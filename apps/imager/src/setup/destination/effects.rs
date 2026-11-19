@@ -21,52 +21,52 @@ pub fn region_row(index: usize) -> String {
 #[effect(operation = "imager.destination")]
 pub enum DestinationEffect {
     /// Installer status.
-    #[effect(returns, kind = "read")]
+    #[effect(returns, kind = "read", on = Session)]
     Status,
     /// Next.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     Next,
     /// Back.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     Back,
     /// Return to the existing system.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     ReturnToHost,
     /// Choose keyboard layout.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetLayout {
         #[param("Keyboard layout", choices = imager_backend::destination::layouts::display_names())]
         layout: String,
     },
     #[effect(kind = "outside")]
-    #[effect(label = "installer-action-refresh-networks")]
+    #[effect(label = "installer-action-refresh-networks", on = Session)]
     RefreshNetworks,
     /// Choose Wi-Fi network.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Network)]
     SelectNetwork {
         #[param("Network name")]
         ssid: String,
     },
     /// Connect to the chosen Wi-Fi network.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     ConnectNetwork {
         #[param(secret, "Wi-Fi password (secured networks only)")]
         password: Option<String>,
     },
     /// Sign in using the private form.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     AddAccount,
     /// Retry signing in using the private form.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     RetryAccount,
     #[effect(kind = "outside")]
-    #[effect(label = "installer-accounts-cancel")]
+    #[effect(label = "installer-accounts-cancel", on = Session)]
     CancelSignIn,
     #[effect(kind = "outside")]
-    #[effect(label = "imager-installer-continue-offline")]
+    #[effect(label = "imager-installer-continue-offline", on = Session)]
     ContinueOffline,
     /// Choose install method.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetMethod {
         #[param(
             "erase: use the whole disk; alongside: keep existing partitions",
@@ -75,25 +75,25 @@ pub enum DestinationEffect {
         method: String,
     },
     #[effect(kind = "outside")]
-    #[effect(label = "installer-action-refresh-disks")]
+    #[effect(label = "installer-action-refresh-disks", on = Session)]
     RefreshDisks,
     /// Use this disk.
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = Disk)]
     SelectDisk {
         #[param("Device path of the disk")]
         device: String,
     },
     /// Use this region.
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = Region)]
     SelectRegion {
         #[param("Index of the unallocated region")]
         index: i64,
     },
     #[effect(kind = "outside")]
     #[effect(row)]
-    #[effect(label = "installer-storage-use-capacity")]
+    #[effect(label = "installer-storage-use-capacity", on = Storage)]
     SetSize {
         #[param("Total Tilo capacity in whole GiB (at least 35)")]
         gib: i64,
@@ -101,7 +101,7 @@ pub enum DestinationEffect {
         extent: String,
     },
     /// Set username and name.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetIdentity {
         #[param("Up to 32 lowercase letters, digits, _ or -; starts with a letter or _")]
         username: Option<String>,
@@ -109,7 +109,7 @@ pub enum DestinationEffect {
         full_name: Option<String>,
     },
     /// Set account and default startup secret.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetPassphrase {
         #[param(
             secret,
@@ -120,7 +120,7 @@ pub enum DestinationEffect {
         confirmation: String,
     },
     /// Set a separate disk startup secret.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetDiskPassphrase {
         #[param(
             secret,
@@ -135,7 +135,7 @@ pub enum DestinationEffect {
         mode: Option<String>,
     },
     /// Set a pre-hashed account password.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetPasswordHash {
         #[param(
             secret,
@@ -144,43 +144,43 @@ pub enum DestinationEffect {
         hash: String,
     },
     /// Choose filesystem.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetFilesystem {
         #[param("Root filesystem", choices = install_profile_model::FILESYSTEMS)]
         filesystem: String,
     },
     /// Enroll a security key.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetSecurityKey {
         #[param("Enroll a FIDO2 security key as another unlock factor")]
         enabled: bool,
     },
     /// Install media codecs.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetMediaCodecs {
         #[param("Install more video and audio formats once the new system is online")]
         enabled: bool,
     },
     /// Set hostname.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetHostname {
         #[param("Letters, digits and hyphens; no leading or trailing hyphen; at most 63")]
         hostname: String,
     },
     /// Choose language and locale.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetLocale {
         #[param("Language and locale", choices = install_profile_model::locales())]
         locale: String,
     },
     /// Choose time zone.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Session)]
     SetTimezone {
         #[param("IANA time zone")]
         timezone: String,
     },
     #[effect(kind = "outside")]
-    #[effect(label = "installer-action-recovery-promise")]
+    #[effect(label = "installer-action-recovery-promise", on = Session)]
     SetRecoveryPromise {
         #[param(
             "A recovery key is shown once during install; it is the only backup if the TPM or passphrase is lost"
@@ -189,7 +189,7 @@ pub enum DestinationEffect {
     },
     /// Begin installation.
     #[effect(kind = "outside")]
-    #[effect(row, destructive, phrase = "Self::target_name")]
+    #[effect(row, destructive, phrase = "Self::target_name", on = Review)]
     Begin {
         #[param("The reviewed target the installation formats")]
         target: String,
@@ -198,21 +198,56 @@ pub enum DestinationEffect {
     },
     #[effect(kind = "outside")]
     #[effect(own_device)]
-    #[effect(label = "installer-action-copy-recovery-key")]
+    #[effect(label = "installer-action-copy-recovery-key", on = Session)]
     CopyRecoveryKey,
     #[effect(kind = "outside")]
-    #[effect(label = "installer-action-recovery-saved")]
+    #[effect(label = "installer-action-recovery-saved", on = Session)]
     ConfirmRecoverySaved {
         #[param("The recovery key is stored somewhere other than this computer")]
         saved: bool,
     },
     #[effect(kind = "outside")]
-    #[effect(label = "installer-action-reboot")]
+    #[effect(label = "installer-action-reboot", on = Session)]
     Reboot,
     #[effect(kind = "outside")]
-    #[effect(label = "installer-action-power-off")]
+    #[effect(label = "installer-action-power-off", on = Session)]
     PowerOff,
 }
+
+/// The installer on the live medium, as it publishes itself: every command
+/// it offers while it is open.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "installer.session",
+    label = "Install",
+    effects = DestinationEffect
+)]
+pub struct Session;
+
+/// One Wi-Fi network the installer can join.
+#[derive(tilo_resource::Row)]
+#[row(kind = "installer.network", label = "Network", effects = DestinationEffect)]
+pub struct Network;
+
+/// One disk the installer may write.
+#[derive(tilo_resource::Row)]
+#[row(kind = "installer.disk", label = "Disk", effects = DestinationEffect)]
+pub struct Disk;
+
+/// One unallocated region inside a disk.
+#[derive(tilo_resource::Row)]
+#[row(kind = "installer.region", label = "Install region", effects = DestinationEffect)]
+pub struct Region;
+
+/// The capacity a guided installation takes.
+#[derive(tilo_resource::Row)]
+#[row(kind = "installer.storage", label = "Storage", effects = DestinationEffect)]
+pub struct Storage;
+
+/// The review before the install begins.
+#[derive(tilo_resource::Row)]
+#[row(kind = "installer.review", label = "Review", effects = DestinationEffect)]
+pub struct Review;
 
 impl DestinationEffect {
     fn target_name(&self) -> String {

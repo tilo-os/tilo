@@ -3900,6 +3900,10 @@ impl crate::window_view::PublishingWindow for InstallerApp {
     fn statuses(&self) -> Vec<ui::framework::EffectStatus> {
         self.effect_statuses()
     }
+
+    fn row_statuses(&self) -> Vec<(String, Vec<ui::framework::EffectStatus>)> {
+        InstallerApp::row_statuses(self)
+    }
 }
 
 #[cfg(test)]
