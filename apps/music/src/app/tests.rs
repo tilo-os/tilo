@@ -2435,11 +2435,16 @@ fn global_search_and_canonical_views_route_without_mutation() {
         let resource_id = crate::actions::playlist_track_resource_id(&playlist.id, &track);
         let resource =
             Music::publish_resource(&app, &resource_id).expect("membership resolves lazily");
+        assert!(resource.actions.iter().any(|action| action.id == "open"));
         assert!(
-            resource
-                .actions
-                .iter()
-                .any(|action| { action.id == "open" && action.label == "Open in playlist" })
+            app.music_rows().row_status(&resource_id).contains(
+                &ui::framework::EffectStatus::labelled(
+                    crate::actions::MusicEffect::OPEN,
+                    "Open in playlist",
+                )
+                .on(&resource_id)
+            ),
+            "the membership says its Open reads as opening it in the playlist"
         );
 
         let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Open {

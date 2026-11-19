@@ -6,7 +6,13 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource::{self, Effect};
 
+use crate::row_types::{
+    Album, Artist, LocalFile as LocalFileRow, Membership, Player, Playlist, Queue, QueueItem,
+    Source, Track,
+};
 use tilo_actions::ActionSpec;
+use ui::framework::EffectStatus;
+use ui::tilo_resource::row::RowBindings;
 /// The largest decoded cover the document accepts.
 pub const MAX_PORTABLE_COVER_BYTES: usize = 256 * 1024;
 /// Portal normalization never persists an image wider or taller than this.
@@ -187,25 +193,25 @@ pub enum MusicEffect {
     /// Choose music source
     ///
     /// Opens the source picker without starting sign-in or changing a grant.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     Sources,
     /// Enable full Spotify library and device controls
     ///
     /// Explicitly requests editing, playlist, followed-artist and remote-device permissions.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     #[effect(attended, job)]
     ConnectSpotifyLibrary,
     /// Connect Spotify
     ///
     /// Requests profile and saved-library read access, without editing or remote control.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     #[effect(attended, job)]
     #[effect(label = "music-connect-spotify")]
     ConnectSpotify,
     /// Authorize Spotify playback
     ///
     /// Separately grants native streaming for the same Premium account.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     #[effect(attended, job)]
     ConnectSpotifyPlayback,
     /// Inspect Spotify account eligibility
@@ -213,21 +219,21 @@ pub enum MusicEffect {
     #[effect(job, returns, idempotent, kind = "read")]
     SpotifyAccountStatus,
     /// Refresh Spotify devices
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     #[effect(job, returns)]
     SpotifyDevices,
     /// Show Spotify's remote queue
     ///
     /// Reads a provider snapshot; never replaces this device's queue.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     #[effect(job, returns)]
     SpotifyQueue,
     /// Load more Spotify library collections
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     #[effect(job, returns)]
     SpotifyLibraryMore,
     /// Name a new private Spotify playlist
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     NewSpotifyPlaylist,
     /// Create private Spotify playlist
     ///
@@ -262,14 +268,14 @@ pub enum MusicEffect {
         device: String,
     },
     /// Save to Spotify library
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Track, on = Artist, on = Album, on = Playlist)]
     #[effect(job, returns)]
     SpotifySave {
         #[param("Spotify track, album, artist or playlist URI")]
         uri: String,
     },
     /// Remove from Spotify library
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Track, on = Artist, on = Album, on = Playlist)]
     #[effect(job, returns)]
     SpotifyUnsave {
         #[param("Spotify track, album, artist or playlist URI")]
@@ -307,17 +313,17 @@ pub enum MusicEffect {
     /// Disconnect Spotify
     ///
     /// Forgets the local grant. Revoke Tilo in Spotify account settings to remove provider-side access.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     #[effect(job)]
     #[effect(label = "music-disconnect-spotify")]
     DisconnectSpotify,
     /// Browse Spotify
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     #[effect(job)]
     #[effect(label = "music-browse-spotify")]
     BrowseSpotify,
     /// Browse `YouTube` Music
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = Source)]
     #[effect(job)]
     BrowseYouTube,
 
@@ -327,7 +333,7 @@ pub enum MusicEffect {
     Search { query: String },
     /// Inspect playback
     /// Device-local transport observations, with no account or credential data.
-    #[effect(row, returns, idempotent, kind = "read")]
+    #[effect(row, returns, idempotent, kind = "read", on = Player, on = crate::row_types::LocalFile)]
     PlaybackStatus,
     /// Open audio file
     ///
@@ -337,13 +343,13 @@ pub enum MusicEffect {
     #[effect(label = "music-open-audio-file")]
     OpenFile,
     /// Open
-    #[effect(view, row)]
+    #[effect(view, row, on = Artist, on = Album, on = Playlist, on = Membership, on = Queue, on = QueueItem)]
     Open { place: Place },
     /// Open album
-    #[effect(view, row)]
+    #[effect(view, row, on = Track)]
     OpenAlbum { album: String },
     /// Open artist
-    #[effect(view, row)]
+    #[effect(view, row, on = Track)]
     OpenArtist { artist: String },
     /// Browse genre
     ///
@@ -358,7 +364,7 @@ pub enum MusicEffect {
     /// Plays a track on its own, or (with `queued`) this exact occurrence of
     /// it in the queue, which a stale queue result cannot select.
     #[effect(kind = "outside")]
-    #[effect(row, job, returns)]
+    #[effect(row, job, returns, on = Track, on = QueueItem, on = crate::row_types::LocalFile)]
     #[effect(label = "music-recommendations-play")]
     Play {
         track: String,
@@ -366,67 +372,67 @@ pub enum MusicEffect {
     },
     /// Like or unlike a catalogue song, importing its real metadata first.
     /// It changes only the library, through its edits.
-    #[effect(row, edit)]
+    #[effect(row, edit, on = Track, on = Membership)]
     ToggleLike { track: String },
     /// Like the song that plays
     ///
     /// Likes or unlikes whatever plays on this device when it runs, as
     /// liking that song's own row does.
-    #[effect(row, edit)]
+    #[effect(row, edit, on = Player, on = crate::row_types::LocalFile)]
     ToggleLikePlaying,
     /// Add to queue
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = Track)]
     AddToQueue { track: String },
     /// Play next
     #[effect(kind = "outside")]
-    #[effect(row, job, returns)]
+    #[effect(row, job, returns, on = Track)]
     PlayNext { track: String },
     /// Keep offline
     ///
     /// Downloads the tracks' media to this device only.
     #[effect(kind = "outside")]
-    #[effect(row, job, cancellable, idempotent, returns)]
+    #[effect(row, job, cancellable, idempotent, returns, on = Track)]
     KeepOffline { tracks: Vec<String> },
     /// Remove from offline cache
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = Track)]
     RemoveOffline { tracks: Vec<String> },
     /// Play or pause
     #[effect(kind = "outside")]
-    #[effect(row, job, returns)]
+    #[effect(row, job, returns, on = Player, on = crate::row_types::LocalFile)]
     PlayPause,
     /// Previous track
     #[effect(kind = "outside")]
-    #[effect(row, job, returns)]
+    #[effect(row, job, returns, on = Player, on = crate::row_types::LocalFile)]
     Previous,
     /// Next queued track
     #[effect(kind = "outside")]
-    #[effect(row, job, returns)]
+    #[effect(row, job, returns, on = Player, on = crate::row_types::LocalFile)]
     Next,
     /// Toggle mute
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = Player, on = crate::row_types::LocalFile)]
     ToggleMute,
     /// Toggle shuffle
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = Player, on = crate::row_types::LocalFile)]
     ToggleShuffle,
     /// Change repeat mode
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = Player, on = crate::row_types::LocalFile)]
     CycleRepeat,
     /// Remove from queue
     #[effect(kind = "outside")]
-    #[effect(row, destructive)]
+    #[effect(row, destructive, on = QueueItem)]
     Remove { index: usize, track: String },
     /// Move queue item up
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = QueueItem)]
     MoveUp { index: usize, track: String },
     /// Move queue item down
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = QueueItem)]
     MoveDown { index: usize, track: String },
     /// Seek playback
     #[effect(kind = "outside")]
@@ -568,7 +574,7 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         let mut artists = self.lib.artists.keys().collect::<Vec<_>>();
         artists.sort();
         rows.extend(artists.into_iter().take(limit).map(|id| self.artist(id)));
-        rows.push(self.player());
+        rows.push(Self::player());
         rows.push(self.queue());
         if let Some(file) = &self.local_file {
             rows.push(self.file(file));
@@ -582,7 +588,7 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
             return self.local_file.as_ref().map(|file| self.file(file));
         }
         if id == PLAYER_RESOURCE_ID {
-            return Some(self.player());
+            return Some(Self::player());
         }
         if id == QUEUE_RESOURCE_ID {
             return Some(self.queue());
@@ -634,50 +640,41 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
         } else {
             format!("{} — {artist}", self.track_title(id))
         };
-        let tracks = vec![id.to_owned()];
-        let mut row = ui::framework::LiveRow::new(track_resource_id(id), "music.track", label)
-            .operation(bound(
-                &MusicEffect::Play {
-                    track: id.to_owned(),
-                    queued: None,
-                },
-                "Play track",
-            ))
-            .operation(if id.starts_with("spotify:") {
-                MusicEffect::KeepOffline { tracks }.bound().unavailable(
-                    "spotify_offline_unsupported",
-                    crate::i18n::CATALOG.t("music-spotify-protected"),
-                )
-            } else if self.device.offline(id) {
-                MusicEffect::RemoveOffline { tracks }.bound()
-            } else {
-                MusicEffect::KeepOffline { tracks }.bound()
-            })
-            .operation(like_operation(id, self.lib.is_liked(id)))
-            .effect(&MusicEffect::AddToQueue {
-                track: id.to_owned(),
-            })
-            .effect(&MusicEffect::PlayNext {
-                track: id.to_owned(),
-            });
+        let mut bindings = RowBindings::new()
+            .bind(MusicEffect::PLAY, play_arguments(id, None))
+            .bind(MusicEffect::TOGGLE_LIKE, track_arguments(id))
+            .bind(MusicEffect::ADD_TO_QUEUE, track_arguments(id))
+            .bind(MusicEffect::PLAY_NEXT, track_arguments(id));
+        let tracks = tracks_arguments(&[id]);
+        if id.starts_with("spotify:") {
+            // Offered so its row can say why it is not kept: a protected
+            // stream is the account's, not this device's.
+            bindings = bindings.bind(MusicEffect::KEEP_OFFLINE, tracks);
+        } else if self.device.offline(id) {
+            bindings = bindings.bind(MusicEffect::REMOVE_OFFLINE, tracks);
+        } else {
+            bindings = bindings.bind(MusicEffect::KEEP_OFFLINE, tracks);
+        }
         if id.starts_with("spotify:track:") {
-            row = row
-                .effect(&MusicEffect::SpotifySave { uri: id.to_owned() })
-                .effect(&MusicEffect::SpotifyUnsave { uri: id.to_owned() });
+            bindings = bindings
+                .bind(MusicEffect::SPOTIFY_SAVE, uri_arguments(id))
+                .bind(MusicEffect::SPOTIFY_UNSAVE, uri_arguments(id));
         }
         if let Some(song) = self.lib.track(id) {
             if !song.album_id.is_empty() {
-                row = row.effect(&MusicEffect::OpenAlbum {
-                    album: song.album_id.clone(),
-                });
+                bindings = bindings.bind(
+                    MusicEffect::OPEN_ALBUM,
+                    [("album", song.album_id.clone().into())],
+                );
             }
             if !song.artist_id.is_empty() {
-                row = row.effect(&MusicEffect::OpenArtist {
-                    artist: song.artist_id.clone(),
-                });
+                bindings = bindings.bind(
+                    MusicEffect::OPEN_ARTIST,
+                    [("artist", song.artist_id.clone().into())],
+                );
             }
         }
-        row
+        ui::framework::LiveRow::typed_with::<Track>(track_resource_id(id), label, &bindings)
     }
 
     fn artist(&self, id: &str) -> ui::framework::LiveRow {
@@ -685,36 +682,28 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
             .lib
             .artist(id)
             .map_or_else(|| id.to_owned(), |artist| artist.name.clone());
-        let row = ui::framework::LiveRow::new(artist_resource_id(id), "music.artist", name).effect(
-            &MusicEffect::Open {
-                place: Place::Artist(id.to_owned()),
-            },
-        );
-        if !id.starts_with("spotify:artist:") {
-            return row;
+        let mut bindings = open_place(Place::Artist(id.to_owned()));
+        if id.starts_with("spotify:artist:") {
+            // Following is one control either way: it offers the one that
+            // applies to what this device has.
+            let effect = if self.device.followed(id) {
+                MusicEffect::SPOTIFY_UNSAVE
+            } else {
+                MusicEffect::SPOTIFY_SAVE
+            };
+            bindings = bindings.bind(effect, uri_arguments(id));
         }
-        let followed = self.device.followed(id);
-        row.effect(&if followed {
-            MusicEffect::SpotifyUnsave { uri: id.to_owned() }
-        } else {
-            MusicEffect::SpotifySave { uri: id.to_owned() }
-        })
+        ui::framework::LiveRow::typed_with::<Artist>(artist_resource_id(id), name, &bindings)
     }
 
-    /// A playlist as the library holds it, with its first few songs: its row
-    /// is the item's, here adding what opens it.
+    /// A playlist as the library holds it, with its first few songs.
     fn playlist(&self, playlist: &crate::model::Playlist) -> ui::framework::LiveRow {
-        let mut row = ui::framework::LiveRow::new(
+        let bindings = open_place(Place::Playlist(playlist.id.clone()));
+        let mut row = ui::framework::LiveRow::typed_with::<Playlist>(
             playlist_resource_id(&playlist.id),
-            "music.playlist",
             playlist_label(playlist),
-        )
-        .operation(bound(
-            &MusicEffect::Open {
-                place: Place::Playlist(playlist.id.clone()),
-            },
-            "Open playlist",
-        ));
+            &bindings,
+        );
         let tracks = playlist
             .tracks
             .values()
@@ -729,21 +718,16 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
 
     fn membership(&self, playlist: &str, track: &str) -> ui::framework::LiveRow {
         let artist = self.track_artist(track);
-        let mut row = ui::framework::LiveRow::new(
+        let bindings = open_place(Place::Membership {
+            playlist: playlist.to_owned(),
+            track: track.to_owned(),
+        })
+        .bind(MusicEffect::TOGGLE_LIKE, track_arguments(track));
+        let mut row = ui::framework::LiveRow::typed_with::<Membership>(
             playlist_track_resource_id(playlist, track),
-            "music.playlist-track",
             self.track_title(track),
-        )
-        .operation(bound(
-            &MusicEffect::Open {
-                place: Place::Membership {
-                    playlist: playlist.to_owned(),
-                    track: track.to_owned(),
-                },
-            },
-            "Open in playlist",
-        ))
-        .operation(like_operation(track, self.lib.is_liked(track)));
+            &bindings,
+        );
         if !artist.is_empty() {
             row = row.presentation(tilo_actions::ResourcePresentation {
                 detail: Some(artist),
@@ -754,16 +738,20 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
     }
 
     /// The player: the transport's controls, each offered or refused with a reason.
-    fn player(&self) -> ui::framework::LiveRow {
-        transport(
-            ui::framework::LiveRow::new(PLAYER_RESOURCE_ID, "music.player", "Player"),
-            self.playback,
+    fn player() -> ui::framework::LiveRow {
+        ui::framework::LiveRow::typed_with::<Player>(
+            PLAYER_RESOURCE_ID,
+            "Player",
+            &transport_bindings(),
         )
     }
 
     fn queue(&self) -> ui::framework::LiveRow {
-        let mut row = ui::framework::LiveRow::new(QUEUE_RESOURCE_ID, "music.queue", "Queue")
-            .operation(open_queue());
+        let mut row = ui::framework::LiveRow::typed_with::<Queue>(
+            QUEUE_RESOURCE_ID,
+            "Queue",
+            &open_place(Place::View("queue".into())),
+        );
         for (index, track) in self
             .playback
             .queue
@@ -779,58 +767,16 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
     /// One occurrence in the queue: a song may be queued twice, so the row is its position there.
     fn queue_item(&self, index: usize, track: &str) -> ui::framework::LiveRow {
         let artist = self.track_artist(track);
-        let total = self.playback.queue.len();
-        let move_up = MusicEffect::MoveUp {
-            index,
-            track: track.to_owned(),
-        }
-        .bound();
-        let move_down = MusicEffect::MoveDown {
-            index,
-            track: track.to_owned(),
-        }
-        .bound();
-        let mut row = ui::framework::LiveRow::new(
+        let bindings = open_place(Place::View("queue".into()))
+            .bind(MusicEffect::PLAY, play_arguments(track, Some(index)))
+            .bind(MusicEffect::REMOVE, position_arguments(index, track))
+            .bind(MusicEffect::MOVE_UP, position_arguments(index, track))
+            .bind(MusicEffect::MOVE_DOWN, position_arguments(index, track));
+        let mut row = ui::framework::LiveRow::typed_with::<QueueItem>(
             queue_item_resource_id(index, track),
-            "music.queue-item",
             self.track_title(track),
-        )
-        .operation(open_queue())
-        .operation(bound(
-            &MusicEffect::Play {
-                track: track.to_owned(),
-                queued: Some(index),
-            },
-            if self.playback.current.as_deref() == Some(track) && self.playback.queue_index == index
-            {
-                "Restart track"
-            } else {
-                "Play queue item"
-            },
-        ))
-        .operation(
-            MusicEffect::Remove {
-                index,
-                track: track.to_owned(),
-            }
-            .bound(),
-        )
-        .operation(if index > 0 {
-            move_up
-        } else {
-            move_up.unavailable(
-                "first_queue_item",
-                crate::i18n::CATALOG.t("music-already-first"),
-            )
-        })
-        .operation(if index + 1 < total {
-            move_down
-        } else {
-            move_down.unavailable(
-                "last_queue_item",
-                crate::i18n::CATALOG.t("music-already-last"),
-            )
-        });
+            &bindings,
+        );
         if !artist.is_empty() {
             row = row.presentation(tilo_actions::ResourcePresentation {
                 detail: Some(artist),
@@ -841,87 +787,183 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
     }
 
     fn file(&self, file: &LocalFile) -> ui::framework::LiveRow {
-        let row = ui::framework::LiveRow::new(
+        let bindings = if self.playback.current.as_deref() == Some(file.id.as_str()) {
+            transport_bindings()
+        } else {
+            RowBindings::new().bind(MusicEffect::PLAY, play_arguments(&file.id, None))
+        };
+        ui::framework::LiveRow::typed_with::<LocalFileRow>(
             LOCAL_FILE_RESOURCE_ID,
-            "music.local-file",
             file.label.clone(),
-        );
-        if self.playback.current.as_deref() == Some(file.id.as_str()) {
-            return transport(row, self.playback);
+            &bindings,
+        )
+    }
+
+    /// What the row `id` says of its effects now: a transport with nothing to
+    /// play, a queue item at either end, a protected stream that cannot be
+    /// kept here, and the words the transport's own controls use.
+    pub(crate) fn row_status(&self, id: &str) -> Vec<EffectStatus> {
+        if id == PLAYER_RESOURCE_ID || (id == LOCAL_FILE_RESOURCE_ID && self.is_current_file()) {
+            return transport_status(
+                self.playback,
+                self.playback
+                    .current
+                    .as_deref()
+                    .is_some_and(|track| self.lib.is_liked(track)),
+                id,
+            );
         }
-        row.operation(bound(
-            &MusicEffect::Play {
-                track: file.id.clone(),
-                queued: None,
-            },
-            "Play file",
-        ))
+        if id == LOCAL_FILE_RESOURCE_ID {
+            return vec![EffectStatus::labelled(MusicEffect::PLAY, "Play file").on(id)];
+        }
+        if id == QUEUE_RESOURCE_ID {
+            return vec![EffectStatus::labelled(MusicEffect::OPEN, "Open queue").on(id)];
+        }
+        if let Some(track) = track_id_from_resource(id) {
+            return self.track_status(track, id);
+        }
+        if let Some((index, track)) = parse_queue_item_resource_id(id) {
+            return queue_item_status(self.playback, index, &track, id);
+        }
+        if parse_playlist_track_resource_id(id).is_some() {
+            return vec![EffectStatus::labelled(MusicEffect::OPEN, "Open in playlist").on(id)];
+        }
+        if parse_playlist_resource_id(id).is_some() {
+            return vec![EffectStatus::labelled(MusicEffect::OPEN, "Open playlist").on(id)];
+        }
+        Vec::new()
+    }
+
+    fn is_current_file(&self) -> bool {
+        self.local_file
+            .as_ref()
+            .is_some_and(|file| self.playback.current.as_deref() == Some(file.id.as_str()))
+    }
+
+    /// The song `track`'s row says of its effects: its like reads what this
+    /// device has, and a protected stream says why it stays the account's.
+    fn track_status(&self, track: &str, id: &str) -> Vec<EffectStatus> {
+        let mut statuses = vec![
+            EffectStatus::labelled(MusicEffect::PLAY, "Play track").on(id),
+            EffectStatus::labelled(
+                MusicEffect::TOGGLE_LIKE,
+                like_label(self.lib.is_liked(track)),
+            )
+            .on(id),
+        ];
+        if track.starts_with("spotify:") {
+            statuses.push(
+                EffectStatus::unavailable(
+                    MusicEffect::KEEP_OFFLINE,
+                    "spotify_offline_unsupported",
+                    crate::i18n::CATALOG.t("music-spotify-protected"),
+                )
+                .on(id),
+            );
+        }
+        statuses
     }
 }
 
-fn playlist_label(playlist: &crate::model::Playlist) -> String {
-    let name = playlist.name.trim();
-    if name.is_empty() {
-        "Untitled playlist".to_owned()
-    } else {
-        name.to_owned()
-    }
+/// The arguments a song-shaped effect binds: the song, and the queue
+/// occurrence it names, when it names one.
+fn play_arguments(track: &str, queued: Option<usize>) -> [(&'static str, serde_json::Value); 2] {
+    [
+        ("track", track.to_owned().into()),
+        (
+            "queued",
+            serde_json::to_value(queued).unwrap_or(serde_json::Value::Null),
+        ),
+    ]
 }
 
-fn like_operation(track: &str, liked: bool) -> ActionSpec {
-    bound(
-        &MusicEffect::ToggleLike {
-            track: track.to_owned(),
-        },
-        if liked { "Unlike song" } else { "Like song" },
+/// The arguments an effect taking the song `track` binds.
+fn track_arguments(track: &str) -> [(&'static str, serde_json::Value); 1] {
+    [("track", track.to_owned().into())]
+}
+
+/// The arguments an effect taking the Spotify URI `uri` binds.
+fn uri_arguments(uri: &str) -> [(&'static str, serde_json::Value); 1] {
+    [("uri", uri.to_owned().into())]
+}
+
+/// The arguments an effect taking a list of the songs `tracks` binds.
+pub(crate) fn tracks_arguments(tracks: &[&str]) -> [(&'static str, serde_json::Value); 1] {
+    let tracks = tracks
+        .iter()
+        .map(|track| serde_json::Value::from((*track).to_owned()))
+        .collect::<Vec<_>>();
+    [("tracks", serde_json::Value::Array(tracks))]
+}
+
+/// The arguments an effect acting on the occurrence `index` of `track` binds.
+fn position_arguments(index: usize, track: &str) -> [(&'static str, serde_json::Value); 2] {
+    [
+        ("index", serde_json::Value::from(index)),
+        ("track", track.to_owned().into()),
+    ]
+}
+
+/// The row offering its type's Open of `place`.
+pub(crate) fn open_place(place: Place) -> RowBindings {
+    RowBindings::new().bind(
+        MusicEffect::OPEN,
+        [(
+            "place",
+            serde_json::to_value(place).unwrap_or(serde_json::Value::Null),
+        )],
     )
 }
 
-fn with_unavailable(spec: ActionSpec, unavailable: Option<(&'static str, String)>) -> ActionSpec {
-    match unavailable {
-        Some((code, reason)) => spec.unavailable(code, reason),
-        None => spec,
-    }
+/// The player's own effects, each offered on a transport row.
+fn transport_bindings() -> RowBindings {
+    RowBindings::new()
+        .offer(MusicEffect::PLAYBACK_STATUS)
+        .offer(MusicEffect::PLAY_PAUSE)
+        .offer(MusicEffect::PREVIOUS)
+        .offer(MusicEffect::NEXT)
+        .offer(MusicEffect::TOGGLE_MUTE)
+        .offer(MusicEffect::TOGGLE_SHUFFLE)
+        .offer(MusicEffect::CYCLE_REPEAT)
+        .offer(MusicEffect::TOGGLE_LIKE_PLAYING)
 }
 
-fn transport(
-    row: ui::framework::LiveRow,
-    playback: &crate::model::Playback,
-) -> ui::framework::LiveRow {
-    let mut row = row.effect(&MusicEffect::PlaybackStatus);
-    let play = bound(
-        &MusicEffect::PlayPause,
-        if playback.playing { "Pause" } else { "Play" },
-    );
-    row = row.operation(if playback.current.is_some() {
-        play
-    } else {
-        play.unavailable(
-            "nothing_playing",
-            crate::i18n::CATALOG.t("music-choose-track-playback"),
+/// How the transport stands now: what it cannot do without something
+/// playing or queued, and the words its controls use then.
+fn transport_status(playback: &crate::model::Playback, liked: bool, id: &str) -> Vec<EffectStatus> {
+    let mut statuses = vec![
+        EffectStatus::labelled(
+            MusicEffect::PLAY_PAUSE,
+            if playback.playing { "Pause" } else { "Play" },
         )
-    });
-    row = row
-        .effect(&MusicEffect::ToggleMute)
-        .operation(bound(
-            &MusicEffect::ToggleShuffle,
-            &crate::i18n::CATALOG.t(if playback.shuffle {
+        .on(id),
+        EffectStatus::labelled(
+            MusicEffect::TOGGLE_SHUFFLE,
+            crate::i18n::CATALOG.t(if playback.shuffle {
                 "music-shuffle-off"
             } else {
                 "music-shuffle-on"
             }),
-        ))
-        .effect(&MusicEffect::CycleRepeat);
-    let like = MusicEffect::ToggleLikePlaying.bound();
-    row = row.operation(if playback.current.is_some() {
-        like
-    } else {
-        like.unavailable(
-            "nothing_playing",
-            crate::i18n::CATALOG.t("music-choose-track-like"),
         )
-    });
-    let unavailable: Option<(&str, String)> = if playback.current.is_none() {
+        .on(id),
+    ];
+    if playback.current.is_none() {
+        for effect in [MusicEffect::PLAY_PAUSE, MusicEffect::TOGGLE_LIKE_PLAYING] {
+            statuses.push(
+                EffectStatus::unavailable(
+                    effect,
+                    "nothing_playing",
+                    crate::i18n::CATALOG.t("music-choose-track-playback"),
+                )
+                .on(id),
+            );
+        }
+    } else {
+        statuses.push(
+            EffectStatus::labelled(MusicEffect::TOGGLE_LIKE_PLAYING, like_label(liked)).on(id),
+        );
+    }
+    let skipped = if playback.current.is_none() {
         Some((
             "nothing_playing",
             crate::i18n::CATALOG.t("music-choose-track-playback"),
@@ -931,23 +973,72 @@ fn transport(
     } else {
         None
     };
-    // Next steps through this device's own shuffle order while shuffle is
-    // on, as the transport's button does; the order stays device-local and
-    // never reaches the shared library.
-    row.operation(with_unavailable(
-        MusicEffect::Previous.bound(),
-        unavailable.clone(),
-    ))
-    .operation(with_unavailable(MusicEffect::Next.bound(), unavailable))
+    for effect in [MusicEffect::PREVIOUS, MusicEffect::NEXT] {
+        if let Some((code, reason)) = &skipped {
+            statuses.push(EffectStatus::unavailable(effect, *code, reason.clone()).on(id));
+        }
+    }
+    statuses
 }
 
-fn open_queue() -> ActionSpec {
-    bound(
-        &MusicEffect::Open {
-            place: Place::View("queue".into()),
-        },
-        "Open queue",
-    )
+/// What one queue occurrence says of its effects: what playing it means now,
+/// and that the ends of the queue cannot move further.
+fn queue_item_status(
+    playback: &crate::model::Playback,
+    index: usize,
+    track: &str,
+    id: &str,
+) -> Vec<EffectStatus> {
+    let total = playback.queue.len();
+    let playing = playback.current.as_deref() == Some(track) && playback.queue_index == index;
+    let mut statuses = vec![
+        EffectStatus::labelled(MusicEffect::OPEN, "Open queue").on(id),
+        EffectStatus::labelled(
+            MusicEffect::PLAY,
+            if playing {
+                "Restart track"
+            } else {
+                "Play queue item"
+            },
+        )
+        .on(id),
+    ];
+    if index == 0 {
+        statuses.push(
+            EffectStatus::unavailable(
+                MusicEffect::MOVE_UP,
+                "first_queue_item",
+                crate::i18n::CATALOG.t("music-already-first"),
+            )
+            .on(id),
+        );
+    }
+    if index + 1 >= total {
+        statuses.push(
+            EffectStatus::unavailable(
+                MusicEffect::MOVE_DOWN,
+                "last_queue_item",
+                crate::i18n::CATALOG.t("music-already-last"),
+            )
+            .on(id),
+        );
+    }
+    statuses
+}
+
+/// What a playlist reads as, when it has no name of its own.
+fn playlist_label(playlist: &crate::model::Playlist) -> String {
+    let name = playlist.name.trim();
+    if name.is_empty() {
+        "Untitled playlist".to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
+/// What a like effect reads now.
+fn like_label(liked: bool) -> &'static str {
+    if liked { "Unlike song" } else { "Like song" }
 }
 
 /// One song joining or leaving a queue, at its position: a queue can hold the same song twice,
@@ -1097,17 +1188,23 @@ fn track_id_from_resource(address: &str) -> Option<&str> {
 
 /// A catalogue album, artist or playlist the library does not hold, as the row `id`.
 pub fn live_catalogue_row(id: &str, label: &str) -> Option<ui::framework::LiveRow> {
-    let kind = if id.starts_with("music.album:") {
-        "music.album"
+    let place = if id.starts_with("music.album:") {
+        Place::Album(id.strip_prefix("music.album:")?.to_owned())
     } else if id.starts_with("music.artist:") {
-        "music.artist"
+        Place::Artist(id.strip_prefix("music.artist:")?.to_owned())
     } else if id.starts_with("music.catalogue-playlist:") {
-        "music.playlist"
+        Place::Playlist(id.strip_prefix("music.catalogue-playlist:")?.to_owned())
     } else {
         return None;
     };
-    let effect = anchor_effect(id)?;
-    Some(ui::framework::LiveRow::new(id, kind, label).operation(bound(&effect, "Open")))
+    let bindings = open_place(place);
+    Some(if id.starts_with("music.artist:") {
+        ui::framework::LiveRow::typed_with::<crate::row_types::Artist>(id, label, &bindings)
+    } else if id.starts_with("music.album:") {
+        ui::framework::LiveRow::typed_with::<crate::row_types::Album>(id, label, &bindings)
+    } else {
+        ui::framework::LiveRow::typed_with::<crate::row_types::Playlist>(id, label, &bindings)
+    })
 }
 
 #[cfg(test)]
@@ -1313,7 +1410,13 @@ mod tests {
                 .collect();
             assert!(flat.contains(&"Create playlist"), "{flat:?}");
             assert!(flat.contains(&"Delete playlist"), "{flat:?}");
-            assert!(flat.contains(&"Open in playlist"), "{flat:?}");
+            assert!(
+                app.music_rows().row_status(track.id.as_str()).contains(
+                    &EffectStatus::labelled(MusicEffect::OPEN, "Open in playlist")
+                        .on(track.id.as_str())
+                ),
+                "the membership's Open reads as opening it in the playlist"
+            );
         }
 
         {
@@ -1567,9 +1670,8 @@ mod tests {
                 queue: vec!["track-1".into()],
                 ..crate::model::Playback::default()
             };
-            let player = music_rows(&Library::default(), &playback)
-                .player()
-                .into_resource();
+            let player =
+                crate::actions::MusicRows::<crate::actions::PlainDevice>::player().into_resource();
             let library = MusicEffect::specs();
             for (id, on) in [
                 ("play-pause", &player.actions),

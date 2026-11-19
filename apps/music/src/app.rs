@@ -1162,35 +1162,38 @@ impl Music {
 
     fn source_row(&self) -> ui::framework::LiveRow {
         use crate::actions::MusicEffect;
-        ui::framework::LiveRow::new(
+        use ui::tilo_resource::row::RowBindings;
+        let bindings = RowBindings::new()
+            .offer(MusicEffect::SOURCES)
+            .offer(MusicEffect::CONNECT_SPOTIFY_LIBRARY)
+            .offer(MusicEffect::CONNECT_SPOTIFY)
+            .offer(MusicEffect::CONNECT_SPOTIFY_PLAYBACK)
+            .offer(MusicEffect::SPOTIFY_DEVICES)
+            .offer(MusicEffect::SPOTIFY_QUEUE)
+            .offer(MusicEffect::SPOTIFY_LIBRARY_MORE)
+            .offer(MusicEffect::NEW_SPOTIFY_PLAYLIST)
+            .offer(MusicEffect::DISCONNECT_SPOTIFY)
+            .offer(MusicEffect::BROWSE_SPOTIFY)
+            .offer(MusicEffect::BROWSE_YOU_TUBE);
+        ui::framework::LiveRow::typed_with::<crate::row_types::Source>(
             "music.source:catalogue",
-            "music.source",
             self.source_status(),
+            &bindings,
         )
-        .effect(&MusicEffect::Sources)
-        .effect(&MusicEffect::ConnectSpotifyLibrary)
-        .effect(&MusicEffect::ConnectSpotify)
-        .effect(&MusicEffect::ConnectSpotifyPlayback)
-        .effect(&MusicEffect::SpotifyDevices)
-        .effect(&MusicEffect::SpotifyQueue)
-        .effect(&MusicEffect::SpotifyLibraryMore)
-        .effect(&MusicEffect::NewSpotifyPlaylist)
-        .effect(&MusicEffect::DisconnectSpotify)
-        .effect(&MusicEffect::BrowseSpotify)
-        .effect(&MusicEffect::BrowseYouTube)
     }
 
     fn offline_row(&self, track: &str) -> Option<ui::framework::LiveRow> {
         self.lib.track(track)?;
+        let bindings = ui::tilo_resource::row::RowBindings::new().bind(
+            crate::actions::MusicEffect::REMOVE_OFFLINE,
+            crate::actions::tracks_arguments(&[track]),
+        );
         Some(
-            ui::framework::LiveRow::new(
+            ui::framework::LiveRow::typed_with::<crate::row_types::Track>(
                 crate::actions::track_resource_id(track),
-                "music.track",
                 self.track_label(track),
-            )
-            .effect(&crate::actions::MusicEffect::RemoveOffline {
-                tracks: vec![track.to_owned()],
-            }),
+                &bindings,
+            ),
         )
     }
 
