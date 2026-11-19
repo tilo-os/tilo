@@ -308,7 +308,7 @@ check(frame.step === null && frame.held, '1. a browser new here holds the first 
 // offers the prompt, and pressing it makes the code — and with it, on the
 // host, the workspace the code names.
 const offering = await until(tab, `document.documentElement.dataset.firstRun === ''
-  && getComputedStyle(document.getElementById('first-run')).display !== 'none'`, '1. the first screen shown');
+  && getComputedStyle(document.getElementById('first-run')).display !== 'none'`);
 check(offering, '1. the first screen offers to set up', await pageText(tab));
 const idle = await tab.evaluate(`document.getElementById('first-run')?.dataset.setup === undefined`);
 check(idle, '1. nothing is made before the person asks for it', JSON.stringify(await where(tab)));
