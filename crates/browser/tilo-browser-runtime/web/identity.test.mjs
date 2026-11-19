@@ -94,6 +94,12 @@ test('a profile is looked for the same way, and only one naming the person count
   });
   assert.deepEqual(await fetchProfile(root, ['https://a.example', 'https://b.example'], {fetch: fetcher}), profile);
   assert.equal(await fetchProfile(root, ['https://a.example'], {fetch: fetcher}), null);
+  // A server only an invitation named has no web origin: it is never asked over HTTP.
+  const invited = 'https://0221e6218cbf08506ee73f14758b8f79.iroh.invalid';
+  const asked = fakeFetch({'https://b.example/peer/v1/profile/fetch': {body: {profile}}});
+  assert.deepEqual(await fetchProfile(root, [invited, 'https://b.example'], {fetch: asked}), profile);
+  assert.deepEqual(asked.requests.map(request => request.url), ['https://b.example/peer/v1/profile/fetch']);
+  assert.equal(await fetchProfile(root, [invited], {fetch: asked}), undefined, 'nobody answered');
 });
 
 test('a profile is signed by the root and carries the name, picture and links the person chose', async () => {

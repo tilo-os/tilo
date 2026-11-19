@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {followPhotos} from './profile-photos.mjs';
+import {fetchPersonProfile, followPhotos} from './profile-photos.mjs';
+import {invitedOrigin} from './site-host.mjs';
 
 const ADA = 'a'.repeat(64);
 const BO = 'b'.repeat(64);
@@ -28,4 +29,16 @@ test('a person’s picture is fetched when they are met and when their profile c
   photos.seen([{user: ADA, profile_ms: 20}]);
   await settle();
   assert.deepEqual(shown.at(-1), [ADA, null], 'a picture taken away goes');
+});
+
+test('a profile is asked of a server with a web origin, never of one only an invitation named', async () => {
+  const asked = [];
+  const fetcher = async url => {
+    asked.push(url);
+    return {ok: true, json: async () => ({profile: {user_public_key: ADA, display_name: 'Ada'}, issued_at_ms: 7})};
+  };
+  assert.deepEqual(await fetchPersonProfile('https://eu1.tilo.sh', ADA, fetcher),
+    {user_public_key: ADA, display_name: 'Ada', issued_at_ms: 7});
+  assert.equal(await fetchPersonProfile(invitedOrigin('0221e6218cbf08506ee73f14758b8f79'), ADA, fetcher), null);
+  assert.deepEqual(asked, ['https://eu1.tilo.sh/peer/v1/profile/fetch'], 'the unresolvable origin is never fetched');
 });

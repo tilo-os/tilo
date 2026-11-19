@@ -1299,6 +1299,9 @@ paths = [
     "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
     "crates/browser/tilo-browser-runtime/web/entry.mjs",
     "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
+    "crates/browser/tilo-browser-runtime/web/identity.mjs",
+    "crates/browser/tilo-browser-runtime/web/profile-photos.mjs",
+    "crates/browser/tilo-browser-runtime/web/profile-photos.test.mjs",
     "crates/browser/tilo-browser-runtime/web/site-host.mjs",
     "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
 ]

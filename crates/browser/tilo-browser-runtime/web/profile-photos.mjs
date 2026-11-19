@@ -12,6 +12,8 @@
  * avatars wear it from the next frame (`desktop_set_person_photo`).
  */
 
+import {isInvitedServer} from './site-host.mjs';
+
 /** The side, in pixels, of the square a picture is kept at. */
 export const PHOTO_SIDE = 96;
 /** The longest picture a host keeps, as its `data:` URL. */
@@ -116,6 +118,10 @@ export async function photoPixels(url) {
 /** The profile of `user` (root key, hex) the host at `origin` keeps, with
  * when it was kept (`issued_at_ms`), or `null`. */
 export async function fetchPersonProfile(origin, user, fetcher = (...args) => globalThis.fetch(...args)) {
+  // A server only an invitation named answers no HTTP: its origin is its endpoint under a name
+  // that never resolves, and the page reaches it over iroh alone. Asking it would only fail,
+  // once per person met; people there go by what their presence says.
+  if (isInvitedServer(origin)) return null;
   const response = await fetcher(new URL('/peer/v1/profile/fetch', origin).href, {
     method: 'POST', headers: {'content-type': 'text/plain'}, body: user, credentials: 'omit',
   });

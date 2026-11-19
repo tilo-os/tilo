@@ -403,7 +403,8 @@ async fn joined(join: LiveSessionJoin) -> Result<Arc<LiveSession>, Failed> {
             )
             .await
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        // A page reaches a server that takes no WebTransport (one behind a NAT, reached through
+        // its packet relay) over iroh, and its live session goes the same way.
         Carrier::Direct | Carrier::Relay => {
             let endpoint = join
                 .dialer
@@ -417,8 +418,6 @@ async fn joined(join: LiveSessionJoin) -> Result<Arc<LiveSession>, Failed> {
             )
             .await
         }
-        #[cfg(target_arch = "wasm32")]
-        Carrier::Direct | Carrier::Relay => return Err(Failed::Unavailable),
     };
     joined.map(Arc::new).map_err(|error| match error {
         LiveError::Denied => Failed::Refused,
