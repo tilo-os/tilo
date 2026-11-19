@@ -1370,7 +1370,7 @@ impl Widget for Banner {
         self.band.motion = theme.motion();
         // Built again by its view: go on from the banner it replaces.
         let (key, visible) = (self.carry_key(), self.visible());
-        self.band.build(&key, visible);
+        self.band.build(&key, visible, self.arrives_in_place);
         let mut nodes = vec![self.body.build_layout(taffy, theme, node_map)];
         let mut buttons = Vec::new();
         for button in self.buttons_mut() {

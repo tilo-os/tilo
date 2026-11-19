@@ -336,8 +336,11 @@ impl Decorator for PageSlide {
         self.layout_dirty || self.page.is_layout_dirty()
     }
 
+    /// The slide stands in for its page at the page's own node, so the solve that measured that
+    /// node measured the page: its request is met with the slide's.
     fn layout_measured(&mut self) {
         self.layout_dirty = false;
+        self.page.layout_measured();
     }
 }
 

@@ -150,7 +150,7 @@ tilo_test_env::scenario! {
                 .and_then(Widget::accessibility)
                 .filter(|_| {
                     h.root::<NavShell>()
-                        .host_parts
+                        .laid_out_parts
                         .contains(&Part::Title(column))
                 })
                 .and_then(|node| node.name)
@@ -768,7 +768,7 @@ tilo_test_env::scenario! {
             "under the header row"
         );
         let shell = h.root::<NavShell>();
-        assert!(shell.host_parts.contains(&Part::Body(Column::Content)));
+        assert!(shell.laid_out_parts.contains(&Part::Body(Column::Content)));
         assert_eq!(
             shell
                 .part(Part::Body(Column::Content))

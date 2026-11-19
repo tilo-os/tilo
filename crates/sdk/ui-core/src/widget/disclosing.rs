@@ -344,16 +344,21 @@ impl BandMotion {
     }
 
     /// At its first build: go on from the band with the same `key` a
-    /// rebuild dropped, if there is one.
-    pub fn build(&mut self, key: &str, visible: bool) {
+    /// rebuild dropped, if there is one. When no band left anything to take
+    /// up, it arrives now ([`Self::place_first`]), before its first layout,
+    /// so what follows is laid out once, where the band stands on its way.
+    pub fn build(&mut self, key: &str, visible: bool, arrives_in_place: bool) {
         if self.carry != Carry::Fresh {
             return;
         }
         if let Some(kept) = crate::motion::take_kept::<KeptBand>(key) {
             self.take_up(kept, visible);
             self.carry = Carry::Bound;
-        } else {
+        } else if crate::motion::kept_any::<KeptBand>() {
             self.carry = Carry::Placing;
+        } else {
+            self.carry = Carry::Bound;
+            self.arrive(visible, arrives_in_place);
         }
     }
 

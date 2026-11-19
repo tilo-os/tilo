@@ -1,8 +1,8 @@
 //! The gallery (`apps/tl/gallery`) in a real window's frame loop (`ui::app::EmbeddedApp`, the
 //! app as the shell shows it in-process): switching its page, dragging its sidebar's edge and
 //! turning the wheel over its content each do the work of what changed. What is held is counted,
-//! not timed, so the check reads the same on any machine at any load: a page switch rebuilds the
-//! window's structure at most once, solves its layout a few times, measures its leaves a bounded
+//! not timed, so the check reads the same on any machine at any load: a page switch rebuilds none of
+//! the window's structure, solves its layout a few times, measures its leaves a bounded
 //! number of times and costs no more time or memory after many switches than after one, a drag
 //! step of the sidebar's edge is
 //! one layout with no rebuild, no view evaluated and no sync, and a wheel step is one layout with
@@ -130,11 +130,26 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
     let mut resident = vec![resident_kib()];
     for _ in 0..2 {
         let _ = ui::profiling::layout_counts::take();
-        let ((), scopes) = observe(|| {
-            for y in ROWS {
-                click(tile, text, (120.0, y));
-            }
-        });
+        let mut callbacks = 0_usize;
+        for y in ROWS {
+            let ((), scopes) = observe(|| click(tile, text, (120.0, y)));
+            // A page shown in the content takes the place of the one before under the content's
+            // own node: the rest of the window keeps its layout tree.
+            assert_eq!(
+                calls(&scopes, "ui.rebuild_structure"),
+                0,
+                "a page switch rebuilds none of the window's structure: {}",
+                said(&scopes)
+            );
+            // The page is laid out where it stands; the frames after it solve nothing: no
+            // control left asking to be measured every frame.
+            assert!(
+                calls(&scopes, "ui.solve") <= 3,
+                "a page switch solves the window's layout at most three times: {}",
+                said(&scopes)
+            );
+            callbacks = callbacks.saturating_add(calls(&scopes, "ui.callback_scope"));
+        }
         let solved = ui::profiling::layout_counts::take();
         resident.push(resident_kib());
         // A solve that answers a container from its cache measures each leaf a few times a
@@ -142,26 +157,12 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
         // the Feedback page alone some 12,000 times, and one whose controls state their own
         // sizes only after a solve read them solved every page again for them.
         assert!(
-            solved.measures <= 10_000,
+            solved.measures <= 7_000,
             "a round of {} switches measures its leaves {} times",
             ROWS.len(),
             solved.measures
         );
-        let rebuilds = calls(&scopes, "ui.rebuild_structure");
-        assert!(
-            rebuilds <= ROWS.len(),
-            "a page switch rebuilds the window's structure at most once: {}",
-            said(&scopes)
-        );
-        // A page shown in the content lays its own part out again where it stands; the
-        // frames after it solve nothing: no control left asking to be measured every frame.
-        let laid_out = calls(&scopes, "ui.solve");
-        assert!(
-            laid_out <= ROWS.len().saturating_mul(3),
-            "a page switch solves the window's layout at most three times: {}",
-            said(&scopes)
-        );
-        rounds.push(calls(&scopes, "ui.callback_scope"));
+        rounds.push(callbacks);
     }
     let grown =
         |round: usize| resident[round].saturating_sub(resident[round.saturating_sub(1)]) / 1024;

@@ -395,6 +395,10 @@ pub(crate) struct HostRemount<'a> {
     pub(crate) interaction: crate::interaction::InteractionEnvironment,
 }
 
+/// How many times one remount carries out the in-place changes the widgets report: the changes
+/// widgets it built made as they were built, and theirs.
+const REMOUNT_PASSES: usize = 4;
+
 pub(crate) trait AppCore {
     /// The host's document and laid-out tree.
     fn tree(&self) -> AppTree<'_>;
@@ -546,7 +550,17 @@ pub(crate) trait AppCore {
         parts.root.set_interaction_environment(parts.interaction);
         let mapped = parts.node_map.len();
         let mut remount = crate::widget::Remount::new(parts.taffy, parts.theme, parts.node_map);
-        let applied = parts.root.remount_children(&mut remount);
+        let mut applied = parts.root.remount_children(&mut remount);
+        // A widget the remount built may change its own parts in place as it is built (a part
+        // view filled in as its component mounts): that change is carried out in the same remount.
+        let mut after = parts.root.take_structure_change();
+        for _ in 1..REMOUNT_PASSES {
+            if !applied || after != crate::widget::StructureChange::Children {
+                break;
+            }
+            applied = parts.root.remount_children(&mut remount);
+            after = parts.root.take_structure_change();
+        }
         let (mounted, unmounted) = remount.finish();
         let built = (parts.node_map.len() + unmounted.len()).saturating_sub(mapped);
         // What was mounted was built after the tell above, as a rebuild's controls are: tell
@@ -557,11 +571,15 @@ pub(crate) trait AppCore {
         // a build's are, so the next structure check finds the maps live.
         self.admit_layout_maps();
         let parts = self.remount_parts();
-        if !applied || parts.root.take_structure_change() != crate::widget::StructureChange::None {
+        if !applied || after != crate::widget::StructureChange::None {
             return false;
         }
         parts.bindings.forget(&unmounted);
-        for (parent, child) in mounted {
+        // A node a later pass let go of again is no longer in the tree.
+        for (parent, child) in mounted
+            .into_iter()
+            .filter(|(_, child)| !unmounted.contains(child))
+        {
             // SAFETY: the host exclusively owns this tree, its maps and
             // widgets; the remount above admitted `child` into both.
             if !unsafe {
