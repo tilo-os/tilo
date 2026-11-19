@@ -470,6 +470,53 @@ fn an_effect_carries_a_typed_payload_as_one_of_its_arguments() {
 }
 
 #[test]
+fn a_control_binds_a_declared_effect_at_its_resource_with_no_carrier_row() {
+    let binding = JobEffect::SKIP
+        .binding("so.tilo.test-jobs:jobs")
+        .expect("the declaration publishes skip");
+    let invocation = binding.invoke(()).expect("skip takes nothing");
+    assert_eq!(invocation.address.resource, "so.tilo.test-jobs:jobs");
+    assert_eq!(invocation.address.action, "skip");
+    assert!(
+        invocation.arguments.is_empty(),
+        "a nullary effect asks nothing a control must supply"
+    );
+}
+
+#[test]
+fn a_row_binds_an_effect_named_only_when_it_invokes() {
+    let bindings = tilo_resource::RowBindings::new()
+        .bind_id("pause", [("transfer", "t:3".into()), ("until", "7".into())]);
+    let row = LiveRow::typed_with::<Transfer>("t:3", "Restore", &bindings).into_resource();
+    let pause = row
+        .actions
+        .iter()
+        .find(|action| action.id == "pause")
+        .expect("the row offers what it named");
+    let encoded = pause.build_json(&serde_json::Map::new()).unwrap();
+    assert_eq!(
+        TransferEffect::from_payload(&encoded.payload).unwrap(),
+        TransferEffect::Pause {
+            transfer: "t:3".into(),
+            until: "7".into(),
+        }
+    );
+}
+
+#[test]
+fn offering_an_effect_on_a_row_keeps_its_audience() {
+    let stop = <JobEffect as tilo_resource::Effect>::specs()
+        .into_iter()
+        .find(|spec| spec.id == "stop")
+        .expect("stop is published on the resource");
+    assert_eq!(
+        stop.audience(),
+        tilo_actions::Audience::Everyone,
+        "a declaration that names where it is offered never changes who sees it"
+    );
+}
+
+#[test]
 fn a_pickable_resource_parameter_names_the_kind_it_takes() {
     let spec = JobEffect::spec("retarget").expect("the effect is declared");
     let job = &spec.params()[0];

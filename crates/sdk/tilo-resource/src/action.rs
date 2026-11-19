@@ -1684,6 +1684,38 @@ impl<R, A> ActionRef<R, A> {
     }
 }
 
+impl<E: crate::Effect, A> ActionRef<E, A> {
+    /// The action this effect's declaration publishes, as the resource that
+    /// offers the vocabulary publishes it: what a control binds to without a
+    /// row carrying it.
+    #[must_use]
+    pub fn spec(&self) -> Option<tilo_actions::ActionSpec> {
+        E::spec(self.id)
+    }
+
+    /// A control's binding to this effect on `resource`, from its
+    /// declaration: the resource's own address and the declared action, with
+    /// no carrier row. A nullary effect binds as a button; one taking
+    /// arguments is offered with them asked.
+    ///
+    /// # Errors
+    /// The declaration publishes no such action, or it requires an argument
+    /// this binding gives none.
+    pub fn binding(
+        &self,
+        resource: impl Into<String>,
+    ) -> Result<tilo_actions::ActionBinding<()>, tilo_actions::ActionBindingError> {
+        let resource = resource.into();
+        let spec = E::spec(self.id).ok_or_else(|| {
+            tilo_actions::ActionBindingError::ActionNotExported {
+                resource: resource.clone(),
+                action: self.id.to_owned(),
+            }
+        })?;
+        tilo_actions::ActionBinding::declared(resource, spec)
+    }
+}
+
 impl<R, A: Serialize> ActionRef<R, A> {
     /// The reference `#[resource]` and `#[derive(Effect)]` generate: action
     /// `id` taking the parameters `params`, of the kind `kind` declares. The

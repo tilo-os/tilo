@@ -754,10 +754,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 |(_, ty, _)| {
                     quote! {
                         ::core::option::Option::Some((|id: &str| {
-                            let value: #ty = ::core::str::FromStr::from_str(id)
-                                .map_err(|_| format!("`{id}` is not one this effect acts on"))?;
-                            #krate::__private::serde_json::to_value(value)
-                                .map_err(|error| error.to_string())
+                            // The field's own serde type reads the id: a
+                            // string as it is, a number from its decimal text.
+                            #krate::__private::serde_json::from_value::<#ty>(
+                                #krate::__private::serde_json::Value::String(id.to_owned()),
+                            )
+                            .or_else(|_| #krate::__private::serde_json::from_str::<#ty>(id))
+                            .ok()
+                            .and_then(|value| #krate::__private::serde_json::to_value(value).ok())
+                            .ok_or_else(|| format!("`{id}` is not one this effect acts on"))
                         }) as #krate::effect::RowIdOf)
                     }
                 },

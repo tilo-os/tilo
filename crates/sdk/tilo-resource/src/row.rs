@@ -40,13 +40,25 @@ impl RowBindings {
     /// effect's declaration's parameters, each by the name it declares.
     /// Names the effect does not take are dropped.
     #[must_use]
-    pub fn bind<R, A, I, K>(mut self, effect: crate::ActionRef<R, A>, arguments: I) -> Self
+    pub fn bind<R, A, I, K>(self, effect: crate::ActionRef<R, A>, arguments: I) -> Self
+    where
+        I: IntoIterator<Item = (K, serde_json::Value)>,
+        K: Into<String>,
+    {
+        self.bind_id(effect.id, arguments)
+    }
+
+    /// [`Self::bind`] of an effect known only when it invokes, by the id it
+    /// answers to: the arguments its declaration takes, named as it names
+    /// them. Names the effect does not take are dropped.
+    #[must_use]
+    pub fn bind_id<I, K>(mut self, effect: &'static str, arguments: I) -> Self
     where
         I: IntoIterator<Item = (K, serde_json::Value)>,
         K: Into<String>,
     {
         self.arguments.insert(
-            effect.id,
+            effect,
             arguments
                 .into_iter()
                 .map(|(name, value)| (name.into(), value))
@@ -58,8 +70,14 @@ impl RowBindings {
     /// Offer `effect` on the row with nothing bound: every argument of it is
     /// asked from whoever invokes it.
     #[must_use]
-    pub fn offer<R, A>(mut self, effect: crate::ActionRef<R, A>) -> Self {
-        self.arguments.entry(effect.id).or_default();
+    pub fn offer<R, A>(self, effect: crate::ActionRef<R, A>) -> Self {
+        self.offer_id(effect.id)
+    }
+
+    /// [`Self::offer`] of an effect known only when it invokes, by its id.
+    #[must_use]
+    pub fn offer_id(mut self, effect: &'static str) -> Self {
+        self.arguments.entry(effect).or_default();
         self
     }
 

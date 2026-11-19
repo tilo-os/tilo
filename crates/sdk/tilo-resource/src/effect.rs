@@ -547,21 +547,14 @@ fn kept_specs(
 }
 
 fn offered_specs(check: Check, decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
+    // Offered on an item or a row (`item = field`, `on = Row`) as well as
+    // here: the declaration's own audience, unchanged. Whether a listing
+    // shows the unbound action beside the bound ones is the listing's, never
+    // a silent change of who the action is for.
     decls
         .into_iter()
         .filter(|decl| !decl.row)
-        .map(|decl| {
-            let mut spec = decl.spec_checked(operation, check);
-            // Offered on each item it acts on (`item = field`), its item
-            // bound, it stays published here for scripts that name the item,
-            // out of the palette's way, as an item verb does.
-            if !decl.items.is_empty() && spec.audience() == tilo_actions::Audience::Everyone {
-                spec.type_mut()
-                    .contract
-                    .set_audience(tilo_actions::Audience::Agents);
-            }
-            spec
-        })
+        .map(|decl| decl.spec_checked(operation, check))
         .collect()
 }
 

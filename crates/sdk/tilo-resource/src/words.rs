@@ -147,7 +147,6 @@ pub trait RowType {
     ) -> Vec<tilo_actions::ActionSpec> {
         Vec::new()
     }
-
 }
 
 /// A `#[derive(Model)]` record's declaration is its type's: it publishes the
