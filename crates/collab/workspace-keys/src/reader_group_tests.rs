@@ -214,3 +214,121 @@ fn only_the_readers_devices_hold_their_groups_keys_and_one_that_leaves_reads_not
         KeyAccess::Ready(_)
     ));
 }
+
+/// Ada and Bob read a group of their own beside the workspace's, which Cleo reads too; Ada's
+/// devices are `ada_devices`. Answers the group's readers.
+fn two_read(
+    ada_devices: &mut [&mut Device],
+    bob: &mut Device,
+    cleo: &mut Device,
+    workspace_id: WorkspaceId,
+    now: &mut Instant,
+) -> String {
+    let readers = collab_types::Readers::people([person_of(1), person_of(2)])
+        .unwrap()
+        .text();
+    create(&mut *ada_devices[0], workspace_id, *now);
+    for member in &mut ada_devices[1..] {
+        member.service.access(workspace_id, *now);
+    }
+    bob.service.access(workspace_id, *now);
+    cleo.service.access(workspace_id, *now);
+    for reader in ada_devices.iter_mut() {
+        reader_access(reader, workspace_id, &readers, *now);
+    }
+    reader_access(bob, workspace_id, &readers, *now);
+    let mut all: Vec<&mut Device> = ada_devices.iter_mut().map(|device| &mut **device).collect();
+    all.push(bob);
+    all.push(cleo);
+    pump_for(&mut all, now, 20);
+    readers
+}
+
+#[test]
+fn a_restarted_key_holder_removes_a_reader_without_being_asked_for_the_keys() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let policy = people_policy([1, 2, 3]);
+    let dirs = [(); 3].map(|()| tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let mut ada = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
+    let mut bob = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
+    let mut cleo = device(&workspace, workspace_id, 2, 3, &policy, dirs[2].path());
+    let readers = two_read(&mut [&mut ada], &mut bob, &mut cleo, workspace_id, &mut now);
+    let group = collab_types::reader_group(workspace_id, &readers).unwrap();
+    let bobs = reader_keys(&mut bob, workspace_id, &readers, now);
+
+    // Ada's laptop starts again; nothing on it asks for the group's keys.
+    drop(ada);
+    let mut ada = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
+    leaves(&policy, 2, &mut [&mut ada, &mut bob, &mut cleo], &mut now);
+    let Some(Ok(after)) = ada.service.history_keys(group) else {
+        panic!("Ada's laptop holds the group's keys");
+    };
+    assert!(
+        after.epoch() > bobs.epoch(),
+        "Bob's removal rotated the keys"
+    );
+    assert!(matches!(
+        reader_access(&mut bob, workspace_id, &readers, now),
+        KeyAccess::Removed
+    ));
+}
+
+#[test]
+fn a_device_that_was_away_catches_up_on_its_reader_groups_from_another_of_its_persons() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let policy = people_policy([1, 2, 3, 4]);
+    let dirs = [(); 4].map(|()| tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let mut ada = device(&workspace, workspace_id, 0, 1, &policy, dirs[0].path());
+    let mut bob = device(&workspace, workspace_id, 1, 2, &policy, dirs[1].path());
+    let mut cleo = device(&workspace, workspace_id, 2, 3, &policy, dirs[2].path());
+    let mut phone = device(&workspace, workspace_id, 3, 4, &policy, dirs[3].path());
+    let readers = two_read(
+        &mut [&mut ada, &mut phone],
+        &mut bob,
+        &mut cleo,
+        workspace_id,
+        &mut now,
+    );
+    let group = collab_types::reader_group(workspace_id, &readers).unwrap();
+    let held = reader_keys(&mut phone, workspace_id, &readers, now).epoch();
+
+    // Bob leaves while Ada's phone is away: it hears nothing of the commit.
+    leaves(&policy, 2, &mut [&mut ada, &mut bob, &mut cleo], &mut now);
+    drop(phone.endpoint.take_inbound());
+    let current = reader_keys(&mut ada, workspace_id, &readers, now).epoch();
+    assert!(current > held);
+
+    // Back, the phone asks Ada's laptop for each of its groups from the epoch it holds.
+    let asked = phone.service.reader_groups_of(workspace_id);
+    assert_eq!(asked, [(group, held)]);
+    let answered: Vec<InboundGovernance> = asked
+        .into_iter()
+        .flat_map(|(group, epoch)| ada.service.frames_for(group, &public(4), epoch, 1_000))
+        .map(|frame| {
+            InboundGovernance::from_message(NeighbourMsg::MlsGovernance {
+                workspace: ada.service.carrier(group).to_string(),
+                frame: Box::new(frame),
+                delivery: 0,
+            })
+            .unwrap()
+        })
+        .collect();
+    assert!(!answered.is_empty());
+    phone
+        .service
+        .pump_inbound(answered, &phone.endpoint, now, 1_000);
+    let Some(Ok(caught_up)) = phone.service.history_keys(group) else {
+        panic!("the phone holds the group's keys");
+    };
+    assert_eq!(caught_up.epoch(), current);
+    // Cleo is no reader: Ada's laptop answers her nothing of the group.
+    assert!(
+        ada.service
+            .frames_for(group, &public(3), 0, 1_000)
+            .is_empty()
+    );
+}

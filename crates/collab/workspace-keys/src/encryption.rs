@@ -329,6 +329,21 @@ pub trait KeyStorage: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     fn holds_key_state(&self) -> Result<bool, String> {
         Ok(false)
     }
+    /// The reader sets' groups this device takes part in, as [`Self::keep_reader_groups`] last
+    /// kept them: each one's workspace and readers ([`collab_types::reader_group`]). A store
+    /// that keeps none answers none: its groups are known again as endpoints ask for them.
+    fn reader_groups(&self) -> Vec<(WorkspaceId, String)> {
+        Vec::new()
+    }
+    /// Keep `groups`, every reader set's group this device takes part in, in place of what was
+    /// kept.
+    ///
+    /// # Errors
+    /// They could not be kept.
+    fn keep_reader_groups(&self, groups: &[(WorkspaceId, String)]) -> Result<(), String> {
+        let _ = groups;
+        Ok(())
+    }
     /// Forget everything kept of `workspace`'s group: it was deleted.
     ///
     /// # Errors
@@ -340,7 +355,12 @@ pub trait KeyStorage: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     }
 }
 
-/// A desktop's key directory: one `<workspace>.peer` file per workspace.
+/// The file of a [`KeyDir`] keeping its reader sets' groups.
+#[cfg(not(target_arch = "wasm32"))]
+const READER_GROUPS: &str = "reader-groups.json";
+
+/// A desktop's key directory: one `<workspace>.peer` file per workspace, and the reader sets'
+/// groups it takes part in.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct KeyDir {
@@ -393,6 +413,15 @@ impl KeyStorage for KeyDir {
                 workspace
             })
             .collect()
+    }
+
+    fn reader_groups(&self) -> Vec<(WorkspaceId, String)> {
+        tilo_files::native::atomic::json::load_or_default(&self.state.join(READER_GROUPS))
+    }
+
+    fn keep_reader_groups(&self, groups: &[(WorkspaceId, String)]) -> Result<(), String> {
+        tilo_files::native::atomic::json::write_private(&self.state.join(READER_GROUPS), groups)
+            .map_err(|error| error.to_string())
     }
 
     fn holds_key_state(&self) -> Result<bool, String> {
@@ -599,7 +628,11 @@ impl WorkspaceKeys {
     /// # Errors
     /// What the store kept could not be removed.
     pub fn forget_workspace(&mut self, workspace: WorkspaceId) -> Result<(), String> {
-        for group in self.directory.forget(workspace) {
+        let groups = self.directory.forget(workspace);
+        if !groups.is_empty() {
+            self.keep_reader_groups();
+        }
+        for group in groups {
             self.forget_group(group)?;
         }
         self.forget_group(workspace)
@@ -628,7 +661,11 @@ impl WorkspaceKeys {
     ) -> std::io::Result<Self> {
         config.state.prepare().map_err(std::io::Error::other)?;
         let held = config.state.held();
+        let kept = config.state.reader_groups();
         let mut service = Self::with_store(Some(config), directory, seal_checks);
+        for (workspace, readers) in kept {
+            service.directory.group(workspace, &readers);
+        }
         let now = tilo_clock::now();
         for workspace in held {
             if let Err(error) = service.open_peer(workspace, now) {
@@ -686,7 +723,38 @@ impl WorkspaceKeys {
     /// [`Self::access`] then answers for: this device settles it from now on as it settles the
     /// workspace's own. `None` when `readers` names no set.
     pub fn reader_group(&mut self, workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
-        self.directory.group(workspace, readers)
+        let known = self.directory.kept().len();
+        let group = self.directory.group(workspace, readers)?;
+        if self.directory.kept().len() != known {
+            self.keep_reader_groups();
+        }
+        Some(group)
+    }
+
+    /// Keep every reader set's group known here with this device's group state.
+    fn keep_reader_groups(&self) {
+        if let Some(store) = &self.store
+            && let Err(error) = store.state.keep_reader_groups(&self.directory.kept())
+        {
+            tracing::warn!(%error, "reader groups could not be kept");
+        }
+    }
+
+    /// The groups of `workspace`'s reader sets this device holds keys of, each with the epoch it
+    /// holds: what a device asks the person's other devices to catch up on beside the
+    /// workspace's own group.
+    pub fn reader_groups_of(&self, workspace: WorkspaceId) -> Vec<(WorkspaceId, u64)> {
+        self.directory
+            .of(workspace)
+            .into_iter()
+            .filter_map(|group| Some((group, self.existing_keys(group)?.epoch())))
+            .collect()
+    }
+
+    /// The workspace whose transport carries `group`'s governance: a reader set's workspace, or
+    /// the group's own.
+    pub fn carrier(&self, group: WorkspaceId) -> WorkspaceId {
+        self.directory.carrier(group)
     }
 
     /// What an endpoint of this device may do with `workspace`'s group. The
@@ -1803,6 +1871,23 @@ impl SharedKeys {
     pub fn record_keys(&self, workspace: WorkspaceId) -> Option<Result<ContentKeys, String>> {
         self.run(|service| service.record_keys(workspace))
             .unwrap_or_else(|| Some(Err("the key service is unavailable".into())))
+    }
+
+    /// See [`WorkspaceKeys::reader_groups_of`]; none when the service is unavailable.
+    #[must_use]
+    pub fn reader_groups_of(&self, workspace: WorkspaceId) -> Vec<(WorkspaceId, u64)> {
+        self.inner
+            .lock()
+            .map(|service| service.reader_groups_of(workspace))
+            .unwrap_or_default()
+    }
+
+    /// See [`WorkspaceKeys::carrier`]; `group` itself when the service is unavailable.
+    #[must_use]
+    pub fn carrier(&self, group: WorkspaceId) -> WorkspaceId {
+        self.inner
+            .lock()
+            .map_or(group, |service| service.carrier(group))
     }
 
     /// See [`WorkspaceKeys::reader_group`]; `None` also when the service is unavailable.

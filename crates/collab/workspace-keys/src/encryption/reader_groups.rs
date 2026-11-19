@@ -12,8 +12,11 @@
 //!
 //! A device learns which people read a group when one of its endpoints asks for the group's
 //! keys ([`super::WorkspaceKeys::reader_group`]): the group's id is derived from the set and
-//! names neither. Governance for a group no endpoint of this device asked about yet is not
-//! taken in; the group's key holders answer this device once it asks.
+//! names neither. It keeps what it learned with its group state
+//! ([`super::KeyStorage::reader_groups`]), so after a restart it goes on settling the groups it
+//! holds, a removal included, before anything asks for their keys again. Governance for a group
+//! no endpoint of this device asked about yet is not taken in; the group's key holders answer
+//! this device once it asks.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -25,6 +28,7 @@ use super::KeyDirectory;
 /// The workspace a reader set's group belongs to, and the people who read it.
 struct ReaderGroup {
     workspace: WorkspaceId,
+    readers: String,
     people: BTreeSet<[u8; 32]>,
 }
 
@@ -48,11 +52,33 @@ impl Directory {
     pub(super) fn group(&mut self, workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId> {
         let group = collab_types::reader_group(workspace, readers)?;
         if let Some(Readers::People(people)) = Readers::parse(readers) {
-            self.groups
-                .entry(group)
-                .or_insert(ReaderGroup { workspace, people });
+            self.groups.entry(group).or_insert_with(|| ReaderGroup {
+                workspace,
+                readers: readers.to_owned(),
+                people,
+            });
         }
         Some(group)
+    }
+
+    /// Every reader set's group known here: its workspace and readers, as a store keeps them.
+    pub(super) fn kept(&self) -> Vec<(WorkspaceId, String)> {
+        let mut kept: Vec<(WorkspaceId, String)> = self
+            .groups
+            .values()
+            .map(|group| (group.workspace, group.readers.clone()))
+            .collect();
+        kept.sort();
+        kept
+    }
+
+    /// The reader sets' groups of `workspace` known here.
+    pub(super) fn of(&self, workspace: WorkspaceId) -> Vec<WorkspaceId> {
+        self.groups
+            .iter()
+            .filter(|(_, group)| group.workspace == workspace)
+            .map(|(group, _)| *group)
+            .collect()
     }
 
     /// The workspace whose transport carries `group`'s governance: the workspace of a reader
