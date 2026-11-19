@@ -68,14 +68,8 @@ impl ChatApp {
         self.scroll_content = 0.0;
         self.scroll_viewport = area.height().max(0.0);
         self.scroll = 0.0;
-        let title = crate::i18n::t(if self.can_participate() {
-            "chat-empty-title"
-        } else {
-            "chat-empty-title-read-only"
-        });
-        // An empty channel says what it is for, or invites the first word:
-        // a visitor arriving in a quiet workspace should know they may start it.
-        let channel_message = self.empty_channel_message();
+        self.empty_messages = Some(area);
+        let (title, channel_message) = self.empty_messages_words();
         let content = EmptyStateContent {
             icon: Some(Icon::Send),
             message: channel_message.as_deref(),
@@ -87,6 +81,19 @@ impl ChatApp {
             &content,
             self.last_mouse,
         );
+    }
+
+    /// What an empty timeline says: its title, and the line under it
+    /// ([`Self::empty_channel_message`]).
+    pub(crate) fn empty_messages_words(&self) -> (String, Option<String>) {
+        let title = crate::i18n::t(if self.can_participate() {
+            "chat-empty-title"
+        } else {
+            "chat-empty-title-read-only"
+        });
+        // An empty channel says what it is for, or invites the first word:
+        // a visitor arriving in a quiet workspace should know they may start it.
+        (title, self.empty_channel_message())
     }
 
     /// The line under an empty channel's title: its topic, else, for
@@ -143,6 +150,7 @@ impl ChatApp {
         // Earlier parts of the chat's messages are read back into from the
         // top of a channel's timeline ([`crate::scrollback`]).
         let reads_back = self.reads_back();
+        self.empty_messages = None;
 
         // An empty channel or direct Agent conversation explains the exact
         // capability the composer currently offers.

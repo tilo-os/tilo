@@ -126,7 +126,22 @@ impl ChatApp {
                     .with_name(label)
                     .with_hashed_key(("earlier-messages", &self.active_channel))
             });
-        let conversation: Vec<AccessNode> = earlier.into_iter().chain(conversation).collect();
+        let mut conversation: Vec<AccessNode> = earlier.into_iter().chain(conversation).collect();
+        // An empty timeline is read as it is drawn: its title and the line under it.
+        if conversation.is_empty()
+            && let Some(area) = self.empty_messages
+        {
+            let (title, message) = self.empty_messages_words();
+            let content = ui::widget::EmptyStateContent {
+                message: message.as_deref(),
+                ..ui::widget::EmptyStateContent::new(&title)
+            };
+            conversation.push(
+                content
+                    .access_node(area, None, "")
+                    .with_hashed_key(("empty-messages", &self.active_channel)),
+            );
+        }
         AccessNode::new(Role::List)
             .with_name(crate::i18n::t("chat-messages"))
             .with_interface_name(true)
