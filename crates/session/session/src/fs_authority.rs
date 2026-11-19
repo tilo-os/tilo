@@ -63,13 +63,22 @@ pub(crate) fn list(tree: &Layout, person: &str, device: Option<[u8; 32]>) -> FsA
             fs_protocol::tree::FILES_APP,
             &fs_protocol::tree::document_id(),
         );
+        let file_action = |verb| {
+            tilo_action_policy::TreePath::workspace(&id)
+                .joined(&fs_protocol::file_action::verb_node(None, verb))
+        };
+        let listing = file_action(fs_protocol::tree::LIST);
+        let writing = file_action(fs_protocol::file_action::verbs::WRITE);
         let refresh_at = workspace
             .policy
             .grants
             .iter()
             .filter_map(|grant| match grant.lifetime {
                 Lifetime::Until(at)
-                    if at > context.now_unix_ms && context.covers(&grant.node, &node) =>
+                    if at > context.now_unix_ms
+                        && [&node, &listing, &writing]
+                            .into_iter()
+                            .any(|target| context.covers(&grant.node, target)) =>
                 {
                     Some(at)
                 }
@@ -92,18 +101,17 @@ pub(crate) fn list(tree: &Layout, person: &str, device: Option<[u8; 32]>) -> FsA
         );
         for (member, _) in workspace.roster() {
             let authority = workspace.policy.party(&member);
-            if authority.decide(&node, ActionKind::Read, &context).answer != Answer::Allow {
+            let allows =
+                |path, kind| authority.decide(path, kind, &context).answer == Answer::Allow;
+            if !allows(&node, ActionKind::Read) || !allows(&listing, ActionKind::Read) {
                 continue;
             }
-            let access = if authority
-                .decide(&node, ActionKind::Undoable, &context)
-                .answer
-                == Answer::Allow
-            {
-                Access::Write
-            } else {
-                Access::Read
-            };
+            let access =
+                if allows(&node, ActionKind::Undoable) && allows(&writing, ActionKind::Undoable) {
+                    Access::Write
+                } else {
+                    Access::Read
+                };
             let capability = CapOverride::new(
                 Grantee::person(member.clone()),
                 scope.clone(),
@@ -523,11 +531,11 @@ mod tests {
         phase a_grant_on_the_files_decides_over_the_role;
         {
             const MEMBER: &str = "3333333333333333333333333333333333333333333333333333333333333333";
-            const NOTE: &str = "/var/workspace/brief/plan.md";
             let member = Acting::person(MEMBER);
             let mut tree = tree_with(app_folder_grant());
             tree.workspaces[0].admit(MEMBER, Role::Editor);
             let workspace = tree.workspaces[0].policy.workspace.clone();
+            let note = format!("{WORKSPACE_FILES}/{}/{workspace}/brief/plan.md", tilo_paths::WORKSPACE_TREES_DIR);
             tree.workspaces[0].policy.grants.push(tilo_action_policy::Grant::new(
                 "files-read-only",
                 Grantee::person(MEMBER),
@@ -538,9 +546,9 @@ mod tests {
                 Grantee::person(PERSON),
             ));
             let listed = list(&tree, PERSON, None);
-            assert!(may_read(&listed, &member, NOTE), "the role still lets them read");
+            assert!(may_read(&listed, &member, &note), "the role still lets them read");
             assert!(
-                !may_write(&listed, &member, NOTE),
+                !may_write(&listed, &member, &note),
                 "a Deny on the files' node takes writing away, as every holder decides it"
             );
         }
