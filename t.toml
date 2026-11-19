@@ -6309,8 +6309,11 @@ default = false
 # script runs in a user namespace where it is root.
 [[check]]
 name = "peer-handover"
-# A default check because it is cheap: the stack comes up from what its needs built, and the
-# hand-over takes about half a minute.
+# Not a default check: the hand-over takes about half a minute, but its need tilo-sh-programs is a
+# release build of the stack's programs, 1.73 CPU-h a head (86.7 CPU-h over the 50 heads of main in
+# the 24 h to 2026-11-19 18:45Z), which nothing else a head runs needs. Main's idle runs it, as
+# they run its neighbours' stack checks when named.
+on = ["dispatch", "idle"]
 # No egress: the holders and the stack meet on loopback alone.
 run = "bash os/containers/tilo-sh/test-peer-handover.sh /target/peer-handover"
 needs = ["tilo-sh-programs", "lounge-fonts", "tilo-sh-caddy"]
