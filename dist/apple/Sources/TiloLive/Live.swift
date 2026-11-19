@@ -231,7 +231,10 @@ public final class LiveStage: ObservableObject {
     /// Put the web view into a live thing's place, filling it.
     func stand(in place: LivePlatformView) {
         let view = engine.view
-        guard view.superview !== place else { return }
+        if view.superview === place {
+            if view.frame != place.bounds { view.frame = place.bounds }
+            return
+        }
         view.removeFromSuperview()
         view.frame = place.bounds
         view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
