@@ -251,13 +251,15 @@ impl Workspaces {
                     "that address is no longer on the wait list",
                 ));
             }
-            let issued = self.stage_issue(
-                &mut governed,
-                administrator,
-                request,
-                makes_administrator,
-                now,
-            )?;
+            let issued = self
+                .stage_issue(
+                    &mut governed,
+                    administrator,
+                    request,
+                    makes_administrator,
+                    now,
+                )
+                .await?;
             if let Some(entry) = wait_list_entry {
                 governed
                     .wait_list
@@ -295,7 +297,7 @@ impl Workspaces {
     }
 
     /// Record an invitation `request` asks of `workspace`, unwritten.
-    pub(super) fn stage_issue(
+    pub(super) async fn stage_issue(
         &self,
         workspace: &mut GovernedWorkspace,
         administrator: &DeviceCert,
@@ -304,7 +306,7 @@ impl Workspaces {
         now: u64,
     ) -> Result<IssuedInvitation, CollaborationError> {
         let role = request.role;
-        let transport = vec![self.transport_hint(workspace)?];
+        let transport = vec![self.invitation_hint(workspace).await?];
         let mut log = workspace.collaboration().clone();
         let issued = log.issue_as(
             &workspace.governed(self.serving_certificate()),

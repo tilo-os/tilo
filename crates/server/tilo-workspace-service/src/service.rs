@@ -22,6 +22,7 @@ use tilo_clock::unix_now_ns;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 
+use tilo_endpoint_reachability::Reachability;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::Reaching;
@@ -68,6 +69,10 @@ pub struct ServiceConfig {
     /// it would have to rename; an endpoint that will never name one says so
     /// here, rather than making every open wait for it.
     pub reaching: Reaching,
+    /// The relays this embedder holds back: a holder wakes them before it signs an
+    /// invitation's address, so the link it hands out names where it is reached from any
+    /// network. The default holds nothing back, so an invitation names the endpoint's address.
+    pub reachability: Reachability,
     /// What a server's operator answered for the folder that keeps the keys
     /// of people's sealed stores apart from `state_root`: one a copy or a
     /// backup of the state does not take along, so that such a copy opens
@@ -95,6 +100,7 @@ impl ServiceConfig {
             apps: None,
             shell_payloads: crate::payloads::neighbour(),
             reaching: Reaching::ByRelay,
+            reachability: Reachability::default(),
             people_keys: None,
         }
     }
@@ -321,6 +327,7 @@ impl ServiceSessions {
             agents: self.handler.agents.clone(),
             environments: self.handler.environments.clone(),
             work: cfg.work.clone(),
+            reachability: cfg.reachability.clone(),
             holder: Arc::new(std::sync::RwLock::new(crate::workspaces::HolderClaim {
                 label: cfg.label.clone(),
                 cloud: cfg.rented,

@@ -650,6 +650,9 @@ impl Server {
                 trust_policy: cfg.trust_policy.clone(),
                 max_workspace_grants: cfg.max_workspace_grants,
                 reaching,
+                // A server's endpoint keeps its relays from the start, so nothing is held back for
+                // an invitation to wake.
+                reachability: tilo_endpoint_reachability::Reachability::default(),
                 apps: app_serving.clone(),
                 shell_payloads,
                 // The folder its operator names for the keys of people's
