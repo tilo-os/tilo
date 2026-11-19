@@ -279,15 +279,19 @@ pub fn loopback_url() -> String {
         .to_string()
 }
 
-/// Make the profile at `config_home` relay through this machine's loopback relay: what a session
-/// started on that profile reads as its device's relays, instead of the person's own out on the
-/// internet.
-pub fn relay_through_loopback_in(config_home: &std::path::Path) {
+/// Make the profile with these homes (`config_home` and `data_home`) relay through this machine's
+/// loopback relay: what a session started on that profile reads as its device's relays, instead of
+/// the person's own out on the internet.
+///
+/// The settings a session reads live in the device document store at its data home, which is the
+/// store written here, not the configuration directory a profile's other files sit in.
+pub fn relay_through_loopback_in(config_home: &std::path::Path, data_home: &std::path::Path) {
     use settings_store::SettingsSource as _;
 
-    let profile = config_home.join("tilo");
-    std::fs::create_dir_all(&profile).expect("the profile's directory");
-    let store = settings_store::Store::open(&profile).expect("the profile's settings");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", config_home)
+        .set("XDG_DATA_HOME", data_home);
+    let store = settings_store::Store::open_device().expect("the device's settings");
     settings_store::relay::RELAY
         .set_in(
             store.as_ref(),
@@ -453,10 +457,15 @@ mod tests {
     /// session started on that profile binds with.
     #[test]
     fn a_seeded_profile_relays_through_this_machines_loopback() {
-        let config = tempfile::tempdir().expect("a configuration directory");
-        relay_through_loopback_in(config.path());
-        let store = settings_store::Store::follow(&config.path().join("tilo"))
-            .expect("the profile's settings");
+        let home = tempfile::tempdir().expect("a device's home");
+        let (config, data) = (home.path().join("config"), home.path().join("data"));
+        std::fs::create_dir_all(&config).expect("the configuration directory");
+        std::fs::create_dir_all(&data).expect("the data directory");
+        relay_through_loopback_in(&config, &data);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &config)
+            .set("XDG_DATA_HOME", &data);
+        let store = settings_store::Store::open_device().expect("the device's settings");
         assert_eq!(
             settings_store::relay::RELAY.get_in(store.as_ref()),
             settings_store::relay::Relays::Own(loopback_url())

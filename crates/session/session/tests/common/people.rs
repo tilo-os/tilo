@@ -936,7 +936,7 @@ impl Person {
         );
         // This device relays through this machine's loopback relay, as the site does: no session
         // of a test reaches the person's relays or their directory out on the internet.
-        test_server::relay_through_loopback_in(&root.join("config"));
+        test_server::relay_through_loopback_in(&root.join("config"), &root.join("data"));
         let paths = IdentityPaths::under(root.join("identity"));
         let cert = self.certify(&paths, label);
         Device {
