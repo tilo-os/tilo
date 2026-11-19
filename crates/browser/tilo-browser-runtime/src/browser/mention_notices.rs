@@ -164,7 +164,7 @@ pub(super) fn over(
         asks.peer().unwrap_or_default(),
         person,
         (
-            name_of(here, people),
+            name_of(here, people, &shell),
             Rc::new(move |app: &str, item: &str| shell.shows_item(app, item)),
         ),
         waking(woken),
@@ -172,21 +172,33 @@ pub(super) fn over(
 }
 
 /// The name the person's page knows `user` by: a person who is here, else one it has met, else
-/// what a member nobody named is called.
+/// the one the workspace's governance keeps for them, so a page that cannot reach presence still
+/// names who mentioned the person; else what a member nobody named is called.
 fn name_of(
     here: &tilo_desktop::here::Here,
     people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
+    shell: &tilo_desktop_surface::DesktopHandle,
 ) -> tilo_session::mentions::Names {
     let seen = Rc::clone(here);
     let known = Rc::clone(people);
+    let shell = shell.clone();
     Rc::new(move |user: &ui::MemberId| {
-        user.person_id()
-            .and_then(|person| {
-                seen.borrow()
-                    .person(person)
-                    .or_else(|| known.borrow().get(person).cloned())
+        let Some(person) = user.person_id() else {
+            return ui::presence::unnamed_label(user);
+        };
+        seen.borrow()
+            .person(person)
+            .or_else(|| known.borrow().get(person).cloned())
+            .map(|(name, _)| name)
+            .or_else(|| {
+                shell.read(|tree| {
+                    tree.workspaces
+                        .iter()
+                        .find_map(|workspace| workspace.person_name(person))
+                        .map(str::to_owned)
+                })
             })
-            .map_or_else(|| ui::presence::unnamed_label(user), |(name, _)| name)
+            .unwrap_or_else(|| ui::presence::unnamed_label(user))
     })
 }
 

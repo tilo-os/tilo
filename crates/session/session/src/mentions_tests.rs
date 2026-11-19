@@ -907,3 +907,77 @@ fn a_large_record_is_read_whole_only_for_the_change_that_mentions_the_person() {
         "nothing is read again after a restart"
     );
 }
+
+/// Ada's message in #general of the chat's newest part, its paragraph marking `@Bea` as a mention
+/// of Bea, posted as Chat's window posts it: the composer's paragraph with the mention's pill.
+#[cfg(target_os = "linux")]
+fn post_as_chat(part: &mut AutoCommit, chat: &chat::Chat, text: &str) {
+    let message: chat::messages::NewMessage = serde_json::from_value(serde_json::json!({
+        "channel": "c_general",
+        "text": text,
+        "body": [{
+            "kind": "paragraph",
+            "text": text,
+            "marks": [{ "start": 0, "end": 4, "name": MARK, "value": { "Str": member_value(BEA) } }],
+        }],
+    }))
+    .expect("a message as the composer sends it");
+    chat::demo::apply_part_doc(
+        part,
+        chat,
+        ADA,
+        chat::parts::ChatMessages::POST.with(chat::messages::chat_messages::Post { message }),
+    )
+    .expect("Ada posts");
+}
+
+/// A page takes in the chat's newest part as the workspace replays it, then follows it: a message
+/// that mentions the person, written as Chat writes it, is told once it lands, read from what
+/// changed since rather than the part whole.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_mention_posted_in_a_chat_part_the_page_follows_is_told() {
+    ui::app_surface::register_built_in(CHAT, CHAT_SURFACE);
+    let chat = chat::demo::demo();
+    let route = chat::parts::part(0).as_str().to_owned();
+    let mut part = AutoCommit::new();
+    chat::demo::say_in_part(&mut part, &chat, ADA, "c_general", "Morning all")
+        .expect("Ada says hello");
+    let device = Device::empty();
+    device.already_held(CHAT, &route, &mut part);
+    let shown = Rc::new(Shown::default());
+    let counted = Rc::new(Counted {
+        linked: Kept::over(device.store.clone(), device.changes.clone()),
+        store: device.store.clone(),
+        whole: std::cell::Cell::new(0),
+    });
+    let mentions = Mentions::over(Given {
+        person: vec![BEA.to_owned()],
+        store: Some(device.store.clone()),
+        records: Some(Rc::clone(&counted) as Rc<dyn Records>),
+        notices: Some(Rc::clone(&shown) as Rc<dyn Notices>),
+        name: Rc::new(name),
+        shown: nothing_shown(),
+        wake: None,
+    });
+    mentions.step();
+    assert!(
+        shown.up.borrow().is_empty(),
+        "what the part held is no news"
+    );
+
+    post_as_chat(&mut part, &chat, "@Bea can you look?");
+    device.writes(CHAT, &route, &mut part);
+    look_again(&mentions);
+    let up = shown.up.borrow();
+    assert_eq!(up.len(), 1, "the mention is told: {up:?}");
+    let notice = up.values().next().unwrap();
+    assert_eq!(notice.body, "@Bea can you look?");
+    assert!(
+        notice
+            .place
+            .as_ref()
+            .is_some_and(|place| place.anchor.starts_with("chat.workspace/messages/")),
+        "it opens the message: {notice:?}"
+    );
+}

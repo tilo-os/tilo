@@ -48,6 +48,10 @@ const RESOURCE_META: &str = "tilo:record";
 const MAX_DEPTH: usize = 32;
 const MAX_OBJECTS: usize = 200_000;
 
+/// Longest mark value, in bytes, a batch of changes is read for as it spells it out character by
+/// character: far past any member's id, so a long text written under a value's key costs no more.
+const MAX_SPELLED_VALUE: usize = 1024;
+
 /// One mention in a record: who is named, by whom, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mention {
@@ -102,10 +106,16 @@ pub fn touched_by(
     changes: &[u8],
     people: &std::collections::BTreeSet<MemberId>,
 ) -> Option<Touched> {
-    use automerge::legacy::{Key, MarkData, OpType};
+    use automerge::legacy::{Key, MarkData, ObjectId, OpId, OpType};
     let mut touched = Touched::default();
+    // A stored mark's value kept as a text rather than a string (a model's `String` field is an
+    // Automerge text, as a chat paragraph's mark keeps its member) arrives as the text made under
+    // the value's key and then its characters, one op each: gathered here, by the text's id, to
+    // read the member they spell once every change is read.
+    let mut spelled: std::collections::HashMap<OpId, String> = std::collections::HashMap::new();
     for change in automerge::Automerge::parse_changes(changes).ok()? {
-        for op in change.decode().operations {
+        let change = change.decode();
+        for (counter, op) in (change.start_op.get()..).zip(change.operations) {
             // A person's id is written in many places that are no mention of them (who wrote a
             // change, who sits where): only a mention's mark, or the value a stored mark span
             // keeps ([`Walk::mark_value`]), can make one.
@@ -116,6 +126,19 @@ pub fn touched_by(
                 Key::Seq(_) => "",
             };
             let mark_value = matches!(key, "value" | STR_FIELD | STR_FIELD_FLAT);
+            match (&op.action, &op.obj) {
+                (OpType::Make(ObjType::Text), _) if mark_value => {
+                    spelled.insert(OpId::new(counter, &change.actor_id), String::new());
+                }
+                (OpType::Put(ScalarValue::Str(piece)), ObjectId::Id(text)) if op.insert => {
+                    if let Some(value) = spelled.get_mut(text)
+                        && value.len() < MAX_SPELLED_VALUE
+                    {
+                        value.push_str(piece);
+                    }
+                }
+                _ => {}
+            }
             match &op.action {
                 OpType::Put(ScalarValue::Str(value))
                     if (mark_value
@@ -149,6 +172,9 @@ pub fn touched_by(
             }
         }
     }
+    touched.names |= spelled
+        .values()
+        .any(|value| member_of(value).is_some_and(|member| people.contains(&member)));
     Some(touched)
 }
 
