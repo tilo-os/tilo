@@ -387,7 +387,7 @@ pub static OPERATIONS: std::sync::LazyLock<Vec<Operation>> = std::sync::LazyLock
             "namePerson",
             Method::POST,
             "/v1/workspaces/{workspace}/members/name",
-            "The name the key's own person goes by in the workspace",
+            "The name the key's own person goes by, in this workspace and every other one its server keeps",
         )
         .body(Body::Json("NewName"))
         .json(200, "Members"),

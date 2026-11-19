@@ -2097,7 +2097,7 @@
     "/v1/workspaces/{workspace}/members/name": {
       "post": {
         "operationId": "namePerson",
-        "summary": "The name the key's own person goes by in the workspace",
+        "summary": "The name the key's own person goes by, in this workspace and every other one its server keeps",
         "tags": [
           "Members"
         ],
@@ -2123,7 +2123,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The name the key's own person goes by in the workspace",
+            "description": "The name the key's own person goes by, in this workspace and every other one its server keeps",
             "content": {
               "application/json": {
                 "schema": {

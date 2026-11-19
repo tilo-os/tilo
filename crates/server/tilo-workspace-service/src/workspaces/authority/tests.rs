@@ -16,6 +16,7 @@ use tilo_server_protocol::voice::{CallOperation, CallState};
 use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
+use crate::workspaces::PersonNames as _;
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{
     CancelInvitationRequest, IssueInvitationRequest, PreAdmitRequest, RemoveMemberRequest,
@@ -1487,4 +1488,83 @@ async fn a_page_lists_and_chooses_the_servers_keeping_the_workspace() {
         "{refused:?}"
     );
     server.shutdown().await;
+}
+
+/// What a person keeps their name in, as a test reads it back.
+#[derive(Default)]
+struct KeptNames(std::sync::Mutex<std::collections::HashMap<[u8; 32], String>>);
+
+impl crate::workspaces::PersonNames for KeptNames {
+    fn name_of(&self, person: &[u8; 32]) -> Option<String> {
+        self.0.lock().unwrap().get(person).cloned()
+    }
+
+    fn keep_name(&self, person: &[u8; 32], name: &str) -> Result<(), String> {
+        self.0.lock().unwrap().insert(*person, name.to_owned());
+        Ok(())
+    }
+}
+
+/// A person names themselves once, in one workspace, and goes by that name in every workspace
+/// this server governs: the name is theirs, kept with their profile, and a workspace they are
+/// declared in later calls them by it too.
+#[tokio::test]
+async fn a_name_given_in_one_workspace_is_the_persons_everywhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let kept = std::sync::Arc::new(KeptNames::default());
+    workspaces.person_names(kept.clone());
+    let lounge = workspaces.create("Lounge").await.unwrap().workspace;
+    let own = workspaces.create("Their own").await.unwrap().workspace;
+
+    let person = SigningKey::from_bytes(&rand::random());
+    let root = person.verifying_key().to_bytes();
+    for workspace in [&lounge, &own] {
+        workspaces
+            .set_member_administrator(workspace, &owner, rand::random(), root, Some("Eager Lynx"))
+            .await
+            .unwrap();
+    }
+    let named = async |workspace: &str| {
+        workspaces
+            .summary(workspace)
+            .await
+            .unwrap()
+            .members
+            .into_iter()
+            .find(|member| member.root() == Some(root) && !member.removed)
+            .map(|member| member.name)
+    };
+
+    let theirs = device_of(
+        &person,
+        "their laptop",
+        DeviceCapabilities::server_key_grant(),
+    );
+    workspaces
+        .name_self(&lounge, &theirs, "Quinten", tilo_clock::unix_now_ns())
+        .await
+        .unwrap();
+    assert_eq!(kept.name_of(&root).as_deref(), Some("Quinten"));
+    assert_eq!(named(&lounge).await.as_deref(), Some("Quinten"));
+    assert_eq!(named(&own).await.as_deref(), Some("Quinten"));
+
+    // Declared in a third workspace under another name: the one they gave themselves wins as
+    // soon as that workspace's governance moves.
+    let later = workspaces.create("Later").await.unwrap().workspace;
+    workspaces
+        .set_member_administrator(&later, &owner, rand::random(), root, Some("Witty Otter"))
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while named(&later).await.as_deref() != Some("Quinten") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the later workspace still calls them {:?}",
+            named(&later).await
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }

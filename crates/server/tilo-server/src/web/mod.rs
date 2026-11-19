@@ -551,6 +551,11 @@ impl Server {
             )),
             wait_list: config.wait_list.clone(),
         });
+        // The name each person gives themselves is kept with their profile, which the workspaces
+        // here name them by.
+        if let Some(workspaces) = &web.workspaces {
+            workspaces.person_names(web.profiles.clone());
+        }
         web.serve_code_requests();
         web.serve_pushes(
             self.state_root(),
@@ -1316,7 +1321,21 @@ async fn route(
             };
             kept.publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
                 .await
-                .map(|()| reply(StatusCode::NO_CONTENT, Vec::new()))
+                .map(|root| {
+                    // A profile's name is the person's in every workspace here: each names them
+                    // by it from now on.
+                    if route == "/profile"
+                        && let (Some(workspaces), Some(name)) =
+                            (web.workspaces.clone(), web.profiles.kept_name(&root))
+                    {
+                        tokio::spawn(async move {
+                            workspaces
+                                .name_person_everywhere(root, &name, tilo_clock::unix_now_ns())
+                                .await;
+                        });
+                    }
+                    reply(StatusCode::NO_CONTENT, Vec::new())
+                })
                 .map_err(|refusal| {
                     let code = match refusal {
                         envelopes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,

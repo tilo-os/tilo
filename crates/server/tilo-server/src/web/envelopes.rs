@@ -29,6 +29,8 @@
 //! record's label; `{"profile": null}` when none is kept).
 use std::path::{Path, PathBuf};
 
+use tilo_lock::MutexRecover as _;
+
 use tilo_user_identity::root_envelope::RootEnvelope;
 use tilo_user_identity::root_statement;
 pub(super) use tilo_user_identity::root_statement::Kind;
@@ -217,7 +219,10 @@ pub(super) struct Envelopes {
     dir: PathBuf,
     kind: Kind,
     /// One write at a time, so "newer than kept" holds across requests.
-    write: tokio::sync::Mutex<()>,
+    write: std::sync::Mutex<()>,
+    /// The name each person's kept profile gives, once read: `None` for a person whose server
+    /// keeps none. A profile kept here moves it.
+    names: std::sync::Mutex<std::collections::HashMap<[u8; 32], Option<String>>>,
 }
 
 fn root_of(text: &str) -> Option<[u8; 32]> {
@@ -241,7 +246,8 @@ impl Envelopes {
         Self {
             dir,
             kind,
-            write: tokio::sync::Mutex::new(()),
+            write: std::sync::Mutex::new(()),
+            names: std::sync::Mutex::default(),
         }
     }
 
@@ -279,13 +285,13 @@ impl Envelopes {
     }
 
     /// Keep the envelope `body` publishes, when its root signed it, is
-    /// `member` here, and dated it after the one kept.
+    /// `member` here, and dated it after the one kept: the root it is kept for.
     pub(super) async fn publish<F, Fut>(
         &self,
         body: &[u8],
         now_ms: u64,
         member: F,
-    ) -> Result<(), Refusal>
+    ) -> Result<[u8; 32], Refusal>
     where
         F: FnOnce([u8; 32]) -> Fut,
         Fut: std::future::Future<Output = bool>,
@@ -311,22 +317,108 @@ impl Envelopes {
         if !member(root).await {
             return Err(Refusal::NotMember);
         }
-        let _write = self.write.lock().await;
+        let _write = self.write.lock_recover();
         let path = self.path(&root);
         if Self::kept(&path).is_some_and(|kept| kept.issued_at_ms >= publish.issued_at_ms) {
             return Err(Refusal::Stale);
         }
-        let bytes = serde_json::to_vec(&Kept {
-            issued_at_ms: publish.issued_at_ms,
-            envelope: publish.envelope,
-        })
-        .map_err(|_| Refusal::Storage)?;
-        tilo_files::native::atomic::write_creating_parent_with_mode(&path, &bytes, 0o644).map_err(
+        self.write_kept(
+            &path,
+            &Kept {
+                issued_at_ms: publish.issued_at_ms,
+                envelope: publish.envelope,
+            },
+        )?;
+        self.names.lock_recover().remove(&root);
+        Ok(root)
+    }
+
+    /// Write `kept` at `path`, under the write lock.
+    fn write_kept(&self, path: &Path, kept: &Kept) -> Result<(), Refusal> {
+        let bytes = serde_json::to_vec(kept).map_err(|_| Refusal::Storage)?;
+        tilo_files::native::atomic::write_creating_parent_with_mode(path, &bytes, 0o644).map_err(
             |error| {
                 tracing::warn!(%error, kind = self.kind.name(), "member record not kept");
                 Refusal::Storage
             },
         )
+    }
+
+    /// The name the profile kept for `root` gives, as the person chose it; `None` before they
+    /// chose one. Read once per person, then from memory until their profile changes.
+    pub(super) fn kept_name(&self, root: &[u8; 32]) -> Option<String> {
+        if let Some(known) = self.names.lock_recover().get(root) {
+            return known.clone();
+        }
+        let name = Self::kept(&self.path(root))
+            .and_then(|kept| serde_json::from_str::<serde_json::Value>(&kept.envelope).ok())
+            .and_then(|profile| profile.get("display_name")?.as_str().map(str::to_owned))
+            .filter(|name| !name.trim().is_empty());
+        self.names.lock_recover().insert(*root, name.clone());
+        name
+    }
+
+    /// Keep `name` as the one the person `root` goes by, as a device of theirs asked this
+    /// server: the profile kept for them takes it, the rest of it as it was, dated `now_ms` (after
+    /// the one kept, so their devices read it as the newest).
+    pub(super) fn keep_name(
+        &self,
+        root: &[u8; 32],
+        name: &str,
+        now_ms: u64,
+    ) -> Result<(), Refusal> {
+        let name = tilo_user_identity::display_name(name)
+            .map_err(|_| Refusal::Malformed("not a display name"))?;
+        let _write = self.write.lock_recover();
+        let path = self.path(root);
+        let kept = Self::kept(&path);
+        let mut profile = kept
+            .as_ref()
+            .and_then(|kept| serde_json::from_str::<serde_json::Value>(&kept.envelope).ok())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(
+                || serde_json::json!({"version": 1, "user_public_key": hex::encode(root)}),
+            );
+        if profile
+            .get("display_name")
+            .and_then(serde_json::Value::as_str)
+            == Some(name)
+        {
+            return Ok(());
+        }
+        let Some(fields) = profile.as_object_mut() else {
+            return Err(Refusal::Storage);
+        };
+        fields.insert("display_name".into(), name.into());
+        let envelope = serde_json::to_string(&profile).map_err(|_| Refusal::Storage)?;
+        root_for(self.kind, &envelope)?;
+        let issued_at_ms = kept.map_or(now_ms, |kept| {
+            now_ms.max(kept.issued_at_ms.saturating_add(1))
+        });
+        self.write_kept(
+            &path,
+            &Kept {
+                issued_at_ms,
+                envelope,
+            },
+        )?;
+        self.names
+            .lock_recover()
+            .insert(*root, Some(name.to_owned()));
+        Ok(())
+    }
+}
+
+/// The name each person gave themselves is their profile's: the server's workspaces read it there
+/// and keep it there when a device of theirs names them.
+impl crate::workspaces::PersonNames for Envelopes {
+    fn name_of(&self, person: &[u8; 32]) -> Option<String> {
+        self.kept_name(person)
+    }
+
+    fn keep_name(&self, person: &[u8; 32], name: &str) -> Result<(), String> {
+        Self::keep_name(self, person, name, tilo_clock::unix_now_ms())
+            .map_err(|refusal| refusal.message().to_owned())
     }
 }
 
@@ -606,5 +698,46 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// A name the person gives from any device of theirs is kept with their profile: the rest of
+    /// it stays, and it is dated after the one kept, so every device of theirs reads it as newest.
+    #[tokio::test]
+    async fn a_name_given_elsewhere_is_kept_with_the_profile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let profiles = Envelopes::of(Kind::Profile, dir.path().join("profiles"));
+        let root = SigningKey::from_bytes(&[11; 32]);
+        let person = root.verifying_key().to_bytes();
+        let hex_root = hex::encode(person);
+        assert_eq!(profiles.kept_name(&person), None);
+        profiles
+            .keep_name(&person, "Quinten", 10)
+            .expect("kept without a profile");
+        assert_eq!(profiles.kept_name(&person).as_deref(), Some("Quinten"));
+        let pictured = serde_json::json!({"version": 1, "user_public_key": hex_root,
+            "display_name": "Eager Lynx", "photo": "data:image/webp;base64,UklGRg=="})
+        .to_string();
+        let issued = profiles
+            .publish(
+                &signed(Kind::Profile, &root, "profile", &pictured, 5_000),
+                5_000,
+                |_| async { true },
+            )
+            .await
+            .expect("kept");
+        assert_eq!(issued, person);
+        assert_eq!(profiles.kept_name(&person).as_deref(), Some("Eager Lynx"));
+        profiles.keep_name(&person, "Quinten", 1_000).expect("kept");
+        assert_eq!(profiles.kept_name(&person).as_deref(), Some("Quinten"));
+        let answered: serde_json::Value =
+            serde_json::from_slice(&profiles.answer(hex_root.as_bytes()).expect("a root"))
+                .expect("json");
+        assert_eq!(answered["profile"]["display_name"], "Quinten");
+        assert_eq!(
+            answered["profile"]["photo"],
+            "data:image/webp;base64,UklGRg=="
+        );
+        assert_eq!(answered["issued_at_ms"], 5_001);
+        assert!(profiles.keep_name(&person, " ", 6_000).is_err());
     }
 }

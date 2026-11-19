@@ -1563,8 +1563,12 @@ export async function startEntryPage({mode}) {
         ask: (current, save) => askName(current, save),
         set: chosen => {
           displayName = chooseDisplayName(pagePerson(page), chosen);
-          if (page.peer) page.peer.setDisplayName?.(displayName);
-          else page.mount?.setOwnPerson?.({user: pagePerson(page), label: displayName});
+          if (page.peer) {
+            page.peer.setDisplayName?.(displayName);
+            // The name is the person's: their host keeps it and every workspace
+            // there names them by it, as the `tilo` command's naming does.
+            page.peer.nameSelf?.(displayName);
+          } else page.mount?.setOwnPerson?.({user: pagePerson(page), label: displayName});
           return displayName;
         },
       }});

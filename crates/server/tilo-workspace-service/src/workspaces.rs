@@ -45,6 +45,8 @@ pub mod fixtures;
 mod genesis;
 mod machines;
 pub use machines::WorkspaceMachines;
+mod names;
+pub use names::PersonNames;
 mod surfaces;
 pub use content::{ContentKeeper, WholeDocuments, WorkspaceContent};
 mod desktop_writes;
@@ -822,7 +824,6 @@ impl GovernedWorkspace {
 use commit::{
     durable_messages, for_members, prepare_governance, publication, select_exact_admission,
 };
-use tilo_peer_state::workspace_membership::valid_workspace_name as valid_name;
 
 /// The extension of the marker beside a workspace file this host released.
 const RELEASED: &str = "released";
@@ -943,6 +944,8 @@ struct WorkspacesInner {
     /// What runs the workspaces' Linux machines, as a branch takes its
     /// source's and a deletion takes the workspace's ([`Workspaces::machines`]).
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
+    /// Where the name each person gave themselves is kept ([`Workspaces::person_names`]).
+    person_names: std::sync::RwLock<Option<Arc<dyn PersonNames>>>,
     /// Each record write of a member the governor's copy took in.
     document_writes: tokio::sync::broadcast::Sender<ResourceWrite>,
     /// Moves whenever a person's own settings kept here — their mail
@@ -1204,6 +1207,7 @@ impl Workspaces {
                 branch_content: std::sync::RwLock::default(),
                 asks_people: std::sync::RwLock::default(),
                 machines: std::sync::RwLock::default(),
+                person_names: std::sync::RwLock::default(),
                 document_writes: tokio::sync::broadcast::channel(256).0,
                 person_settings_moved: tokio::sync::watch::channel(0).0,
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1392,55 +1396,6 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         crate::workspace_io::evict(&self.inner.host.workspaces, workspace_id).await;
         Ok(())
-    }
-
-    /// Name `workspace` `name`, in its governance (what members show) and in
-    /// this server's record of it. Naming it what it is called changes
-    /// nothing.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is not governed here, the name is not 1–80 characters, or
-    /// the change could not be committed.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked from the rename until it is settled"
-    )]
-    pub async fn rename(&self, workspace: &str, name: &str) -> Result<WorkspaceSummary, String> {
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut governed = state.lock().await;
-        let summary = self.rename_governed(&mut governed, name)?;
-        self.settle(&mut governed).await?;
-        Ok(summary)
-    }
-
-    /// [`Self::rename`] of `governed`, which the caller holds, without
-    /// settling it: the entry answers with what the rename made.
-    ///
-    /// # Errors
-    ///
-    /// The name is not 1–80 characters, or the change could not be committed.
-    fn rename_governed(
-        &self,
-        governed: &mut GovernedWorkspace,
-        name: &str,
-    ) -> Result<WorkspaceSummary, String> {
-        let name = valid_name(name)?;
-        if governed.peer().governance().workspace_name().as_deref() == Some(name) {
-            return Ok(self.people(governed));
-        }
-        let now = tilo_clock::wall();
-        let key = &self.inner.host.key;
-        let mut candidate = governed.peer().clone();
-        candidate
-            .governance_mut()
-            .author_workspace_name(name, key, now)?;
-        let collaboration = governed.collaboration().clone();
-        governed.commit(candidate, key, now, |_, _| Ok(collaboration))?;
-        Ok(self.people(governed))
     }
 
     /// Every workspace this server governs.

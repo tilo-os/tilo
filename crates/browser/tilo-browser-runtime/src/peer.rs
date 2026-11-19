@@ -1760,11 +1760,8 @@ fn peer_store(
     ))
 }
 
-/// Tell `workspace` its member, the page's person, goes by `name` from now on:
-/// what its member list and everyone's person lists show for them. Asked
-/// as the page joins and whenever the person renames themself, so a name
-/// the workspace recorded earlier is corrected on the next visit. A person who
-/// chose no name keeps the one they were admitted with.
+/// Tell the server of `workspace` its member, the page's person, goes by `name` from now on, the
+/// name they gave themselves: asked only when they give one, never with one the page drew.
 fn set_member_name(handle: &Link, workspace: &str, name: &str) {
     if name.trim().is_empty() {
         return;
@@ -2023,10 +2020,10 @@ impl WasmPeer {
                 store,
             )
             .map_err(js_error)?;
+            // The name the page shows its person by is never written into the workspace here: the
+            // workspace names them by the name they gave themselves, which their server keeps
+            // ([`Self::name_self`]); one the page drew from their key names nobody.
             if crate::page_person::speaks(self.id) {
-                if let Some(identity) = ui::local_identity::load() {
-                    set_member_name(&self.handle, workspace, &identity.display_name);
-                }
                 *self.speaking_workspace.borrow_mut() = Some(workspace.to_owned());
             }
         }
@@ -2938,16 +2935,22 @@ impl WasmPeer {
         self.handle.clear_surface(surface);
     }
 
-    /// The person's chosen name from now on, for history and presence
-    /// (empty for none).
+    /// The name the page shows its person by from now on, for history and presence (empty for
+    /// none): the one they gave themselves, or one drawn from their key until they give one.
     #[wasm_bindgen(js_name = setDisplayName)]
     pub fn set_display_name(&self, name: String) {
         set_label(self.id, &name);
-        if let Some(workspace) = self.speaking_workspace.borrow().as_deref() {
-            set_member_name(&self.handle, workspace, &name);
-        }
         if crate::page_person::speaks(self.id) {
             install_identity(&self.reporter_cert, name);
+        }
+    }
+
+    /// The person named themselves `name`: their server keeps it as theirs, with their profile,
+    /// and names them by it in every workspace it keeps, this one included.
+    #[wasm_bindgen(js_name = nameSelf)]
+    pub fn name_self(&self, name: &str) {
+        if let Some(workspace) = self.speaking_workspace.borrow().as_deref() {
+            set_member_name(&self.handle, workspace, name);
         }
     }
 

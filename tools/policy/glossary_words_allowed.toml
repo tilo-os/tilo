@@ -676,6 +676,8 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces.rs",
     "crates/server/tilo-workspace-service/src/workspaces/device_actions.rs",
     "crates/server/tilo-workspace-service/src/workspaces/device_actions_tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/names.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/authority/tests.rs",
     "docs/architecture/workspace.md",
     "os/tests/host_image.sh",
     "os/tests/server_update_policy_test.sh"
@@ -1314,7 +1316,7 @@ paths = ["crates/sdk/ui-core/src/widget/group_row*.rs"]
 [[allow]]
 reason = "The overview's `OverviewHost`, the desktop it is drawn for, which its functions take as `host`."
 words = ["host"]
-identifiers = ["host"]
+identifiers = ["host", "OverviewHost"]
 paths = ["crates/session/desktop/src/overview.rs"]
 
 [[allow]]
