@@ -10,6 +10,10 @@ use tilo_app::prelude::*;
 #[row(kind = "test.jobs", label = "Job", effects = JobEffect)]
 struct Job;
 
+#[derive(tilo_resource::Row)]
+#[row(kind = "test.songs", label = "Song", effects = JobEffect)]
+struct Song;
+
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "test.jobs.effect", catalogue = "tests/locales")]
 pub enum JobEffect {
@@ -21,6 +25,21 @@ pub enum JobEffect {
         #[param("Stop it even if it is busy")]
         force: Option<bool>,
     },
+    /// Play this.
+    ///
+    /// One effect offered on two types of row, bound to whichever row it
+    /// was offered on.
+    #[effect(on = Job, on = Song, kind = "read")]
+    Play {
+        #[param("The job or song")]
+        item: String,
+    },
+    /// Skip ahead.
+    ///
+    /// An effect that takes nothing: every row of the type offers it as it
+    /// is.
+    #[effect(on = Job, kind = "read")]
+    Skip,
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -85,6 +104,64 @@ fn a_row_type_offers_its_effects_bound_to_the_row() {
             job: "job:7".into(),
             force: None,
         }
+    );
+}
+
+/// An effect offered on several row types is bound to whichever row it was
+/// offered on, and one that takes nothing is offered on the rows as it is.
+#[test]
+fn a_row_effect_may_be_offered_on_several_types_and_take_nothing() {
+    let find = |row: &tilo_actions::ResourceSpec, id: &str| {
+        row.actions
+            .iter()
+            .find(|action| action.id == id)
+            .unwrap_or_else(|| panic!("{id} on {}", row.id.as_str()))
+            .clone()
+    };
+
+    let job = LiveRow::typed::<Job>("job:7", "Backup").into_resource();
+    let play = find(&job, "play");
+    let encoded = play.build_json(&serde_json::Map::new()).unwrap();
+    assert_eq!(
+        JobEffect::from_payload(&encoded.payload).unwrap(),
+        JobEffect::Play {
+            item: "job:7".into()
+        },
+        "a job's play is about the job"
+    );
+
+    let song = LiveRow::typed::<Song>("song:3", "Layla").into_resource();
+    let play = find(&song, "play");
+    let encoded = play.build_json(&serde_json::Map::new()).unwrap();
+    assert_eq!(
+        JobEffect::from_payload(&encoded.payload).unwrap(),
+        JobEffect::Play {
+            item: "song:3".into()
+        },
+        "a song's play is about the song"
+    );
+
+    let skip = find(&job, "skip");
+    assert!(
+        skip.params().is_empty(),
+        "an effect that takes nothing asks nothing on a row"
+    );
+    let encoded = skip.build_json(&serde_json::Map::new()).unwrap();
+    assert_eq!(
+        JobEffect::from_payload(&encoded.payload).unwrap(),
+        JobEffect::Skip,
+        "every row of the type offers it as it is"
+    );
+
+    let ids: Vec<&str> = song
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        ["play"],
+        "a song offers only what the declarations say"
     );
 }
 

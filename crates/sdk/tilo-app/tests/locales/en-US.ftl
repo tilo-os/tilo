@@ -378,3 +378,5 @@ test-chain-api-log-part-write = Write a line
 test-jobs = Jobs
 test-jobs-add-job = Add a job
 test-jobs-effect-stop = Stop this job
+test-jobs-effect-play = Play this
+test-jobs-effect-skip = Skip ahead

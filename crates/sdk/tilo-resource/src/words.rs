@@ -127,9 +127,10 @@ pub trait RowType {
     }
 
     /// The effects the type offers on each of its rows, each with its first
-    /// parameter bound to the row's id (`#[effect(on = Row)]`). A row that
-    /// is an item of a declared type offers these, so what a press does on
-    /// it is one of the type's effects, published on every row of the type.
+    /// parameter bound to the row's id (`#[effect(on = Row)]`), or as it is
+    /// when it takes none. A row that is an item of a declared type offers
+    /// these, so what a press does on it is one of the type's effects,
+    /// published on every row of the type.
     fn effects(_id: &crate::Id) -> Vec<tilo_actions::ActionSpec> {
         Vec::new()
     }

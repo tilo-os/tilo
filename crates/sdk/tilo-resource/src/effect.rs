@@ -119,7 +119,9 @@
 //! `item = field` (offered on each item of the collection, its first
 //! parameter bound to the item's id, beside the item's own verbs) or
 //! `on = RowType` (offered on each row of a `#[derive(Row)]` type, its first
-//! parameter bound to the row's id; `LiveRow::typed` publishes them)
+//! parameter bound to the row's id; `LiveRow::typed` publishes them; write it
+//! more than once to offer the effect on several types, and leave the effect
+//! without parameters to offer it on the type as it is)
 //! and
 //! `kind = "read"` (an effect that only reads, which whoever may read may
 //! invoke), `kind = "undoable"` (an undoable change) or `kind = "outside"`
@@ -534,7 +536,7 @@ fn offered_specs(check: Check, decls: Vec<EffectDecl>, operation: &'static str) 
             // Offered on each item it acts on (`item = field`), its item
             // bound, it stays published here for scripts that name the item,
             // out of the palette's way, as an item verb does.
-            if decl.item.is_some() && spec.audience() == tilo_actions::Audience::Everyone {
+            if !decl.items.is_empty() && spec.audience() == tilo_actions::Audience::Everyone {
                 spec.type_mut()
                     .contract
                     .set_audience(tilo_actions::Audience::Agents);
@@ -597,8 +599,10 @@ fn params_from(params: &[ActionParam]) -> Vec<ActionParam> {
 
 /// [`Effect::item_specs`] and [`Effect::row_specs`] of the vocabulary `key`,
 /// whose declarations `declarations` are: every effect `matches` offers on an
-/// entity, its first parameter bound here to `entity`. Each type is kept per
-/// target, so offering the same effect on many items costs one type.
+/// entity, its first parameter bound here to `entity` — or, for an effect
+/// with no parameters, offered as it is, since the entity changes nothing
+/// about it. Each type is kept per target, so offering the same effect on
+/// many items costs one type.
 fn target_specs(
     check: Check,
     key: std::any::TypeId,
@@ -609,19 +613,20 @@ fn target_specs(
 ) -> Vec<ActionSpec> {
     declarations()
         .into_iter()
-        .filter(|decl| decl.item.as_ref().is_some_and(&matches))
         .filter_map(|decl| {
-            let target = decl.item?;
-            let first = decl.params.first()?.name.to_string();
+            let target = *decl.items.iter().find(|target| matches(target))?;
+            let bound = match decl.params.first() {
+                Some(first) => BoundArguments::from_iter([(
+                    first.name.to_string(),
+                    serde_json::Value::String(entity.as_str().to_owned()),
+                )]),
+                None => BoundArguments::new(),
+            };
             let ty = kept_type((key, decl.id, Some(target.key())), || {
                 let rest = params_from(decl.params.get(1..).unwrap_or_default());
                 let build = encoder(check, operation, decl.id, Bound::OverCaller);
                 Arc::clone(decl.spec_with(operation, rest, build).action_type())
             });
-            let bound = BoundArguments::from_iter([(
-                first,
-                serde_json::Value::String(entity.as_str().to_owned()),
-            )]);
             let fixed = bound.clone().into_iter().collect();
             Some(ty.bind(Target::new(bound)).with_bound(fixed))
         })
@@ -718,7 +723,9 @@ pub struct EffectRow {
     pub presence: bool,
     pub edits: bool,
     pub member: bool,
-    pub item: Option<EffectTarget>,
+    /// The kinds of entity its rows are offered on
+    /// ([`EffectTarget`]): none for an effect offered on the resource alone.
+    pub items: &'static [EffectTarget],
     pub offload: Option<EffectOffload>,
     pub tags: &'static [&'static str],
     pub outside_with: Option<&'static str>,
@@ -863,8 +870,11 @@ pub struct EffectDecl {
     /// collection field whose items offer it (`#[effect(item = connections)]`,
     /// published on each item resource as an item verb is), or the kind of a
     /// [`RowType`](crate::words::RowType) whose rows offer it
-    /// (`#[effect(on = Process)]`, published on each of the type's rows).
-    pub item: Option<EffectTarget>,
+    /// (`#[effect(on = Process)]`, published on each of the type's rows). An
+    /// effect declared on several of them (`#[effect(on = QueueItem, on =
+    /// HistoryItem)]`) is offered on each, bound to the row it was offered on;
+    /// one with no parameters is offered on them as it is.
+    pub items: &'static [EffectTarget],
     /// A content transform the system may run on the invoker's best-placed
     /// device (`#[effect(offload(...))]`); the handler is its local run.
     pub offload: Option<EffectOffload>,
@@ -978,7 +988,7 @@ impl EffectDecl {
             presence: row.presence,
             edits: row.edits,
             member: row.member,
-            item: row.item,
+            items: row.items,
             offload: row.offload,
             tags: row.tags,
             outside_with: row.outside_with,

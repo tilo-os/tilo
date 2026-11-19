@@ -208,10 +208,12 @@ struct VariantOptions {
     edit: bool,
     member: bool,
     kind: Option<String>,
-    /// The entity whose id the effect's first field is bound to: a
+    /// The entities whose ids the effect's first field is bound to: a
     /// collection's items (`item = field`) or a declared row type's rows
-    /// (`on = RowType`).
-    target: Option<Target>,
+    /// (`on = RowType`). One variant may be offered on several of them (a
+    /// queue and a recent video offer `play` alike), each binding its own
+    /// row.
+    targets: Vec<Target>,
     /// `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
     /// output_mb = N, gpu)`: a content transform the system may run on the
     /// invoker's best-placed device as the package's catalogue entrypoint.
@@ -358,11 +360,13 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
             } else if meta.path.is_ident("member") {
                 options.member = true;
             } else if meta.path.is_ident("item") {
-                options.target = Some(Target::Field(
+                options.targets.push(Target::Field(
                     meta.value()?.parse::<syn::Ident>()?.to_string(),
                 ));
             } else if meta.path.is_ident("on") {
-                options.target = Some(Target::Row(meta.value()?.parse::<syn::Path>()?));
+                options
+                    .targets
+                    .push(Target::Row(meta.value()?.parse::<syn::Path>()?));
             } else if meta.path.is_ident("offload") {
                 options.offload = Some(offload_option(&meta)?);
             } else if meta.path.is_ident("host_render") {
@@ -671,23 +675,21 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         let presence = options.presence;
         let edits = options.edit;
         let member = options.member;
-        if options.target.is_some() && fields.is_empty() {
-            return Err(syn::Error::new(
-                variant.span(),
-                "an effect offered on items or rows binds its first field to the entity: \
-                 give it one",
-            ));
-        }
-        let item = match &options.target {
-            None => quote!(::core::option::Option::None),
-            Some(Target::Field(field)) => {
-                quote!(::core::option::Option::Some(#krate::effect::EffectTarget::Field(#field)))
-            }
-            Some(Target::Row(path)) => quote! {
-                ::core::option::Option::Some(#krate::effect::EffectTarget::Row(
-                    <#path as #krate::words::RowType>::KIND,
-                ))
-            },
+        // An effect with arguments binds its first to the entity it is offered
+        // on. One without (showing a set of remotes) is offered on every entity
+        // of the type as it is: the entity changes nothing about it.
+        let items = if options.targets.is_empty() {
+            quote!(&[])
+        } else {
+            let targets = options.targets.iter().map(|target| match target {
+                Target::Field(field) => quote!(#krate::effect::EffectTarget::Field(#field)),
+                Target::Row(path) => quote! {
+                    #krate::effect::EffectTarget::Row(
+                        <#path as #krate::words::RowType>::KIND,
+                    )
+                },
+            });
+            quote!(&[#(#targets),*])
         };
         let reads = match options.kind.as_deref() {
             Some(kind) => kind == "read",
@@ -817,7 +819,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 presence: #presence,
                 edits: #edits,
                 member: #member,
-                item: #item,
+                items: #items,
                 offload: #offload,
                 tags: #tags,
                 outside_with: #outside_with,

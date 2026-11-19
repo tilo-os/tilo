@@ -265,7 +265,7 @@ pub fn effect_verbs(rows: &[crate::effect::EffectRow], types: &mut TypeSet) -> V
     rows.iter()
         .filter(|row| row.kind != tilo_actions::OperationKind::View)
         .filter(|row| row.action_kind == crate::ActionKind::Read)
-        .filter(|row| !row.row && row.item.is_none())
+        .filter(|row| !row.row && row.items.is_empty())
         .map(|row| effect_verb(&crate::EffectDecl::of_row(row), types))
         .collect()
 }
