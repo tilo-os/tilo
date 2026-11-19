@@ -256,6 +256,7 @@ impl Runtime {
                     ty: info.id.clone(),
                     app: AppId::default(),
                     fields: info.specs(),
+                    text_defaults: info.text_defaults(),
                 };
                 let applied = self.core.store.borrow_mut().apply(
                     txn,

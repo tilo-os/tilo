@@ -378,4 +378,51 @@ action book(d: Calendar) {
             "the words it was given stand"
         );
     }
+
+    // A root is a record of its type too: what its fields start as is the words their type
+    // declares, so a control bound to one shows them from the window's first frame.
+    #[test]
+    fn a_new_roots_text_field_starts_as_its_declared_words() {
+        const FOLDERS: &str = r#"app so.tilo.folders "Folders"
+
+type Folder {
+    label: Text = "Studio"
+    note: Text
+}
+
+root Folder
+
+default view folders for Folder
+
+view folders(f: Folder) {
+    text(f.label)
+    text(f.note)
+    ui.Dropdown(bind: f.label, options: ["Studio", "Annex"], placeholder: "Choose one")
+}
+"#;
+        let app = App::compile(FOLDERS, &[]);
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        app.load(&rt);
+        let folder = rt.create("Folder").unwrap();
+        let mut view = rt
+            .open_view(&me(), &app.view("folders"), vec![Value::resource(&folder)])
+            .unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(
+            texts(&view),
+            ["Studio", ""],
+            "the label the root was not given is the one its type declares, and a text whose type declares nothing starts empty: {}",
+            dump(view.tree())
+        );
+        assert_eq!(
+            rt.read(&folder, "label").unwrap(),
+            Value::text("Studio"),
+            "the root holds what its type declares"
+        );
+        assert_eq!(
+            rt.read(&folder, "note").unwrap(),
+            Value::text(""),
+            "a text whose type declares nothing starts empty"
+        );
+    }
 }

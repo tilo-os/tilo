@@ -1670,6 +1670,7 @@ fn create(replica: &mut Replica, id: &str) {
                 ty: list,
                 app: tilolang_runtime::ids::AppId::from(APP),
                 fields: Vec::new(),
+                text_defaults: Vec::new(),
             },
             id,
         )
