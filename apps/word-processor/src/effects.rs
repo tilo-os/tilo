@@ -377,6 +377,21 @@ pub enum WordProcessorEffect {
         #[param("Character offset where the comment's range ends")]
         end: usize,
     },
+    /// Show search result.
+    ///
+    /// Shows the range a Find hit names.
+    #[effect(
+        view,
+        row,
+        presence,
+        idempotent,
+        on = crate::rows::SearchHit,
+        tag = ui::tilo_actions::ContextRequirement::FindHits.tag()
+    )]
+    GoToHit {
+        #[param("The search-hit row's id")]
+        hit: String,
+    },
 }
 
 const TOGGLED_MARKS: [&str; 6] = ["strong", "em", "underline", "strike", "super", "sub"];
@@ -448,6 +463,12 @@ impl WordProcessorEffect {
                     start: *start,
                     end: *end,
                 }
+            }
+            Self::GoToHit { hit } => {
+                let Some((block, start, end)) = crate::actions::parse_search_hit(hit) else {
+                    return Err("there is no such search hit".into());
+                };
+                ViewMove::NavigateTo { block, start, end }
             }
             _ => return Ok(None),
         }))
