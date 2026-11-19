@@ -3,6 +3,7 @@
 
 pub mod locales;
 pub mod resource;
+mod rows;
 mod surface;
 
 pub use resource::{PrintCentreEffect, PrintCentreShell, PrintDefaults};
