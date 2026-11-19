@@ -258,7 +258,7 @@ mod tests {
             EffectiveMotion::default(),
         )
         .drawn;
-        assert_eq!(unnamed[0].label, ui::presence::guest_label());
+        assert_eq!(unnamed[0].label, ui::presence::unnamed_person_label());
     }
 
     /// A pointer is drawn where the tile it is over stands, under the name presence knows the

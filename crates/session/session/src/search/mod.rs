@@ -1124,7 +1124,7 @@ impl SessionSearch {
         );
         for recipient in out.iter_mut().filter(|r| r.kind != Conversation) {
             let name = ui::presence::shown_name(&recipient.name)
-                .map_or_else(ui::presence::guest_label, str::to_owned);
+                .map_or_else(ui::presence::unnamed_person_label, str::to_owned);
             recipient.name = labels.label(&recipient.id, &name);
         }
         out
@@ -2833,7 +2833,7 @@ mod tests {
         let opened = (open.app.as_str(), open.address.action.as_str());
         assert_eq!(opened, ("so.tilo.chat", "open-direct-conversation"));
         assert!(
-            people("Guest").is_empty(),
+            people("Someone without a name yet").is_empty(),
             "nobody is offered to themselves"
         );
     }

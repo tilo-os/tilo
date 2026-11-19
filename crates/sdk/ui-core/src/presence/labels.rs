@@ -19,18 +19,19 @@
 use std::collections::{BTreeMap, HashMap};
 use tilo_sort::CompactSort as _;
 
-/// What a person who gave no name is called, on every surface that names them: never their key.
+/// What a person who gave no name is called, on every surface that names them (people lists,
+/// cards, cursors, chat): one phrase, never their key.
 #[must_use]
-pub fn guest_label() -> String {
-    "Guest".to_owned()
+pub fn unnamed_person_label() -> String {
+    crate::i18n::widget_text("person-unnamed")
 }
 
-/// What `user` is called while nobody named them: a person is a guest, never their key; an agent
-/// or a bot goes by its id.
+/// What `user` is called while nobody named them: a person is someone without a name yet, never
+/// their key; an agent or a bot goes by its id.
 #[must_use]
 pub fn unnamed_label(user: &crate::permissions::MemberId) -> String {
     match user {
-        crate::permissions::MemberId::Person(_) => guest_label(),
+        crate::permissions::MemberId::Person(_) => unnamed_person_label(),
         crate::permissions::MemberId::Agent(id) | crate::permissions::MemberId::Bot(id) => {
             id.clone()
         }

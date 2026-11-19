@@ -1289,16 +1289,18 @@ fn chip_name_width(theme: &Theme) -> f64 {
     f64::from(theme.tokens.metrics.avatar_inline) * 8.0
 }
 
-/// `people` as chips, the most that fit in `width`, and how wide they are: each a face and the
-/// name they go by, names elided to [`chip_name_width`], and the rest counted ("+2").
+/// `people` as chips, the most that fit in `width`, how wide they are, and how wide a name may
+/// get: each a face and the name they go by, names elided to [`chip_name_width`], and the rest
+/// counted ("+2"). Where not even the first chip fits so, its name is elided to the width the line
+/// has left: a line names at least one of the people it counts.
 fn fit_chips(
     ctx: &mut ui::paint::PaintCtx<'_>,
     people: &[ShownPerson],
     look: &ChipLook<'_>,
     width: f64,
-) -> (usize, f64) {
+) -> (usize, f64, f64) {
     if people.is_empty() || width <= 0.0 {
-        return (0, 0.0);
+        return (0, 0.0, 0.0);
     }
     let theme = ctx.theme;
     let style = theme.tokens.typography.style(look.role);
@@ -1314,12 +1316,34 @@ fn fit_chips(
             face + gap + f64::from(w)
         })
         .collect();
-    let more = |left: usize| {
+    let mut more = |left: usize| {
         let label = t_args("overview-more-people", &[("count", left.into())]);
         let (w, _) = ctx.text.measure_style(&label, None, &style);
         f64::from(w)
     };
-    chips_that_fit(&widths, between, more, width)
+    let (shown, total) = chips_that_fit(&widths, between, &mut more, width);
+    if shown > 0 {
+        return (shown, total, name_width);
+    }
+    let rest = people.len().saturating_sub(1);
+    let reserve = if rest > 0 { between + more(rest) } else { 0.0 };
+    let (Some(first), Some(spare)) = (people.first(), first_name_width(width, face, gap, reserve))
+    else {
+        return (shown, total, name_width);
+    };
+    let name = ctx
+        .text
+        .elide_to_width_style(&first.name, f32_of_f64(spare), &style);
+    let (w, _) = ctx.text.measure_style(&name, None, &style);
+    (1, face + gap + f64::from(w) + reserve, spare)
+}
+
+/// The width a line `width` wide leaves the first chip's name once its face, the gap after it and
+/// the count of the rest (`reserve`) took theirs: `None` where it is under two faces, too narrow
+/// for a name anyone reads.
+fn first_name_width(width: f64, face: f64, gap: f64, reserve: f64) -> Option<f64> {
+    let spare = width - face - gap - reserve;
+    (spare >= face * 2.0).then_some(spare)
 }
 
 /// How many of `widths` (each a chip's own width) fit in `width` with `between` between them,
@@ -1377,8 +1401,8 @@ fn paint_person_chips(
     people: &[ShownPerson],
     look: &ChipLook<'_>,
 ) -> f64 {
-    let (shown, _) = fit_chips(ctx, people, look, width);
-    paint_chips(ctx, x, mid, people, shown, look)
+    let (shown, _, name_width) = fit_chips(ctx, people, look, width);
+    paint_chips(ctx, x, mid, people, (shown, name_width), look)
 }
 
 /// Paint `people` as chips ending at `right` on the line centred at `mid`, within `width`: the
@@ -1391,25 +1415,24 @@ fn paint_person_chips_right(
     people: &[ShownPerson],
     look: &ChipLook<'_>,
 ) -> f64 {
-    let (shown, total) = fit_chips(ctx, people, look, width);
-    paint_chips(ctx, right - total, mid, people, shown, look);
+    let (shown, total, name_width) = fit_chips(ctx, people, look, width);
+    paint_chips(ctx, right - total, mid, people, (shown, name_width), look);
     right - total
 }
 
-/// Paint the chips of `people`, the first `shown` of them and the rest counted after, from `x`.
-/// Returns where the last of them ends.
+/// Paint the chips of `people`, the first `shown` of them with names elided to `name_width` and
+/// the rest counted after, from `x`. Returns where the last of them ends.
 fn paint_chips(
     ctx: &mut ui::paint::PaintCtx<'_>,
     x: f64,
     mid: f64,
     people: &[ShownPerson],
-    shown: usize,
+    (shown, name_width): (usize, f64),
     look: &ChipLook<'_>,
 ) -> f64 {
     let theme = ctx.theme;
     let style = theme.tokens.typography.style(look.role);
     let (face, gap, between) = chip_metrics(theme);
-    let name_width = chip_name_width(theme);
     let mut left = x;
     for person in people.iter().take(shown) {
         let fill = face_colour(look.colours, &person.id);
@@ -1460,7 +1483,15 @@ fn paint_chips(
 }
 #[cfg(test)]
 mod tests {
-    use super::chips_that_fit;
+    use super::{chips_that_fit, first_name_width};
+
+    /// A line too narrow for the first chip at its usual width still names that person, their
+    /// name shortened to what is left; only a line too narrow for a readable name counts alone.
+    #[test]
+    fn a_narrow_line_still_names_the_first_person() {
+        assert_eq!(first_name_width(200.0, 20.0, 4.0, 30.0), Some(146.0));
+        assert_eq!(first_name_width(80.0, 20.0, 4.0, 30.0), None);
+    }
 
     fn f64_from(value: usize) -> f64 {
         f64::from(u32::try_from(value).unwrap_or(u32::MAX))

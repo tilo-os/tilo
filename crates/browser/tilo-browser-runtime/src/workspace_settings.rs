@@ -352,7 +352,7 @@ impl PageWorkspaceSettings {
                         .filter(|name| !name.is_empty())
                         .map(str::to_owned)
                         .or_else(|| here.person(&user).map(|(name, _)| name))
-                        .unwrap_or_else(tilo_sheets::invite::unnamed_person),
+                        .unwrap_or_else(ui::presence::unnamed_person_label),
                     owns: role == Role::Owner,
                     administrator: member.administrator,
                     role,

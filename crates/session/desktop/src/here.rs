@@ -625,7 +625,7 @@ impl HereState {
         let mut names = HashMap::new();
         for member in self.members.iter().flatten().chain(self.own.as_ref()) {
             let agent = member.kind == "agent";
-            let label = member_name(member).map_or_else(guest_label, str::to_owned);
+            let label = member_name(member).map_or_else(unnamed_person_label, str::to_owned);
             let key = if agent {
                 member.publisher.as_str()
             } else {
@@ -675,7 +675,7 @@ impl HereState {
             .chain(devices)
             .find(|member| member_name(member).is_some())
             .unwrap_or(first);
-        let label = member_name(named).map_or_else(guest_label, str::to_owned);
+        let label = member_name(named).map_or_else(unnamed_person_label, str::to_owned);
         let label = self.labels().label(user, &label);
         let rgb = self
             .colors()
@@ -701,7 +701,8 @@ impl HereState {
                     .user_of(&member.publisher)
                     .and_then(|user| self.person(user))
                     .unwrap_or_else(|| {
-                        let name = member_name(member).map_or_else(guest_label, str::to_owned);
+                        let name =
+                            member_name(member).map_or_else(unnamed_person_label, str::to_owned);
                         (
                             labels.label(&member.publisher, &name),
                             color_in(&colors, &member.publisher),
@@ -833,7 +834,7 @@ impl HereState {
                 label: [member.label.as_str(), member.device.as_str()]
                     .into_iter()
                     .find_map(ui::presence::shown_name)
-                    .map_or_else(guest_label, str::to_owned),
+                    .map_or_else(unnamed_person_label, str::to_owned),
                 devices: self.devices_of(&member.publisher),
                 rgb: color_in(&colors, &member.publisher),
                 agent,
@@ -871,7 +872,7 @@ impl HereState {
         let mut named: Vec<(&'a str, String)> = Vec::new();
         // One name per person, whoever of theirs spoke first: a device that has not said whose it
         // is yet does not keep their name out.
-        let guest = guest_label();
+        let guest = unnamed_person_label();
         let add = |named: &mut Vec<(&'a str, String)>, id: &'a str, name: String| match named
             .iter_mut()
             .find(|(known, _)| *known == id)
@@ -884,7 +885,7 @@ impl HereState {
             if member.kind == "agent" {
                 continue;
             }
-            let label = member_name(member).map_or_else(guest_label, str::to_owned);
+            let label = member_name(member).map_or_else(unnamed_person_label, str::to_owned);
             add(&mut named, self.person_of(&member.publisher), label);
         }
         ui::presence::MemberLabels::by_joining(named.iter().map(|(id, name)| {
@@ -963,7 +964,7 @@ fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8,
         .unwrap_or(ui::presence::UNSETTLED_RGB)
 }
 
-pub use ui::presence::guest_label;
+pub use ui::presence::unnamed_person_label;
 
 /// Name every person here and every device of theirs in `authors`, as
 /// presence shows them: what a folder file's version resolves through — the

@@ -431,7 +431,7 @@ fn mount_people(
 pub(crate) fn own_identity(here: &tilo_desktop::here::HereState) -> (String, (u8, u8, u8)) {
     let name = here
         .own_shown()
-        .unwrap_or_else(tilo_desktop::here::guest_label);
+        .unwrap_or_else(tilo_desktop::here::unnamed_person_label);
     let rgb = here.own_rgb().unwrap_or(ui::presence::UNSETTLED_RGB);
     (name, rgb)
 }
@@ -1564,7 +1564,7 @@ impl BrowserShell {
             .here
             .borrow()
             .own_label()
-            .map_or_else(tilo_desktop::here::guest_label, str::to_owned);
+            .map_or_else(tilo_desktop::here::unnamed_person_label, str::to_owned);
         ProfileModel {
             identity: ui::collaboration::local_user_id()
                 .person_id()
@@ -2327,7 +2327,7 @@ impl Widget for BrowserShell {
 /// Whether a link offer the page arrived with can open the card: the bar
 /// is drawn (the card opens under the own avatar) and the workspace named the
 /// person, since the card asks "Link Discord @name to <you>?" in their own
-/// name and must never ask it of "Guest".
+/// name and must never ask it of someone without a name yet.
 fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> bool {
     !page.is_zero_area()
         && !own_avatar.is_zero_area()
@@ -2438,7 +2438,7 @@ mod tests {
     }
 
     /// The confirm a `/link` button opens asks in the person's own name:
-    /// it waits for the workspace to name them rather than ask it of "Guest".
+    /// it waits for the workspace to name them rather than ask it of someone without a name.
     #[test]
     fn a_link_offer_waits_for_the_persons_own_name() {
         let page = Rect::new(0.0, 0.0, 1440.0, 900.0);

@@ -331,12 +331,8 @@ fn shared_route(
             JOIN_PAGE.as_bytes().to_vec(),
         ),
         ("POST", "/join") => {
+            // A visitor who gave no name has none: the workspace's surfaces say so themselves.
             let name: String = text("name").trim().chars().take(32).collect();
-            let name = if name.is_empty() {
-                "Guest".to_owned()
-            } else {
-                name
-            };
             match workspace.admit(&text("userPublicKey"), &name) {
                 Ok(admission) => {
                     eprintln!("[tilo-app] {name} joined");

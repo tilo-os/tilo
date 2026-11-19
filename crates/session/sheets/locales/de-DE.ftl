@@ -627,7 +627,6 @@ invite-lasting-hours = { $hours ->
 invite-for-anyone = Für alle mit dem Link
 invite-for-person = Für { $name }
 invite-for-someone = Für eine Person, die dieser Arbeitsbereich kennt
-invite-person-unnamed = Jemand ohne Namen
 invite-pending-title = Links, die noch gelten
 invite-revoke = Zurücknehmen
 invite-copied = Kopiert

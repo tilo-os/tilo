@@ -1294,3 +1294,4 @@ format-lifetime-session = Until log out
 format-lifetime-until = Until
 format-lifetime-until-at = Until { $when }
 format-lifetime-always = Always
+person-unnamed = Someone without a name yet

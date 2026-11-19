@@ -6484,7 +6484,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
         assert_eq!(carets.len(), 1);
         assert_eq!(
             carets[0].label,
-            ui::presence::guest_label(),
+            ui::presence::unnamed_person_label(),
             "a person nobody named is a guest, never their key",
         );
         assert_eq!(

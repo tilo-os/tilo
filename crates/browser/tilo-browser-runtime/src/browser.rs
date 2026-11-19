@@ -837,7 +837,7 @@ impl Desktop {
                 }
                 None => people.get(user).cloned().unwrap_or_else(|| {
                     (
-                        tilo_desktop::here::guest_label(),
+                        tilo_desktop::here::unnamed_person_label(),
                         ui::presence::user_color(user),
                     )
                 }),

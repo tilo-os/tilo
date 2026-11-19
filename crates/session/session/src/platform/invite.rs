@@ -189,7 +189,7 @@ impl Workspace for InviteWorkspace {
                 }
                 people.push(sheet::Person {
                     name: if member.name.is_empty() {
-                        sheet::unnamed_person()
+                        ui::presence::unnamed_person_label()
                     } else {
                         member.name
                     },
