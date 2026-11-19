@@ -11,8 +11,11 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use fs_protocol::FileAction;
 use fs_protocol::files::TreeChunk;
-use fs_protocol::tree::{FILES_APP, TREE_KIND, Tree, chunk_document_id};
+use fs_protocol::tree::{FILES_APP, FilesTree, TREE_KIND, Tree, chunk_document_id};
+use tilo_app::framework::WorkspaceResource;
+use tilo_app::tilo_resource::Resource as _;
 use ui::kurbo::{Point, Rect};
 use ui::resource::StoredResource;
 use ui::resource::workspace::WorkspaceResources;
@@ -82,12 +85,39 @@ async fn chunk_here(
     Err("The workspace's files did not arrive from its host; try again in a moment".into())
 }
 
-/// Where a drop writes the workspace's tree: each chunk's record, opened as the drop needs it,
-/// and the tree's own record that lists the chunks it wrote into.
+/// Where a drop writes the workspace's tree: each chunk's record and the tree's own record that
+/// lists the chunks it wrote into, each changed with the tree's own actions as the person who
+/// dropped the files, as Files makes a node. The workspace takes a change of the tree only as one
+/// of its actions.
 struct Records<'a> {
     workspace: &'a WorkspaceResources,
     index: &'a StoredResource,
-    chunks: &'a mut BTreeMap<TreeChunk, Rc<StoredResource>>,
+    /// Each record written so far, by its chunk (the tree's own record is chunk 0).
+    written: BTreeMap<TreeChunk, WorkspaceResource<FilesTree>>,
+}
+
+impl Records<'_> {
+    /// Apply `action` to the record of chunk `chunk` as the person who dropped the files.
+    fn act(&mut self, chunk: TreeChunk, action: &FileAction) -> Result<(), String> {
+        let resource = match self.written.entry(chunk) {
+            std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
+            std::collections::btree_map::Entry::Vacant(free) => {
+                let opened = WorkspaceResource::<FilesTree>::open_at(
+                    self.workspace,
+                    FILES_APP,
+                    &chunk_document_id(chunk),
+                    (FILES_APP, FilesTree::LABEL),
+                    None,
+                    None,
+                )
+                .ok_or_else(|| format!("chunk {chunk} is not open here"))?;
+                free.insert(opened)
+            }
+        };
+        let invoke = tilo_app::tilo_resource::Invoke::<FilesTree>::apply(action)
+            .map_err(|error| error.to_string())?;
+        resource.invoke(&invoke).map_err(|error| error.to_string())
+    }
 }
 
 impl TreeWrite for Records<'_> {
@@ -100,26 +130,11 @@ impl TreeWrite for Records<'_> {
         placing: fs_protocol::tree::Placing<'_>,
         when: (u64, &str),
     ) -> Result<fs_protocol::tree::Placed, String> {
-        let record = if let Some(record) = self.chunks.get(&chunk) {
-            Rc::clone(record)
-        } else {
-            let opened = self
-                .workspace
-                .open_resource_at(
-                    FILES_APP,
-                    &chunk_document_id(chunk),
-                    TREE_KIND,
-                    &|_doc: &mut ui::automerge::AutoCommit| Ok(()),
-                )
-                .map_err(|error| format!("chunk {chunk} is not open here: {error}"))?;
-            let record = Rc::new(opened);
-            self.chunks.insert(chunk, Rc::clone(&record));
-            record
-        };
-        record.edit(false, |doc| {
-            fs_protocol::tree::place((doc, chunk), tree, parent, name, placing, when)
-                .map_err(|error| error.to_string())
-        })
+        let (create, placed) =
+            fs_protocol::tree::placement(chunk, tree, parent, name, placing, when)
+                .map_err(|error| error.to_string())?;
+        self.act(chunk, &create)?;
+        Ok(placed)
     }
 
     fn list(&mut self, chunk: TreeChunk) -> Result<(), String> {
@@ -130,13 +145,7 @@ impl TreeWrite for Records<'_> {
         if listed.contains(&chunk) {
             return Ok(());
         }
-        self.index
-            .edit(false, |doc| {
-                fs_protocol::tree::list_chunk(doc, chunk)
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            })
-            .map(drop)
+        self.act(0, &FileAction::ListChunk { chunk })
     }
 }
 
@@ -468,7 +477,7 @@ async fn copy(
         &mut Records {
             workspace: records,
             index: &index,
-            chunks: &mut chunks,
+            written: BTreeMap::new(),
         },
         &mut tree,
         at,

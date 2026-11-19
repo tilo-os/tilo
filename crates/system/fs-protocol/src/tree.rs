@@ -887,8 +887,31 @@ pub fn place(
     parent: &str,
     name: &str,
     placing: Placing<'_>,
-    (mtime, author): (u64, &str),
+    when: (u64, &str),
 ) -> Result<Placed, ModelError> {
+    let (create, placed) = placement(chunk, tree, parent, name, placing, when)?;
+    create
+        .write(doc)
+        .map_err(|error| ModelError::invalid(error.to_string()))?;
+    Ok(placed)
+}
+
+/// What [`place`] writes, without writing it: the tree's own create action of the node, for
+/// a writer that applies it as the person's action rather than writing the chunk's record
+/// itself, and the node it makes. `tree` takes the node already, so the next placement sees it.
+///
+/// # Errors
+///
+/// A name no file can have (empty, `.`, `..`, or with a `/`), or a parent the tree does not
+/// hold.
+pub fn placement(
+    chunk: TreeChunk,
+    tree: &mut Tree,
+    parent: &str,
+    name: &str,
+    placing: Placing<'_>,
+    (mtime, author): (u64, &str),
+) -> Result<(FileAction, Placed), ModelError> {
     if name.is_empty() || name == "." || name == ".." || name.contains('/') {
         return Err(ModelError::invalid(format!("{name:?} is no file's name")));
     }
@@ -902,7 +925,7 @@ pub fn place(
         Placing::Folder => (FileNodeKind::Directory, None, 0),
         Placing::File { hash, size } => (FileNodeKind::File, Some(hash), size),
     };
-    FileAction::Create {
+    let create = FileAction::Create {
         node: id.clone(),
         document_id,
         parent: parent.to_owned(),
@@ -912,9 +935,7 @@ pub fn place(
         size,
         mtime,
         author: author.to_owned(),
-    }
-    .write(doc)
-    .map_err(|error| ModelError::invalid(error.to_string()))?;
+    };
     tree.nodes.insert(
         id.clone(),
         TreeEntry {
@@ -928,7 +949,7 @@ pub fn place(
             author: Some(author.to_owned()),
         },
     );
-    Ok(Placed { id, name })
+    Ok((create, Placed { id, name }))
 }
 
 #[cfg(test)]
