@@ -449,6 +449,20 @@ pub struct InvokeRequest {
 }
 
 impl InvokeRequest {
+    /// What the agent's harness calls the session this request was sent in ("Release prep"), as
+    /// the client's agent-session group says it: display only, the name people see the agent by
+    /// ([`Caller::in_named_session`]). `None` when the client named no session.
+    #[must_use]
+    pub fn said_session_name(&self) -> Option<String> {
+        let group = self
+            .context
+            .as_ref()?
+            .group
+            .as_ref()
+            .filter(|group| group.kind == crate::context::AGENT_SESSION_GROUP)?;
+        crate::context::one_line(group.session.as_deref()?, crate::context::MAX_LABEL_CHARS)
+    }
+
     /// Whether `other` asks for the same invocation: every field but the
     /// transport-only [`wait_ms`](Self::wait_ms), so a retry that waits
     /// differently is still a retry.

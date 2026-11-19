@@ -302,6 +302,28 @@ impl Caller {
         self
     }
 
+    /// An agent caller as `message` says the session it works in is called: by that name
+    /// ([`super::InvokeRequest::said_session_name`]), where its client named one, and by the name it
+    /// went by else. One name for everything the agent does here: the window it opens, the
+    /// message it writes, its History rows and the questions it puts to its person. Display
+    /// only, like the session's name itself; it grants nothing and changes no member id.
+    #[must_use]
+    pub fn in_named_session(self, message: &super::RemoteActionMessage) -> Self {
+        let super::RemoteActionMessage::Invoke(request) = message else {
+            return self;
+        };
+        self.in_session_of(request)
+    }
+
+    /// [`Self::in_named_session`] for the call `request`.
+    #[must_use]
+    pub fn in_session_of(self, request: &super::InvokeRequest) -> Self {
+        match request.said_session_name() {
+            Some(session) => self.named(&session),
+            None => self,
+        }
+    }
+
     /// An agent caller working in the agent session `session`: what its
     /// changes are grouped and taken back by. Set only by the provider that
     /// admitted the session; names nothing for a caller that is not an agent.
@@ -528,6 +550,63 @@ impl Caller {
 #[cfg(test)]
 mod tests {
     use super::{Caller, device_agent_id};
+    use crate::context::{AGENT_SESSION_GROUP, ActionContext, WorkGroup};
+    use crate::remote::{ActionAddress, InvokeArgument, InvokeRequest, RemoteActionTarget};
+
+    /// A call made in the session `session` names, in a work group of `kind`.
+    fn call_in(kind: &str, session: Option<&str>) -> InvokeRequest {
+        InvokeRequest {
+            invocation: crate::InvocationId::new(),
+            target: RemoteActionTarget {
+                provider: "chat".into(),
+                address: ActionAddress::new("chat.messages", "post"),
+            },
+            argument: InvokeArgument::Text(String::new()),
+            context: Some(ActionContext {
+                group: Some(WorkGroup {
+                    id: "visit-1".into(),
+                    label: None,
+                    kind: kind.into(),
+                    declared_id: None,
+                    session: session.map(str::to_owned),
+                }),
+                ..ActionContext::default()
+            }),
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            wait_ms: None,
+            appearance: None,
+        }
+    }
+
+    /// An agent goes by the name of the session its client named for the call, and by its own
+    /// name where none was named; a person is named by no session.
+    #[test]
+    fn an_agent_goes_by_its_sessions_name() {
+        let claude = || Caller::local_agent("claude-code").named("Claude Code");
+        let named = |caller: Caller, request| {
+            caller
+                .in_session_of(&request)
+                .agent_called()
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            named(claude(), call_in(AGENT_SESSION_GROUP, Some("Release prep"))).as_deref(),
+            Some("Release prep")
+        );
+        assert_eq!(
+            named(claude(), call_in(AGENT_SESSION_GROUP, Some("   "))).as_deref(),
+            Some("Claude Code")
+        );
+        assert_eq!(
+            named(claude(), call_in("issue", Some("Release prep"))).as_deref(),
+            Some("Claude Code")
+        );
+        let ada = Caller::local_person("ada")
+            .in_session_of(&call_in(AGENT_SESSION_GROUP, Some("Release prep")));
+        assert_eq!(ada.agent_called(), None);
+    }
 
     /// An agent session names itself by what it was asked, and by the agent's name where it was
     /// asked nothing.

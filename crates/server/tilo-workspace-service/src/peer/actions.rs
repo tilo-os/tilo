@@ -109,6 +109,7 @@ pub(super) async fn handle_remote_action(
         if let Some(server) = session.app_serving
             && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
             && let Ok(caller) = session_caller(peer, session)
+                .map(|caller| caller.in_named_session(&decoded.message))
             && let Some(route) =
                 server.route_certified(workspace_id, &caller, &peer.cert, &decoded.message)
         {
@@ -396,6 +397,7 @@ pub(super) fn handle_host_action(
             reason: "the host dropped the request".into(),
         },
     );
+    let caller = caller.in_named_session(&request.message);
     let Some(reply) = server.serve_host(&caller, &peer.cert, request.message) else {
         // `None` for a response (which needs no answer) or an operation the
         // app action server does not serve, which is refused.
@@ -478,7 +480,7 @@ fn serve_locally(
     } = *local;
     let request = RemoteActionFrame::decode(frame)
         .map_err(|_| Refusal::Invalid("malformed remote action frame".into()))?;
-    let caller = session_caller(peer, session)?;
+    let caller = session_caller(peer, session)?.in_named_session(&request.message);
     if !server.answers(&caller, &request.message) {
         return Err(Refusal::Other("this host does not serve apps".into()));
     }

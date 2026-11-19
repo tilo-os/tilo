@@ -17,16 +17,6 @@ fn said_group(request: &InvokeRequest) -> Option<&tilo_actions::WorkGroup> {
         .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
 }
 
-/// What the agent's harness calls the session `request` was sent in ("Office Hours"), as the
-/// client's group says it: display only, the name people see the agent by. `None` when the
-/// client named no session.
-pub(super) fn said_session_name(request: &InvokeRequest) -> Option<String> {
-    tilo_actions::context::one_line(
-        said_group(request)?.session.as_deref()?,
-        tilo_actions::context::MAX_LABEL_CHARS,
-    )
-}
-
 /// What the agent called the group `request` says it is a step of (`_meta`
 /// invocation.title), as History names the invocation's changes: words for people
 /// to read, never the group itself, which is the host's to say ([`caller_context`]).
@@ -36,7 +26,7 @@ pub(super) fn said_invocation_title(request: &InvokeRequest) -> Option<String> {
         said_group(request)?.label.as_deref()?,
         tilo_actions::context::MAX_LABEL_CHARS,
     )?;
-    (said_session_name(request).as_deref() != Some(title.as_str())).then_some(title)
+    (request.said_session_name().as_deref() != Some(title.as_str())).then_some(title)
 }
 
 /// The id the agent gave the group `request` says it is a step of (`_meta`
@@ -55,7 +45,7 @@ pub(super) fn said_invocation_id(request: &InvokeRequest) -> Option<String> {
 /// said, and the work it is part of. The group is
 /// the host's to say: an agent's or a key's actions on one connection are the
 /// group [`Caller::agent_session`] names, by the title the agent gave it
-/// ([`said_invocation_title`]), else by the session's own name ([`said_session_name`]), else by
+/// ([`said_invocation_title`]), else by the session's own name ([`InvokeRequest::said_session_name`]), else by
 /// what it was asked, and naming the id the agent gave it ([`said_invocation_id`]); one a client
 /// claims for itself is never taken, only the words it says of it.
 pub(super) fn caller_context(
@@ -67,7 +57,7 @@ pub(super) fn caller_context(
         Some(mut group) => {
             // The session's name is display only, like the title: what people see the agent by
             // (its chip, its pointer's tag, its History rows), never which group it is.
-            group.session = said_session_name(request);
+            group.session = request.said_session_name();
             if let Some(label) = said_invocation_title(request).or_else(|| group.session.clone()) {
                 group.label = Some(label);
             }

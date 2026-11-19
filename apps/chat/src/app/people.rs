@@ -117,10 +117,10 @@ impl ChatApp {
         crate::identity::unnamed_label(id)
     }
 
-    /// What to call the agent or app `id`: what the workspace calls it, numbered while another
-    /// member goes by that name too, as every surface names it; else the name it wrote under
-    /// (`kept`), after it left. A person's line keeps the name it wrote under. `None` for anyone
-    /// else.
+    /// What to call the agent or app `id`: the name a line of theirs wrote under (`kept`), which
+    /// is the session the agent wrote it in where its client named one ("Release prep"), else what
+    /// the workspace calls it; numbered while another member goes by that name too, as every
+    /// surface names it. A person's line keeps the name it wrote under. `None` for anyone else.
     pub(crate) fn agent_name(&self, id: &MemberId, kept: Option<&str>) -> Option<String> {
         let kept = kept
             .map(str::trim)
@@ -129,9 +129,8 @@ impl ChatApp {
         if id.is_person() {
             return kept;
         }
-        self.known_agent_name(id.id())
+        kept.or_else(|| self.known_agent_name(id.id()))
             .map(|name| self.workspace_labels.label(id.id(), &name))
-            .or(kept)
     }
 
     /// How a narrow line names someone: their given name, so a line that

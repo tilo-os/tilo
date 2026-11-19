@@ -71,19 +71,17 @@ impl Worker {
             .group
             .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
             .map(|group| {
-                // The session's own name when the client named one ("Office Hours"): what people
-                // read the agent by, where the only name this machine holds of it is the device it
-                // came from's. The agent's own name, else.
-                let label = group
-                    .session
-                    .clone()
-                    .filter(|name| !name.trim().is_empty())
-                    .or_else(|| caller.agent_called().map(str::to_owned))
-                    .unwrap_or_default();
                 tilo_desktop_model::ownership::OpenedBy {
                     run: group.id,
                     agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
-                    label,
+                    // The name the agent goes by here: its session's, where its client named one
+                    // (`Caller::in_session_of`), as everywhere else it appears.
+                    label: caller
+                        .clone()
+                        .in_session_of(request)
+                        .agent_called()
+                        .unwrap_or_default()
+                        .to_owned(),
                     // Only what the agent called the step that opened it: the group's label
                     // also names a session asked nothing by its agent's name, which the mark
                     // already says.
