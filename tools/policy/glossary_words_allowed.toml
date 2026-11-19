@@ -1708,7 +1708,10 @@ paths = [
 reason = "The workspace service's own test fixture for the device a test runs workspaces on, with the keys it holds (`test_host_holding`); the fixture's name, never prose."
 words = ["host"]
 identifiers = ["test_host_holding"]
-paths = ["crates/server/tilo-workspace-service/src/workspaces/writes.rs"]
+paths = [
+    "crates/server/tilo-workspace-service/src/workspaces/writes.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/member_tests.rs",
+]
 
 [[allow]]
 reason = "The session's `records` module, whose test stand-in writes a workspace's documents into the engine's copy (`records::testing::EngineWrites`); the module's name in a path, never prose."

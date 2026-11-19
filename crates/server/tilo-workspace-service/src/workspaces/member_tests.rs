@@ -260,3 +260,171 @@ async fn a_members_write_reaches_the_device_serving_the_workspace() {
     })
     .await;
 }
+
+/// The front `workspace`'s layout stands on, as its member copy reads it now.
+#[cfg(feature = "apps")]
+async fn front(copies: &super::Workspaces, workspace: &str) -> Option<String> {
+    use crate::workspace_documents::DocumentRead;
+    use automerge::ReadDoc as _;
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+
+    let read = copies
+        .own_read(
+            workspace,
+            (DESKTOP_APP, DESKTOP_DOCUMENT),
+            &[],
+            64 * 1024 * 1024,
+        )
+        .await
+        .expect("the layout reads");
+    let DocumentRead::Whole { bytes, .. } = read else {
+        return None;
+    };
+    let document = automerge::AutoCommit::load(&bytes).expect("the layout opens");
+    match document
+        .get(automerge::ROOT, "front")
+        .expect("the layout's front")
+    {
+        Some((automerge::Value::Scalar(value), _)) => value.as_str().map(str::to_owned),
+        _ => None,
+    }
+}
+
+/// Wait until the member copy reads `want` as its layout's front: the write comes back to the copy
+/// from the serving device, as a member's own write does.
+#[cfg(feature = "apps")]
+async fn waiting_front(copies: &super::Workspaces, workspace: &str, want: &str) {
+    tilo_test_env::within("the member copy reads the layout it wrote", async {
+        loop {
+            if front(copies, workspace).await.as_deref() == Some(want) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
+/// A member copy's own layout write reaches the workspace and reads back at once, a later change
+/// builds on it, and the copy keeps both across a restart of this device's service: what a joined
+/// workspace's window positions go through once the session holds it as a member copy.
+#[cfg(feature = "apps")]
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one join, the founding write, a change of it and the restart that reads it back"
+)]
+async fn a_member_copies_layout_write_is_read_back_and_survives_a_restart() {
+    use automerge::transaction::Transactable as _;
+    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT};
+
+    use super::super::fixtures::{TestGroupKeys, test_host_holding};
+
+    let serving_state = tempfile::tempdir().unwrap();
+    let member_state = tempfile::tempdir().unwrap();
+    let keys = Arc::new(TestGroupKeys::default());
+    let (serving_key, serving_cert) = governor();
+    let serving = test_host_holding(
+        serving_state.path(),
+        &serving_key,
+        &serving_cert,
+        Arc::clone(&keys),
+    )
+    .await;
+    let created = serving
+        .workspaces()
+        .create("Layout")
+        .await
+        .expect("a workspace is created");
+    let workspace = created.workspace.clone();
+    let (key, cert) = device_cert(
+        &SigningKey::from_bytes(&[21; 32]),
+        "laptop",
+        DeviceCapabilities::member(),
+    );
+    let issued = serving
+        .workspaces()
+        .pre_admit(
+            &serving_cert,
+            PreAdmitRequest {
+                request_id: [21; 32],
+                grant: signed_pre_admission(&workspace, &[21; 8]),
+                recipient_user_public_key: Some(cert.user_public_key),
+                inviter_name: None,
+            },
+        )
+        .await
+        .expect("the serving device issues an invitation");
+    let invitation = tilo_peer_state::join::encode_invitation_text(&issued.signed_invitation);
+
+    // This device's service acts as this device, as a desktop's does, and takes part in the
+    // workspace's groups with the keys its key service hands it.
+    let member = test_host_holding(member_state.path(), &key, &cert, Arc::clone(&keys)).await;
+    let copies = member.workspaces().clone();
+    copies.set_member_device(Arc::new(MemberDevice {
+        cert: cert.clone(),
+        signer: Arc::new(key.clone()),
+    }));
+    assert_eq!(
+        copies
+            .join_member(&invitation)
+            .await
+            .expect("the invitation is redeemed")
+            .to_string(),
+        workspace
+    );
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: DESKTOP_APP.into(),
+        cluster_id: workspace.clone(),
+        document: DESKTOP_DOCUMENT.into(),
+    };
+    let sealed = copies
+        .own_route_keys(&route, true)
+        .await
+        .expect("the device's key service answers")
+        .expect("the group opens");
+
+    let mut layout = automerge::AutoCommit::new();
+    layout
+        .put(automerge::ROOT, "front", "Main")
+        .expect("the layout's front");
+    copies
+        .own_write(
+            &workspace,
+            (DESKTOP_APP, DESKTOP_DOCUMENT),
+            &layout.save(),
+            true,
+            Some(&sealed),
+        )
+        .await
+        .expect("the layout is written");
+    waiting_front(&copies, &workspace, "Main").await;
+    let heads = layout.get_heads();
+    layout
+        .put(automerge::ROOT, "front", "Moved")
+        .expect("the layout's front moves");
+    copies
+        .own_write(
+            &workspace,
+            (DESKTOP_APP, DESKTOP_DOCUMENT),
+            &layout.save_after(&heads),
+            false,
+            Some(&sealed),
+        )
+        .await
+        .expect("the change is written");
+    waiting_front(&copies, &workspace, "Moved").await;
+
+    // The service after a restart reads the copy back.
+    drop(copies);
+    member.shutdown().await;
+    let member = test_host_holding(member_state.path(), &key, &cert, keys).await;
+    let copies = member.workspaces().clone();
+    copies.set_member_device(Arc::new(MemberDevice {
+        cert,
+        signer: Arc::new(key),
+    }));
+    waiting_front(&copies, &workspace, "Moved").await;
+    drop(copies);
+    member.shutdown().await;
+}

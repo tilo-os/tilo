@@ -502,6 +502,7 @@ impl Asking {
                         &events,
                         *request,
                         channels.as_deref(),
+                        own_service.as_ref(),
                     )
                     .await
                 }

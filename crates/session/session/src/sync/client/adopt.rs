@@ -18,7 +18,7 @@ fn join_client(
     own_service: Option<&OwnService>,
     identity: &DeviceIdentity,
     invitation: &str,
-) -> Result<tilo_peer_state::join_transport::WorkspaceJoinClient, String> {
+) -> Result<(tilo_peer_state::join_transport::WorkspaceJoinClient, bool), String> {
     let own = identity.device_cert.device_public_key;
     let hosted_here = tilo_peer_state::join::decode_and_verify_invitation_text(
         invitation,
@@ -34,13 +34,15 @@ fn join_client(
             .any(|hint| tilo_peer_state::owner::session::hosted_by(hint, &own))
     });
     if !hosted_here {
-        return Ok(tilo_peer_state::join_transport::WorkspaceJoinClient::new(
-            endpoint,
+        return Ok((
+            tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint),
+            false,
         ));
     }
-    own_service
+    let client = own_service
         .and_then(|service| service.join_client(own))
-        .ok_or_else(|| "this device's workspace service is not open".to_owned())
+        .ok_or_else(|| "this device's workspace service is not open".to_owned())?;
+    Ok((client, true))
 }
 
 /// Come into the workspace the shell made for the join, through its entry or with an invitation: this
@@ -92,7 +94,7 @@ pub(super) async fn redeem(
             .await
             .map_err(|_| "the workspace's host did not answer".to_owned())??;
             let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
-            tokio::time::timeout(
+            let (bootstrap, at) = tokio::time::timeout(
                 REDEEM_WITHIN,
                 tilo_peer_state::owner::enroll::admit_as_member(
                     client,
@@ -111,10 +113,11 @@ pub(super) async fn redeem(
             )
             .await
             .map_err(|_| "the workspace was not taken in time".to_owned())??;
+            hold_on_service(own_service, &bootstrap, &at).await;
             return Ok(());
         }
     };
-    let client = join_client(endpoint, own_service, &identity, &invitation)?;
+    let (client, hosted_here) = join_client(endpoint, own_service, &identity, &invitation)?;
     let enrollment = tokio::time::timeout(
         REDEEM_WITHIN,
         tilo_peer_state::owner::enroll::prepare_and_complete(
@@ -141,6 +144,14 @@ pub(super) async fn redeem(
     })
     .await
     .map_err(|_| "the workspace was not taken in time".to_owned())??;
+    if !hosted_here {
+        hold_on_service(
+            own_service,
+            enrollment.bootstrap(),
+            enrollment.transport_hint(),
+        )
+        .await;
+    }
     Ok(())
 }
 
@@ -302,12 +313,13 @@ pub(super) async fn enter(
     events: &tokio::sync::mpsc::Sender<NetEvent>,
     request: Entering,
     link: Option<&KeyLink>,
+    own_service: Option<&OwnService>,
 ) -> Result<(), tilo_session_client::EnrollFailure> {
     let topic = request.workspace_id;
     identity.current_material(topic)?;
     let owner = engine.owner().clone();
     let client = tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint);
-    tokio::time::timeout(
+    let (bootstrap, at) = tokio::time::timeout(
         REDEEM_WITHIN,
         tilo_peer_state::owner::enroll::admit_as_member(
             client,
@@ -331,5 +343,40 @@ pub(super) async fn enter(
     )
     .await
     .map_err(|_| "the workspace was not taken in time".to_owned())??;
+    hold_on_service(own_service, &bootstrap, &at).await;
     Ok(())
+}
+
+/// Hold `workspace` on this device's own service too, as the member copy the session's own reads
+/// and writes go through: the serving device admitted `bootstrap`, and this device's service acts
+/// as this device, so the same membership holds the workspace's documents there. A service that is
+/// not open, or that serves the workspace itself, keeps no copy; the workspace stays one this
+/// device's engine holds alone, as before.
+async fn hold_on_service(
+    own_service: Option<&OwnService>,
+    bootstrap: &tilo_peer_state::join::JoinBootstrap,
+    hint: &tilo_peer_state::join::TransportHint,
+) {
+    let Some(service) = own_service.and_then(OwnService::get) else {
+        tracing::warn!(
+            "this device's workspace service is not open, so the workspace is not a member copy here"
+        );
+        return;
+    };
+    match tokio::time::timeout(
+        SETTLE_WITHIN,
+        service.workspaces().join_admitted(bootstrap, hint),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "the workspace was taken in here, but not on this device's service");
+        }
+        Err(_) => {
+            tracing::warn!(
+                "the workspace's member copy did not arrive on this device's service in time"
+            );
+        }
+    }
 }

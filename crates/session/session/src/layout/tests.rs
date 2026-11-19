@@ -979,7 +979,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     let layout_key = (workspace, Route::layout());
     let (wake, _heard) = woken();
     let before = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
-    before.attach_engine(&engine);
+    attach_through_engine(&before, &engine);
     let mut shown = layout.clone();
     before.follow(&engine, "", &mut shown);
     // The step the session keeps while its workspace cannot hold the layout yet: the whole shell.
@@ -1001,7 +1001,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
     // was.
     let (wake, _heard) = woken();
     let next = Layouts::new(Arc::clone(&notes), wake, person, Some(state.path()));
-    next.attach_engine(&engine);
+    attach_through_engine(&next, &engine);
     let mut reopened = Layout {
         workspaces: vec![Workspace::new(workspace, "Home")],
         active: workspace,
@@ -1110,7 +1110,7 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
         person.clone(),
         Some(state.path()),
     );
-    desktops.attach_engine(&engine);
+    attach_through_engine(&desktops, &engine);
     let mut shown = layout.clone();
     desktops.follow(&engine, "", &mut shown);
     let view_key = (workspace, Route::view(&person));
@@ -1134,4 +1134,14 @@ fn a_view_the_session_cannot_write_before_it_ends_is_kept() {
         "the view, the person's own window with it, waits for the session after"
     );
     hold.open();
+}
+
+/// Attach `layouts` to read and write the workspaces' documents through `engine`'s own copy, as the
+/// device's workspace service holds them in a session.
+fn attach_through_engine(layouts: &Layouts, engine: &Arc<crate::engine::Engine>) {
+    let writes: Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites> =
+        Arc::new(crate::records::testing::EngineWrites(Arc::clone(engine)));
+    let reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments> =
+        Arc::new(crate::records::testing::EngineDocuments(Arc::clone(engine)));
+    layouts.attach(engine, &reads, &writes);
 }

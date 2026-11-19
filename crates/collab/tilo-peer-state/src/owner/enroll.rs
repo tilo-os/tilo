@@ -366,8 +366,14 @@ async fn prove_membership(
 
 /// Take `workspace` in as one of this person's further devices: the workspace
 /// admits a device certified by a member's root as that member's device, so
-/// this device proves its membership at the host `hint` names, without an
-/// invitation, and holds what the host answers.
+/// this device proves its membership at the device `hint` names, without an
+/// invitation, and holds what it answers. Answers the bootstrap it admitted this
+/// device with, and the hint that names it: what another holder of the
+/// workspace (the device's service) takes the same membership in by.
+#[allow(
+    clippy::type_complexity,
+    reason = "the bootstrap and the device it came from, as the join answers them"
+)]
 pub async fn admit_as_member(
     client: WorkspaceJoinClient,
     identity: DeviceIdentity,
@@ -375,7 +381,7 @@ pub async fn admit_as_member(
     workspace_id: WorkspaceId,
     hint: join::TransportHint,
     now: SystemTime,
-) -> Result<(), String> {
+) -> Result<(join::JoinBootstrap, join::TransportHint), String> {
     let (host, _) =
         WorkspaceDeviceHintV1::authenticate_transport_hint(&hint).map_err(|e| e.to_string())?;
     let (device, _) = identity.current_material(workspace_id)?;
@@ -388,8 +394,8 @@ pub async fn admit_as_member(
     )
     .await?;
     current(&identity, workspace_id, &device)?;
-    owner.install_member(workspace_id, &bootstrap, hint, &device, now)?;
-    Ok(())
+    owner.install_member(workspace_id, &bootstrap, hint.clone(), &device, now)?;
+    Ok((bootstrap, hint))
 }
 
 /// Prove this device's membership of `workspace`, a workspace it joined, with the

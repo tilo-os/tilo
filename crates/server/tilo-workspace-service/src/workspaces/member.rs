@@ -24,6 +24,7 @@ use collab_types::signer::DeviceSigner;
 use neighbour_wire::NeighbourMsg;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_peer_state::StatePeer;
+use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::join::{
     JoinBootstrap, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
@@ -238,6 +239,30 @@ fn take_governance(
 }
 
 impl GovernedWorkspace {
+    /// Take `message`, a document write the device serving this member copy sent, into the copy:
+    /// a document it holds is changed, and one it holds nothing of is founded by the whole
+    /// document its serving device writes. Answers whether the copy changed.
+    fn take_served(&self, author: [u8; 32], message: &NeighbourMsg) -> bool {
+        if !matches!(message, NeighbourMsg::AppDocument { .. }) {
+            return false;
+        }
+        let mut peer = self.peer();
+        match peer.receive_from(
+            TransportOrigin::RetainedServerDelta(author),
+            message.clone(),
+            tilo_clock::wall(),
+        ) {
+            Ok(seen) => seen.changed || seen.metadata_changed,
+            Err(error) => {
+                tracing::debug!(
+                    %error,
+                    "a member copy did not take in what its serving device wrote"
+                );
+                false
+            }
+        }
+    }
+
     /// A member copy of the workspace `bootstrap` answers, kept under `path`:
     /// the device serving it as the answer names it, nothing of its own
     /// published.
@@ -358,6 +383,24 @@ impl Workspaces {
             return Err("the device admitted this to another workspace".into());
         }
         self.hold_member(&device, &bootstrap, &hint).await
+    }
+
+    /// Hold the workspace `bootstrap` answers as a member copy, synced with the device `hint`
+    /// names: what this device's session hands its service once the serving device admitted this
+    /// device, by an invitation, an entry or as a further device of the person. Answers the
+    /// workspace.
+    ///
+    /// # Errors
+    ///
+    /// This service acts as no device, the address `hint` carries is not the workspace's, this
+    /// device's own service serves the workspace, or the copy could not be kept.
+    pub async fn join_admitted(
+        &self,
+        bootstrap: &JoinBootstrap,
+        hint: &TransportHint,
+    ) -> Result<WorkspaceId, String> {
+        let device = self.member_identity()?;
+        self.hold_member(&device, bootstrap, hint).await
     }
 
     /// Hold `bootstrap` as a member copy of the workspace it answers, synced
@@ -627,6 +670,19 @@ impl Workspaces {
             .await?;
         let message: NeighbourMsg =
             postcard::from_bytes(&body).map_err(|error| error.to_string())?;
+        // This device's own write is this copy's from the moment it is made, as the engine's was:
+        // the device serving the workspace carries it to the workspace's other members, and what
+        // it sends back may reach this copy later.
+        {
+            let state = self
+                .workspace(workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut governed = state.lock().await;
+            if governed.take_served(device.device(), &message) {
+                self.keep_soon(&mut governed);
+            }
+        }
         if let Some(link) = self.member_link(workspace_id)
             && let Err(error) = link.send(message)
         {
@@ -1231,13 +1287,16 @@ impl Workspaces {
             return Ok(());
         };
         let state = self.workspace(workspace).await.map_err(|e| e.to_string())?;
-        let governed = state.lock().await;
-        let followed = governed.follow(author, message.clone());
-        if let Some(reason) = followed.refused {
-            tracing::debug!(%workspace, %reason, "a member copy refused a write the serving device carried");
+        let mut governed = state.lock().await;
+        // A write the copy's own receive refuses may still be a compaction the
+        // copy is behind; that is taken as the serving device kept it.
+        let taken = governed.take_served(author, message)
+            || governed.follow_kept(author, message.clone()).await.changed;
+        if taken {
+            self.tell_followers(&governed, (app_id.clone(), document_id.clone()), message)
+                .await;
+            self.keep_soon(&mut governed);
         }
-        self.tell_followers(&governed, (app_id.clone(), document_id.clone()), message)
-            .await;
         let workspace_id = governed.workspace_id();
         let access = governed.peer().permissions(author, tilo_clock::wall()).ok();
         drop(governed);
