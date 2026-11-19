@@ -314,9 +314,6 @@ impl ServiceSessions {
         ))
         .await
         .map_err(ServiceError::Workspaces)?;
-        if let Some(member) = cfg.member.clone() {
-            workspaces.set_member_device(member);
-        }
         if let Some(governance) = governance {
             governance.attach(workspaces.clone());
             // Sessions ask its governance what a device may do; the lock is set
@@ -368,6 +365,7 @@ impl ServiceSessions {
                 moderates: std::collections::BTreeSet::new(),
             })),
             arrivals: self.handler.arrivals.clone(),
+            member: cfg.member.clone(),
         }
     }
 

@@ -1483,3 +1483,14 @@ reason = "The lineage a document's frames are retained on, which the wire names 
 words = ["channel"]
 identifiers = ["channel", "frame_channel", "app_document_channel"]
 paths = ["crates/server/tilo-workspace-service/src/store/document_sync.rs", "crates/server/tilo-workspace-service/src/store/document_sync_tests.rs"]
+
+[[allow]]
+reason = "The workspace service's admitted-run code names an agent's run and the device that carries it, and its content accessor names the keeper that waits on what a member answers; these are the words the types it handles are already named with."
+words = ["host", "run"]
+paths = [
+    "crates/server/tilo-workspace-service/src/apps/document_content.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/run_admission.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/run_admission_tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/member.rs",
+]

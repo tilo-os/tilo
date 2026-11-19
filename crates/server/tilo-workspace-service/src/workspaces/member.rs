@@ -31,6 +31,7 @@ use tilo_peer_state::join::{
 };
 use tilo_peer_state::join_transport::WorkspaceJoinClient;
 use tilo_peer_state::owner::session::hosted_by;
+use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
@@ -39,7 +40,6 @@ use crate::workspace_documents::HostCommit;
 
 /// The member copies a device holds: the links of the workspaces it joined,
 /// by workspace while each is up, and the device they act as.
-#[derive(Default)]
 pub(super) struct Members {
     /// The link of each member copy, while it is up.
     links: std::sync::Mutex<std::collections::HashMap<WorkspaceId, DirectSync>>,
@@ -50,8 +50,55 @@ pub(super) struct Members {
     /// waits for before it is published, since a write published before the
     /// serving device listens is in no store of its own.
     up: std::sync::Mutex<std::collections::HashMap<WorkspaceId, tokio::sync::watch::Sender<bool>>>,
+    /// What runs admitted to each member copy are pinned to, by workspace: the
+    /// serving device's address and how often the copy was enrolled, read
+    /// without waiting by the check every admitted call passes.
+    materials: std::sync::Mutex<std::collections::HashMap<WorkspaceId, (TransportHint, u64)>>,
     /// Told each time a workspace is held here as a member copy.
     held: Arc<tokio::sync::Notify>,
+    /// Each write the device serving a member copy sent, as it is kept: the
+    /// embedder hands it to the apps following the workspace's records.
+    writes: tokio::sync::broadcast::Sender<MemberWrite>,
+}
+
+impl Default for Members {
+    fn default() -> Self {
+        Self {
+            links: std::sync::Mutex::default(),
+            device: std::sync::OnceLock::default(),
+            up: std::sync::Mutex::default(),
+            materials: std::sync::Mutex::default(),
+            held: Arc::default(),
+            writes: tokio::sync::broadcast::channel(WRITES_HELD).0,
+        }
+    }
+}
+
+/// How many member writes an embedder that has not read them yet is told of
+/// before the oldest is dropped.
+const WRITES_HELD: usize = 64;
+
+/// A write the device serving a member copy sent, as this device kept it.
+#[derive(Clone, Debug)]
+pub struct MemberWrite {
+    /// The workspace the write is of.
+    pub workspace: WorkspaceId,
+    /// The device that wrote it.
+    pub author: [u8; 32],
+    /// The frame, encoded as it arrived.
+    pub body: Vec<u8>,
+    /// The author's access in the workspace, as its governance gives it:
+    /// `None` when it could not be read now.
+    pub access: Option<tilo_action_policy::MemberAccess>,
+}
+
+impl Members {
+    /// Take `device` as the device the member copies act as.
+    pub(super) fn set_device(&self, device: Arc<MemberDevice>) {
+        if self.device.set(device).is_err() {
+            tracing::warn!("the service's member device was already set; it is kept");
+        }
+    }
 }
 
 /// The extension of the file beside a member copy's workspace naming the
@@ -88,6 +135,26 @@ impl MemberDevice {
 pub(super) struct Member {
     /// That device's signed address, where it is reached.
     addr: iroh_base::EndpointAddr,
+    /// The hint the address came from, which a run admitted here is pinned
+    /// to.
+    hint: TransportHint,
+    /// How often this copy was enrolled: every admission of this device,
+    /// counted, so a run admitted under one enrollment ends when another
+    /// replaces it.
+    continuity: u64,
+}
+
+/// The material a run admitted to a member copy is pinned to: the device the
+/// copy acts as, the device serving it, and the enrollment that admitted this
+/// device there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberMaterial {
+    /// The admitted device certificate.
+    pub cert: DeviceCert,
+    /// The serving device's signed address.
+    pub hint: TransportHint,
+    /// How often the copy was enrolled.
+    pub continuity: u64,
 }
 
 /// The member copy kept at `path`, by the file beside it: none for a
@@ -106,6 +173,8 @@ pub(super) fn member_of(path: &Path) -> Option<Member> {
         Ok(hint) => match WorkspaceDeviceHintV1::from_transport_hint(&hint) {
             Ok(address) => Some(Member {
                 addr: address.endpoint_addr,
+                hint,
+                continuity: 0,
             }),
             Err(error) => {
                 tracing::warn!(path = %file.display(), %error, "a member copy's device is not an address");
@@ -205,9 +274,7 @@ impl Workspaces {
     /// person's own, whose key the devices serving the workspaces it joined
     /// admitted.
     pub fn set_member_device(&self, device: Arc<MemberDevice>) {
-        if self.inner.member.device.set(device).is_err() {
-            tracing::warn!("the service's member device was already set; it is kept");
-        }
+        self.inner.member.set_device(device);
     }
 
     /// The device a member copy acts as, when this service serves one.
@@ -322,14 +389,24 @@ impl Workspaces {
         let name = workspace.to_string();
         let now = tilo_clock::wall();
         let held = self.inner.workspaces.lock().await.get(&name).cloned();
+        let mut enrolled = 1;
         let state = if let Some(held) = held {
-            let governed = held.lock().await;
+            let mut governed = held.lock().await;
             if governed.member.is_none() {
                 return Err("this device governs that workspace here".into());
             }
             let mut peer = governed.peer().clone();
             take_governance(&mut peer, bootstrap, now)?;
             *governed.peer.lock() = peer;
+            if let Some(member) = governed.member.as_mut() {
+                member.addr = address.endpoint_addr.clone();
+                member.hint = hint.clone();
+                member.continuity = member.continuity.saturating_add(1);
+                enrolled = member.continuity;
+            }
+            if let Err(error) = keep_member(&governed.path, hint) {
+                tracing::warn!(%name, %error, "a member copy's device address was not kept");
+            }
             drop(governed);
             held
         } else {
@@ -352,6 +429,8 @@ impl Workspaces {
             };
             governed.member = Some(Member {
                 addr: address.endpoint_addr.clone(),
+                hint: hint.clone(),
+                continuity: enrolled,
             });
             governed.persist()?;
             if let Err(error) = keep_member(&governed.path, hint) {
@@ -367,15 +446,44 @@ impl Workspaces {
             state
         };
         self.serve_member(&state, device)?;
+        if let Ok(mut materials) = self.inner.member.materials.lock() {
+            materials.insert(workspace, (hint.clone(), enrolled));
+        }
+        // A run admitted under another enrollment of this copy is over.
+        self.inner.executions.fence(workspace);
         self.inner.member.held.notify_waiters();
         tracing::info!(%name, workspace_id = %workspace, "holding a workspace this device joined as a member");
         Ok(workspace)
+    }
+
+    /// The material a run admitted to `workspace`, a member copy, is pinned
+    /// to: the device the copy acts as, the device serving it, and how often
+    /// the copy was enrolled. `None` for a workspace this device does not
+    /// hold as a member copy.
+    #[must_use]
+    pub fn member_material(&self, workspace: WorkspaceId) -> Option<MemberMaterial> {
+        let device = self.inner.member.device.get()?;
+        let (hint, continuity) = {
+            let materials = self.inner.member.materials.lock().ok()?;
+            materials.get(&workspace)?.clone()
+        };
+        Some(MemberMaterial {
+            cert: device.cert.clone(),
+            hint,
+            continuity,
+        })
     }
 
     /// Told each time a workspace is held here as a member copy.
     #[must_use]
     pub fn members_held(&self) -> Arc<tokio::sync::Notify> {
         Arc::clone(&self.inner.member.held)
+    }
+
+    /// Each write the device serving a member copy sends, as it is kept here.
+    #[must_use]
+    pub fn member_writes(&self) -> tokio::sync::broadcast::Receiver<MemberWrite> {
+        self.inner.member.writes.subscribe()
     }
 
     /// Every workspace held here as a member copy.
@@ -413,6 +521,33 @@ impl Workspaces {
         let governed = state.lock().await;
         governed.member.as_ref()?;
         Some((governed.name(), governed.peer().clone()))
+    }
+
+    /// `workspace`'s copy as this device holds it, when this device governs
+    /// it here rather than as a member: the name its governance gives it and
+    /// the replica it keeps. `None` for a member copy or a workspace not held
+    /// here.
+    pub async fn governed_copy(&self, workspace: WorkspaceId) -> Option<(String, StatePeer)> {
+        let state = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace.to_string())
+            .cloned()?;
+        let governed = state.lock().await;
+        governed
+            .member
+            .is_none()
+            .then(|| (governed.name(), governed.peer().clone()))
+    }
+
+    /// Send `message` on `workspace`'s member link, while it is up: whether
+    /// it was sent.
+    #[must_use]
+    pub fn send_member(&self, workspace: WorkspaceId, message: NeighbourMsg) -> bool {
+        self.member_link(workspace)
+            .is_some_and(|link| link.send(message).is_ok())
     }
 
     /// The person the device this member copy acts as acts for in
@@ -460,7 +595,7 @@ impl Workspaces {
     /// Keep `commit`, a write this device makes to `workspace`, a member
     /// copy: admitted into the copy's documents in this device's name, and
     /// sent to the device serving it, which fans it out to the workspace's
-    /// other members.
+    /// other members. Answers the order the write was kept at.
     ///
     /// # Errors
     ///
@@ -498,6 +633,152 @@ impl Workspaces {
             tracing::debug!(%workspace, %error, "a member write did not reach the serving device");
         }
         Ok(order)
+    }
+
+    /// Keep `request`, a terminal effect receipt this device served in
+    /// `workspace`, a member copy: recorded in this device's slice of the
+    /// workspace and sent to the device serving it, answered with its
+    /// receipt.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not a member copy held here, the request is not an
+    /// effect receipt, or the receipt could not be kept.
+    pub async fn commit_member_effect_receipt(
+        &self,
+        workspace: &str,
+        request: &OwnerCommitRequest,
+    ) -> Result<OwnerCommitReceipt, String> {
+        let CommitOperation::EffectReceipt { redacted, .. } = &request.operation else {
+            return Err("not an effect receipt".into());
+        };
+        if !self.is_member(workspace).await? {
+            return Err("this workspace is not held here as a member copy".into());
+        }
+        let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+            serde_json::from_slice(redacted).map_err(|error| error.to_string())?;
+        let device = self.member_identity()?;
+        let binding = request.binding()?;
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let messages = {
+            let governed = state.lock().await;
+            let now = tilo_clock::wall();
+            let generation = governed.record.generation.saturating_add(1);
+            let peer = governed.peer();
+            let mut candidate = peer.clone();
+            candidate
+                .workspace_mut()
+                .apply_own_effect_receipt(&device.cert, &receipt, now)?;
+            let messages = candidate.publication_mut().durable_mutation_messages(
+                &peer,
+                device.signer.as_ref(),
+                now,
+                generation,
+            )?;
+            drop(peer);
+            *governed.peer.lock() = candidate;
+            drop(governed);
+            messages
+        };
+        let commit = messages
+            .into_iter()
+            .next()
+            .map(|message| {
+                let (channel, retention) = neighbour_wire::retention(&message, false)
+                    .ok_or_else(|| "the receipt carries no retention route".to_owned())?;
+                let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
+                Ok::<_, String>(HostCommit {
+                    body,
+                    channel,
+                    checkpoint: retention == neighbour_wire::Retention::Checkpoint,
+                })
+            })
+            .transpose()?;
+        // A receipt whose change produced nothing is one the workspace already
+        // holds; the answer still binds the request.
+        if let Some(commit) = commit {
+            let _ = self.commit_member_document(workspace, commit).await?;
+        }
+        Ok(OwnerCommitReceipt {
+            binding,
+            generation: 1,
+            aggregate_hash: *blake3::hash(redacted).as_bytes(),
+        })
+    }
+
+    /// Admit `request`, an app's signed write this device makes to
+    /// `workspace`, the profile's own workspace this service holds and
+    /// governs: into its ordered persistence, answered with the receipt that
+    /// binds it, and carried to the workspace's other devices.
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here, the request is not a document of
+    /// this device's, or the write could not be kept.
+    pub async fn commit_own_document(
+        &self,
+        workspace: &str,
+        request: OwnerCommitRequest,
+    ) -> Result<OwnerCommitReceipt, String> {
+        let workspace_id = WorkspaceId::parse(workspace).ok_or("not a workspace id")?;
+        let device = self.member_identity()?;
+        if self.is_member(workspace).await? {
+            return Err("this workspace is held here as a member copy".into());
+        }
+        if self.governed_copy(workspace_id).await.is_none() {
+            return Err("this workspace is not governed here".into());
+        }
+        let CommitOperation::Document {
+            app,
+            document: record,
+            envelope,
+            own,
+        } = &request.operation
+        else {
+            return Err("an app writes documents to its workspace".into());
+        };
+        if envelope.author.as_bytes() != &device.device() {
+            return Err("the document's signer differs from this device".into());
+        }
+        let binding = request.binding()?;
+        let message = NeighbourMsg::AppDocument {
+            peer: neighbour_wire::peer_handle(&device.device()),
+            app_id: app.clone(),
+            cluster_id: workspace_id.to_string(),
+            document_id: record.clone(),
+            envelope: envelope.clone(),
+            own: own.clone(),
+        };
+        let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
+        let Some((route, retention)) = neighbour_wire::retention(&message, false) else {
+            return Err("the write carries no retention route".into());
+        };
+        let order = self
+            .inner
+            .host
+            .records
+            .carry(
+                workspace_id,
+                device.device(),
+                HostCommit {
+                    body: body.clone(),
+                    channel: route,
+                    checkpoint: retention == neighbour_wire::Retention::Checkpoint,
+                },
+            )
+            .await?
+            .durable()
+            .await?;
+        self.absorb(workspace, device.device(), &body).await?;
+        self.carry_to_links(workspace, device.device(), &message);
+        Ok(OwnerCommitReceipt {
+            binding,
+            generation: order.clamp(1, u64::MAX),
+            aggregate_hash: *blake3::hash(&body).as_bytes(),
+        })
     }
 
     /// Write `command`, this device's own membership change (a lease it
@@ -608,7 +889,10 @@ impl Workspaces {
             let workspace = GovernedWorkspace::open(path.clone(), device.as_ref())
                 .map_err(|error| super::document_format::unopened(&path, dir, &error))?;
             let name = workspace.workspace().to_owned();
-            let state = if workspace.member.is_some() {
+            let state = if let Some(member) = workspace.member.clone() {
+                if let Ok(mut materials) = self.inner.member.materials.lock() {
+                    materials.insert(workspace.workspace_id(), (member.hint, member.continuity));
+                }
                 self.kept_member(workspace).await?
             } else {
                 self.serve_direct(&workspace)?;
@@ -881,6 +1165,7 @@ impl Workspaces {
         self.tell_followers(&governed, (app_id.clone(), document_id.clone()), message)
             .await;
         let workspace_id = governed.workspace_id();
+        let access = governed.peer().permissions(author, tilo_clock::wall()).ok();
         drop(governed);
         self.inner
             .host
@@ -897,6 +1182,12 @@ impl Workspaces {
             .await?
             .durable()
             .await?;
+        let _ = self.inner.member.writes.send(MemberWrite {
+            workspace: workspace_id,
+            author,
+            body: body.to_vec(),
+            access,
+        });
         Ok(())
     }
 }
