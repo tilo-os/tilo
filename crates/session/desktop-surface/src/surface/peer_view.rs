@@ -64,10 +64,8 @@ use super::elsewhere;
 pub use super::elsewhere::Elsewhere;
 use crate::i18n::{t, t_args};
 use crate::page_view::{PageStream, PageView};
-use tilo_actions::{
-    ActionOutput, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
-    ResourcePresentation, ResourceSpec,
-};
+use tilo_actions::{ActionOutput, ActionSpec, ResourcePresentation, ResourceSpec};
+use tilo_resource::Effect as _;
 use ui::widget::DrawChild;
 
 /// The kind of resource a shared surface's tile publishes.
@@ -93,13 +91,58 @@ pub const KEYFRAME: &str = "keyframe";
 /// Let the shared window's tile go.
 pub const END: &str = "end";
 
-const POINTER_MOTION_OPERATION: &str = "desktop.peer-surface.pointer-motion";
-const POINTER_BUTTON_OPERATION: &str = "desktop.peer-surface.pointer-button";
-const KEY_OPERATION: &str = "desktop.peer-surface.key";
-const SCROLL_OPERATION: &str = "desktop.peer-surface.scroll";
-const TEXT_OPERATION: &str = "desktop.peer-surface.text";
-const KEYFRAME_OPERATION: &str = "desktop.peer-surface.keyframe";
-const END_OPERATION: &str = "desktop.peer-surface.end";
+/// What a viewer does to a shared surface's window: the input a tile ships
+/// to the sender, one effect each.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "desktop.peer-surface")]
+pub enum PeerEffect {
+    /// Move the viewer's pointer over the shared window, in the sender's pixels.
+    #[effect(kind = "outside", label = "peer-window-action-pointer-motion")]
+    PointerMotion {
+        #[param(label = "peer-window-param-x")]
+        x: f64,
+        #[param(label = "peer-window-param-y")]
+        y: f64,
+    },
+    /// Press or release one of the viewer's pointer buttons.
+    #[effect(kind = "outside", label = "peer-window-action-pointer-button")]
+    PointerButton {
+        #[param(label = "peer-window-param-button")]
+        button: i64,
+        #[param(label = "peer-window-param-pressed")]
+        pressed: bool,
+    },
+    /// Press or release one key on the viewer's keyboard.
+    #[effect(kind = "outside", label = "peer-window-action-key")]
+    Key {
+        #[param(label = "peer-window-param-keysym")]
+        keysym: i64,
+        #[param(label = "peer-window-param-pressed")]
+        pressed: bool,
+        #[param(label = "peer-window-param-modifiers")]
+        modifiers: i64,
+    },
+    /// Scroll the shared window under the viewer's pointer.
+    #[effect(kind = "outside", label = "peer-window-action-scroll")]
+    Scroll {
+        #[param(label = "peer-window-param-dx")]
+        dx: f64,
+        #[param(label = "peer-window-param-dy")]
+        dy: f64,
+    },
+    /// Type text the viewer composed into the shared window's focused field.
+    #[effect(kind = "outside", label = "peer-window-action-text")]
+    Text {
+        #[param(label = "peer-window-param-text")]
+        text: String,
+    },
+    /// Ask the sender for a keyframe.
+    #[effect(kind = "outside", label = "peer-window-action-keyframe")]
+    Keyframe,
+    /// Let the shared window's tile go.
+    #[effect(kind = "outside", label = "peer-window-action-end")]
+    End,
+}
 
 /// How many decoded pictures a tile holds for a paint it has not had yet: up to two, and the oldest
 /// goes once a third arrives.
@@ -331,18 +374,17 @@ pub enum PeerAction {
 }
 
 impl PeerAction {
-    /// The action an operation type carries, if it is one of this tile's.
+    /// The action `effect` ships: what a tile does with one input event.
     #[must_use]
-    pub fn of_type(type_id: &str) -> Option<Self> {
-        match type_id {
-            POINTER_MOTION_OPERATION => Some(Self::PointerMotion),
-            POINTER_BUTTON_OPERATION => Some(Self::PointerButton),
-            KEY_OPERATION => Some(Self::Key),
-            SCROLL_OPERATION => Some(Self::Scroll),
-            TEXT_OPERATION => Some(Self::Text),
-            KEYFRAME_OPERATION => Some(Self::Keyframe),
-            END_OPERATION => Some(Self::End),
-            _ => None,
+    pub fn of(effect: &PeerEffect) -> Self {
+        match effect {
+            PeerEffect::PointerMotion { .. } => Self::PointerMotion,
+            PeerEffect::PointerButton { .. } => Self::PointerButton,
+            PeerEffect::Key { .. } => Self::Key,
+            PeerEffect::Scroll { .. } => Self::Scroll,
+            PeerEffect::Text { .. } => Self::Text,
+            PeerEffect::Keyframe => Self::Keyframe,
+            PeerEffect::End => Self::End,
         }
     }
 }
@@ -535,29 +577,29 @@ impl PeerSurface {
     /// its stream stands, and the actions that drive it.
     #[must_use]
     pub fn resource(&self) -> ResourceSpec {
-        tilo_resource::typed_resource::<PeerSurfaceRow>(self.resource_id(), self.title.to_string())
-            .with_presentation(ResourcePresentation {
-                detail: Some(bounded(
-                    &t_args("peer-window-of", &[("name", (&*self.sharer).into())]),
-                    ResourcePresentation::MAX_DETAIL_BYTES,
-                )),
-                badge: Some(t(if self.writable {
-                    "peer-window-can-type"
-                } else {
-                    "peer-window-view-only"
-                })),
-                preview: Some(bounded(
-                    &self.state_line(),
-                    ResourcePresentation::MAX_PREVIEW_BYTES,
-                )),
-            })
-            .with_action(motion_action())
-            .with_action(button_action())
-            .with_action(key_action())
-            .with_action(scroll_action())
-            .with_action(text_action())
-            .with_action(keyframe_action())
-            .with_action(end_action())
+        let mut resource = tilo_resource::typed_resource::<PeerSurfaceRow>(
+            self.resource_id(),
+            self.title.to_string(),
+        )
+        .with_presentation(ResourcePresentation {
+            detail: Some(bounded(
+                &t_args("peer-window-of", &[("name", (&*self.sharer).into())]),
+                ResourcePresentation::MAX_DETAIL_BYTES,
+            )),
+            badge: Some(t(if self.writable {
+                "peer-window-can-type"
+            } else {
+                "peer-window-view-only"
+            })),
+            preview: Some(bounded(
+                &self.state_line(),
+                ResourcePresentation::MAX_PREVIEW_BYTES,
+            )),
+        });
+        for action in peer_actions().into_iter().flatten() {
+            resource = resource.with_action(action);
+        }
+        resource
     }
 
     /// This tile's resource id.
@@ -931,111 +973,18 @@ fn bounded(text: &str, max: usize) -> String {
     text.get(..cut).unwrap_or_default().to_owned()
 }
 
-/// The argument-encoding operation of one effect action.
-/// What the action is called and what it asks for are the catalogue's, by `words` : the message
-/// naming it, and that message's `-hint` .
-fn operation(
-    id: &'static str,
-    words: &str,
-    type_id: &'static str,
-    params: Vec<ActionParam>,
-) -> ActionSpec {
-    ActionSpec::typed_operation(
-        id,
-        t(words),
-        t(&format!("{words}-hint")),
-        OperationKind::Effect,
-        type_id,
-        params,
-        move |arguments| {
-            EncodedAction::encode_operation(type_id, &arguments.to_json()).unwrap_or_else(|_| {
-                EncodedAction {
-                    type_id: type_id.to_string(),
-                    payload: Vec::new(),
-                }
-            })
-        },
-    )
-}
-
-/// One argument of an action, described in the catalogue's words under `words` .
-fn param(name: &'static str, kind: ParamType, words: &str) -> ActionParam {
-    ActionParam::required_owned(name, kind, t(words))
-}
-
-fn motion_action() -> ActionSpec {
-    operation(
-        POINTER_MOTION,
-        "peer-window-action-pointer-motion",
-        POINTER_MOTION_OPERATION,
-        vec![
-            param("x", ParamType::Number, "peer-window-param-x"),
-            param("y", ParamType::Number, "peer-window-param-y"),
-        ],
-    )
-}
-
-fn button_action() -> ActionSpec {
-    operation(
-        POINTER_BUTTON,
-        "peer-window-action-pointer-button",
-        POINTER_BUTTON_OPERATION,
-        vec![
-            param("button", ParamType::Integer, "peer-window-param-button"),
-            param("pressed", ParamType::Boolean, "peer-window-param-pressed"),
-        ],
-    )
-}
-
-fn key_action() -> ActionSpec {
-    operation(
-        KEY,
-        "peer-window-action-key",
-        KEY_OPERATION,
-        vec![
-            param("keysym", ParamType::Integer, "peer-window-param-keysym"),
-            param("pressed", ParamType::Boolean, "peer-window-param-pressed"),
-            param(
-                "modifiers",
-                ParamType::Integer,
-                "peer-window-param-modifiers",
-            ),
-        ],
-    )
-}
-
-fn scroll_action() -> ActionSpec {
-    operation(
-        SCROLL,
-        "peer-window-action-scroll",
-        SCROLL_OPERATION,
-        vec![
-            param("dx", ParamType::Number, "peer-window-param-dx"),
-            param("dy", ParamType::Number, "peer-window-param-dy"),
-        ],
-    )
-}
-
-fn text_action() -> ActionSpec {
-    operation(
-        TEXT,
-        "peer-window-action-text",
-        TEXT_OPERATION,
-        vec![param("text", ParamType::Text, "peer-window-param-text")],
-    )
-}
-
-fn keyframe_action() -> ActionSpec {
-    operation(
-        KEYFRAME,
-        "peer-window-action-keyframe",
-        KEYFRAME_OPERATION,
-        Vec::new(),
-    )
-}
-
-fn end_action() -> ActionSpec {
-    operation(END, "peer-window-action-end", END_OPERATION, Vec::new())
+/// What a tile offers: the declared effects of [`PeerEffect`], each with its
+/// arguments asked from the viewer.
+fn peer_actions() -> [Option<ActionSpec>; 7] {
+    [
+        PeerEffect::spec(PeerEffect::POINTER_MOTION.id),
+        PeerEffect::spec(PeerEffect::POINTER_BUTTON.id),
+        PeerEffect::spec(PeerEffect::KEY.id),
+        PeerEffect::spec(PeerEffect::SCROLL.id),
+        PeerEffect::spec(PeerEffect::TEXT.id),
+        PeerEffect::spec(PeerEffect::KEYFRAME.id),
+        PeerEffect::spec(PeerEffect::END.id),
+    ]
 }
 
 /// The refusal of an argument that is not what its action takes, naming the argument.
@@ -1551,15 +1500,7 @@ impl ui::resources::PublishesResources for PeerView {
 
 impl ResourceOperations for PeerView {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            POINTER_MOTION_OPERATION,
-            POINTER_BUTTON_OPERATION,
-            KEY_OPERATION,
-            SCROLL_OPERATION,
-            TEXT_OPERATION,
-            KEYFRAME_OPERATION,
-            END_OPERATION,
-        ]
+        &[PeerEffect::OPERATION]
     }
 
     fn start_operation(
@@ -1574,11 +1515,13 @@ impl ResourceOperations for PeerView {
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
-        let Some(action) = PeerAction::of_type(request.type_id) else {
+        if request.type_id != PeerEffect::OPERATION {
             return Ok(None);
-        };
-        let arguments: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
+        }
+        let effect =
+            PeerEffect::from_payload(request.payload).map_err(|error| error.to_string())?;
+        let action = PeerAction::of(&effect);
+        let arguments = effect.arguments();
         self.state
             .borrow_mut()
             .act(action, &arguments)

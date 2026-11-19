@@ -1,7 +1,6 @@
 # Rows and trees apps still build by hand
 # (tools/policy/check_live_rows.py). Counts only shrink.
 hand-bound-action 2 crates/session/core/src/layout/published.rs
-hand-bound-action 1 crates/session/desktop-surface/src/surface/peer_view.rs
 hand-bound-action 1 crates/session/desktop/src/osd.rs
 hand-bound-action 1 crates/session/session/src/controls.rs
 hand-bound-action 1 crates/session/session/src/conversations.rs
