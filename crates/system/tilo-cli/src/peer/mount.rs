@@ -90,7 +90,8 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
         .with_eviction_queue(Arc::new(tokio::sync::Mutex::new(evictions)))
         .with_actor(parts.actor)
         .with_writers(Arc::clone(&parts.writers))
-        .with_pinned_hydration();
+        .with_pinned_hydration()
+        .with_change_journal(parts.replica.journal());
     fs.resume_pending_evictions();
     let fs = match tilo_fs::unsaved::UnsavedStore::open(parts.state.join("unsaved-writes")) {
         Ok(unsaved) => {
