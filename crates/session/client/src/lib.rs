@@ -33,6 +33,7 @@ pub mod health;
 mod held_live;
 pub mod identity;
 pub mod link;
+pub mod machines;
 pub mod membership;
 pub mod membership_check;
 pub mod message_policy;

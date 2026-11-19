@@ -678,6 +678,9 @@ pub struct DataTableCore {
     model_sort: Option<(String, bool)>,
     rect: Rect,
     col_rects: Vec<Rect>,
+    /// The width of each column the mounted cells were sized to in the solve
+    /// ([`Self::size_cells`]): placing finds a column of another width and lays out again.
+    cell_widths: Vec<f64>,
     is_focused: bool,
     /// Populated lazily from `ColumnWidth`, then authoritative once the user has dragged a handle.
     col_widths_px: HashMap<String, f32>,
@@ -1143,6 +1146,7 @@ impl DataTableCore {
             model_sort: None,
             rect: Rect::ZERO,
             col_rects: Vec::new(),
+            cell_widths: Vec::new(),
             is_focused: false,
             col_widths_px,
             resize: None,
@@ -3723,6 +3727,176 @@ struct RowChoice {
     handler: Box<dyn FnMut(usize)>,
 }
 
+impl DataTableCore {
+    /// Measure [`ColumnWidth::Auto`] columns from their header and the visible cells, never narrower
+    /// than four characters' worth of line. Whether one changed.
+    fn size_auto_columns(&mut self, theme: &Theme, text: &mut TextRenderer) -> bool {
+        let tokens = &theme.tokens;
+        let pad = 2.0 * f64::from(tokens.spacing.s2);
+        let sort_width = f64::from(tokens.metrics.icon_sm) + f64::from(tokens.spacing.s1);
+        let header = header_style(theme);
+        let floor = 4.0 * type_line_height(&tokens.typography, TextRole::Caption);
+        let (start, end) = self.visible_row_range();
+        let first = self.first_shown_column();
+        let mut next = HashMap::new();
+        for (column_index, col) in self.columns.iter().enumerate() {
+            if col.width != ColumnWidth::Auto {
+                continue;
+            }
+            let label = crate::i18n::I18nManager::lookup_plain(&col.header);
+            let mut width = f64::from(text.measure_style(&label, None, &header).0)
+                + if col.sortable { sort_width } else { 0.0 };
+            if col.checked.is_some() {
+                width = width.max(f64::from(tokens.metrics.icon_md));
+            }
+            let style = cell_style(theme, col.kind);
+            for ri in start..end {
+                let Some(Arrival::Ready(row)) = self.row_state_at(ri) else {
+                    continue;
+                };
+                let indent = match &self.tree {
+                    Some(tree) if first == Some(column_index) => {
+                        self.tree_indent(theme, (tree.depth)(row))
+                    }
+                    _ => 0.0,
+                };
+                if let Some(value) = &col.text {
+                    let cell = value(row).unwrap_or_else(|| col.absent.clone());
+                    width =
+                        width.max(f64::from(text.measure_style(&cell, None, &style).0) + indent);
+                }
+                if let Some(badge) = &col.badge {
+                    let (label, _) = badge(row);
+                    if !label.is_empty() {
+                        width = width.max(
+                            crate::widget::BadgeFace::intrinsic_width(&label, text, theme) + indent,
+                        );
+                    }
+                }
+            }
+            // Widget cells: the widest mounted control's own measure.
+            for cell in &mut self.mounted_cells {
+                if cell.column_index == column_index {
+                    let measured = cell.widget.measure(
+                        taffy::Size {
+                            width: None,
+                            height: None,
+                        },
+                        taffy::Size {
+                            width: taffy::AvailableSpace::MaxContent,
+                            height: taffy::AvailableSpace::MaxContent,
+                        },
+                        text,
+                    );
+                    width = width.max(f64::from(measured.width) - pad);
+                }
+            }
+            next.insert(col.key.clone(), f32_of_f64((width + pad).max(floor).ceil()));
+        }
+        if next == self.auto_widths {
+            return false;
+        }
+        self.auto_widths = next;
+        true
+    }
+
+    /// Measure the rows whose cells wrap, at the widths their columns came to ([`Self::size_cells`]).
+    /// Whether one grew.
+    fn size_wrapped_rows(&mut self, theme: &Theme, text: &mut TextRenderer) -> bool {
+        let pad = 2.0 * f64::from(theme.tokens.spacing.s2);
+        let (start, end) = self.visible_row_range();
+        let mut grew = false;
+        if self.columns.iter().any(|c| c.max_lines > 1) {
+            let line = f64::from(theme.text(TextRole::Caption).line_height_px());
+            let pad_y = f64::from(theme.tokens.spacing.s2);
+            for ri in start..end {
+                let Some(Arrival::Ready(row)) = self.row_state_at(ri) else {
+                    continue;
+                };
+                let mut lines = 1_usize;
+                for (i, col) in self.columns.iter().enumerate() {
+                    if col.max_lines <= 1 {
+                        continue;
+                    }
+                    let (Some(value), Some(cr)) = (&col.text, self.cell_widths.get(i)) else {
+                        continue;
+                    };
+                    if *cr <= 0.0 {
+                        continue;
+                    }
+                    let cell = value(row).unwrap_or_default();
+                    let spare = f32_of_f64((cr - pad).max(1.0));
+                    let n = text
+                        .clamp_to_lines(&cell, &cell_style(theme, col.kind), spare, col.max_lines)
+                        .len();
+                    lines = lines.max(n);
+                }
+                let height =
+                    (line * lines as f64 + 2.0 * pad_y).max(self.viewport.estimated_height());
+                if let Some(key) = self.row_identity_at(ri) {
+                    grew |= self.viewport.measure(ri, key, height);
+                }
+            }
+        }
+        grew
+    }
+
+    /// Each mounted cell's node as wide as its column (at most as wide, for a cell its column does
+    /// not fill) where the solve stood the table at `node`: a cell is sized in the solve that lays
+    /// the table out, never by building the table again once it is placed. Whether one changed.
+    fn size_cells(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Ok(&layout) = taffy.layout(node) else {
+            return false;
+        };
+        let width = f64::from(layout.size.width);
+        let x1 = if self.internal_scroll() {
+            width - self.gutter
+        } else {
+            width + self.bleed
+        };
+        let band = Rect::new(-self.bleed, 0.0, x1.max(-self.bleed), 0.0);
+        let hidden = hidden_for_width(
+            &self.columns,
+            band.width(),
+            &self.col_widths_px,
+            &self.auto_widths,
+        );
+        let (columns, _) = compute_column_rects(
+            &self.columns,
+            band,
+            &self.col_widths_px,
+            &self.auto_widths,
+            &hidden,
+        );
+        self.cell_widths = columns.iter().map(Rect::width).collect();
+        let mut changed = false;
+        for cell in &self.mounted_cells {
+            let (Some(child), Some(column)) = (cell.node, columns.get(cell.column_index)) else {
+                continue;
+            };
+            let Ok(current) = taffy.style(child) else {
+                continue;
+            };
+            let fills = self
+                .columns
+                .get(cell.column_index)
+                .is_none_or(|column| column.alignment() == CellAlign::Leading);
+            let mut style = current.clone();
+            let width = Dimension::length(f32_of_f64(column.width()));
+            if fills {
+                style.size.width = width;
+            } else {
+                style.max_size.width = width;
+            }
+            if style != *current {
+                let _ = taffy.set_style(child, style);
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
 impl crate::widget::controls::ActionControls for DataTableCore {
     fn attach_controls(
         &mut self,
@@ -4161,118 +4335,21 @@ impl Widget for DataTableCore {
         node
     }
 
-    /// Measure [`ColumnWidth::Auto`] columns from their header and the visible cells, never narrower
-    /// than four characters' worth of line.
+    /// Size the [`ColumnWidth::Auto`] columns and the rows whose cells wrap, and each mounted cell to
+    /// its column at the size the solve gave the table.
     fn adjust_layout_style(
         &mut self,
-        _taffy: &mut TaffyTree<()>,
-        _node: NodeId,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
         let Some(theme) = self.measure_theme.clone() else {
             return false;
         };
-        let tokens = &theme.tokens;
-        let pad = 2.0 * f64::from(tokens.spacing.s2);
-        let sort_width = f64::from(tokens.metrics.icon_sm) + f64::from(tokens.spacing.s1);
-        let header = header_style(&theme);
-        let floor = 4.0 * type_line_height(&tokens.typography, TextRole::Caption);
-        let (start, end) = self.visible_row_range();
-        let first = self.first_shown_column();
-        let mut next = HashMap::new();
-        for (column_index, col) in self.columns.iter().enumerate() {
-            if col.width != ColumnWidth::Auto {
-                continue;
-            }
-            let label = crate::i18n::I18nManager::lookup_plain(&col.header);
-            let mut width = f64::from(text.measure_style(&label, None, &header).0)
-                + if col.sortable { sort_width } else { 0.0 };
-            if col.checked.is_some() {
-                width = width.max(f64::from(tokens.metrics.icon_md));
-            }
-            let style = cell_style(&theme, col.kind);
-            for ri in start..end {
-                let Some(Arrival::Ready(row)) = self.row_state_at(ri) else {
-                    continue;
-                };
-                let indent = match &self.tree {
-                    Some(tree) if first == Some(column_index) => {
-                        self.tree_indent(&theme, (tree.depth)(row))
-                    }
-                    _ => 0.0,
-                };
-                if let Some(value) = &col.text {
-                    let cell = value(row).unwrap_or_else(|| col.absent.clone());
-                    width =
-                        width.max(f64::from(text.measure_style(&cell, None, &style).0) + indent);
-                }
-                if let Some(badge) = &col.badge {
-                    let (label, _) = badge(row);
-                    if !label.is_empty() {
-                        width = width.max(
-                            crate::widget::BadgeFace::intrinsic_width(&label, text, &theme)
-                                + indent,
-                        );
-                    }
-                }
-            }
-            // Widget cells: the widest mounted control's own measure.
-            for cell in &mut self.mounted_cells {
-                if cell.column_index == column_index {
-                    let measured = cell.widget.measure(
-                        taffy::Size {
-                            width: None,
-                            height: None,
-                        },
-                        taffy::Size {
-                            width: taffy::AvailableSpace::MaxContent,
-                            height: taffy::AvailableSpace::MaxContent,
-                        },
-                        text,
-                    );
-                    width = width.max(f64::from(measured.width) - pad);
-                }
-            }
-            next.insert(col.key.clone(), f32_of_f64((width + pad).max(floor).ceil()));
-        }
-        let mut grew = false;
-        if self.columns.iter().any(|c| c.max_lines > 1) {
-            let line = f64::from(theme.text(TextRole::Caption).line_height_px());
-            let pad_y = f64::from(tokens.spacing.s2);
-            for ri in start..end {
-                let Some(Arrival::Ready(row)) = self.row_state_at(ri) else {
-                    continue;
-                };
-                let mut lines = 1_usize;
-                for (i, col) in self.columns.iter().enumerate() {
-                    if col.max_lines <= 1 {
-                        continue;
-                    }
-                    let (Some(value), Some(cr)) = (&col.text, self.col_rects.get(i)) else {
-                        continue;
-                    };
-                    if cr.width() <= 0.0 {
-                        continue;
-                    }
-                    let cell = value(row).unwrap_or_default();
-                    let spare = f32_of_f64((cr.width() - pad).max(1.0));
-                    let n = text
-                        .clamp_to_lines(&cell, &cell_style(&theme, col.kind), spare, col.max_lines)
-                        .len();
-                    lines = lines.max(n);
-                }
-                let height =
-                    (line * lines as f64 + 2.0 * pad_y).max(self.viewport.estimated_height());
-                if let Some(key) = self.row_identity_at(ri) {
-                    grew |= self.viewport.measure(ri, key, height);
-                }
-            }
-        }
-        if next == self.auto_widths && !grew {
-            return false;
-        }
-        self.auto_widths = next;
-        true
+        let widths = self.size_auto_columns(&theme, text);
+        let cells = self.size_cells(taffy, node);
+        let rows = self.size_wrapped_rows(&theme, text);
+        widths || cells || rows
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -4319,7 +4396,6 @@ impl Widget for DataTableCore {
         for rect in &mut next_columns {
             *rect = *rect - vello::kurbo::Vec2::new(self.h_offset, 0.0);
         }
-        let columns_changed = self.col_rects != next_columns;
         self.col_rects = next_columns;
         let mut row_heights = HashMap::<usize, f64>::new();
         for cell in &mut self.mounted_cells {
@@ -4370,12 +4446,18 @@ impl Widget for DataTableCore {
                 measured |= self.viewport.measure(row_index, key, height.max(row_floor));
             }
         }
-        if columns_changed {
-            self.structure_dirty = true;
-        }
+        // The cells were sized to their columns in the solve that placed them
+        // ([`Self::size_cells`]); a column that came to another width lays them out again.
+        let resized = self.mounted_cells.iter().any(|cell| {
+            let column = self.col_rects.get(cell.column_index).map(Rect::width);
+            let sized = self.cell_widths.get(cell.column_index).copied();
+            column
+                .zip(sized)
+                .is_none_or(|(column, sized)| (column - sized).abs() > 0.5)
+        });
         if measured {
             self.visible_window_changed();
-        } else if !columns_changed {
+        } else if !resized {
             self.layout_dirty = false;
             self.refresh_view_anchor();
         }

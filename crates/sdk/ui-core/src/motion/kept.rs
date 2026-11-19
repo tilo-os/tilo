@@ -68,6 +68,13 @@ pub fn take_kept_at<T: 'static>(at: Rect) -> Option<T> {
     })
 }
 
+/// Whether a widget of `T`'s kind left anything a widget built now could take up.
+#[must_use]
+pub(crate) fn kept_any<T: 'static>() -> bool {
+    let kind = TypeId::of::<T>();
+    KEPT.with(|kept| kept.borrow().iter().any(|entry| entry.kind == kind))
+}
+
 /// What a widget of `T`'s kind left that `matches`, if anything.
 #[must_use]
 pub fn take_kept_where<T: 'static>(matches: impl Fn(&T) -> bool) -> Option<T> {

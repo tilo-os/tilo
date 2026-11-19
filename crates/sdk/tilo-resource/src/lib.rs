@@ -651,17 +651,22 @@ pub mod __private {
     }
 
     /// A verb's declared parameter, built by one function for every verb:
-    /// its schema is its type's, described, with the example when given.
+    /// its schema is its type's, described, with the example when given. Its
+    /// name and description are a verb's own words and, at an effect, its
+    /// field's spelling and catalogue word, which is why it takes them the
+    /// way the constructors beside it do.
     #[must_use]
     pub fn declared_param(
-        name: &'static str,
+        name: impl Into<String>,
         ty: ParamType,
-        description: impl Into<std::borrow::Cow<'static, str>>,
+        description: impl Into<String>,
         schema: fn() -> serde_json::Value,
         optional: bool,
         place: PlaceIn,
         example: Option<fn() -> serde_json::Value>,
     ) -> ActionParam {
+        let name = name.into();
+        let description = description.into();
         let param = if optional {
             ActionParam::optional_owned(name, ty, description)
         } else {

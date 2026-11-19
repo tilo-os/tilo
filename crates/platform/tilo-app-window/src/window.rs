@@ -12,6 +12,7 @@
 
 use std::cell::RefCell;
 mod page;
+mod rebind;
 
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
@@ -737,20 +738,22 @@ impl AppWindow {
     /// ([`ToUi::Actions`]).
     pub fn bind_published(&mut self, published: &[tilo_actions::ResourceSpec]) {
         // A control is bound to the action its event runs when its widget is built: controls whose
-        // events would now take the other path are built again, so a press and anyone else running
-        // the action take the one path. The app publishing the same actions again binds nothing
-        // anew.
-        let rebind = {
+        // events would now take the other path are built again, and they alone, so a press and
+        // anyone else running the action take the one path while the rest of the window stays as
+        // it stands. The app publishing the same actions again binds nothing anew.
+        let rebound = {
             let reconciler = self.reconciler.borrow();
             let adapter = reconciler.adapter();
-            adapter.published(published.to_vec()).is_some_and(|shown| {
+            adapter.published(published.to_vec()).and_then(|shown| {
                 self.built
                     .as_ref()
-                    .is_some_and(|built| rebinding(&shown, adapter, built))
+                    .and_then(|built| rebind::rebinding(&shown, adapter, built))
             })
         };
-        if rebind {
-            self.built = None;
+        if let Some(rebound) = rebound {
+            // Reconciled against the window as built with those controls named as another
+            // kind: each is built again in its place.
+            self.built = Some(rebound);
             self.compose();
         }
     }
@@ -2568,27 +2571,6 @@ fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(S
         .into_iter()
         .find(|event| node.events.contains_key(*event))
         .map(|event| (node.key.clone(), event.to_owned()))
-}
-
-/// Whether some control of the tree `node` an app built while the actions `before` were published
-/// would take the other path now that the window offers the actions `after`: an event that runs an
-/// action the app publishes is bound to the action itself, and one that runs an action it does not
-/// publish is the view's own.
-fn rebinding(
-    before: &crate::adapter::Published,
-    after: &crate::adapter::Adapter,
-    node: &UiNode,
-) -> bool {
-    node.events.values().any(|event| {
-        let Some(invoked) = event.invokes.as_ref() else {
-            return false;
-        };
-        before.holds(&invoked.resource, &invoked.action)
-            != after.holds(&invoked.resource, &invoked.action)
-    }) || node
-        .children
-        .iter()
-        .any(|child| rebinding(before, after, child))
 }
 
 fn declared_within(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {

@@ -162,7 +162,7 @@ impl NavShell {
     /// when there is no tree for their order to disagree with.
     pub(super) fn exposed_parts(&self) -> Vec<Part> {
         if self.built {
-            self.host_parts.clone()
+            self.laid_out_parts.clone()
         } else {
             let history = self.inputs.borrow().history.map(HistoryControl::is_open);
             self.all_parts()

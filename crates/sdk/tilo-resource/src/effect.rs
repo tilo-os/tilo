@@ -326,7 +326,7 @@ pub trait Effect: Sized + 'static {
             std::any::TypeId::of::<Self>(),
             Self::OPERATION,
             Self::declarations,
-            |target| target.is_field(field),
+            &|target| target.is_field(field),
             item,
         )
     }
@@ -341,7 +341,7 @@ pub trait Effect: Sized + 'static {
             std::any::TypeId::of::<Self>(),
             Self::OPERATION,
             Self::declarations,
-            |target| target.is_row(kind),
+            &|target| target.is_row(kind),
             row,
         )
     }
@@ -360,7 +360,7 @@ pub trait Effect: Sized + 'static {
             check::<Self>,
             Self::OPERATION,
             Self::declarations,
-            |target| target.is_row(kind),
+            &|target| target.is_row(kind),
             bindings,
         )
     }
@@ -622,7 +622,7 @@ fn target_specs(
     key: std::any::TypeId,
     operation: &'static str,
     declarations: fn() -> Vec<EffectDecl>,
-    matches: impl Fn(&EffectTarget) -> bool,
+    matches: &dyn Fn(&EffectTarget) -> bool,
     entity: &crate::Id,
 ) -> Vec<ActionSpec> {
     declarations()
@@ -680,12 +680,12 @@ fn target_specs_with(
     check: Check,
     operation: &'static str,
     declarations: fn() -> Vec<EffectDecl>,
-    matches: impl Fn(&EffectTarget) -> bool,
+    matches: &dyn Fn(&EffectTarget) -> bool,
     bindings: &crate::row::RowBindings,
 ) -> Vec<ActionSpec> {
     declarations()
         .into_iter()
-        .filter(|decl| decl.items.iter().any(&matches))
+        .filter(|decl| decl.items.iter().any(matches))
         .flat_map(|decl| {
             bindings
                 .arguments(decl.id)

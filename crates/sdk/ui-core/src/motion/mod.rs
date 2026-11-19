@@ -65,7 +65,7 @@ pub use kept::{
     Found, HandOn, LayingOutWindow, keep, laying_out_window, take_kept, take_kept_at,
     take_kept_where, window_has_shown,
 };
-pub(crate) use kept::{closing_window, frame_ended};
+pub(crate) use kept::{closing_window, frame_ended, kept_any};
 pub use named::{
     Ambient, Appear, Attention, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill, DrillDepth,
     Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reading, Reveal, Snap, Speaking,

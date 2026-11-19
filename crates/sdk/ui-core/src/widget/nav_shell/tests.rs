@@ -2131,7 +2131,7 @@ fn scrolling_reuses_measured_panes_without_reloading_fonts() {
             "scroll preserves intrinsic sizes: shell_pending={} dirty_parts={:?} font_constructions={}",
             h.root::<NavShell>().invalidation.is_pending(),
             h.root::<NavShell>()
-                .host_parts
+                .laid_out_parts
                 .iter()
                 .filter_map(|part| {
                     let widget = h.root::<NavShell>().part(*part)?;

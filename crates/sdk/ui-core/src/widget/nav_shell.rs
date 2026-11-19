@@ -46,6 +46,7 @@ mod place;
 use place::{measure, place_parts};
 mod sidebar_resize;
 mod status_action;
+mod swap;
 mod window_header;
 mod window_toolbar;
 use crate::widget::OverflowButton;
@@ -723,6 +724,10 @@ pub struct NavShell {
     /// the overview has not opened yet gives its width to the overview
     /// ([`Self::content_shown`]).
     content_shown: bool,
+    /// [`Self::content_shown`] as the shell was last built: the column comes or goes when the two
+    /// differ as the change is taken, so a body swapped for another (the content hidden and shown
+    /// again in one change) keeps the column where it stands.
+    content_shown_built: bool,
     inspector: Option<Element>,
     /// The app's columns while [`Self::nothing_listed`] stands in for them.
     held: Option<nothing_listed::Held>,
@@ -750,7 +755,7 @@ pub struct NavShell {
     invalidation: ManualInvalidation,
     baseline: Vec<(NodeId, Style)>,
     /// The parts in the host tree, in build order.
-    host_parts: Vec<Part>,
+    laid_out_parts: Vec<Part>,
     inert_parts: Vec<InertPart>,
     layout_theme: Box<Theme>,
     conventions: PlatformConventions,
@@ -791,6 +796,10 @@ pub struct NavShell {
     /// dropped when the next build replaces the row.
     retired_actions: Vec<Element>,
     structure_dirty: bool,
+    /// Bodies are staged for columns that stand laid out, and nothing else: the next remount puts
+    /// them in place under the shell's node ([`Self::swap_bodies`]), and the rest of the window
+    /// keeps its layout.
+    bodies_swapped: bool,
     layout_dirty: bool,
     paint_dirty: bool,
     /// The window's notice, shown in its bar ([`Self::toast`]).
@@ -869,6 +878,7 @@ impl NavShell {
             overview: None,
             content: Box::new(crate::widget::Spacer::new()),
             content_shown: true,
+            content_shown_built: true,
             held: None,
             inspector: None,
             rail: None,
@@ -897,7 +907,7 @@ impl NavShell {
             policy,
             invalidation: ManualInvalidation::default(),
             baseline: Vec::new(),
-            host_parts: Vec::new(),
+            laid_out_parts: Vec::new(),
             inert_parts: Vec::new(),
             layout_theme: Box::new(Theme::dark()),
             conventions: PlatformConventions::default(),
@@ -920,6 +930,7 @@ impl NavShell {
             window_search: false,
             retired_actions: Vec::new(),
             structure_dirty: false,
+            bodies_swapped: false,
             layout_dirty: true,
             paint_dirty: true,
             notice: crate::widget::toast::Transient::new(),
@@ -1216,7 +1227,8 @@ impl NavShell {
             return;
         }
         self.content_shown = shown;
-        self.pending_changed();
+        self.refresh_part_inputs();
+        self.invalidate();
     }
 
     pub fn set_inspector(&mut self, inspector: Option<Element>) {
@@ -1244,7 +1256,13 @@ impl NavShell {
         if let Some(part) = self.pending.bodies.get_mut(column.index()) {
             *part = Some(Staged(element));
         }
-        self.pending_changed();
+        if self.built && self.swaps_in_place() {
+            self.bodies_swapped = true;
+            self.refresh_part_inputs();
+            self.invalidate();
+        } else {
+            self.pending_changed();
+        }
     }
 
     pub fn set_sidebar_header(&mut self, title: impl Into<String>, actions: Vec<Element>) {
@@ -1901,7 +1919,7 @@ impl NavShell {
 
     /// The parts a frame paints: laid out, and on screen inside the shell.
     fn painted_parts(&self) -> impl Iterator<Item = &dyn Widget> {
-        self.host_parts
+        self.laid_out_parts
             .iter()
             .filter_map(|part| self.part(*part))
             .filter(|part| part.paint_bounds().intersect(self.rect).area() > 0.0)
@@ -2649,7 +2667,7 @@ impl NavShell {
     /// Whether `part` is in the host tree this frame: only those were laid
     /// out, so only those paint.
     fn built_has(&self, part: Part) -> bool {
-        self.host_parts.contains(&part)
+        self.laid_out_parts.contains(&part)
     }
 
     fn paint_column(&mut self, f: &mut Frame<'_>, column: Column) {
@@ -2968,10 +2986,12 @@ impl Widget for NavShell {
             .iter()
             .map(|&node| (node, taffy.style(node).cloned().unwrap_or_default()))
             .collect();
-        self.host_parts = parts;
+        self.laid_out_parts = parts;
         self.built = true;
         self.retired_status_actions.clear();
         self.structure_dirty = false;
+        self.bodies_swapped = false;
+        self.content_shown_built = self.content_shown;
         self.invalidation.invalidate();
         let style = Style {
             size: Self::region_size(),
@@ -2999,7 +3019,7 @@ impl Widget for NavShell {
         self.follow_sidebar_width(self.geometry.body(Column::Sidebar).width());
         let child_origin = Point::new(self.rect.x0, self.rect.y0);
         let child_nodes = taffy.children(node).unwrap_or_default();
-        let parts = self.host_parts.clone();
+        let parts = self.laid_out_parts.clone();
         for (part, child) in parts.iter().zip(child_nodes) {
             if let Some(widget) = self.part_mut(*part) {
                 widget.apply_layout(taffy, child, child_origin);
@@ -3014,7 +3034,7 @@ impl Widget for NavShell {
         self.apply_open_states();
         self.publish_open_states();
         let visible = self.geometry.visible_parts(&self.inputs.borrow());
-        if visible != self.host_parts || !self.pending.is_empty() {
+        if visible != self.laid_out_parts || !self.pending.is_empty() {
             self.structure_dirty = true;
         }
     }
@@ -3023,7 +3043,7 @@ impl Widget for NavShell {
         let mut dirty = self.invalidation.is_pending();
         // Hidden headers and controls may never have been measured, so they must not invalidate an
         // unrelated visible pane on every scroll; revealing a part invalidates the shell.
-        for part in &self.host_parts {
+        for part in &self.laid_out_parts {
             if let Some(child) = self.part(*part) {
                 dirty |= child.layout_needs_measure();
             }
@@ -3441,16 +3461,24 @@ impl Widget for NavShell {
 
     fn take_structure_dirty(&mut self) -> bool {
         self.take_requests();
-        let mut dirty = std::mem::take(&mut self.structure_dirty);
+        let mut dirty = std::mem::take(&mut self.structure_dirty)
+            || self.bodies_swapped
+            || self.content_column_changed();
         self.for_each_owned_mut(|child| dirty |= child.take_structure_dirty());
         dirty
     }
 
-    /// The shell's own changes (a column shown or hidden, a part swapped) rebuild; what its
-    /// parts describe (a column's content changed in place) stays described.
+    /// The shell's own changes (a column shown or hidden, a header's part swapped) rebuild; a
+    /// column's body swapped for another is put in place ([`Self::swap_bodies`]); what its parts
+    /// describe (a column's content changed in place) stays described.
     fn take_structure_change(&mut self) -> StructureChange {
         self.take_requests();
-        let mut change = StructureChange::of(std::mem::take(&mut self.structure_dirty));
+        let mut change = StructureChange::of(
+            std::mem::take(&mut self.structure_dirty) || self.content_column_changed(),
+        );
+        if self.bodies_swapped {
+            change = change.join(StructureChange::Children);
+        }
         let laid_out = self.exposed_parts();
         for part in self.all_parts() {
             if let Some(widget) = self.part_mut(part) {
@@ -3466,6 +3494,9 @@ impl Widget for NavShell {
     /// The parts the shell lays out carry out their own changes, those of a
     /// screen not in front too: they stand in the tree while it slides.
     fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+        if self.bodies_swapped && !self.swap_bodies(remount) {
+            return false;
+        }
         let mut carried = true;
         for part in self.exposed_parts() {
             if let Some(widget) = self.part_mut(part) {
@@ -3803,7 +3834,7 @@ impl NavShell {
             }
             if c.eq_ignore_ascii_case("f") && !modifiers.shift_key() {
                 let index = self
-                    .host_parts
+                    .laid_out_parts
                     .iter()
                     .position(|part| *part == Part::Filter);
                 if let Some(node) = index.and_then(|i| {
@@ -3903,7 +3934,7 @@ impl NavShell {
                 | WindowEvent::Touch(_)
         );
         let mut order: Vec<(Part, NodeId)> = self
-            .host_parts
+            .laid_out_parts
             .iter()
             .copied()
             .zip(child_nodes)
