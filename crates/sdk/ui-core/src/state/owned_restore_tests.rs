@@ -78,9 +78,9 @@ fn snapshot(state: &State) -> Snapshot {
         bytes: state.doc.clone().save(),
         heads: state.doc.base_heads(),
         pending: state.doc.pending_ops(),
-        undo: state.undo.brackets(&state.doc).0,
-        redo: state.undo.brackets(&state.doc).1,
-        baseline: state.undo.last_heads().to_vec(),
+        undo: state.undo_log().brackets(&state.doc).0,
+        redo: state.undo_log().brackets(&state.doc).1,
+        baseline: state.undo_log().last_heads().to_vec(),
         revision: state.history_revision(),
     }
 }
@@ -152,10 +152,9 @@ tilo_test_env::scenario! {
             Err(OwnedRestoreError::UnfinishedActionBoundary)
         ));
         assert_eq!(snapshot(&state), before);
-        let baseline = state.undo.last_heads().to_vec();
-        state
-            .undo
-            .record_committed_action(&mut state.doc, baseline, None, None);
+        let baseline = state.undo_log().last_heads().to_vec();
+        let (doc, undo, _) = state.parts_mut();
+        undo.record_committed_action(doc, baseline, None, None);
         assert!(
             state
                 .restore_prepared_owned(&admission(&authority), &plan)
@@ -183,7 +182,7 @@ tilo_test_env::scenario! {
             plan.target_heads(),
         )
         .unwrap();
-        state.undo.set_revision(u64::MAX);
+        state.parts_mut().1.set_revision(u64::MAX);
         let before = snapshot(&state);
         assert!(matches!(
             state.restore_prepared_owned(&admission(&authority), &plan),
@@ -335,7 +334,7 @@ fn owned_restore_mixed_overlay_and_undo_preserve_live_remote_operational_state()
     }
     assert_eq!(
         state
-            .undo
+            .undo_log()
             .next_redo_as(&state.doc, Some(&MemberId::person("ada")))
             .unwrap()
             .author,

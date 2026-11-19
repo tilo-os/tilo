@@ -808,6 +808,14 @@ pub(crate) fn step_summary(entry: &crate::state::UndoEntry) -> Option<String> {
         .and_then(crate::history_source::sentence::step_summary)
 }
 
+/// What `state`'s history can do for `author` right now, ready to hand to a widget.
+pub fn state_status(
+    state: &crate::state::State,
+    author: Option<&crate::permissions::MemberId>,
+) -> UndoStatus {
+    status_snapshot(&state.doc, state.undo_log(), author)
+}
+
 /// The undo status of `history` for `author`, read without finalizing a displayed owner's
 /// live edit.
 pub(crate) fn status_snapshot(

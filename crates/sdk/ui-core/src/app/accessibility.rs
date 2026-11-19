@@ -1,4 +1,5 @@
 // Accessibility configuration, semantic focus, announcements, and action routing.
+use crate::state::StateHistory as _;
 
 impl App {
     fn configured_screen_reader() -> crate::screen_reader::ScreenReader {
@@ -653,8 +654,10 @@ impl App {
                         self.state
                             .undo_status_snapshot(Some(&self.collaboration.local_author))
                     } else {
-                        self.state
-                            .undo_status(Some(&self.collaboration.local_author))
+                        crate::undo::state_status(
+                            &self.state,
+                            Some(&self.collaboration.local_author),
+                        )
                     }
                 })
             };

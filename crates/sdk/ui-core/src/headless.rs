@@ -20,6 +20,7 @@ mod history;
 pub mod host_media;
 mod keys;
 
+use crate::state::StateHistory as _;
 pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput, FollowedView, agent_acting};
 use tilo_sort::CompactSort as _;
 
@@ -1890,7 +1891,7 @@ impl FrameHarness {
         {
             binding.undo_status(&mut self.state.doc).unwrap_or_default()
         } else {
-            self.state.undo_status(Some(&self.author))
+            crate::undo::state_status(&self.state, Some(&self.author))
         }
     }
 
@@ -2457,7 +2458,7 @@ impl FrameHarness {
                             if embedded {
                                 self.state.undo_status_snapshot(Some(&self.author))
                             } else {
-                                self.state.undo_status(Some(&self.author))
+                                crate::undo::state_status(&self.state, Some(&self.author))
                             }
                         })
                         .clone()

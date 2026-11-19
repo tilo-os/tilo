@@ -12,6 +12,7 @@ pub use collab_types::document::{
     MAX_FORMER_IDS, ResourceType, chain_of_resource_id, chain_resource_id, valid_label,
 };
 pub mod capability;
+use crate::state::StateHistory as _;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 

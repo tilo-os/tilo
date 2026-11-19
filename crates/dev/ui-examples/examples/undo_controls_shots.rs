@@ -96,7 +96,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
 
     // The host's publish: derive the status from the live history and hand it
     // to every laid-out widget by sweeping `node_map`.
-    let status = state.undo_status(Some(&author()));
+    let status = tilo_ui::undo::state_status(&state, Some(&author()));
     for &w_ptr in node_map.values() {
         unsafe { tilo_ui::undo::set_undo_status(&mut (*w_ptr), &mut || status.clone()) };
     }

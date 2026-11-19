@@ -1,5 +1,6 @@
 //! Merge native committed history into the existing frame/document owner.
 use super::App;
+use crate::state::StateHistory as _;
 use automerge::transaction::Transactable;
 impl App {
     pub(super) fn queue_committed_document(

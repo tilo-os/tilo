@@ -1,12 +1,13 @@
 //! Native owner-route bridge. SDK retains signing, encryption and transport.
-#[allow(
-    clippy::wildcard_imports,
-    reason = "private implementation module shares its enclosing host types"
-)]
 use super::*;
 pub(super) use crate::collaboration::document_routes::{
     decode_routed_mutation, validated_route_payload_with,
 };
+#[allow(
+    clippy::wildcard_imports,
+    reason = "private implementation module shares its enclosing host types"
+)]
+use crate::state::StateHistory as _;
 
 /// The user-visible status a transport outcome implies for a route: `Some`
 /// replaces the current one (clearing it on success), `None` leaves it (a
@@ -485,7 +486,7 @@ impl App {
         while let Some(mutation) = self.document_routes.primary.front() {
             // A window whose document cannot take a peer's document yet must not load — and, on
             // bytes that do not load, quarantine — it now:
-            // [`State::defers_remote`] says so before the whole document is read.
+            // [`StateHistory::defers_remote`](crate::state::StateHistory::defers_remote) says so before the whole document is read.
             if self.state.defers_remote() {
                 break;
             }
