@@ -1055,12 +1055,12 @@ fn following_someone_brings_forward_the_window_of_the_app_they_work_in() {
     });
 }
 
-/// The channel the Notes window's app holds in the workspace.
-fn notes_channel() -> String {
+/// The route the Notes window's app holds in the workspace.
+fn notes_route() -> String {
     tilo_workspace_service::apps::route::CrdtRoute::app("so.tilo.notes", WORKSPACE).channel_key()
 }
 
-/// The app of the Notes window: it joins the workspace's channel, and says whom each follow event
+/// The app of the Notes window: it joins the workspace's route, and says whom each follow event
 /// names once it is on it.
 fn the_notes_app(
     socket: &Path,
@@ -1087,11 +1087,11 @@ fn the_notes_app(
         tokio::spawn(carrying);
         let handle = client
             .join_channel(
-                &notes_channel(),
+                &notes_route(),
                 &crate::common::held::presentation(device, cert),
             )
             .await
-            .expect("the app the session launched joins the workspace's channel");
+            .expect("the app the session launched joins the workspace's route");
         let context = handle
             .subscribe_context()
             .await
@@ -1151,16 +1151,14 @@ fn following_someone_tells_the_window_app_whose_view_is_theirs() {
     let sync = Rc::new(Client::untethered(device(0xf0), own));
     let mut session = app_session(&socket, &held, &sync, shell_of_two());
 
-    // The app of the Notes window is on the workspace's channel.
+    // The app of the Notes window is on the workspace's route.
     let (joined, app_joined) = std::sync::mpsc::channel();
     let (told, hears) = std::sync::mpsc::channel();
     let app =
         std::thread::spawn(move || the_notes_app(&socket, &held.device, &held.cert, joined, told));
-    until(
-        &mut session,
-        "the app joins the workspace's channel",
-        |_| app_joined.try_recv().is_ok(),
-    );
+    until(&mut session, "the app joins the workspace's route", |_| {
+        app_joined.try_recv().is_ok()
+    });
 
     // Ada is here, and her page says she works in Notes.
     sync.hear(hello(0xaa, "Framework 16"));
