@@ -39,7 +39,7 @@ pub enum KeysCmd {
     )]
     Create {
         /// What will use it, as your grants page will name it. With -w
-        /// (an id), it reaches only that workspace.
+        /// (a name or id), it reaches only that workspace.
         name: String,
         /// Seconds until it expires; without it, a key reaching all your
         /// workspaces lasts until revoked.
@@ -85,7 +85,7 @@ pub enum KeysCmd {
     )]
     Export {
         /// What will use it, as your grants page will name it. With -w
-        /// (an id), it reaches only that workspace.
+        /// (a name or id), it reaches only that workspace.
         name: String,
         /// Where to write it, readable by this account only.
         #[arg(long)]
@@ -1612,9 +1612,26 @@ fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
     })
 }
 
+/// The id of the workspace a new key is to reach, named as every command names one: by its name
+/// or its id. The API server's key page takes the id alone.
+async fn key_workspace(reach: Reach<'_>, workspace: Option<&str>) -> Result<Option<String>> {
+    match workspace {
+        None => Ok(None),
+        Some(id) if api::is_uuid(id) => Ok(Some(id.to_owned())),
+        Some(named) => Ok(Some(Client::open(reach)?.workspace_id(named).await?)),
+    }
+}
+
 /// `tilo keys …`.
 pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode {
     run(async {
+        let new_key = matches!(cmd, KeysCmd::Create { .. } | KeysCmd::Export { .. });
+        let key_reaches = if new_key {
+            key_workspace(reach, workspace).await?
+        } else {
+            None
+        };
+        let workspace_id = key_reaches.as_deref();
         match cmd {
             KeysCmd::Create {
                 name,
@@ -1624,7 +1641,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 let asked = KeyAsk {
                     api: reach.api,
                     name: &name,
-                    workspace,
+                    workspace: workspace_id,
                     expires_in,
                     browser_pages: !no_browser_pages,
                 };
@@ -1645,7 +1662,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 let asked = KeyAsk {
                     api: reach.api,
                     name: &name,
-                    workspace,
+                    workspace: workspace_id,
                     expires_in,
                     browser_pages: true,
                 };
@@ -1745,7 +1762,7 @@ struct KeyAsk<'a> {
     api: Option<&'a str>,
     /// What will use it, as the grants page names it.
     name: &'a str,
-    /// The one workspace it reaches, when not all of them.
+    /// The id of the one workspace it reaches, when not all of them.
     workspace: Option<&'a str>,
     expires_in: Option<u64>,
     browser_pages: bool,
@@ -2025,6 +2042,56 @@ mod tests {
         let own = dir.join("own.json");
         std::fs::write(&own, serde_json::to_vec(file).unwrap()).unwrap();
         assert!(as_file(&own).is_some());
+    }
+
+    /// `-w` names the workspace a new key reaches by its name, as every other command takes it:
+    /// the key page is asked with the id the name is listed under.
+    #[test]
+    fn a_new_key_reaches_the_workspace_its_name_names() {
+        let device = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_DEVICE_DIR", device.path())
+            .set(api::KEY_ENV, "tilo_sk_test");
+        let api_server = test_http::Responder::handle(|request: &test_http::Request| {
+            let (status, body) = match (request.method.as_str(), request.target.as_str()) {
+                ("GET", "/v1/workspaces") => (
+                    200,
+                    serde_json::json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+                ),
+                _ => (
+                    400,
+                    serde_json::json!({"error": {"code": "refused", "message": "no key today"}}),
+                ),
+            };
+            Some(
+                test_http::Reply::status(status)
+                    .header("content-type", "application/json")
+                    .body(body.to_string()),
+            )
+        });
+        let url = api_server.url();
+        let asked = keys(
+            Reach {
+                api: Some(&url),
+                key_file: None,
+                json: false,
+            },
+            Some("Studio"),
+            KeysCmd::Create {
+                name: "Visa backend".into(),
+                expires_in: None,
+                no_browser_pages: false,
+            },
+        );
+        assert_ne!(asked, ExitCode::SUCCESS, "the key page refused this one");
+        let sent = api_server.drain_requests();
+        let new_key = sent
+            .iter()
+            .find(|sent| sent.target == "/keys/new")
+            .expect("the key was asked for");
+        let body: Value = serde_json::from_str(&new_key.body_text()).unwrap();
+        assert_eq!(body["workspace"], WORKSPACE, "the name is sent as its id");
+        drop(env);
     }
 
     /// A folder goes up whole, each file named by its path from the folder's
