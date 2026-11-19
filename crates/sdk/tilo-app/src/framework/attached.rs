@@ -1346,15 +1346,20 @@ impl AttachedView {
     /// Have the app open what it asked its workspace for, once the view was told of all of
     /// it. Its declaration asked for each once, when the view opened and they were still
     /// awaited, and a view no window shows is laid out and never refreshed, so nothing else
-    /// asks again.
+    /// asks again. A document opened here is new to the view, which lays it out when next
+    /// read; laying the view out here would do that for every change merged into a part.
     fn take_up_kept(&mut self) {
         if self.keeps_for_workspace && !self.awaited.borrow().is_empty() {
             return;
         }
-        let _ = self
+        let opened = self
             .frame
             .get_mut()
-            .with_widget_mut(|root: &mut super::root::ResourceRoot| root.storage.open_arrived());
+            .widget_mut::<super::root::ResourceRoot>()
+            .is_some_and(|root| root.storage.open_arrived());
+        if opened {
+            self.unsettle();
+        }
     }
 
     /// The documents the view opened from its workspace beside its own — what the app keeps for
