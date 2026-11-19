@@ -192,9 +192,6 @@ impl App {
         // the process waits for those as it ends.
         let _started_only = durable_store::waiting::forbid_on_this_thread();
         self.close_admission.admitted = true;
-        // The process goes with its last window: work that comes from now on goes to a process
-        // of its own, not to this one.
-        crate::window_link::stop_serving_with_last_window();
         // No document mutation/event may run between checkpoint and finalization.
         // Existing teardown may cancel jobs through its immutable-document poll.
         self.component_close_reports
