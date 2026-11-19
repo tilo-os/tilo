@@ -1,6 +1,6 @@
 //! What a write and a page cost as a kind grows: resources committed per second into an index
-//! already holding `n`, and the time of a filtered page over it, at 1k and 100k resources. Both
-//! must stay flat in `n`.
+//! already holding `n`, the time of a filtered page over it, of a page in the middle of it and of
+//! finding a resource's row, at 1k and 100k resources. All must stay flat in `n`.
 //!
 //! Measure with:
 //!
@@ -180,8 +180,26 @@ fn main() {
         let first = index.query(&Query::of(KIND, 50), &|_| true);
         let unfiltered_us = start.elapsed().as_secs_f64() * 1e6;
 
+        // A window scrolled to the middle of the kind, and of one state's resources, and the
+        // row of a resource found there.
+        let all = |_: &str| true;
+        let middle = Query::of(KIND, 50);
+        let doing = Query::of(KIND, 50).filter(Filter::Is("state".into(), "doing".into()));
+        let start = Instant::now();
+        for _ in 0..100 {
+            shown += index.at(&middle, size / 2, &all).resources.len();
+            shown += index.at(&doing, size / 6, &all).resources.len();
+        }
+        let at_us = start.elapsed().as_secs_f64() * 1e6 / 200.0;
+        let target = format!("issue-{:08}", size / 2 + 1);
+        let start = Instant::now();
+        for _ in 0..100 {
+            shown += index.position(&doing, &target, &all).unwrap_or(0);
+        }
+        let position_us = start.elapsed().as_secs_f64() * 1e6 / 100.0;
+
         println!(
-            "resources={size} writes_per_s={per_second:.0} filtered_page_us={page_us:.0} first_page_us={unfiltered_us:.0} shown={shown} first={}",
+            "resources={size} writes_per_s={per_second:.0} filtered_page_us={page_us:.0} first_page_us={unfiltered_us:.0} middle_page_us={at_us:.1} position_us={position_us:.1} shown={shown} first={}",
             first.resources.len()
         );
         store(size);

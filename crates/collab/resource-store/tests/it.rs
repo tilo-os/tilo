@@ -77,6 +77,112 @@ fn ids(index: &Index, query: &Query) -> Vec<String> {
     self::query(index, query).ids().map(str::to_owned).collect()
 }
 
+/// Every resource `query` lists, page after page by cursor.
+fn listed(index: &Index, query: &Query, may_read: &dyn Fn(&str) -> bool) -> Vec<String> {
+    let mut all = Vec::new();
+    let mut after = None;
+    loop {
+        let page = index.query(&query.clone().after(after), may_read);
+        all.extend(page.ids().map(str::to_owned));
+        match page.next {
+            Some(next) => after = Some(next),
+            None => return all,
+        }
+    }
+}
+
+#[test]
+fn a_row_is_found_by_its_position_and_a_position_by_its_row() {
+    // Three reader sets, interleaved in the kind's order, so a listing merges their tables.
+    let mut index = Index::new();
+    for (n, readers) in (0..300).zip(["everyone", "ada", "team"].iter().cycle()) {
+        let state = ["open", "doing", "done"][n % 7 % 3];
+        let change = issue(
+            &format!("i{n:03}"),
+            &format!("board{}", n % 2),
+            &format!("{n:04}"),
+            &format!("Issue {n}"),
+            state,
+            i64::try_from(n % 11).unwrap(),
+        );
+        index.committed(&Commit {
+            doc: readers,
+            readers,
+            heads: &[],
+            changes: &[change],
+        });
+    }
+    let not_ada = |readers: &str| readers != "ada";
+    let queries = [
+        Query::of(ISSUE, 7),
+        Query::of(ISSUE, 7).order(Order::by("points")),
+        Query::of(ISSUE, 7).order(Order::by("points").descending()),
+        Query::of(ISSUE, 7).filter(Filter::Is("state".into(), "doing".into())),
+        Query::of(ISSUE, 7)
+            .filter(Filter::Is(PARENT.into(), "board1".into()))
+            .order(Order::default().descending()),
+        Query::of(ISSUE, 7).filter(Filter::Has("labels".into(), "done".into())),
+        Query::of(ISSUE, 7)
+            .filter(Filter::Within {
+                field: "points".into(),
+                from: Bound::Excluded(2.into()),
+                to: Bound::Included(8.into()),
+            })
+            .order(Order::by("points")),
+        // Not one span of any order: answered by walking the listing.
+        Query::of(ISSUE, 7)
+            .filter(Filter::Is("state".into(), "open".into()))
+            .order(Order::by("points").descending()),
+    ];
+    for may_read in [&anyone as &dyn Fn(&str) -> bool, &not_ada] {
+        for query in &queries {
+            let all = listed(&index, query, may_read);
+            assert_eq!(index.len(query, may_read), all.len(), "{query:?}");
+            for start in [
+                0,
+                1,
+                6,
+                50,
+                all.len().saturating_sub(3),
+                all.len(),
+                all.len() + 4,
+            ] {
+                let page = index.at(query, start, may_read);
+                let expected: Vec<&String> = all.iter().skip(start).take(7).collect();
+                assert_eq!(
+                    page.ids().collect::<Vec<_>>(),
+                    expected,
+                    "{query:?} at {start}"
+                );
+                // The page's cursor continues where it ended.
+                let rest = index.query(&query.clone().after(page.next), may_read);
+                if start + 7 < all.len() {
+                    assert_eq!(rest.ids().next(), all.get(start + 7).map(String::as_str));
+                }
+            }
+            for (position, id) in all.iter().enumerate() {
+                assert_eq!(
+                    index.position(query, id, may_read),
+                    Some(position),
+                    "{query:?} {id}"
+                );
+            }
+        }
+    }
+    let unlisted = Query::of(ISSUE, 7).filter(Filter::Is("state".into(), "doing".into()));
+    let open = listed(
+        &index,
+        &Query::of(ISSUE, 300).filter(Filter::Is("state".into(), "open".into())),
+        &anyone,
+    );
+    assert_eq!(index.position(&unlisted, &open[0], &anyone), None);
+    assert_eq!(
+        index.position(&Query::of(ISSUE, 7), "i001", &not_ada),
+        None,
+        "ada's alone"
+    );
+}
+
 #[test]
 fn pages_follow_the_kinds_order_and_resume_after_their_cursor() {
     let index = board();

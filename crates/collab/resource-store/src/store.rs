@@ -159,6 +159,29 @@ impl Store {
         self.index.count(kind, filters, may_read)
     }
 
+    /// How many resources `query` lists, of those whose readers `may_read` admits.
+    #[must_use]
+    pub fn len(&self, query: &Query, may_read: &dyn Fn(&str) -> bool) -> usize {
+        self.index.len(query, may_read)
+    }
+
+    /// The page of `query` starting at `position` in its listing. See [`Index::at`].
+    #[must_use]
+    pub fn at(&self, query: &Query, position: usize, may_read: &dyn Fn(&str) -> bool) -> Page {
+        self.index.at(query, position, may_read)
+    }
+
+    /// Where the resource `id` stands in the listing of `query`. See [`Index::position`].
+    #[must_use]
+    pub fn position(
+        &self,
+        query: &Query,
+        id: &str,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Option<usize> {
+        self.index.position(query, id, may_read)
+    }
+
     /// The resource `id` of `kind`, when its readers `may_read` admits.
     #[must_use]
     pub fn get(&self, kind: &str, id: &str, may_read: &dyn Fn(&str) -> bool) -> Option<&Indexed> {

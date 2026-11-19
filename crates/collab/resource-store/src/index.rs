@@ -1,11 +1,12 @@
 //! The index and the hook every commit updates it through.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
 
 use automerge::ChangeHash;
 
 use crate::query::{Cursor, Filter, Page, Query, Sort, past};
+use crate::ranked::Ranked;
 use crate::value::{Cell, Value};
 
 /// The field a resource's parent is indexed under: a filter `Is(PARENT, parent)` lists the
@@ -117,10 +118,13 @@ type Entry = (Value, Value, String);
 struct Table {
     rows: BTreeMap<String, Indexed>,
     /// Every resource by its place.
-    by_position: BTreeSet<Entry>,
+    by_position: Ranked<Entry>,
     /// Per scalar field, every resource holding it by its value, then by its place; per set
     /// field, every member. A filter on one value pages in the kind's order from here alone.
-    by_field: HashMap<String, BTreeSet<Entry>>,
+    by_field: HashMap<String, Ranked<Entry>>,
+    /// The fields some resource holds a set in: their entries list members, not one value per
+    /// resource, so they are no order and no span of one.
+    sets: HashSet<String>,
     /// Per field, how many resources hold each value: what a query reads to choose its path, and
     /// a count of one value answers from.
     counts: HashMap<String, HashMap<Value, usize>>,
@@ -132,6 +136,11 @@ impl Table {
         let place = position(&stored);
         self.by_position
             .insert((place.clone(), Value::Null, id.to_owned()));
+        for (field, cell) in &stored.fields {
+            if matches!(cell, Cell::Set(_)) && !self.sets.contains(field) {
+                self.sets.insert(field.clone());
+            }
+        }
         for (field, value) in stored.indexed() {
             let counted = self
                 .counts
@@ -190,10 +199,10 @@ impl Table {
         let entries = self.by_field.get(field)?;
         Some(
             entries
-                .range((
-                    Bound::Included((value.clone(), Value::Null, String::new())),
+                .range(
+                    Bound::Included(&(value.clone(), Value::Null, String::new())),
                     Bound::Unbounded,
-                ))
+                )
                 .take_while(move |(held, _, _)| held == value)
                 .map(|(_, _, id)| id.as_str()),
         )
@@ -215,7 +224,7 @@ impl Table {
         };
         Some(
             entries
-                .range((start, Bound::Unbounded))
+                .range(start.as_ref(), Bound::Unbounded)
                 .skip_while(
                     move |(held, _, _)| matches!(from, Bound::Excluded(from) if held == from),
                 )
@@ -262,14 +271,14 @@ impl Table {
     /// The entries of `entries` from `from` on (after it), in `descending` order or not, that
     /// `keep` keeps, `wanted` at most.
     fn scan(
-        entries: &BTreeSet<Entry>,
-        lower: Bound<Entry>,
-        upper: Bound<Entry>,
+        entries: &Ranked<Entry>,
+        lower: Bound<&Entry>,
+        upper: Bound<&Entry>,
         descending: bool,
         wanted: usize,
         keep: impl FnMut(&&Entry) -> bool,
     ) -> Vec<Entry> {
-        let range = entries.range((lower, upper));
+        let range = entries.range(lower, upper);
         if descending {
             range.rev().filter(keep).take(wanted).cloned().collect()
         } else {
@@ -356,11 +365,18 @@ impl Table {
                 };
                 let keep =
                     |(held, _, id): &&Entry| held == value && self.rows.get(id).is_some_and(holds);
-                Self::scan(entries, lower, upper, order.descending, wanted, keep)
-                    .into_iter()
-                    .filter(|(held, _, _)| held == value)
-                    .map(|(_, place, id)| (place, Value::Null, id))
-                    .collect()
+                Self::scan(
+                    entries,
+                    lower.as_ref(),
+                    upper.as_ref(),
+                    order.descending,
+                    wanted,
+                    keep,
+                )
+                .into_iter()
+                .filter(|(held, _, _)| held == value)
+                .map(|(_, place, id)| (place, Value::Null, id))
+                .collect()
             } else {
                 // Sorting what one value names costs its holders; walking the order and skipping
                 // the rest costs the page times how much rarer than the kind the value is.
@@ -393,7 +409,14 @@ impl Table {
                     } else {
                         (bound, Bound::Unbounded)
                     };
-                    Self::scan(entries, lower, upper, order.descending, wanted, keep)
+                    Self::scan(
+                        entries,
+                        lower.as_ref(),
+                        upper.as_ref(),
+                        order.descending,
+                        wanted,
+                        keep,
+                    )
                 }
             };
         keys.truncate(wanted);
@@ -414,6 +437,206 @@ impl Table {
                 .count(),
             None if filters.is_empty() => self.rows.len(),
             None => self.rows.values().filter(|stored| holds(stored)).count(),
+        }
+    }
+
+    /// Where the whole listing of `query` lies in one of this table's orders, when it is one
+    /// span of it: the kind in an order, one value's resources in the kind's order, or a range
+    /// of a field in that field's order. `None` for any other query.
+    fn window(&self, query: &Query) -> Option<Window<'_>> {
+        let scalar = |field: &str| !self.sets.contains(field);
+        let span = |entries: &Ranked<Entry>,
+                    lower: &dyn Fn(&Value) -> bool,
+                    upper: &dyn Fn(&Value) -> bool| {
+            (
+                entries.partition_point(|(held, _, _)| lower(held)),
+                entries.partition_point(|(held, _, _)| upper(held)),
+            )
+        };
+        let empty = || Window {
+            entries: &EMPTY,
+            from: 0,
+            to: 0,
+            value: None,
+        };
+        match (&query.order.by, query.filters.as_slice()) {
+            (Sort::Position, []) => Some(Window {
+                entries: &self.by_position,
+                from: 0,
+                to: self.by_position.len(),
+                value: None,
+            }),
+            (Sort::Field(field), []) if scalar(field) => Some(
+                self.by_field
+                    .get(field)
+                    .map_or_else(empty, |entries| Window {
+                        entries,
+                        from: 0,
+                        to: entries.len(),
+                        value: None,
+                    }),
+            ),
+            (Sort::Position, [Filter::Is(field, value) | Filter::Has(field, value)])
+                if *value != Value::Null
+                    && (scalar(field)
+                        || matches!(query.filters.first(), Some(Filter::Has(..)))) =>
+            {
+                Some(self.by_field.get(field).map_or_else(empty, |entries| {
+                    let (from, to) = span(entries, &|held| held < value, &|held| held <= value);
+                    Window {
+                        entries,
+                        from,
+                        to,
+                        value: Some(value.clone()),
+                    }
+                }))
+            }
+            (Sort::Field(sorted), [Filter::Within { field, from, to }])
+                if sorted == field && scalar(field) =>
+            {
+                Some(self.by_field.get(field).map_or_else(empty, |entries| {
+                    let (from, to) = span(
+                        entries,
+                        &|held| match from {
+                            Bound::Included(from) => held < from,
+                            Bound::Excluded(from) => held <= from,
+                            Bound::Unbounded => false,
+                        },
+                        &|held| !past(held, to),
+                    );
+                    Window {
+                        entries,
+                        from,
+                        to: to.max(from),
+                        value: None,
+                    }
+                }))
+            }
+            _ => None,
+        }
+    }
+}
+
+static EMPTY: Ranked<Entry> = Ranked::new();
+
+/// The page of the first `limit` of `keys`, which are in the page's order, and where the next
+/// one starts when there are more.
+fn page_of(mut keys: Vec<(Entry, &Table)>, limit: usize) -> Page {
+    let more = keys.len() > limit;
+    keys.truncate(limit);
+    let next = if more {
+        keys.last().map(|((key, place, id), _)| Cursor {
+            key: key.clone(),
+            place: place.clone(),
+            id: id.clone(),
+        })
+    } else {
+        None
+    };
+    let resources = keys
+        .into_iter()
+        .filter_map(|((_, _, id), table)| {
+            let stored = table.rows.get(&id)?.clone();
+            Some((id, stored))
+        })
+        .collect();
+    Page { resources, next }
+}
+
+/// The span of one table's order a query lists. See [`Table::window`].
+struct Window<'a> {
+    entries: &'a Ranked<Entry>,
+    from: usize,
+    to: usize,
+    /// For one value's resources in the kind's order, the value: the span's entries lead with
+    /// it, and sort by what follows.
+    value: Option<Value>,
+}
+
+impl Window<'_> {
+    const fn len(&self) -> usize {
+        self.to.saturating_sub(self.from)
+    }
+
+    /// How many of the span's entries sort before `entry`.
+    fn before(&self, entry: &Entry) -> usize {
+        self.entries
+            .rank(entry)
+            .clamp(self.from, self.to)
+            .saturating_sub(self.from)
+    }
+
+    /// Where `stored` stands in this span's entries, given the order's key of it.
+    fn entry(&self, id: &str, (key, place): (Value, Value)) -> Entry {
+        match &self.value {
+            Some(value) => (value.clone(), key, id.to_owned()),
+            None => (key, place, id.to_owned()),
+        }
+    }
+
+    /// The order's key of an entry of this span.
+    fn key(&self, (held, place, id): &Entry) -> Entry {
+        match self.value {
+            Some(_) => (place.clone(), Value::Null, id.clone()),
+            None => (held.clone(), place.clone(), id.clone()),
+        }
+    }
+}
+
+/// Where to cut each span so that `k` of their entries, together, lie before the cuts and the
+/// rest after: each cut is how many of its span's entries come first. Each step halves the
+/// largest span left, so this reads a few positions per span and step, never the entries.
+fn cuts(windows: &[Window<'_>], mut k: usize) -> Vec<usize> {
+    let mut lower = vec![0_usize; windows.len()];
+    let mut upper: Vec<usize> = windows.iter().map(Window::len).collect();
+    loop {
+        let left = lower
+            .iter()
+            .zip(&upper)
+            .map(|(lower, upper)| upper.saturating_sub(*lower))
+            .fold(0, usize::saturating_add);
+        if k == 0 || left == 0 {
+            return lower;
+        }
+        if k >= left {
+            return upper;
+        }
+        // The middle entry of the largest span left is the pivot.
+        let Some((widest, (low, high))) = lower
+            .iter()
+            .zip(&upper)
+            .enumerate()
+            .max_by_key(|(_, (lower, upper))| upper.saturating_sub(**lower))
+        else {
+            return lower;
+        };
+        let middle = low.saturating_add(high.saturating_sub(*low) / 2);
+        let Some(pivot) = windows
+            .get(widest)
+            .and_then(|window| window.entries.get(window.from.saturating_add(middle)))
+        else {
+            return lower;
+        };
+        let below: Vec<usize> = windows
+            .iter()
+            .zip(lower.iter().zip(&upper))
+            .map(|(window, (lower, upper))| window.before(pivot).clamp(*lower, *upper))
+            .collect();
+        let less = below
+            .iter()
+            .zip(&lower)
+            .map(|(below, lower)| below.saturating_sub(*lower))
+            .fold(0, usize::saturating_add);
+        match k.cmp(&less) {
+            std::cmp::Ordering::Less => upper = below,
+            std::cmp::Ordering::Equal => return below,
+            std::cmp::Ordering::Greater => {
+                k = k.saturating_sub(less.saturating_add(1));
+                lower = below;
+                if let Some(at) = lower.get_mut(widest) {
+                    *at = middle.saturating_add(1);
+                }
+            }
         }
     }
 }
@@ -510,25 +733,7 @@ impl Index {
         } else {
             keys.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         }
-        let more = keys.len() > query.limit;
-        keys.truncate(query.limit);
-        let next = if more {
-            keys.last().map(|((key, place, id), _)| Cursor {
-                key: key.clone(),
-                place: place.clone(),
-                id: id.clone(),
-            })
-        } else {
-            None
-        };
-        let resources = keys
-            .into_iter()
-            .filter_map(|((_, _, id), table)| {
-                let stored = table.rows.get(&id)?.clone();
-                Some((id, stored))
-            })
-            .collect();
-        Page { resources, next }
+        page_of(keys, query.limit)
     }
 
     /// How many resources of `kind` whose readers `may_read` admits hold to every filter.
@@ -537,6 +742,137 @@ impl Index {
         self.readable(kind, may_read)
             .map(|table| table.count(filters))
             .fold(0, usize::saturating_add)
+    }
+
+    /// The span of each readable table `query` lists, when it is one span in every one of them.
+    fn windows<'a>(
+        &'a self,
+        query: &Query,
+        may_read: &'a dyn Fn(&str) -> bool,
+    ) -> Option<Vec<Window<'a>>> {
+        self.readable(&query.kind, may_read)
+            .map(|table| table.window(query))
+            .collect()
+    }
+
+    /// How many resources `query` lists, of those whose readers `may_read` admits.
+    #[must_use]
+    pub fn len(&self, query: &Query, may_read: &dyn Fn(&str) -> bool) -> usize {
+        match self.windows(query, may_read) {
+            Some(windows) => windows
+                .iter()
+                .map(Window::len)
+                .fold(0, usize::saturating_add),
+            None => self.count(&query.kind, &query.filters, may_read),
+        }
+    }
+
+    /// The page of `query` that starts at `position` in its listing, ignoring its cursor: what
+    /// a window scrolled to that row shows. A query listing the kind in an order, one value's
+    /// resources in the kind's order, or a range of a field in that order finds the position
+    /// from the counts it keeps; any other walks the listing up to it.
+    #[must_use]
+    pub fn at(&self, query: &Query, position: usize, may_read: &dyn Fn(&str) -> bool) -> Page {
+        let Some(windows) = self.windows(query, may_read) else {
+            let mut walked = query.clone();
+            walked.after = None;
+            walked.limit = position.saturating_add(query.limit);
+            let mut page = self.query(&walked, may_read);
+            page.resources.drain(..position.min(page.resources.len()));
+            return page;
+        };
+        let total = windows
+            .iter()
+            .map(Window::len)
+            .fold(0, usize::saturating_add);
+        let descending = query.order.descending;
+        // In the ascending order the spans keep, the first shown is at `start`, and a page
+        // turned around walks down from the one before the cut.
+        let start = if descending {
+            total.saturating_sub(position)
+        } else {
+            position
+        };
+        let cut = cuts(&windows, start);
+        let mut heads: Vec<_> = windows
+            .iter()
+            .zip(&cut)
+            .map(|(window, at)| {
+                let at = window.from.saturating_add(*at);
+                let entries: Box<dyn DoubleEndedIterator<Item = &Entry>> = if descending {
+                    Box::new(window.entries.between(window.from, at).rev())
+                } else {
+                    Box::new(window.entries.between(at, window.to))
+                };
+                entries.map(|entry| window.key(entry)).peekable()
+            })
+            .collect();
+        let tables: Vec<&Table> = self.readable(&query.kind, may_read).collect();
+        let mut keys: Vec<(Entry, &Table)> = Vec::new();
+        while keys.len() <= query.limit {
+            let next = heads
+                .iter_mut()
+                .enumerate()
+                .filter_map(|(at, head)| head.peek().map(|key| (at, key.clone())))
+                .reduce(|best, other| {
+                    let better = if descending {
+                        other.1 > best.1
+                    } else {
+                        other.1 < best.1
+                    };
+                    if better { other } else { best }
+                });
+            let Some((at, key)) = next else {
+                break;
+            };
+            if let Some(head) = heads.get_mut(at) {
+                head.next();
+            }
+            if let Some(table) = tables.get(at) {
+                keys.push((key, table));
+            }
+        }
+        page_of(keys, query.limit)
+    }
+
+    /// Where the resource `id` stands in the listing of `query`; `None` when it lists no such
+    /// resource or one `may_read` does not admit.
+    #[must_use]
+    pub fn position(
+        &self,
+        query: &Query,
+        id: &str,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Option<usize> {
+        let stored = self
+            .readable(&query.kind, may_read)
+            .find_map(|table| table.rows.get(id))?;
+        if !query.filters.iter().all(|filter| filter.holds(stored)) {
+            return None;
+        }
+        let key = stored.key(&query.order.by)?;
+        let Some(windows) = self.windows(query, may_read) else {
+            let mut walked = query.clone();
+            walked.after = None;
+            walked.limit = usize::MAX;
+            return self
+                .query(&walked, may_read)
+                .ids()
+                .position(|listed| listed == id);
+        };
+        let total = windows
+            .iter()
+            .map(Window::len)
+            .fold(0, usize::saturating_add);
+        let before = windows
+            .iter()
+            .map(|window| window.before(&window.entry(id, key.clone())))
+            .fold(0, usize::saturating_add);
+        Some(if query.order.descending {
+            total.saturating_sub(before).saturating_sub(1)
+        } else {
+            before
+        })
     }
 
     /// Takes out everything stored in `doc`: a document this store no longer keeps.

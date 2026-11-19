@@ -25,6 +25,7 @@
 
 mod index;
 mod query;
+mod ranked;
 mod schema;
 mod snapshot;
 pub mod store;
