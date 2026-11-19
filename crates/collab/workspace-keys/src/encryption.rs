@@ -2204,11 +2204,21 @@ impl KeyProvider {
         if !create {
             let access = self.get()?;
             // Asked off the caller's task: the service takes its lock and
-            // reads its state on that thread, never on the host's.
+            // reads its state on that thread, never on the host's runtime. A
+            // caller polling this on a thread of its own (a session's main
+            // thread, its search index) holds no runtime to hand it to, and
+            // is that thread already.
             #[cfg(not(target_family = "wasm"))]
-            return tokio::task::spawn_blocking(move || access.record_keys(workspace))
-                .await
-                .unwrap_or_else(|error| Some(Err(error.to_string())));
+            {
+                let read = move || access.record_keys(workspace);
+                return match tokio::runtime::Handle::try_current() {
+                    Ok(runtime) => runtime
+                        .spawn_blocking(read)
+                        .await
+                        .unwrap_or_else(|error| Some(Err(error.to_string()))),
+                    Err(_) => read(),
+                };
+            }
             // A page has one thread: the read runs on it.
             #[cfg(target_family = "wasm")]
             return access.record_keys(workspace);

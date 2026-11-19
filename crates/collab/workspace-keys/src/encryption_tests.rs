@@ -2186,3 +2186,45 @@ fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
 }
 
 include!("reader_group_tests.rs");
+
+/// A thread of the caller's own (a session's main thread, its search index) reads the keys a
+/// device holds with no runtime around it, as a runtime's task does.
+#[test]
+fn the_keys_held_are_read_on_a_thread_without_a_runtime() {
+    let workspace = Arc::new(Workspace::default());
+    let held = WorkspaceId::new();
+    let policy = Policy::readers([1, 2]);
+    let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let mut owner = device(&workspace, held, 0, 1, &policy, owner_dir.path());
+    let laptop = device(&workspace, held, 1, 2, &policy, laptop_dir.path());
+    let keys = KeyProvider::default();
+    keys.set(Some(SharedKeys::new(laptop.service)));
+    let held_at = Endpoint::join(&workspace, held, 1);
+    assert!(ready_epoch(&create(&mut owner, held, now)).is_some());
+    tilo_test_env::wait_until("the laptop holds the workspace's keys", || {
+        now = now.checked_add(Duration::from_millis(250)).unwrap();
+        owner.service.pump(&owner.endpoint, now, 1_000);
+        let laptop = keys.get().unwrap();
+        laptop.pump_at(&held_at, now);
+        ready_epoch(&laptop.access(held).0).is_some()
+    });
+
+    let asking = keys;
+    let workspace_name = held.to_string();
+    let read = std::thread::spawn(move || {
+        pollster::block_on(asking.group_keys(
+            &workspace_name,
+            collab_types::EVERY_MEMBER,
+            false,
+            Duration::from_secs(1),
+        ))
+    })
+    .join()
+    .expect("a read off any runtime does not panic");
+    assert!(
+        matches!(read, Some(Ok(_))),
+        "the keys held are read: {:?}",
+        read.map(|r| r.map(|_| ()))
+    );
+}
