@@ -108,13 +108,6 @@ fn shape(
 /// stand in ([`IssueRows::blocks`]).
 type RowsRead = (Vec<u64>, Vec<Option<u64>>, Vec<(u64, usize)>);
 
-/// One block of rows as they are read again: kept from the rows held (where
-/// it starts there, and how many rows), or read anew.
-enum Block {
-    Kept(usize, usize),
-    Read(Vec<u64>, Vec<Option<u64>>),
-}
-
 /// The rows the list shows, by issue number, in the order the tree reads:
 /// each issue followed by its sub-issues, only what the filter shows and the
 /// issues above it so the tree stays whole. Read again from the window's
@@ -233,24 +226,22 @@ impl IssueRows {
     }
 
     /// The rows held with only the blocks the `touched` issues stand in read
-    /// again: the block each stood in, and the block it stands in now, put
-    /// where its top-level issue stands in the tracker's order. `None` when
-    /// the blocks cannot be placed, and every row is read instead.
+    /// again: the block each stood in, and the block it stands in now. The
+    /// top-level issues are walked once in the tracker's order, each block
+    /// kept or read again where it stands, so a change costs one pass over
+    /// the blocks however many top-level issues it made: an import's list of
+    /// hundreds lands as one change. `None` when the rows held cannot be
+    /// sliced, and every row is read instead.
     fn read_touched(&self, issues: &Issues, touched: &[u64]) -> Option<RowsRead> {
+        let mut held_at: HashMap<u64, (usize, usize)> = HashMap::with_capacity(self.blocks.len());
         let mut starts = Vec::with_capacity(self.blocks.len());
         let mut at = 0_usize;
-        for (_, len) in &self.blocks {
+        for (top, len) in &self.blocks {
+            held_at.insert(*top, (at, *len));
             starts.push(at);
             at = at.saturating_add(*len);
         }
-        let tops: HashMap<u64, usize> = self
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(index, (top, _))| (*top, index))
-            .collect();
         let mut stale = std::collections::HashSet::new();
-        let mut fresh = Vec::new();
         for number in touched {
             if let Some(&row) = self.at.get(number)
                 && let Some(block) = starts.partition_point(|start| *start <= row).checked_sub(1)
@@ -258,67 +249,27 @@ impl IssueRows {
             {
                 stale.insert(*top);
             }
-            if tops.contains_key(number) {
-                stale.insert(*number);
-            }
+            stale.insert(*number);
             if let Some(top) = issues.top_of(*number) {
                 stale.insert(top);
-                if !fresh.contains(&top) {
-                    fresh.push(top);
-                }
-            }
-        }
-        // The blocks no change reached keep their rows; each fresh block is
-        // read again and stands before the top-level issue after it.
-        let mut blocks: Vec<(u64, Block)> = self
-            .blocks
-            .iter()
-            .zip(&starts)
-            .filter(|((top, _), _)| !stale.contains(top))
-            .map(|((top, len), start)| (*top, Block::Kept(*start, *len)))
-            .collect();
-        let mut pending: Vec<u64> = fresh;
-        while !pending.is_empty() {
-            let before = pending.len();
-            pending.retain(|top| {
-                let next = issues.top_after(*top);
-                let place = match next {
-                    None => Some(blocks.len()),
-                    Some(next) => blocks.iter().position(|(held, _)| *held == next),
-                };
-                let Some(place) = place else {
-                    return true;
-                };
-                let (mut rows, mut parents) = (Vec::new(), Vec::new());
-                if let Some((id, issue)) = issues.by_number(*top) {
-                    self.read_block(issues, id, issue, &mut rows, &mut parents);
-                }
-                blocks.insert(place, (*top, Block::Read(rows, parents)));
-                false
-            });
-            if pending.len() == before {
-                return None;
             }
         }
         let mut rows = Vec::with_capacity(self.rows.len().saturating_add(1));
         let mut parents = Vec::with_capacity(rows.capacity());
-        let mut held = Vec::with_capacity(blocks.len());
-        for (top, block) in blocks {
+        let mut blocks = Vec::with_capacity(self.blocks.len().saturating_add(1));
+        for (id, issue) in issues.children(None) {
             let start = rows.len();
-            match block {
-                Block::Kept(from, len) => {
+            match held_at.get(&issue.number) {
+                Some(&(from, len)) if !stale.contains(&issue.number) => {
                     let to = from.saturating_add(len);
                     rows.extend_from_slice(self.rows.get(from..to)?);
                     parents.extend_from_slice(self.parents.get(from..to)?);
                 }
-                Block::Read(read, under) => {
-                    rows.extend(read);
-                    parents.extend(under);
-                }
+                _ => self.read_block(issues, id, issue, &mut rows, &mut parents),
             }
-            held.push((top, rows.len().saturating_sub(start)));
+            blocks.push((issue.number, rows.len().saturating_sub(start)));
         }
-        Some((rows, parents, held))
+        Some((rows, parents, blocks))
     }
 
     /// Hold `rows` under `parents` in place of the rows held, and note the
