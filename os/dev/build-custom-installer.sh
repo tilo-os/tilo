@@ -150,23 +150,32 @@ done < <(find "$INSTALLER_CONTEXT/rootfs/usr/libexec" -type f -print0)
 # disk, which can be Windows' ESP rather than the ESP mounted at /target/boot/efi.
 # Build the pinned corrected bootc once per source revision and put it in the
 # existing single installer overlay layer. The installed OS never inherits it.
-alongside_bootc_key="$(cat \
-  "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
-  "$TILO_OS_DIR/external-assets/bootc/0001-probe-missing-partition-metadata.patch" \
-  "$TILO_OS_DIR/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch" \
-  | sha256sum | cut -c1-16)"
-alongside_bootc_ref="localhost/tilo-bootc-alongside-helper:${alongside_bootc_key}"
-if ! podman image exists "$alongside_bootc_ref"; then
-  podman build "${build_network_args[@]}" -f "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
-    -t "$alongside_bootc_ref" "$TILO_REPO"
-fi
-(
-  alongside_bootc_container="$(podman create "$alongside_bootc_ref" /bootc)"
-  trap 'podman rm -f "$alongside_bootc_container" >/dev/null 2>&1 || true' EXIT
-  install -d -m 0755 "$INSTALLER_CONTEXT/rootfs/usr/libexec"
-  podman cp "$alongside_bootc_container:/bootc" \
+# TILO_INSTALLER_BOOTC_ALONGSIDE names that bootc built already, from the same
+# Containerfile, by a step of its own (t's bootc-alongside-ARCH).
+install -d -m 0755 "$INSTALLER_CONTEXT/rootfs/usr/libexec"
+if [ -n "${TILO_INSTALLER_BOOTC_ALONGSIDE:-}" ]; then
+  [ -f "$TILO_INSTALLER_BOOTC_ALONGSIDE" ] && [ ! -L "$TILO_INSTALLER_BOOTC_ALONGSIDE" ] \
+    || die "TILO_INSTALLER_BOOTC_ALONGSIDE is not a built bootc: $TILO_INSTALLER_BOOTC_ALONGSIDE"
+  install -m 0755 "$TILO_INSTALLER_BOOTC_ALONGSIDE" \
     "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-bootc-alongside"
-)
+else
+  alongside_bootc_key="$(cat \
+    "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
+    "$TILO_OS_DIR/external-assets/bootc/0001-probe-missing-partition-metadata.patch" \
+    "$TILO_OS_DIR/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch" \
+    | sha256sum | cut -c1-16)"
+  alongside_bootc_ref="localhost/tilo-bootc-alongside-helper:${alongside_bootc_key}"
+  if ! podman image exists "$alongside_bootc_ref"; then
+    podman build "${build_network_args[@]}" -f "$TILO_OS_DIR/Containerfile.bootc-alongside-helper" \
+      -t "$alongside_bootc_ref" "$TILO_REPO"
+  fi
+  (
+    alongside_bootc_container="$(podman create "$alongside_bootc_ref" /bootc)"
+    trap 'podman rm -f "$alongside_bootc_container" >/dev/null 2>&1 || true' EXIT
+    podman cp "$alongside_bootc_container:/bootc" \
+      "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-bootc-alongside"
+  )
+fi
 chmod 0755 "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-bootc-alongside"
 if [ "${TILO_UNVERIFIED_VM_INSTALL:-0}" = 1 ]; then
   { [ -z "$OFFLINE_TARGET_DIR" ] || [ "${TILO_INSTALLER_DEV_TARGET:-0}" = 1 ]; } \

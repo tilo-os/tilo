@@ -4590,12 +4590,30 @@ default = false
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
+# The bootc a live installer carries to install beside another system, built once for its sources
+# (tools/ci/publish/bootc-alongside.sh) instead of inside every medium.
+[[check]]
+name = "bootc-alongside-{arch}"
+# Pinned: bootc's source archive is checked by SHA-256, its crates by its Cargo.lock and the build
+# image by digest. The build's dnf adds the ostree headers bootc links against, by their stable
+# soname, from Fedora's mirrors, which no fixed list names.
+egress = { to = ["0.0.0.0/0", "::/0"], pinned = true }
+run = "bash tools/ci/publish/bootc-alongside.sh /target/bootc-alongside/{arch}"
+image = { check = "os-assembler-{arch}", path = "/target/os/{arch}/assembler/oci" }
+isolation = "vm"
+outputs = ["/target/bootc-alongside/{arch}/bootc"]
+timeout_secs = 3600
+default = false
+[check.matrix]
+arch = ["x86_64", "aarch64"]
+
 [[check]]
 name = "dev-installer-medium-{arch}"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/installer-medium.sh {arch} /target/os/{arch}/image /target/publish/dev-installer-medium/{arch}"
-needs = ["os-image-{arch}"]
+needs = ["os-image-{arch}", "bootc-alongside-{arch}"]
+env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/{arch}/bootc" }
 requires = ["disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/dev-installer-medium/{arch}/disk.qcow2", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.sha256", "/target/publish/dev-installer-medium/{arch}/disk.qcow2.hardware.json", "/target/publish/dev-installer-medium/{arch}/source.json"]
@@ -4615,7 +4633,8 @@ name = "server-installer-medium-x86_64"
 # Only this run's steps read the medium, so it is left uncompressed.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "export TILO_INSTALLER_TARGET_OCI=/target/publish/host-sealed/image.oci.tar\nexport TILO_INSTALLER_TARGET_REPOSITORY=registry.tilo.so/tilo/tilo-host\nexport TILO_INSTALLER_TARGET_DIGEST=$(cat /target/publish/host-sealed/digest)\nexport TILO_INSTALLER_TARGET_ARCHITECTURE=x86_64\nexport TILO_INSTALLER_TARGET_PROFILE=generic\nexport TILO_INSTALLER_TARGET_UPDATE_ORIGIN=registry.tilo.so/tilo/tilo-host:dev-$(git rev-parse --short=12 HEAD)\nexport TILO_INSTALLER_ROOTFS=btrfs TILO_QCOW2_COMPRESS=0\nbash tools/ci/publish/installer-medium.sh x86_64 /target/os/x86_64/image /target/publish/server-installer-medium/x86_64\nstarted=$SECONDS\nrm -rf /target/publish/server-installer-bundle/x86_64\nmkdir -p /target/publish/server-installer-bundle\nTMPDIR=/var/tmp bash os/dev/export-internal-bundle.sh /target/publish/server-installer-medium/x86_64/disk.qcow2 x86_64 imager-v0.0.0 /target/publish/server-installer-bundle/x86_64\necho \"TILO_MEDIUM_TIMING phase=bundle seconds=$((SECONDS - started))\""
-needs = ["os-image-x86_64", "seal-host"]
+needs = ["os-image-x86_64", "seal-host", "bootc-alongside-x86_64"]
+env = { TILO_INSTALLER_BOOTC_ALONGSIDE = "/target/bootc-alongside/x86_64/bootc" }
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/publish/server-installer-medium/x86_64/disk.qcow2", "/target/publish/server-installer-medium/x86_64/disk.qcow2.sha256", "/target/publish/server-installer-medium/x86_64/disk.qcow2.hardware.json", "/target/publish/server-installer-medium/x86_64/source.json", "/target/publish/server-installer-bundle/x86_64/**"]
