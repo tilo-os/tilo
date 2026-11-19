@@ -499,6 +499,7 @@ mod tests {
     use crate::workspaces::BranchContent;
     use fs::ROOT_INO;
     use fs_protocol::tree::{FILES_APP, chunk_document_id};
+    use tilo_automerge::ApplyIncoming as _;
 
     fn snapshot(namespace: &mut fs::Namespace) -> Vec<((String, String), Vec<u8>)> {
         namespace
@@ -506,7 +507,7 @@ mod tests {
             .into_iter()
             .map(|write| {
                 let mut doc = AutoCommit::new();
-                doc.load_incremental(&write.changes).unwrap();
+                doc.load_incoming(&write.changes).unwrap();
                 (
                     (FILES_APP.to_owned(), chunk_document_id(write.chunk)),
                     doc.save(),
@@ -533,7 +534,7 @@ mod tests {
             fs::content::SealedChunks {
                 group: *keys.workspace().as_uuid().as_bytes(),
                 epoch: keys.epoch(),
-                overhead: u32::try_from(payload.len() - data.len()).unwrap(),
+                overhead: u32::try_from(payload.len().checked_sub(data.len()).unwrap()).unwrap(),
             },
         );
         store
@@ -574,12 +575,12 @@ mod tests {
         assert!(namespace.set_content(ino, Some(&new), later.len() as u64, 2));
         let mut copied = snapshot(&mut namespace);
 
-        let copier = StoresBranches(stores.clone());
+        let transfer = StoresBranches(stores.clone());
         assert_eq!(
-            copier.file_keys(&source, &copied).unwrap(),
+            transfer.file_keys(&source, &copied).unwrap(),
             BranchFileKeys::SourceAndDestination
         );
-        copier
+        transfer
             .copy_rekeyed(&source, &branch, &mut copied, (Some(&from), &to))
             .unwrap();
 
@@ -648,12 +649,12 @@ mod tests {
             .create_file(ROOT_INO, "empty", Some(&empty_hash.parse().unwrap()), 0, 1)
             .unwrap();
         let mut copied = snapshot(&mut namespace);
-        let copier = StoresBranches(stores.clone());
+        let transfer = StoresBranches(stores.clone());
         assert_eq!(
-            copier.file_keys(&source, &copied).unwrap(),
+            transfer.file_keys(&source, &copied).unwrap(),
             BranchFileKeys::Destination
         );
-        copier
+        transfer
             .copy_rekeyed(&source, &branch.to_string(), &mut copied, (None, &keys))
             .unwrap();
 

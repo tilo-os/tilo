@@ -468,53 +468,48 @@ mod tests {
         verify_scoped_file_access(true).await;
     }
 
-    async fn verify_scoped_file_access(kernel_mount: bool) {
-        use crate::acl::WorkspaceAcl;
+    fn scoped_file_acl(
+        reader: [u8; 32],
+        workspace: WorkspaceId,
+        another: WorkspaceId,
+        allowed: bool,
+    ) -> crate::acl::WorkspaceAcl {
         use collab_types::{CapOverride, Effect, Scope};
         use tilo_action_policy::Grantee;
 
-        let reader = [19; 32];
-        let member = collab_types::MemberId::person("local");
-        let workspace = WorkspaceId::new();
-        let another = WorkspaceId::new();
-        let capabilities = |allowed| {
-            [workspace, another]
-                .into_iter()
-                .flat_map(|id| {
-                    let scope = Scope::FsPath(format!("/var/workspace/.workspaces/{id}"));
-                    let who = Grantee::person("local");
-                    let mut caps = vec![CapOverride::new(
-                        who.clone(),
-                        scope.clone(),
-                        Effect::WorkspaceFileBoundary,
-                        collab_types::Access::Read,
-                    )];
-                    if id != workspace || allowed {
-                        caps.push(CapOverride::new(
-                            who,
-                            scope,
-                            Effect::WorkspaceFileAccess,
-                            collab_types::Access::Write,
-                        ));
-                    }
-                    caps
-                })
-                .collect::<Vec<_>>()
-        };
-        let acl = |allowed| {
-            WorkspaceAcl::from_capabilities(
-                reader,
-                &capabilities(allowed),
-                std::slice::from_ref(&member),
-                None,
-            )
-        };
-        let policy = AclHandle::new(acl(true));
-        let store = Arc::new(crate::store::ContentStore::memory());
-        let hydrator = Hydrator::new(super::super::tests::local_endpoint().await, store.clone())
-            .with_scoped_file_keys(PathBuf::new(), policy.clone(), reader);
+        let capabilities: Vec<_> = [workspace, another]
+            .into_iter()
+            .flat_map(|id| {
+                let scope = Scope::FsPath(format!("/var/workspace/.workspaces/{id}"));
+                let who = Grantee::person("local");
+                let mut caps = vec![CapOverride::new(
+                    who.clone(),
+                    scope.clone(),
+                    Effect::WorkspaceFileBoundary,
+                    collab_types::Access::Read,
+                )];
+                if id != workspace || allowed {
+                    caps.push(CapOverride::new(
+                        who,
+                        scope,
+                        Effect::WorkspaceFileAccess,
+                        collab_types::Access::Write,
+                    ));
+                }
+                caps
+            })
+            .collect();
+        crate::acl::WorkspaceAcl::from_capabilities(
+            reader,
+            &capabilities,
+            &[collab_types::MemberId::person("local")],
+            None,
+        )
+    }
+
+    fn install_file_keys(hydrator: &Hydrator, workspaces: [WorkspaceId; 2]) {
         let source = hydrator.scoped_file_keys.as_ref().unwrap();
-        for id in [workspace, another] {
+        for id in workspaces {
             let mut group = *id.as_uuid().as_bytes();
             group[8] |= 0xe0;
             let keys = key_group::KeyGroup::create(
@@ -529,6 +524,18 @@ mod tests {
                 .lock_recover()
                 .insert(id, FileKeys::from_session(id, move || Ok(keys.clone())));
         }
+    }
+
+    async fn verify_scoped_file_access(kernel_mount: bool) {
+        let reader = [19; 32];
+        let workspace = WorkspaceId::new();
+        let another = WorkspaceId::new();
+        let acl = |allowed| scoped_file_acl(reader, workspace, another, allowed);
+        let policy = AclHandle::new(acl(true));
+        let store = Arc::new(crate::store::ContentStore::memory());
+        let hydrator = Hydrator::new(super::super::tests::local_endpoint().await, store.clone())
+            .with_scoped_file_keys(PathBuf::new(), policy.clone(), reader);
+        install_file_keys(&hydrator, [workspace, another]);
 
         let data = b"private workspace file";
         let len = data.len() as u64;

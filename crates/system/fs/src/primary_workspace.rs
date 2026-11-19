@@ -168,10 +168,10 @@ mod tests {
             admin_binary: PathBuf::from("/bin/true"),
         };
         let serve = command(&args, &env).expect("ready fixture");
-        let mut argv = serve.get_args();
-        assert!(argv.any(|arg| arg == "--workspace-key-socket"));
+        let mut flags = serve.get_args();
+        assert!(flags.any(|arg| arg == "--workspace-key-socket"));
         assert_eq!(
-            argv.next(),
+            flags.next(),
             Some(runtime.join("tilo/services/identity.sock").as_os_str())
         );
         let envs: std::collections::HashMap<_, _> = serve.get_envs().collect();

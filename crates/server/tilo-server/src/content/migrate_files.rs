@@ -307,6 +307,7 @@ fn rewrite_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming as _;
 
     #[test]
     fn a_legacy_manifest_requires_all_replacement_chunks_before_retirement() {
@@ -396,7 +397,7 @@ mod tests {
             .into_iter()
             .map(|write| {
                 let mut doc = AutoCommit::new();
-                doc.load_incremental(&write.changes).unwrap();
+                doc.load_incoming(&write.changes).unwrap();
                 (
                     (FILES_APP.to_owned(), chunk_document_id(write.chunk)),
                     doc.save(),
@@ -412,7 +413,7 @@ mod tests {
             .unwrap();
         let changes = rewrite_index(&store, workspace, &keys, versions, bytes).unwrap();
         let mut doc = AutoCommit::load(bytes).unwrap();
-        doc.load_incremental(&changes).unwrap();
+        doc.load_incoming(&changes).unwrap();
         *bytes = doc.save();
 
         let tree = tree_of(&docs).unwrap();

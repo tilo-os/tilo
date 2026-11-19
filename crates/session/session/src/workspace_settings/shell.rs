@@ -403,7 +403,7 @@ fn governance_ask(
                 domain::apply_revoke(ws, actor, &grant)
             });
         }
-        _ => unreachable!("ask dispatches only governance effects here"),
+        _ => tracing::error!("received a non-governance workspace setting"),
     }
 }
 

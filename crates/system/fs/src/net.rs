@@ -750,7 +750,7 @@ mod tests {
     }
 
     fn answer_files_identity(
-        listener: std::os::unix::net::UnixListener,
+        listener: &std::os::unix::net::UnixListener,
         workspace: WorkspaceId,
         keys: &ContentKeys,
     ) {
@@ -812,7 +812,7 @@ mod tests {
         .content_keys()
         .unwrap();
         let kept = keys.clone();
-        let broker = std::thread::spawn(move || answer_files_identity(listener, workspace, &kept));
+        let broker = std::thread::spawn(move || answer_files_identity(&listener, workspace, &kept));
 
         let session = Endpoint::builder(presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)

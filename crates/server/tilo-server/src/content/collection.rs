@@ -398,6 +398,7 @@ mod tests {
     use automerge::{AutoCommit, ObjType, ROOT};
 
     use super::*;
+    use tilo_automerge::ApplyIncoming as _;
 
     tilo_test_env::scenario! {
         fn a_record_names_only_the_whole_addresses_it_holds;
@@ -525,7 +526,7 @@ mod tests {
                     governor,
                     (FILES_APP, &chunk_document_id(write.chunk)),
                     |doc| {
-                        doc.load_incremental(&write.changes)
+                        doc.load_incoming(&write.changes)
                             .map(|_| ())
                             .map_err(|error| error.to_string())
                     },
@@ -571,6 +572,7 @@ mod tests {
         assert!(!store.has(&hash));
         assert!(store.has(&sealed));
         assert_eq!(store.read(&shared).unwrap(), attachment);
+        drop(server);
     }
 
     /// A pass that has read a workspace's records holds nothing of it while
