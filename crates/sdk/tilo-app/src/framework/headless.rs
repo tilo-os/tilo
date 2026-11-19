@@ -711,13 +711,14 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )
     }
 
-    /// A window of the app on a fresh profile that holds what this window
-    /// holds now: its record and every part of a chain it keeps beside it,
-    /// as a member whose device synced them opens the app. The two share
+    /// A window of the app on a fresh profile in this window's workspace that
+    /// holds what this window holds now: its resource and every part of a chain
+    /// it keeps beside it, as a member whose device synced them opens the app. The two share
     /// nothing afterwards: what one writes reaches the other through
     /// [`Self::deliver_changes_to`] and [`Self::deliver_record_to`].
     pub fn another_device(&self) -> Result<Self, LaunchError> {
         let profile = Rc::new(profile_directory().map_err(operation)?);
+        let workspace = self.profile.workspace().to_owned();
         {
             let native =
                 ui_core::application::NativeProfile::open(&profile.path().join("state"), None)?;
@@ -735,7 +736,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
                     let _landing = ui_core::resource::transfer::install_workspace_document(
                         native.store(),
                         app,
-                        TEST_WORKSPACE,
+                        &workspace,
                         &mut doc,
                     )
                     .map_err(operation)?;
@@ -743,7 +744,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
                     let _installed = ui_core::resource::transfer::install_as(
                         native.store(),
                         app,
-                        TEST_WORKSPACE,
+                        &workspace,
                         checkout,
                         &mut doc,
                     )
@@ -752,12 +753,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             }
         }
         Self::open(
-            Profile::Window(
-                profile,
-                TEST_WORKSPACE.to_owned(),
-                TEST_DEVICE.to_owned(),
-                INSTANCE + 1,
-            ),
+            Profile::Window(profile, workspace, TEST_DEVICE.to_owned(), INSTANCE + 1),
             Role::Owner,
             AUTHOR,
             &[],

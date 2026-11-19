@@ -635,6 +635,25 @@ pub fn genesis_actor(doc: &AutoCommit) -> Option<automerge::ActorId> {
     Some(genesis_actor_of(&checkout.id, &checkout.kind, &home))
 }
 
+/// Bind a package-primary document to `workspace`, the namespace that owns it, as a resource's
+/// identity binds it: the primary's genesis then holds a change whatever the app's `initialize`
+/// writes. A primary whose state starts as its defaults would otherwise be founded as a document
+/// with no change at all, which every other device takes for a resource nobody made: a window of
+/// a peer that names it finds nothing to open.
+fn scope_primary(doc: &mut AutoCommit, workspace: &str) -> bool {
+    if workspace.is_empty() {
+        return false;
+    }
+    let Some(m) = meta_obj(doc) else {
+        return false;
+    };
+    match stored_workspace(doc, &m) {
+        StringAt::Missing => doc.put(&m, WORKSPACE, workspace).is_ok(),
+        StringAt::String(existing) => existing == workspace,
+        StringAt::Invalid => false,
+    }
+}
+
 /// Make `doc` the resource as it is created: its identity and the app's `initialize`d content in one
 /// change, byte for byte the same on every peer. An actor derived from the resource's identity makes
 /// it at time zero, so two members creating the same resource hash the same change.
@@ -660,7 +679,7 @@ pub fn genesis(
             &checkout.kind,
             workspace,
             Some(workspace),
-        )
+        ) && scope_primary(&mut made, workspace)
     } else {
         DocumentId::parse(checkout.id.as_str()).is_some()
             && checkout.kind.is_valid()

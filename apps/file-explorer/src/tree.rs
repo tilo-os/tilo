@@ -2191,4 +2191,35 @@ mod window_tests {
             "the folder in the untouched chunk is still listed: {texts:?}"
         );
     }
+
+    /// The window's resource the first person's Files founds is one every later person and
+    /// reload finds: it holds a change, so a workspace that sends it sends the resource, not
+    /// an empty document a page takes for one nobody made ("record does not exist").
+    #[test]
+    fn the_window_resource_the_first_person_founds_opens_for_the_next() {
+        let first = ui::prelude::TestApp::<FilesTreeShell>::in_workspace(WORKSPACE)
+            .expect("the first person's window opens");
+        let record = first.record().clone();
+        assert!(record.is_package_primary(), "{record}");
+        let bytes = first
+            .resource_document(&record)
+            .expect("the window holds its resource");
+        let mut founded = AutoCommit::load(&bytes).expect("the resource loads");
+        assert!(
+            !founded.get_heads().is_empty(),
+            "the founded window resource holds a change the workspace sends"
+        );
+
+        let next = first
+            .another_device()
+            .expect("the next person's window opens on what the workspace sent");
+        assert_eq!(next.record(), &record);
+        let mut theirs = AutoCommit::load(
+            &next
+                .resource_document(&record)
+                .expect("the next window holds the resource"),
+        )
+        .expect("their resource loads");
+        assert_eq!(theirs.get_heads(), founded.get_heads());
+    }
 }
