@@ -5,6 +5,10 @@
 //! panicking as `std::process::id` does.
 
 pub mod child;
+#[cfg(unix)]
+pub mod confinement;
+#[cfg(unix)]
+pub mod descriptor;
 #[cfg(feature = "native-editor")]
 pub mod editor;
 pub mod environment;
@@ -12,6 +16,8 @@ pub use tilo_platform_caps::{Availability, availability, available};
 #[cfg(unix)]
 pub mod local_socket;
 pub mod login_shell;
+#[cfg(unix)]
+pub mod pty;
 pub mod rendezvous;
 pub mod shared_memory;
 pub mod tools;

@@ -1,5 +1,5 @@
 [Unit]
-Description=Tilo app process (verified package store and launch broker)
+Description=Tilo package service (verified package store and launch broker)
 After=tilo-graphical-session.target
 PartOf=tilo-graphical-session.target
 

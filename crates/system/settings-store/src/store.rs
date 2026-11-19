@@ -166,7 +166,7 @@ fn load_doc(kept: &FsStore, holder: Holder) -> std::io::Result<AutoCommit> {
     let stored = match kept.read(&key) {
         Ok(stored) => stored,
         // A target without files keeps nothing to read.
-        Err(_) if !cfg!(unix) && !cfg!(windows) => None,
+        Err(_) if !tilo_files::available(tilo_files::Feature::NativePaths) => None,
         Err(error) => return Err(std::io::Error::other(error.to_string())),
     };
     match stored {
@@ -189,11 +189,10 @@ fn stamp(kept: &FsStore) -> u64 {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for holder in [Holder::Person, Holder::Device] {
-        let meta = kept
+        let stamped = kept
             .local_path(&key(holder))
-            .and_then(|path| std::fs::metadata(path).ok());
-        meta.map(|meta| (meta.len(), meta.modified().ok()))
-            .hash(&mut hasher);
+            .and_then(|path| tilo_files::native::stamp(&path));
+        stamped.hash(&mut hasher);
     }
     hasher.finish()
 }

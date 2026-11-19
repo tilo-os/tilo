@@ -556,6 +556,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
                     .unwrap();
                 request
             });
+            let terminal_end = tilo_process::local_socket::ServiceSocket::from(terminal_end);
             let opened = crate::inner::ush_backend_on(
                 &terminal_end,
                 &[],
@@ -617,6 +618,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             .unwrap();
             (request, supervisor_end, pair, lease)
         });
+        let terminal_end = tilo_process::local_socket::ServiceSocket::from(terminal_end);
         let opened = crate::inner::ush_backend_on(
             &terminal_end,
             &[],
@@ -757,9 +759,10 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
         use std::os::unix::net::UnixStream;
         let (client, server) = UnixStream::pair().unwrap();
         drop(server);
-        let mut widget =
-            crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices { ush: Some(client) })
-                .unwrap();
+        let mut widget = crate::TerminalWidget::spawn_hosted(crate::HostedProcessServices {
+            ush: Some(tilo_process::local_socket::ServiceSocket::from(client)),
+        })
+        .unwrap();
         let doc = session_resource_at(&crate::target::SessionTarget::default_environment());
         ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         tilo_test_env::wait_until("the failed open to finish", || {

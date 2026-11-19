@@ -225,6 +225,7 @@ tilo_test_env::scenario! {
                 "no OpenSession follows unsupported negotiation"
             );
         });
+        let client = tilo_process::local_socket::ServiceSocket::from(client);
         let answer = crate::inner::ush_backend_on(
             &client,
             &[],
@@ -266,6 +267,7 @@ tilo_test_env::scenario! {
                 assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
             }
         });
+        let client = tilo_process::local_socket::ServiceSocket::from(client);
         assert!(matches!(
             crate::inner::ush_backend_on(
                 &client,

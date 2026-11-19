@@ -197,7 +197,7 @@ impl RichTextSource for IssueBody {
         }
     }
 
-    fn with_state<T>(&self, read: impl FnOnce(&tilo_document::RichTextState) -> T) -> Option<T> {
+    fn with_state<T>(&self, read: impl FnOnce(&tilo_rich_text::RichTextState) -> T) -> Option<T> {
         self.field.with_state(read)
     }
 

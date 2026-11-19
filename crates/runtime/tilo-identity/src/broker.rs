@@ -1593,12 +1593,21 @@ params = []
                     .is_err(),
                 "the identity broker must not sign a join for another workspace"
             );
+            // A cleartext change is decided by the action its history entry
+            // names, so these ops carry real changes: a field edit of the
+            // document, as a window's own commit of what its widgets wrote.
+            fn changes() -> Vec<u8> {
+                let (mutation, _) =
+                    collab_types::claim::field_edit_mutation("notes.page", "body", "written once")
+                        .expect("a change that names its action");
+                // The op's payload is the encoded mutation, as the executor
+                // writes it.
+                DocumentMutation::encode(&mutation).expect("typed mutation")
+            }
             let document_id = "record-1";
             let now = std::time::SystemTime::now();
             let mut op = SignedOp::new_unsigned(
-                DocumentMutation::Incremental(b"automerge changes".to_vec())
-                    .encode()
-                    .expect("typed mutation"),
+                changes(),
                 document_artifact_id("so.tilo.notes", &workspace_id, document_id),
                 Ed25519PublicKey::from_bytes(identity.signing_public_key()),
                 document_attestation_id("so.tilo.notes", &workspace_id, document_id),
@@ -1630,9 +1639,7 @@ params = []
                 .expect("a proof for the person's store");
             let person_op = |record: &str| {
                 SignedOp::new_unsigned(
-                    DocumentMutation::Incremental(b"automerge changes".to_vec())
-                        .encode()
-                        .expect("typed mutation"),
+                    changes(),
                     document_artifact_id("so.tilo.notes", &own_cluster, record),
                     Ed25519PublicKey::from_bytes(identity.signing_public_key()),
                     document_attestation_id("so.tilo.notes", &own_cluster, record),
