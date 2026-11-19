@@ -101,3 +101,38 @@ fn a_deferred_copy_stands_where_its_writer_does_and_applies_where_read() {
     );
     assert_eq!(copy.settled().unwrap().save(), writer.save());
 }
+
+/// A writer's own changes wait in the copy unapplied, and a worker process applies them only
+/// once the copy is read: the copy stands where the writer does throughout, reads as the
+/// writer's document, takes changes admitted the usual way after them, and refuses a change
+/// that does not decode, as it was.
+#[test]
+fn a_writers_own_changes_wait_unapplied_until_the_copy_is_read() {
+    let isolate = fresh_isolate();
+    let mut writer = AutoCommit::new().with_actor(ActorId::from(vec![0x57; 16]));
+    writer.put(ROOT, "seed", "resident").unwrap();
+    writer.commit();
+    let mut copy = Deferred::from(writer.clone());
+    let before = writer.get_heads();
+    for round in 0..8_i64 {
+        let change = written(&mut writer, &format!("own{round}"));
+        assert_eq!(copy.admit_unapplied(&change), Ok(Applied::Changed(true)));
+        let (mut want, mut have) = (writer.get_heads(), copy.heads());
+        want.sort_unstable();
+        have.sort_unstable();
+        assert_eq!(have, want, "round {round}");
+    }
+    assert_eq!(copy.unsettled().0.clone().get_heads(), before);
+
+    let mut bad = written(&mut writer.clone(), "broken");
+    let last = bad.len() - 1;
+    bad[last] ^= 0xff;
+    assert!(copy.admit_unapplied(&bad).is_err());
+
+    let checked = written(&mut writer, "checked");
+    assert_eq!(
+        isolate.admit(&mut copy, &checked, Dependencies::RequireComplete),
+        Ok(Applied::Changed(true))
+    );
+    assert_eq!(copy.settled().unwrap().save(), writer.save());
+}

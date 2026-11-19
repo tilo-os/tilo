@@ -81,8 +81,9 @@ struct Inner {
     kept: Vec<u8>,
     /// The records the app keeps beside this one that are held with it
     /// (the parts of its chain), each mirrored as this one is. What the
-    /// worker writes to them is admitted as it is taken and applied here
-    /// only once the mirror is read: an action that writes a part is
+    /// worker writes to them is checked as it is taken (its framing, and that
+    /// it builds on what the part holds) and applied, in an isolate and then
+    /// here, only once the mirror is read: an action that writes a part is
     /// followed by the next one, rarely by a read of the part here.
     beside: BTreeMap<DocumentId, Deferred>,
     /// An operation ran since the last take of the records beside.
@@ -1359,7 +1360,9 @@ impl ConfinedReplica {
                 beside.insert(document.clone(), Deferred::from(mirror));
                 Ok((document, DocumentMutation::Snapshot(bytes)))
             }
-            (false, Some(mirror)) => match mirror.admit(&bytes, Dependencies::RequireComplete) {
+            // The worker made this change on the state the mirror holds: it waits there
+            // unapplied, and is applied, in an isolate first, only once the mirror is read.
+            (false, Some(mirror)) => match mirror.admit_unapplied(&bytes) {
                 Ok(Applied::Changed(_)) => Ok((document, DocumentMutation::Incremental(bytes))),
                 Ok(Applied::MissingDependencies) => Err(AppError::Merge(
                     "the worker's change builds on nothing the part holds".into(),

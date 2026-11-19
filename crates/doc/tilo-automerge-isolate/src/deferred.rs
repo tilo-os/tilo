@@ -17,11 +17,20 @@ use crate::{Applied, Dependencies, Isolate, Rejected, engine};
 /// What it answers without applying anything is what the changes' own
 /// headers say: the heads it stands at ([`Self::heads`]) and whether it holds
 /// a change ([`Self::holds`]).
+///
+/// A writer that made its changes on this very state, such as an app's worker
+/// whose copy this is, hands them over unapplied ([`Self::admit_unapplied`]):
+/// a worker process applies them, as any untrusted change is admitted, only
+/// once something reads the document, so a writer the copy is never read
+/// between pays neither application of its changes.
 #[derive(Clone, Default)]
 pub struct Deferred {
     doc: AutoCommit,
     /// Changes admitted and not yet applied to `doc`, in the order admitted.
     pending: Vec<u8>,
+    /// Some of `pending` was admitted unapplied ([`Self::admit_unapplied`]): no worker process
+    /// applied it yet.
+    unchecked: bool,
     /// The hash of each change in `pending`.
     hashes: HashSet<ChangeHash>,
     /// The heads with `pending` applied, while any wait.
@@ -49,9 +58,24 @@ impl Deferred {
             let pending = std::mem::take(&mut self.pending);
             self.hashes.clear();
             self.heads.clear();
-            // A worker applied exactly these bytes to exactly this state,
-            // which is what admitted them.
-            engine::apply_trusted(&mut self.doc, &pending, Dependencies::RequireComplete)?;
+            if std::mem::take(&mut self.unchecked) {
+                // What waits unapplied is applied in a worker process first, as any untrusted
+                // change is, and only then here.
+                let applied = Isolate::shared().apply(
+                    &mut self.doc,
+                    &pending,
+                    Dependencies::RequireComplete,
+                )?;
+                if applied == Applied::MissingDependencies {
+                    return Err(Rejected::Invalid(
+                        "changes admitted unapplied build on what the document lacks".into(),
+                    ));
+                }
+            } else {
+                // A worker applied exactly these bytes to exactly this state,
+                // which is what admitted them.
+                engine::apply_trusted(&mut self.doc, &pending, Dependencies::RequireComplete)?;
+            }
         }
         Ok(&mut self.doc)
     }
@@ -95,14 +119,31 @@ impl Deferred {
         Isolate::shared().admit(self, incoming, dependencies)
     }
 
+    /// Admit `incoming`, changes made on this document's own state by the writer it is kept
+    /// beside, without applying them anywhere yet: their framing is checked and they must all be
+    /// new and build only on what the document holds; a worker process applies them, and then
+    /// this copy, once something reads the document ([`Self::settled`]). Anything else is
+    /// admitted as [`Self::admit`] admits it.
+    ///
+    /// # Errors
+    ///
+    /// A [`Rejected`] reason; the document is then unchanged.
+    pub fn admit_unapplied(&mut self, incoming: &[u8]) -> Result<Applied, Rejected> {
+        let Some((after, carried)) = self.heads_after(incoming) else {
+            return self.admit(incoming, Dependencies::RequireComplete);
+        };
+        crate::precheck::check(incoming, Isolate::shared().limits())?;
+        self.pending.extend_from_slice(incoming);
+        self.hashes.extend(carried);
+        self.heads = after;
+        self.unchecked = true;
+        Ok(Applied::Changed(true))
+    }
+
     /// The heads after `incoming` and the hash of each change it carries, when it is a sequence of new changes that build
     /// only on what the document holds and the document waits on nothing:
     /// the changes that stand at its heads now or arrive, less every change
     /// one of them builds on.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        allow(dead_code, reason = "only a worker process admits without applying")
-    )]
     fn heads_after(&mut self, incoming: &[u8]) -> Option<(Vec<ChangeHash>, Vec<ChangeHash>)> {
         if self.pending.is_empty() && !self.doc.get_missing_deps(&[]).is_empty() {
             return None;
