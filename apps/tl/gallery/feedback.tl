@@ -12,7 +12,7 @@ view feedback(g: Gallery) {
             "A run of tools: one on, one with news, a separator and a share at the end.",
         ) {
             ui.Toolbar {
-                ui.ToolbarButton("Bold", icon: .pencil, toggled: true) {
+                ui.ToolbarButton("Bold", icon: .bold, toggled: true) {
                     on press: set(last, "Bold")
                 }
                 ui.ToolbarButton("Flag", icon: .flag, dot: true) {

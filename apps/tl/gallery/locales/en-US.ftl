@@ -470,7 +470,7 @@ d-7chkyi44 = Basics
     .w-archive-an-item-to-put-it = Archive an item to put it aside.
     .w-a-page-of-a-stack = A page of a stack
     .w-a-section-opened-in-a-page = A section opened in a page of its own, one level deep.
-    .w-opened-from-the-panel-with-the = Opened from the panel, with the way back above it.
+    .w-a-page-one-level-deep-slid = A page one level deep, slid in over the one that opened it.
 
 d-vvxmf5ve = Backlog list
     .w-add-an-item-to-the-backlog = Add an item to the backlog

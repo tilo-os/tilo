@@ -260,7 +260,7 @@ d-7chkyi44 = Grundlagen
     .w-archive-an-item-to-put-it = Archiviere einen Eintrag, um ihn beiseitezulegen.
     .w-a-page-of-a-stack = Eine Seite eines Stapels
     .w-a-section-opened-in-a-page = Ein Abschnitt, in einer eigenen Seite geöffnet, eine Ebene tief.
-    .w-opened-from-the-panel-with-the = Aus dem Panel geöffnet, mit dem Weg zurück darüber.
+    .w-a-page-one-level-deep-slid = Eine Seite eine Ebene tiefer, über die geschoben, die sie geöffnet hat.
 
 d-vvxmf5ve = Backlogliste
     .w-add-an-item-to-the-backlog = Einen Eintrag zum Backlog hinzufügen

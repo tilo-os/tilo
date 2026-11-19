@@ -391,7 +391,7 @@ view parts(g: Gallery, last: State<Text>) {
     }
     part("A page of a stack", "A section opened in a page of its own, one level deep.") {
         ui.PageSlide(level: 1) {
-            ui.Text("Opened from the panel, with the way back above it.", role: .caption)
+            ui.Text("A page one level deep, slid in over the one that opened it.", role: .caption)
         }
     }
 }
