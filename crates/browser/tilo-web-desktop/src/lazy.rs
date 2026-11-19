@@ -17,7 +17,8 @@
 //! notification centre,
 //! which opening it asks for, the people roster, which the bar's faces
 //! open, the server an invitation names, which the entry page fetches when it
-//! follows an invitation, the HTML presenter, which a page mounted
+//! follows an invitation, what the page's person is doing, which the page
+//! fetches once its first frame is up, the HTML presenter, which a page mounted
 //! with `dom: true` asks for, the directory and invite sheets and the
 //! shortcut guide, which opening one asks for, a hosted window's page, which
 //! the first page to reach the shell asks for, the renderer's maker, which
@@ -260,6 +261,13 @@ split_code! {
 }
 
 split_code! {
+    /// What the page's person is doing, read off their own steps: fetched once the first frame is
+    /// up, before the page next says.
+    mod say_doing: tilo_session::activity::SayDoing = tilo_session::activity::builtin_say_doing()
+        => tilo_session::activity::SAY_DOING, module = "say_doing", hash = "6e2b9d47c10a8f35";
+}
+
+split_code! {
     /// The jobs band the shell's card shows: the first job that runs asks for it.
     mod jobs_band: ui::jobs::MakeBand = ui::jobs::builtin_band() => ui::jobs::BAND,
         module = "jobs_band", hash = "c1b8e04f7a2d9635";
@@ -417,9 +425,11 @@ pub(crate) fn register() {
     renderer::register();
     pdf_words::register();
     written_views::register();
+    say_doing::register();
     prepare_settings_keeper_after_first_frame();
     prepare_page_drops_after_first_frame();
     prepare_page_search_after_first_frame();
+    prepare_say_doing_after_first_frame();
 }
 
 /// Once the page has drawn its first frame, fetch what a file dropped on the
@@ -444,6 +454,23 @@ fn prepare_page_drops_after_first_frame() {
 /// too.
 fn fetch_desktop_search() {
     let _ = tilo_desktop_search::DESKTOP_SEARCH.get();
+}
+
+/// Once the page has drawn its first frame, fetch the code that reads what the page's person is
+/// doing.
+///
+/// The page says what its person does every few seconds, and a tick before the code is in says
+/// nothing: the module goes after the first frame, so the first tick that matters has it. Nothing
+/// of it is needed for that frame.
+fn prepare_say_doing_after_first_frame() {
+    let work = Closure::once_into_js(move |_deadline: f64| {
+        if tilo_browser_runtime::first_frame_presented() {
+            let _ = tilo_session::activity::SAY_DOING.get();
+        } else {
+            prepare_say_doing_after_first_frame();
+        }
+    });
+    after_idle(SPELLING_POLL_MS, &work);
 }
 
 /// Once the page has drawn its first frame, fetch the page search's code.

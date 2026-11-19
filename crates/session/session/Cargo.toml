@@ -57,6 +57,10 @@ dev-rust-views = ["dep:tube", "chat/samples"]
 # bundling crate, with the desktop's search engine, rather than linked: the
 # browser desktop fetches them as their own module.
 lazy-search-feed = []
+# The code that reads a person's own steps for what they are doing
+# (`activity::SAY_DOING`) is handed over by the bundling crate rather than
+# linked: the browser desktop fetches it as its own module.
+lazy-say-doing = []
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.
