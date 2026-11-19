@@ -89,6 +89,20 @@ impl RowMetrics {
         m
     }
 
+    /// The metrics of a row of an outline: the label's size in its regular weight, so a
+    /// sidebar's tree of notes or files reads as a column of names, many to a screen.
+    pub(super) fn outline(theme: &Theme) -> Self {
+        let mut m = Self::new(theme);
+        let name = theme
+            .text(TextRole::Label)
+            .with_weight(crate::text_render::TextWeight::Regular);
+        m.title = name.clone();
+        m.title_strong = name.clone().strong();
+        m.subtitle = name;
+        m.pad_y = f64::from(theme.tokens.spacing.rhythm.tight) / 2.0;
+        m
+    }
+
     pub(super) fn line(text: &mut TextRenderer, style: &TextStyle) -> f64 {
         f64::from(text.measure_style("Ag", None, style).1)
     }

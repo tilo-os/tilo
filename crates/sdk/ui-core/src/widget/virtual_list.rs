@@ -1573,7 +1573,12 @@ impl Widget for VirtualRows {
             self.invalidate_rows(mounted);
         }
         self.disclosure = disclosure;
-        self.row_line = f64::from(theme.tokens.metrics.row_single);
+        // A tree's rows stand as an outline's ([`crate::widget::ListRow::set_outline`]).
+        self.row_line = if self.tree.is_some() {
+            f64::from(crate::widget::TREE_ROW_HEIGHT)
+        } else {
+            f64::from(theme.tokens.metrics.row_single)
+        };
         self.settle_lead();
         self.pill_height =
             crate::widget::ButtonFace::height(crate::widget::ControlSize::Regular, theme);

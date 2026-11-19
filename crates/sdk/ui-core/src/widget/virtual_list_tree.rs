@@ -65,21 +65,24 @@ impl Chevrons {
         ))
     }
 
-    /// Paint the hairline up each depth's gutter the row `key` stands past, through its own box
-    /// `row`, so a deep tree keeps its structure legible.
+    /// Paint the hairline under each ancestor's chevron through the box `row` of a row `depth`
+    /// deep: a branch's line hangs from the middle of its chevron down past the last row inside
+    /// it, so every row reads as inside the row over it, and a line never sits beside a chevron.
     pub(super) fn paint_guides(
         &self,
-        marks: &Rc<Marks>,
         scene: &mut Scene,
         transform: Affine,
-        key: &ListKey,
+        theme: &Theme,
+        depth: u32,
         row: Rect,
         color: vello::peniko::Color,
     ) {
-        let depth = marks.depth(key);
+        let side = f64::from(theme.tokens.metrics.icon_sm);
         for level in 0..depth {
-            let x =
-                self.x0 + self.lead + self.column + f64::from(level) * self.step + self.step / 2.0;
+            // The chevron of the ancestor at `level` stands where a branch row of that depth
+            // keeps it ([`Self::gutter`]).
+            let chevron = self.x0 + self.lead + self.column + (f64::from(level) - 1.0) * self.step;
+            let x = chevron + side / 2.0;
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,

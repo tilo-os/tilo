@@ -614,7 +614,7 @@ impl PageSidebar {
         let depths = Rc::clone(&marks);
         let tree = VirtualList::new(
             PageList::build(&Workspace::default()),
-            ui::tokens::Metrics::BASE.row_single,
+            ui::widget::TREE_ROW_HEIGHT,
             move |model, index, page| {
                 let Some(row) = model.row(index) else {
                     return Box::new(ListRow::new(format!("note-{page}"), "")) as Element;

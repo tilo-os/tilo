@@ -281,6 +281,8 @@ pub struct ListRowFace<'a> {
     check_pose: Option<crate::widget::checkbox::CheckPose>,
     card: bool,
     dense: bool,
+    /// Stands as a row of an outline ([`Self::outline`]).
+    outline: bool,
     /// The row's own height, where it is not the list's row height: an outline's row token.
     /// The row stands at it, taller only when what it holds needs more.
     row_height: Option<f64>,
@@ -367,6 +369,7 @@ impl<'a> ListRowFace<'a> {
             check_pose: None,
             card: false,
             dense: false,
+            outline: false,
             row_height: None,
         }
     }
@@ -385,6 +388,17 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn dense(mut self) -> Self {
         self.dense = true;
+        self
+    }
+
+    /// Show the row as a row of an outline: a sidebar's tree reads many rows at once, so its
+    /// title takes the label's size and the row the tree's own height
+    /// ([`crate::widget::TREE_ROW_HEIGHT`]) unless it says another.
+    #[must_use]
+    pub fn outline(mut self) -> Self {
+        self.outline = true;
+        self.row_height
+            .get_or_insert(f64::from(crate::widget::TREE_ROW_HEIGHT));
         self
     }
 
@@ -409,6 +423,8 @@ impl<'a> ListRowFace<'a> {
             RowMetrics::card(theme)
         } else if self.dense {
             RowMetrics::dense(theme)
+        } else if self.outline {
+            RowMetrics::outline(theme)
         } else {
             RowMetrics::new(theme)
         }
@@ -1088,6 +1104,8 @@ pub struct ListRow {
     nested: bool,
     depth: u32,
     chevron_column: f64,
+    /// The box the list holding the row lifts it in ([`Self::set_lift_box`]).
+    lift_box: Option<Rect>,
     column_badges: Option<std::rc::Rc<[String]>>,
     pub(crate) shared_leading: Option<f64>,
     pub(crate) shared_after_trailing: Option<f64>,
@@ -1138,6 +1156,8 @@ pub struct ListRow {
     card: bool,
     card_lines: u8,
     dense: bool,
+    /// Stands as a row of an outline ([`Self::outline`]).
+    outline: bool,
     row_height: Option<f64>,
 }
 
@@ -1175,6 +1195,7 @@ impl ListRow {
             nested: false,
             depth: 0,
             chevron_column: 0.0,
+            lift_box: None,
             column_badges: None,
             shared_leading: None,
             shared_after_trailing: None,
@@ -1221,6 +1242,7 @@ impl ListRow {
             card: false,
             card_lines: 1,
             dense: false,
+            outline: false,
             row_height: None,
         }
     }
@@ -1230,6 +1252,8 @@ impl ListRow {
             RowMetrics::card(theme)
         } else if self.dense {
             RowMetrics::dense(theme)
+        } else if self.outline {
+            RowMetrics::outline(theme)
         } else {
             RowMetrics::new(theme)
         }
@@ -2278,6 +2302,9 @@ impl ListRow {
         if self.dense {
             face = face.dense();
         }
+        if self.outline {
+            face = face.outline();
+        }
         if let Some(height) = self.row_height {
             face.row_height = Some(height);
         }
@@ -2406,7 +2433,9 @@ impl ListRow {
         if let Some(width) = trailing_width {
             face = face.trailing_width(width);
         }
-        if self.trailing_wrapped() {
+        if let Some(lift_box) = self.lift_box {
+            face = face.frame(lift_box);
+        } else if self.trailing_wrapped() {
             face = face.frame(self.outer());
         }
         if let Some(swipe) = &self.swipe
@@ -3452,6 +3481,7 @@ mod colour;
 
 mod paint;
 
+mod held;
 mod html;
 pub(crate) use paint::paint_code_badge;
 

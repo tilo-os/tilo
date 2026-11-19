@@ -117,6 +117,19 @@ impl VirtualRows {
             let Some(row_rect) = row_rect else {
                 continue;
             };
+            // A list row paints its chosen state itself, in the box the list would lift it in:
+            // its hover and its selection are then one box in one state, never the row's hover
+            // as a second, smaller box inside the list's lift, nor a hover hiding the choice.
+            let handed = !self.delegate_selection
+                && row
+                    .widget
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
+                    .is_some_and(|list_row| {
+                        list_row.set_lift_box(Some(row_rect));
+                        crate::widget::RowSelectionSink::take_selection(list_row, selection);
+                        true
+                    });
             let lift = (selection.selected && !self.delegate_selection).then(|| {
                 let content =
                     crate::widget::row_content_box(row.widget.as_ref()).unwrap_or(row_rect);
@@ -128,6 +141,7 @@ impl VirtualRows {
                 });
                 painted
             });
+            let lift = lift.filter(|_| !handed);
             // A row the frame keeps on screen, unchanged, is not drawn
             // again: its selection, its ring and its widget are as they were.
             if focused != Some(&row.key)
@@ -231,10 +245,10 @@ impl VirtualRows {
                 };
                 if self.indent_guides {
                     chevrons.paint_guides(
-                        marks,
                         scene,
                         transform,
-                        &row.key,
+                        theme,
+                        marks.depth(&row.key),
                         line,
                         crate::ColorCompat::with_alpha_factor(guide_color, alpha),
                     );
