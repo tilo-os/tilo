@@ -42,7 +42,7 @@ pub(crate) struct PowerRun {
     idle_sleep: bool,
     /// Keeps the settings watch alive: the loader's one watch, which the compositor's assists and
     /// the power policy both follow.
-    watch: Option<settings_store::watch::SettingsWatch>,
+    watch: Option<crate::config::Following>,
 }
 
 impl PowerRun {
@@ -68,7 +68,7 @@ impl PowerRun {
     fn follow_settings(
         &self,
         waker: std::task::Waker,
-    ) -> std::io::Result<settings_store::watch::SettingsWatch> {
+    ) -> std::io::Result<crate::config::Following> {
         let reload = Arc::clone(&self.reload);
         let next = Arc::clone(&self.next);
         SessionConfig::follow(move |config| {

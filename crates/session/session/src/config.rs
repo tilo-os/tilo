@@ -66,6 +66,76 @@ impl Default for SessionConfig {
     }
 }
 
+/// What a settings change wakes, and what ends that worker: the reading is made off the thread
+/// that wrote the setting, which is often the loop.
+pub struct Following {
+    _watch: settings_store::watch::SettingsWatch,
+    news: std::sync::Arc<News>,
+}
+
+impl Drop for Following {
+    fn drop(&mut self) {
+        self.news.close();
+    }
+}
+
+#[derive(Default)]
+struct News {
+    state: std::sync::Mutex<NewsState>,
+    changed: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct NewsState {
+    /// A change arrived and was not read yet.
+    pending: bool,
+    /// The follow was dropped: the worker reads nothing more.
+    closed: bool,
+}
+
+impl News {
+    fn rung(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.pending = true;
+        drop(state);
+        self.changed.notify_one();
+    }
+
+    /// Whether a change waits to be read, waiting for one; `false` once it is closed.
+    fn next(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if state.closed {
+                return false;
+            }
+            if state.pending {
+                state.pending = false;
+                return true;
+            }
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn close(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closed = true;
+        drop(state);
+        self.changed.notify_one();
+    }
+}
+
 impl SessionConfig {
     /// The person's settings as stored.
     #[must_use]
@@ -89,15 +159,36 @@ impl SessionConfig {
 
     /// Load the person's settings now and again whenever they change,
     /// handing each reading to `apply`: the loader's one watch, so whoever
-    /// follows a section follows every change through it. The returned
-    /// watch keeps the notifications coming; dropping it stops them.
+    /// follows a section follows every change through it. What it returns keeps the notifications
+    /// coming; dropping it stops them.
+    ///
+    /// The change only wakes a worker, which reads and applies: the reading
+    /// opens the keyboard files and resolves the power policy, and the
+    /// change is often rung by the session's loop writing a setting.
     ///
     /// # Errors
-    /// Fails when there are no settings to follow.
-    pub fn follow(
-        apply: impl Fn(Self) + Send + Sync + 'static,
-    ) -> std::io::Result<settings_store::watch::SettingsWatch> {
-        settings_store::watch::watch_settings(move || apply(Self::load()))
+    /// Fails when there are no settings to follow, or the worker cannot start.
+    pub fn follow(apply: impl Fn(Self) + Send + Sync + 'static) -> std::io::Result<Following> {
+        let news = std::sync::Arc::new(News::default());
+        let worker = std::sync::Arc::clone(&news);
+        std::thread::Builder::new()
+            .name("session-config".into())
+            .spawn(move || {
+                while worker.next() {
+                    apply(Self::load());
+                }
+            })?;
+        let rung = std::sync::Arc::clone(&news);
+        match settings_store::watch::watch_settings(move || rung.rung()) {
+            Ok(watch) => Ok(Following {
+                _watch: watch,
+                news,
+            }),
+            Err(error) => {
+                news.close();
+                Err(error)
+            }
+        }
     }
 
     /// The settings `input` and `shortcuts` hold, as the session applies them.
