@@ -25,7 +25,7 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use tilo_desktop_policy::Window;
-use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
+use tilo_desktop_surface::surface::window_menu::move_to_workspace_id;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
@@ -175,11 +175,28 @@ fn save_layout(state: &Path, tree: &Layout) -> (u16, Vec<WorkspaceId>) {
     (salt, workspace_ids)
 }
 
-/// Run frames until the layout shows the windows its workspaces' layouts hold.
+/// Run frames until the layout shows a window.
 fn laid_out(session: &mut Session) {
     until(session, "the layout is laid out", |session| {
         !tabs(session).is_empty()
     });
+}
+
+/// Move the window `tab` to the workspace `to`, as the person does once the window's menu offers
+/// the workspace.
+fn move_to_workspace(session: &mut Session, tab: u64, to: WorkspaceId) {
+    let row = move_to_workspace_id(to);
+    until(session, "the window menu offers the workspace", |session| {
+        session
+            .handle()
+            .window_menu(tab)
+            .iter()
+            .any(|offered| offered.find(&row).is_some())
+    });
+    session
+        .handle()
+        .choose_window_menu(tab, &row, None)
+        .expect("the person moves the window");
 }
 
 fn tab(id: u64, label: &str, app: &str) -> Tab {
@@ -536,15 +553,10 @@ fn moved_behind_comes_back(network: bool) {
     let mail = device.id(200);
 
     let mut session = session_on(&device.state, None, network);
-    laid_out(&mut session);
-    session
-        .handle()
-        .choose_window_menu(
-            mail,
-            &format!("{MOVE_TO_WORKSPACE}:{}", workspace_ids[1]),
-            None,
-        )
-        .expect("the person moves the window");
+    until(&mut session, "the window is back", |session| {
+        workspace_of(session, mail).is_some()
+    });
+    move_to_workspace(&mut session, mail, workspace_ids[1]);
     until(
         &mut session,
         "the window is in the workspace behind",
@@ -638,11 +650,10 @@ fn signalled_restart_scene() {
         .parse()
         .expect("a tab id");
     let mut session = session_restarted(&state);
-    laid_out(&mut session);
-    session
-        .handle()
-        .choose_window_menu(mail, &format!("{MOVE_TO_WORKSPACE}:{workspace}"), None)
-        .expect("the person moves the window");
+    until(&mut session, "the window is back", |session| {
+        workspace_of(session, mail).is_some()
+    });
+    move_to_workspace(&mut session, mail, workspace);
     until(
         &mut session,
         "the window is in the workspace behind",
@@ -1144,7 +1155,7 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
 
     session
         .handle()
-        .choose_window_menu(window_tab, &format!("{MOVE_TO_WORKSPACE}:{away}"), None)
+        .choose_window_menu(window_tab, &move_to_workspace_id(away), None)
         .expect("the person moves the window");
 
     until(&mut session, "the app runs in the other workspace", |_| {
@@ -1205,11 +1216,7 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
 
     session
         .handle()
-        .choose_window_menu(
-            window_tab,
-            &format!("{MOVE_TO_WORKSPACE}:{}", workspace_ids[1]),
-            None,
-        )
+        .choose_window_menu(window_tab, &move_to_workspace_id(workspace_ids[1]), None)
         .expect("the person moves the window");
     until(&mut session, "the person is asked", |session| {
         session.notifications().feed().banners.iter().any(|banner| {

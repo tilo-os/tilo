@@ -284,7 +284,8 @@ impl Row {
     }
 
     /// The row `id` this row or a row of its submenu offers.
-    fn find(&self, id: &str) -> Option<&Self> {
+    #[must_use]
+    pub fn find(&self, id: &str) -> Option<&Self> {
         if self.id == id {
             return Some(self);
         }
@@ -298,7 +299,7 @@ pub fn move_to_strip_id(strip: StripId) -> String {
 }
 
 /// The id of the row taking the window into workspace `workspace`.
-fn move_to_workspace_id(workspace: WorkspaceId) -> String {
+pub fn move_to_workspace_id(workspace: WorkspaceId) -> String {
     format!("{MOVE_TO_WORKSPACE}:{workspace}")
 }
 
