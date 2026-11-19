@@ -23,6 +23,10 @@ struct Feed {
     /// Bumped whenever `shown` changes: each list reading the feed keeps
     /// the revision it last read.
     revision: u64,
+    /// `revision` as a component's pass follows it: the app shows its places
+    /// when it settles, after the pass whose list read the feed, so that pass
+    /// syncs again to show them rather than resting on what it read.
+    followed: Followed,
     chosen: Vec<String>,
     /// The person chose since the app last showed: the next show is the
     /// app's answer, read even where nothing changed, so a choice the app
@@ -44,6 +48,16 @@ struct Feed {
     rect: Option<Rect>,
 }
 
+/// What a pass that read the feed follows ([`Feed::followed`]).
+#[derive(Clone)]
+struct Followed(crate::component_inputs::Shared);
+
+impl Default for Followed {
+    fn default() -> Self {
+        Self(crate::component_inputs::Shared::new(0))
+    }
+}
+
 impl NavFeed {
     #[must_use]
     pub fn new() -> Self {
@@ -59,6 +73,7 @@ impl NavFeed {
         if feed.shown != next || answer {
             feed.shown = next;
             feed.revision = feed.revision.wrapping_add(1);
+            feed.followed.0.moved();
         }
     }
 
@@ -171,6 +186,7 @@ impl NavFeed {
     /// What a list that last read revision `seen` has not read yet.
     fn pull(&self, seen: &mut Option<u64>) -> Option<(Vec<NavSection>, Option<String>)> {
         let feed = self.0.borrow();
+        feed.followed.0.read();
         if *seen == Some(feed.revision) {
             return None;
         }
@@ -244,5 +260,48 @@ impl NavList {
                 .item_actions
                 .push((place.to_owned(), action.to_owned()));
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The places a conversation list shows, with `unread` waiting in one
+    /// conversation.
+    fn conversations(unread: u32) -> Vec<NavSection> {
+        vec![NavSection::new(
+            "direct",
+            "Direct messages",
+            vec![super::super::NavItem::new("scout", "Scout").live_count(unread)],
+        )]
+    }
+
+    /// Chat counts what reached a conversation as it reads its messages, and
+    /// shows the count in the shell's sidebar when it settles: after the pass
+    /// whose list read the feed. That pass does not stand on what it read: its
+    /// window syncs again, and the sidebar shows the count.
+    #[test]
+    fn a_pass_whose_list_read_the_feed_syncs_again_once_the_app_shows_a_new_count() {
+        let scope = crate::wake::WakeScope::new();
+        let window = scope.handle();
+        let feed = NavFeed::new();
+        feed.show(conversations(2), None);
+        let mut seen = None;
+        let ((), reads) = crate::component_inputs::reading(&window, || {
+            assert!(feed.pull(&mut seen).is_some(), "the list reads the places");
+        });
+        feed.show(conversations(2), None);
+        assert_eq!(
+            reads.stand(),
+            Ok(()),
+            "showing the same places moves nothing"
+        );
+        feed.show(conversations(3), None);
+        assert_eq!(
+            reads.stand(),
+            Err("ui.component.loud.reads"),
+            "the window syncs again for the count it does not show yet"
+        );
     }
 }

@@ -23,6 +23,8 @@ pub(crate) fn note_written(owner: &WakeHandle) {
 }
 
 struct Reading {
+    /// Which pass this is ([`running_pass`]), counted on this thread.
+    pass: u64,
     owner: WakeHandle,
     probes: Vec<Probe>,
     untracked: Option<&'static str>,
@@ -50,7 +52,7 @@ thread_local! {
     /// skipped pass changed nothing, which reruns every pass it skipped.
     static FORCED: Cell<bool> = const { Cell::new(false) };
     static PROVING: Cell<bool> = const { Cell::new(false) };
-    /// Counts this thread's passes.
+    /// Counts this thread's passes: the number the next one takes.
     static PASSES: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -60,18 +62,24 @@ pub(crate) fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Re
     // The store tells this pass which resources it read.
     crate::resource::observe_reads(read_resource);
     let _feeding = crate::wake::FeedsComponent::begin();
-    PASSES.with(|passes| passes.set(passes.get().wrapping_add(1)));
     let pass_reading = PassReading::begin(owner);
     let result = pass();
     (result, pass_reading.end())
 }
 
 /// The number of the pass running, or `None` outside a pass: what a reader of several resources
-/// registers the reading it follows once a pass, however often the pass looks at them.
+/// registers the reading it follows once a pass, however often the pass looks at them. A pass that
+/// another one nests (a component's published resources, gathered while its window syncs) has
+/// its own number, and once it ends the pass around it is the one running again: what the inner pass
+/// read is followed by the inner one's component, not by the window's.
 #[must_use]
 pub fn running_pass() -> Option<u64> {
-    let reading = READING.with(|reading| reading.try_borrow().ok().is_some_and(|it| it.is_some()));
-    reading.then_some(PASSES.with(Cell::get))
+    READING.with(|reading| {
+        reading
+            .try_borrow()
+            .ok()
+            .and_then(|reading| reading.as_ref().map(|reading| reading.pass))
+    })
 }
 
 /// The reading of one pass, from [`PassReading::begin`] to
@@ -88,6 +96,7 @@ impl PassReading {
     fn begin(owner: &WakeHandle) -> Self {
         let outer = READING.with(|reading| {
             reading.borrow_mut().replace(Reading {
+                pass: PASSES.with(|passes| passes.replace(passes.get().wrapping_add(1))),
                 owner: owner.clone(),
                 probes: Vec::new(),
                 untracked: None,
@@ -465,5 +474,35 @@ mod tests {
         assert!(reads.stand().is_ok(), "the state it did not read moved");
         live.moved();
         assert_eq!(reads.stand(), Err("ui.component.loud.reads"));
+    }
+
+    /// A reader of several resources reads them once a pass ([`running_pass`]), as a chain reads
+    /// the parts that Chat's unread counts are summed from. A pass nested in the window's
+    /// pass and read them first (the window's published resources, gathered while it syncs) does
+    /// not stand in for the window's own: the window still follows them, and wakes when one moves.
+    #[test]
+    fn a_window_follows_what_a_pass_inside_it_read_first() {
+        let scope = crate::wake::WakeScope::new();
+        let (window, published) = (scope.handle(), scope.handle());
+        let part = Shared::new(0);
+        let read_at = Cell::new(None);
+        let read_once_a_pass = || {
+            let pass = running_pass();
+            if pass.is_some() && read_at.get() != pass {
+                part.read();
+                read_at.set(pass);
+            }
+        };
+        let ((), reads) = reading(&window, || {
+            let ((), inner) = reading(&published, read_once_a_pass);
+            assert_eq!(inner.stand(), Ok(()));
+            read_once_a_pass();
+        });
+        part.moved();
+        assert_eq!(
+            reads.stand(),
+            Err("ui.component.loud.reads"),
+            "the window read the part after the pass inside it did: it wakes when the part moves"
+        );
     }
 }
