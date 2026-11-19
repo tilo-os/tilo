@@ -627,6 +627,7 @@ impl Widget for Image {
                     fill: tile.then(|| crate::composition::rgba8(raised)),
                     edge: tile.then(|| crate::composition::rgba8(crate::surface::edge_on(raised))),
                     radius: f64::from(radius),
+                    inset: [0.0; 2],
                 });
             }
             return;

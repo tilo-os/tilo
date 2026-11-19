@@ -2073,13 +2073,7 @@ impl ListRow {
         cx.place_children();
         if self.card {
             // A card's surface, as the canvas lays it under the row.
-            let theme = cx.theme();
-            let raised = theme.tokens.colors.surfaces.raised;
-            cx.ground(crate::composition::Ground {
-                fill: Some(crate::composition::rgba8(raised)),
-                edge: Some(crate::composition::rgba8(crate::surface::edge_on(raised))),
-                radius: crate::widget::card::CardMetrics::new(theme).radius,
-            });
+            cx.ground(crate::widget::card::card_ground(cx.theme()));
         }
         let band = self.text_band();
         self.with_face(|face| face.compose(cx, band, check));

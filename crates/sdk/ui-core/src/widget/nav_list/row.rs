@@ -572,50 +572,74 @@ impl Widget for NavRow {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         use crate::composition::{Face, TextLook};
         let theme = cx.theme().clone();
-        let ink = theme.tokens.colors.text_primary;
         let quiet = theme.tokens.colors.text_dim;
-        let style = theme.text(crate::tokens::TextRole::Body);
+        let body = theme.text(TextRole::Body);
         match &self.row.kind {
             NavRowKind::Item { label, spec, .. } => {
                 cx.element("li");
-                cx.selected(self.selection.selected);
-                // The chosen row's lift, under its words as the canvas paints it: the row's own
-                // rounded ground. A part of its own would stand over the label.
-                if self.selection.selected {
-                    let tokens = &theme.tokens;
-                    let fill = crate::chrome::selection_tier_on(
-                        &theme,
-                        crate::chrome::SelectionState::active(true),
-                        tokens.colors.surfaces.content,
+                let selected = self.selection.selected;
+                cx.selected(selected);
+                // Laid out as the canvas lays it out: the lift inset from the list's edges on
+                // the row's own ground, the icon and the words where the canvas places them.
+                let face = self
+                    .paint
+                    .borrow()
+                    .item_face(spec, self.rect, label)
+                    .state(SelectionState::active(selected));
+                let layout = crate::text_render::with_layout_renderer(&theme, |text| {
+                    nav_row_layout(&theme, text, &face)
+                });
+                let tokens = &theme.tokens;
+                let lift = layout.selection;
+                let inset = [lift.x0 - self.rect.x0, lift.y0 - self.rect.y0];
+                let radius = f64::from(tokens.radii.item).min(lift.height() / 2.0);
+                // Every row keeps the inset, so its icon and words stand where a chosen row's do.
+                let fill = selected.then(|| {
+                    crate::composition::rgba8(
+                        crate::chrome::selection_tier_on(
+                            &theme,
+                            SelectionState::active(true),
+                            tokens.colors.surfaces.content,
+                        )
+                        .fill,
                     )
-                    .fill;
-                    cx.ground(crate::composition::Ground {
-                        fill: Some(crate::composition::rgba8(fill)),
-                        edge: None,
-                        radius: f64::from(tokens.radii.control),
-                    });
-                }
+                });
+                cx.ground(crate::composition::Ground {
+                    fill,
+                    edge: None,
+                    radius,
+                    inset,
+                });
+                // A chosen row's words are its strongest, the rest stand back, as painted.
+                let ink = if selected {
+                    tokens.colors.text_primary
+                } else {
+                    tokens.colors.text_dim
+                };
+                let style = crate::chrome::nav_row::label_style(&theme, &face);
+                let lead = layout.icon.map_or(layout.label_x0, |icon| icon.x0) - lift.x0;
                 let detail = spec
                     .secondary
                     .clone()
                     .or_else(|| spec.meta.clone())
                     .or_else(|| spec.badge.clone());
                 cx.face(Face {
-                    icon: spec
-                        .icon
-                        .and_then(|icon| crate::composition::glyph(icon, 16.0, ink, false)),
+                    icon: layout.icon.zip(spec.icon).and_then(|(rect, icon)| {
+                        crate::composition::glyph(icon, rect.width(), ink, false)
+                    }),
                     label: Some(
                         TextLook::new(label.clone(), &style, Some(ink)).with_max_lines(Some(1)),
                     ),
                     detail: detail.map(|detail| {
-                        TextLook::new(detail, &style, Some(quiet)).with_max_lines(Some(1))
+                        TextLook::new(detail, &theme.text(TextRole::Caption), Some(quiet))
+                            .with_max_lines(Some(1))
                     }),
                     trailing: None,
                     fill: None,
                     edge: None,
-                    radius: f64::from(theme.tokens.radii.control),
-                    pad: 8.0,
-                    gap: 8.0,
+                    radius,
+                    pad: lead,
+                    gap: f64::from(tokens.metrics.icon_label_gap),
                     spread: true,
                 });
             }
@@ -640,11 +664,11 @@ impl Widget for NavRow {
             }
             NavRowKind::Caption { caption, .. } => {
                 cx.element("p");
-                cx.text(TextLook::new(caption.clone(), &style, Some(quiet)));
+                cx.text(TextLook::new(caption.clone(), &body, Some(quiet)));
             }
             NavRowKind::Pending { .. } => {
                 cx.element("li");
-                cx.text(TextLook::new("…".to_owned(), &style, Some(quiet)));
+                cx.text(TextLook::new("…".to_owned(), &body, Some(quiet)));
             }
         }
     }

@@ -666,6 +666,7 @@ impl Widget for BannerBody {
             fill: Some(rgba8(well)),
             edge: Some(rgba8(well_edge(theme, self.notice.kind))),
             radius: f64::from(theme.tokens.radii.control),
+            inset: [0.0; 2],
         });
         let content = self.content();
         // Its words stand where the banner's own geometry measures them.

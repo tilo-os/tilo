@@ -65,6 +65,7 @@ impl SurfaceLevel {
             fill: Some(crate::composition::rgba8(fill)),
             edge: floats.then(|| crate::composition::rgba8(theme.window_edge())),
             radius: self.radius(theme).min(rect.height() / 2.0),
+            inset: [0.0; 2],
         });
         node.floats = floats;
     }

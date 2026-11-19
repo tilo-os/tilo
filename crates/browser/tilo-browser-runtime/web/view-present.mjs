@@ -259,6 +259,14 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       css += textStyle(node.own.look) + `margin:0;padding:${iy}px ${ix}px;border:0;outline:none;font-family:inherit;resize:none;`;
       if (!node.ground) css += 'background:transparent;';
     }
+    // A ground inset from the element's sides is clipped to it by a clear border, its corners
+    // drawn at the ground's own radius inside it; set last, over a face's own corners.
+    const inset = node.ground?.inset;
+    if (inset) {
+      const [ix, iy] = inset;
+      const r = node.ground.radius;
+      css += `border-style:solid;border-color:transparent;border-width:${iy}px ${ix}px;background-clip:padding-box;border-radius:${r + ix}px / ${r + iy}px;`;
+    }
     write(element, 'css', css);
     // What it is, for assistive technology and for the page's own find,
     // selection and focus.

@@ -468,6 +468,7 @@ pub(crate) fn compose_title_in(
         fill: Some(rgba8(fill)),
         edge: Some(rgba8(crate::surface::edge_on(fill))),
         radius: rect.height() / 2.0,
+        inset: [0.0; 2],
     });
 }
 

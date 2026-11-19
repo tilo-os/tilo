@@ -587,6 +587,7 @@ impl Widget for StatTile {
             fill: Some(rgba8(raised)),
             edge: Some(rgba8(crate::surface::edge_on(raised))),
             radius: m.radius,
+            inset: [0.0; 2],
         });
         cx.selected(self.selected);
         let left = self.rect.x0 + m.pad;

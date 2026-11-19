@@ -21,6 +21,7 @@ impl ActivityTimeline {
                 fill: Some(crate::composition::rgba8(raised)),
                 edge: Some(crate::composition::rgba8(crate::surface::edge_on(raised))),
                 radius: f64::from(theme.tokens.radii.control),
+                inset: [0.0; 2],
             });
         }
         let now = self.now();

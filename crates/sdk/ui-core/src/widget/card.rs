@@ -490,16 +490,9 @@ impl Card {
 impl Widget for Card {
     /// A card: its media, head, body and actions.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        use crate::composition::{Ground, rgba8};
         cx.element("article");
         // Its surface, as the canvas lays it under the card's parts.
-        let theme = cx.theme();
-        let raised = theme.tokens.colors.surfaces.raised;
-        cx.ground(Ground {
-            fill: Some(rgba8(raised)),
-            edge: Some(rgba8(crate::surface::edge_on(raised))),
-            radius: CardMetrics::new(theme).radius,
-        });
+        cx.ground(card_ground(cx.theme()));
         cx.children();
     }
 
@@ -1196,3 +1189,16 @@ mod component;
 mod grid_component;
 pub use component::CardProps;
 pub use grid_component::{CardGridCardProps, CardGridProps, DescribedCardGrid};
+
+/// A card's raised surface with its hairline edge, as a page fills the element of a card, or of a
+/// row that stands as one.
+pub(crate) fn card_ground(theme: &Theme) -> crate::composition::Ground {
+    use crate::composition::rgba8;
+    let raised = theme.tokens.colors.surfaces.raised;
+    crate::composition::Ground {
+        fill: Some(rgba8(raised)),
+        edge: Some(rgba8(crate::surface::edge_on(raised))),
+        radius: CardMetrics::new(theme).radius,
+        inset: [0.0; 2],
+    }
+}

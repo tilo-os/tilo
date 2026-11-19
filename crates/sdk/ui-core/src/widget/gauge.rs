@@ -834,6 +834,7 @@ impl Widget for BarGauge {
             fill: Some(rgba8(theme.tokens.colors.intent.value_track)),
             edge: None,
             radius,
+            inset: [0.0; 2],
         });
         let frac = f64::from(self.frac.clamp(0.0, 1.0));
         if frac > 0.0 {
@@ -848,6 +849,7 @@ impl Widget for BarGauge {
                 fill: Some(rgba8(self.resolve_color(theme))),
                 edge: None,
                 radius,
+                inset: [0.0; 2],
             });
         }
     }
