@@ -359,6 +359,16 @@ pub(crate) trait SurfacePublication {
     ) -> Option<tilo_actions::ResourcePresentation> {
         None
     }
+    /// The reads the item `id` of the collection `field` answers from its
+    /// committed state: an app's registered reader (`read_action`) of a
+    /// report's receipt or a conversation's destination, a launch replaying
+    /// what a message carried. Read for every published item child and
+    /// published beside its effects, so a caller reads through the
+    /// projection the app registered rather than through a row the view
+    /// built.
+    fn item_reads(&self, _field: &str, _id: &str) -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
     fn live_row_pending(&self, _id: &str) -> bool {
