@@ -162,10 +162,11 @@ fn copy_assets(
             .flatten()
     })?;
     if !omitted.is_empty() {
-        let attachments =
-            super::collection::named_by_matching(documents, &|app| app != FILES_APP, &|address| {
-                from.read(address)
-            })?;
+        let attachments = super::collection::named_by_matching(
+            documents,
+            &|(app, _)| app != FILES_APP,
+            &|address| from.read(address),
+        )?;
         named.retain(|hash| !omitted.contains(hash));
         named.extend(attachments);
     }

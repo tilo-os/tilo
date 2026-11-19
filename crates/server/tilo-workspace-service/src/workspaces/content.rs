@@ -168,13 +168,11 @@ impl Workspaces {
             .filter(|route| only.is_none_or(|only| only.contains(route)))
             .collect();
         let mut read = WholeDocuments {
-            files_security_basis: only
-                .filter(|routes| {
-                    routes
-                        .iter()
-                        .any(|(app, _)| app == tilo_app_id::apps::FILE_EXPLORER)
-                })
-                .and_then(|_| files_security_basis(&peer)),
+            files_security_basis: routes
+                .iter()
+                .any(|(app, _)| app == tilo_app_id::apps::FILE_EXPLORER)
+                .then(|| files_security_basis(&peer))
+                .flatten(),
             ..WholeDocuments::default()
         };
         for (app, record) in routes {
@@ -304,7 +302,7 @@ impl Workspaces {
     /// `read` read has changed since and none was added: `Ok(Ok(_))` with
     /// what it answered, or `Ok(Err(_))` with the records that changed or
     /// appeared, for the caller to read again. The workspace waits only as
-    /// long as `act` takes.
+    /// long as `act` takes. Retiring legacy payloads also checks Files access policy.
     ///
     /// # Errors
     ///
@@ -313,6 +311,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         read: &WholeDocuments,
+        guard_files_policy: bool,
         act: impl FnOnce() -> R,
     ) -> Result<Result<R, BTreeSet<(String, String)>>, CollaborationError> {
         let state = self.workspace(workspace).await?;
@@ -320,6 +319,14 @@ impl Workspaces {
         // Members' writes are taken into the replica under its own lock: held
         // too, nothing lands while `act` runs.
         let peer = governed.peer();
+        if guard_files_policy
+            && (read.files_security_basis.is_none()
+                || files_security_basis(&peer) != read.files_security_basis)
+        {
+            return Err(CollaborationError::new(
+                "Files access changed during collection",
+            ));
+        }
         let changed: BTreeSet<(String, String)> = peer
             .plaintext_routes()
             .into_iter()

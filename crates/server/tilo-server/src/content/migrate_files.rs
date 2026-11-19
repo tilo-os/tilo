@@ -2,9 +2,11 @@
 //! The new addresses become visible together through a signed Files index change.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::time::SystemTime;
 
 use automerge::AutoCommit;
-use collab_types::WorkspaceId;
+use collab_types::{ContentRetention, EncryptionMetadata, WorkspaceId, file_content_artifact};
 use fs_protocol::tree::{FILES_APP, chunk_document_id};
 use key_group::ContentKeys;
 use tilo_content::{ContentStore, WorkspaceStores};
@@ -100,6 +102,151 @@ async fn migrate_batch(
         .map_err(|error| error.to_string())
 }
 
+/// Which plaintext versions have a durable, byte-equivalent encrypted copy.
+/// A repeated address elsewhere in the workspace still keeps its own copy.
+pub(super) async fn retired_sources(
+    workspaces: &Workspaces,
+    stores: &Arc<WorkspaceStores>,
+    workspace: &str,
+    documents: &[Document],
+    before: SystemTime,
+) -> Option<BTreeSet<String>> {
+    let id = WorkspaceId::parse(workspace)?;
+    let index = chunk_document_id(0);
+    if !documents
+        .iter()
+        .any(|((app, document), _)| app == FILES_APP && document == &index)
+    {
+        return None;
+    }
+    let (store, documents, workspace) = (
+        stores.get(workspace).ok()?,
+        documents.to_vec(),
+        workspace.to_owned(),
+    );
+    let stores = Arc::clone(stores);
+    let (store, workspace, candidates) = tokio::task::spawn_blocking(move || {
+        let tree = tree_of(&documents)?;
+        let sources = file_versions(&documents).ok()?;
+        let destinations: BTreeSet<String> = sources
+            .iter()
+            .map(|source| (source.as_str(), tree.file_hash(source)))
+            .filter(|(source, replacement)| source != replacement)
+            .map(|(_, replacement)| replacement.to_owned())
+            .collect();
+        let mut candidates: Vec<_> = sources
+            .into_iter()
+            .filter_map(|source| {
+                let replacement = tree.file_hash(&source);
+                if replacement == source
+                    || destinations.contains(&source)
+                    || !store.has(&source)
+                    || !stores.written_before(&workspace, replacement, before)
+                {
+                    return None;
+                }
+                let replacement = replacement.to_owned();
+                Some((source, replacement))
+            })
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let shared = super::collection::named_by_matching(
+            &documents,
+            &|(app, document)| app != FILES_APP || tree_chunk(document).is_none(),
+            &|hash| store.read(hash),
+        )
+        .ok()?;
+        candidates.retain(|(source, _)| !shared.contains(source));
+        Some((store, workspace, candidates))
+    })
+    .await
+    .ok()??;
+    if candidates.is_empty() {
+        return None;
+    }
+    let route = DocumentRoute {
+        app_id: FILES_APP.to_owned(),
+        cluster_id: workspace,
+        document: index,
+    };
+    let keys = workspaces.own_route_keys(&route, false).await?.ok()?;
+    tokio::task::spawn_blocking(move || {
+        candidates
+            .into_iter()
+            .filter(|(source, replacement)| is_sealed_copy(&store, id, &keys, source, replacement))
+            .map(|(source, _)| source)
+            .collect()
+    })
+    .await
+    .ok()
+}
+
+fn is_sealed_copy(
+    store: &ContentStore,
+    workspace: WorkspaceId,
+    keys: &ContentKeys,
+    source: &str,
+    replacement: &str,
+) -> bool {
+    let Ok(Some(old)) = inspect_version(store, source) else {
+        return false;
+    };
+    let Some(new) = inspect_version(store, replacement)
+        .ok()
+        .flatten()
+        .and_then(|version| version.manifest)
+    else {
+        return false;
+    };
+    let Some(sealed) = new.sealed() else {
+        return false;
+    };
+    if sealed.group != *keys.workspace().as_uuid().as_bytes()
+        || old.manifest.as_ref().is_some_and(|old| {
+            old.sealed().is_some()
+                || old.tier() != new.tier()
+                || old.chunks().len() != new.chunks().len()
+        })
+    {
+        return false;
+    }
+    let metadata = EncryptionMetadata::content_group(
+        workspace,
+        keys.workspace(),
+        sealed.epoch,
+        ContentRetention::Delta,
+    );
+    let mut raw = blake3::Hasher::new();
+    for (i, chunk) in new.chunks().iter().enumerate() {
+        let hash = hex::encode(chunk.hash);
+        if store.size(&hash) != Some(new.stored_len(chunk)) {
+            return false;
+        }
+        let Some(clear) = store.read(&hash).and_then(|bytes| {
+            keys.open_content(file_content_artifact(workspace), &metadata, &bytes)
+                .ok()
+        }) else {
+            return false;
+        };
+        if clear.len() != chunk.len as usize {
+            return false;
+        }
+        if let Some(old) = &old.manifest {
+            let Some(part) = old.chunks().get(i) else {
+                return false;
+            };
+            if part.len != chunk.len || &part.hash != blake3::hash(&clear).as_bytes() {
+                return false;
+            }
+        } else {
+            raw.update(&clear);
+        }
+    }
+    old.manifest.is_some() || raw.finalize().to_hex().as_str() == source
+}
+
 fn legacy_versions(store: &ContentStore, documents: &[Document]) -> Result<Versions, String> {
     let mut versions = BTreeMap::new();
     let Some(tree) = tree_of(documents) else {
@@ -160,7 +307,6 @@ fn rewrite_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{ContentRetention, EncryptionMetadata, file_content_artifact};
 
     #[test]
     fn an_existing_files_index_preserves_history_when_plaintext_is_sealed() {
@@ -242,5 +388,19 @@ mod tests {
             );
         }
         assert!(legacy_versions(&store, &docs).unwrap().is_empty());
+        assert!(is_sealed_copy(
+            &store,
+            workspace,
+            &keys,
+            &hash,
+            tree.file_hash(&hash),
+        ));
+        assert!(!is_sealed_copy(
+            &store,
+            workspace,
+            &keys,
+            &hash,
+            tree.file_hash(&later_hash),
+        ));
     }
 }

@@ -51,6 +51,13 @@ impl WorkspaceStores {
         Ok(self.kept(workspace)?.store)
     }
 
+    /// Whether a stored item was last written before the given time.
+    #[must_use]
+    pub fn written_before(&self, workspace: &str, hash: &str, before: SystemTime) -> bool {
+        self.kept(workspace)
+            .is_ok_and(|kept| kept.dir.written_before(hash, before))
+    }
+
     /// Remove from `workspace`'s store what nothing in `live` names and was
     /// last written before `before`: content the workspace no longer
     /// references, once whoever wrote it had time to reference it.
