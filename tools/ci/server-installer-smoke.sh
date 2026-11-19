@@ -37,6 +37,13 @@ export TILO_INSTALLER_WORK_DISK="$storage/installer-work.qcow2"
 export TILO_TARGET_DISK="$storage/target.qcow2"
 export TILO_TARGET_SIZE="${TILO_TARGET_SIZE:-20G}"
 export TILO_BOOT_WAIT_SECS="${TILO_BOOT_WAIT_SECS:-1500}"
+# The installer guest is sized to this machine: asking for more memory than
+# the host has leaves the guest too small to start the graphical installer.
+memory=$(awk '/^MemTotal:/ { print int($2 / 1024 / 2) }' /proc/meminfo 2>/dev/null || true)
+[[ $memory =~ ^[0-9]+$ ]] || memory=2048
+(( memory > 4096 )) && memory=4096
+(( memory < 2048 )) && memory=2048
+export TILO_MEM="${TILO_MEM:-$memory}"
 vm="$repo_root/os/dev/vm.sh"
 
 stop() {
@@ -50,6 +57,7 @@ if ! python3 "$repo_root/os/dev/installer-console.py" --socket "$("$vm" console)
   # The guest's serial is the only evidence a boot that never reached the
   # installer leaves, and the trap below removes it with the storage.
   cp "$TILO_RUN/serial.log" "$out/serial.log" 2>/dev/null || true
+  tail -n 120 "$out/serial.log" >&2 2>/dev/null || true
   die "the medium never reached the graphical installer"
 fi
 cp "$TILO_RUN/serial.log" "$out/serial.log" 2>/dev/null || true
