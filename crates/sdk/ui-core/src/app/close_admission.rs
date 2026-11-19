@@ -122,6 +122,13 @@ impl App {
     /// Each pass the close waits on it takes it a step further ([`Self::service_close_admission`]).
     fn left_invocations(&mut self) -> bool {
         use crate::close_admission::Leaving;
+        // The window left takes no more of what the broker hands out, though it answers what
+        // it was handed: the process goes on serving its other windows, and once none takes
+        // them it lets go of its link, so work that comes from now on goes to a process of
+        // its own rather than to this one, which is on its way out.
+        if matches!(self.close_admission.leaving, Leaving::Staying) {
+            crate::window_link::window_stops_taking_invocations();
+        }
         loop {
             let manager = &mut self.collaboration.manager;
             // Without a connection nothing more reaches this window, nor leaves it.

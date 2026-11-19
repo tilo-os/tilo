@@ -21,24 +21,41 @@ pub fn announce() {
     }
 }
 
-/// How many windows this process shows: a process going away with its last one stops
-/// taking windows first ([`stop_serving_with_last_window`]).
+/// How many windows of this process take invocations: the one its launch made, the
+/// windowless endpoint it starts with, and each window the shell asks for later, until it
+/// stops taking them as it closes ([`window_stops_taking_invocations`]). A process with none
+/// left lets go of its link while it is still alive to finish them, so the shell starts its
+/// next window, and the work that comes after, in a process of its own.
 #[cfg(feature = "local-daemons")]
-static WINDOWS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+static TAKING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
-/// The process shows `count` windows now.
+/// The process's loop starts, with one window taking invocations.
 #[cfg(feature = "native")]
-pub(crate) fn shows_windows(count: usize) {
-    WINDOWS.store(count, std::sync::atomic::Ordering::Release);
+pub(crate) fn process_starts() {
+    TAKING.store(1, std::sync::atomic::Ordering::Release);
 }
 
-/// Take no more windows when the window closing now is the process's last: the process goes
-/// with it, so the shell starts its next window, and the work it was asked for, in a process
-/// of its own rather than in this one.
-pub(crate) fn stop_serving_with_last_window() {
+/// The shell asked the process for one more window: it takes invocations too.
+#[cfg(feature = "native")]
+pub(crate) fn window_takes_invocations() {
+    TAKING.fetch_add(1, std::sync::atomic::Ordering::Release);
+}
+
+/// This window takes no more invocations: it answers the ones it was handed and goes. One
+/// that was the process's last to take them lets go of its link, so what is asked of the app
+/// from now on reaches a process that takes it, rather than one that is on its way out.
+pub(crate) fn window_stops_taking_invocations() {
     #[cfg(feature = "local-daemons")]
-    if WINDOWS.load(std::sync::atomic::Ordering::Acquire) <= 1 {
-        transport::stop_serving();
+    {
+        use std::sync::atomic::Ordering;
+        let last = TAKING
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |taking| {
+                taking.checked_sub(1)
+            })
+            .is_ok_and(|before| before == 1);
+        if last {
+            transport::stop_serving();
+        }
     }
 }
 
@@ -512,6 +529,43 @@ mod transport {
             assert_eq!(requested_reveal(), None);
             assert_eq!(requested_open(), None);
             assert!(!is_building());
+        }
+
+        /// A process serves `link` as the launcher handed it one.
+        fn serves(link: Descriptor) {
+            *served() = link.try_clone().ok();
+        }
+
+        /// The windows of a process that are still leaving: the windowless endpoint it
+        /// started with, and the window a send opened in its place.
+        ///
+        /// As the last of them stops taking invocations the process lets go of its link,
+        /// though it is still alive to finish what it was handed: the shell starts the next
+        /// window, and the work that comes after, in a process of its own. Before, the count
+        /// was of windows, and the windowless endpoint still counted as one after it stopped,
+        /// so a process with nothing left to take invocations kept its link, and what was
+        /// asked of the app waited on it until it went.
+        #[test]
+        fn a_process_with_no_window_left_taking_invocations_lets_go_of_its_link() {
+            let Some((ours, theirs)) = link_pair() else {
+                return;
+            };
+            serves(theirs);
+            crate::window_link::process_starts();
+            crate::window_link::window_takes_invocations();
+            // The windowless endpoint stops as the window opens.
+            crate::window_link::window_stops_taking_invocations();
+            assert!(
+                !runtime_portal::process_link::hung_up(&ours),
+                "a window still takes them"
+            );
+            // That window closes; the process stays to save what it holds.
+            crate::window_link::window_stops_taking_invocations();
+            assert!(
+                runtime_portal::process_link::hung_up(&ours),
+                "it lets go of its link once no window of it takes invocations"
+            );
+            *served() = None;
         }
     }
 }
