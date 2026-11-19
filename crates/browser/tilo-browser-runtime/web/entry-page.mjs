@@ -173,7 +173,11 @@ async function inviterName(inviter, origin) {
 /** What an invitation offers, before the person joins: the workspace it is
  * for, who it is from and how many people are in it, and what the role lets
  * them do. `inviterColour` is the presence colour of who made it, where the
- * page has one for them. Resolves to whether they join. */
+ * page has one for them. Resolves to whether they join.
+ *
+ * An invitation sent off the wait list (`offer.ownFirst`) opens the person's
+ * own workspace, and joins them to the one it names on the way: the card says
+ * they are in, that their own workspace opens, and where the other one is. */
 function invitationCard(offer, inviterColour) {
   return new Promise(resolve => {
     const form = element('form', 'tilo-entry-card tilo-invite');
@@ -196,10 +200,30 @@ function invitationCard(offer, inviterColour) {
         face.style.color = readableOn(inviterColour);
       }
       const says = element('span', 'tilo-invite-says');
-      says.append(element('strong', 'tilo-invite-name', inviter), ' invited you to');
+      says.append(element('strong', 'tilo-invite-name', inviter), offer.ownFirst ? ' invited you' : ' invited you to');
       from.append(face, says);
-    } else {
+    } else if (!offer.ownFirst) {
       from.append('You’re invited to');
+    }
+    if (offer.ownFirst) {
+      const heading = element('h2', 'tilo-invite-workspace', 'You’re in');
+      heading.id = 'tilo-invite-workspace';
+      const head = element('div', 'tilo-invite-head');
+      if (inviter) head.append(from);
+      head.append(heading, element('p', 'tilo-invite-people', 'Your own workspace is ready'));
+      form.append(head);
+      // The workspace the invitation joins them to, as the card names any:
+      // its name, then how many people are in it, then where to find it.
+      const joined = element('div', 'tilo-invite-role');
+      joined.append(element('p', 'tilo-invite-role-name', offer.workspaceName || 'The workspace that invited you'));
+      if (Number.isInteger(offer.members) && offer.members > 0) {
+        joined.append(element('p', 'tilo-invite-role-words', offer.members === 1 ? '1 person' : `${offer.members} people`));
+      }
+      joined.append(element('p', 'tilo-invite-role-words', 'Also yours, in the workspace menu'));
+      form.append(joined);
+      form.append(answers(form, resolve, 'Open my workspace'));
+      document.body.append(form);
+      return;
     }
     // An invitation read on its own (a server reached only over iroh) does not carry the
     // workspace's name: the server says it once the person is in.
@@ -220,16 +244,22 @@ function invitationCard(offer, inviterColour) {
         element('p', 'tilo-invite-role-words', ROLE_WORDS[role]));
       form.append(panel);
     }
-    const actions = element('div', 'tilo-entry-actions');
-    for (const [label, join] of [['Join', true], ['Not now', false]]) {
-      const button = element('button', join ? 'tilo-entry-primary' : '', label);
-      button.type = 'button';
-      button.addEventListener('click', () => { form.remove(); resolve(join); });
-      actions.append(button);
-    }
-    form.append(actions);
+    form.append(answers(form, resolve, 'Join'));
     document.body.append(form);
   });
+}
+
+/** The invitation card's two answers: `join`, named for what it does, and
+ * Not now. Either closes the card. */
+function answers(form, resolve, join) {
+  const actions = element('div', 'tilo-entry-actions');
+  for (const [label, joins] of [[join, true], ['Not now', false]]) {
+    const button = element('button', joins ? 'tilo-entry-primary' : '', label);
+    button.type = 'button';
+    button.addEventListener('click', () => { form.remove(); resolve(joins); });
+    actions.append(button);
+  }
+  return actions;
 }
 
 /** The person's name, asked over the page; resolves to what `save(typed)`
