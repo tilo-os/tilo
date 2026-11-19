@@ -15,7 +15,6 @@ scenario "the default shell" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
@@ -44,7 +43,6 @@ scenario "a full dock" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "a01", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "a02", title: "Mail", icon: "mail", badge: 12))
@@ -91,7 +89,6 @@ scenario "the dock on the left" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     let s = shell
     s.dock_edge = .left
     s.dock_fit = .floating
@@ -113,7 +110,6 @@ scenario "the dock on the right" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     let s = shell
     s.dock_edge = .right
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
@@ -134,7 +130,6 @@ scenario "moving an item on the dock" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
@@ -154,7 +149,6 @@ scenario "a rearranged bar" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     let s = shell
     if let clock = s.bar_parts.find(p -> p.kind == BarPartKind.clock) {
         s.bar_parts.move(clock, to: 0)
@@ -176,7 +170,6 @@ scenario "the Tilo preset" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
@@ -195,7 +188,6 @@ scenario "the macos preset" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
@@ -214,7 +206,6 @@ scenario "the windows preset" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
@@ -233,7 +224,6 @@ scenario "the gnome preset" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     apply(shell, .gnome)
 }
 
@@ -247,6 +237,5 @@ scenario "the minimal preset" {
     d.workspaces.insert(LayoutWorkspace(key: "home", name: "Home"))
     d.workspaces.insert(LayoutWorkspace(key: "studio", name: "Studio", current: true))
     d.people.insert(LayoutPerson(key: "mia", name: "Mia"))
-    seed(shell)
     apply(shell, .minimal)
 }

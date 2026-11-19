@@ -1349,7 +1349,6 @@ scenario "the bar's status" {
     stage(device.notifications, waiting())
     d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
     d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
-    seed(shell)
 }
 
 /// Who is here, and the menu a person's presence opens.
@@ -1863,7 +1862,6 @@ scenario "the traditional desktop" {
             ],
         ),
     )
-    seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
@@ -1975,7 +1973,6 @@ scenario "the traditional desktop, a terminal in front" {
             ],
         ),
     )
-    seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
@@ -2027,7 +2024,6 @@ scenario "the agents on the bar" {
             ],
         ),
     )
-    seed(shell)
     let s = shell
     if let part = s.bar_parts.find(p -> p.kind == BarPartKind.agent) { show_part(s, part, true) }
 }

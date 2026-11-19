@@ -280,10 +280,9 @@ impl Staged {
             host.runtime().record_costs(true);
         }
         // The package's own root resources — every layer it has (the shell's `Shell` beside its
-        // layout) and a person's record kept beside them (`root shell: Shell`) — are made and
-        // its migrations run, as the live session does when it loads the package: a scenario that
-        // seeds another layer than the one laid out, or seeds a root through a migration, shows
-        // them.
+        // layout) and a person's record kept beside them (`root shell: Shell`) — are made with
+        // what each starts with, as the live session does when it loads the package: a scenario
+        // that seeds another layer than the one laid out shows them.
         if let Some(host) = instance.host() {
             let meta = host.package(app).map(|package| package.meta);
             let roots = meta.iter().flat_map(|meta| {

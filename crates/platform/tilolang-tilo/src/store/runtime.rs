@@ -63,6 +63,21 @@ impl Store for TiloStore {
         Self::create_in(self, txn, record, id)
     }
 
+    fn mark_migrated_in(&mut self, txn: Txn, doc: &str, migration: &str) -> Result<(), StoreError> {
+        let mut inner = self.mutate();
+        let mut state = inner
+            .txns
+            .remove(&txn.0)
+            .ok_or_else(|| invalid("no such transaction"))?;
+        let edit = DynEdit::Migrated {
+            id: doc.to_owned(),
+            migration: migration.to_owned(),
+        };
+        let marked = inner.mark(&mut state, txn, doc, edit);
+        inner.txns.insert(txn.0, state);
+        marked.map(drop)
+    }
+
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError> {
         // The index names the type of what it holds, and a write names the one it just made
         // before the index derives it: a window opens over either without reading the document.
@@ -319,13 +334,7 @@ impl Store for TiloStore {
             .then(|| inner.burst_gesture(&state, note))
             .flatten();
         let versioned = app.to_string();
-        let (action_id, args) = if note.creating {
-            // The change is part of making what it wrote: nobody made it, and it carries the
-            // platform's own creation action rather than the migration's.
-            (crate::action::CREATE_ACTION.to_owned(), note.args.clone())
-        } else {
-            published_name(note)
-        };
+        let (action_id, args) = published_name(note);
         // A change is one app's, and the document stores each edit under the app its resource is
         // of: what the change wrote of another — a notice of the host's, riding in the change
         // that told its person — is addressed to that app, as the store that wrote it read it.
@@ -342,19 +351,13 @@ impl Store for TiloStore {
             action_id,
             args,
             authorship: Authorship {
-                // A change that is part of a resource's making names nobody, however the
-                // package's action was invoked.
-                invoker: if note.creating {
-                    None
-                } else {
-                    note.invoker.clone()
-                },
+                invoker: note.invoker.clone(),
                 chain: note.chain.clone(),
                 module: note.module.clone(),
                 at: note.at.clone(),
                 from: note.from.clone(),
                 suggested_by: note.suggested_by.clone(),
-                count: if note.creating { 1 } else { note.count.max(1) },
+                count: note.count.max(1),
                 invocation: note.invocation.clone(),
                 gesture,
             },

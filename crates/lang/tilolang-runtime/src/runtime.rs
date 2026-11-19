@@ -625,13 +625,7 @@ impl Runtime {
     ///
     /// `NotFound` for an unknown or ambiguous type, or a store failure.
     pub fn create(&self, ty: &str) -> Result<ResourceRef, RuntimeError> {
-        let record = {
-            let reg = self.core.registry.borrow();
-            let id = reg.resolve_global(ty).map_err(RuntimeError::NotFound)?;
-            reg.new_record(&id)
-                .ok_or_else(|| RuntimeError::NotFound(format!("type {ty}")))?
-        };
-        Ok(self.core.store.borrow_mut().create(&record)?)
+        self.core.make(&self.made_as(ty)?, None)
     }
 
     /// Create the per-workspace root of a type, by id or by a name one loaded package declares: the
@@ -641,14 +635,17 @@ impl Runtime {
     ///
     /// `NotFound` for an unknown or ambiguous type; a store failure, or a root that exists.
     pub fn create_root(&self, ty: &str) -> Result<ResourceRef, RuntimeError> {
-        let record = {
-            let reg = self.core.registry.borrow();
-            let id = reg.resolve_global(ty).map_err(RuntimeError::NotFound)?;
-            reg.new_record(&id)
-                .ok_or_else(|| RuntimeError::NotFound(format!("type {ty}")))?
-        };
-        let id = format!("root-{}", record.ty);
-        Ok(self.core.store.borrow_mut().create_with_id(&record, &id)?)
+        let new = self.made_as(ty)?;
+        let id = format!("root-{}", new.ty);
+        self.core.make(&new, Some(&id))
+    }
+
+    /// What a new resource of a type starts as, by id or by a name one loaded package declares.
+    fn made_as(&self, ty: &str) -> Result<crate::store::NewResource, RuntimeError> {
+        let reg = self.core.registry.borrow();
+        let id = reg.resolve_global(ty).map_err(RuntimeError::NotFound)?;
+        reg.new_record(&id)
+            .ok_or_else(|| RuntimeError::NotFound(format!("type {ty}")))
     }
 
     /// Read a field of a resource, by field id or name. A resource of an app this runtime does
@@ -801,13 +798,6 @@ impl Runtime {
         before: &[Value],
     ) -> Result<Option<Value>, RuntimeError> {
         self.core.default_argument(action, at, before)
-    }
-
-    /// Treat what commits from now on as part of making a resource, not a change someone made
-    /// (a root made first): the change reads as the resource's creation, under the platform's
-    /// own action, and nobody is caught up on it.
-    pub fn set_creating(&self, creating: bool) {
-        self.core.creating.set(creating);
     }
 
     /// The workspace's members as the host last gave them ([`Self::set_members`]).

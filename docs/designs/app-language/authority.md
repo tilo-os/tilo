@@ -45,6 +45,9 @@ who proposed it. Dismissing records the refusal and changes nothing.
   in the resources, and migrations read them. The platform runs the migration once on each
   resource of its type, as an ordinary action in history (undone like any other), recording in
   the same change that it ran. It may move items between collections, which keeps their ids.
+  A migration upgrades only what an earlier version wrote: a resource this version makes is
+  recorded as already migrated in the change that makes it, and what it starts with is its
+  type's `initial action`, never a migration.
 - An app renamed keeps what it had: `app so.tilo.lang.tasks "Tasks" (previously:
   so.tilo.lang.todo)` reads the resources under the old id as its own, where they are. The old id
   is signed into the app, and only the same publisher's app can take it over. The renamed app

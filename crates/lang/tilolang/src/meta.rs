@@ -632,6 +632,20 @@ impl ActionMeta {
         self.role.as_deref() == Some("migration")
     }
 
+    /// Whether it is an `initial action`: never offered, applied by the platform in the change
+    /// that makes each new resource of its type.
+    #[must_use]
+    pub fn is_initial(&self) -> bool {
+        self.role.as_deref() == Some("initial")
+    }
+
+    /// Whether only the platform applies it: a migration or an initial action, which no person,
+    /// agent or code invokes.
+    #[must_use]
+    pub fn platform_applies(&self) -> bool {
+        self.is_migration() || self.is_initial()
+    }
+
     /// Whether it takes a `File`, the person's own: then no command, only a control's
     /// ([`Self::unbound`]'s exception).
     #[must_use]
@@ -815,25 +829,48 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
-    /// The actions the platform offers: not the hidden ones of scenarios, the migrations or the ones
-    /// that take a `File`. This is the one list every surface draws from — the header's buttons and
-    /// menu, an item's menu, the palette.
+    /// The actions the platform offers: not the hidden ones of scenarios, the ones only the
+    /// platform applies or the ones that take a `File`. This is the one list every surface draws
+    /// from — the header's buttons and menu, an item's menu, the palette.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()
-            .filter(|a| !a.scenario && !a.is_migration() && !a.takes_a_file())
+            .filter(|a| !a.scenario && !a.platform_applies() && !a.takes_a_file())
     }
 
-    /// The actions code may call by name: not the hidden ones of scenarios and the migrations.
+    /// The actions code may call by name: not the hidden ones of scenarios and the ones only the
+    /// platform applies.
     pub fn callable_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()
-            .filter(|a| !a.scenario && !a.is_migration())
+            .filter(|a| !a.scenario && !a.platform_applies())
     }
 
     /// The package's migrations (`migration action`), in declaration order.
     pub fn migrations(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions.iter().filter(|a| a.is_migration())
+    }
+
+    /// The migrations of the type `ty` (a type id): those whose target is a resource of it.
+    pub fn migrations_of<'a>(&'a self, ty: &'a str) -> impl Iterator<Item = &'a ActionMeta> {
+        self.migrations()
+            .filter(move |a| self.target_type(a).is_some_and(|target| target.id == ty))
+    }
+
+    /// The `initial action` of the type `ty` (a type id): what each new resource of it starts
+    /// with. The checker allows one per type.
+    #[must_use]
+    pub fn initial_of(&self, ty: &str) -> Option<&ActionMeta> {
+        self.actions
+            .iter()
+            .find(|a| a.is_initial() && self.target_type(a).is_some_and(|target| target.id == ty))
+    }
+
+    /// The type of the resource `action` takes first: what a migration or an initial action
+    /// applies to.
+    #[must_use]
+    pub fn target_type(&self, action: &ActionMeta) -> Option<&TypeMeta> {
+        self.type_named(&action.params.first()?.ty)
     }
 
     /// The views a person or an agent can open or apply: not the hidden ones that present an

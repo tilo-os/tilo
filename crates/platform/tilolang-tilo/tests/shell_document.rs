@@ -100,8 +100,8 @@ fn workspace() -> Replica {
             )
         });
     replica.host.load_compiled(&compiled).unwrap();
-    // The person's shell document, made as the session makes it, and the package's migration
-    // seeding it: the bar's parts and the dock's items, on a shell never arranged.
+    // The person's shell document, made as the session makes it, with what a new shell starts
+    // with: the bar's parts and the dock's items.
     let meta = replica.host.package(APP).unwrap().meta;
     for root in &meta.named_roots {
         replica
@@ -109,7 +109,6 @@ fn workspace() -> Replica {
             .root_resource(APP, &root.ty)
             .expect("the shell document is made");
     }
-    replica.host.migrate();
     // The layout's root the session writes, as the session makes it.
     let layout_ty = meta
         .roots

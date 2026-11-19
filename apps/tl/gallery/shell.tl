@@ -107,7 +107,7 @@ view shell_parts(g: Gallery) {
 
 /// The shell group, with three apps pinned to the dock.
 scenario "shell parts" {
-    fill(root Gallery)
+    root Gallery
 }
 
 /// Note the item moved, in the window's last answer.

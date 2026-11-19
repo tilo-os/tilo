@@ -906,6 +906,18 @@ impl Core {
         self.touched(target.id_string());
         self.init_item(&ctx, &item_ty, &target, &rec)?;
         let author = Some(self.module_of_frame()?);
+        // What the item starts with is part of inserting it: its type's initial action writes in
+        // this same change, when the package whose code this is declares the type.
+        let pkg = author
+            .as_ref()
+            .filter(|module| self.registry.borrow().type_owner(&item_ty.id) == Some(*module))
+            .and_then(|module| self.registry.borrow().package(module));
+        if let Some(pkg) = pkg
+            && let Some(initial) = pkg.meta.initial_of(&item_ty.id)
+        {
+            self.start_content(&pkg, initial, &target)
+                .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        }
         self.ret_h(Value::Ref(RefValue {
             target: Rc::new(target),
             author,

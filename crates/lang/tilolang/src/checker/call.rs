@@ -626,6 +626,18 @@ impl Checker<'_> {
                 self.err("E043", span, format!("a fn computes values and cannot use actions; `{}` is an action. Move this into an action", c.name));
                 Ex::error()
             }
+            (CKind::Action, _) if c.present.role.as_deref() == Some("initial") => {
+                let target = c
+                    .params
+                    .first()
+                    .map_or_else(String::new, |p| p.ty.to_string());
+                self.err("E143", span, format!("`{}` is what a new `{target}` starts with: the platform writes it as each one is made, and nothing invokes it. Insert the `{target}` where it belongs", c.name));
+                Ex::error()
+            }
+            (CKind::Action, Ctx::Action) if self.st.role.as_deref() == Some("initial") => {
+                self.err("E143", span, format!("an initial action is part of making its resource, one change, and `{}` is an action, a change of its own. Write what it does in the initial action itself", c.name));
+                Ex::error()
+            }
             (CKind::Action, Ctx::Action | Ctx::Program) => {
                 // A call runs the action at its own action API, as a change of its own, and goes on from
                 // its journaled result. `suggest act(args)` is the same call, recorded as a
@@ -1798,11 +1810,9 @@ impl Checker<'_> {
                     && v.ty.fits(t))
                 .then(|| v.ty.clone());
                 let v = self.coerce(v, t, a.value.span);
-                Ex::host(
-                    Imp::CollInsert,
-                    vec![b, fid, v],
-                    case.unwrap_or_else(|| (**t).clone()),
-                )
+                let inserted = case.unwrap_or_else(|| (**t).clone());
+                self.inserted.extend(inserted.records());
+                Ex::host(Imp::CollInsert, vec![b, fid, v], inserted)
             }
             (Ty::Collection(t), "remove") => {
                 if !self.arity(name, args, 1, span) {

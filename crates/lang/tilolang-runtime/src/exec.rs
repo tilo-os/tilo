@@ -518,6 +518,158 @@ impl Core {
         value
     }
 
+    /// Make the resource `new` describes, under `id` or a fresh one, as one change that is
+    /// nobody's: the resource's making. What its type's `initial action` writes is in that change,
+    /// and so are the marks of its type's migrations, which upgrade what an earlier version wrote
+    /// and have nothing to do on what this one makes. A type with neither is made as the store
+    /// makes any resource.
+    ///
+    /// # Errors
+    ///
+    /// A store failure, or initial content that failed: then nothing is made.
+    pub(crate) fn make(
+        &self,
+        new: &crate::store::NewResource,
+        id: Option<&str>,
+    ) -> Result<ResourceRef, RuntimeError> {
+        let pkg = {
+            let registry = self.registry.borrow();
+            registry
+                .type_owner(&new.ty)
+                .and_then(|owner| registry.package(owner))
+        };
+        let initial = pkg
+            .as_ref()
+            .and_then(|pkg| pkg.meta.initial_of(&new.ty).cloned());
+        let migrations: Vec<String> = pkg.as_ref().map_or_else(Vec::new, |pkg| {
+            pkg.meta
+                .migrations_of(&new.ty)
+                .map(|migration| migration.id.clone())
+                .collect()
+        });
+        let Some(pkg) = pkg.filter(|_| initial.is_some() || !migrations.is_empty()) else {
+            let mut store = self.store.borrow_mut();
+            return Ok(match id {
+                Some(id) => store.create_with_id(new, id)?,
+                None => store.create(new)?,
+            });
+        };
+        let id = id.map_or_else(|| self.store.borrow_mut().fresh_id("r"), str::to_owned);
+        let txn = self.store.borrow_mut().begin()?;
+        match self.make_in(&pkg, initial.as_ref(), &migrations, txn, new, &id) {
+            Ok((made, note)) => {
+                self.store.borrow_mut().commit(txn, &note)?;
+                Ok(made)
+            }
+            Err(error) => {
+                self.store.borrow_mut().rollback(txn);
+                Err(error)
+            }
+        }
+    }
+
+    /// [`Self::make`]'s writes in the transaction `txn`, and the note its change commits under.
+    fn make_in(
+        &self,
+        pkg: &Package,
+        initial: Option<&ActionMeta>,
+        migrations: &[String],
+        txn: Txn,
+        new: &crate::store::NewResource,
+        id: &str,
+    ) -> Result<(ResourceRef, ChangeNote), RuntimeError> {
+        let made = self.store.borrow_mut().create_in(txn, new, id)?;
+        for migration in migrations {
+            self.store
+                .borrow_mut()
+                .mark_migrated_in(txn, id, migration)?;
+        }
+        let mut touched = std::collections::BTreeSet::from([made.id_string()]);
+        let mut at = None;
+        if let Some(initial) = initial {
+            // The package's own code writes it, in a frame of its own over the making's
+            // transaction: what it inserts starts with its own initial content too.
+            let app = Actor::App(AppId::from(pkg.meta.app.as_str()));
+            let journal = Journal {
+                action: Some(initial.id.clone()),
+                args: vec![Value::resource(&made)],
+                invoker: app.clone(),
+                chain: Vec::new(),
+                from: None,
+                at: None,
+                suggested_by: None,
+                entries: Vec::new(),
+                pending: None,
+                finished: false,
+                approved_by: None,
+                effects: 0,
+                parent: None,
+                invocation: String::new(),
+            };
+            let state = ActionState {
+                txn,
+                action: initial.id.clone(),
+                primary: Some(made.clone()),
+                invoker: app.clone(),
+                suggested_by: None,
+                suggestions: Vec::new(),
+                queued: Vec::new(),
+                scenario: false,
+                invocations: Vec::new(),
+                note: Box::default(),
+                touched: std::collections::BTreeSet::new(),
+                run: Box::new(RunState {
+                    run: format!("make:{id}"),
+                    journal,
+                    cursor: 0,
+                    invoker: app,
+                    suggested_by: None,
+                    clock: None,
+                    journaled: false,
+                }),
+            };
+            self.frames
+                .borrow_mut()
+                .push(pkg.hash.clone(), FrameKind::Action(state));
+            let wrote = self.start_content(pkg, initial, &made);
+            at = Some(self.change_time());
+            if let Some(FrameKind::Action(state)) =
+                self.frames.borrow_mut().pop().map(|frame| frame.kind)
+            {
+                touched.extend(state.touched);
+            }
+            wrote?;
+        }
+        let note = ChangeNote {
+            action: crate::store::CREATE_ACTION.to_owned(),
+            args: Json::String(id.to_owned()),
+            module: pkg.hash.0.clone(),
+            at: Some(at.unwrap_or_else(|| self.clock_now())),
+            touched: touched.into_iter().collect(),
+            count: 1,
+            ..ChangeNote::default()
+        };
+        Ok((made, note))
+    }
+
+    /// Write what the new resource `at` starts with, its type's `initial action`, in the frame on
+    /// top now: part of the change that makes it.
+    pub(crate) fn start_content(
+        &self,
+        pkg: &Package,
+        initial: &ActionMeta,
+        at: &ResourceRef,
+    ) -> Result<(), RuntimeError> {
+        self.call_in_frame(
+            pkg,
+            &format!("a_{}", initial.id),
+            &initial.params,
+            &[Value::resource(at)],
+            None,
+        )
+        .map(drop)
+    }
+
     /// `call_fn`: another package's `fn`, as in `todo.finished(list, t)`. It runs as that
     /// package's own code, on the values it is given, in a frame authored by that package — so
     /// what it makes is its app's, and what it reads is what the code that called it sees. It
@@ -589,9 +741,8 @@ impl Core {
         }
     }
 
-    fn note(&self, ctx: &ExecCtx, pkg: &Package, aref: &ActionRef) -> ChangeNote {
+    fn note(ctx: &ExecCtx, pkg: &Package, aref: &ActionRef) -> ChangeNote {
         ChangeNote {
-            creating: self.creating.get(),
             action: aref.action.clone(),
             args: Json::Array(
                 aref.args
@@ -752,7 +903,7 @@ impl Core {
             Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
             _ => None,
         });
-        let mut note = self.note(ctx, &pkg, first);
+        let mut note = Self::note(ctx, &pkg, first);
         note.count = u32::try_from(refs.len()).unwrap_or(u32::MAX);
         self.frames.borrow_mut().push(
             pkg.hash.clone(),
@@ -802,7 +953,7 @@ impl Core {
                     .collect();
                 (a.queued, a.suggestions, a.txn, note)
             }
-            _ => (Vec::new(), Vec::new(), txn, self.note(ctx, &pkg, first)),
+            _ => (Vec::new(), Vec::new(), txn, Self::note(ctx, &pkg, first)),
         };
         match failure {
             None => {
@@ -1261,7 +1412,7 @@ impl Core {
             Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
             _ => None,
         });
-        let mut note = self.note(&ctx, pkg, &ActionRef::new(action.clone(), args.clone()));
+        let mut note = Self::note(&ctx, pkg, &ActionRef::new(action.clone(), args.clone()));
         // A change of a run, and of every action it called, names the one invocation: what
         // makes the run one action of the workspace.
         if !state.journal.invocation.is_empty() {

@@ -788,3 +788,70 @@ view places<T>(t: T, entry: Option<Action> = .none) {\n    ui.Text(\"x\")\n}\n";
         );
     }
 }
+
+const SHELF: &str = "type Book {\n    title: Text\n    notes: Collection<Book>\n}\n\ntype Shelf {\n    books: Collection<Book>\n}\n";
+
+fn with_shelf(rest: &str) -> String {
+    format!("{SHELF}{rest}")
+}
+
+tilo_test_env::scenario! {
+    /// E143: what an `initial action` may be, which the platform applies as each resource of its
+    /// type is made.
+    fn initial_content_e143;
+
+    phase an_initial_action_is_never_offered_and_names_its_type;
+    {
+        let compiled = crate::common::compile_body(&with_shelf(
+            "initial action stock(s: Shelf) {\n    s.books.insert(Book(title: \"Dune\"))\n}\n",
+        ));
+        let stock = compiled.meta.actions.iter().find(|a| a.name == "stock").unwrap();
+        assert!(stock.is_initial());
+        assert!(compiled.meta.offered_actions().all(|a| a.name != "stock"));
+        assert!(compiled.meta.callable_actions().all(|a| a.name != "stock"));
+        let shelf = compiled.meta.type_named("Shelf").unwrap().id.clone();
+        assert_eq!(compiled.meta.initial_of(&shelf).map(|a| a.name.as_str()), Some("stock"));
+    }
+
+    phase it_takes_only_a_resource_of_its_own_package;
+    {
+        expect("E143", &with_shelf("initial action stock(n: Int) {\n}\n"));
+        expect("E143", &with_shelf("initial action stock(s: Shelf, title: Text) {\n}\n"));
+        expect("E143", &with_shelf("initial action stock(s: Shelf) -> Int {\n    1\n}\n"));
+        expect("E143", &with_shelf("initial action stock(s: Shelf) uses time {\n}\n"));
+    }
+
+    phase a_type_has_one;
+    {
+        expect(
+            "E143",
+            &with_shelf("initial action a(s: Shelf) {\n}\n\ninitial action b(s: Shelf) {\n}\n"),
+        );
+    }
+
+    phase it_calls_no_action_and_nothing_calls_it;
+    {
+        expect(
+            "E143",
+            &with_shelf("action add(s: Shelf) {\n    s.books.insert(Book(title: \"Dune\"))\n}\n\ninitial action stock(s: Shelf) {\n    add(s)\n}\n"),
+        );
+        expect(
+            "E143",
+            &with_shelf("initial action stock(s: Shelf) {\n}\n\naction again(s: Shelf) {\n    stock(s)\n}\n"),
+        );
+    }
+
+    phase content_that_makes_itself_again_is_refused;
+    {
+        let got = crate::common::compile_with(
+            &format!(
+                "app t.x \"X\"\n{}",
+                with_shelf("initial action start(b: Book) {\n    b.notes.insert(Book(title: \"Inside\"))\n}\n")
+            ),
+            &[],
+        )
+        .expect_err("a book that starts with a book never ends");
+        let d = got.iter().find(|d| d.code == "E143").expect("E143");
+        assert!(d.message.contains("would never end"), "{}", d.message);
+    }
+}

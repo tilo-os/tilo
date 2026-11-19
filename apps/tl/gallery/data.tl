@@ -138,7 +138,7 @@ view data(g: Gallery) {
 
 /// The data group, over a release a team is working on.
 scenario "data" {
-    fill(root Gallery)
+    root Gallery
 }
 
 /// Note the row the table picked, in the page's answer.
