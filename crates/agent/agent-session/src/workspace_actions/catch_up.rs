@@ -73,7 +73,19 @@ const HOLD_ROUNDS: usize = 4;
 /// person, held its chains empty: what was written into a part on another
 /// device or in another replica was neither listed nor read, and a write
 /// started a part beside the chain's newest.
-pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
+///
+/// The parts the document wants that the session's replica does not hold yet
+/// are answered, for the caller to ask the workspace for
+/// ([`Worker::ask_parts`]): a workspace that sends a document only once it is
+/// opened sent this service the head of each chain and nothing before it, so
+/// a service that started again held only the newest part of a chain read
+/// whole until someone asked for the others, which nobody did.
+#[must_use = "the parts not here yet are asked for"]
+pub(super) fn hold_parts(
+    holder: &DocumentRoute,
+    mounted: &mut Mounted,
+    state: &WorkspaceState,
+) -> Vec<DocumentRoute> {
     let mut newest: std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)> =
         std::collections::HashMap::new();
     for route in state.documents.iter() {
@@ -91,7 +103,7 @@ pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &
         }
     }
     if newest.is_empty() {
-        return;
+        return Vec::new();
     }
     let asked: Vec<DocumentRoute> = newest
         .values()
@@ -100,15 +112,18 @@ pub(super) fn hold_parts(holder: &DocumentRoute, mounted: &mut Mounted, state: &
         .collect();
     // A record holding none of its chains asks for nothing more.
     if asked.is_empty() && mounted.parts.is_empty() {
-        return;
+        return Vec::new();
     }
     // What it wants moves only with what it holds: nothing merged or handed
     // to it since it was asked last, it is not asked again.
     if asked.is_empty() && mounted.wanted_at == Some(holding(mounted)) {
-        return;
+        return Vec::new();
     }
-    hold_wanted(holder, mounted, state, &newest, asked);
-    mounted.wanted_at = Some(holding(mounted));
+    let missing = hold_wanted(holder, mounted, state, &newest, asked);
+    // A part still on its way is handed once it arrives: the document is asked
+    // again then, though it holds what it held now.
+    mounted.wanted_at = missing.is_empty().then(|| holding(mounted));
+    missing
 }
 
 /// What `mounted` and its parts merged last, as one number: where
@@ -126,14 +141,16 @@ fn holding(mounted: &Mounted) -> u64 {
     hasher.finish()
 }
 
-/// The rounds of [`hold_parts`] from `asked`, the parts first handed.
+/// The rounds of [`hold_parts`] from `asked`, the parts first handed. The
+/// parts of its chains the document wants that the replica does not hold.
 fn hold_wanted(
     holder: &DocumentRoute,
     mounted: &mut Mounted,
     state: &WorkspaceState,
     newest: &std::collections::HashMap<ui::resource::DocumentId, (u64, &DocumentRoute)>,
     mut asked: Vec<DocumentRoute>,
-) {
+) -> Vec<DocumentRoute> {
+    let mut missing = Vec::new();
     for _ in 0..HOLD_ROUNDS {
         for route in std::mem::take(&mut asked) {
             hold(&route, mounted, state);
@@ -156,15 +173,24 @@ fn hold_wanted(
                     cluster_id: holder.cluster_id.clone(),
                     document: record.as_str().to_owned(),
                 };
-                (newest.contains_key(&chain) && state.documents.iter().any(|held| held == &route))
-                    .then_some(route)
+                if !newest.contains_key(&chain) {
+                    return None;
+                }
+                if !state.holds(&route) {
+                    if !missing.contains(&route) {
+                        missing.push(route);
+                    }
+                    return None;
+                }
+                Some(route)
             })
             .filter(|route| !mounted.parts.contains_key(route) && !mounted.foreign.contains(route))
             .collect();
         if asked.is_empty() {
-            return;
+            break;
         }
     }
+    missing
 }
 
 /// Hand the part at `route` to `mounted` whole, as the workspace holds it;
@@ -308,8 +334,25 @@ impl Worker {
         if let Some(behind) = mounted.behind.take() {
             catch_up(holder, mounted, state, Some(&behind));
         }
-        hold_parts(holder, mounted, state);
+        let missing = hold_parts(holder, mounted, state);
         tell_kept(mounted, state, kept);
+        self.ask_parts(holder, missing);
+    }
+
+    /// Ask the workspace of `holder` for `parts`, parts of its chains the
+    /// document held there wants and the session's replica does not hold: each
+    /// arrives as a change, and the document is handed it the next time it is
+    /// used ([`hold_parts`]).
+    pub(super) fn ask_parts(&mut self, holder: &DocumentRoute, parts: Vec<DocumentRoute>) {
+        if parts.is_empty() {
+            return;
+        }
+        let Some(workspace_id) = WorkspaceId::parse(&holder.cluster_id) else {
+            return;
+        };
+        if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
+            workspace.ask_routes(workspace_id, parts);
+        }
     }
 
     /// Whether the workspace holds each of `routes`, as far as it answered. One still on

@@ -675,6 +675,21 @@ impl Worker {
         bounded_permissions(&policy, who).ok()
     }
 
+    /// Let go of the replicas used longest ago until one more fits.
+    fn let_go_oldest_bounded(&mut self) {
+        while self.bounded.len() >= super::MAX_MOUNTED {
+            let Some(oldest) = self
+                .bounded
+                .iter()
+                .min_by_key(|(_, held)| held.held.used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.bounded.remove(&oldest);
+        }
+    }
+
     /// `who`'s replica of the record at `route` (a part: of the record it is
     /// held beside), opened as them on their access now, or the one held
     /// for them while that access is unchanged.
@@ -724,17 +739,7 @@ impl Worker {
         }
         if !current {
             self.bounded.remove(&key);
-            while self.bounded.len() >= super::MAX_MOUNTED {
-                let Some(oldest) = self
-                    .bounded
-                    .iter()
-                    .min_by_key(|(_, held)| held.held.used)
-                    .map(|(key, _)| key.clone())
-                else {
-                    break;
-                };
-                self.bounded.remove(&oldest);
-            }
+            self.let_go_oldest_bounded();
             let (bytes, heads) = state.document(&holder).map_err(unavailable)?;
             let app = ConfinedReplica::open(
                 &self.catalogue,
@@ -780,7 +785,7 @@ impl Worker {
         // aside when the workspace last caught up: what others wrote since is
         // merged before it acts, only the changes after the heads it holds.
         super::catch_up::catch_up(&holder, &mut held.held, state, None);
-        super::catch_up::hold_parts(&holder, &mut held.held, state);
+        let missing = super::catch_up::hold_parts(&holder, &mut held.held, state);
         super::catch_up::tell_kept(&mut held.held, state, kept);
         if holder != *route && !held.held.parts.contains_key(route) {
             let (part, heads) = state.document(route).map_err(unavailable)?;
@@ -793,6 +798,7 @@ impl Worker {
                 .map_err(|error| unavailable(error.to_string()))?;
             held.held.parts.insert(route.clone(), Some(heads));
         }
+        self.ask_parts(&holder, missing);
         Ok(key)
     }
 
