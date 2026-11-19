@@ -9,7 +9,8 @@ own, and reads every claim back off the session rather than off the clients:
   1. asking    each client opens with `initialize` and waits: nothing it asked
                for runs until the person answers the sheet the MCP server puts up.
   2. admitted  the person answers each sheet, once per client; each agent is
-               admitted as an agent session of its own (`Claude Code #1`) acting
+               admitted as an agent session of its own, called as the workspace
+               names the agent it admits the client as (`Claude Code`), acting
                for the person, and shows on the shell as its own presence, a
                session of its own beside the person's runs.
   3. acting    each admitted client is served as itself: its own tools answer,
@@ -48,9 +49,9 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SESSION_LAUNCHER = REPO / "dist" / "dev" / "nested-session.sh"
 # tools/ci/session-proofs.sh points this at the session build the run made.
 SHELL = pathlib.Path(os.environ.get("TILO_SHELL_BINARY", REPO / "target" / "debug" / "tilo-session"))
-# What each client calls itself, and the agent of its own the MCP server admits it as:
-# the first connection of that client on this device.
-CLIENTS = [("Claude Code", "Claude Code #1"), ("Codex", "Codex #1")]
+# What each client calls itself. The workspace names the agent it is admitted as after the
+# client, so the shell calls the session by that name too.
+CLIENTS = ["Claude Code", "Codex"]
 
 failures: list[str] = []
 
@@ -267,7 +268,7 @@ def main() -> int:
               str(shell.mcp))
 
         print("\n[1] two agents ask, and nothing they ask for runs yet")
-        for name, _ in CLIENTS:
+        for name in CLIENTS:
             agents.append(Agent(shell.mcp, name))
         # The sheet is up: the person's own keyboard is what answers it. The
         # clients are still waiting on their `initialize` until then.
@@ -298,12 +299,12 @@ def main() -> int:
               shell.grants() == grants_before, ", ".join(shell.grants())[:160])
         sessions = {agent.get("name") for agent in shell.agents()}
         check("the shell shows both agent sessions, each as itself",
-              sessions == {expected for _, expected in CLIENTS}, ", ".join(sorted(map(str, sessions))))
+              sessions == set(CLIENTS), ", ".join(sorted(map(str, sessions))))
         check("each session is the person's own to end",
               all(agent.get("stoppable") for agent in shell.agents()), json.dumps(shell.agents())[:160])
 
         print("\n[3] each agent acts as itself")
-        for agent, (name, _) in zip(agents, CLIENTS):
+        for agent, name in zip(agents, CLIENTS):
             agent.send("tools/list", {})
             listed = (agent.reply() or {}).get("result") or {}
             tools = sorted(tool.get("name", "") for tool in listed.get("tools") or [])
@@ -366,7 +367,7 @@ def main() -> int:
         # The name a reader activates it by, as a person's pointer press reaches the same button.
         pressed = shell.call({"op": "click_named", "name": "Stop"})
         check("Stop is a control a reader can name", "ok" in pressed, json.dumps(pressed)[:120])
-        keys = [shown for _, shown in CLIENTS]
+        keys = list(CLIENTS)
         gone = keys.index(stopped_name)
         stopped, other = agents[gone], agents[1 - gone]
         until(lambda: len(shell.agents()) < 2, 10)
