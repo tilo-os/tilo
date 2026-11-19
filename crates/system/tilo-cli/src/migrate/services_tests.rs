@@ -28,6 +28,7 @@ use super::workspace::{Answer, Invocation, Refused, Workspace};
 #[derive(Clone, Debug, Default)]
 struct Kept {
     title: String,
+    body: String,
     url: String,
     parent: Option<String>,
     project: Option<String>,
@@ -40,6 +41,8 @@ struct Kept {
 #[derive(Default)]
 struct Tasks {
     calls: usize,
+    /// How many issues it made: each one's id is its count.
+    made: usize,
     issues: BTreeMap<String, Kept>,
     areas: usize,
     /// A title Tasks refuses, as it refuses a title too long.
@@ -102,9 +105,27 @@ impl Tasks {
         {
             bail!(refused(format!("issue {} in the list: too long", at + 1)));
         }
+        // What Tasks refuses of an entry refuses the list, naming the entry.
+        for (at, issue) in list.iter().enumerate() {
+            if text(issue, "title").chars().count() > 240 {
+                bail!(refused(format!(
+                    "issue {} in the list: An issue's title fits on a line",
+                    at + 1
+                )));
+            }
+            if let Some(Value::String(parent)) = issue.get("parent")
+                && !self.issues.contains_key(parent)
+            {
+                bail!(refused(format!(
+                    "issue {} in the list: no issue named {parent}",
+                    at + 1
+                )));
+            }
+        }
         let mut made: Vec<String> = Vec::new();
         for issue in &list {
-            let id = format!("issue-{}", self.issues.len());
+            let id = format!("issue-{}", self.made);
+            self.made += 1;
             let parent = match (
                 issue.get("under").and_then(Value::as_str),
                 issue.get("parent"),
@@ -113,16 +134,14 @@ impl Tasks {
                     let place: usize = place.parse().expect("a place");
                     Some(made[place - 1].clone())
                 }
-                (None, Some(Value::String(parent))) => {
-                    assert!(self.issues.contains_key(parent), "{parent}");
-                    Some(parent.clone())
-                }
+                (None, Some(Value::String(parent))) => Some(parent.clone()),
                 _ => None,
             };
             self.issues.insert(
                 id.clone(),
                 Kept {
                     title: text(issue, "title"),
+                    body: text(issue, "body"),
                     url: text(issue, "url"),
                     parent,
                     project: issue["project"].as_str().map(str::to_owned),
@@ -382,4 +401,109 @@ fn a_refused_issue_is_named_and_the_rest_of_its_list_lands() {
     tasks.refused_title = None;
     invocation(&place, &mut tasks, &issues, "invocation-2").unwrap();
     assert_all_there(&tasks, 50);
+}
+
+/// An import cut off part-way and resumed, as a person's large tracker goes: what the second import
+/// brings sits under and relates to issues the first import made, by what the first import kept of
+/// them; a relation to an issue outside the import waits without refusing anything; and a title
+/// longer than Tasks takes is cut, said whole in the description. The second import lands
+/// everything it has, in a handful of calls.
+#[test]
+fn a_resumed_import_brings_issues_naming_ones_an_earlier_import_brought_or_none_brought() {
+    let dir = tempfile::tempdir().unwrap();
+    let place = Place::at(dir.path());
+    reviewed(&place);
+    let mut issues = tracker(450);
+    // Across the cut: sub-issues and relations of issues the first import made.
+    issues[250].parent = Some(page(10));
+    issues[260].relations.push(IncomingRelation {
+        kind: "blocks".into(),
+        page: page(15),
+    });
+    // Outside the import.
+    issues[270].relations.push(IncomingRelation {
+        kind: "related".into(),
+        page: "https://linear.example/other/issue/OPS-1/elsewhere".into(),
+    });
+    issues[290].title = "A title that goes on. ".repeat(20);
+
+    let mut tasks = Tasks {
+        drops_after: Some(1 + 3 + 3 + 1),
+        ..Tasks::default()
+    };
+    assert!(invocation(&place, &mut tasks, &issues, "invocation-1").is_err());
+    assert_eq!(
+        landed(&place),
+        200,
+        "the first list landed, then the import was cut off"
+    );
+    let by_page = |tasks: &Tasks, page: &str| -> Option<String> {
+        tasks
+            .issues
+            .iter()
+            .find(|(_, issue)| issue.url == page)
+            .map(|(id, _)| id.clone())
+    };
+    tasks.drops_after = None;
+    let calls = tasks.calls;
+
+    invocation(&place, &mut tasks, &issues, "invocation-2").unwrap();
+    assert_eq!(landed(&place), 450, "nothing refused");
+    let made = |at: usize| &tasks.issues[&by_page(&tasks, &page(at)).unwrap()];
+    assert_eq!(made(250).parent, by_page(&tasks, &page(10)));
+    let fifteen = by_page(&tasks, &page(15)).unwrap();
+    assert!(
+        made(260)
+            .links
+            .contains(&format!("tasks.issues/issues/{fifteen}")),
+        "{:?}",
+        made(260).links
+    );
+    let long = made(290);
+    assert_eq!(long.title.chars().count(), 240);
+    assert!(long.title.ends_with('…'), "{}", long.title);
+    assert!(
+        long.body.starts_with(issues[290].title.trim()),
+        "{}",
+        long.body
+    );
+    // The issues the first import made but did not finish (comments, links) and the 250 new ones:
+    // a call per list, per group of comments and per group of links.
+    assert!(tasks.calls - calls <= 12, "{} calls", tasks.calls - calls);
+}
+
+/// The person deleted an issue an earlier import brought: a later issue under it still comes
+/// over, at the top level, with the rest of its list.
+#[test]
+fn an_issue_whose_parent_was_deleted_since_comes_over_at_the_top() {
+    let dir = tempfile::tempdir().unwrap();
+    let place = Place::at(dir.path());
+    reviewed(&place);
+    let mut tasks = Tasks::default();
+    invocation(&place, &mut tasks, &tracker(50), "invocation-1").unwrap();
+    let deleted = tasks
+        .issues
+        .iter()
+        .find(|(_, issue)| issue.url == page(20))
+        .map(|(id, _)| id.clone())
+        .unwrap();
+    tasks.issues.remove(&deleted);
+
+    let mut issues = tracker(60);
+    issues[55].parent = Some(page(20));
+    invocation(&place, &mut tasks, &issues, "invocation-2").unwrap();
+    assert_eq!(landed(&place), 60);
+    let made = |at: usize| {
+        tasks
+            .issues
+            .iter()
+            .find(|(_, issue)| issue.url == page(at))
+            .unwrap()
+    };
+    assert_eq!(made(55).1.parent, None, "at the top level");
+    assert_eq!(
+        made(56).1.parent.as_deref(),
+        Some(made(55).0.as_str()),
+        "its own sub-issue under it"
+    );
 }

@@ -59,6 +59,9 @@ const ISSUES_BYTES: usize = 384 * 1024;
 /// history, and one message of the workspace's session.
 const GROUP_MEMBERS: usize = 500;
 const GROUP_BYTES: usize = 256 * 1024;
+/// The most characters an issue's title has in Tasks (its own bound): a longer one is cut to it,
+/// and said whole at the top of the issue's description.
+const TITLE_CHARS: usize = 240;
 /// How Tasks names the kind of an issue a link points at.
 const ISSUE_KIND: &str = "tasks.tracker.issues";
 use tilo_app_id::apps::TASKS as TASKS_APP;
@@ -735,14 +738,17 @@ impl Landing<'_, '_> {
         for call in calls(&missing, ISSUES_PER_CALL, ISSUES_BYTES, |(_, listed)| {
             listed.to_string().len()
         }) {
-            self.make(call, refused)?;
+            self.make(call, true, refused)?;
         }
         Ok(())
     }
 
+    /// Make `issues` in one call, each under its parent when `nest`; a list Tasks refuses is
+    /// halved until the issue it refuses is alone.
     fn make(
         &mut self,
         issues: &[(&IncomingIssue, Value)],
+        nest: bool,
         refused: &mut Vec<RefusedItem>,
     ) -> Result<()> {
         if issues.is_empty() {
@@ -751,7 +757,7 @@ impl Landing<'_, '_> {
         let mut list = Vec::with_capacity(issues.len());
         for (at, (issue, listed)) in issues.iter().enumerate() {
             let mut listed = listed.clone();
-            if let Some(parent) = &issue.parent {
+            if let Some(parent) = issue.parent.as_ref().filter(|_| nest) {
                 let earlier = issues
                     .get(..at)
                     .and_then(|before| before.iter().position(|(other, _)| other.url == *parent));
@@ -789,15 +795,26 @@ impl Landing<'_, '_> {
             }
             Err(error) if super::workspace::Refused::of(&error).is_none() => Err(error),
             Err(error) if issues.len() == 1 => {
-                if let Some((issue, _)) = issues.first() {
-                    refused.push(refusal(&issue.key, &issue.identifier, &error));
+                let Some((issue, listed)) = issues.first() else {
+                    return Ok(());
+                };
+                // The issue an earlier import made its parent may be gone from Tasks (deleted
+                // since): the issue comes over all the same, at the top level.
+                if nest
+                    && issue
+                        .parent
+                        .as_ref()
+                        .is_some_and(|parent| self.kept.issues.contains_key(parent))
+                {
+                    return self.make(&[(*issue, listed.clone())], false, refused);
                 }
+                refused.push(refusal(&issue.key, &issue.identifier, &error));
                 Ok(())
             }
             Err(_) => {
                 let (first, rest) = issues.split_at(issues.len() / 2);
-                self.make(first, refused)?;
-                self.make(rest, refused)
+                self.make(first, nest, refused)?;
+                self.make(rest, nest, refused)
             }
         }
     }
@@ -1117,13 +1134,24 @@ fn listed(issue: &IncomingIssue, project: Option<&String>) -> Value {
         .and_then(|day| day.at(12, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC).ok())
         .map(|noon| noon.timestamp().as_millisecond());
     let title = if issue.title.trim().is_empty() {
-        issue.identifier.as_str()
+        issue.identifier.trim()
     } else {
-        issue.title.as_str()
+        issue.title.trim()
+    };
+    let (title, body) = if title.chars().count() > TITLE_CHARS {
+        let cut: String = title.chars().take(TITLE_CHARS.saturating_sub(1)).collect();
+        let body = if issue.body.trim().is_empty() {
+            title.to_owned()
+        } else {
+            format!("{title}\n\n{}", issue.body)
+        };
+        (format!("{}…", cut.trim_end()), body)
+    } else {
+        (title.to_owned(), issue.body.clone())
     };
     json!({
-        "title": title.trim(),
-        "body": issue.body,
+        "title": title,
+        "body": body,
         "status": issue.status,
         "assignee": issue.assignee,
         "url": issue.url,
