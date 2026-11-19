@@ -283,6 +283,9 @@ tilo_test_env::scenario! {
             .set("XDG_STATE_HOME", home.path().join("state"));
         let (people, mut frame) = agent_here_at((390, 844)).expect("the roster places its layer");
         people.borrow().toggle();
+        // Opening asks for a frame; this harness's stand-in layer asks none of its own, so the
+        // frame the opening asks for is taken here, as it is on a phone.
+        frame.relayout();
         settle(&mut frame);
         let shown = labels(&frame);
         assert!(

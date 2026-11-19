@@ -518,7 +518,7 @@ fn say(
 /// part of the chain of messages derived from it. Each message that mentions Bea is one notice,
 /// opening that message in the chat's own record as a search hit on it does.
 fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
-    ui::app_surface::register_built_in(CHAT, CHAT_SURFACE);
+    ui::app_surface::register_package(CHAT, CHAT_SURFACE);
     let mut chat = AutoCommit::new();
     let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
     let entry = chat
@@ -588,7 +588,7 @@ struct Talk {
 /// What Bea is told of `said` (id, author, words) in her conversation with Scribe, while a window
 /// on screen shows what `on_screen` takes (app, item).
 fn bea_and_scribe(said: &[(&str, ui::MemberId, &str)], on_screen: OnScreen) -> Talk {
-    ui::app_surface::register_built_in(CHAT, CHAT_SURFACE);
+    ui::app_surface::register_package(CHAT, CHAT_SURFACE);
     let part_id = DocumentId::derived("messages", &DocumentId::workspace_default()).part(0);
     let mut part = AutoCommit::new();
     ui::resource::init(

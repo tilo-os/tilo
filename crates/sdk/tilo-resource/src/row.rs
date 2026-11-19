@@ -213,11 +213,14 @@ pub struct LiveRow {
 impl LiveRow {
     /// A row with a stable `id` (unique within the resource, and naming the
     /// same entity for as long as it lives: a process id with its start
-    /// time, a container id), a `kind` tag and a human `label`. It names no
-    /// declared type, so search cannot name what it is and a press on it can
-    /// only offer the operations the app adds; a production app publishes
-    /// [`Self::typed`] instead, and the repository's live-row check refuses
-    /// this one in an app or a session surface.
+    /// time, a container id), a `kind` tag and a human `label`.
+    ///
+    /// The untyped builder is framework-internal: it names no declared type,
+    /// so search cannot say what the row is and a press on it offers only the
+    /// operations the caller adds. Production code publishes
+    /// [`Self::typed`]; the repository's live-row check refuses this one in
+    /// an app or a session surface.
+    #[doc(hidden)]
     pub fn new(id: impl Into<String>, kind: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             resource: std::rc::Rc::new(ResourceSpec::new(id, kind, label)),
@@ -277,14 +280,6 @@ impl LiveRow {
         row
     }
 
-    /// This row's type, saying what it is as people name it ([`Self::typed`]);
-    /// a row made with [`Self::new`] says nothing.
-    #[must_use]
-    pub fn with_type(mut self, words: tilo_actions::ResourceType) -> Self {
-        std::rc::Rc::make_mut(&mut self.resource).resource_type = Some(words);
-        self
-    }
-
     /// Attach the stable source-domain identity used to find this row across
     /// live dispatch aliases. It is descriptive metadata only and grants no
     /// permission or authority. Invalid identities are omitted at this
@@ -300,6 +295,11 @@ impl LiveRow {
     /// (a search hit, a catalogue entry), as a row: its presentation,
     /// views, operations and children. Its document actions are dropped at
     /// any depth: the resource's own publication carries them.
+    ///
+    /// Framework-internal, beside [`Self::new`]: the row takes whatever the
+    /// resource carries rather than a declared type's words and effects, so
+    /// nothing here says what it is to search.
+    #[doc(hidden)]
     pub fn from_resource(resource: ResourceSpec) -> Self {
         Self {
             resource: std::rc::Rc::new(crate::share::resolved_outside_document(resource)),
@@ -325,6 +325,10 @@ impl LiveRow {
     /// form, named after the form and asking its own questions. Everything a
     /// type declares for its rows as they are goes through the declaration
     /// (`#[derive(Row)]`'s `effects = E`), never through here.
+    ///
+    /// Framework-internal: an app's row offers effects through its type's
+    /// declaration and the bindings of [`Self::typed_with`].
+    #[doc(hidden)]
     #[must_use]
     pub fn specialized(mut self, operations: impl IntoIterator<Item = ActionSpec>) -> Self {
         for operation in operations {
@@ -336,6 +340,10 @@ impl LiveRow {
     /// # Panics
     /// In a debug build, when `operation` is a document mutation; a release
     /// build drops it.
+    ///
+    /// Framework-internal, beside [`Self::new`]: a row offers its effects
+    /// through its type's declaration.
+    #[doc(hidden)]
     #[must_use]
     pub fn operation(mut self, operation: ActionSpec) -> Self {
         if crate::share::admits_outside_document(&operation, self.id()) {
@@ -358,6 +366,10 @@ impl LiveRow {
     /// Offer `effect`, bound to this row's entity (stop *this* process):
     /// invoked here, it reaches the surface's or view's handler of `E` as
     /// that value, under the effect's declared contract.
+    ///
+    /// Framework-internal: a row's type declares its effects
+    /// (`#[effect(on = Row)]`) and [`Self::typed`] publishes them.
+    #[doc(hidden)]
     #[must_use]
     pub fn effect<E: Effect>(self, effect: &E) -> Self {
         self.operation(effect.bound())

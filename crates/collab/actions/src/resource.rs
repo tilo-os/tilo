@@ -830,6 +830,10 @@ impl Clone for ResourceSpec {
 }
 
 impl ResourceSpec {
+    /// A resource with a stable `id`, a `kind` and a human `label`.
+    /// Framework-internal: a declaration builds a resource's tree, never an
+    /// app.
+    #[doc(hidden)]
     pub fn new(id: impl Into<String>, kind: impl Into<String>, label: impl Into<String>) -> Self {
         Self {
             id: ResourceId::new(id),
@@ -1972,7 +1976,8 @@ impl ActionSpec {
         )
     }
 
-    /// An action with a real typed argument surface.
+    /// An action with a real typed argument surface. Framework-internal: the
+    /// declaration macros and the tilolang publisher build specs, never an app.
     ///
     /// This is the constructor for an argument that has a *type* — a number in
     /// `0..=1`, a rate, one of a fixed set of filter names — rather than prose
@@ -1995,6 +2000,7 @@ impl ActionSpec {
     /// optional means. Text the palette cannot parse into the primary
     /// parameter's type is likewise left unbound rather than coerced; only the
     /// keyboard path can be that lossy, and the external path stays strict.
+    #[doc(hidden)]
     pub fn typed(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -2021,6 +2027,7 @@ impl ActionSpec {
     /// [`typed`](Self::typed) for a type shared by many targets: the builder
     /// is given the target of the spec being invoked. A nullary one is
     /// encoded per invocation, as its target says what it does.
+    #[doc(hidden)]
     pub fn typed_on(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -2046,6 +2053,7 @@ impl ActionSpec {
 
     /// A typed effect or view operation. This is the non-document counterpart
     /// to [`typed`](Self::typed), with the same strict multi-parameter binding.
+    #[doc(hidden)]
     pub fn typed_operation(
         id: impl Into<String>,
         label: impl Into<String>,
@@ -2073,6 +2081,7 @@ impl ActionSpec {
 
     /// [`typed_operation`](Self::typed_operation) for a type shared by many
     /// targets, as [`typed_on`](Self::typed_on) is for [`typed`](Self::typed).
+    #[doc(hidden)]
     pub fn typed_operation_on(
         id: impl Into<String>,
         label: impl Into<String>,

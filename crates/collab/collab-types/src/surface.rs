@@ -25,7 +25,7 @@ use crate::receipt::{ReceiptSurface, SurfaceSource, WrittenDocument};
 pub const ANY_ITEM: &str = "*";
 
 /// An app's surface file: every resource kind it publishes.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct SurfaceFile {
     pub resources: Vec<Surface>,
     /// The resource kinds of other apps this app reads (`reads = [kind]`):
@@ -47,6 +47,15 @@ impl SurfaceFile {
         // a second, TOML-specific copy of their whole deserializer.
         let value: serde_json::Value = toml::from_str(text).map_err(|error| error.to_string())?;
         serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
+    /// Read a surface in the JSON form `tilo_resource::committed_surface!`
+    /// generated from its `surface.toml` at build time.
+    ///
+    /// # Errors
+    /// JSON that is not a surface.
+    pub fn from_json(json: &str) -> Result<Self, String> {
+        serde_json::from_str(json).map_err(|error| error.to_string())
     }
 
     /// Whether this app declares that it reads a resource kind of the app
@@ -390,7 +399,7 @@ writes = ["document", "comments.*"]
             assert!(forged.surface(&document, None, Some(&hash)).is_none());
         }
 
-        phase every_committed_surface_parses;
+        phase every_committed_surface_parses_and_its_generated_form_reads_as_it_does;
         {
             let apps = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
             let mut parsed = 0;
@@ -402,6 +411,21 @@ writes = ["document", "comments.*"]
                 let surface = SurfaceFile::parse(&bytes)
                     .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
                 assert!(surface.resource(None).is_some(), "{}", file.display());
+                // The form `committed_surface!` generates for a built-in app reads as the file does.
+                let generated = serde_json::to_string(
+                    &toml::from_str::<serde_json::Value>(
+                        std::str::from_utf8(&bytes).expect("a surface file is UTF-8"),
+                    )
+                    .expect("a committed surface is TOML"),
+                )
+                .expect("a surface is JSON");
+                assert_eq!(
+                    SurfaceFile::from_json(&generated)
+                        .unwrap_or_else(|error| panic!("{}: {error}", file.display())),
+                    surface,
+                    "{}",
+                    file.display()
+                );
                 parsed += 1;
             }
             assert!(parsed > 10, "found the apps' surfaces");

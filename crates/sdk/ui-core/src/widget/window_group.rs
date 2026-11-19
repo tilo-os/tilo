@@ -1641,6 +1641,11 @@ impl WindowGroup {
             && !self.bar.control_hit(p)
     }
 
+    /// Whether `p` is on a part of the bar's toolbar: its navigation, its location or its actions.
+    pub fn toolbar_hit(&self, p: Point) -> bool {
+        self.shows_its_bar() && self.bar.toolbar_hit(p)
+    }
+
     pub fn set_carriable(&mut self, carriable: bool) {
         self.bar.set_carriable(carriable);
     }

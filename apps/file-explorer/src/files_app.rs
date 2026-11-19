@@ -7736,19 +7736,10 @@ impl FilesState {
     }
 
     pub(crate) fn published_row(&self, id: &str) -> Option<LiveRow> {
-        fn find(row: &LiveRow, id: &str) -> Option<LiveRow> {
-            if row.id() == id {
-                return Some(row.clone());
-            }
-            row.exported()
-                .children
-                .iter()
-                .find_map(|child| find(&LiveRow::from_resource(child.clone()), id))
-        }
         if let Some(found) = self
             .published_live_rows()
             .iter()
-            .find_map(|row| find(row, id))
+            .find_map(|row| row.find(id))
         {
             return Some(found);
         }

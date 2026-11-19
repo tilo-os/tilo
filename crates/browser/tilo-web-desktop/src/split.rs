@@ -166,6 +166,6 @@ lazy_exports!("peer":
     "parseLink", "formatLink", "formatInviteLink", "nativeLink", "qrSvg",
     "rememberEntered", "nameEntered", "markEnteredUnavailable", "forgetGoneWorkspaces",
     "settleFailedWorkspace", "sealedInvitationLink", "workspaceDeleted",
-    "forgetDeletedWorkspace", "component_catalogue_response", "project_browser_accounts",
+    "forgetDeletedWorkspace", "forgetEnteredAt", "component_catalogue_response", "project_browser_accounts",
     "verifiedChangeHashes",
 );

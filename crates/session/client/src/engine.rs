@@ -2540,7 +2540,7 @@ mod tests {
             })
         };
         assert!(verbs(&engine).is_none(), "no surface is named yet");
-        collab_types::app_surface::register_built_in(
+        collab_types::app_surface::register_package(
             "so.tilo.tasks",
             include_bytes!("../../../../apps/tasks/surface.toml"),
         );

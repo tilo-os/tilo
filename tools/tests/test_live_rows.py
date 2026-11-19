@@ -111,28 +111,30 @@ class LiveRowsTests(unittest.TestCase):
             "a test's row is not production",
         )
 
-    def test_a_new_untyped_row_fails_and_a_migrated_one_lowers_the_baseline(self):
-        root = self.fixture({
+    def test_an_untyped_row_fails_and_a_declared_one_passes(self):
+        untyped = self.fixture({
             "apps/mail/src/app.rs": "fn f() { LiveRow::new(\"a\", \"b\", \"c\"); }\n",
-            "apps/notes/src/app.rs": TYPED,
         })
-        baseline = root / "baseline.txt"
-        baseline.write_text("untyped-live-row 1 apps/notes/src/app.rs\n", encoding="utf-8")
-        errors = live_rows.check(root, baseline)
-        self.assertTrue(
-            any("apps/mail/src/app.rs: 1 untyped-live-row (allowed 0)" in e for e in errors)
-        )
-        self.assertTrue(
-            any(
-                "untyped-live-row 1 apps/notes/src/app.rs is now 0" in e
-                for e in errors
+        errors = live_rows.check(untyped)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("apps/mail/src/app.rs: 1 untyped-live-row", errors[0])
+
+        typed = self.fixture({"apps/tube/src/rows.rs": TYPED})
+        self.assertEqual(live_rows.check(typed), [])
+
+    def test_a_hand_built_tree_or_bound_action_fails(self):
+        root = self.fixture({
+            "apps/tube/src/rows.rs": (
+                "fn tree() { ResourceSpec::new(\"a\", \"b\", \"c\"); }\n"
+                "fn action() { ActionSpec::typed(id, label, \"\", locus, params, build); }\n"
             ),
-            "a migrated app must lower its count, not leave a stale line",
-        )
+        })
+        rules = sorted(error.split()[2].rstrip(";") for error in live_rows.check(root))
+        self.assertEqual(rules, ["hand-bound-action", "hand-built-tree"])
 
     def test_a_fully_typed_tree_passes(self):
         root = self.fixture({"apps/tube/src/rows.rs": TYPED})
-        self.assertEqual(live_rows.check(root, root / "none.txt"), [])
+        self.assertEqual(live_rows.check(root), [])
 
 
 if __name__ == "__main__":

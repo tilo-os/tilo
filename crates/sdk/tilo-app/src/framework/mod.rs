@@ -265,12 +265,17 @@
 //!   entries, fetched catalogue rows, running jobs — are [`LiveRow`]s from
 //!   [`ResourceSurface::live_rows`], merged by id into the resource's
 //!   published children. A row is an item of a declared `#[resource]` type
-//!   ([`LiveRow::typed`]), so it says what it is to search (its type's noun,
-//!   its app's name) as a tilolang item does, with nothing the app writes,
-//!   and what a press does is one of the type's actions or `open`. A row
-//!   carries only view and effect operations (an effect bound to the row
-//!   with `LiveRow::effect`) and may say how its entity stands right now
-//!   (`LiveRow::presentation`). An edit of the
+//!   or a `#[derive(Row)]` struct ([`LiveRow::typed`]), so it says what it is
+//!   to search (its type's noun, its app's name) as a tilolang item does,
+//!   with nothing the app writes, and what a press does is one of the type's
+//!   declared effects or `open`. The type declares its effects on rows
+//!   (`#[effect(on = Row)]`); [`LiveRow::typed`] publishes them all with the
+//!   row's id bound, [`LiveRow::typed_with`] publishes the ones a
+//!   [`RowBindings`](tilo_resource::row::RowBindings) names with the
+//!   arguments the row's state holds, and
+//!   [`LiveRow::labelled`] and [`LiveRow::prefilled`] refine one effect's
+//!   word or defaults for that row. A row may say how its entity stands
+//!   right now ([`LiveRow::presentation`]). An edit of the
 //!   resource bound to a row (rename *this* file) is one of
 //!   [`Publishes::row_edits`], published on the row.
 //!   Neither rows nor children need to be published whole: a bounded page is

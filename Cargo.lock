@@ -21878,7 +21878,9 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn 2.0.117",
+ "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
 

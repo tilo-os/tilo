@@ -2430,14 +2430,18 @@ function offerFirstRun({page, identityActions, runtime, pairSignIn: pairFor = ()
   // (`perform`) keeps a failure to itself.
   if (identityActions) firstRun.offerSignIn(() => identityActions.signIn());
   const identity = currentIdentity();
-  if (!peer?.origin || !peer.workspace || !identity || peer.userPublicKey !== identity.userPublicKey) {
+  // The address the page makes its codes at: the host it is in, unless this
+  // page reached that host only over iroh, in which case the site's home host
+  // serves them (`setupOrigin`).
+  const origin = setupOrigin({peer, home: page.entry?.home});
+  if (!origin || !peer.workspace || !identity || peer.userPublicKey !== identity.userPublicKey) {
     if (!firstRunCodesOffered) firstRun.unavailable({code: 'no-codes'});
     return;
   }
   // A sign-in with the person's agent pairs this tab through the workspace
   // listing at this host, and opens a workspace of theirs rather than the
   // home's shared desktop this page is in.
-  offerFirstRunCodes({origin: peer.origin, identity, runtime, link: page.link,
+  offerFirstRunCodes({origin, identity, runtime, link: page.link,
     home: homeAdmissionWorkspace(page.entry), pair: pairFor()});
   // The workspace the codes name, so leaving the screen opens it.
   void askOwnWorkspace(peer);

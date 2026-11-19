@@ -8,12 +8,13 @@
 //! file. The app reads it, checks the hash and registers it
 //! ([`register_named`]); an app's own binary does not carry the file. A host
 //! that runs an app in its own process (the shell's built-in apps, the web
-//! build) carries its committed file instead ([`register_built_in`]). The bytes
-//! are kept in the app's content store, from where they reach the devices and
-//! relays that decide its changes.
+//! build) carries its committed file instead ([`register_built_in`]), with
+//! the parsed surface `tilo_resource::committed_surface!` generated from it
+//! while the app was built. The bytes are kept in the app's content store,
+//! from where they reach the devices and relays that decide its changes.
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use tilo_lock::MutexRecover as _;
 
 /// The variable naming the path of the app's `surface.toml`.
@@ -22,10 +23,30 @@ pub const SURFACE_FILE_ENV: &str = "TILO_SURFACE";
 /// started the app read it.
 pub const SURFACE_HASH_ENV: &str = "TILO_SURFACE_HASH";
 
-#[derive(Clone, Copy)]
+/// A surface this process was named: the bytes a change names by hash, and
+/// those bytes parsed, `None` when they do not parse (and so decide nothing).
 struct Named {
     hash: [u8; 32],
     bytes: &'static [u8],
+    file: Option<Arc<crate::surface::SurfaceFile>>,
+}
+
+impl Named {
+    fn new(
+        app_id: &str,
+        hash: [u8; 32],
+        bytes: &'static [u8],
+        parsed: Result<crate::surface::SurfaceFile, String>,
+    ) -> Self {
+        let file = match parsed {
+            Ok(file) => Some(Arc::new(file)),
+            Err(error) => {
+                tracing::warn!(app = app_id, %error, "the app's surface does not parse; it declares no records, reads or footprints");
+                None
+            }
+        };
+        Self { hash, bytes, file }
+    }
 }
 
 /// Counts the surfaces named so far ([`registered`]).
@@ -67,13 +88,15 @@ pub fn register_named(app_id: &str, bytes: &[u8], hash: &str) -> Result<(), Stri
 
 /// Name `bytes`, the committed surface of an app a host runs in its own
 /// process (built into the host, no package of its own), for `app_id`,
-/// unless a package already named one.
-pub fn register_built_in(app_id: &str, bytes: &'static [u8]) {
+/// unless a package already named one. `generated` is those bytes as JSON,
+/// written by `tilo_resource::committed_surface!` while the app was built.
+pub fn register_built_in(app_id: &str, bytes: &'static [u8], generated: &'static str) {
     let hash = *blake3::hash(bytes).as_bytes();
     if let std::collections::btree_map::Entry::Vacant(entry) =
         registry().lock_recover().entry(app_id.to_owned())
     {
-        entry.insert(Named { hash, bytes });
+        let parsed = crate::surface::SurfaceFile::from_json(generated);
+        entry.insert(Named::new(app_id, hash, bytes, parsed));
         NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
@@ -89,16 +112,15 @@ pub fn register_package(app_id: &str, bytes: &[u8]) {
     {
         return;
     }
-    // Readers below take a surface that does not parse as declaring nothing:
-    // say so once, here.
-    if let Err(error) = crate::surface::SurfaceFile::parse(bytes) {
-        tracing::warn!(app = app_id, %error, "package surface does not parse; it declares no records, reads or footprints");
-    }
     // Kept for the process's life, once per distinct surface.
     let bytes = held_bytes(hash, bytes);
-    registry()
-        .lock_recover()
-        .insert(app_id.to_owned(), Named { hash, bytes });
+    let named = Named::new(
+        app_id,
+        hash,
+        bytes,
+        crate::surface::SurfaceFile::parse(bytes),
+    );
+    registry().lock_recover().insert(app_id.to_owned(), named);
     NAMED.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 }
 
@@ -148,13 +170,14 @@ pub fn hash_of(app_id: &str) -> Option<[u8; 32]> {
         .map(|named| named.hash)
 }
 
-/// Every app's surface this process carries, by app.
+/// Every app's surface this process carries, parsed: a surface that does not
+/// parse carries none.
 #[must_use]
-pub fn every() -> Vec<(String, &'static [u8])> {
+pub fn every() -> Vec<Arc<crate::surface::SurfaceFile>> {
     registry()
         .lock_recover()
-        .iter()
-        .map(|(app, named)| (app.clone(), named.bytes))
+        .values()
+        .filter_map(|named| named.file.clone())
         .collect()
 }
 
@@ -167,25 +190,12 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
         .map(|named| named.bytes)
 }
 
-/// `app_id`'s surface as parsed, once per distinct surface: every check of a change reads it,
-/// and a surface is tens of kilobytes. `None` when this process holds no surface for the app, or
-/// it does not parse (logged when it was named).
-fn surface_of(app_id: &str) -> Option<std::sync::Arc<crate::surface::SurfaceFile>> {
-    type Parsed = Option<std::sync::Arc<crate::surface::SurfaceFile>>;
-    static PARSED: OnceLock<Mutex<BTreeMap<[u8; 32], Parsed>>> = OnceLock::new();
-    let named = *registry().lock_recover().get(app_id)?;
-    PARSED
-        .get_or_init(Mutex::default)
-        .lock_recover()
-        .entry(named.hash)
-        .or_insert_with(|| {
-            tilo_failure::ignored!(
-                "a held surface that does not parse was logged when it was named, and declares nothing here",
-                crate::surface::SurfaceFile::parse(named.bytes).ok()
-            )
-            .map(std::sync::Arc::new)
-        })
-        .clone()
+/// `app_id`'s surface as parsed, once when it was named: every check of a
+/// change reads it, and a surface is tens of kilobytes. `None` when this
+/// process holds no surface for the app, or it does not parse (logged when it
+/// was named).
+fn surface_of(app_id: &str) -> Option<Arc<crate::surface::SurfaceFile>> {
+    registry().lock_recover().get(app_id)?.file.clone()
 }
 
 /// The kind of `app_id`'s own record of a workspace, the first its surface declares: the resource
@@ -461,11 +471,23 @@ mod tests {
         {
             static BUILT: &[u8] =
                 b"[[resources]]\nkind = \"test.built\"\nlabel = \"Built\"\nversion = 1\n";
-            register_built_in("test.built-in", BUILT);
+            static BUILT_JSON: &str = r#"{"resources":[{"kind":"test.built","label":"Built","version":1}]}"#;
+            register_built_in("test.built-in", BUILT, BUILT_JSON);
             assert_eq!(bytes_of("test.built-in"), Some(BUILT));
+            assert_eq!(
+                primary_kind("test.built-in"),
+                Some("test.built".to_owned()),
+                "the generated form is what decides, without the bytes parsed again"
+            );
+            assert!(
+                every()
+                    .iter()
+                    .any(|file| file.resources.first().is_some_and(|r| r.kind == "test.built")),
+                "every surface this process carries is here, parsed"
+            );
             let package = b"[[resources]]\n".to_vec();
             register_package("test.built-in", &package);
-            register_built_in("test.built-in", BUILT);
+            register_built_in("test.built-in", BUILT, BUILT_JSON);
             assert_eq!(
                 bytes_of("test.built-in"),
                 Some(package.as_slice()),

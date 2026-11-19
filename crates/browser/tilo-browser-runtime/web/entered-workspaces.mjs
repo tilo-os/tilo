@@ -107,6 +107,15 @@ export function nameEntered(runtime, {origin, workspace, name}, store = globalTh
   keep(store, runtime.nameEntered(stored(store), JSON.stringify({origin: at, workspace}), name));
 }
 
+/** The browser becomes someone else's at `origin` than the person it entered the
+ * workspaces remembered there as: those were entered as the other person, so they
+ * are forgotten and a bare entry reopens none of them (`forgetEnteredAt` in `runtime`). */
+export function forgetEnteredAt(runtime, {origin}, store = globalThis.localStorage) {
+  let at;
+  try { at = originOf(origin); } catch { return; }
+  keep(store, runtime.forgetEnteredAt(stored(store), at));
+}
+
 /** The last attempt to open the remembered workspace `{origin, workspace}` failed: say
  * so where it is offered, and stop reopening it on a bare entry. */
 export function markUnavailable(runtime, {origin, workspace}, store = globalThis.localStorage) {

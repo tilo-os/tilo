@@ -70,6 +70,17 @@ pub fn forget_deleted_workspace(stored: &str, place_json: &str) -> Result<String
     answer(&entered::forget_deleted(list(stored), &place(place_json)?))
 }
 
+/// The browser becomes someone else's at `origin` than the person it entered the workspaces
+/// remembered there as ([`entered::forget_at`]).
+///
+/// # Errors
+///
+/// Throws only when the answer cannot be written.
+#[wasm_bindgen(js_name = forgetEnteredAt)]
+pub fn forget_entered_at(stored: &str, origin: &str) -> Result<String, JsError> {
+    answer(&entered::forget_at(list(stored), origin))
+}
+
 /// The host at `origin` answered as `hostDevice` ([`entered::forget_gone`]).
 ///
 /// # Errors

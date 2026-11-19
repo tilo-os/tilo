@@ -10,7 +10,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, Publishes, ViewCx};
-use ui::tilo_actions::Exports as _;
 use ui::widget::Element;
 
 use super::{ResourceIo, TypstApp};
@@ -80,16 +79,7 @@ impl Store {
     /// The live row `id`: a Problems row, a preview page or a heading, or
     /// one of their children.
     fn row(&self, id: &str) -> Option<LiveRow> {
-        fn find(row: &LiveRow, id: &str) -> Option<LiveRow> {
-            if row.id() == id {
-                return Some(row.clone());
-            }
-            row.exported()
-                .children
-                .iter()
-                .find_map(|child| find(&LiveRow::from_resource(child.clone()), id))
-        }
-        self.rows.iter().find_map(|row| find(row, id))
+        self.rows.iter().find_map(|row| row.find(id))
     }
 }
 

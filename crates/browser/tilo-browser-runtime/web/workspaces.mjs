@@ -58,7 +58,7 @@
 import {AdmissionError} from './admission.mjs';
 import {connectPeer, fitDisplayName, identityProfile, joinWorkspace, pairDevice, renewDevice, withDeviceKey} from './peer.mjs';
 import {idbStorage, openDeviceKey} from './device-key.mjs';
-import {originOf} from './entered-workspaces.mjs';
+import {forgetEnteredAt, originOf} from './entered-workspaces.mjs';
 import {fetchProfile} from './identity.mjs';
 import {PAIRING_SAME_PERSON, PAIRING_STOPPED, shownName} from './pairing.mjs';
 import {backoffDelay} from './reconnect.mjs';
@@ -70,6 +70,7 @@ export {
   chosenWorkspace, chooseWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, hostDeviceOf, markUnavailable,
   nameEntered, rememberEntered, settleFailedWorkspace,
 } from './entered-workspaces.mjs';
+export {forgetEnteredAt} from './entered-workspaces.mjs';
 
 const MEMBERSHIPS = 'tilo-host-memberships';
 const ADJECTIVES = ['Brave', 'Calm', 'Clever', 'Curious', 'Eager', 'Gentle', 'Happy', 'Jolly', 'Kind', 'Lively', 'Lucky', 'Merry', 'Nimble', 'Quiet', 'Swift', 'Witty'];
@@ -883,7 +884,15 @@ export async function pairViaHost({
     await peer.dispose?.();
     throw stop();
   }
+  const was = keptMembership({host: {origin}}, memberships);
   keepMembership(memberships, {host: {origin}}, {origin, workspace: peer.workspace ?? workspace, userPublicKey, paired: true});
+  // A browser that becomes another person here entered the workspaces it remembers
+  // at this server as the other one: they are not this person's, so they are forgotten.
+  // The own workspace a tab asked for as the person it was before this pairing is
+  // one of them (`signInWorkspace` would otherwise reopen it as the person).
+  if (connectOptions.runtime && was?.userPublicKey && was.userPublicKey !== userPublicKey) {
+    forgetEnteredAt(connectOptions.runtime, {origin}, memberships);
+  }
   return peer;
 }
 

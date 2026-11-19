@@ -12,9 +12,10 @@
  * ```
  *
  * `grant_kind=server_key` asks for an API key the person creates for their
- * own backend: it reaches all their workspaces and may last until they revoke
- * it (`grant_expires=never`) or until any time they chose, where an agent's
- * grant lasts at most 90 days.
+ * own backend: it reaches all their workspaces or, where the link names one,
+ * that one, and lasts until a time the link names — `never`, which only such
+ * a key reaching all of them may name, or a date, where one reaching a
+ * workspace ends within the 90 days an agent's grant at most lasts.
  *
  * Everything in it is checked before the page shows anything, and nothing is
  * signed until the person presses Allow: then this browser's device key,
@@ -134,17 +135,18 @@ export function readSignInRequest(search, {now = Date.now()} = {}) {
     if (grantScope !== 'all' && !UUID.test(grantScope)) {
       throw new SignInLinkError('This link asks a grant to reach a workspace Tilo cannot read.');
     }
-    if (grantServerKey && grantScope !== 'all') {
-      throw new SignInLinkError('This link asks for a grant Tilo cannot give.');
-    }
     const expires = once('grant_expires');
-    if (!(grantServerKey && expires === 'never')) {
+    // Only a key reaching all of the person's workspaces may last until they
+    // revoke it: one reaching a workspace ends within the 90 days an agent's
+    // grant at most lasts.
+    const untilRevoked = grantServerKey && grantScope === 'all';
+    if (!(untilRevoked && expires === 'never')) {
       if (!MILLISECONDS.test(expires)) throw new SignInLinkError('This link asks for a grant Tilo cannot give.');
       grantExpiresMs = Number(expires);
       if (grantExpiresMs <= now) {
         throw new SignInLinkError('This sign-in link has expired. Connect again from where you started, for a new one.');
       }
-      if (!grantServerKey && grantExpiresMs - now > MAX_GRANT_LIFETIME_MS) {
+      if (!untilRevoked && grantExpiresMs - now > MAX_GRANT_LIFETIME_MS) {
         throw new SignInLinkError('This link asks for a grant longer than Tilo gives. Ask the service for a shorter one.');
       }
     }
@@ -180,12 +182,15 @@ export function requestWords(request, {locale = undefined, local = globalThis.lo
       pages: null,
     };
   }
+  const one = workspaceName(grantScope, {local});
   return {
     heading: `Let ${client} act for you?`,
     service: `Through ${host}.`,
     reaches: grantScope === 'all'
       ? 'All your workspaces, and it may create new ones'
-      : `Only the workspace ${workspaceName(grantScope, {local})}`,
+      : one === null
+        ? `Only the workspace with id ${grantScope}`
+        : `Only the workspace “${one}”`,
     until: grantExpiresMs === null
       ? 'Until you revoke it'
       : new Date(grantExpiresMs).toLocaleDateString(locale, {year: 'numeric', month: 'long', day: 'numeric'}),
@@ -211,10 +216,11 @@ export function rememberedWorkspaces({local = globalThis.localStorage} = {}) {
   return workspaces;
 }
 
-/** The name this browser knows the workspace `id` by, or the id itself where
- * it knows none: what a card names a workspace it was asked to reach. */
+/** The name this browser knows the workspace `id` by, or `null` where it
+ * knows none: what a card names a workspace it was asked to reach, by its id
+ * where the person saw it under no name here. */
 export function workspaceName(id, {local = globalThis.localStorage} = {}) {
-  return rememberedWorkspaces({local}).find(workspace => workspace.scope === id)?.name ?? id;
+  return rememberedWorkspaces({local}).find(workspace => workspace.scope === id)?.name ?? null;
 }
 
 /**
@@ -496,8 +502,12 @@ function offerSignIn({window, card, show, tell, storage, signIn, hosts, words, t
   document.documentElement.dataset.signIn = 'signed-out';
   card.heading.textContent = words.heading;
   card.service.textContent = words.service;
+  // What the request reaches is said before the person signs in to answer it,
+  // not only after: a key that reaches one workspace says which.
+  card.reaches.textContent = words.reaches ?? '';
+  show('reachesRow', words.reaches !== null);
   if (card.signedOutText) card.signedOutText.textContent = SIGNED_OUT;
-  for (const row of ['reachesRow', 'scopeRow', 'untilRow', 'pagesRow']) show(row, false);
+  for (const row of ['scopeRow', 'untilRow', 'pagesRow']) show(row, false);
   show('request');
   show('actions', false);
   tell('');

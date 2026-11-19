@@ -11,11 +11,12 @@
 //! when the key enters. Scope checks, History attribution and revocation at
 //! `/grants` are the grant's.
 //!
-//! A key reaching all the person's workspaces is a server key: a backend
-//! runs unattended, so it lasts until the person revokes it, as Stripe's and
-//! AWS's secret keys do, unless they chose an expiry (`expires_in`, in
-//! seconds). A key reaching one workspace lasts at most
-//! [`crate::grant_key::GRANT_LIFETIME`], like an agent's grant. The token
+//! A key is a server key whether it reaches all the person's workspaces or
+//! one: a backend runs unattended. One reaching all of them lasts until the
+//! person revokes it, as Stripe's and AWS's secret keys do, unless they chose
+//! an expiry (`expires_in`, in seconds). One reaching a single workspace
+//! lasts at most [`crate::grant_key::GRANT_LIFETIME`], like an agent's grant.
+//! The token
 //! is answered once, and the grants page
 //! and `account/keys#list` show when each key was last used and which device
 //! of the person approved it.
