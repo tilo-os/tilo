@@ -521,6 +521,109 @@ pub enum RetryPolicy {
     AtMostOnce,
 }
 
+/// Operational safety disposition when an invocation's completion receipt is
+/// lost after dispatch (for example, on a transport disconnect or an
+/// interrupted turn where the provider may have accepted just before receipt
+/// loss).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptLossDisposition {
+    /// Repeating the call has the same externally observable result.
+    AutoRetry,
+    /// Safe to repeat only under the exact same [`crate::InvocationId`] so
+    /// the provider deduplicates the attempt; never mint a fresh id.
+    RetrySameInvocation,
+    /// Never automatically repeat. The provider may have accepted the
+    /// one-time call just before the receipt was lost; mark the effect
+    /// unconfirmed and reconcile against a provider receipt before acting
+    /// again.
+    ReconcileNeverAutoRetry,
+}
+
+impl ReceiptLossDisposition {
+    /// Whether a caller may blindly repeat the call without reconciling first.
+    #[must_use]
+    pub const fn may_auto_retry(self) -> bool {
+        matches!(self, Self::AutoRetry)
+    }
+
+    /// Whether a caller may repeat the call when carrying the exact same
+    /// [`crate::InvocationId`].
+    #[must_use]
+    pub const fn may_retry_with_same_invocation_id(self) -> bool {
+        matches!(self, Self::AutoRetry | Self::RetrySameInvocation)
+    }
+
+    /// Whether the caller must reconcile against a provider receipt (or
+    /// external state) rather than automatically repeating.
+    #[must_use]
+    pub const fn requires_reconciliation(self) -> bool {
+        matches!(self, Self::ReconcileNeverAutoRetry)
+    }
+}
+
+/// Classification of how a caller must treat an invocation whose completion
+/// receipt was lost after dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UncertaintyClassification {
+    /// Required behavior after receipt loss.
+    pub disposition: ReceiptLossDisposition,
+    /// Whether the action crosses an external boundary (cannot be reconciled
+    /// from local workspace history alone).
+    pub external: bool,
+    /// Whether Undo can revert the effect once confirmed.
+    pub reversible: bool,
+    /// Whether automatic retry without reconciliation is permitted.
+    pub auto_retryable: bool,
+    /// Whether the caller must reconcile against a provider receipt and keep
+    /// the effect marked unconfirmed until resolved.
+    pub requires_reconciliation: bool,
+}
+
+impl UncertaintyClassification {
+    /// Whether this describes an uncertain one-time external action where the
+    /// provider may have accepted just before receipt loss: non-auto-retryable
+    /// and requiring receipt reconciliation.
+    #[must_use]
+    pub const fn is_uncertain_one_time_external(self) -> bool {
+        self.external && self.requires_reconciliation && !self.auto_retryable
+    }
+}
+
+impl RetryPolicy {
+    /// Classify what a caller must do if the completion receipt is lost after
+    /// dispatch.
+    #[must_use]
+    pub const fn receipt_loss_disposition(self) -> ReceiptLossDisposition {
+        match self {
+            Self::Idempotent => ReceiptLossDisposition::AutoRetry,
+            Self::RetryWithInvocationId => ReceiptLossDisposition::RetrySameInvocation,
+            Self::AtMostOnce => ReceiptLossDisposition::ReconcileNeverAutoRetry,
+        }
+    }
+
+    /// Whether a caller may blindly auto-retry after losing the receipt.
+    #[must_use]
+    pub const fn may_auto_retry(self) -> bool {
+        self.receipt_loss_disposition().may_auto_retry()
+    }
+
+    /// Whether a caller may retry after losing the receipt when reusing the
+    /// exact same [`crate::InvocationId`].
+    #[must_use]
+    pub const fn may_retry_with_same_invocation_id(self) -> bool {
+        self.receipt_loss_disposition()
+            .may_retry_with_same_invocation_id()
+    }
+
+    /// Whether losing the receipt leaves an uncertain one-time outcome that
+    /// requires reconciliation instead of automatic retry.
+    #[must_use]
+    pub const fn requires_reconciliation_on_receipt_loss(self) -> bool {
+        self.receipt_loss_disposition().requires_reconciliation()
+    }
+}
+
 /// Completion behavior advertised before invocation.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(remote = "Self", tag = "mode", rename_all = "snake_case")]
@@ -1077,6 +1180,52 @@ impl ActionContract {
             && !self.tags.iter().any(|tag| tag == IRREVERSIBLE_TAG)
     }
 
+    /// What a caller must do if this action's completion receipt is lost
+    /// after dispatch.
+    #[must_use]
+    pub fn receipt_loss_disposition(&self) -> ReceiptLossDisposition {
+        self.retry.receipt_loss_disposition()
+    }
+
+    /// Full retry and uncertainty safety classification for this contract
+    /// after dispatch without a confirmed completion receipt.
+    #[must_use]
+    pub fn uncertainty_classification(&self) -> UncertaintyClassification {
+        let disposition = self.receipt_loss_disposition();
+        let external =
+            self.kind == ActionKind::Outside || self.settled_kind() == ActionKind::Outside;
+        UncertaintyClassification {
+            disposition,
+            external,
+            reversible: self.can_be_undone(),
+            auto_retryable: disposition.may_auto_retry(),
+            requires_reconciliation: disposition.requires_reconciliation(),
+        }
+    }
+
+    /// Whether this contract describes an uncertain one-time external action
+    /// (such as sending mail or writing to an external calendar) where the
+    /// provider may have accepted just before receipt loss: callers must never
+    /// automatically repeat it and must reconcile against a provider receipt.
+    #[must_use]
+    pub fn is_uncertain_one_time_external(&self) -> bool {
+        self.uncertainty_classification()
+            .is_uncertain_one_time_external()
+    }
+
+    /// Whether a caller may blindly auto-retry this action after receipt loss.
+    #[must_use]
+    pub fn may_auto_retry_on_receipt_loss(&self) -> bool {
+        self.receipt_loss_disposition().may_auto_retry()
+    }
+
+    /// Whether losing the receipt requires reconciling against provider or
+    /// workspace state instead of automatically repeating the call.
+    #[must_use]
+    pub fn requires_reconciliation_on_receipt_loss(&self) -> bool {
+        self.receipt_loss_disposition().requires_reconciliation()
+    }
+
     /// Whether an invocation of this action must be confirmed before it
     /// runs: its risk asks for it and Undo cannot take it back
     /// ([`RiskLevel::requires_confirmation_when`]).
@@ -1624,6 +1773,92 @@ mod tests {
                 writes.validate_declaration(),
                 vec!["an offloadable action must be a read".to_string()]
             );
+        }
+
+        phase uncertain_one_time_external_actions_never_auto_retry_and_require_reconciliation;
+        // An external one-time send or write whose receipt is lost may already
+        // have been accepted by the provider: it must classify as
+        // non-auto-retryable and requiring reconciliation, while idempotent
+        // and invocation-id-deduplicated policies stay distinct.
+        {
+            // RetryPolicy preserves its compact wire discriminants.
+            assert_eq!(postcard::to_allocvec(&RetryPolicy::Idempotent).unwrap(), vec![0]);
+            assert_eq!(
+                postcard::to_allocvec(&RetryPolicy::RetryWithInvocationId).unwrap(),
+                vec![1]
+            );
+            assert_eq!(postcard::to_allocvec(&RetryPolicy::AtMostOnce).unwrap(), vec![2]);
+
+            // Default external effect is one-time (AtMostOnce): never auto-retried.
+            let external_send = ActionContract::for_operation(OperationKind::Effect);
+            let classification = external_send.uncertainty_classification();
+            assert_eq!(
+                classification.disposition,
+                ReceiptLossDisposition::ReconcileNeverAutoRetry
+            );
+            assert!(classification.external);
+            assert!(!classification.reversible);
+            assert!(!classification.auto_retryable);
+            assert!(classification.requires_reconciliation);
+            assert!(classification.is_uncertain_one_time_external());
+            assert!(external_send.is_uncertain_one_time_external());
+            assert!(!external_send.may_auto_retry_on_receipt_loss());
+            assert!(external_send.requires_reconciliation_on_receipt_loss());
+            assert!(!external_send.retry.may_retry_with_same_invocation_id());
+
+            // An Undoable action tagged irreversible also crosses an external
+            // boundary and is non-auto-retryable when AtMostOnce.
+            let irreversible_local = ActionContract {
+                tags: vec![IRREVERSIBLE_TAG.to_owned()],
+                ..ActionContract::default()
+            };
+            assert!(irreversible_local.is_uncertain_one_time_external());
+
+            // A local undoable AtMostOnce edit still forbids blind auto-retry
+            // and requires reconciliation, though it is not external.
+            let local_append = ActionContract::default();
+            let local_class = local_append.uncertainty_classification();
+            assert!(!local_class.external);
+            assert!(local_class.reversible);
+            assert!(!local_class.auto_retryable);
+            assert!(local_class.requires_reconciliation);
+            assert!(!local_class.is_uncertain_one_time_external());
+
+            // An idempotent read or external refresh may auto-retry.
+            let read = ActionContract::view();
+            assert_eq!(
+                read.receipt_loss_disposition(),
+                ReceiptLossDisposition::AutoRetry
+            );
+            assert!(read.may_auto_retry_on_receipt_loss());
+            assert!(!read.requires_reconciliation_on_receipt_loss());
+            assert!(!read.is_uncertain_one_time_external());
+
+            let external_refresh = ActionContract {
+                retry: RetryPolicy::Idempotent,
+                ..ActionContract::for_operation(OperationKind::Effect)
+            };
+            assert!(external_refresh.may_auto_retry_on_receipt_loss());
+            assert!(!external_refresh.is_uncertain_one_time_external());
+
+            // RetryWithInvocationId allows retry only with the same invocation
+            // id, never blind auto-retry with a fresh id.
+            let deduped = ActionContract {
+                retry: RetryPolicy::RetryWithInvocationId,
+                ..ActionContract::for_operation(OperationKind::Effect)
+            };
+            assert_eq!(
+                deduped.receipt_loss_disposition(),
+                ReceiptLossDisposition::RetrySameInvocation
+            );
+            assert!(!deduped.may_auto_retry_on_receipt_loss());
+            assert!(deduped.retry.may_retry_with_same_invocation_id());
+            assert!(!deduped.requires_reconciliation_on_receipt_loss());
+
+            // Classification round-trips through JSON.
+            let round: UncertaintyClassification =
+                serde_json::from_value(serde_json::to_value(classification).unwrap()).unwrap();
+            assert_eq!(round, classification);
         }
     }
 }

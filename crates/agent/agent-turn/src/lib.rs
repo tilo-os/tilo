@@ -266,6 +266,12 @@ pub struct Asked {
     pub output_tokens: u32,
     /// The most characters the conversation keeps before old answers give way.
     pub context_chars: usize,
+    /// The lower character mark compaction frees old answers down to once `context_chars` is
+    /// passed; `None` defaults to 60% of `context_chars`.
+    pub compact_low_chars: Option<usize>,
+    /// Whether an empty model answer ends the turn quietly with no follow-up call asking for
+    /// words. Default `false` for person-started turns; set `true` for event and look wakes.
+    pub allow_silent: bool,
     /// How long one round of the model may take.
     pub round_time: Duration,
     /// What names this turn's rounds to the model's meter.
@@ -286,16 +292,24 @@ impl Asked {
             result_bytes: MOST_RESULT_BYTES,
             output_tokens: 8_192,
             context_chars: 400_000,
+            compact_low_chars: None,
+            allow_silent: false,
             round_time: Duration::from_secs(90),
             key: String::new(),
         }
+    }
+
+    /// Lower mark compaction targets once `context_chars` is exceeded.
+    fn compact_low_mark(&self) -> usize {
+        self.compact_low_chars
+            .unwrap_or_else(|| compact::default_low_mark(self.context_chars))
     }
 }
 
 /// How a turn ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// The model answered the person in these words.
+    /// The model answered the person in these words (empty when a silent turn finished quietly).
     Answered(String),
     /// A bound stopped it; the words say which and what to do.
     Stopped(String),
@@ -303,6 +317,14 @@ pub enum Outcome {
     Failed(String),
     /// Its person stopped it.
     Cancelled,
+}
+
+impl Outcome {
+    /// Whether the turn ended cleanly with no words to show its person.
+    #[must_use]
+    pub fn is_silent(&self) -> bool {
+        matches!(self, Self::Answered(words) if words.is_empty())
+    }
 }
 
 /// `text`, at most `most` bytes of it.
@@ -389,7 +411,7 @@ where
                 cost,
             );
         }
-        compact::compact(&mut messages, asked.context_chars);
+        compact::compact_to(&mut messages, asked.context_chars, asked.compact_low_mark());
         let request = ModelRequest {
             messages: messages.clone(),
             tools: tools.clone(),
@@ -427,7 +449,7 @@ where
                 continue;
             }
             let words = words_of(&response);
-            if words.is_empty() && !asked_for_words {
+            if words.is_empty() && !asked.allow_silent && !asked_for_words {
                 asked_for_words = true;
                 messages.push(Message::text(Role::User, SAY_WHAT_YOU_DID.to_owned()));
                 continue;
@@ -470,7 +492,7 @@ async fn said_where_it_got<T, M: Model + 'static>(
         return (Outcome::Cancelled, cost);
     }
     messages.push(Message::text(Role::User, OUT_OF_STEPS.to_owned()));
-    compact::compact(&mut messages, asked.context_chars);
+    compact::compact_to(&mut messages, asked.context_chars, asked.compact_low_mark());
     let request = ModelRequest {
         messages,
         tools,
@@ -647,3 +669,229 @@ fn later(wait: Duration) -> Instant {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod silent_and_compact_tests {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use agent_provider_config::protocol::{
+        Content, Message, ModelRequest, ModelResponse, Role, StopReason, ToolCall, ToolDefinition,
+        Usage,
+    };
+    use serde_json::{Value, json};
+    use tilo_lock::MutexRecover as _;
+
+    use super::{Answer, Asked, Doing, Model, Outcome, Tools, compact, work};
+
+    struct QuietTools {
+        reply: String,
+    }
+
+    impl Tools for QuietTools {
+        async fn list(&self) -> Result<Vec<ToolDefinition>, String> {
+            Ok(vec![ToolDefinition {
+                name: "tilo_ls".into(),
+                description: "List apps".into(),
+                input_schema: json!({"type": "object"}),
+            }])
+        }
+
+        async fn call(&self, _: &str, _: Value) -> Answer {
+            Answer {
+                text: self.reply.clone(),
+                pictures: Vec::new(),
+                is_error: false,
+            }
+        }
+    }
+
+    struct QuietDoing;
+
+    impl Doing<QuietTools> for QuietDoing {
+        fn stopped(&self) -> bool {
+            false
+        }
+    }
+
+    struct ScriptedModel {
+        answers: VecDeque<Message>,
+        asked: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    impl Model for ScriptedModel {
+        fn turn(
+            &mut self,
+            request: &ModelRequest,
+            _: &str,
+            _: Instant,
+        ) -> Result<ModelResponse, String> {
+            self.asked.lock_recover().push(request.clone());
+            let message = self
+                .answers
+                .pop_front()
+                .unwrap_or_else(|| Message::text(Role::Assistant, ""));
+            Ok(ModelResponse {
+                message,
+                stop_reason: StopReason::EndTurn,
+                usage: Usage::default(),
+                cost_micros: 10,
+            })
+        }
+    }
+
+    fn call_message(id: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![Content::ToolCall(ToolCall {
+                id: id.into(),
+                name: "tilo_ls".into(),
+                input: json!({}),
+                extra_content: None,
+            })],
+        }
+    }
+
+    #[test]
+    fn asked_defaults_keep_silent_off_and_low_mark_auto() {
+        let asked = Asked::new("s", "r");
+        assert!(!asked.allow_silent);
+        assert_eq!(asked.compact_low_chars, None);
+        assert_eq!(asked.compact_low_mark(), 240_000);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn allow_silent_ends_empty_answer_without_extra_model_call() {
+        let tools = QuietTools { reply: "ok".into() };
+        let asked_log = Arc::new(Mutex::new(Vec::new()));
+        let model = Arc::new(Mutex::new(ScriptedModel {
+            answers: VecDeque::from([
+                Message {
+                    role: Role::Assistant,
+                    content: Vec::new(),
+                },
+                Message::text(Role::Assistant, "should never be called"),
+            ]),
+            asked: Arc::clone(&asked_log),
+        }));
+        let turn = Asked {
+            allow_silent: true,
+            ..Asked::new("s", "event wake")
+        };
+        let (outcome, cost) = work(&tools, model, &turn, &QuietDoing).await;
+        assert_eq!(outcome, Outcome::Answered(String::new()));
+        assert!(outcome.is_silent());
+        assert_eq!(cost, 10);
+        assert_eq!(
+            asked_log.lock_recover().len(),
+            1,
+            "silent turn must not make a second model call"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn allow_silent_treats_whitespace_only_as_quiet_with_no_extra_call() {
+        let tools = QuietTools { reply: "ok".into() };
+        let asked_log = Arc::new(Mutex::new(Vec::new()));
+        let model = Arc::new(Mutex::new(ScriptedModel {
+            answers: VecDeque::from([Message::text(Role::Assistant, "   \n\t  ")]),
+            asked: Arc::clone(&asked_log),
+        }));
+        let turn = Asked {
+            allow_silent: true,
+            ..Asked::new("s", "look wake")
+        };
+        let (outcome, cost) = work(&tools, model, &turn, &QuietDoing).await;
+        assert_eq!(outcome, Outcome::Answered(String::new()));
+        assert!(outcome.is_silent());
+        assert_eq!(cost, 10);
+        assert_eq!(asked_log.lock_recover().len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn allow_silent_after_tool_work_finishes_quietly_at_zero_extra_calls() {
+        let tools = QuietTools {
+            reply: "nothing changed".into(),
+        };
+        let asked_log = Arc::new(Mutex::new(Vec::new()));
+        let model = Arc::new(Mutex::new(ScriptedModel {
+            answers: VecDeque::from([
+                call_message("1"),
+                Message {
+                    role: Role::Assistant,
+                    content: Vec::new(),
+                },
+            ]),
+            asked: Arc::clone(&asked_log),
+        }));
+        let turn = Asked {
+            allow_silent: true,
+            ..Asked::new("s", "look wake")
+        };
+        let (outcome, cost) = work(&tools, model, &turn, &QuietDoing).await;
+        assert_eq!(outcome, Outcome::Answered(String::new()));
+        assert!(outcome.is_silent());
+        assert_eq!(cost, 20);
+        assert_eq!(asked_log.lock_recover().len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn allow_silent_still_returns_words_when_model_speaks() {
+        let tools = QuietTools { reply: "ok".into() };
+        let model = Arc::new(Mutex::new(ScriptedModel {
+            answers: VecDeque::from([Message::text(Role::Assistant, "Sent the reminder.")]),
+            asked: Arc::default(),
+        }));
+        let turn = Asked {
+            allow_silent: true,
+            ..Asked::new("s", "event wake")
+        };
+        let (outcome, _) = work(&tools, model, &turn, &QuietDoing).await;
+        assert_eq!(outcome, Outcome::Answered("Sent the reminder.".into()));
+        assert!(!outcome.is_silent());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn work_honors_custom_compact_low_chars() {
+        let tools = QuietTools {
+            reply: "a".repeat(2_000),
+        };
+        let asked_log = Arc::new(Mutex::new(Vec::new()));
+        let model = Arc::new(Mutex::new(ScriptedModel {
+            answers: VecDeque::from([
+                call_message("1"),
+                call_message("2"),
+                call_message("3"),
+                call_message("4"),
+                Message::text(Role::Assistant, "done"),
+            ]),
+            asked: Arc::clone(&asked_log),
+        }));
+        // After 4 tool results of 2_000 chars each (~8_000 > 7_000), low mark of 4_000
+        // drops the first 2 tool answers in one step while keeping answers 3 and 4.
+        let turn = Asked {
+            context_chars: 7_000,
+            compact_low_chars: Some(4_500),
+            ..Asked::new("s", "r")
+        };
+        let (outcome, _) = work(&tools, model, &turn, &QuietDoing).await;
+        assert_eq!(outcome, Outcome::Answered("done".into()));
+        let requests = asked_log.lock_recover().clone();
+        let last = requests.last().expect("final model request");
+        let tool_contents: Vec<&str> = last
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, Role::Tool))
+            .filter_map(|m| match m.content.first() {
+                Some(Content::ToolResult(r)) => Some(r.content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tool_contents.len(), 4);
+        assert_eq!(tool_contents[0], compact::LEFT_OUT);
+        assert_eq!(tool_contents[1], compact::LEFT_OUT);
+        assert_eq!(tool_contents[2].len(), 2_000);
+        assert_eq!(tool_contents[3].len(), 2_000);
+    }
+}

@@ -256,11 +256,124 @@ pub fn listed_price_of(id: &str) -> Option<Price> {
         .map(|row| row.price)
 }
 
+/// How one answer's cost was determined against the price table.
+///
+/// Distinguishes a model whose price is known (either from its own listed row
+/// or from its family's row) from one with no known price, so unpriced models
+/// are never silently reported as costing zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PricedCost {
+    /// Priced from the model's own published list-price row, in millionths of
+    /// the currency.
+    Listed(u64),
+    /// Estimated from the model's family row when no dedicated row exists for
+    /// this exact model id, in millionths of the currency.
+    FamilyEstimate(u64),
+    /// No price is known for this model (for example a local model or a
+    /// third-party endpoint's open-weight model); the cost is unknown rather
+    /// than zero.
+    Unknown,
+}
+
+impl PricedCost {
+    /// The known cost in millionths of the currency, or `None` when the
+    /// model's price is unknown.
+    #[must_use]
+    pub const fn micros(self) -> Option<u64> {
+        match self {
+            Self::Listed(micros) | Self::FamilyEstimate(micros) => Some(micros),
+            Self::Unknown => None,
+        }
+    }
+
+    /// The listed cost in millionths of the currency when the table carries a
+    /// dedicated row for the model itself, else `None`.
+    #[must_use]
+    pub const fn listed_micros(self) -> Option<u64> {
+        match self {
+            Self::Listed(micros) => Some(micros),
+            Self::FamilyEstimate(_) | Self::Unknown => None,
+        }
+    }
+
+    /// Whether the model's price is unknown.
+    #[must_use]
+    pub const fn is_unknown(self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+
+    /// Whether the price table could price this model (listed or family).
+    #[must_use]
+    pub const fn is_known(self) -> bool {
+        !self.is_unknown()
+    }
+}
+
+impl std::fmt::Display for PricedCost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Listed(micros) => write!(f, "{micros}"),
+            Self::FamilyEstimate(micros) => write!(f, "~{micros}"),
+            Self::Unknown => f.write_str("unknown"),
+        }
+    }
+}
+
+/// What one answer of model `id` costs, distinguishing listed prices, family
+/// estimates, and unknown pricing.
+#[must_use]
+pub fn priced_cost(id: &str, usage: &Usage) -> PricedCost {
+    let lowered = id.to_ascii_lowercase();
+    let Some(row) = PRICES.iter().find(|row| lowered.contains(row.pattern)) else {
+        return PricedCost::Unknown;
+    };
+    let micros = row.price.of(usage);
+    if FAMILIES.contains(&row.pattern) {
+        PricedCost::FamilyEstimate(micros)
+    } else {
+        PricedCost::Listed(micros)
+    }
+}
+
+/// What one answer of model `id` costs in millionths of the currency, or
+/// `None` when no price is known for the model.
+///
+/// Unlike [`cost_micros`], this distinguishes a known model with zero token
+/// usage (`Some(0)`) from an unpriced model (`None`).
+#[must_use]
+pub fn known_cost_micros(id: &str, usage: &Usage) -> Option<u64> {
+    price_of(id).map(|price| price.of(usage))
+}
+
+/// Upper-bound cost in millionths of the currency for reserving budget before
+/// dispatching a request of `input_tokens` (uncached) and up to
+/// `max_output_tokens`, or `None` when no price is known for model `id`.
+#[must_use]
+pub fn estimated_max_cost_micros(
+    id: &str,
+    input_tokens: u64,
+    max_output_tokens: u64,
+) -> Option<u64> {
+    let price = price_of(id)?;
+    let worst_case = Usage {
+        input_tokens,
+        output_tokens: max_output_tokens,
+        total_tokens: input_tokens.saturating_add(max_output_tokens),
+        cached_input_tokens: 0,
+        cache_write_tokens: 0,
+        reasoning_tokens: 0,
+    };
+    Some(price.of(&worst_case))
+}
+
 /// What one answer of model `id` costs, in millionths of the currency: zero
 /// for a model no price is known for.
+///
+/// Callers that need to distinguish unknown model pricing from zero cost
+/// should use [`priced_cost`] or [`known_cost_micros`].
 #[must_use]
 pub fn cost_micros(id: &str, usage: &Usage) -> u64 {
-    price_of(id).map_or(0, |price| price.of(usage))
+    known_cost_micros(id, usage).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -390,5 +503,67 @@ mod tests {
             assert!(price_of(guessed).is_some(), "{guessed}");
         }
         assert!(listed_price_of("my-local-model").is_none());
+    }
+
+    /// Unknown models report `PricedCost::Unknown` / `None` rather than
+    /// silently pretending their cost is zero, while a known model with zero
+    /// token usage is explicitly `Some(0)`.
+    #[test]
+    fn unknown_model_pricing_is_distinct_from_zero_cost() {
+        let nonempty = usage(1_000_000, 0, 0, 1_000);
+        assert_eq!(priced_cost("llama-3.3-70b", &nonempty), PricedCost::Unknown);
+        assert_eq!(
+            priced_cost("my-local-model", &nonempty),
+            PricedCost::Unknown
+        );
+        assert!(priced_cost("llama-3.3-70b", &nonempty).is_unknown());
+        assert_eq!(priced_cost("llama-3.3-70b", &nonempty).micros(), None);
+        assert_eq!(
+            priced_cost("llama-3.3-70b", &nonempty).to_string(),
+            "unknown"
+        );
+        assert_eq!(known_cost_micros("llama-3.3-70b", &nonempty), None);
+
+        // A known model with zero usage is priced at Some(0), never Unknown.
+        assert_eq!(
+            priced_cost("claude-opus-5", &Usage::default()),
+            PricedCost::Listed(0)
+        );
+        assert_eq!(
+            known_cost_micros("claude-opus-5", &Usage::default()),
+            Some(0)
+        );
+
+        // Listed models vs family-estimated models are distinguished.
+        assert_eq!(
+            priced_cost("gemini-2.5-pro", &usage(1_000_000, 0, 0, 0)),
+            PricedCost::Listed(1_250_000)
+        );
+        assert_eq!(
+            priced_cost("gemini-2.5-pro", &usage(1_000_000, 0, 0, 0)).listed_micros(),
+            Some(1_250_000)
+        );
+        assert_eq!(
+            priced_cost("claude-sonnet-4-5", &usage(1_000_000, 0, 0, 0)),
+            PricedCost::FamilyEstimate(3_000_000)
+        );
+        assert_eq!(
+            priced_cost("claude-sonnet-4-5", &usage(1_000_000, 0, 0, 0)).listed_micros(),
+            None
+        );
+        assert_eq!(
+            priced_cost("claude-sonnet-4-5", &usage(1_000_000, 0, 0, 0)).micros(),
+            Some(3_000_000)
+        );
+
+        // Pre-call upper-bound estimates distinguish known vs unknown models.
+        assert_eq!(
+            estimated_max_cost_micros("claude-sonnet-5", 1_000_000, 1_000_000),
+            Some(12_000_000)
+        );
+        assert_eq!(
+            estimated_max_cost_micros("my-local-model", 1_000_000, 1_000_000),
+            None
+        );
     }
 }

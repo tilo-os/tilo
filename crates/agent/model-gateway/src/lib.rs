@@ -1,6 +1,8 @@
 pub use tilo_model_client::*;
 
 pub mod caller;
+/// Typed decision-model requests, confidence thresholds, and non-permission gating.
+pub mod decision;
 #[cfg(all(unix, feature = "server"))]
 pub mod http_service;
 pub mod openai;

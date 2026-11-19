@@ -606,6 +606,422 @@ pub struct Session {
     pub unreverted: Vec<String>,
 }
 
+impl Session {
+    /// Apply a structured per-effect Undo outcome to this session's status
+    /// and unreverted list so callers render an honest breakdown instead of
+    /// flattening partial, irreversible, or unconfirmed results.
+    pub fn apply_undo_outcome(&mut self, outcome: &UndoSessionOutcome) {
+        outcome.apply_to_session(self);
+    }
+}
+
+/// Decision of a concurrent-edit guard before undoing one local change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConcurrentEditGuard {
+    /// No conflicting human edit touches the same target; local Undo may
+    /// proceed.
+    SafeToUndo,
+    /// A person edited the same target concurrently; Undo must preserve that
+    /// edit rather than overwriting it.
+    PreserveConcurrentEdit,
+}
+
+/// Guard local Undo against overwriting a concurrent human edit.
+///
+/// Whenever any overlapping change on the same target came from a person
+/// (`Relation::Reader` or `Relation::Person`), Undo preserves the human edit
+/// and reports [`UndoEffectState::PreservedConcurrentEdit`].
+#[must_use]
+pub fn guard_concurrent_human_edit(overlapping_authors: &[Relation]) -> ConcurrentEditGuard {
+    if overlapping_authors
+        .iter()
+        .any(|relation| matches!(relation, Relation::Reader | Relation::Person))
+    {
+        ConcurrentEditGuard::PreserveConcurrentEdit
+    } else {
+        ConcurrentEditGuard::SafeToUndo
+    }
+}
+
+/// Outcome of attempting to undo one effect produced by a session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UndoEffectState {
+    /// Undone locally (workspace CRDT edit reverted or held outbox item
+    /// cancelled before leaving).
+    UndoneLocally,
+    /// Skipped to avoid overwriting a concurrent edit made by a person.
+    PreservedConcurrentEdit,
+    /// Already handed off or irreversible externally; cannot be taken back.
+    AlreadyDelivered,
+    /// External dispatch was interrupted or lost its provider receipt; actual
+    /// external outcome is unconfirmed and requires reconciliation without
+    /// blindly repeating the action.
+    Unconfirmed,
+    /// Undo could not reach this resource (for example, it was unavailable on
+    /// this device).
+    NotReached,
+}
+
+/// Structured Undo outcome for one effect of a session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UndoEffect {
+    /// Concise human-facing name for the effect (for example, `"Sheet edit"`,
+    /// `"Email"`, `"Calendar update"`).
+    pub label: String,
+    /// The app that owned the effect, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    /// The resource touched by the effect, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    /// The originating invocation id, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation_id: Option<String>,
+    /// Whether this effect was undone locally, preserved for a concurrent
+    /// edit, already delivered externally, unconfirmed, or not reached.
+    pub state: UndoEffectState,
+    /// Optional context (for example, who made the concurrent edit or a
+    /// provider receipt note).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl UndoEffect {
+    /// An effect that was undone locally (or cancelled before leaving an
+    /// outbox hold).
+    #[must_use]
+    pub fn undone_locally(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            app_id: None,
+            resource: None,
+            invocation_id: None,
+            state: UndoEffectState::UndoneLocally,
+            detail: None,
+        }
+    }
+
+    /// A local effect left in place because a person edited the same target
+    /// concurrently.
+    #[must_use]
+    pub fn preserved_concurrent_edit(label: impl Into<String>, detail: Option<String>) -> Self {
+        Self {
+            label: label.into(),
+            app_id: None,
+            resource: None,
+            invocation_id: None,
+            state: UndoEffectState::PreservedConcurrentEdit,
+            detail,
+        }
+    }
+
+    /// An external effect that was already delivered or is otherwise
+    /// irreversible externally.
+    #[must_use]
+    pub fn already_delivered(label: impl Into<String>, detail: Option<String>) -> Self {
+        Self {
+            label: label.into(),
+            app_id: None,
+            resource: None,
+            invocation_id: None,
+            state: UndoEffectState::AlreadyDelivered,
+            detail,
+        }
+    }
+
+    /// An external effect whose provider receipt was lost or interrupted and
+    /// therefore remains unconfirmed until reconciled.
+    #[must_use]
+    pub fn unconfirmed(label: impl Into<String>, detail: Option<String>) -> Self {
+        Self {
+            label: label.into(),
+            app_id: None,
+            resource: None,
+            invocation_id: None,
+            state: UndoEffectState::Unconfirmed,
+            detail,
+        }
+    }
+
+    /// An effect that Undo could not reach from this device.
+    #[must_use]
+    pub fn not_reached(label: impl Into<String>, detail: Option<String>) -> Self {
+        Self {
+            label: label.into(),
+            app_id: None,
+            resource: None,
+            invocation_id: None,
+            state: UndoEffectState::NotReached,
+            detail,
+        }
+    }
+
+    /// Evaluate a local Undo attempt against overlapping authors on the same
+    /// target so concurrent human edits are never overwritten.
+    #[must_use]
+    pub fn from_local_undo_attempt(
+        label: impl Into<String>,
+        overlapping_authors: &[Relation],
+        detail: Option<String>,
+    ) -> Self {
+        match guard_concurrent_human_edit(overlapping_authors) {
+            ConcurrentEditGuard::SafeToUndo => Self::undone_locally(label),
+            ConcurrentEditGuard::PreserveConcurrentEdit => {
+                Self::preserved_concurrent_edit(label, detail)
+            }
+        }
+    }
+
+    /// Build an unconfirmed per-effect outcome when an invocation's receipt
+    /// was lost after dispatch, carrying the reconciliation requirement from
+    /// its [`crate::contract::ActionContract`].
+    #[must_use]
+    pub fn from_lost_receipt(
+        label: impl Into<String>,
+        contract: &crate::contract::ActionContract,
+    ) -> Self {
+        let detail = if contract.is_uncertain_one_time_external() {
+            Some("provider receipt lost; reconcile before retrying".to_owned())
+        } else if contract.requires_reconciliation_on_receipt_loss() {
+            Some("receipt lost; reconcile state before retrying".to_owned())
+        } else {
+            Some("receipt lost; status unconfirmed".to_owned())
+        };
+        Self::unconfirmed(label, detail)
+    }
+
+    /// Attach the app and resource identifier for this effect.
+    #[must_use]
+    pub fn with_resource(mut self, app_id: impl Into<String>, resource: impl Into<String>) -> Self {
+        self.app_id = Some(app_id.into());
+        self.resource = Some(resource.into());
+        self
+    }
+
+    /// Attach the originating invocation id for this effect.
+    #[must_use]
+    pub fn with_invocation_id(mut self, invocation_id: impl Into<String>) -> Self {
+        self.invocation_id = Some(invocation_id.into());
+        self
+    }
+
+    /// Whether this effect was undone locally.
+    #[must_use]
+    pub const fn is_undone(&self) -> bool {
+        matches!(self.state, UndoEffectState::UndoneLocally)
+    }
+
+    /// Whether this effect was already delivered or is irreversible externally.
+    #[must_use]
+    pub const fn is_already_delivered(&self) -> bool {
+        matches!(self.state, UndoEffectState::AlreadyDelivered)
+    }
+
+    /// Whether this effect is unconfirmed and requires reconciliation.
+    #[must_use]
+    pub const fn is_unconfirmed(&self) -> bool {
+        matches!(self.state, UndoEffectState::Unconfirmed)
+    }
+
+    /// Whether Undo left this effect in place to protect a concurrent human
+    /// edit.
+    #[must_use]
+    pub const fn preserved_concurrent_edit_flag(&self) -> bool {
+        matches!(self.state, UndoEffectState::PreservedConcurrentEdit)
+    }
+
+    /// Honest one-sentence summary of this effect's Undo result, suitable for
+    /// joining into a session summary (for example, `"Sheet edit undone."`,
+    /// `"Email already delivered."`, `"Calendar update unconfirmed."`).
+    #[must_use]
+    pub fn phrase(&self) -> String {
+        let label = self.label.trim().trim_end_matches('.');
+        let detail = self
+            .detail
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        match self.state {
+            UndoEffectState::UndoneLocally => format!("{label} undone."),
+            UndoEffectState::PreservedConcurrentEdit => match detail {
+                Some(reason) => format!("{label} kept ({reason})."),
+                None => format!("{label} kept (concurrent edit preserved)."),
+            },
+            UndoEffectState::AlreadyDelivered => format!("{label} already delivered."),
+            UndoEffectState::Unconfirmed => format!("{label} unconfirmed."),
+            UndoEffectState::NotReached => match detail {
+                Some(reason) => format!("{label} not reached ({reason})."),
+                None => format!("{label} not reached."),
+            },
+        }
+    }
+}
+
+/// Overall classification of a session Undo without flattening partial,
+/// irreversible, conflict-preserved, or unconfirmed outcomes into a generic
+/// boolean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UndoOutcomeKind {
+    /// No effects were present to undo.
+    NothingToUndo,
+    /// Every effect was undone locally.
+    Complete,
+    /// At least one effect was undone locally while at least one other effect
+    /// was already delivered, unconfirmed, preserved for a concurrent edit, or
+    /// not reached.
+    Partial,
+    /// No effect could be undone locally.
+    NoneUndone,
+}
+
+/// Structured per-effect result of undoing a session.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UndoSessionOutcome {
+    /// The undone session's identifier, when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Individual outcome of each effect in the session.
+    pub effects: Vec<UndoEffect>,
+}
+
+impl UndoSessionOutcome {
+    /// Build a session Undo outcome from its per-effect results.
+    #[must_use]
+    pub fn new(effects: Vec<UndoEffect>) -> Self {
+        Self {
+            session_id: None,
+            effects,
+        }
+    }
+
+    /// Attach the session identifier.
+    #[must_use]
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    /// Classify the overall outcome while preserving partial and irreversible
+    /// distinctions.
+    #[must_use]
+    pub fn kind(&self) -> UndoOutcomeKind {
+        if self.effects.is_empty() {
+            return UndoOutcomeKind::NothingToUndo;
+        }
+        let undone = self.undone_count();
+        if undone == self.effects.len() {
+            UndoOutcomeKind::Complete
+        } else if undone > 0 {
+            UndoOutcomeKind::Partial
+        } else {
+            UndoOutcomeKind::NoneUndone
+        }
+    }
+
+    /// Count of effects undone locally.
+    #[must_use]
+    pub fn undone_count(&self) -> usize {
+        self.effects
+            .iter()
+            .filter(|effect| effect.is_undone())
+            .count()
+    }
+
+    /// Count of effects already delivered or irreversible externally.
+    #[must_use]
+    pub fn already_delivered_count(&self) -> usize {
+        self.effects
+            .iter()
+            .filter(|effect| effect.is_already_delivered())
+            .count()
+    }
+
+    /// Count of external effects whose status remains unconfirmed.
+    #[must_use]
+    pub fn unconfirmed_count(&self) -> usize {
+        self.effects
+            .iter()
+            .filter(|effect| effect.is_unconfirmed())
+            .count()
+    }
+
+    /// Count of local effects kept in place to preserve concurrent human edits.
+    #[must_use]
+    pub fn preserved_concurrent_edit_count(&self) -> usize {
+        self.effects
+            .iter()
+            .filter(|effect| effect.preserved_concurrent_edit_flag())
+            .count()
+    }
+
+    /// Count of effects that Undo could not reach.
+    #[must_use]
+    pub fn not_reached_count(&self) -> usize {
+        self.effects
+            .iter()
+            .filter(|effect| matches!(effect.state, UndoEffectState::NotReached))
+            .count()
+    }
+
+    /// Whether every effect in a non-empty outcome was undone locally.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.kind() == UndoOutcomeKind::Complete
+    }
+
+    /// Whether any effect was already delivered or irreversible externally.
+    #[must_use]
+    pub fn has_already_delivered(&self) -> bool {
+        self.already_delivered_count() > 0
+    }
+
+    /// Whether any effect remains unconfirmed and needs reconciliation.
+    #[must_use]
+    pub fn has_unconfirmed(&self) -> bool {
+        self.unconfirmed_count() > 0
+    }
+
+    /// Whether any concurrent human edit was preserved instead of overwritten.
+    #[must_use]
+    pub fn has_preserved_concurrent_edits(&self) -> bool {
+        self.preserved_concurrent_edit_count() > 0
+    }
+
+    /// Render the honest per-effect summary sentence (for example,
+    /// `"Sheet edit undone. Email already delivered. Calendar update unconfirmed."`).
+    #[must_use]
+    pub fn summary(&self) -> String {
+        self.effects
+            .iter()
+            .map(UndoEffect::phrase)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Phrases for every effect that was not undone locally (already
+    /// delivered, unconfirmed, preserved concurrent edits, or not reached).
+    #[must_use]
+    pub fn unreverted_phrases(&self) -> Vec<String> {
+        self.effects
+            .iter()
+            .filter(|effect| !effect.is_undone())
+            .map(UndoEffect::phrase)
+            .collect()
+    }
+
+    /// Write the honest per-effect summary and unreverted breakdown onto a
+    /// [`Session`] wire snapshot so existing UI surfaces display every outcome
+    /// accurately.
+    pub fn apply_to_session(&self, session: &mut Session) {
+        session.undo_status = (!self.effects.is_empty()).then(|| self.summary());
+        session.unreverted = self.unreverted_phrases();
+    }
+}
+
 /// A record an agent session changed.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1203,6 +1619,117 @@ mod tests {
             assert!(here.reads_only_resources_of("so.tilo.notes"));
             assert!(!here.reads_only_resources_of("so.tilo.chat"), "Notes' resources are not Chat's");
             assert!(!FeedQuery::default().reads_only_resources_of("so.tilo.notes"));
+        }
+
+        phase per_effect_undo_outcomes_stay_honest_and_preserve_concurrent_human_edits;
+        {
+            // Mixed Undo distinguishes local undo, already delivered external
+            // effects, and unconfirmed external effects instead of flattening.
+            let external_calendar = crate::contract::ActionContract::for_operation(
+                crate::action::OperationKind::Effect,
+            );
+            let outcome = UndoSessionOutcome::new(vec![
+                UndoEffect::undone_locally("Sheet edit")
+                    .with_resource("so.tilo.sheets", "sheet-1")
+                    .with_invocation_id("inv-1"),
+                UndoEffect::already_delivered("Email", None)
+                    .with_resource("so.tilo.mail", "outbox-1")
+                    .with_invocation_id("inv-2"),
+                UndoEffect::from_lost_receipt("Calendar update", &external_calendar)
+                    .with_resource("so.tilo.calendar", "event-1")
+                    .with_invocation_id("inv-3"),
+            ])
+            .with_session_id("session-1");
+
+            assert_eq!(outcome.kind(), UndoOutcomeKind::Partial);
+            assert!(!outcome.is_complete());
+            assert_eq!(outcome.undone_count(), 1);
+            assert_eq!(outcome.already_delivered_count(), 1);
+            assert_eq!(outcome.unconfirmed_count(), 1);
+            assert!(outcome.has_already_delivered());
+            assert!(outcome.has_unconfirmed());
+            assert!(!outcome.has_preserved_concurrent_edits());
+            assert_eq!(
+                outcome.summary(),
+                "Sheet edit undone. Email already delivered. Calendar update unconfirmed."
+            );
+            assert_eq!(
+                outcome.unreverted_phrases(),
+                vec![
+                    "Email already delivered.".to_owned(),
+                    "Calendar update unconfirmed.".to_owned(),
+                ]
+            );
+
+            // Applying onto Session fills undo_status and unreverted accurately.
+            let mut session = Session::default();
+            session.apply_undo_outcome(&outcome);
+            assert_eq!(
+                session.undo_status.as_deref(),
+                Some("Sheet edit undone. Email already delivered. Calendar update unconfirmed.")
+            );
+            assert_eq!(session.unreverted.len(), 2);
+
+            // Round-trips cleanly over JSON.
+            let wire = serde_json::to_string(&outcome).unwrap();
+            assert_eq!(
+                serde_json::from_str::<UndoSessionOutcome>(&wire).unwrap(),
+                outcome
+            );
+
+            // Concurrent human edit guard never overwrites human changes.
+            assert_eq!(
+                guard_concurrent_human_edit(&[Relation::Person]),
+                ConcurrentEditGuard::PreserveConcurrentEdit
+            );
+            assert_eq!(
+                guard_concurrent_human_edit(&[Relation::Reader]),
+                ConcurrentEditGuard::PreserveConcurrentEdit
+            );
+            assert_eq!(
+                guard_concurrent_human_edit(&[Relation::Software]),
+                ConcurrentEditGuard::SafeToUndo
+            );
+            assert_eq!(
+                guard_concurrent_human_edit(&[]),
+                ConcurrentEditGuard::SafeToUndo
+            );
+
+            let guarded = UndoEffect::from_local_undo_attempt(
+                "Doc paragraph",
+                &[Relation::Software, Relation::Person],
+                Some("edited by Ada".into()),
+            );
+            assert_eq!(guarded.state, UndoEffectState::PreservedConcurrentEdit);
+            assert!(guarded.preserved_concurrent_edit_flag());
+            assert!(!guarded.is_undone());
+            assert_eq!(guarded.phrase(), "Doc paragraph kept (edited by Ada).");
+
+            let safe = UndoEffect::from_local_undo_attempt(
+                "Doc paragraph",
+                &[Relation::Software],
+                None,
+            );
+            assert_eq!(safe.state, UndoEffectState::UndoneLocally);
+            assert!(safe.is_undone());
+
+            // Complete, NoneUndone, and NothingToUndo are kept distinct.
+            let complete = UndoSessionOutcome::new(vec![safe]);
+            assert_eq!(complete.kind(), UndoOutcomeKind::Complete);
+            assert!(complete.is_complete());
+            assert!(complete.unreverted_phrases().is_empty());
+
+            let irreversible_only = UndoSessionOutcome::new(vec![
+                UndoEffect::already_delivered("Email", None),
+                guarded,
+            ]);
+            assert_eq!(irreversible_only.kind(), UndoOutcomeKind::NoneUndone);
+            assert!(irreversible_only.has_already_delivered());
+            assert!(irreversible_only.has_preserved_concurrent_edits());
+
+            let empty = UndoSessionOutcome::default();
+            assert_eq!(empty.kind(), UndoOutcomeKind::NothingToUndo);
+            assert_eq!(empty.summary(), "");
         }
     }
 }

@@ -600,6 +600,23 @@ pub const BY_DISMISSED: &str = "dismissed";
 /// The question the thing tells was answered.
 pub const BY_ANSWERED: &str = "answered";
 
+/// Whether `by` only marks a notification as opened or dismissed rather than
+/// explicitly answering or resolving a waiting question.
+#[must_use]
+pub fn is_notice_only(by: &str) -> bool {
+    let by = by.trim();
+    by.is_empty() || by.eq_ignore_ascii_case(BY_OPENED) || by.eq_ignore_ascii_case(BY_DISMISSED)
+}
+
+impl Acknowledged {
+    /// Whether this acknowledgment only marks a notification as opened or
+    /// dismissed rather than resolving a waiting question.
+    #[must_use]
+    pub fn is_notice_only(&self) -> bool {
+        is_notice_only(&self.by)
+    }
+}
+
 /// One time a host told a thing outside Tilo.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -656,8 +673,15 @@ pub struct Told {
     pub offered_by: Option<Teller>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub insists: Option<Insists>,
+    /// Whether the person opened or dismissed the notification (or, for
+    /// non-questions, acknowledged it). For a [`Kind::Question`], opening
+    /// or dismissing the notice does not resolve the question itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acknowledged: Option<Acknowledged>,
+    /// Explicit resolution of a waiting question (answered, or a decision
+    /// button pressed), kept independent of notification opening or dismissal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<Acknowledged>,
     /// When what it tells was taken back, in milliseconds since the
     /// epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -668,11 +692,48 @@ pub struct Told {
 }
 
 impl Told {
-    /// Whether it still waits for its person: it reaches them, and was
-    /// neither acknowledged nor taken back.
+    /// Whether this thing asks for a decision that only an explicit answer
+    /// or withdrawal clears, never merely opening or dismissing its notice.
     #[must_use]
-    pub const fn waits(&self) -> bool {
-        self.reaches && self.acknowledged.is_none() && self.withdrawn_at_ms.is_none()
+    pub const fn is_decision(&self) -> bool {
+        matches!(self.kind, Kind::Question)
+    }
+
+    /// Whether a decision has been explicitly answered or resolved.
+    #[must_use]
+    pub fn is_resolved(&self) -> bool {
+        self.resolved.is_some()
+            || self
+                .acknowledged
+                .as_ref()
+                .is_some_and(|ack| !ack.is_notice_only())
+    }
+
+    /// Whether this thing is settled: taken back, or explicitly resolved
+    /// (for a decision) or acknowledged (for anything else).
+    #[must_use]
+    pub fn is_settled(&self) -> bool {
+        self.withdrawn_at_ms.is_some()
+            || if self.is_decision() {
+                self.is_resolved()
+            } else {
+                self.acknowledged.is_some()
+            }
+    }
+
+    /// Whether this is an unresolved, non-withdrawn decision that must stay
+    /// durable regardless of notification history limits.
+    #[must_use]
+    pub fn is_pending_decision(&self) -> bool {
+        self.is_decision() && !self.is_resolved() && self.withdrawn_at_ms.is_none()
+    }
+
+    /// Whether it still waits for its person: it reaches them and is not
+    /// settled. For a [`Kind::Question`], opening or dismissing the notice
+    /// leaves it waiting until it is explicitly answered or taken back.
+    #[must_use]
+    pub fn waits(&self) -> bool {
+        self.reaches && !self.is_settled()
     }
 }
 
@@ -898,10 +959,78 @@ mod tests {
         assert_eq!(json["mark"]["why"]["fact"], "Hiring");
         assert_eq!(json["reaches"], false);
         assert!(json.get("acknowledged").is_none(), "{json}");
+        assert!(json.get("resolved").is_none(), "{json}");
         assert_eq!(serde_json::from_value::<Told>(json).unwrap(), told);
         let letting: LetThrough =
             serde_json::from_value(serde_json::json!({"kind": "reminder", "may": true})).unwrap();
         assert_eq!(letting.kind, Reach::Reminder);
+    }
+
+    /// Dismissing or opening a notification for a question leaves it waiting
+    /// until it is explicitly answered, resolved by a button, or taken back.
+    #[test]
+    fn dismissing_or_opening_a_question_does_not_resolve_it() {
+        let mut question = Told {
+            id: "q1".into(),
+            kind: Kind::Question,
+            reaches: true,
+            ..Told::default()
+        };
+        assert!(question.waits());
+        assert!(question.is_pending_decision());
+        assert!(!question.is_resolved());
+
+        for by in [BY_OPENED, BY_DISMISSED, "", "Dismissed"] {
+            question.acknowledged = Some(Acknowledged {
+                at_ms: 100,
+                device: "phone".into(),
+                by: by.into(),
+            });
+            assert!(question.waits(), "notice-only `{by}` must not clear waits");
+            assert!(question.is_pending_decision());
+            assert!(!question.is_resolved());
+        }
+
+        // Explicit resolution clears it while preserving notice acknowledgment.
+        question.resolved = Some(Acknowledged {
+            at_ms: 200,
+            device: "laptop".into(),
+            by: BY_ANSWERED.into(),
+        });
+        assert!(!question.waits());
+        assert!(!question.is_pending_decision());
+        assert!(question.is_resolved());
+
+        // Legacy entries with a resolving acknowledgment still count as resolved.
+        let legacy = Told {
+            id: "q2".into(),
+            kind: Kind::Question,
+            reaches: true,
+            acknowledged: Some(Acknowledged {
+                at_ms: 300,
+                device: "laptop".into(),
+                by: BY_ANSWERED.into(),
+            }),
+            ..Told::default()
+        };
+        assert!(!legacy.waits());
+        assert!(!legacy.is_pending_decision());
+        assert!(legacy.is_resolved());
+
+        // Non-decision kinds settle when dismissed.
+        let reminder = Told {
+            id: "r1".into(),
+            kind: Kind::Reminder,
+            reaches: true,
+            acknowledged: Some(Acknowledged {
+                at_ms: 100,
+                device: "phone".into(),
+                by: BY_DISMISSED.into(),
+            }),
+            ..Told::default()
+        };
+        assert!(!reminder.waits());
+        assert!(!reminder.is_pending_decision());
     }
 
     /// A rhythm a person may ask for is bounded both ways.
