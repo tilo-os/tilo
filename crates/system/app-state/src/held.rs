@@ -33,15 +33,13 @@ impl Follow {
         Self { documents }
     }
 
-    /// Where the documents stand: their lengths and change times, so a follower takes a save in
-    /// once.
+    /// Where the documents stand: what the platform reports of each document file, so a follower
+    /// takes a save in once.
     pub fn stamp(&self) -> u64 {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for document in &self.documents {
-            let meta = std::fs::metadata(document.join(DOCUMENT_FILE)).ok();
-            meta.map(|meta| (meta.len(), meta.modified().ok()))
-                .hash(&mut hasher);
+            tilo_files::native::stamp(&document.join(DOCUMENT_FILE)).hash(&mut hasher);
         }
         hasher.finish()
     }
