@@ -7,7 +7,8 @@
 //! sealing, syncing and reading all go by document: a query walks only the documents its reader
 //! may open, and a resource whose readers change moves to a document of the new ones. Within a
 //! reader set, the resources nested in one parent fill a document of the parent's
-//! (`<readers>/<parent>#<n>`, the top-level resources of a kind `<readers>/<kind>#<n>`); a
+//! (`<readers>/<parent>#<n>`, the top-level resources of a kind `<readers>/<kind>#<n>`, where
+//! `<readers>` is `*` for the whole group and a short digest of any other set); a
 //! document holds at most [`DOCUMENT_LIMIT`] resources, and the next one starts when the newest
 //! is full. So a write changes one small document, a newcomer is sent the documents they open,
 //! and no document grows with the workspace.
@@ -20,6 +21,14 @@
 //! ([`Store::put`], [`Store::remove`]) from what it wrote, and a peer's changes
 //! ([`Store::receive`]) from the patches their apply logged, which name the resources they touched
 //! and nothing else. Both cost what they changed, never the size of the store.
+//!
+//! **Content.** A resource's bulk content (rich text, lists, maps: what no filter or sort reads)
+//! is never in the documents above. It is in a content document of its own, placed by the store
+//! under the resource and in its reader set (`<readers>/<kind>/<id>~<n>`), so the same key seals
+//! it and a reader is sent it with the resource. An app asks only for the content of a resource
+//! ([`Store::content`], [`Store::edit_content`]). When the resource's readers change, its content
+//! moves with it: copied, without its history, into a content document of the new readers, and
+//! emptied in the old one, so nobody who lost access is sent what it holds next.
 //!
 //! **Starting.** A document the store kept is given back whole ([`Store::load`]), and its
 //! resources are read from it; or, faster, the index's snapshot of it ([`Store::snapshot`]) is
@@ -49,6 +58,23 @@ const KIND: &str = "k";
 const PARENT: &str = "p";
 const ORDER: &str = "o";
 const FIELDS: &str = "f";
+/// The root of what a content document holds.
+const CONTENT: &str = "c";
+
+/// The name a document id gives the reader set `readers`: `*` for the whole group, a digest of
+/// any other set, so a long list of people is in no id.
+fn readers_name(readers: &str) -> String {
+    if readers == "*" {
+        return readers.to_owned();
+    }
+    let digest = blake3::hash(readers.as_bytes()).to_hex();
+    digest.as_str().get(..16).unwrap_or_default().to_owned()
+}
+
+/// The content document of the resource `id` of `kind`, read by `readers`.
+fn content_id(readers: &str, kind: &str, id: &str) -> String {
+    format!("{}/{kind}/{id}~0", readers_name(readers))
+}
 
 /// Why the store refused a write or a peer's changes.
 #[derive(Debug)]
@@ -256,7 +282,7 @@ impl Store {
             filled.held = 0;
         }
         filled.held = filled.held.saturating_add(1);
-        format!("{readers}/{owner}#{}", filled.newest)
+        format!("{}/{owner}#{}", readers_name(readers), filled.newest)
     }
 
     /// Writes `resource` as the resource `id` of `kind`: a new one into the document the store
@@ -276,8 +302,10 @@ impl Store {
         let held = self.index.get(kind, id).map(|held| held.doc.clone());
         let doc_id = match held {
             Some(doc) if self.index.readers(&doc) == Some(resource.readers.as_str()) => doc,
-            Some(_) => {
+            Some(doc) => {
+                let earlier = self.index.readers(&doc).unwrap_or_default().to_owned();
                 written.push(self.remove(kind, id)?);
+                written.extend(self.move_content(kind, id, &earlier, &resource.readers)?);
                 self.place(kind, resource.parent.as_deref(), &resource.readers)
             }
             None => self.place(kind, resource.parent.as_deref(), &resource.readers),
@@ -400,6 +428,150 @@ impl Store {
         })
     }
 
+    /// The document `doc` when it exists, in memory or at the source; `None` for one never
+    /// written.
+    fn existing(&mut self, doc: &str) -> Result<Option<&mut Automerge>, StoreError> {
+        if !self.docs.contains_key(doc) {
+            let Some(bytes) = self.source.as_mut().and_then(|source| source(doc)) else {
+                return Ok(None);
+            };
+            self.docs.insert(doc.to_owned(), Automerge::load(&bytes)?);
+        }
+        Ok(self.docs.get_mut(doc))
+    }
+
+    /// The content document of the resource `id` of `kind`, and its reader set.
+    fn content_of(&self, kind: &str, id: &str) -> Result<(String, String), StoreError> {
+        let held = self
+            .index
+            .get(kind, id)
+            .ok_or_else(|| StoreError::Missing {
+                kind: kind.to_owned(),
+                id: id.to_owned(),
+            })?;
+        let readers = self.index.readers(&held.doc).unwrap_or_default().to_owned();
+        Ok((content_id(&readers, kind, id), readers))
+    }
+
+    /// The content of the resource `id` of `kind`: the document it is in and the map at its
+    /// root, `None` while nothing was written to it.
+    ///
+    /// # Errors
+    /// When there is no such resource, or its content document cannot be read.
+    pub fn content(
+        &mut self,
+        kind: &str,
+        id: &str,
+    ) -> Result<Option<(&Automerge, ObjId)>, StoreError> {
+        let (doc_id, _) = self.content_of(kind, id)?;
+        let Some(doc) = self.existing(&doc_id)? else {
+            return Ok(None);
+        };
+        let doc: &Automerge = doc;
+        Ok(match doc.get(ROOT, CONTENT)? {
+            Some((AmValue::Object(ObjType::Map), root)) => Some((doc, root)),
+            _ => None,
+        })
+    }
+
+    /// Edits the content of the resource `id` of `kind` in one change: `edit` is given the map
+    /// at its root. Answers what `edit` answered and the change, `None` when it changed nothing.
+    ///
+    /// # Errors
+    /// When there is no such resource, `edit` failed (and nothing was written), or the content
+    /// document cannot be read.
+    pub fn edit_content<R>(
+        &mut self,
+        kind: &str,
+        id: &str,
+        edit: impl FnOnce(
+            &mut automerge::transaction::Transaction<'_>,
+            &ObjId,
+        ) -> Result<R, automerge::AutomergeError>,
+    ) -> Result<(R, Option<Written>), StoreError> {
+        let (doc_id, readers) = self.content_of(kind, id)?;
+        let doc = self.doc(&doc_id)?;
+        let before = doc.get_heads();
+        let mut tx = doc.transaction();
+        let answer = map_in(&mut tx, &ROOT, CONTENT).and_then(|root| edit(&mut tx, &root));
+        let answer = match answer {
+            Ok(answer) => answer,
+            Err(error) => {
+                tx.rollback();
+                return Err(error.into());
+            }
+        };
+        tx.commit();
+        if doc.get_heads() == before {
+            return Ok((answer, None));
+        }
+        let change = doc
+            .get_last_local_change()
+            .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
+        let heads = doc.get_heads();
+        self.index.committed(&Commit {
+            doc: &doc_id,
+            readers: &readers,
+            heads: &heads,
+            changes: &[],
+        });
+        Ok((
+            answer,
+            Some(Written {
+                doc: doc_id,
+                readers,
+                change,
+            }),
+        ))
+    }
+
+    /// Moves the content of the resource `id` of `kind` from the reader set `from` to `to`:
+    /// what it holds now, without its history, into a content document of `to`, and the old one
+    /// emptied. Answers both changes; none for a resource without content.
+    fn move_content(
+        &mut self,
+        kind: &str,
+        id: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<Written>, StoreError> {
+        let old_id = content_id(from, kind, id);
+        let Some(old) = self.existing(&old_id)? else {
+            return Ok(Vec::new());
+        };
+        let Some((AmValue::Object(ObjType::Map), old_root)) = old.get(ROOT, CONTENT)? else {
+            return Ok(Vec::new());
+        };
+        let copy = old.fork();
+        let mut tx = old.transaction();
+        tx.delete(ROOT, CONTENT)?;
+        tx.commit();
+        let emptied = old
+            .get_last_local_change()
+            .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
+        let new_id = content_id(to, kind, id);
+        let new = self.doc(&new_id)?;
+        let mut tx = new.transaction();
+        let root = map_in(&mut tx, &ROOT, CONTENT)?;
+        copy_object(&copy, &old_root, &mut tx, &root)?;
+        tx.commit();
+        let copied = new
+            .get_last_local_change()
+            .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
+        Ok(vec![
+            Written {
+                doc: old_id,
+                readers: from.to_owned(),
+                change: emptied,
+            },
+            Written {
+                doc: new_id,
+                readers: to.to_owned(),
+                change: copied,
+            },
+        ])
+    }
+
     /// Applies a peer's `changes` to the document `doc`, which `readers` may read, and indexes
     /// the resources they touched.
     ///
@@ -505,7 +677,7 @@ impl Store {
     /// goes to the newest document known.
     fn know_document(&mut self, doc: &str, readers: &str, owner: &str, count: usize) {
         let Some(number) = doc
-            .strip_prefix(readers)
+            .strip_prefix(readers_name(readers).as_str())
             .and_then(|rest| rest.strip_prefix('/'))
             .and_then(|rest| rest.strip_prefix(owner))
             .and_then(|rest| rest.strip_prefix('#'))
@@ -593,6 +765,47 @@ impl Store {
     pub fn in_memory(&self) -> usize {
         self.docs.len()
     }
+}
+
+/// Writes what the object `from` of `source` holds into the empty object `to` of `tx`, as it
+/// stands now: its maps, lists and scalars, and its texts with their marks and blocks.
+fn copy_object(
+    source: &Automerge,
+    from: &ObjId,
+    tx: &mut automerge::transaction::Transaction<'_>,
+    to: &ObjId,
+) -> Result<(), automerge::AutomergeError> {
+    let value = ReadDoc::hydrate(source, from, None)?;
+    tx.update_object(to, &value)
+        .map_err(|_| automerge::AutomergeError::Fail)?;
+    copy_texts(source, from, tx, to)
+}
+
+/// Gives each text under `from` its marks and blocks in its copy under `to`.
+fn copy_texts(
+    source: &Automerge,
+    from: &ObjId,
+    tx: &mut automerge::transaction::Transaction<'_>,
+    to: &ObjId,
+) -> Result<(), automerge::AutomergeError> {
+    let props: Vec<Prop> = match source.object_type(from)? {
+        ObjType::Map | ObjType::Table => source.keys(from).map(Prop::Map).collect(),
+        ObjType::List => (0..source.length(from)).map(Prop::Seq).collect(),
+        ObjType::Text => {
+            let spans: Vec<automerge::iter::Span> = source.spans(from)?.collect();
+            return tx.update_spans(to, automerge::marks::UpdateSpansConfig::default(), spans);
+        }
+    };
+    for prop in props {
+        let Some((AmValue::Object(_), inner)) = source.get(from, prop.clone())? else {
+            continue;
+        };
+        let Some((AmValue::Object(_), copied)) = tx.get(to, prop)? else {
+            continue;
+        };
+        copy_texts(source, &inner, tx, &copied)?;
+    }
+    Ok(())
 }
 
 fn scalar(value: &Value) -> ScalarValue {

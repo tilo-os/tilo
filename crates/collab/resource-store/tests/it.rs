@@ -367,7 +367,7 @@ mod store {
     use tilo_resource_store::store::DOCUMENT_LIMIT;
     use tilo_resource_store::{Resource, Store, Written};
 
-    const MEMBERS: &str = "members";
+    const MEMBERS: &str = "*";
 
     fn fields(title: &str, state: &str) -> BTreeMap<String, Cell> {
         BTreeMap::from([
@@ -510,23 +510,92 @@ mod store {
             .iter()
             .map(|write| (write.doc.as_str(), write.readers.as_str()))
             .collect();
-        assert_eq!(
-            docs,
-            [
-                ("members/board#0", MEMBERS),
-                ("ada-only/board#0", "ada-only")
-            ]
+        assert_eq!(docs[0], ("*/board#0", MEMBERS));
+        let (ada_only, readers) = docs[1];
+        assert_eq!(readers, "ada-only");
+        assert!(
+            ada_only.ends_with("/board#0") && !ada_only.contains("ada"),
+            "a reader set other than the group is named by a digest: {ada_only}"
         );
+        let ada_only = ada_only.to_owned();
         send(&moved, &mut there);
         let members = |readers: &str| readers == MEMBERS;
         for store in [&here, &there] {
             assert_eq!(store.count(ISSUE, &[], &members), 0);
             assert_eq!(store.count(ISSUE, &[], &anyone), 1);
-            assert_eq!(
-                store.index().get(ISSUE, "a").unwrap().doc,
-                "ada-only/board#0"
-            );
+            assert_eq!(store.index().get(ISSUE, "a").unwrap().doc, ada_only);
         }
+    }
+
+    #[test]
+    fn content_is_written_beside_its_resource_and_moves_with_its_readers() {
+        use automerge::marks::{ExpandMark, Mark};
+        use automerge::transaction::Transactable as _;
+        use automerge::{ObjType, ReadDoc as _};
+
+        let mut here = Store::new();
+        let mut there = Store::new();
+        let mut written = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
+        let ((), body) = here
+            .edit_content(ISSUE, "a", |tx, root| {
+                let text = tx.put_object(root, "body", ObjType::Text)?;
+                tx.splice_text(&text, 0, 0, "Hello world")?;
+                tx.mark(
+                    &text,
+                    Mark::new("bold".into(), true, 0, 5),
+                    ExpandMark::After,
+                )?;
+                let steps = tx.put_object(root, "steps", ObjType::List)?;
+                tx.insert(&steps, 0, "first")?;
+                Ok(())
+            })
+            .unwrap();
+        let body = body.expect("a change");
+        assert_eq!(
+            body.readers, MEMBERS,
+            "content is read by its resource's readers"
+        );
+        assert_ne!(
+            body.doc,
+            here.index().get(ISSUE, "a").unwrap().doc,
+            "content is in a document of its own"
+        );
+        written.push(body);
+        // An edit that changes nothing writes nothing.
+        let ((), none) = here.edit_content(ISSUE, "a", |_, _| Ok(())).unwrap();
+        assert!(none.is_none());
+
+        send(&written, &mut there);
+        let text_of = |store: &mut Store| {
+            let (doc, root) = store.content(ISSUE, "a").unwrap()?;
+            let (_, text) = doc.get(&root, "body").unwrap()?;
+            let marks = doc.marks(&text).unwrap();
+            Some((doc.text(&text).unwrap(), marks.len()))
+        };
+        assert_eq!(text_of(&mut there), Some(("Hello world".to_owned(), 1)));
+
+        // Its readers change: the content moves to a document of theirs, and the old one is
+        // emptied, so a member who lost access is sent nothing more of it.
+        let moved = put(
+            &mut here,
+            "a",
+            read_by("ada-only", "board", "a0", "Draft", "open"),
+        );
+        let emptied = moved
+            .iter()
+            .find(|write| write.readers == MEMBERS && write.doc.contains('~'))
+            .expect("the old content emptied");
+        assert!(
+            moved
+                .iter()
+                .any(|write| write.readers == "ada-only" && write.doc.contains('~')),
+            "the content copied for its new readers"
+        );
+        assert_eq!(text_of(&mut here), Some(("Hello world".to_owned(), 1)));
+        send(&moved, &mut there);
+        assert_eq!(text_of(&mut there), Some(("Hello world".to_owned(), 1)));
+        let old = there.document(&emptied.doc).unwrap();
+        assert!(old.get(automerge::ROOT, "c").unwrap().is_none());
     }
 
     #[test]
@@ -544,7 +613,7 @@ mod store {
         }
         assert_eq!(
             docs.into_iter().collect::<Vec<_>>(),
-            ["members/board#0", "members/board#1"]
+            ["*/board#0", "*/board#1"]
         );
         assert_eq!(
             store.count(ISSUE, &[Filter::Is(PARENT.into(), "board".into())], &anyone),
@@ -558,7 +627,7 @@ mod store {
             last.ids().collect::<Vec<_>>(),
             [format!("i{DOCUMENT_LIMIT:05}")]
         );
-        let held = store.document("members/board#0").unwrap();
+        let held = store.document("*/board#0").unwrap();
         assert!(held.save().len() < 1 << 20, "a document stays small");
     }
 

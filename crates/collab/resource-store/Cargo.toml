@@ -17,6 +17,8 @@ automerge.workspace = true
 # The index's snapshot of a document, which a start reads instead of the document.
 serde.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
+# Short names of reader sets in document ids.
+blake3.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
