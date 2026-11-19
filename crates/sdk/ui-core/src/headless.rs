@@ -623,6 +623,8 @@ pub struct FrameHarness {
     /// The invoker each job started for someone else runs for, while it runs
     /// ([`FrameHarness::start_bound_job_for`]).
     acting_for: HashMap<tilo_actions::InvocationId, crate::invocation_scope::Continuation>,
+    /// The person's presses waiting for what they change to arrive from the workspace.
+    waiting_controls: Vec<crate::app_core::WaitingControl>,
     invocation_results: Option<invocation_results::InvocationResults>,
     /// Per-pass frame profiler set by the perf harness; `None` on a normal run, so no frame pays for
     /// it.
@@ -1582,6 +1584,7 @@ impl FrameHarness {
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
             acting_for: HashMap::new(),
+            waiting_controls: Vec::new(),
             invocation_results: None,
             profiler: None,
             last_send_skipped_relayout: false,
@@ -8827,6 +8830,10 @@ impl crate::app_core::KeyCore for FrameHarness {
 impl crate::app_core::ControlCore for FrameHarness {
     fn local_author(&self) -> &crate::permissions::MemberId {
         &self.author
+    }
+
+    fn waiting_controls(&mut self) -> &mut Vec<crate::app_core::WaitingControl> {
+        &mut self.waiting_controls
     }
 
     fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication {

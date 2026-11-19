@@ -3314,6 +3314,10 @@ impl crate::app_core::ControlCore for App {
         &self.collaboration.local_author
     }
 
+    fn waiting_controls(&mut self) -> &mut Vec<crate::app_core::WaitingControl> {
+        &mut self.actions.waiting_controls
+    }
+
     fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication {
         &self.actions.bound_publication
     }

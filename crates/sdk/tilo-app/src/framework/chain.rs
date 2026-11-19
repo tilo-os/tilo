@@ -1162,14 +1162,23 @@ impl ChainCore {
         if self.workspace.store.workspace_answered(&head) {
             return false;
         }
-        // A store written at this moment cannot say which part is the newest: the head is
-        // waited for rather than taken as the workspace's word that there is none.
-        matches!(
-            self.workspace
-                .store
-                .try_open_resource(&DocumentCheckout::new(head, self.kind.clone())),
-            Err(ResourceOpenError::Arriving | ResourceOpenError::Busy)
-        )
+        match self
+            .workspace
+            .store
+            .try_open_resource(&DocumentCheckout::new(head.clone(), self.kind.clone()))
+        {
+            Err(ResourceOpenError::Arriving) => true,
+            // A store written at this moment (a chain opened in a view's sync) cannot say
+            // which part is the newest: the head is waited for rather than taken as the
+            // workspace's word that there is none, and asked for now. Opening it would have
+            // asked; without this nothing asked until a write needed it, and that write
+            // found the head still on its way.
+            Err(ResourceOpenError::Busy) => {
+                self.workspace.store.want(head);
+                true
+            }
+            _ => false,
+        }
     }
 
     fn moved(&self) {

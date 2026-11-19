@@ -11,9 +11,41 @@ use super::{AppCore, ResourceInvocation};
 /// What entering an API started, or why it refused.
 pub(crate) type Started = Result<ResourceOperationStart, ApiError>;
 
+/// How long a press of the person's waits for what it changes to arrive from the workspace
+/// before the window says it has not: what a just-opened window shows arrives in a round trip.
+const ARRIVAL_WAIT: crate::time::Duration = crate::time::Duration::from_secs(30);
+
+/// A press of the person's whose API answered that what it changes has not arrived from the
+/// workspace yet ([`tilo_actions::api::NOT_READY`]: nothing was made, ask again). The window
+/// asks again each time it dispatches its controls, as any caller of that answer does, until the
+/// press goes ahead or [`ARRIVAL_WAIT`] passed; only then is it refused over the window. Its
+/// control hears how it ended once it did.
+pub(crate) struct WaitingControl {
+    /// The component whose control it was, or `None` for the outer document's.
+    target: Option<BoundActionTarget>,
+    intent: ControlInvocation,
+    origin: Origin,
+    until: crate::time::Instant,
+}
+
+/// Whether `result` says what the press changes has not arrived yet, and to ask again.
+fn waits_for_arrival(result: &Started) -> bool {
+    matches!(result, Err(ApiError::Unavailable { code, .. }) if code == tilo_actions::api::NOT_READY)
+}
+
+/// When a press first refused at `first` (now, when `None`) stops waiting, or `None` once it has.
+fn still_waiting(first: Option<crate::time::Instant>) -> Option<crate::time::Instant> {
+    let now = crate::time::now();
+    let until = first.unwrap_or_else(|| now.checked_add(ARRIVAL_WAIT).unwrap_or(now));
+    (now < until).then_some(until)
+}
+
 pub(crate) trait ControlCore: AppCore {
     /// The person at this device.
     fn local_author(&self) -> &crate::permissions::MemberId;
+
+    /// The presses of the person's that wait for what they change to arrive ([`WaitingControl`]).
+    fn waiting_controls(&mut self) -> &mut Vec<WaitingControl>;
 
     /// How the host publishes its components' resources to the workspace.
     fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication;
@@ -186,6 +218,25 @@ pub(crate) trait ControlCore: AppCore {
         registered: crate::control_domain::RegisteredControls,
     ) -> usize {
         let mut dispatched = 0usize;
+        // What waited for what it changes is asked again first, in the order it was pressed.
+        for waiting in std::mem::take(self.waiting_controls()) {
+            let went = match &waiting.target {
+                Some(target) => self.dispatch_bound_control_invocation(
+                    target,
+                    &waiting.intent,
+                    None,
+                    waiting.origin,
+                    Some(waiting.until),
+                ),
+                None => self.dispatch_outer_control_invocation(
+                    waiting.intent,
+                    None,
+                    waiting.origin,
+                    Some(waiting.until),
+                ),
+            };
+            dispatched = dispatched.saturating_add(usize::from(went));
+        }
         let mut registered = registered;
         loop {
             let (went, delivered) = self.dispatch_control_round(std::mem::take(&mut registered));
@@ -241,7 +292,8 @@ pub(crate) trait ControlCore: AppCore {
                 dispatched = dispatched.saturating_add(1);
                 continue;
             }
-            if self.dispatch_bound_control_invocation(&target, &intent, on_behalf_of, origin) {
+            if self.dispatch_bound_control_invocation(&target, &intent, on_behalf_of, origin, None)
+            {
                 dispatched = dispatched.saturating_add(1);
             }
         }
@@ -251,19 +303,21 @@ pub(crate) trait ControlCore: AppCore {
             .or_else(|| crate::bound_dispatch::take_attributed_with_origin(self.host_root_mut()))
         {
             delivered = delivered.saturating_add(1);
-            if self.dispatch_outer_control_invocation(intent, on_behalf_of, origin) {
+            if self.dispatch_outer_control_invocation(intent, on_behalf_of, origin, None) {
                 dispatched = dispatched.saturating_add(1);
             }
         }
         (dispatched, delivered)
     }
 
-    /// Deliver one control intent the outer document produced.
+    /// Deliver one control intent the outer document produced; `waited`, when the person's press
+    /// already waits for what it changes to arrive, until when ([`WaitingControl`]).
     fn dispatch_outer_control_invocation(
         &mut self,
         intent: ControlInvocation,
         on_behalf_of: Option<InvocationId>,
         origin: Origin,
+        waited: Option<crate::time::Instant>,
     ) -> bool {
         // Only what the person asked for is refused over the window; the
         // app hears of its own invocation's refusal through the feedback.
@@ -348,6 +402,19 @@ pub(crate) trait ControlCore: AppCore {
                 .ambient_context(acting.as_ref().and_then(|acting| acting.context.as_ref())),
         );
         drop(scopes);
+        if says_refusal
+            && acting.is_none()
+            && waits_for_arrival(&result)
+            && let Some(until) = still_waiting(waited)
+        {
+            self.waiting_controls().push(WaitingControl {
+                target: None,
+                intent,
+                origin,
+                until,
+            });
+            return false;
+        }
         self.outer_control_settled(&intent.address, on_behalf_of, &result);
         match result {
             Ok(_) => true,
@@ -386,13 +453,15 @@ pub(crate) trait ControlCore: AppCore {
         );
     }
 
-    /// Deliver one control intent a component produced.
+    /// Deliver one control intent a component produced; `waited`, when the person's press already
+    /// waits for what it changes to arrive, until when ([`WaitingControl`]).
     fn dispatch_bound_control_invocation(
         &mut self,
         target: &BoundActionTarget,
         intent: &ControlInvocation,
         on_behalf_of: Option<InvocationId>,
         origin: Origin,
+        waited: Option<crate::time::Instant>,
     ) -> bool {
         if origin == Origin::PersonConfirming && on_behalf_of.is_none() {
             return self.ask_person(
@@ -441,6 +510,19 @@ pub(crate) trait ControlCore: AppCore {
         );
         drop(answering);
         drop(scopes);
+        if on_behalf_of.is_none()
+            && origin.is_persons()
+            && waits_for_arrival(&result)
+            && let Some(until) = still_waiting(waited)
+        {
+            self.waiting_controls().push(WaitingControl {
+                target: Some(target.clone()),
+                intent: intent.clone(),
+                origin,
+                until,
+            });
+            return false;
+        }
         if origin.is_persons() {
             crate::pick::note_invocation(&target.address, result.is_ok());
         }
