@@ -1,0 +1,14 @@
+# The budget was set from a 14,015,620-byte measurement. Since then the library
+# grew with Settings' panes and the toolkit they compile for the pane types:
+# among them Agent Models' provider and model rows as declared types with the
+# effects their panel offers (92542dbef26), and the row, table, navigation and
+# presence behaviour the toolkit gained. The library measured 14,126,568 bytes
+# at rb7cf36d876 and 14,179,256 at r7ce0700551, 23,480 over its budget; the
+# amount is that size with the ratchet's 1 % headroom, rounded up to 64 KiB.
+# The aarch64 library compiles the same panes; its first run prints what to
+# raise that budget to.
+reason = "Settings' panes and the toolkit they compile for the pane types kept growing, among them Agent Models' provider and model rows as declared types with the effects their panel offers"
+run = "r7ce0700551"
+
+[engines.x86_64]
+"libtilo_settings_engine.so" = 196608
