@@ -961,6 +961,7 @@ impl Widget for DragRun {
                 fill: Some(crate::composition::rgba8(raised)),
                 edge: Some(crate::composition::rgba8(crate::surface::edge_on(raised))),
                 radius,
+                inset: [0.0; 2],
             });
         }
         cx.children();
