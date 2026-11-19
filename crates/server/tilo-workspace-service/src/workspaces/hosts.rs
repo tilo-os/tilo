@@ -147,12 +147,16 @@ impl Workspaces {
         let own = host.cert.device_public_key;
         let (others, unnamed) = {
             let peer = governed.peer();
-            // A workspace founded in its person's name is one of their own
-            // devices to name itself in, whichever of them opened it first.
+            // The founder's row names the device that made the workspace, or
+            // the person whose own workspace it is. A workspace founded in its
+            // person's name is one of their own devices to name itself in,
+            // whichever of them opened it first.
+            let founder = peer.governance().founder();
             (
                 peer.owner() != host.cert.user_public_key,
                 peer.governance().holder_role(&own).is_none()
-                    && peer.governance().founder() != Some(host.cert.user_public_key),
+                    && founder != Some(own)
+                    && founder != Some(host.cert.user_public_key),
             )
         };
         if others || unnamed {
