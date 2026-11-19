@@ -1475,6 +1475,7 @@ impl ChainCore {
         }
         let checkout = self.checkout(index);
         let mut opened = Opened::Held;
+        self.start_where_none_is_held(&checkout.id);
         if !self.workspace.store.is_ready(&checkout.id) {
             match self.workspace.store.try_open_resource(&checkout) {
                 Ok(_) => {}

@@ -225,6 +225,43 @@ fn a_create_that_waits_for_its_part_says_so_and_answers_its_id_once_it_is_here()
     assert_eq!(written.last().map(|(_, text)| text.as_str()), Some("two"));
 }
 
+/// A create in a chain the workspace holds no part of starts its first part
+/// at once: the workspace's answer for the chain is its answer for every part,
+/// so the create is not refused while the first part is asked for again.
+#[test]
+fn a_create_in_a_chain_the_workspace_holds_none_of_lands_at_once() {
+    let workspace = uuid::Uuid::new_v4().to_string();
+    let ours = Rc::new(durable_store::MemoryStore::new());
+    let reader = device_keeping(&ours, &workspace);
+    reader.ask_workspace_for_missing();
+    let chain = chain_in(&reader, "bo");
+    assert!(
+        chain.head_arriving(),
+        "which part is the newest is asked for"
+    );
+    reader.note_workspace_answered(LogPart::chain().chain_head());
+    assert!(!chain.head_arriving(), "the workspace holds no part of it");
+
+    let output = chain
+        .state
+        .apply_answering(&encoded_write("one"), &invoker())
+        .expect("the create is made at once");
+    assert_eq!(made(&output).len(), 1, "it answers what it made");
+    assert_eq!(
+        texts(&chain)
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>(),
+        ["one"]
+    );
+    assert!(
+        !reader
+            .wanted_resources()
+            .contains(&LogPart::chain().part(0)),
+        "the first part is not asked of the workspace"
+    );
+}
+
 /// Several creates asked as one answer every id once the part is here, and
 /// none before.
 #[test]

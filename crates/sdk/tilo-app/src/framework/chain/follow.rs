@@ -3,6 +3,7 @@
 //! no write, so what a pass follows in that case is the parts' own versions.
 
 use super::ChainCore;
+use ui_core::resource::{DocumentId, WorkspaceAnswer};
 
 impl ChainCore {
     /// Follow every held part that changed, and take up a newer head that
@@ -71,6 +72,21 @@ impl ChainCore {
         }
         if read {
             self.read_at.set(Some(pass));
+        }
+    }
+
+    /// Take `part` as new when the workspace answered that it holds no part of
+    /// the chain and none is held here: its answer for the chain is its answer
+    /// for every part, so the first part is started at once. Asked for
+    /// instead, a write into a new chain waited for a second answer the
+    /// workspace had already given.
+    pub(super) fn start_where_none_is_held(&self, part: &DocumentId) {
+        let store = &self.workspace.store;
+        if self.parts.borrow().is_empty()
+            && !store.is_ready(part)
+            && store.workspace_answer(&self.chain.chain_head()) == Some(WorkspaceAnswer::HoldsNone)
+        {
+            store.note_workspace_answer(part.clone(), WorkspaceAnswer::HoldsNone);
         }
     }
 }
