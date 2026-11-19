@@ -420,6 +420,19 @@ fn land_folder(
     failure.map_or(Ok(()), Err)
 }
 
+/// A message as it was sent: without the `From ` line an mbox puts before each message to
+/// separate it from the one before, which is the folder's and not the message's.
+fn as_sent(stored: &[u8]) -> &[u8] {
+    if !stored.starts_with(b"From ") {
+        return stored;
+    }
+    stored
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .and_then(|end| stored.get(end.saturating_add(1)..))
+        .unwrap_or_default()
+}
+
 fn land_message(
     address: &str,
     folder: &str,
@@ -442,7 +455,7 @@ fn land_message(
             // are what Mail keeps; the words beside it are for whoever reads the record alone.
             // Its large parts travel apart from it, each in pieces, so a message of any size
             // comes over and no one upload or piece of content holds all of it.
-            let split = tilo_mail_parts::split(&message.bytes);
+            let split = tilo_mail_parts::split(as_sent(&message.bytes));
             let original = workspace.put(&split.rest)?;
             let mut parts = Vec::with_capacity(split.apart.len());
             for part in &split.apart {

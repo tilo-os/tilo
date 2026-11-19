@@ -566,7 +566,7 @@ fn a_message_larger_than_one_upload_comes_over_with_its_parts_apart() {
     );
 
     // Delivered as the message kept and its parts apart, which put back together are the
-    // message as the mbox holds it, byte for byte.
+    // message as the mbox holds it, byte for byte, without the line that separates it there.
     let delivery = workspace
         .of("mail/mail.messages#deliver-message")
         .into_iter()
@@ -610,5 +610,13 @@ fn a_message_larger_than_one_upload_comes_over_with_its_parts_apart() {
         .iter()
         .map(|(at, body)| (*at, body.as_slice()))
         .collect();
-    assert_eq!(tilo_mail_parts::join(&rest, &bodies).unwrap(), sent);
+    let separator = sent.iter().position(|byte| *byte == b'\n').unwrap() + 1;
+    assert!(sent.starts_with(b"From - "));
+    let rejoined = tilo_mail_parts::join(&rest, &bodies).unwrap();
+    assert!(
+        rejoined == sent[separator..],
+        "{} of {} bytes",
+        rejoined.len(),
+        sent.len() - separator
+    );
 }

@@ -88,14 +88,26 @@ pub struct HeldPart {
 }
 
 impl HeldPart {
-    /// Its body, read from `store`: `None` while a piece is not here.
+    /// Its body, read from `store`: `None` while a piece is not here. Every
+    /// piece is read even after one is missing, so a store that asks for what
+    /// it lacks asks for all of it at once.
     fn body(&self, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
-        let mut body = Vec::new();
-        for piece in &self.pieces {
-            body.extend(piece.read(store)?);
-        }
-        Some(body)
+        every(self.pieces.iter().map(|piece| piece.read(store))).map(|pieces| pieces.concat())
     }
+}
+
+/// Every item, or `None` when one is missing. Unlike collecting into an
+/// `Option`, it goes on through the rest after one is missing, so each read
+/// of content that is not here asks for it.
+fn every<T>(items: impl IntoIterator<Item = Option<T>>) -> Option<Vec<T>> {
+    let mut all = Some(Vec::new());
+    for item in items {
+        match (&mut all, item) {
+            (Some(all), Some(item)) => all.push(item),
+            _ => all = None,
+        }
+    }
+    all
 }
 
 impl HeldMessage {
@@ -126,15 +138,19 @@ impl HeldMessage {
     /// while it or one of them is not in `store`, or for one delivered as
     /// text.
     fn sent(&self, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
-        let rest = self.original.as_ref()?.read(store)?;
+        let rest = self.original.as_ref()?.read(store);
+        // Every part is read even when the rest or a part is missing, so all
+        // that is lacking is asked for at once.
+        let bodies = every(
+            self.parts
+                .iter()
+                .map(|part| Some((part.at, part.body(store)?))),
+        );
+        let rest = rest?;
         if self.parts.is_empty() {
             return Some(rest);
         }
-        let bodies = self
-            .parts
-            .iter()
-            .map(|part| Some((part.at, part.body(store)?)))
-            .collect::<Option<Vec<_>>>()?;
+        let bodies = bodies?;
         let bodies: Vec<(u64, &[u8])> = bodies
             .iter()
             .map(|(at, body)| (*at, body.as_slice()))
@@ -152,20 +168,18 @@ impl HeldMessage {
             return crate::transport::parse_eml(&rest, self.minutes, folder);
         }
         let shown = shown_in_place(&rest);
-        let bodies = self
-            .parts
-            .iter()
-            .map(|part| {
-                Some((
-                    part.at,
-                    if shown.contains(&part.at) {
-                        Some(part.body(store)?)
-                    } else {
-                        None
-                    },
-                ))
-            })
-            .collect::<Option<Vec<_>>>()?;
+        // Every part shown in place is read even after one is missing, so all
+        // that is lacking is asked for at once.
+        let bodies = every(self.parts.iter().map(|part| {
+            Some((
+                part.at,
+                if shown.contains(&part.at) {
+                    Some(part.body(store)?)
+                } else {
+                    None
+                },
+            ))
+        }))?;
         let bodies: Vec<(u64, Option<&[u8]>)> = bodies
             .iter()
             .map(|(at, body)| (*at, body.as_deref()))
@@ -1260,9 +1274,15 @@ fn eml(held: &HeldMessage) -> Result<Vec<u8>, String> {
             .map(|addr| mail_builder::headers::address::Address::new_address(addr.name, addr.email))
             .collect()
     }
-    // A message kept whole exports as it was sent.
-    if let Some(original) = tilo_resource::content::current().and_then(|store| held.sent(&store)) {
-        return Ok(original);
+    // A message kept whole exports as it was sent, never as a copy rebuilt
+    // without its attachments: while a part of it is not here, the export
+    // fails, having asked for what it lacks, and is answered once it is here.
+    if held.original.is_some()
+        && let Some(store) = tilo_resource::content::current()
+    {
+        return held
+            .sent(&store)
+            .ok_or_else(|| "the message's parts are not all here yet; try again".to_owned());
     }
     let sender = held.sender();
     let mut builder = mail_builder::MessageBuilder::new()

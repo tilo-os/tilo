@@ -537,6 +537,37 @@ fn a_message_with_large_attachments_is_kept_with_its_parts_apart_and_opens_whole
 }
 
 #[test]
+fn a_message_whose_part_is_not_here_exports_once_it_is_never_without_it() {
+    use tilo_mail_parts::fixture::message_with_attachments;
+    let message =
+        message_with_attachments("plans@example.net", "Plans", &[("plans.pdf", 600 * 1024)]);
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let id = deliver_apart(&mut app, &message)["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let held = crate::resource::TestMail::held_by(&app);
+    let (_, kept) = held.held_message(&id).unwrap();
+    let piece = kept.parts[0].pieces[0].reference().unwrap();
+    let bytes = app.content().read(&piece).unwrap();
+    app.content().release(&piece).unwrap();
+
+    // Without its attachment's bytes, the export fails rather than answering a
+    // copy of the message that has lost the attachment.
+    let lacking = app.call("export-content", json!({ "format": "eml", "message": &id }));
+    assert!(lacking.is_err(), "{lacking:?}");
+
+    // Once it is here again, the export is the message that was sent.
+    app.content().put_as(&piece, &bytes).unwrap();
+    let eml = app
+        .call("export-content", json!({ "format": "eml", "message": &id }))
+        .unwrap()
+        .unwrap();
+    let eml = exported(&app, &eml);
+    assert!(eml == message, "{} of {} bytes", eml.len(), message.len());
+}
+
+#[test]
 fn a_part_that_does_not_go_back_into_its_message_is_refused() {
     let mut app = TestApp::<MailShell>::new().unwrap();
     let original = format!("tilo.content:{}", app.content().put(&[b'x'; 4096]).unwrap());
