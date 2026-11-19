@@ -777,6 +777,44 @@ struct WorkspaceState {
     engine: Arc<tilo_session_client::engine::Engine>,
     /// How many writes landed in it.
     revision: u64,
+    /// How many writes landed in each app's documents.
+    apps: Arc<HashMap<String, u64>>,
+}
+
+impl WorkspaceState {
+    /// The revision a page of `provider`, or an action on it, is read at: how many writes
+    /// landed in what it reads. A resource's page moves with its app's writes alone and the
+    /// workspace's own rows with its folder's, so a busy app (a mail import) never makes another
+    /// app's page or action stale; a listing of every resource moves with any write.
+    fn revision_of(&self, provider: Option<&str>) -> String {
+        match provider.and_then(revision_scope) {
+            Some(app) => format!("{app}@{}", self.app_revision(&app)),
+            None => self.revision.to_string(),
+        }
+    }
+
+    fn app_revision(&self, app: &str) -> u64 {
+        self.apps.get(app).copied().unwrap_or(0)
+    }
+
+    /// Whether `named`, the revision a page was read at ([`Self::revision_of`]), has moved on.
+    fn stale(&self, named: Option<&str>) -> bool {
+        let Some(named) = named else {
+            return false;
+        };
+        match named.rsplit_once('@') {
+            Some((app, count)) => count.parse::<u64>().ok() != Some(self.app_revision(app)),
+            None => named != self.revision.to_string(),
+        }
+    }
+}
+
+/// The app whose writes move a page of `provider`: a resource's own app, or the workspace's
+/// folder for the workspace's own rows. `None` for a provider that names neither.
+fn revision_scope(provider: &str) -> Option<String> {
+    resource_of(provider, "")
+        .map(|route| route.app_id)
+        .or_else(|| provider_workspace(provider).map(|_| fs_protocol::tree::FILES_APP.to_owned()))
 }
 
 /// How many reads of a document out of the replica the worker made since the
@@ -1036,12 +1074,14 @@ impl Workspace {
                 documents: kept.known(),
                 engine,
                 revision: kept.landings(),
+                apps: kept.app_landings(),
             },
             None => WorkspaceState {
                 workspace: None,
                 documents: Vec::new().into(),
                 engine,
                 revision: 0,
+                apps: Arc::default(),
             },
         }
     }
@@ -1281,11 +1321,6 @@ struct Worker {
 /// The API's answer for an action it has nothing by that address.
 fn unknown_action() -> Outcome {
     Outcome::Rejected(ActionCallError::UnknownAction)
-}
-
-/// Whether the page a request names was listed before `current` moved on.
-fn stale_revision(revision: Option<&str>, current: &str) -> bool {
-    revision.is_some_and(|revision| revision != current)
 }
 
 /// Whether `caller` is `person`, or an agent a device of theirs handed its
@@ -2421,7 +2456,7 @@ impl Worker {
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
         if let Some(named) = provider_workspace(&target.provider) {
-            if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+            if state.stale(request.revision.as_deref()) {
                 return Err(Outcome::Rejected(ActionCallError::StaleRevision));
             }
             return self.open_in_workspace(workspace_id, caller, request, (named, &state));
@@ -2443,7 +2478,7 @@ impl Worker {
         // with a row of it ([`direct`]).
         let withheld = self.kept_from_caller(caller, &route, &state);
         if let Some(package) = packaged {
-            if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+            if state.stale(request.revision.as_deref()) {
                 return Err(Outcome::Rejected(ActionCallError::StaleRevision));
             }
             let performed = self.perform_packaged(
@@ -2482,7 +2517,7 @@ impl Worker {
             self.note_reads(request);
             return Ok((withheld.shown(output), None));
         }
-        if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+        if state.stale(request.revision.as_deref()) {
             return Err(Outcome::Rejected(ActionCallError::StaleRevision));
         }
         withheld.refuses(&target.address.resource)?;

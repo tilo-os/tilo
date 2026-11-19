@@ -44,6 +44,9 @@ mod api_apps;
 #[path = "workspace_actions/api_asks.rs"]
 mod api_asks;
 #[cfg(test)]
+#[path = "workspace_actions/api_beside_import.rs"]
+mod api_beside_import;
+#[cfg(test)]
 #[path = "workspace_actions/api_invites.rs"]
 mod api_invites;
 #[cfg(test)]

@@ -94,6 +94,9 @@ pub(crate) struct WorkspaceDocuments {
     /// already held, whose entries no pass read yet.
     listed: bool,
     landings: u64,
+    /// How many writes landed in each app's documents: a revision of one app's documents, which
+    /// another app's writes leave where it is.
+    app_landings: Arc<HashMap<String, u64>>,
     /// The documents of the workspace not held open, as last listed, with the
     /// same set for asking whether one is in it. Thrown away when a document
     /// that was not here lands, or an open replica takes one.
@@ -122,6 +125,7 @@ impl WorkspaceDocuments {
             unindexed: HashSet::new(),
             listed: false,
             landings: 0,
+            app_landings: Arc::default(),
             known: None,
             entries: HashMap::new(),
             unreadable: HashMap::new(),
@@ -134,6 +138,10 @@ impl WorkspaceDocuments {
     /// A write to `route` landed in the replica.
     pub(crate) fn landed(&mut self, route: &DocumentRoute) {
         self.landings = self.landings.wrapping_add(1);
+        let app = Arc::make_mut(&mut self.app_landings)
+            .entry(route.app_id.clone())
+            .or_insert(0);
+        *app = app.wrapping_add(1);
         self.arrived.insert(route.clone(), self.landings);
         if !self.opened.contains(route) {
             self.unindexed.insert(route.clone());
@@ -194,6 +202,11 @@ impl WorkspaceDocuments {
     /// How many writes landed in the workspace: a revision of it as a whole.
     pub(crate) const fn landings(&self) -> u64 {
         self.landings
+    }
+
+    /// How many writes landed in each app's documents ([`Self::landings`], by app).
+    pub(crate) fn app_landings(&self) -> Arc<HashMap<String, u64>> {
+        Arc::clone(&self.app_landings)
     }
 
     /// Whether what search finds in the document at `route` is kept: a query answers from it

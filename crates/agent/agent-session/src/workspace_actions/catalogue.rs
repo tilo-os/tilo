@@ -37,7 +37,9 @@ impl Worker {
         let refresh_began = std::time::Instant::now();
         let state = self.refresh(workspace_id, keys.read())?;
         let refresh_ms = refresh_began.elapsed().as_millis();
-        let revision = state.revision.to_string();
+        // The revision of what this page reads: another app's writes leave it where it is, so
+        // a page read on from a cursor still reads one snapshot of it while they land.
+        let revision = state.revision_of(query.provider.as_deref());
         // A workspace nothing was written in yet is named by the provider
         // asked for, so its new records are offered; one this member's replica
         // holds nothing of yet — a public workspace sends its records when a
@@ -78,7 +80,12 @@ impl Worker {
             let mut rows = self.listed_rows(workspace_id, bounded.as_ref(), &wanted, &state);
             rows.extend(own_rows);
             CataloguePage::from_rows(revision, rows, query)
-        } else if !query.cursor.is_empty() && query.revision.as_deref() != Some(revision.as_str()) {
+        } else if !query.cursor.is_empty()
+            && query
+                .revision
+                .as_deref()
+                .is_none_or(|named| state.stale(Some(named)))
+        {
             CataloguePage::stale(revision)
         } else {
             // Paged where each record is held: a page costs its rows, however

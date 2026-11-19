@@ -80,7 +80,7 @@ async fn publish(laptop: &Browser, folder: &mut tilo_fs::Namespace) {
 
 /// [`publish`] without waiting for the server to keep it: the first write the laptop's own
 /// replica refuses, if one is.
-fn write_tree(laptop: &Browser, folder: &mut tilo_fs::Namespace) -> Result<(), String> {
+pub(super) fn write_tree(laptop: &Browser, folder: &mut tilo_fs::Namespace) -> Result<(), String> {
     let mut writes = folder.document_writes(&BTreeMap::new());
     writes.sort_by_key(|write| std::cmp::Reverse(write.chunk));
     for write in writes {
