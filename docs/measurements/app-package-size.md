@@ -277,6 +277,8 @@ Apps that keep no model grew 2 to 52 KB of their own code: Mail, Agent, Imager, 
 Terminal, Typst Editor, Video Player and Windows. `raises/models-in-packages.toml` carries each
 overage plus the headroom, and `raises/app-code-since-model-budgets.toml` the four that crossed
 their budgets later with code of their own: Mail, Agent, Contacts and Disks.
-`tools/perf/runtime-size-budget/raises/models-in-packages.toml` carries the runtime the modules
-share, which grew as more of them joined the combined build. The whole collection is still inside
+The runtime the modules link carries what several of them reach. The date library left it when
+Calendar's model became its only user: the model runtime fell to 2,431,613 bytes, under the
+budget it got at its introduction, and Calendar's own module took its 124,888 bytes
+(`raises/calendar-carries-the-date-library.toml`). The whole collection is still inside
 the fleet's targets: p50 1,706,496 bytes, p90 3,822,592, max 5,211,648.

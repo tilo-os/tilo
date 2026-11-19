@@ -1336,26 +1336,10 @@ impl ActionArgs {
 
 /// Whether `value` is an RFC 3339 date and time, as JSON Schema's `date-time` names one:
 /// `2026-01-31T09:00:00Z`, with `T`, `t` or ` ` between the date and the time, any fraction of a
-/// second, a leap second, and `Z` or an offset such as `+01:00`.
-///
-/// A model build reads it with the date library as well. Every model that binds arguments
-/// reaches this check, so the library's parser is part of the model runtime that every model
-/// shares, not of the one model that parses dates with it (Calendar). The library takes a
-/// moment without its seconds, such as `2026-09-01T00:00Z`, which RFC 3339 requires, so
-/// [`read_rfc3339`] decides, and a page, which carries no date library, reads exactly that.
-#[cfg(tilo_model_guest)]
+/// second, a leap second, and `Z` or an offset such as `+01:00`. Read field by field rather than through a date
+/// library, whose whole calendar and time-zone parser a browser page would download for this one
+/// check.
 fn looks_like_rfc3339(value: &str) -> bool {
-    read_rfc3339(value) && value.parse::<jiff::Timestamp>().is_ok()
-}
-
-/// [`looks_like_rfc3339`] for a build with no date library to read it with.
-#[cfg(not(tilo_model_guest))]
-fn looks_like_rfc3339(value: &str) -> bool {
-    read_rfc3339(value)
-}
-
-/// The fields of an RFC 3339 date and time, read one by one.
-fn read_rfc3339(value: &str) -> bool {
     let bytes = value.as_bytes();
     let at = |index: usize| bytes.get(index).copied();
     // The number the `count` digits from `start` spell, if they all are digits.
@@ -2876,40 +2860,6 @@ shaped_by";
             all.sort_unstable();
             all.dedup();
             assert_eq!(all.len(), listed, "a keyword is listed twice");
-        }
-    }
-}
-
-/// A device reads a moment with the date library and a page by its fields, so a page refuses no
-/// moment a device takes. The library takes one a page does not: `2026-09-01T00:00Z` has no
-/// seconds, which RFC 3339 requires.
-#[cfg(test)]
-mod rfc3339_agreement_tests {
-    #[test]
-    fn a_page_refuses_no_moment_the_device_takes() {
-        for reading in [
-            "2026-01-31T09:00:00Z",
-            "2028-02-29t23:59:60.123456789z",
-            "2026-09-01 08:30:00-07:00",
-            "2026-12-31T23:59:59.5+14:00",
-            "2024-02-29T00:00:00Z",
-            "2000-02-29T12:00:00.000-00:00",
-            "2026-02-29T00:00:00Z",
-            "2026-09-01T24:00:00Z",
-            "2026-09-01T00:00:60Z",
-            "2026-09-01T00:00:00.Z",
-            "2026-09-01T00:00:00",
-            "2026-09-01T00:00:00+0100",
-            "2026-09-01T00:00:00+01:00x",
-            "2026-13-01T00:00:00Z",
-            "2026-09-32T00:00:00Z",
-        ] {
-            if super::read_rfc3339(reading) {
-                assert!(
-                    reading.parse::<jiff::Timestamp>().is_ok(),
-                    "{reading:?} is a moment to a page and not to a device"
-                );
-            }
         }
     }
 }
