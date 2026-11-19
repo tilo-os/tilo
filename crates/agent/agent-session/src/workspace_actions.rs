@@ -2036,6 +2036,15 @@ impl Worker {
         // What people have open on the shared desktop first, then the most
         // recently changed: read here, where a listing is answered, and not
         // by every request that refreshes the workspace.
+        // Another person's own document: the workspace sends it to that person's devices
+        // alone, so this service never holds it. Listed, it was the app's newest document,
+        // and every path an agent named in the app was read through it first, waiting out a
+        // listing that could never answer before the one the person's window shows was read.
+        if let Some(workspace) =
+            WorkspaceId::parse(cluster_id).and_then(|id| self.workspaces.get(&id))
+        {
+            routes.retain(|route| !workspace.not_yours.contains(route));
+        }
         let routes = match WorkspaceId::parse(cluster_id) {
             Some(id) => match self.workspaces.get_mut(&id).and_then(|workspace| {
                 workspace
