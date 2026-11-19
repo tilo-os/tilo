@@ -38,13 +38,12 @@ pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav, window: &Window) -> 
                         .map(|(index, _)| *index)
                 }),
                 {
-                    // The issues kept across changes and followed part by part: a change
-                    // to one issue reads that issue, not every issue the tracker holds.
-                    let issues = std::cell::RefCell::new(crate::Issues::default());
+                    // The window's own reading of the issues, which the list already brought
+                    // up to date: opening an issue reads none of the others again, and a
+                    // change to one issue reads that issue.
+                    let index = std::rc::Rc::clone(&window.index);
                     cx.chain_value(chain, move |_, parts| {
-                        let mut issues = issues.borrow_mut();
-                        issues.sync(parts);
-                        Labels::of(&issues, &labelled)
+                        Labels::of(&crate::read_issues(&index, parts), &labelled)
                     })
                 },
             )
