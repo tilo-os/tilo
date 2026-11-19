@@ -1129,7 +1129,7 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
                     eprintln!("RETAINED_SOURCE_ENDPOINT_RETIREMENT_UNCONFIRMED");
                 }
                 observe_canonical_worker_debug(source.working.path());
-                break Err::<_, io::Error>(e).expect("actual source endpoint");
+                panic!("actual source endpoint: {e}");
             }
         }
     };

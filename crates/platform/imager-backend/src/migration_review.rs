@@ -666,87 +666,6 @@ fn check_entry_mount(
     Ok(())
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
-mod tests {
-    use super::*;
-    #[cfg(all(target_os = "linux", feature = "native-capture-qualification"))]
-    #[test]
-    fn live_inventory_working_storage_uses_only_exact_existing_installer_exclusion() {
-        use std::os::unix::fs::PermissionsExt;
-        let native = std::env::var_os("TILO_FS_NATIVE_STORE")
-            .expect("explicitly owned supported native scratch filesystem required");
-        let owned = tempfile::Builder::new()
-            .prefix("live-inventory-")
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir_in(native)
-            .unwrap();
-        let home_path = owned.path().join("home");
-        std::fs::create_dir(&home_path).unwrap();
-        std::fs::set_permissions(&home_path, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("HOME", &home_path);
-        environment.set("XDG_STATE_HOME", home_path.join(".local/state"));
-        let namespace = crate::session::preparation_namespace().unwrap();
-        let home = PinnedDirectory::open_absolute(&home_path).unwrap();
-        let mut ownership = home.clone();
-        for component in namespace.strip_prefix(&home_path).unwrap().components() {
-            let std::path::Component::Normal(name) = component else {
-                panic!("canonical preparation namespace must be beneath fixture home");
-            };
-            ownership = ownership.create_child(name).unwrap();
-        }
-        let scratch_pin = ownership
-            .create_child(std::ffi::OsStr::new("working-storage"))
-            .unwrap();
-        let scratch = InventoryScratch::review(scratch_pin, 32 * 1024 * 1024).unwrap();
-        let document = home_path.join("document");
-        std::fs::write(&document, b"ordinary original document").unwrap();
-        let cancel = AtomicBool::new(false);
-        assert!(scratch.validate_source(&home).is_err());
-        let unrelated = home
-            .create_child(std::ffi::OsStr::new("user-documents"))
-            .unwrap();
-        let unadmitted = InventoryScratch::review(unrelated, 32 * 1024 * 1024).unwrap();
-        assert!(
-            SourceInventory::capture_portable_home_with_storage(
-                &home, &home_path, unadmitted, &cancel
-            )
-            .is_err()
-        );
-        let inventory = SourceInventory::capture_portable_home_with_storage(
-            &home, &home_path, scratch, &cancel,
-        )
-        .unwrap();
-        assert_eq!(inventory.summary().unwrap().files, 1);
-        inventory.validate_with_cancel(&home, &cancel).unwrap();
-        std::fs::write(&document, b"changed original document").unwrap();
-        assert!(inventory.validate_with_cancel(&home, &cancel).is_err());
-        assert_eq!(
-            std::fs::read(document).unwrap(),
-            b"changed original document"
-        );
-    }
-    #[test]
-    fn review_depth_limit_refuses_without_creating_copy_output() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
-        let mut path = root.clone();
-        for _ in 0..129 {
-            path.push("d");
-            std::fs::create_dir(&path).unwrap();
-        }
-        let error = match SourceInventory::capture(&PinnedDirectory::open_absolute(&root).unwrap())
-        {
-            Ok(_) => panic!("deep inventory must require a smaller selection"),
-            Err(error) => error,
-        };
-        assert!(
-            error.to_string().contains("select a smaller folder"),
-            "unexpected refusal: {error}"
-        );
-    }
-}
-
 #[cfg(target_os = "linux")]
 struct InstallerOwnership {
     mutable_ancestors: bool,
@@ -895,3 +814,85 @@ impl InstallerOwnership {
 
 #[cfg(target_os = "linux")]
 pub use mounted_locations::root_set::TransferredHomeRoots;
+
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod tests {
+    use super::*;
+    #[cfg(all(target_os = "linux", feature = "native-capture-qualification"))]
+    #[test]
+    fn live_inventory_working_storage_uses_only_exact_existing_installer_exclusion() {
+        use std::os::unix::fs::PermissionsExt;
+        let native = std::env::var_os("TILO_FS_NATIVE_STORE")
+            .expect("explicitly owned supported native scratch filesystem required");
+        let owned = tempfile::Builder::new()
+            .prefix("live-inventory-")
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(native)
+            .unwrap();
+        let home_path = owned.path().join("home");
+        std::fs::create_dir(&home_path).unwrap();
+        std::fs::set_permissions(&home_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("HOME", &home_path);
+        environment.set("XDG_STATE_HOME", home_path.join(".local/state"));
+        let namespace = crate::session::preparation_namespace().unwrap();
+        let home = PinnedDirectory::open_absolute(&home_path).unwrap();
+        let mut ownership = home.clone();
+        for component in namespace.strip_prefix(&home_path).unwrap().components() {
+            let std::path::Component::Normal(name) = component else {
+                panic!("canonical preparation namespace must be beneath fixture home");
+            };
+            ownership = ownership.create_child(name).unwrap();
+        }
+        let scratch_pin = ownership
+            .create_child(std::ffi::OsStr::new("working-storage"))
+            .unwrap();
+        let scratch = InventoryScratch::review(scratch_pin, 32 * 1024 * 1024).unwrap();
+        let document = home_path.join("document");
+        std::fs::write(&document, b"ordinary original document").unwrap();
+        let cancel = AtomicBool::new(false);
+        assert!(scratch.validate_source(&home).is_err());
+        let unrelated = home
+            .create_child(std::ffi::OsStr::new("user-documents"))
+            .unwrap();
+        let unadmitted = InventoryScratch::review(unrelated, 32 * 1024 * 1024).unwrap();
+        assert!(
+            SourceInventory::capture_portable_home_with_storage(
+                &home, &home_path, unadmitted, &cancel
+            )
+            .is_err()
+        );
+        let inventory = SourceInventory::capture_portable_home_with_storage(
+            &home, &home_path, scratch, &cancel,
+        )
+        .unwrap();
+        assert_eq!(inventory.summary().unwrap().files, 1);
+        inventory.validate_with_cancel(&home, &cancel).unwrap();
+        std::fs::write(&document, b"changed original document").unwrap();
+        assert!(inventory.validate_with_cancel(&home, &cancel).is_err());
+        assert_eq!(
+            std::fs::read(document).unwrap(),
+            b"changed original document"
+        );
+    }
+    #[test]
+    fn review_depth_limit_refuses_without_creating_copy_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let mut path = root.clone();
+        for _ in 0..129 {
+            path.push("d");
+            std::fs::create_dir(&path).unwrap();
+        }
+        let error = match SourceInventory::capture(&PinnedDirectory::open_absolute(&root).unwrap())
+        {
+            Ok(_) => panic!("deep inventory must require a smaller selection"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("select a smaller folder"),
+            "unexpected refusal: {error}"
+        );
+    }
+}

@@ -37,12 +37,14 @@ use report::{Paths, Reports};
 mod replay;
 mod root_acl;
 mod seeds;
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 mod seeds_native_tests;
 mod segmented;
 mod startup;
 mod storage;
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 mod streaming_tests;
 mod structure;
 #[cfg(test)]
@@ -908,7 +910,8 @@ struct Log {
     root_receipt: Option<root_acl::Receipt>,
     journal_reservations: Vec<Reservation>,
     segment_reservation: Reservation,
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     manifest: segmented::Manifest,
 }
 impl Log {
@@ -1015,7 +1018,8 @@ impl Log {
             segments,
         };
         let store = Store::new(scratch.clone(), Arc::new(AtomicBool::new(false)))?;
-        #[cfg(all(test, feature = "native-capture-qualification"))]
+        #[cfg(test)]
+        #[cfg(feature = "native-capture-qualification")]
         let kept = segmented::Manifest {
             nonce: manifest.nonce.clone(),
             bytes: manifest.bytes,
@@ -1084,7 +1088,8 @@ impl Log {
             root_receipt,
             journal_reservations,
             segment_reservation,
-            #[cfg(all(test, feature = "native-capture-qualification"))]
+            #[cfg(test)]
+            #[cfg(feature = "native-capture-qualification")]
             manifest: kept,
         })
     }

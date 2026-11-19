@@ -239,7 +239,8 @@ fn unsupported() -> io::Error {
     )
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
     use std::fs;

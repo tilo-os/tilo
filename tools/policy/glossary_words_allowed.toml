@@ -1261,3 +1261,8 @@ reason = "The runtime bundle's names for the machine it is built on and verified
 words = ["host", "channel"]
 identifiers = ["host_arch", "host_minimal_paths_for", "host", "channel_authorization", "test_host"]
 paths = ["crates/packaging/app-cli/src/model_runtime.rs", "crates/packaging/runtime-bundle/src/lib.rs", "crates/server/tilo-workspace-service/src/workspaces/packaged_model_runtime_tests.rs"]
+
+[[allow]]
+reason = "A backup run is the completed attempt one stored snapshot records, and the row it is published as (`backups.run`, `Run`): the app's word for that attempt, not the shell's old name for running a record's action."
+words = ["run"]
+paths = ["apps/backups/src/actions.rs", "apps/backups/src/app.rs"]

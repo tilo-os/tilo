@@ -11,6 +11,11 @@
 //! read-only file system, instead of being written on this device and never reaching anyone.
 //! A role change, a revoked grant or an agent's narrowed delegation answers at the next
 //! operation; nothing is decided at mount time.
+//!
+//! Nothing is admitted without the workspace's policy. A mount shown before this device holds
+//! it (the first seconds after a login) holds each write until the policy arrives rather than
+//! refusing it, so a person's first save does not fail; once a policy is held, a source that
+//! cannot be read for a moment answers with the newest one held.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,6 +29,13 @@ use tilo_lock::MutexRecover as _;
 /// operations asks once, and a changed policy answers within a second.
 const POLICY_FRESH: Duration = Duration::from_secs(1);
 
+/// How long a write waits for the workspace's policy while this device holds none yet: long
+/// enough for a device that just logged in to receive it, after which the write is refused.
+const POLICY_WAIT: Duration = Duration::from_secs(120);
+
+/// How often a waiting write asks the source again.
+const POLICY_POLL: Duration = Duration::from_millis(50);
+
 /// Where the workspace's policy comes from, as this device holds it now; `None` while it holds
 /// none.
 pub type PolicySource = dyn Fn() -> Option<WorkspacePolicy> + Send + Sync;
@@ -35,6 +47,8 @@ pub struct FileAdmission {
     signer: Acting,
     source: Box<PolicySource>,
     held: Mutex<Option<(Instant, Arc<WorkspacePolicy>)>>,
+    /// How long a write waits for a first policy ([`POLICY_WAIT`]).
+    wait: Duration,
 }
 
 impl std::fmt::Debug for FileAdmission {
@@ -54,19 +68,44 @@ impl FileAdmission {
             signer: Acting::member(MemberId::parsed_person(person)?),
             source,
             held: Mutex::new(None),
+            wait: POLICY_WAIT,
         })
     }
 
+    /// The same admission, a write waiting at most `wait` for a first policy.
+    #[must_use]
+    pub const fn waiting_at_most(mut self, wait: Duration) -> Self {
+        self.wait = wait;
+        self
+    }
+
+    /// The workspace's policy: the one read within [`POLICY_FRESH`], else the source's now,
+    /// else the newest held. With none ever held, waits for the source to have one.
     fn policy(&self) -> Option<Arc<WorkspacePolicy>> {
-        let fresh = self
-            .held
-            .lock_recover()
-            .as_ref()
-            .filter(|(read, _)| read.elapsed() < POLICY_FRESH)
-            .map(|(_, policy)| Arc::clone(policy));
-        if fresh.is_some() {
-            return fresh;
+        let held = self.held.lock_recover().clone();
+        if let Some((read, policy)) = &held
+            && read.elapsed() < POLICY_FRESH
+        {
+            return Some(Arc::clone(policy));
         }
+        if let Some(policy) = self.read() {
+            return Some(policy);
+        }
+        if let Some((_, policy)) = held {
+            return Some(policy);
+        }
+        let started = Instant::now();
+        while started.elapsed() < self.wait {
+            std::thread::sleep(POLICY_POLL.min(self.wait.saturating_sub(started.elapsed())));
+            if let Some(policy) = self.read() {
+                return Some(policy);
+            }
+        }
+        None
+    }
+
+    /// The source's policy now, kept as the newest held.
+    fn read(&self) -> Option<Arc<WorkspacePolicy>> {
         let policy = Arc::new((self.source)()?);
         *self.held.lock_recover() = Some((Instant::now(), Arc::clone(&policy)));
         Some(policy)
@@ -91,8 +130,9 @@ impl FileAdmission {
     }
 
     /// Whether `invoker` (the person at this device when `None`) may take the file action
-    /// `verb` on the tree's node `node`, or on the tree as a whole with no node named. Refused
-    /// while this device holds no policy of the workspace: no receiver could decide it either.
+    /// `verb` on the tree's node `node`, or on the tree as a whole with no node named. Waits for
+    /// the workspace's policy while this device holds none, and is refused only once that wait
+    /// ends without one: no receiver could decide it either.
     #[must_use]
     pub fn admits(&self, invoker: Option<&Acting>, node: Option<&str>, verb: &str) -> bool {
         let Some(policy) = self.policy() else {
@@ -132,6 +172,22 @@ mod tests {
         let policy = Mutex::new(policy);
         FileAdmission::new(person, Box::new(move || policy.lock_recover().clone()))
             .expect("a person's key")
+            .waiting_at_most(Duration::from_millis(200))
+    }
+
+    /// An admission whose source has a policy only from its `arrives`-th read on, and none
+    /// again from its `leaves`-th.
+    fn arriving(arrives: usize, leaves: usize) -> FileAdmission {
+        let reads = std::sync::atomic::AtomicUsize::new(0);
+        FileAdmission::new(
+            EDITOR,
+            Box::new(move || {
+                let read = reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (arrives..leaves).contains(&read).then(policy)
+            }),
+        )
+        .expect("a person's key")
+        .waiting_at_most(Duration::from_secs(10))
     }
 
     tilo_test_env::scenario! {
@@ -149,6 +205,24 @@ mod tests {
         phase nothing_is_written_while_no_policy_is_held;
         {
             assert!(!admission(OWNER, None).admits(None, None, verbs::WRITE));
+        }
+
+        phase a_first_write_waits_for_the_policy_instead_of_failing;
+        {
+            // The device has no policy for its first few reads, as right after a login.
+            let admission = arriving(5, usize::MAX);
+            assert!(admission.admits(None, Some("n1"), verbs::WRITE));
+        }
+
+        phase a_policy_held_answers_while_the_source_cannot_be_read;
+        {
+            let admission = arriving(0, 1);
+            assert!(admission.admits(None, Some("n1"), verbs::WRITE));
+            std::thread::sleep(POLICY_FRESH);
+            assert!(
+                admission.admits(None, Some("n1"), verbs::WRITE),
+                "the newest policy held still answers"
+            );
         }
 
         phase a_handed_agent_writes_for_its_person_within_their_role;

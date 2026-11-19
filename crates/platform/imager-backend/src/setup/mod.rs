@@ -52,7 +52,8 @@ pub mod prepared_setup;
 #[cfg(target_os = "linux")]
 pub mod prepared_setup_helper;
 pub mod prepared_tpm;
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 #[cfg(target_os = "linux")]
 mod qualification_frontend;
 #[cfg(all(

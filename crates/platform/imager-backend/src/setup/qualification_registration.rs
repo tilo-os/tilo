@@ -92,7 +92,7 @@ impl AdmittedMain {
                 libc::SOL_SOCKET,
                 libc::SO_PEERCRED,
                 (&raw mut peer).cast(),
-                &mut len,
+                &raw mut len,
             )
         } != 0
             || len as usize != std::mem::size_of::<libc::ucred>()
@@ -143,7 +143,7 @@ impl AdmittedMain {
             events: libc::POLLIN,
             revents: 0,
         };
-        if unsafe { libc::poll(&mut poll, 1, 0) } != 0 {
+        if unsafe { libc::poll(&raw mut poll, 1, 0) } != 0 {
             return Err(denied());
         }
         Ok(())
@@ -153,7 +153,8 @@ impl AdmittedMain {
         operation: impl FnOnce() -> io::Result<T>,
     ) -> io::Result<T> {
         self.check()?;
-        if unsafe { libc::getuid() } != 1000 || unsafe { libc::geteuid() } != 1000 {
+        if rustix::process::getuid().as_raw() != 1000 || rustix::process::geteuid().as_raw() != 1000
+        {
             return Err(denied());
         }
         CURRENT.with(|slot| {
@@ -200,28 +201,6 @@ pub fn with_frontend_parent<T>(
     let result = operation();
     validate_frontend_parent(&program)?;
     result
-}
-#[cfg(test)]
-mod frontend_tests {
-    use super::*;
-
-    #[test]
-    fn frontend_cannot_select_an_unrelated_program_or_run_before_admission() {
-        for path in [
-            "/proc/self/exe",
-            "/usr/bin/true",
-            "/proc/1/fd/not-a-descriptor",
-        ] {
-            let ran = std::cell::Cell::new(false);
-            let result = with_frontend_parent(PathBuf::from(path), || {
-                ran.set(true);
-                Ok(())
-            });
-            assert!(result.is_err(), "unrelated program admitted: {path}");
-            assert!(!ran.get(), "frontend operation ran before admission");
-            assert!(current().unwrap().is_none());
-        }
-    }
 }
 
 fn validate_frontend_parent(program: &std::path::Path) -> io::Result<()> {
@@ -278,4 +257,27 @@ pub fn current() -> io::Result<Option<PathBuf>> {
             main.program.as_raw_fd()
         ))))
     })
+}
+
+#[cfg(test)]
+mod frontend_tests {
+    use super::*;
+
+    #[test]
+    fn frontend_cannot_select_an_unrelated_program_or_run_before_admission() {
+        for path in [
+            "/proc/self/exe",
+            "/usr/bin/true",
+            "/proc/1/fd/not-a-descriptor",
+        ] {
+            let ran = std::cell::Cell::new(false);
+            let result = with_frontend_parent(PathBuf::from(path), || {
+                ran.set(true);
+                Ok(())
+            });
+            assert!(result.is_err(), "unrelated program admitted: {path}");
+            assert!(!ran.get(), "frontend operation ran before admission");
+            assert!(current().unwrap().is_none());
+        }
+    }
 }

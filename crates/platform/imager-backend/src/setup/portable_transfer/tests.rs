@@ -1130,10 +1130,7 @@ fn commit_disposable_ballast(
     journal: u64,
     plaintext: u64,
 ) {
-    use std::{
-        os::fd::AsRawFd,
-        time::{Duration, Instant},
-    };
+    use std::{os::fd::AsRawFd, time::Instant};
     let lower = journal.checked_add(2 * 1024 * 1024).unwrap();
     let upper = journal.checked_add(plaintext).unwrap();
     let target = lower

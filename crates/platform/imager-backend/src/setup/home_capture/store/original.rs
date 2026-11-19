@@ -91,7 +91,8 @@ impl SourceIntent {
 impl Store {
     /// Root service only: facts are freshly observed from its authenticated channel, never
     /// deserialized request facts, and unsupported same-volume topology refuses registration.
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     pub(in crate::setup::home_capture) fn register_original_selection(
         &self,
         home: &Path,
@@ -578,5 +579,6 @@ impl SourceReadContext {
     }
 }
 
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 pub mod native_tests;

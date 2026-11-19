@@ -13,7 +13,11 @@
 //! [`CameraEffect`] vocabulary. Media-library management is owned by Photos
 //! or Video Player. Zoom and an open chooser are presentation-only.
 
-use ui::framework::LiveRow;
+use ui::framework::{EffectStatus, LiveRow};
+
+use ui::tilo_resource::row::RowBindings;
+
+use crate::row_types::{CameraDevice, Capture, DocumentScanner, Photo, Scanner, Video};
 use ui::tilo_actions::ActionSpec;
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource::{self, Effect};
@@ -90,13 +94,15 @@ pub enum CameraEffect {
         seconds: String,
     },
     /// Show composition grid
-    #[effect(screen, label = "camera-a11y-composition-grid")]
+    #[effect(kind = "outside")]
+    #[effect(label = "camera-a11y-composition-grid")]
     SetGrid {
         #[param("Whether the grid is shown")]
         on: bool,
     },
     /// Show level guide
-    #[effect(screen, label = "camera-settings-level")]
+    #[effect(kind = "outside")]
+    #[effect(label = "camera-settings-level")]
     SetLevel {
         #[param("Whether the level guide is shown")]
         on: bool,
@@ -133,7 +139,7 @@ pub enum CameraEffect {
     ///
     /// Saves the current frame and answers once the photo is registered.
     #[effect(kind = "outside")]
-    #[effect(row, job, cancellable)]
+    #[effect(row, job, cancellable, on = Capture)]
     #[effect(label = "camera-a11y-take-photo")]
     Capture,
     /// Start recording
@@ -141,23 +147,23 @@ pub enum CameraEffect {
     /// Starts a clip, or stops the one recording and answers once it is
     /// saved and registered.
     #[effect(kind = "outside")]
-    #[effect(row, job, cancellable)]
+    #[effect(row, job, cancellable, on = Capture)]
     #[effect(label = "camera-a11y-start-recording")]
     Record,
     /// Refresh cameras
     ///
     /// Drops a stale camera session and looks for cameras again.
     #[effect(kind = "outside")]
-    #[effect(row, idempotent)]
+    #[effect(row, idempotent, on = Capture)]
     RetryCamera,
     /// Open camera privacy settings
     #[effect(kind = "outside")]
-    #[effect(row)]
-    #[effect(own_device, label = "camera-a11y-camera-privacy")]
+    #[effect(row, on = Capture)]
+    #[effect(label = "camera-a11y-camera-privacy")]
     OpenCameraPrivacy,
     /// Use camera
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = CameraDevice)]
     UseCamera {
         #[param("The camera's device node, as discovered on this device")]
         device: String,
@@ -167,7 +173,7 @@ pub enum CameraEffect {
     /// Asks for an image with the file chooser and decodes the QR code or
     /// barcode in it, without importing the image.
     #[effect(kind = "outside")]
-    #[effect(attended, row, job)]
+    #[effect(attended, row, job, on = Scanner)]
     ImportImage,
     /// Choose a document scan setting
     ///
@@ -182,25 +188,25 @@ pub enum CameraEffect {
     },
     /// Capture document page
     #[effect(kind = "outside")]
-    #[effect(row, job, cancellable)]
+    #[effect(row, job, cancellable, on = DocumentScanner)]
     CapturePage,
     /// Rotate selected page
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = DocumentScanner)]
     RotatePage,
     /// Recognize text on selected page
     #[effect(kind = "outside")]
-    #[effect(row, job, cancellable)]
+    #[effect(row, job, cancellable, on = DocumentScanner)]
     RecognizeText,
     /// Copy recognized text
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = DocumentScanner)]
     CopyText,
     /// Export searchable PDF
     ///
     /// Asks where to save the scanned pages as one searchable PDF.
     #[effect(kind = "outside")]
-    #[effect(attended, row, job)]
+    #[effect(attended, row, job, on = DocumentScanner)]
     ExportPdf,
     /// Crop selected page
     ///
@@ -212,16 +218,29 @@ pub enum CameraEffect {
     CropPage,
     /// Move selected page earlier
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = DocumentScanner)]
     MovePageEarlier,
     /// Move selected page later
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = DocumentScanner)]
     MovePageLater,
     /// Remove selected page
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = DocumentScanner)]
     RemovePage,
+}
+
+/// The capture's handoff to the app that owns its verified bytes: the app's
+/// typed launch of the content the capture published.
+fn capture_handoff(is_video: bool, content_hash: Option<&str>) -> Option<ActionSpec> {
+    let content_hash = content_hash?;
+    let (app_id, destination) = capture_destination(is_video);
+    let label = format!("Open in {destination}");
+    Some(ApplicationLaunch::with_content(app_id, content_hash).spec(
+        "open",
+        &label,
+        "Open the verified portable capture in its owning app",
+    ))
 }
 
 // ===========================================================================
@@ -340,28 +359,22 @@ pub(crate) fn capture_resource_id(it: &CaptureItem) -> String {
 /// The recent capture, offering to open its verified bytes in Photos or
 /// Video Player.
 pub(crate) fn recent_row(it: &CaptureItem) -> LiveRow {
-    let kind = if it.is_video {
-        "camera.video"
+    let row = if it.is_video {
+        LiveRow::typed::<Video>(capture_resource_id(it), item_label(it))
     } else {
-        "camera.photo"
+        LiveRow::typed::<Photo>(capture_resource_id(it), item_label(it))
     };
-    let mut row = LiveRow::new(capture_resource_id(it), kind, item_label(it));
-    if let Some(content_hash) = it
+    let content_hash = it
         .media_id
         .as_deref()
         .filter(|id| crate::media::is_media_id(id))
-        .and_then(|id| id.strip_prefix(crate::media::MEDIA_PREFIX))
-    {
-        let (app_id, destination) = capture_destination(it.is_video);
-        let label = format!("Open in {destination}");
-        let spec = ApplicationLaunch::with_content(app_id, content_hash).spec(
-            "open",
-            &label,
-            "Open the verified portable capture in its owning app",
-        );
-        row = row.operation(spec);
+        .and_then(|id| id.strip_prefix(crate::media::MEDIA_PREFIX));
+    // The handoff is another app's typed launch, not an effect of Camera's
+    // own vocabulary, so the capture's row offers it beside its type's.
+    match capture_handoff(it.is_video, content_hash) {
+        Some(handoff) => row.operation(handoff),
+        None => row,
     }
-    row
 }
 
 /// The row of the capture pipeline published by the surface.
@@ -376,144 +389,224 @@ pub(crate) fn camera_device_row_id(device: &str) -> String {
     format!("camera.device:{device}")
 }
 
-/// `effect` bound to its row, or unavailable for `why` (a code for
-/// programs, a reason for people).
-fn bound(effect: &CameraEffect, why: Option<(&str, &str)>) -> ActionSpec {
-    let spec = effect.bound();
-    match why {
-        Some((code, reason)) => spec.unavailable(code, reason),
-        None => spec,
-    }
-}
-
 fn capture_row(ctx: &CameraResourceCtx) -> LiveRow {
-    let mut row = LiveRow::new(CAPTURE_ROW, "camera.capture", "Capture")
-        .operation(open_photos_action())
-        .operation(bound(
-            &CameraEffect::Capture,
-            if !ctx.feed_available {
-                Some((
-                    "camera_unavailable",
-                    "Connect or allow a camera before capturing",
-                ))
-            } else if ctx.mode == CaptureMode::Photo && !ctx.recording {
-                None
+    let bindings = RowBindings::new()
+        .offer(CameraEffect::CAPTURE)
+        .offer(CameraEffect::RECORD)
+        .offer(CameraEffect::RETRY_CAMERA)
+        .offer(CameraEffect::OPEN_CAMERA_PRIVACY);
+    let mut row = LiveRow::typed_with::<Capture>(CAPTURE_ROW, "Capture", &bindings);
+    if !ctx.feed_available && ctx.camera_devices.len() > 1 {
+        for device in ctx.camera_devices.iter().take(MAX_PUBLISHED_CAMERA_DEVICES) {
+            let label = if ctx.selected_camera.as_deref() == Some(device.as_str()) {
+                format!("{device} (selected)")
             } else {
-                Some((
-                    "photo_mode_required",
-                    "Switch to photo mode before capturing",
-                ))
-            },
-        ));
-    if !ctx.feed_available {
-        row = row.effect(&CameraEffect::RetryCamera);
-        if ctx.camera_permission_denied {
-            row = row.effect(&CameraEffect::OpenCameraPrivacy);
-        }
-        if ctx.camera_devices.len() > 1 {
-            for device in ctx.camera_devices.iter().take(MAX_PUBLISHED_CAMERA_DEVICES) {
-                let selected = ctx.selected_camera.as_deref() == Some(device.as_str());
-                let mut spec = bound(
-                    &CameraEffect::UseCamera {
-                        device: device.clone(),
-                    },
-                    selected.then_some(("already_selected", "This camera is already selected")),
-                );
-                spec.type_mut().label = crate::CATALOG.t_args(
-                    "camera-action-use-device",
-                    &[("device", ui::i18n::ArgValue::Text(device.clone()))],
-                );
-                let label = if selected {
-                    format!("{device} (selected)")
-                } else {
-                    device.clone()
-                };
-                row = row.row(
-                    LiveRow::new(camera_device_row_id(device), "camera.device", label)
-                        .operation(spec),
-                );
-            }
-        }
-    }
-    let mut record = bound(
-        &CameraEffect::Record,
-        // Finalizing an existing clip needs no live camera. Keep the semantic
-        // stop api available after disconnection, just like the shutter.
-        if ctx.recording {
-            None
-        } else if !ctx.feed_available {
-            Some((
-                "camera_unavailable",
-                "Connect or allow a camera before recording",
-            ))
-        } else if ctx.mode == CaptureMode::Video {
-            None
-        } else {
-            Some((
-                "video_mode_required",
-                "Switch to video mode before recording",
-            ))
-        },
-    );
-    if ctx.recording {
-        record.type_mut().label = crate::CATALOG.t("camera-action-stop-recording");
-    }
-    row.operation(record)
-}
-
-fn scanner_row(ctx: &CameraResourceCtx) -> LiveRow {
-    LiveRow::new(SCANNER_ROW, "camera.scanner", "Code scanner").operation(bound(
-        &CameraEffect::ImportImage,
-        ctx.scan_import_pending
-            .then_some(("picker_open", "An image picker is already open")),
-    ))
-}
-
-fn document_row(ctx: &CameraResourceCtx) -> LiveRow {
-    let has_page = ctx.document_pages > 0;
-    let document_effects = [
-        (CameraEffect::CapturePage, ctx.document_scanner_available),
-        (CameraEffect::RotatePage, has_page),
-        (CameraEffect::RecognizeText, has_page),
-        (CameraEffect::CopyText, ctx.document_has_text),
-        (CameraEffect::ExportPdf, has_page),
-        (
-            CameraEffect::MovePageEarlier,
-            has_page && ctx.document_selected > 0,
-        ),
-        (
-            CameraEffect::MovePageLater,
-            has_page && ctx.document_selected + 1 < ctx.document_pages,
-        ),
-        (CameraEffect::RemovePage, has_page),
-    ];
-    document_effects.into_iter().fold(
-        LiveRow::new(DOCUMENT_ROW, "camera.document-scanner", "Document scanner"),
-        |row, (effect, available)| {
-            let why = if ctx.document_busy {
-                Some(("document_busy", "Wait for the current document task"))
-            } else if available {
-                None
-            } else if effect == CameraEffect::CapturePage {
-                Some(("no_scanner", "Connect or select a document scanner first"))
-            } else {
-                Some(("no_selected_page", "Capture and select a page first"))
+                device.clone()
             };
-            row.operation(bound(&effect, why))
-        },
-    )
+            let bindings = RowBindings::new().bind(
+                CameraEffect::USE_CAMERA,
+                [("device", device.clone().into())],
+            );
+            row = row.row(LiveRow::typed_with::<CameraDevice>(
+                camera_device_row_id(device),
+                label,
+                &bindings,
+            ));
+        }
+    }
+    row
+}
+
+fn scanner_row(_ctx: &CameraResourceCtx) -> LiveRow {
+    let bindings = RowBindings::new().offer(CameraEffect::IMPORT_IMAGE);
+    LiveRow::typed_with::<Scanner>(SCANNER_ROW, "Code scanner", &bindings)
+}
+
+fn document_row(_ctx: &CameraResourceCtx) -> LiveRow {
+    let bindings = RowBindings::new()
+        .offer(CameraEffect::CAPTURE_PAGE)
+        .offer(CameraEffect::ROTATE_PAGE)
+        .offer(CameraEffect::RECOGNIZE_TEXT)
+        .offer(CameraEffect::COPY_TEXT)
+        .offer(CameraEffect::EXPORT_PDF)
+        .offer(CameraEffect::MOVE_PAGE_EARLIER)
+        .offer(CameraEffect::MOVE_PAGE_LATER)
+        .offer(CameraEffect::REMOVE_PAGE);
+    LiveRow::typed_with::<DocumentScanner>(DOCUMENT_ROW, "Document scanner", &bindings)
 }
 
 /// What the surface publishes beside the resource's verbs: the capture
 /// pipeline with its cameras, the code scanner and the document scanner,
-/// each with the effects it offers now, and the recent capture with its
-/// handoff to the app that owns it. Mode, lens and the capture preferences
-/// are effects on the resource.
+/// each offering its type's effects, and the recent capture with its handoff
+/// to the app that owns it. Mode, lens and the capture preferences are
+/// effects on the resource.
 pub(crate) fn live_rows(ctx: &CameraResourceCtx) -> Vec<LiveRow> {
     let recent = ctx.recent.as_ref().map(recent_row);
     [capture_row(ctx), scanner_row(ctx), document_row(ctx)]
         .into_iter()
         .chain(recent)
+        .collect()
+}
+
+/// What the camera can do on the row `id` now: an effect it cannot offer
+/// says why, and one that reads otherwise than its declaration says (stopping
+/// the recording in progress, the camera already chosen) is offered by that
+/// name. Served by the surface's `Publishes::row_status`.
+pub(crate) fn row_status(ctx: &CameraResourceCtx, id: &str) -> Vec<EffectStatus> {
+    if id == CAPTURE_ROW {
+        return capture_status(ctx, id);
+    }
+    if id == SCANNER_ROW {
+        return ctx
+            .scan_import_pending
+            .then(|| {
+                EffectStatus::unavailable(
+                    CameraEffect::IMPORT_IMAGE,
+                    "picker_open",
+                    "An image picker is already open",
+                )
+                .on(id)
+            })
+            .into_iter()
+            .collect();
+    }
+    if id == DOCUMENT_ROW {
+        return document_status(ctx, id);
+    }
+    device_status(ctx, id)
+}
+
+fn capture_status(ctx: &CameraResourceCtx, id: &str) -> Vec<EffectStatus> {
+    let mut statuses = Vec::new();
+    let photo = if !ctx.feed_available {
+        Some((
+            "camera_unavailable",
+            "Connect or allow a camera before capturing",
+        ))
+    } else if ctx.mode == CaptureMode::Photo && !ctx.recording {
+        None
+    } else {
+        Some((
+            "photo_mode_required",
+            "Switch to photo mode before capturing",
+        ))
+    };
+    if let Some((code, reason)) = photo {
+        statuses.push(EffectStatus::unavailable(CameraEffect::CAPTURE, code, reason).on(id));
+    }
+    // Finalizing an existing clip needs no live camera. Keep the semantic
+    // stop api available after disconnection, just like the shutter.
+    if ctx.recording {
+        statuses.push(
+            EffectStatus::labelled(
+                CameraEffect::RECORD,
+                crate::CATALOG.t("camera-action-stop-recording"),
+            )
+            .on(id),
+        );
+    } else if !ctx.feed_available {
+        statuses.push(
+            EffectStatus::unavailable(
+                CameraEffect::RECORD,
+                "camera_unavailable",
+                "Connect or allow a camera before recording",
+            )
+            .on(id),
+        );
+    } else if ctx.mode != CaptureMode::Video {
+        statuses.push(
+            EffectStatus::unavailable(
+                CameraEffect::RECORD,
+                "video_mode_required",
+                "Switch to video mode before recording",
+            )
+            .on(id),
+        );
+    }
+    // Recovery is what a camera that is not there needs; with a live feed
+    // they stay off the row's way without leaving the row's type.
+    if ctx.feed_available {
+        statuses.push(
+            EffectStatus::unavailable(
+                CameraEffect::RETRY_CAMERA,
+                "camera_connected",
+                "The camera is connected",
+            )
+            .on(id),
+        );
+    }
+    if ctx.feed_available || !ctx.camera_permission_denied {
+        statuses.push(
+            EffectStatus::unavailable(
+                CameraEffect::OPEN_CAMERA_PRIVACY,
+                "camera_allowed",
+                "Camera access is allowed on this device",
+            )
+            .on(id),
+        );
+    }
+    statuses
+}
+
+fn device_status(ctx: &CameraResourceCtx, id: &str) -> Vec<EffectStatus> {
+    let Some(device) = id.strip_prefix("camera.device:") else {
+        return Vec::new();
+    };
+    let mut statuses = vec![
+        EffectStatus::labelled(
+            CameraEffect::USE_CAMERA,
+            crate::CATALOG.t_args(
+                "camera-action-use-device",
+                &[("device", ui::i18n::ArgValue::Text(device.to_owned()))],
+            ),
+        )
+        .on(id),
+    ];
+    if ctx.selected_camera.as_deref() == Some(device) {
+        statuses.push(
+            EffectStatus::unavailable(
+                CameraEffect::USE_CAMERA,
+                "already_selected",
+                "This camera is already selected",
+            )
+            .on(id),
+        );
+    }
+    statuses
+}
+
+fn document_status(ctx: &CameraResourceCtx, id: &str) -> Vec<EffectStatus> {
+    let has_page = ctx.document_pages > 0;
+    let effects = [
+        (CameraEffect::CAPTURE_PAGE, ctx.document_scanner_available),
+        (CameraEffect::ROTATE_PAGE, has_page),
+        (CameraEffect::RECOGNIZE_TEXT, has_page),
+        (CameraEffect::COPY_TEXT, ctx.document_has_text),
+        (CameraEffect::EXPORT_PDF, has_page),
+        (
+            CameraEffect::MOVE_PAGE_EARLIER,
+            has_page && ctx.document_selected > 0,
+        ),
+        (
+            CameraEffect::MOVE_PAGE_LATER,
+            has_page && ctx.document_selected + 1 < ctx.document_pages,
+        ),
+        (CameraEffect::REMOVE_PAGE, has_page),
+    ];
+    effects
+        .into_iter()
+        .filter_map(|(effect, available)| {
+            let (code, reason) = if ctx.document_busy {
+                ("document_busy", "Wait for the current document task")
+            } else if available {
+                return None;
+            } else if effect.id == CameraEffect::CAPTURE_PAGE.id {
+                ("no_scanner", "Connect or select a document scanner first")
+            } else {
+                ("no_selected_page", "Capture and select a page first")
+            };
+            Some(EffectStatus::unavailable(effect, code, reason).on(id))
+        })
         .collect()
 }
 
@@ -701,29 +794,32 @@ mod tests {
 
         phase disconnected_camera_keeps_stop_recording_available;
         {
-            let resources = provide_resources(&CameraResourceCtx {
+            let ctx = CameraResourceCtx {
                 mode: CaptureMode::Video,
                 recording: true,
                 feed_available: false,
                 ..CameraResourceCtx::default()
-            });
-            let capture = resources
-                .iter()
-                .find(|resource| resource.id.as_str() == "camera.capture")
-                .expect("capture effect root");
-            let record = capture
-                .actions
-                .iter()
-                .find(|action| action.id == "record")
-                .expect("recording action");
-            assert_eq!(record.label, "Stop recording");
-            assert!(record.contract.availability.is_available());
-            let photo = capture
-                .actions
-                .iter()
-                .find(|action| action.id == "capture")
-                .expect("photo action");
-            assert!(!photo.contract.availability.is_available());
+            };
+            assert_eq!(
+                row_status(&ctx, CAPTURE_ROW),
+                vec![
+                    EffectStatus::unavailable(
+                        CameraEffect::CAPTURE,
+                        "camera_unavailable",
+                        "Connect or allow a camera before capturing",
+                    )
+                    .on(CAPTURE_ROW),
+                    EffectStatus::labelled(CameraEffect::RECORD, "Stop recording")
+                        .on(CAPTURE_ROW),
+                    EffectStatus::unavailable(
+                        CameraEffect::OPEN_CAMERA_PRIVACY,
+                        "camera_allowed",
+                        "Camera access is allowed on this device",
+                    )
+                    .on(CAPTURE_ROW),
+                ],
+                "stopping the recording stays available with no feed"
+            );
         }
 
         phase provided_resources_are_honest_about_devices_and_expose_every_preference;
@@ -790,8 +886,24 @@ mod tests {
                     .find(|a| a.id == "capture")
                     .unwrap();
                 assert_eq!(capture.kind, OperationKind::Effect);
+                let ctx = CameraResourceCtx {
+                    recent: Some(CaptureItem {
+                        id: "IMG_1.jpg".into(),
+                        label: "Capture".into(),
+                        is_video: false,
+                        media_id: None,
+                    }),
+                    ..CameraResourceCtx::default()
+                };
                 assert!(
-                    !capture.contract.availability.is_available(),
+                    row_status(&ctx, CAPTURE_ROW).contains(
+                        &EffectStatus::unavailable(
+                            CameraEffect::CAPTURE,
+                            "camera_unavailable",
+                            "Connect or allow a camera before capturing",
+                        )
+                        .on(CAPTURE_ROW)
+                    ),
                     "a palette must not claim capture works without a feed"
                 );
                 let unverified = resources
@@ -800,26 +912,40 @@ mod tests {
                     .expect("recent handoff");
                 assert!(unverified.actions.is_empty());
 
-                let available = provide_resources(&CameraResourceCtx {
+                let ctx = CameraResourceCtx {
                     feed_available: true,
                     ..CameraResourceCtx::default()
-                });
-                let capture = available
-                    .iter()
-                    .find(|resource| resource.id.as_str() == "camera.capture")
-                    .expect("capture effect root")
-                    .actions
-                    .iter()
-                    .find(|action| action.id == "capture")
-                    .unwrap();
-                assert!(capture.contract.availability.is_available());
+                };
+                assert!(
+                    !row_status(&ctx, CAPTURE_ROW).contains(
+                        &EffectStatus::unavailable(
+                            CameraEffect::CAPTURE,
+                            "camera_unavailable",
+                            "Connect or allow a camera before capturing",
+                        )
+                        .on(CAPTURE_ROW)
+                    ),
+                    "a live feed offers capture"
+                );
+                assert!(
+                    row_status(&ctx, CAPTURE_ROW).contains(
+                        &EffectStatus::unavailable(
+                            CameraEffect::RETRY_CAMERA,
+                            "camera_connected",
+                            "The camera is connected",
+                        )
+                        .on(CAPTURE_ROW)
+                    ),
+                    "recovery is offered only when the camera is not there"
+                );
             }
             {
-                let resources = provide_resources(&CameraResourceCtx {
+                let ctx = CameraResourceCtx {
                     camera_permission_denied: true,
                     camera_devices: vec!["/dev/video0".into(), "/dev/video2".into()],
                     ..CameraResourceCtx::default()
-                });
+                };
+                let resources = provide_resources(&ctx);
                 let capture = resources
                     .iter()
                     .find(|resource| resource.id.as_str() == "camera.capture")
@@ -838,13 +964,31 @@ mod tests {
                         .iter()
                         .find(|row| row.id.as_str() == camera_device_row_id(device))
                         .unwrap_or_else(|| panic!("{device} is a row"));
-                    let choose = row
-                        .actions
+                    row.actions
                         .iter()
                         .find(|action| action.id == "use-camera")
                         .expect("a camera row offers choosing it");
-                    assert_eq!(choose.label, format!("Use {device}"));
-                    assert!(choose.contract.availability.is_available());
+                    let statuses = row_status(&ctx, camera_device_row_id(device).as_str());
+                    assert!(
+                        statuses.contains(
+                            &EffectStatus::labelled(
+                                CameraEffect::USE_CAMERA,
+                                format!("Use {device}"),
+                            )
+                            .on(camera_device_row_id(device)),
+                        ),
+                        "{device} offers choosing it: {statuses:?}"
+                    );
+                    assert!(
+                        statuses.iter().all(|status| status
+                            != &EffectStatus::unavailable(
+                                CameraEffect::USE_CAMERA,
+                                "already_selected",
+                                "This camera is already selected",
+                            )
+                            .on(camera_device_row_id(device))),
+                        "nothing is chosen yet"
+                    );
                 }
                 assert!(
                     capture

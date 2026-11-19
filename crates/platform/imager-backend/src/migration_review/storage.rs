@@ -457,7 +457,8 @@ fn merge<T: IndexValue>(
     Ok(output)
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
     use super::*;
     use crate::migration::PinnedDirectory;

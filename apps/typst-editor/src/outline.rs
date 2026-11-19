@@ -245,12 +245,15 @@ impl Outline {
     pub(crate) fn rows(&self) -> Option<LiveRow> {
         (!self.headings.is_empty()).then(|| {
             self.headings.iter().fold(
-                LiveRow::new("typst.outline", "typst.outline", "Outline"),
+                LiveRow::typed::<crate::actions::Outline>("typst.outline", "Outline"),
                 |outline, heading| {
-                    outline.row(
-                        LiveRow::new(heading_id(heading.line), "typst.heading", &heading.title)
-                            .effect(&TypstEffect::GoToHeading { line: heading.line }),
-                    )
+                    let bindings = ui::tilo_resource::row::RowBindings::new()
+                        .bind(TypstEffect::GO_TO_HEADING, [("line", heading.line.into())]);
+                    outline.row(LiveRow::typed_with::<crate::actions::Heading>(
+                        heading_id(heading.line),
+                        &heading.title,
+                        &bindings,
+                    ))
                 },
             )
         })

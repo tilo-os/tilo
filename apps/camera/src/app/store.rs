@@ -54,11 +54,21 @@ impl Store {
         }))
     }
 
-    fn rows(&self) -> Vec<ui::framework::LiveRow> {
+    fn context(&self) -> crate::actions::CameraResourceCtx {
         let mut ctx = self.shown.clone();
         ctx.camera_devices = super::camera_devices(self.lists_devices);
         ctx.scan_import_pending = self.scan_import_pending.get();
-        crate::actions::live_rows(&ctx)
+        ctx
+    }
+
+    fn rows(&self) -> Vec<ui::framework::LiveRow> {
+        crate::actions::live_rows(&self.context())
+    }
+
+    /// What the camera offers on the row `id` now, from the same snapshot its
+    /// rows are built from.
+    fn row_status(&self, id: &str) -> Vec<EffectStatus> {
+        crate::actions::row_status(&self.context(), id)
     }
 
     /// Switching between photo and video stops nothing: while a video
@@ -313,8 +323,13 @@ pub(crate) fn window(cx: &ViewCx<Camera>, mut app: CameraApp) -> Element {
                 .push(Ask::Stage(scenario.map(str::to_owned)));
         });
     }
+    let (rows, statuses) = (Rc::clone(&store), store);
     cx.publishing(
-        Publishes::new().live_rows(move || store.borrow().rows()),
+        Publishes::new()
+            .live_rows(move || rows.borrow().rows())
+            // What the camera offers on each row now, where the declaration
+            // alone cannot say (a feed that is not there, a page not chosen).
+            .row_status(move |id| statuses.borrow().row_status(id)),
         Box::new(app),
     )
 }

@@ -171,7 +171,8 @@ pub fn resolve_state_root(path: &Path) -> io::Result<PathBuf> {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 

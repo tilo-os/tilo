@@ -220,12 +220,14 @@ fn decode(bytes: &[u8]) -> io::Result<PathBuf> {
     Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&decoded)))
 }
 
-#[cfg(all(test, feature = "managed-tree-test"))]
+#[cfg(test)]
+#[cfg(feature = "managed-tree-test")]
 mod tests {
+    use super::super::Scratch;
     use super::*;
     use std::{
         ffi::CString,
-        os::unix::fs::PermissionsExt,
+        os::unix::fs::{MetadataExt, PermissionsExt},
         time::{Duration, Instant},
     };
     use tilo_test_env::SpawnUnderEnvLock as _;
@@ -384,7 +386,12 @@ mod tests {
             // Linux UAPI btrfs_ioctl_vol_args: i64 fd, char name[4088].
             let mut args = [0u8; 4096];
             let name = self.name.as_bytes_with_nul();
-            args[8..8 + name.len()].copy_from_slice(name);
+            // After the leading i64 fd, the volume name follows the fixed UAPI offset.
+            let start: usize = 8;
+            let end = start
+                .checked_add(name.len())
+                .expect("btrfs volume name fits the ioctl buffer");
+            args[start..end].copy_from_slice(name);
             if unsafe { libc::ioctl(self.parent.as_raw_fd(), request, args.as_ptr()) } < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -424,17 +431,19 @@ mod tests {
                 // Keep exact task ownership until a successful wait observes retirement.
                 loop {
                     let _ = child.kill();
-                    match child.wait() {
-                        Ok(_) => return,
-                        Err(_) => {
-                            eprintln!("Btrfs fixture child retirement remains unobserved");
-                            std::thread::sleep(Duration::from_millis(50));
-                        }
+                    if child.wait().is_ok() {
+                        return;
                     }
+                    eprintln!("Btrfs fixture child retirement remains unobserved");
+                    std::thread::sleep(Duration::from_millis(50));
                 }
             }
         }
     }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one qualification walks the whole Btrfs subvolume tree in order"
+    )]
     #[test]
     fn actual_btrfs_subvolume_coordinates_refuse_ancestor_and_alias_overlap() {
         const CHILD: &str = "TILO_BTRFS_COORDINATE_CHILD";
@@ -461,10 +470,11 @@ mod tests {
                     assert!(status.success());
                     break;
                 }
-                if Instant::now() >= deadline {
-                    // OwnedChild kills/reaps the exact child while unwinding.
-                    panic!("Btrfs coordinate fixture timed out");
-                }
+                // OwnedChild kills/reaps the exact child while unwinding.
+                assert!(
+                    Instant::now() < deadline,
+                    "Btrfs coordinate fixture timed out"
+                );
                 std::thread::sleep(Duration::from_millis(10));
             }
             assert_eq!(std::fs::read(marker).unwrap(), b"actual subvolume ancestors and aliases refused; sibling retained; owned mounts and subvolumes retired");

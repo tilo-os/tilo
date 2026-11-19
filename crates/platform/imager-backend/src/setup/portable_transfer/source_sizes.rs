@@ -160,7 +160,8 @@ pub(super) fn source_sizes(
     check_cancel(cancel)?;
     Ok(sizes)
 }
-#[cfg(all(test, feature = "native-capture-qualification", target_os = "linux"))]
+#[cfg(test)]
+#[cfg(all(feature = "native-capture-qualification", target_os = "linux"))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
@@ -207,7 +208,7 @@ mod tests {
         let inventory = SourceInventory::capture_portable_home_with_storage(
             &source_pin,
             &source,
-            scratch.clone(),
+            scratch,
             &cancel,
         )
         .unwrap();
@@ -240,7 +241,7 @@ mod tests {
         let inventory = SourceInventory::capture_portable_home_with_storage(
             &source_pin,
             &source,
-            scratch.clone(),
+            scratch,
             &cancel,
         )
         .unwrap();

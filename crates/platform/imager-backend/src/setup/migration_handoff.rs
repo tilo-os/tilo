@@ -45,7 +45,8 @@ pub use original_inventory::{INVENTORY_BOUND, OriginalInventoryBinding};
 mod fixture;
 #[cfg(test)]
 mod pure_tests;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests;
 #[cfg(all(any(test, feature = "test-support"), target_os = "linux"))]
 pub(in crate::setup) fn fixture_plan() -> Plan {
@@ -53,7 +54,8 @@ pub(in crate::setup) fn fixture_plan() -> Plan {
 }
 #[cfg(all(any(test, feature = "test-support"), target_os = "linux"))]
 pub use linux::capture_fixture;
-#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux", feature = "native-capture-qualification"))]
 pub use linux::resolve;
 
 pub const SCHEMA: u32 = 1;

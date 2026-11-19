@@ -173,7 +173,13 @@ fn assert_filter_launch_splices(
     let mut pairs = baseline.clone();
     lease.splice_pairs(&mut pairs).unwrap();
     let replacements = lease.descriptor_pairs();
-    assert_eq!(replacements.len(), original_roots.len() + 2);
+    assert_eq!(
+        replacements.len(),
+        original_roots
+            .len()
+            .checked_add(2)
+            .expect("root count fits")
+    );
     assert_eq!(pairs.len(), baseline.len());
     for (input, slot) in &replacements {
         let matching: Vec<_> = pairs
@@ -257,7 +263,12 @@ fn assert_fresh_detached_leases(
         "cloning must leave original mount ownership unchanged"
     );
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "one qualification walks the whole credential restoration in order"
+)]
 fn outer() {
+    use std::os::fd::AsRawFd;
     // This /run overlay is visible only in our already-unshared mount namespace.
     let run = CString::new("/run").unwrap();
     let tmpfs = CString::new("tmpfs").unwrap();
@@ -326,7 +337,6 @@ fn outer() {
         .filter_for_launch(&compiler)
         .unwrap()
         .expect("roots require canonical baseline ownership");
-    use std::os::fd::AsRawFd;
     let original_pairs = bootstrap.root_pairs();
     let second = bootstrap
         .filter_for_launch(&compiler)
@@ -525,8 +535,14 @@ fn original_projection_error_restores_actual_filesystem_credentials_without_clai
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one qualification walks the whole private Home observation in order"
+)]
 #[test]
 fn actual_private_home_final_observation_restores_root_before_sealing_mounted_receipt() {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::MetadataExt;
     const CHILD: &str = "TILO_MOUNTED_RECEIPT_DAC_CHILD";
     const SELECTOR: &str = "owned_service::capture::original::credentials::native_tests::actual_private_home_final_observation_restores_root_before_sealing_mounted_receipt";
     const COMPLETE: &[u8] = b"private Home observed as caller; sealed receipt owned by root";
@@ -553,7 +569,6 @@ fn actual_private_home_final_observation_restores_root_before_sealing_mounted_re
         let mounted = Mounted::readonly(source_path);
         let source = pathfd(source_path);
         let selected = pathfd(&nested);
-        use std::os::unix::fs::MetadataExt;
         let m = selected.metadata().unwrap();
         let table = original::original_mounted_table_sha256(&[original::OriginalMountedIdentity {
             placement: b"mounted".to_vec(),
@@ -589,7 +604,6 @@ fn actual_private_home_final_observation_restores_root_before_sealing_mounted_re
         original::roots::publish(observed).unwrap();
         let receipt = unsafe { libc::fcntl(51, libc::F_DUPFD_CLOEXEC, 128) };
         assert!(receipt >= 0);
-        use std::os::fd::{AsRawFd, FromRawFd};
         let mut receipt = unsafe { File::from_raw_fd(receipt) };
         let metadata = receipt.metadata().unwrap();
         assert_eq!(metadata.uid(), 0, "receipt must not inherit caller fsuid");
