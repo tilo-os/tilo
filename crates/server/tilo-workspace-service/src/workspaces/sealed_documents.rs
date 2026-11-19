@@ -229,19 +229,28 @@ impl GovernedWorkspace {
     pub(super) async fn document_keys(
         &self,
         app: &str,
-        record: &str,
+        document: &str,
     ) -> Result<Option<DocumentKeys>, String> {
-        if !self.peer().publication().is_sealed_document(app, record) {
+        if !self.peer().publication().is_sealed_document(app, document) {
             return Ok(None);
         }
         let isolated = self
             .peer()
-            .requires_document_keys(app, record, tilo_clock::wall())?;
+            .requires_document_keys(app, document, tilo_clock::wall())?;
+        if !isolated {
+            return self
+                .keys_of(
+                    collab_types::EVERY_MEMBER,
+                    &collab_types::app_document_id(app, document),
+                )
+                .await
+                .map(Some);
+        }
         let device = self
             .device
             .as_ref()
             .ok_or("no encryption is available for this workspace")?;
-        read_document_keys(device, self.workspace(), (app, record), isolated, isolated)
+        read_document_keys(device, self.workspace(), (app, document), true, true)
             .await
             .map(Some)
     }
