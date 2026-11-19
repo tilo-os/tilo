@@ -785,7 +785,7 @@ mod tests {
         let error = workspace
             .act(
                 &run(),
-                "mail/mail.mailbox#deliver-message",
+                "mail/mail.messages#deliver-message",
                 json!({"from": "ada@example.com"}),
             )
             .expect_err("the workspace refused");
@@ -1004,7 +1004,7 @@ mod tests {
         let answer = workspace
             .act(
                 &hosted_run(),
-                "mail/mail.mailbox#deliver-message",
+                "mail/mail.messages#deliver-message",
                 json!({"from": "a"}),
             )
             .expect("the person allowed it");

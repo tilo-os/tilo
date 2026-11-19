@@ -82,6 +82,7 @@ pub const SOURCES: &[Source] = &[
         connect: None,
         resources: &[
             "mail/mail.mailbox",
+            "mail/mail.messages",
             "contacts/contacts.book",
             "contacts/contacts.contacts",
             "calendar/calendar.calendar",

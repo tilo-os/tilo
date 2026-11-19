@@ -82,7 +82,7 @@ struct HoldsMail(Recorded);
 
 impl Workspace for HoldsMail {
     fn act(&mut self, run: &Invocation, action: &str, args: Value) -> Result<Answer> {
-        if action == "mail/mail.mailbox#deliver-message" {
+        if action == "mail/mail.messages#deliver-message" {
             self.0
                 .actions
                 .push((run.id.clone(), action.to_owned(), args));
@@ -173,7 +173,7 @@ fn one_thunderbird_account_of_two_comes_over_once() {
     assert_eq!(journal.brought.get("messages"), Some(&4), "{journal:?}");
 
     // Its four messages, each delivered to Mail in its folder; none of the home account's.
-    let delivered = workspace.of("mail/mail.mailbox#deliver-message");
+    let delivered = workspace.of("mail/mail.messages#deliver-message");
     assert_eq!(delivered.len(), 4, "{delivered:#?}");
     assert!(delivered.iter().any(|message| message["folder"] == "sent"));
     assert_eq!(
@@ -295,7 +295,7 @@ fn an_address_book_and_calendar_chosen_later_come_over_alone() {
     place.keep_review(&review).unwrap();
     let mut more = Recorded::default();
     let journal = run_once(&home, &place, &mut more).unwrap();
-    assert!(more.of("mail/mail.mailbox#deliver-message").is_empty());
+    assert!(more.of("mail/mail.messages#deliver-message").is_empty());
     let contacts = more
         .of("contacts/contacts.contacts#add-contacts")
         .into_iter()
@@ -323,7 +323,11 @@ fn a_stopped_run_resumes_where_it_stopped() {
     let mut workspace = Recorded::default();
     let error = run_once(&home, &place, &mut workspace).unwrap_err();
     assert!(error.is::<Stopped>(), "{error:#}");
-    assert!(workspace.of("mail/mail.mailbox#deliver-message").is_empty());
+    assert!(
+        workspace
+            .of("mail/mail.messages#deliver-message")
+            .is_empty()
+    );
     assert_eq!(
         place.journal(thunderbird::SOURCE).unwrap().state,
         RunState::Stopped
@@ -334,7 +338,7 @@ fn a_stopped_run_resumes_where_it_stopped() {
     assert_eq!(journal.brought.get("messages"), Some(&3), "{journal:?}");
     assert!(
         workspace
-            .of("mail/mail.mailbox#deliver-message")
+            .of("mail/mail.messages#deliver-message")
             .iter()
             .all(|message| message.to_string().contains("ada.home@example.org"))
     );
