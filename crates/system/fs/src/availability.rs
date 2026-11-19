@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use fs_protocol::projection::{
     AVAILABILITY_PROJECTION_VERSION, MAX_PROJECTED_ERROR_BYTES, ProjectedFreshness,
@@ -259,11 +260,20 @@ pub enum AvailabilityError {
     InvalidTransferProgress,
 }
 
+/// How long what a file's current content is may stay off disk before the next such change
+/// writes the whole registry: a checkout closes thousands of files in a burst, and a write of
+/// every row per file would make it cost the workspace rather than the file.
+const CONTENT_PERSIST_INTERVAL: Duration = Duration::from_millis(250);
+
 pub struct AvailabilityRegistry {
     path: PathBuf,
     records: BTreeMap<FileDocumentId, DocumentAvailability>,
     /// Inside [`Self::batch`]: mutations are validated and persisted once, when the batch ends.
     deferred: bool,
+    /// Current content changed since the registry was last written ([`Self::flush`]).
+    content_unsaved: bool,
+    /// When the registry was last written whole.
+    persisted_at: Instant,
     /// Bumped by every commit that changes what pinned hydration acts on; see
     /// [`Self::hydration_generation`].
     hydration_generation: u64,
@@ -324,6 +334,8 @@ impl AvailabilityRegistry {
                 path,
                 records: BTreeMap::new(),
                 deferred: false,
+                content_unsaved: false,
+                persisted_at: Instant::now(),
                 hydration_generation: 0,
                 hydration_watch: tokio::sync::watch::Sender::new(0),
                 changed: BTreeSet::new(),
@@ -346,6 +358,8 @@ impl AvailabilityRegistry {
             path,
             records,
             deferred: false,
+            content_unsaved: false,
+            persisted_at: Instant::now(),
             hydration_generation: 0,
             hydration_watch: tokio::sync::watch::Sender::new(0),
             changed: BTreeSet::new(),
@@ -544,6 +558,55 @@ impl AvailabilityRegistry {
         Ok(value)
     }
 
+    /// Note what a file's current content is, on a row that already exists: the mount says this
+    /// for every version it writes, so a checkout would otherwise write the whole registry once
+    /// per file. Content alone changes no ancestry and no policy, so nothing is validated again,
+    /// and the write of the registry is shared by a burst of these calls
+    /// ([`CONTENT_PERSIST_INTERVAL`], [`Self::flush`]). A row this device holds nothing of is
+    /// left to the reconciliation that makes one.
+    pub fn update_current_content(
+        &mut self,
+        document_id: FileDocumentId,
+        content: Option<ContentHash>,
+    ) -> bool {
+        let Some(entry) = self.records.get_mut(&document_id) else {
+            return false;
+        };
+        if entry.current_hash == content {
+            return true;
+        }
+        entry.current_hash = content;
+        self.bump_hydration_generation();
+        self.note_changed([document_id]);
+        if self.persisted_at.elapsed() >= CONTENT_PERSIST_INTERVAL {
+            self.persist_or_note();
+        } else {
+            self.content_unsaved = true;
+        }
+        true
+    }
+
+    /// Write what [`Self::update_current_content`] left pending, if anything.
+    ///
+    /// # Errors
+    /// The registry cannot be written; what it holds stays in memory and is written by the next
+    /// [`Self::flush`].
+    pub fn flush(&mut self) -> Result<(), AvailabilityError> {
+        if !self.content_unsaved {
+            return Ok(());
+        }
+        self.persist()
+    }
+
+    /// Write the registry now. A failure leaves the change noted as unsaved, so a later flush,
+    /// or dropping the registry, tries again.
+    fn persist_or_note(&mut self) {
+        if let Err(error) = self.persist() {
+            self.content_unsaved = true;
+            eprintln!("the availability registry is not written on disk: {error}");
+        }
+    }
+
     /// Insert or replace a record and durably commit the whole registry; invalid ancestry leaves
     /// memory and disk unchanged.
     pub fn put(&mut self, record: DocumentAvailability) -> Result<(), AvailabilityError> {
@@ -637,7 +700,7 @@ impl AvailabilityRegistry {
         EvictionDecision::Denied(EvictionBlocker::ReplicaAcknowledgementMissing)
     }
 
-    fn persist(&self) -> Result<(), AvailabilityError> {
+    fn persist(&mut self) -> Result<(), AvailabilityError> {
         #[cfg(test)]
         self.persists
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -647,7 +710,21 @@ impl AvailabilityRegistry {
         };
         let bytes = serde_json::to_vec_pretty(&document)?;
         tilo_files::native::atomic::write_creating_parent(&self.path, &bytes)?;
+        self.content_unsaved = false;
+        self.persisted_at = Instant::now();
         Ok(())
+    }
+}
+
+impl Drop for AvailabilityRegistry {
+    /// What a burst of content notes left unwritten goes out with the registry, so a clean end
+    /// never costs the newest rows.
+    fn drop(&mut self) {
+        if self.content_unsaved
+            && let Err(error) = self.persist()
+        {
+            eprintln!("the availability registry is not written on disk: {error}");
+        }
     }
 }
 
@@ -924,6 +1001,38 @@ mod tests {
             ));
             assert!(registry.get(id).is_none());
         }
+    }
+
+    /// A burst of content notes writes the registry once, and a flush writes the last of them;
+    /// a row this device holds nothing of is left for the reconciliation that makes one.
+    #[test]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "test arithmetic: one more write than the count before it"
+    )]
+    fn a_burst_of_content_notes_writes_the_registry_once_and_a_flush_keeps_the_last() {
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("a.json");
+        let mut registry = AvailabilityRegistry::open(&path).unwrap();
+        let id = FileDocumentId::new();
+        let first = test_hash();
+        registry.put(file(id, first)).unwrap();
+        let after_put = registry.persist_count();
+        let mut last = first;
+        for _ in 0..500 {
+            last = test_hash();
+            assert!(registry.update_current_content(id, Some(last)));
+        }
+        assert_eq!(
+            registry.persist_count(),
+            after_put,
+            "one write covers the whole burst"
+        );
+        assert!(!registry.update_current_content(FileDocumentId::new(), Some(last)));
+        registry.flush().unwrap();
+        assert_eq!(registry.persist_count(), after_put + 1);
+        let reopened = AvailabilityRegistry::open(&path).unwrap();
+        assert_eq!(reopened.get(id).unwrap().current_hash, Some(last));
     }
 
     tilo_test_env::scenario! {

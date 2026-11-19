@@ -2129,13 +2129,10 @@ impl QuickFS {
         let Some(document_id) = self.ns().document_id_for(ino) else {
             return;
         };
-        let mut registry = registry.lock_recover();
-        if let Some(mut record) = registry.get(document_id).cloned() {
-            record.current_hash = hash.map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
-            if let Err(error) = registry.put(record) {
-                eprintln!("could not note a file's new content in its availability: {error}");
-            }
-        }
+        registry.lock_recover().update_current_content(
+            document_id,
+            hash.map(|hash| fs_protocol::ContentHash(*hash.as_bytes())),
+        );
     }
 
     /// The namespace owns the record and path index. This only fingerprints its current
@@ -4944,3 +4941,6 @@ mod durability_tests;
 
 #[cfg(test)]
 mod prediction_tests;
+
+#[cfg(test)]
+mod checkout_bench;
