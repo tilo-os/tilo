@@ -33,8 +33,8 @@ default view board for Board
 default view task_page for Task
 
 view task_page(t: Task) {
-    ui.ListRow(title: t.title) {
-        text(t.done)
+    std.document(t) {
+        text(t.title)
     }
 }
 

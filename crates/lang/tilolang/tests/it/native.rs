@@ -77,7 +77,8 @@ view note_row(n: Note) {
 }
 
 view note_page(n: Note) {
-    ui.ListRow(title: n.title) {
+    std.document(n) {
+        text(n.title)
         text(n.body)
     }
 }
