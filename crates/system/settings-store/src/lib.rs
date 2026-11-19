@@ -131,11 +131,14 @@ pub fn config_path(relative: &Path) -> Option<PathBuf> {
 /// host provides them (the session's own store, an app's channel to the
 /// session, a page's host document), else this device's settings, held or
 /// followed in the device document store ([`device`]). `None` only without a
-/// data home.
+/// data home, as in a browser, whose page always installs its source.
 #[must_use]
 pub fn source() -> Option<Arc<dyn SettingsSource>> {
     if let Some(source) = installed_source() {
         return Some(source);
+    }
+    if cfg!(target_arch = "wasm32") {
+        return None;
     }
     local().map(|store| store as Arc<dyn SettingsSource>)
 }

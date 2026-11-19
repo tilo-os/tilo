@@ -214,6 +214,8 @@ impl SettingsDocument {
     fn located(&self) -> Option<std::sync::Arc<dyn settings_store::SettingsSource>> {
         match self {
             Self::Session => settings_store::source(),
+            // A browser has no profile directory.
+            Self::Profile(_) if cfg!(target_arch = "wasm32") => None,
             Self::Profile(root) => Some(settings_store::profile(root)),
         }
     }
