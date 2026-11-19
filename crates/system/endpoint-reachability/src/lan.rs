@@ -31,6 +31,10 @@ use tokio::sync::broadcast;
 
 pub const SERVICE_NAME: &str = "tilo-v1";
 
+/// The networks a session's local discovery speaks on, as IPv4 addresses separated by commas,
+/// when it is told some: everywhere the endpoint is otherwise.
+pub const NETWORKS_ENV: &str = "TILO_LAN_NETWORKS";
+
 const PROVENANCE: &str = "tilo-lan";
 
 const LOOKUP_FOR: Duration = Duration::from_secs(10);
@@ -70,6 +74,32 @@ impl Nearby {
         networks: impl IntoIterator<Item = Ipv4Addr>,
     ) -> Self {
         Self::hearing(changed, Some(networks.into_iter().collect()))
+    }
+
+    /// [`Nearby`] speaking only on the networks [`NETWORKS_ENV`] names, or `None` when it names
+    /// none: a machine on more than one network is told which one its person's other devices are
+    /// on, and a test keeps a session's discovery on this machine's loopback instead of the
+    /// network the runner gives it.
+    #[must_use]
+    pub fn from_env(changed: Arc<dyn Fn() + Send + Sync>) -> Option<Self> {
+        let named = std::env::var(NETWORKS_ENV).ok()?;
+        let mut networks = Vec::new();
+        for part in named.split(',') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            match part.parse::<Ipv4Addr>() {
+                Ok(network) => networks.push(network),
+                Err(_) => {
+                    tracing::warn!(
+                        value = part,
+                        "a network named for local discovery is no IPv4 address, and is ignored"
+                    );
+                }
+            }
+        }
+        (!networks.is_empty()).then(|| Self::on(changed, networks))
     }
 
     fn hearing(changed: Arc<dyn Fn() + Send + Sync>, on: Option<Vec<Ipv4Addr>>) -> Self {
@@ -306,7 +336,27 @@ mod tests {
     use iroh::{Endpoint, RelayMode, SecretKey};
     use tokio::time::{Duration, timeout};
 
-    use super::{Nearby, endpoint_of, networks, peer_name};
+    use super::{NETWORKS_ENV, Nearby, endpoint_of, networks, peer_name};
+
+    /// The networks the environment names are the ones discovery speaks on, and none named leaves
+    /// it on the networks the endpoint is on.
+    #[test]
+    fn the_environment_names_the_networks_discovery_speaks_on() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(NETWORKS_ENV, "127.0.0.1, 10.0.0.7");
+        let named = Nearby::from_env(std::sync::Arc::new(|| {})).expect("the networks it names");
+        assert_eq!(
+            named.shared.on,
+            Some(vec![Ipv4Addr::LOCALHOST, Ipv4Addr::new(10, 0, 0, 7)])
+        );
+        env.set(NETWORKS_ENV, "the local one");
+        assert!(
+            Nearby::from_env(std::sync::Arc::new(|| {})).is_none(),
+            "a name that is no address leaves discovery where the endpoint is"
+        );
+        env.remove(NETWORKS_ENV);
+        assert!(Nearby::from_env(std::sync::Arc::new(|| {})).is_none());
+    }
 
     const ALPN: &[u8] = b"tilo/lan-discovery-test";
 

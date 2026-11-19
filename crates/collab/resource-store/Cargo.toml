@@ -10,6 +10,8 @@ homepage.workspace = true
 description = "The resource store: every resource of a workspace in documents it places itself, indexed in the commit that changes it, with paged, filtered and counted queries, whichever language declared it."
 
 [dependencies]
+# How a document id names its reader set, which every device and server reads the same way.
+collab-types = { version = "0.1.0", path = "../collab-types" }
 # The surface an app publishes from its typed model: the collections and fields it stores.
 tilo-actions = { version = "0.1.0", path = "../actions" }
 # A committed document, read in the stored layout its surface declares.
@@ -19,8 +21,6 @@ serde.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 # The action a change names, in the change's message.
 serde_json.workspace = true
-# Short names of reader sets in document ids.
-blake3.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

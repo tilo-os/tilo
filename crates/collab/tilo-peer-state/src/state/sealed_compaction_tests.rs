@@ -201,6 +201,7 @@ fn message(op: SignedOp) -> NeighbourMsg {
         document_id: RECORD.into(),
         envelope: Box::new(op),
         own: None,
+        readers: None,
     }
 }
 

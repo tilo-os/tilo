@@ -127,6 +127,10 @@ impl Published for ServiceSurface {
 pub(crate) struct Collaboration<'a> {
     pub revocations: crate::engine::Revocations,
     pub sync: Option<&'a crate::sync::Client>,
+    /// The resources of the workspaces this device's own service holds, as the broker reads them.
+    pub documents: crate::broker_services::BrokerService<
+        std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>,
+    >,
     /// This session's own workspaces, as its engine holds them, when it has an identity to hold
     /// them with: what a change to a workspace's people is written through, whatever the session's
     /// peer network.
@@ -203,6 +207,10 @@ pub(crate) struct Knitted {
     pub(crate) tools: Option<crate::tools::Handle>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the app wire's services are all decided in one place, so a service added is not missed"
+)]
 pub(crate) fn start_app_wire(
     options: &Options,
     live_activities: &std::sync::Arc<runtime_collab::LiveActivities>,
@@ -215,6 +223,7 @@ pub(crate) fn start_app_wire(
     let Collaboration {
         revocations,
         sync,
+        documents,
         engine,
         sealed,
         fanout,
@@ -230,8 +239,7 @@ pub(crate) fn start_app_wire(
     };
     let link = app_wire::Link::new(options.wake.handle());
     let layout = layout_authority(options, handle, revocations)?;
-    // The workspace's activity, as the apps this session runs read it: the same model the shell
-    // serves its own windows.
+    // The workspace's activity as this session's apps read it: the shell's own model.
     let activity_wire = activity_provider::wire(activity.requests());
     activity.serve_apps(std::sync::Arc::clone(&activity_wire));
     // Calls run over the peer network: an app joins a channel through the service, the
@@ -250,8 +258,7 @@ pub(crate) fn start_app_wire(
     // asks them over that same app wire, and what the device that wins produced is kept in the content
     // this session keeps.
     let action_offload = offload_route(actions.as_ref(), content.as_ref());
-    // Files' clipboard lives beside the broker that answers it, and its copies reach the loop that
-    // has the compositor through the same wake.
+    // Files' clipboard lives beside the broker, its copies reaching the compositor's loop alike.
     let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
         options.wake.handle(),
     ));
@@ -290,6 +297,7 @@ pub(crate) fn start_app_wire(
             // What the broker writes a workspace's people through, and where it keeps what it
             // admits: this session's own workspaces, else the ones its peer network holds.
             engine: engine.or_else(|| sync.and_then(crate::sync::Client::engine).cloned()),
+            documents,
             endpoint: sync.map(|sync| sync.endpoint_handle()),
             journal_root: options.state.as_deref().map(app_wire::journal_root),
             // What each installed app declares it may do on the action API,

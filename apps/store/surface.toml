@@ -52,6 +52,13 @@ id = "show-more"
 kind = "read"
 
 [[resources.verbs]]
+id = "browse-remote"
+kind = "read"
+params = [
+  { name = "remote", type = "text", required = true },
+]
+
+[[resources.verbs]]
 id = "set-category"
 kind = "read"
 params = [
@@ -61,6 +68,13 @@ params = [
 [[resources.verbs]]
 id = "clear-filters"
 kind = "read"
+
+[[resources.verbs]]
+id = "show-details"
+kind = "read"
+params = [
+  { name = "app", type = "text", required = true },
+]
 
 [[resources.verbs]]
 id = "show-runtime-details"
@@ -87,6 +101,14 @@ params = [
 
 [[resources.verbs]]
 id = "show-catalogue"
+kind = "read"
+
+[[resources.verbs]]
+id = "show-remotes"
+kind = "read"
+
+[[resources.verbs]]
+id = "show-trust"
 kind = "read"
 
 [[resources.verbs]]

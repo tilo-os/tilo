@@ -28,7 +28,23 @@ Route = Literal["wine", "proton", "vm"]
 
 class Manager(Resource):
     """Windows manager — `windows.manager`."""
-    __surface__ = "so.tilo.windows@5f8b8f362b914588"
+    __surface__ = "so.tilo.windows@a6fa96f5dbf6dba6"
     routes: dict[str, Route]
+
+    def open_file(self,
+        *,
+        app: str,
+        path: Any | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["app"] = app
+        if path is not None:
+            args["path"] = path
+        return self.action("open-file", **args)
+
+    # The actions a call reaches before the resource is read: `await tracker.create(...)`
+    # needs no `load()` first.
+    __actions__ = frozenset({"open_file"})
 
 

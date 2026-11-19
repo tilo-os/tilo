@@ -15,7 +15,7 @@ pub use chat_model::effects::{ChatEffect, RECENT_MESSAGES, item_row_id, item_vie
 use ui::framework::{EffectAnswer, EffectStatus, Effected, LiveRow};
 use ui::native_media::Command;
 use ui::tilo_actions::ResourceViewSpec;
-use ui::tilo_resource::{self, AbsolutePath, Effect};
+use ui::tilo_resource::{self, AbsolutePath};
 
 use crate::app::{ChatApp, Focus};
 use crate::model::ChannelKind;
@@ -502,10 +502,6 @@ impl ChatApp {
     /// messages of every conversation and the reviewed reports.
     /// They are rows merged into the item resources the record publishes.
     pub(crate) fn published_rows(&self) -> Vec<LiveRow> {
-        let categories = self
-            .categories
-            .iter()
-            .filter_map(|category| self.category_row(&category.id));
         let channels = self
             .channels
             .iter()
@@ -527,8 +523,7 @@ impl ChatApp {
             .reports
             .iter()
             .filter_map(|(report, _)| self.report_row(report));
-        categories
-            .chain(channels)
+        channels
             .chain(messages)
             .chain(reports)
             .chain(self.direct_conversation_rows())
@@ -543,21 +538,11 @@ impl ChatApp {
         let (field, item) = tilo_resource::items::item_of_resource::<Chat>(id)?;
         let item = item.as_str();
         match field {
-            "categories" => self.category_row(item),
             "channels" => self.channel_row(item),
             "messages" => self.message_row(item),
             "feedback" => self.report_row(item),
             _ => None,
         }
-    }
-
-    fn category_row(&self, id: &str) -> Option<LiveRow> {
-        let category = self.categories.iter().find(|item| item.id == id)?;
-        Some(LiveRow::new(
-            item_row_id("categories", id),
-            "chat.workspace.categories",
-            &category.name,
-        ))
     }
 
     fn channel_row(&self, id: &str) -> Option<LiveRow> {
@@ -569,10 +554,18 @@ impl ChatApp {
             return None;
         }
         let channel = self.channels.iter().find(|item| item.id == id)?;
-        let row = LiveRow::new(
+        let mut bindings = ui::tilo_resource::RowBindings::new();
+        // A channel with no model behind it offers no command to it.
+        if !self.model_controls(id).is_empty() {
+            bindings = bindings.bind(
+                ChatEffect::MODEL_CONTROL,
+                [("channel", id.to_owned().into())],
+            );
+        }
+        let row = LiveRow::typed_with::<chat_model::rows::Channel>(
             item_row_id("channels", id),
-            "chat.workspace.channels",
             &channel.name,
+            &bindings,
         );
         // A voice channel is a call, not a conversation to read.
         let row = if channel.kind == ChannelKind::Voice {
@@ -583,16 +576,6 @@ impl ChatApp {
                     .with_primary(true),
             )
         };
-        let mut row = row;
-        if !self.model_controls(id).is_empty() {
-            row = row.operation(
-                ChatEffect::ModelControl {
-                    channel: id.to_owned(),
-                    command: String::new(),
-                }
-                .bound_asking(&["command"]),
-            );
-        }
         Some(if channel.kind == ChannelKind::Voice {
             // Opening the conversation is the channel's: a view here would be
             // the call row's disclosure, a private one that keeps joining and
@@ -624,7 +607,7 @@ impl ChatApp {
                 &bindings,
             ))
         } else {
-            row.operation(crate::feedback::destination_read::spec(id))
+            row
         })
     }
 
@@ -633,10 +616,39 @@ impl ChatApp {
         // The badge beside the detail says the author is software; its name is its own.
         let author = self.message_author_label(message);
         let agent = crate::model_stream::is_provider_output(message) || !message.author.is_person();
-        let mut row = LiveRow::new(
+        // The chat keeps its messages in its parts, so the window publishes
+        // each as a row of the item type, offering the message's own effects
+        // bound to it: reveal it, show a range of it, open what it carries.
+        let message_id = || id.to_owned();
+        let bindings = ui::tilo_resource::RowBindings::new()
+            .bind(
+                ChatEffect::REVEAL_MESSAGE,
+                [("message", message_id().into())],
+            )
+            .bind(
+                ChatEffect::REVEAL_MESSAGE_RANGE,
+                [("message", message_id().into())],
+            )
+            .bind(ChatEffect::SHOW_VIEW, [("message", message_id().into())])
+            .bind(
+                ChatEffect::SHOW_AGENT_REASONING,
+                [
+                    (
+                        "message",
+                        ui::tilo_resource::__private::serde_json::Value::from(message_id()),
+                    ),
+                    (
+                        "expanded",
+                        ui::tilo_resource::__private::serde_json::Value::Bool(
+                            !self.expanded_agent.contains(id),
+                        ),
+                    ),
+                ],
+            );
+        let mut row = LiveRow::typed_with::<chat_model::rows::Message>(
             item_row_id("messages", id),
-            "chat.workspace.messages",
             self.message_label(message),
+            &bindings,
         )
         // Who wrote it, beside the message's own words.
         .presentation(ui::tilo_actions::ResourcePresentation {
@@ -644,14 +656,7 @@ impl ChatApp {
             badge: agent.then(|| "agent".to_owned()),
             preview: None,
         });
-        // The resource keeps no message (they are in its parts), so the row
-        // carries what the resource offers on each: its reads and views.
         let item = tilo_resource::Id::from_raw(id);
-        let effects = <Chat as tilo_resource::Resource>::item_effects("messages", &item);
-        let offers_reasoning = effects.iter().any(|spec| spec.id == "show-agent-reasoning");
-        for spec in effects {
-            row = row.operation(spec);
-        }
         for view in item_views("messages", &item) {
             row = row.view(view);
         }
@@ -663,34 +668,41 @@ impl ChatApp {
                 ChatEffect::SHOW_VIEW.id,
             ));
         }
-        if !offers_reasoning
-            && message
-                .work
-                .as_ref()
-                .and_then(|work| work.stream.as_ref())
-                .is_some_and(|stream| !stream.reasoning.is_empty())
-        {
-            row = row.effect(&ChatEffect::ShowAgentReasoning {
-                message: id.to_owned(),
-                expanded: !self.expanded_agent.contains(id),
-            });
-        }
         Some(row)
     }
 
     fn report_row(&self, id: &str) -> Option<LiveRow> {
         let (_, text) = self.reports.iter().find(|(report, _)| report == id)?;
         let message = crate::feedback::message_id(id);
-        let row = LiveRow::new(item_row_id("feedback", id), "chat.workspace.feedback", text)
-            .effect(&ChatEffect::RevealMessage {
-                message: message.clone(),
-            })
-            .operation(crate::feedback::receipt_read::spec(id))
-            .operation(crate::feedback::status_read::spec(id));
-        Some(match self.report_recordings.get(message.as_str()) {
-            Some(recording) => row.operation(crate::feedback::replay_spec(recording)),
-            None => row,
-        })
+        let bindings = ui::tilo_resource::RowBindings::new()
+            .bind(ChatEffect::REVEAL_MESSAGE, [("message", message.into())]);
+        Some(LiveRow::typed_with::<chat_model::rows::Report>(
+            item_row_id("feedback", id),
+            text,
+            &bindings,
+        ))
+    }
+
+    /// The reads the window answers for one of its items, from the chat's
+    /// committed state: a conversation's destination, a report's receipt and
+    /// status, the launch replaying what a report recorded. They are the
+    /// app's registered readers, published on the item the window knows.
+    pub(crate) fn item_reads(&self, field: &str, id: &str) -> Vec<ui::tilo_actions::ActionSpec> {
+        match field {
+            "channels" => vec![crate::feedback::destination_read::spec(id)],
+            "feedback" => {
+                let message = crate::feedback::message_id(id);
+                let mut reads = vec![
+                    crate::feedback::receipt_read::spec(id),
+                    crate::feedback::status_read::spec(id),
+                ];
+                if let Some(recording) = self.report_recordings.get(message.as_str()) {
+                    reads.push(crate::feedback::replay_spec(recording));
+                }
+                reads
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// What a message's row is called: who wrote it and how it begins.

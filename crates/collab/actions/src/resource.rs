@@ -55,38 +55,6 @@ use crate::params::{ActionArgs, ActionParam, ArgError, ArgValue, ParamType};
 /// shared by many; an action whose builder holds what it acts on ignores it.
 pub type ArgsBuilder = Arc<dyn Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync>;
 
-/// A UI control's inert request to invoke one advertised operation.
-///
-/// This deliberately carries an address and typed JSON arguments, not an
-/// [`EncodedAction`]. The application host resolves the address against its
-/// *fresh* resource tree before opening the action API, so a control cannot
-/// retain stale authority when availability or policy changes.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ControlInvocation {
-    pub address: ActionAddress,
-    pub arguments: serde_json::Map<String, serde_json::Value>,
-}
-
-impl ControlInvocation {
-    /// An invocation of `action` on `resource`, with its arguments, or `None`
-    /// when either half is empty or contains the address separator.
-    ///
-    /// This checks the format only. The host resolves the address against its
-    /// fresh resource tree and revalidates the arguments; constructing a value
-    /// grants no authority.
-    #[must_use]
-    pub fn from_parts(
-        resource: impl AsRef<str>,
-        action: impl AsRef<str>,
-        arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Option<Self> {
-        Some(Self {
-            address: ActionAddress::checked(resource, action)?,
-            arguments,
-        })
-    }
-}
-
 /// Failure to construct or emit a control binding.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ActionBindingError {
@@ -2980,6 +2948,10 @@ fn flatten_into<'a>(resource: &'a ResourceSpec, depth: usize, out: &mut Vec<Flat
         flatten_into(child, depth.saturating_add(1), out);
     }
 }
+
+#[path = "resource/control.rs"]
+mod control;
+pub use control::ControlInvocation;
 
 #[path = "resource/choices.rs"]
 mod choices;

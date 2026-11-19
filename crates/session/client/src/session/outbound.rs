@@ -250,6 +250,7 @@ impl Task {
                             document: route.document.clone(),
                             envelope: Box::new(op),
                             own: view.peer().own_write(written.0, written.1, &author),
+                            readers: None,
                         },
                     })
                 })

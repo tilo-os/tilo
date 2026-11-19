@@ -4632,6 +4632,30 @@ timeout_secs = 3600
 heavy = true
 default = false
 
+# A Linux machine another of the person's devices planned as a Tilo Server installs it
+# unattended from a staged installer, a complete plan and a single-use token, and opens its
+# encrypted disk with the owner's device on its first boot and again after
+# `server.set-default-start`; the owner reads its recovery key back
+# (os/dev/test-server-plan-install-cycle.sh). Two KVM guests: the machine (retained Fedora,
+# an empty second disk staged from a privileged container on it) and the owner (the dev
+# disk's headless session with a throwaway identity).
+[[check]]
+name = "server-plan-install-cycle"
+# dnf in the guests installs from Fedora's mirrors, and the enrolment and unlock cross the
+# public iroh relay of two user-mode networks; no fixed host list names either.
+egress = { to = ["0.0.0.0/0", "::/0"] }
+run = "bash tools/ci/install-packages.sh tools/ci/packages/os-vm.txt tools/ci/packages/qemu-x86_64.txt && bash os/dev/test-server-plan-install-cycle.sh --installer-disk /target/publish/server-installer-medium/x86_64/disk.qcow2 --owner-disk /target/publish/os-dev-disk/x86_64/disk/disk.qcow2 --release-tag imager-v0.0.0 --out /target/server-plan-install-cycle"
+needs = ["server-installer-medium-x86_64", "os-dev-disk-lean-x86_64", "tilo-vm-binary-x86_64"]
+env = { TILO_VM_BIN = "/target/tilo-vm-bin/tilo-vm" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/server-plan-install-cycle/**"]
+cache = false
+git = true
+timeout_secs = 10800
+default = false
+on = ["dispatch"]
+
 [[check]]
 name = "os-dev-disk-{arch}"
 # dnf installs from Fedora's mirrors, which are no fixed host list.

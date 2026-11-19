@@ -586,6 +586,16 @@ impl RouteContent {
         }
     }
 
+    /// Whether this device asked `route` for `hash` and still waits on it:
+    /// what a keeper of a host's members' pieces asks before it takes one.
+    #[must_use]
+    pub fn expecting(&self, route: &CrdtRoute, hash: &str) -> bool {
+        let scope = ContentScope::of(route);
+        self.wants
+            .lock()
+            .is_ok_and(|wants| wants.open.contains_key(&(scope, hash.to_ascii_lowercase())))
+    }
+
     /// A piece of content arrived on `route`. Gather it when this device
     /// asked for that content there; once whole and verified, keep it and
     /// hand it to the local apps on the record's scope.

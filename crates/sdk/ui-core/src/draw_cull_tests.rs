@@ -92,6 +92,29 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_widget_that_ends_where_what_repaints_begins_is_left_out;
+    {
+        // A row's words end on the gutter the bar repaints in.
+        let bar = Rect::new(190.0, 0.0, 200.0, 400.0);
+        let mut culling = Culling::default();
+        culling.repainted(&[bar], true);
+        let frame = culling.begin();
+        let mut scene = Scene::new();
+        let keep = Keep::scrolled(Affine::IDENTITY, VIEW, Vec2::new(0.0, -20.0), &[]);
+        bind(&scene);
+        let mut left_out = false;
+        keeping(&mut scene, keep, |scene| {
+            left_out = kept(scene, Affine::IDENTITY, Rect::new(10.0, 100.0, 189.0, 120.0));
+        });
+        unbind();
+        assert!(left_out, "the row beside the bar is kept");
+        assert!(frame.holds(Some(&[bar])));
+        assert!(
+            !frame.holds(Some(&[Rect::new(0.0, 119.0, 200.0, 130.0)])),
+            "damage over the row's own pixels repaints it"
+        );
+    }
+
     phase two_scrolls_at_once_keep_nothing;
     {
         let _frame = Culling::default().begin();

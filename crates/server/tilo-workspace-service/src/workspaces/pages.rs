@@ -797,25 +797,25 @@ impl Workspaces {
             ));
         }
         let identity = grant.workspace.clone();
+        let address = self.invitation_addr().await;
         let issued = {
             let workspace = self.workspace(&identity).await?;
             let mut workspace = workspace.lock().await;
-            let issued = self
-                .stage_issue(
-                    &mut workspace,
-                    device,
-                    IssueInvitationRequest {
-                        request_id,
-                        role: grant.role,
-                        recipient_user_public_key,
-                        invitee_name: None,
-                        expires_at_ns: grant.expires_at_ns,
-                        inviter_name,
-                    },
-                    false,
-                    now,
-                )
-                .await?;
+            let issued = self.stage_issue(
+                &mut workspace,
+                device,
+                IssueInvitationRequest {
+                    request_id,
+                    role: grant.role,
+                    recipient_user_public_key,
+                    invitee_name: None,
+                    expires_at_ns: grant.expires_at_ns,
+                    inviter_name,
+                },
+                false,
+                &address,
+                now,
+            )?;
             workspace.admissions.record(
                 issued.invite_id,
                 grant,
@@ -955,6 +955,7 @@ impl Workspaces {
                 .await;
         };
         let now = tilo_clock::unix_now_ns();
+        let address = self.invitation_addr().await;
         let issued = {
             let governed = self.workspace(workspace).await?;
             let mut governed = governed.lock().await;
@@ -969,9 +970,8 @@ impl Workspaces {
                     "that address is no longer on the wait list",
                 ));
             }
-            let issued = self
-                .stage_issue(&mut governed, device, request, administrator, now)
-                .await?;
+            let issued =
+                self.stage_issue(&mut governed, device, request, administrator, &address, now)?;
             governed
                 .wait_list
                 .invited(entry, issued.invite_id, now)

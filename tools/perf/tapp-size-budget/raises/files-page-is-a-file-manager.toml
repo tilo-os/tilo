@@ -1,0 +1,8 @@
+# The Files page became a file manager: its window is declared, its tree parts list by action,
+# and an empty folder shows what a person can make in it. The app's package carries that code
+# and its model module.
+reason = "the Files page became a file manager, with its window declared and its tree parts listing by action, and the app's package carries its model module"
+run = "rbdc7ad3857"
+
+[apps."so.tilo.file-explorer"]
+x86_64 = 393216

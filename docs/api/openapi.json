@@ -5052,6 +5052,16 @@
         ],
         "description": ""
       },
+      "backups.workspace.verify.Arguments": {
+        "type": "object",
+        "properties": {
+          "snapshot_id": {}
+        },
+        "required": [
+          "snapshot_id"
+        ],
+        "description": ""
+      },
       "browser.application.add-bookmark.Arguments": {
         "type": "object",
         "properties": {
@@ -12603,6 +12613,18 @@
         "required": [],
         "description": ""
       },
+      "clocks.collection.float-stopwatch.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "clocks.collection.unfloat-stopwatch.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "clocks.on-devices.keep.Arguments": {
         "type": "object",
         "properties": {
@@ -13080,6 +13102,26 @@
           "undoable",
           "items",
           "id"
+        ],
+        "description": ""
+      },
+      "code_editor.project.show-symbol.Arguments": {
+        "type": "object",
+        "properties": {
+          "symbol": {}
+        },
+        "required": [
+          "symbol"
+        ],
+        "description": ""
+      },
+      "code_editor.project.show-result.Arguments": {
+        "type": "object",
+        "properties": {
+          "result": {}
+        },
+        "required": [
+          "result"
         ],
         "description": ""
       },
@@ -15777,6 +15819,16 @@
         "required": [],
         "description": ""
       },
+      "disks.system.select.Arguments": {
+        "type": "object",
+        "properties": {
+          "device": {}
+        },
+        "required": [
+          "device"
+        ],
+        "description": ""
+      },
       "disks.system.show-tab.Arguments": {
         "type": "object",
         "properties": {
@@ -17807,6 +17859,12 @@
         "required": [],
         "description": ""
       },
+      "imager.sources.status.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "imager.sources.export-config.Arguments": {
         "type": "object",
         "properties": {},
@@ -17847,6 +17905,16 @@
           "enabled": {}
         },
         "required": [],
+        "description": ""
+      },
+      "logs.journal.select-entry.Arguments": {
+        "type": "object",
+        "properties": {
+          "entry_id": {}
+        },
+        "required": [
+          "entry_id"
+        ],
         "description": ""
       },
       "mail.mailbox.server-applied.Arguments": {
@@ -19811,6 +19879,16 @@
         "required": [],
         "description": ""
       },
+      "maps.workspace.search.Arguments": {
+        "type": "object",
+        "properties": {
+          "query": {}
+        },
+        "required": [
+          "query"
+        ],
+        "description": ""
+      },
       "maps.workspace.locate.Arguments": {
         "type": "object",
         "properties": {},
@@ -19823,6 +19901,46 @@
         "required": [],
         "description": ""
       },
+      "maps.workspace.open-place.Arguments": {
+        "type": "object",
+        "properties": {
+          "place": {}
+        },
+        "required": [
+          "place"
+        ],
+        "description": ""
+      },
+      "maps.workspace.directions.Arguments": {
+        "type": "object",
+        "properties": {
+          "place": {}
+        },
+        "required": [
+          "place"
+        ],
+        "description": ""
+      },
+      "maps.workspace.open-poi.Arguments": {
+        "type": "object",
+        "properties": {
+          "poi": {}
+        },
+        "required": [
+          "poi"
+        ],
+        "description": ""
+      },
+      "maps.workspace.poi-directions.Arguments": {
+        "type": "object",
+        "properties": {
+          "poi": {}
+        },
+        "required": [
+          "poi"
+        ],
+        "description": ""
+      },
       "maps.workspace.show-point.Arguments": {
         "type": "object",
         "properties": {
@@ -19832,6 +19950,16 @@
         "required": [
           "lat",
           "lon"
+        ],
+        "description": ""
+      },
+      "maps.workspace.delete-offline-area.Arguments": {
+        "type": "object",
+        "properties": {
+          "area": {}
+        },
+        "required": [
+          "area"
         ],
         "description": ""
       },
@@ -20168,6 +20296,26 @@
           "query": {}
         },
         "required": [],
+        "description": ""
+      },
+      "monitor.processes.inspect.Arguments": {
+        "type": "object",
+        "properties": {
+          "process": {}
+        },
+        "required": [
+          "process"
+        ],
+        "description": ""
+      },
+      "monitor.processes.copy-pid.Arguments": {
+        "type": "object",
+        "properties": {
+          "process": {}
+        },
+        "required": [
+          "process"
+        ],
         "description": ""
       },
       "music.library.create-playlist.Arguments": {
@@ -21444,6 +21592,16 @@
         "required": [],
         "description": ""
       },
+      "passwords.vault.deny-access.Arguments": {
+        "type": "object",
+        "properties": {
+          "proposal": {}
+        },
+        "required": [
+          "proposal"
+        ],
+        "description": ""
+      },
       "passwords.vault.add.Arguments": {
         "type": "object",
         "properties": {},
@@ -21462,6 +21620,16 @@
         "required": [],
         "description": ""
       },
+      "passwords.vault.copy.Arguments": {
+        "type": "object",
+        "properties": {
+          "item": {}
+        },
+        "required": [
+          "item"
+        ],
+        "description": ""
+      },
       "passwords.vault.copy-identity.Arguments": {
         "type": "object",
         "properties": {
@@ -21473,6 +21641,16 @@
         "description": ""
       },
       "passwords.vault.copy-origins.Arguments": {
+        "type": "object",
+        "properties": {
+          "item": {}
+        },
+        "required": [
+          "item"
+        ],
+        "description": ""
+      },
+      "passwords.vault.reveal.Arguments": {
         "type": "object",
         "properties": {
           "item": {}
@@ -26936,6 +27114,16 @@
         "required": [],
         "description": ""
       },
+      "store.catalog.browse-remote.Arguments": {
+        "type": "object",
+        "properties": {
+          "remote": {}
+        },
+        "required": [
+          "remote"
+        ],
+        "description": ""
+      },
       "store.catalog.set-category.Arguments": {
         "type": "object",
         "properties": {
@@ -26950,6 +27138,16 @@
         "type": "object",
         "properties": {},
         "required": [],
+        "description": ""
+      },
+      "store.catalog.show-details.Arguments": {
+        "type": "object",
+        "properties": {
+          "app": {}
+        },
+        "required": [
+          "app"
+        ],
         "description": ""
       },
       "store.catalog.show-runtime-details.Arguments": {
@@ -26983,6 +27181,18 @@
         "description": ""
       },
       "store.catalog.show-catalogue.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "store.catalog.show-remotes.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "store.catalog.show-trust.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -28644,6 +28854,16 @@
         "required": [],
         "description": ""
       },
+      "terminal.session.open-link.Arguments": {
+        "type": "object",
+        "properties": {
+          "url": {}
+        },
+        "required": [
+          "url"
+        ],
+        "description": ""
+      },
       "terminal.history.remember.Arguments": {
         "type": "object",
         "properties": {
@@ -28903,6 +29123,36 @@
         ],
         "description": ""
       },
+      "tube.library.open-video.Arguments": {
+        "type": "object",
+        "properties": {
+          "video": {}
+        },
+        "required": [
+          "video"
+        ],
+        "description": ""
+      },
+      "tube.library.open-creator.Arguments": {
+        "type": "object",
+        "properties": {
+          "creator": {}
+        },
+        "required": [
+          "creator"
+        ],
+        "description": ""
+      },
+      "tube.library.open-playlist.Arguments": {
+        "type": "object",
+        "properties": {
+          "playlist": {}
+        },
+        "required": [
+          "playlist"
+        ],
+        "description": ""
+      },
       "tube.library.search.Arguments": {
         "type": "object",
         "properties": {
@@ -28930,6 +29180,42 @@
         "description": ""
       },
       "tube.library.skip-segment.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "tube.library.share.Arguments": {
+        "type": "object",
+        "properties": {
+          "video": {}
+        },
+        "required": [
+          "video"
+        ],
+        "description": ""
+      },
+      "tube.library.mark-watched.Arguments": {
+        "type": "object",
+        "properties": {
+          "video": {}
+        },
+        "required": [
+          "video"
+        ],
+        "description": ""
+      },
+      "tube.library.forget-watched.Arguments": {
+        "type": "object",
+        "properties": {
+          "video": {}
+        },
+        "required": [
+          "video"
+        ],
+        "description": ""
+      },
+      "tube.library.clear-history.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -30044,6 +30330,12 @@
         "required": [],
         "description": ""
       },
+      "video-player.library.clear-recent.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "video-player.recent.keep.Arguments": {
         "type": "object",
         "properties": {
@@ -30176,6 +30468,17 @@
         "type": "object",
         "properties": {},
         "required": [],
+        "description": ""
+      },
+      "windows.manager.open-file.Arguments": {
+        "type": "object",
+        "properties": {
+          "app": {},
+          "path": {}
+        },
+        "required": [
+          "app"
+        ],
         "description": ""
       },
       "word-processor.document.append-paragraph.Arguments": {
@@ -30924,6 +31227,12 @@
       "resource": "api-tester.workspace",
       "action": "record-sent",
       "arguments": "#/components/schemas/api-tester.workspace.record-sent.Arguments"
+    },
+    {
+      "app": "so.tilo.backups",
+      "resource": "backups.workspace",
+      "action": "verify",
+      "arguments": "#/components/schemas/backups.workspace.verify.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -32055,6 +32364,18 @@
     },
     {
       "app": "so.tilo.clocks",
+      "resource": "clocks.collection",
+      "action": "float-stopwatch",
+      "arguments": "#/components/schemas/clocks.collection.float-stopwatch.Arguments"
+    },
+    {
+      "app": "so.tilo.clocks",
+      "resource": "clocks.collection",
+      "action": "unfloat-stopwatch",
+      "arguments": "#/components/schemas/clocks.collection.unfloat-stopwatch.Arguments"
+    },
+    {
+      "app": "so.tilo.clocks",
       "resource": "clocks.on-devices",
       "action": "keep",
       "arguments": "#/components/schemas/clocks.on-devices.keep.Arguments"
@@ -32160,6 +32481,18 @@
       "resource": "code_editor.project",
       "action": "record-command",
       "arguments": "#/components/schemas/code_editor.project.record-command.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "code_editor.project",
+      "action": "show-symbol",
+      "arguments": "#/components/schemas/code_editor.project.show-symbol.Arguments"
+    },
+    {
+      "app": "so.tilo.code-editor",
+      "resource": "code_editor.project",
+      "action": "show-result",
+      "arguments": "#/components/schemas/code_editor.project.show-result.Arguments"
     },
     {
       "app": "so.tilo.code-editor",
@@ -32674,6 +33007,12 @@
     {
       "app": "so.tilo.disks",
       "resource": "disks.system",
+      "action": "select",
+      "arguments": "#/components/schemas/disks.system.select.Arguments"
+    },
+    {
+      "app": "so.tilo.disks",
+      "resource": "disks.system",
       "action": "show-tab",
       "arguments": "#/components/schemas/disks.system.show-tab.Arguments"
     },
@@ -33184,6 +33523,12 @@
     {
       "app": "so.tilo.imager",
       "resource": "imager.sources",
+      "action": "status",
+      "arguments": "#/components/schemas/imager.sources.status.Arguments"
+    },
+    {
+      "app": "so.tilo.imager",
+      "resource": "imager.sources",
       "action": "export-config",
       "arguments": "#/components/schemas/imager.sources.export-config.Arguments"
     },
@@ -33216,6 +33561,12 @@
       "resource": "logs.journal",
       "action": "set-live-tail",
       "arguments": "#/components/schemas/logs.journal.set-live-tail.Arguments"
+    },
+    {
+      "app": "so.tilo.logs",
+      "resource": "logs.journal",
+      "action": "select-entry",
+      "arguments": "#/components/schemas/logs.journal.select-entry.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -33496,6 +33847,12 @@
     {
       "app": "so.tilo.maps",
       "resource": "maps.workspace",
+      "action": "search",
+      "arguments": "#/components/schemas/maps.workspace.search.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "maps.workspace",
       "action": "locate",
       "arguments": "#/components/schemas/maps.workspace.locate.Arguments"
     },
@@ -33508,8 +33865,38 @@
     {
       "app": "so.tilo.maps",
       "resource": "maps.workspace",
+      "action": "open-place",
+      "arguments": "#/components/schemas/maps.workspace.open-place.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "maps.workspace",
+      "action": "directions",
+      "arguments": "#/components/schemas/maps.workspace.directions.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "maps.workspace",
+      "action": "open-poi",
+      "arguments": "#/components/schemas/maps.workspace.open-poi.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "maps.workspace",
+      "action": "poi-directions",
+      "arguments": "#/components/schemas/maps.workspace.poi-directions.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "maps.workspace",
       "action": "show-point",
       "arguments": "#/components/schemas/maps.workspace.show-point.Arguments"
+    },
+    {
+      "app": "so.tilo.maps",
+      "resource": "maps.workspace",
+      "action": "delete-offline-area",
+      "arguments": "#/components/schemas/maps.workspace.delete-offline-area.Arguments"
     },
     {
       "app": "so.tilo.maps",
@@ -33708,6 +34095,18 @@
       "resource": "monitor.processes",
       "action": "filter",
       "arguments": "#/components/schemas/monitor.processes.filter.Arguments"
+    },
+    {
+      "app": "so.tilo.monitor",
+      "resource": "monitor.processes",
+      "action": "inspect",
+      "arguments": "#/components/schemas/monitor.processes.inspect.Arguments"
+    },
+    {
+      "app": "so.tilo.monitor",
+      "resource": "monitor.processes",
+      "action": "copy-pid",
+      "arguments": "#/components/schemas/monitor.processes.copy-pid.Arguments"
     },
     {
       "app": "so.tilo.music",
@@ -33922,6 +34321,12 @@
     {
       "app": "so.tilo.passwords",
       "resource": "passwords.vault",
+      "action": "deny-access",
+      "arguments": "#/components/schemas/passwords.vault.deny-access.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "passwords.vault",
       "action": "add",
       "arguments": "#/components/schemas/passwords.vault.add.Arguments"
     },
@@ -33940,6 +34345,12 @@
     {
       "app": "so.tilo.passwords",
       "resource": "passwords.vault",
+      "action": "copy",
+      "arguments": "#/components/schemas/passwords.vault.copy.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "passwords.vault",
       "action": "copy-identity",
       "arguments": "#/components/schemas/passwords.vault.copy-identity.Arguments"
     },
@@ -33948,6 +34359,12 @@
       "resource": "passwords.vault",
       "action": "copy-origins",
       "arguments": "#/components/schemas/passwords.vault.copy-origins.Arguments"
+    },
+    {
+      "app": "so.tilo.passwords",
+      "resource": "passwords.vault",
+      "action": "reveal",
+      "arguments": "#/components/schemas/passwords.vault.reveal.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -35194,6 +35611,12 @@
     {
       "app": "so.tilo.store",
       "resource": "store.catalog",
+      "action": "browse-remote",
+      "arguments": "#/components/schemas/store.catalog.browse-remote.Arguments"
+    },
+    {
+      "app": "so.tilo.store",
+      "resource": "store.catalog",
       "action": "set-category",
       "arguments": "#/components/schemas/store.catalog.set-category.Arguments"
     },
@@ -35202,6 +35625,12 @@
       "resource": "store.catalog",
       "action": "clear-filters",
       "arguments": "#/components/schemas/store.catalog.clear-filters.Arguments"
+    },
+    {
+      "app": "so.tilo.store",
+      "resource": "store.catalog",
+      "action": "show-details",
+      "arguments": "#/components/schemas/store.catalog.show-details.Arguments"
     },
     {
       "app": "so.tilo.store",
@@ -35226,6 +35655,18 @@
       "resource": "store.catalog",
       "action": "show-catalogue",
       "arguments": "#/components/schemas/store.catalog.show-catalogue.Arguments"
+    },
+    {
+      "app": "so.tilo.store",
+      "resource": "store.catalog",
+      "action": "show-remotes",
+      "arguments": "#/components/schemas/store.catalog.show-remotes.Arguments"
+    },
+    {
+      "app": "so.tilo.store",
+      "resource": "store.catalog",
+      "action": "show-trust",
+      "arguments": "#/components/schemas/store.catalog.show-trust.Arguments"
     },
     {
       "app": "so.tilo.store",
@@ -35517,6 +35958,12 @@
     },
     {
       "app": "so.tilo.terminal",
+      "resource": "terminal.session",
+      "action": "open-link",
+      "arguments": "#/components/schemas/terminal.session.open-link.Arguments"
+    },
+    {
+      "app": "so.tilo.terminal",
       "resource": "terminal.history",
       "action": "remember",
       "arguments": "#/components/schemas/terminal.history.remember.Arguments"
@@ -35602,6 +36049,24 @@
     {
       "app": "so.tilo.tube",
       "resource": "tube.library",
+      "action": "open-video",
+      "arguments": "#/components/schemas/tube.library.open-video.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tube.library",
+      "action": "open-creator",
+      "arguments": "#/components/schemas/tube.library.open-creator.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tube.library",
+      "action": "open-playlist",
+      "arguments": "#/components/schemas/tube.library.open-playlist.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tube.library",
       "action": "search",
       "arguments": "#/components/schemas/tube.library.search.Arguments"
     },
@@ -35622,6 +36087,30 @@
       "resource": "tube.library",
       "action": "skip-segment",
       "arguments": "#/components/schemas/tube.library.skip-segment.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tube.library",
+      "action": "share",
+      "arguments": "#/components/schemas/tube.library.share.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tube.library",
+      "action": "mark-watched",
+      "arguments": "#/components/schemas/tube.library.mark-watched.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tube.library",
+      "action": "forget-watched",
+      "arguments": "#/components/schemas/tube.library.forget-watched.Arguments"
+    },
+    {
+      "app": "so.tilo.tube",
+      "resource": "tube.library",
+      "action": "clear-history",
+      "arguments": "#/components/schemas/tube.library.clear-history.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -36021,6 +36510,12 @@
     },
     {
       "app": "so.tilo.video-player",
+      "resource": "video-player.library",
+      "action": "clear-recent",
+      "arguments": "#/components/schemas/video-player.library.clear-recent.Arguments"
+    },
+    {
+      "app": "so.tilo.video-player",
       "resource": "video-player.recent",
       "action": "keep",
       "arguments": "#/components/schemas/video-player.recent.keep.Arguments"
@@ -36060,6 +36555,12 @@
       "resource": "weather.locations",
       "action": "refresh-all",
       "arguments": "#/components/schemas/weather.locations.refresh-all.Arguments"
+    },
+    {
+      "app": "so.tilo.windows",
+      "resource": "windows.manager",
+      "action": "open-file",
+      "arguments": "#/components/schemas/windows.manager.open-file.Arguments"
     },
     {
       "app": "so.tilo.word-processor",

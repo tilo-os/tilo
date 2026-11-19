@@ -1736,6 +1736,10 @@ suite = "os/containers/tilo-sh/test-vm-host.sh"
 reason = "needs root, KVM, loop devices and the built VM host and hosted guest images; the tilo-sh-vm-host check runs it in a VM of its own on dispatch"
 
 [[unrequired]]
+suite = "os/containers/tilo-sh/test-peer-kill-midwrite.sh"
+reason = "needs a whole tilo.sh stack and a FUSE mount, and minutes for the bulk write and its convergence; the peer-kill-midwrite check brings one up when named"
+
+[[unrequired]]
 suite = "os/containers/tilo-lounge/test-wait-list.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the wait-list check runs it in its image"
 
@@ -1831,8 +1835,16 @@ reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"
 
 [[unrequired]]
+suite = "os/tests/native_atspi_smoke.sh"
+reason = "runs inside a booted guest: it drives the compositor's own surfaces over the AT-SPI bus, which only exists in a live session (os/dev/vm.sh test native-atspi-smoke.sh)"
+
+[[unrequired]]
 suite = "os/dev/test-internal-install-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
+
+[[unrequired]]
+suite = "os/dev/test-server-plan-install-cycle.sh"
+reason = "boots two VMs (KVM): a retained Fedora that stages and installs Tilo Server unattended from a plan, and the dev disk's headless owner session that answers its enrolment and unlock"
 
 [[unrequired]]
 suite = "os/dev/test-measured-boot.sh"

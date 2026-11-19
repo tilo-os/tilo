@@ -35,7 +35,7 @@ pub use interaction::{
     ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, MarkerPlace, TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
-pub use labels::{MemberLabels, guest_label, name_key, shown_name, unnamed_label};
+pub use labels::{MemberLabels, name_key, shown_name, unnamed_label, unnamed_person_label};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};
@@ -2094,7 +2094,7 @@ mod remote_cursor_tests {
                 let c = &ctx.remote_cursors[0];
                 assert_eq!(c.member, MemberId::person("alice"));
                 assert_eq!(c.position, [42.0, 17.0]);
-                assert_eq!(c.label, guest_label(), "an unnamed person is a guest");
+                assert_eq!(c.label, unnamed_person_label(), "an unnamed person is someone without a name yet");
                 let (r, g, b) = user_color("alice");
                 assert!((c.color[0] - f32::from(r) / 255.0).abs() < 1e-3);
                 assert!((c.color[1] - f32::from(g) / 255.0).abs() < 1e-3);
@@ -2420,7 +2420,7 @@ mod string_id_wrapper_tests {
                 );
                 assert_eq!(
                     ctx.display_name(&alice),
-                    guest_label(),
+                    unnamed_person_label(),
                     "a person whose name went is a guest again"
                 );
             }
@@ -2463,7 +2463,7 @@ mod string_id_wrapper_tests {
                 let mut ctx = PresenceCtx::empty();
                 let alice = MemberId::person("alice");
                 // No roster entry yet: a guest, never their id.
-                assert_eq!(ctx.display_name(&alice), guest_label());
+                assert_eq!(ctx.display_name(&alice), unnamed_person_label());
                 ctx.set_display_name(alice.clone(), "Alice Smith");
                 assert_eq!(ctx.display_name(&alice), "Alice Smith");
                 // `user()` bundles id + name + colour.
@@ -2488,10 +2488,10 @@ mod string_id_wrapper_tests {
                 let ctx = PresenceCtx::empty();
                 let peer = MemberId::person("ab".repeat(32));
                 let label = ctx.display_name(&peer);
-                assert_eq!(label, guest_label());
+                assert_eq!(label, unnamed_person_label());
                 assert_eq!(
                     ctx.user(&peer).name,
-                    guest_label(),
+                    unnamed_person_label(),
                     "every renderer resolves the same way",
                 );
             }
@@ -2518,7 +2518,7 @@ mod string_id_wrapper_tests {
             {
                 let mut ctx = PresenceCtx::empty();
                 ctx.upsert_remote_cursor(MemberId::person("peer@77"), [10.0, 20.0], None);
-                assert_eq!(ctx.remote_cursors[0].label, guest_label());
+                assert_eq!(ctx.remote_cursors[0].label, unnamed_person_label());
 
                 ctx.set_display_name(MemberId::person("peer@77"), "Bob");
 

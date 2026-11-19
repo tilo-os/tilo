@@ -14,6 +14,7 @@ fn route() -> Route {
         cluster_id: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".into(),
         document_id: "note-1".into(),
         own: None,
+        readers: None,
     }
 }
 
@@ -90,6 +91,7 @@ fn signed_frames(
                 document_id: route.document_id.clone(),
                 envelope: Box::new(op),
                 own: None,
+                readers: None,
             })
             .unwrap();
             let payload = if snapshot_head && !sealed {

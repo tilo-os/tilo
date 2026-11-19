@@ -42,6 +42,22 @@ use tilo_sheets::portal::{
 };
 use tilo_sheets::{SheetState as _, word, words};
 
+/// The questions a session publishes: the ones its caller or its desktop
+/// supplied, and, when neither did (a headless session), one of the session's
+/// own, returned beside them so the session mounts it as a service and its own
+/// asks — a disk unlock, an enrolment, a machine asking to join — are actions
+/// like every other.
+pub(crate) fn for_session(
+    supplied: Option<Questions>,
+    desktop: Option<&Questions>,
+) -> (Option<Questions>, Option<Questions>) {
+    if let Some(questions) = supplied.or_else(|| desktop.cloned()) {
+        return (Some(questions), None);
+    }
+    let questions = Questions::new();
+    (Some(questions.clone()), Some(questions))
+}
+
 /// The sheet that asked the person.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Sheet {
@@ -884,6 +900,7 @@ fn compose(question: &Question) -> Option<Composed> {
         crate::step_questions::KIND => step_question(&question.handle, details)?,
         crate::network::DEVICE_UNLOCK => device_unlock(&question.handle, details)?,
         crate::network::DEVICE_ENROL => device_enrol(&question.handle, details)?,
+        crate::enrollment::KIND => machine_enrol(&question.handle, details)?,
         crate::network_reach::KIND => reach(&question.handle, &who, details)?,
         _ => return None,
     };
@@ -1115,6 +1132,22 @@ fn device_enrol(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
         dialog.caution = Some(word("network-device-enrol-unattended"));
     }
     dialog.confirm_label = word("network-device-enrol-allow");
+    Some((dialog, Plan::Confirm))
+}
+
+/// A machine asks to join the person: what it is and the code both sides show.
+/// Answering admits it, and the sheet's cancel turns it away, as the notice's
+/// own two answers do. The enrolment itself is kept by
+/// [`crate::enrollment::answer`], so it reaches the device serving the machine
+/// whichever of the person's devices answered.
+fn machine_enrol(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
+    let asked: crate::enrollment::Waiting = serde_json::from_value(details).ok()?;
+    let mut dialog = review(
+        handle,
+        word("machines-waiting-title"),
+        crate::enrollment::described(&asked),
+    );
+    dialog.confirm_label = words("machines-waiting-approve", &[("code", &asked.code)]);
     Some((dialog, Plan::Confirm))
 }
 

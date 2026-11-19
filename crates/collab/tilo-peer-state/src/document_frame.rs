@@ -507,6 +507,7 @@ mod tests {
                 document_id: route.document,
                 envelope: Box::new(op),
                 own: None,
+                readers: None,
             })
             .unwrap();
             let opened = open_frame(&body, *author.as_bytes(), Some(&keys))

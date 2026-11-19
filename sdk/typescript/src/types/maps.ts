@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.maps@ec7cd4801e4afb0e";
+export const SURFACE = "so.tilo.maps@41f20a9deca55fef";
 
 /** One of "landmark", "cafe", "restaurant", "bar", "museum", "park", "transit", "hotel", "shop", "hospital", "other". */
 export type Category = "landmark" | "cafe" | "restaurant" | "bar" | "museum" | "park" | "transit" | "hotel" | "shop" | "hospital" | "other";
@@ -205,18 +205,36 @@ export interface Workspace extends tilo.Resource {
   clearTransit(): Promise<void>;
   /** Runs `clear-transit` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   clearTransitMany(items: ClearTransitArgs[]): Promise<tilo.ActionAnswer[]>;
+  search(args: {
+    query: string;
+  }): Promise<void>;
   locate(): Promise<void>;
   toggleTraffic(): Promise<void>;
+  openPlace(args: {
+    place: string;
+  }): Promise<void>;
+  directions(args: {
+    place: string;
+  }): Promise<void>;
+  openPoi(args: {
+    poi: string;
+  }): Promise<void>;
+  poiDirections(args: {
+    poi: string;
+  }): Promise<void>;
   showPoint(args: {
     lat: number;
     lon: number;
+  }): Promise<void>;
+  deleteOfflineArea(args: {
+    area: string;
   }): Promise<void>;
   clearOfflineAreas(): Promise<void>;
 }
 
 /** The actions `Workspace` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const WORKSPACE_ACTIONS = ["acceptPlaces", "acceptPlacesMany", "commitSearch", "commitSearchMany", "clearRecents", "clearRecentsMany", "acceptRoute", "acceptRouteMany", "clearRoute", "clearRouteMany", "acceptTransit", "acceptTransitMany", "clearTransit", "clearTransitMany", "locate", "toggleTraffic", "showPoint", "clearOfflineAreas"] as const;
+export const WORKSPACE_ACTIONS = ["acceptPlaces", "acceptPlacesMany", "commitSearch", "commitSearchMany", "clearRecents", "clearRecentsMany", "acceptRoute", "acceptRouteMany", "clearRoute", "clearRouteMany", "acceptTransit", "acceptTransitMany", "clearTransit", "clearTransitMany", "search", "locate", "toggleTraffic", "openPlace", "directions", "openPoi", "poiDirections", "showPoint", "deleteOfflineArea", "clearOfflineAreas"] as const;
 
 /** The `maps.workspace` kind at `path`. */
 export function workspace(ws: tilo.Workspace, path: string): Workspace {

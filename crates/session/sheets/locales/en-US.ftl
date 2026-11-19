@@ -627,7 +627,6 @@ invite-lasting-hours = { $hours ->
 invite-for-anyone = For anyone with the link
 invite-for-person = For { $name }
 invite-for-someone = For a person this workspace knows
-invite-person-unnamed = Someone without a name yet
 invite-pending-title = Links that still work
 invite-revoke = Take back
 invite-copied = Copied

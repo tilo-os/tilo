@@ -20,6 +20,7 @@ fn sealed(
         document_id,
         mut envelope,
         own,
+        readers,
     } = message
     else {
         panic!("a document write")
@@ -41,6 +42,7 @@ fn sealed(
         document_id,
         envelope,
         own,
+        readers,
     }
 }
 

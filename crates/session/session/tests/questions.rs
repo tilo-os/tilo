@@ -37,6 +37,7 @@ use tilo_portal::file_chooser::{
     FILE_CHOOSER_QUESTION, FileChooserQuestion, PickerFilter, file_uri,
 };
 use tilo_portal::screenshot::ScreenshotQuestion;
+use tilo_resource::Effect as _;
 use tilo_service::{Answer, Asked, Question, Questions, Service, Started, decode, offer};
 use tilo_session::{AppSocket, Options, Session};
 use tilo_sheets::SheetState as _;
@@ -1275,7 +1276,14 @@ fn not_now_leaves_an_agents_question_open_and_decline_declines_it() {
     assert_eq!(shown.defer_label.as_deref(), Some("Not now"));
     assert_eq!(shown.cancel_label, "Decline");
 
-    press(&mut session, PortalEffect::DEFER.id, json!({}));
+    press(
+        &mut session,
+        PortalEffect::Defer {
+            handle: String::new(),
+        }
+        .id(),
+        json!({}),
+    );
     pump(&mut session, |session| {
         !session
             .portal()

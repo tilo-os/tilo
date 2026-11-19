@@ -63,6 +63,10 @@ id = "clear-source"
 kind = "undoable"
 
 [[resources.verbs]]
+id = "status"
+kind = "read"
+
+[[resources.verbs]]
 id = "export-config"
 kind = "read"
 

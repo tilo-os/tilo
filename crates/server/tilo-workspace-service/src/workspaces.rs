@@ -69,7 +69,9 @@ pub(crate) use desktop_writes::writes_desktop;
 mod holding;
 pub(crate) use holding::{HostWorkspaceRequest, decode_hex, owners, work_takes};
 mod member;
-pub use member::MemberDevice;
+pub use member::{MemberDevice, MemberMaterial, MemberWrite};
+mod run_admission;
+pub use run_admission::{Refusal, SessionAdmission};
 mod host_invitations;
 mod hosts;
 mod link_follow;
@@ -872,6 +874,9 @@ pub(crate) struct WorkspaceServices {
     /// embedder runs one: the host seals and opens the records of the
     /// workspaces it governs with its keys and admits nobody.
     pub(crate) channels: Option<DeviceKeyGroups>,
+    /// The device this embedder's member copies act as, when it keeps any:
+    /// what the copies kept from an earlier run sync as, from the open on.
+    pub(crate) member: Option<Arc<member::MemberDevice>>,
 }
 
 impl WorkspaceServices {
@@ -910,6 +915,10 @@ struct WorkspacesInner {
     direct: tilo_peer_state::direct::Serving,
     /// The member copies this device holds ([`member`]).
     member: member::Members,
+    /// The runs admitted to this service's workspaces, whose calls are
+    /// checked against the material each was admitted under
+    /// ([`run_admission`]).
+    executions: Arc<run_admission::ExecutionPins>,
     /// Room for the frames a workspace's link heard and its reader did not
     /// read yet, when a test bounds it ([`Workspaces::bound_link_readers`]);
     /// `0` keeps the link's own.
@@ -1183,6 +1192,7 @@ impl Workspaces {
                 store: Arc::new(store),
                 direct: tilo_peer_state::direct::Serving::new(),
                 member: member::Members::default(),
+                executions: Arc::new(run_admission::ExecutionPins::new()),
                 dir: dir.clone(),
                 action_service,
                 jobs,
@@ -1232,6 +1242,9 @@ impl Workspaces {
                 own_address: std::sync::OnceLock::new(),
             }),
         };
+        if let Some(device) = this.inner.host.member.clone() {
+            this.inner.member.set_device(device);
+        }
         let workspaces = Box::pin(this.open_kept(&dir)).await?;
         *this.inner.workspaces.lock().await = workspaces;
         this.serve_kept(this.served_kept().await).await?;

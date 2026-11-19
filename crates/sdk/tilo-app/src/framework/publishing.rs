@@ -32,6 +32,8 @@ type Statuses = Rc<dyn Fn() -> Vec<EffectStatus>>;
 type RowStatus = Rc<dyn Fn(&str) -> Vec<EffectStatus>>;
 /// How an item of a collection stands, by the collection and the item's id.
 type ItemPresentation = Rc<dyn Fn(&str, &str) -> Option<tilo_actions::ResourcePresentation>>;
+/// The reads one item answers, by the collection and the item's id.
+type ItemReads = Rc<dyn Fn(&str, &str) -> Vec<tilo_actions::ActionSpec>>;
 type Intents = Rc<RefCell<dyn FnMut() -> Option<AppProcessIntent>>>;
 type Entries = Rc<dyn Fn() -> Vec<SearchEntry>>;
 type Unlocked = Rc<dyn Fn() -> Option<bool>>;
@@ -57,6 +59,7 @@ struct Sources {
     availability: Option<Statuses>,
     row_status: Option<RowStatus>,
     item_presentation: Option<ItemPresentation>,
+    item_reads: Option<ItemReads>,
     entries: Option<Entries>,
     /// Whether the system's search index forgets the entries once the app
     /// closes.
@@ -165,6 +168,22 @@ impl<R: Resource> Publishes<R> {
         presentation: impl Fn(&str, &str) -> Option<tilo_actions::ResourcePresentation> + 'static,
     ) -> Self {
         self.sources.item_presentation = Some(Rc::new(presentation));
+        self
+    }
+
+    /// The reads the item `id` of the collection `field` answers from its
+    /// committed state: an app's registered reader ([`read_action`]) of a
+    /// report's receipt, a launch replaying what a message carried. Read for
+    /// every published item child and published beside its effects, so a
+    /// caller reaches the projection the app registered.
+    ///
+    /// [`read_action`]: ui_core::semantic_document_read::read_action
+    #[must_use]
+    pub fn item_reads(
+        mut self,
+        reads: impl Fn(&str, &str) -> Vec<tilo_actions::ActionSpec> + 'static,
+    ) -> Self {
+        self.sources.item_reads = Some(Rc::new(reads));
         self
     }
 
@@ -350,6 +369,12 @@ impl SurfacePublication for Publishing {
             .item_presentation
             .as_ref()
             .and_then(|presentation| presentation(field, id))
+    }
+    fn item_reads(&self, field: &str, id: &str) -> Vec<tilo_actions::ActionSpec> {
+        self.sources
+            .item_reads
+            .as_ref()
+            .map_or_else(Vec::new, |reads| reads(field, id))
     }
     fn live_rows(&self) -> Vec<LiveRow> {
         self.sources

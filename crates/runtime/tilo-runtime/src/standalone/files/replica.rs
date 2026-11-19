@@ -182,17 +182,17 @@ pub(in crate::standalone) struct ReplicaHost {
 pub(in crate::standalone) struct Replicas {
     host: ReplicaHost,
     held: Mutex<BTreeMap<String, ReplicaFiles>>,
-    joined: std::sync::Weak<super::super::joined::Joined>,
+    workspaces: std::sync::Weak<super::super::service::ServiceWorkspaces>,
 }
 
 impl Replicas {
     pub(in crate::standalone) fn new(
         host: ReplicaHost,
-        joined: std::sync::Weak<super::super::joined::Joined>,
+        workspaces: std::sync::Weak<super::super::service::ServiceWorkspaces>,
     ) -> Self {
         Self {
             host,
-            joined,
+            workspaces,
             held: Mutex::default(),
         }
     }
@@ -228,11 +228,11 @@ impl Replicas {
         let credentials = (self.host.credentials)(workspace)?;
         let id = collab_types::WorkspaceId::parse(workspace)
             .ok_or_else(|| io::Error::other("invalid Files workspace"))?;
-        let joined = self.joined.clone();
+        let workspaces = self.workspaces.clone();
         let admission = tilo_fs::admission::FileAdmission::new(
             &hex::encode(credentials.user_public_key()),
             Box::new(move || {
-                joined
+                workspaces
                     .upgrade()?
                     .workspace(id)
                     .map(|workspace| workspace.policy)

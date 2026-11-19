@@ -104,6 +104,7 @@ fn device_with(
         None,
         Vec::new(),
         None,
+        tilo_workspace_service::service::ServiceSlot::default(),
     )
     .expect("a loopback endpoint binds");
     // The fabric names a device by the key its session proves.

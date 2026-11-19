@@ -62,6 +62,10 @@ pub(crate) struct Adding {
     /// what tells the person of each once.
     machines: RefCell<Vec<crate::enrollment::Waiting>>,
     told: RefCell<std::collections::BTreeSet<String>>,
+    /// The question put to the person for each machine still waiting, by ask:
+    /// the sheet's own resource for the same ask, which an agent answers
+    /// through the question actions.
+    parked: RefCell<std::collections::BTreeMap<String, tilo_service::Asked>>,
 }
 
 impl Adding {
@@ -74,6 +78,7 @@ impl Adding {
             waiting: RefCell::default(),
             machines: RefCell::default(),
             told: RefCell::default(),
+            parked: RefCell::default(),
         }
     }
 
@@ -163,6 +168,37 @@ impl Adding {
     /// already.
     pub(crate) fn note_told(&self, ask: &str) -> bool {
         self.told.borrow_mut().insert(ask.to_owned())
+    }
+
+    /// Whether the machine whose ask this is already has its question up.
+    fn parked(&self, ask: &str) -> bool {
+        self.parked.borrow().contains_key(ask)
+    }
+
+    /// Put the machine's ask on the question sheet under `asked`.
+    pub(crate) fn park(&self, ask: String, asked: tilo_service::Asked) {
+        self.parked.borrow_mut().insert(ask, asked);
+    }
+
+    /// The answers the person gave on the question sheet since the last pass,
+    /// by ask: `None` is the question's cancel.
+    pub(crate) fn answers(&self) -> Vec<(String, Option<tilo_service::Answer>)> {
+        let now = tilo_clock::now();
+        let mut parked = self.parked.borrow_mut();
+        let mut resolved = Vec::new();
+        parked.retain(|ask, asked| match asked.until(Some(now)) {
+            Some(answer) => {
+                resolved.push((ask.clone(), answer));
+                false
+            }
+            None => true,
+        });
+        resolved
+    }
+
+    /// Withdraw the question for a machine whose ask went.
+    pub(crate) fn forget(&self, ask: &str) {
+        self.parked.borrow_mut().remove(ask);
     }
 
     /// The asks the person was told of and that no longer wait.
@@ -261,19 +297,34 @@ impl crate::Shared {
 
     /// Put each machine that asks to join to the person once, and take back the asks that are
     /// gone: what the person's store holds is what every one of their devices shows, and an ask
-    /// any of them answered leaves them all at once.
+    /// any of them answered leaves them all at once. Each ask is also a question resource while it
+    /// waits, so an agent answers the machine through the same sheet as a person does.
     pub(crate) fn follow_enrolling(&self) {
         let Some(personal) = self.sync.as_ref().and_then(|sync| sync.personal()) else {
             return;
         };
         let held = crate::enrollment::held(personal.sync());
         self.adding.holding(held.waiting.clone());
+        if let Some(questions) = self.asker.questions() {
+            for machine in &held.waiting {
+                if !self.adding.parked(&machine.ask) {
+                    self.adding.park(
+                        machine.ask.clone(),
+                        questions.ask(crate::enrollment::question(machine)),
+                    );
+                }
+            }
+        }
+        for (ask, answer) in self.adding.answers() {
+            self.answer_enrolling(&ask, crate::enrollment::admits(answer.as_ref()));
+        }
         for machine in &held.waiting {
             if self.adding.note_told(&machine.ask) {
                 self.telling().show(&crate::enrollment::notice(machine));
             }
         }
         for ask in self.adding.gone(&held.waiting) {
+            self.adding.forget(&ask);
             self.telling().withdraw(&crate::enrollment::tag(&ask));
         }
     }
@@ -656,7 +707,7 @@ mod tests {
             crate::enrollment::enter(
                 personal.sync(),
                 &tilo_enrollment::waiting::WaitingMachine {
-                    ask: ask.clone(),
+                    ask,
                     device: machine.clone(),
                     service: "ef".repeat(32),
                     label: "cupboard".into(),
@@ -668,7 +719,23 @@ mod tests {
             )
             .expect("the ask is kept in the person's store");
         }
-        session.shared.answer_enrolling(&ask, true);
+        // The person answers the machine through the same question surface an
+        // agent uses: the ask is a question while it waits, and answering it
+        // approves the machine.
+        session.shared.follow_enrolling();
+        let questions = session
+            .shared
+            .asker
+            .questions()
+            .expect("the session publishes the questions it asks");
+        let question = questions
+            .pending()
+            .into_iter()
+            .find(|question| question.kind == crate::enrollment::KIND)
+            .expect("the machine asking to join is a question");
+        assert_eq!(question.label, "cupboard");
+        assert!(questions.answer(&question.handle, tilo_service::Answer::default()));
+        session.shared.follow_enrolling();
 
         // The entry is the machine's under its device key once the session
         // carried the approval out: the plan's own id names the entry before

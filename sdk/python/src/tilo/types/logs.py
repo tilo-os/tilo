@@ -33,7 +33,7 @@ ClearFiltersArgs = TypedDict("ClearFiltersArgs", {
 
 class Journal(Resource):
     """System journal — `logs.journal`."""
-    __surface__ = "so.tilo.logs@5fbf12a8376ab29b"
+    __surface__ = "so.tilo.logs@2428af2372c28388"
     severity: Priority
     unit: str
     boot: str
@@ -58,8 +58,12 @@ class Journal(Resource):
             args["enabled"] = enabled
         return self.action("set-live-tail", **args)
 
+    def select_entry(self, *, entry_id: str) -> None:
+        """Runs the app's action."""
+        return self.action("select-entry", entry_id=entry_id)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"clear_filters", "clear_filters_many", "set_live_tail"})
+    __actions__ = frozenset({"clear_filters", "clear_filters_many", "set_live_tail", "select_entry"})
 
 

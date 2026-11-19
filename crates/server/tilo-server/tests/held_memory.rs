@@ -30,6 +30,7 @@ fn app_document_checkpoint(size: usize) -> Vec<u8> {
         document_id: "note-1".into(),
         envelope: Box::new(op),
         own: None,
+        readers: None,
     })
     .unwrap();
     tilo_server::CoeditPayload::Checkpoint {

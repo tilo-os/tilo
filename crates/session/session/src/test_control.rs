@@ -2005,7 +2005,18 @@ fn actions_invoke(request: &Json, actions: &Actions, ctx: &Context) -> Json {
     let receipt = match started.wait_timeout(HOST_WAIT) {
         Ok(Some(Ok(receipt))) => receipt,
         Ok(Some(Err(error))) => return action_refusal(&error),
-        Ok(None) | Err(_) => return refusal("unavailable", "the action did not start"),
+        // The wait is the action's answer, not its start: nothing here says the action never
+        // began, and the number follows where it got to.
+        Ok(None) | Err(_) => {
+            let number = actions.remember(invocation);
+            return refusal(
+                "unavailable",
+                &format!(
+                    "the action has not answered and may still run; follow it with \
+                     `actions_status` {number}"
+                ),
+            );
+        }
     };
     receipt_answer(
         actions,

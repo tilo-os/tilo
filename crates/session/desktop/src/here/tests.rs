@@ -119,7 +119,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             here.person("cy-root").map(|(name, _)| name),
-            Some(guest_label())
+            Some(unnamed_person_label())
         );
         assert_eq!(here.person("someone-who-left"), None);
     }

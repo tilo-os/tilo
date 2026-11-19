@@ -134,6 +134,14 @@ kind = "read"
 id = "history-live"
 kind = "read"
 
+[[resources.verbs]]
+id = "open-link"
+destructive = true
+kind = "read"
+params = [
+  { name = "url", type = "text", required = true },
+]
+
 [[resources.types]]
 name = "Command"
 fields = [

@@ -404,6 +404,10 @@ pub struct Hosted {
     /// what it dials the hosts of its workspaces from. `None` when the
     /// session runs none.
     pub endpoint: Option<std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>>,
+    /// The resources of the workspaces this device's own service holds, as the broker reads them.
+    pub documents: crate::broker_services::BrokerService<
+        std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>,
+    >,
     /// The content the workspaces' records reference: where an app keeps
     /// what its record names, and the route an app asks the workspace's other
     /// devices for what it lacks.
@@ -1107,6 +1111,7 @@ fn broker_services(
         own_device,
         engine,
         endpoint: _,
+        documents,
         document_content,
         action_offload,
         journal_root,
@@ -1176,7 +1181,7 @@ fn broker_services(
         // This device's own copy of each workspace's records: an app's Open of a record the
         // workspace holds, and an agent's task read, are answered from it, sealed writes opened
         // with the record channel's keys.
-        committed_documents: crate::broker_services::document_reads(engine.as_ref()),
+        committed_documents: documents,
         // A call an app joins is this session's: the channel it is in, who
         // else is there, and what the app hears of it until it leaves.
         native_media: BrokerService::when(native_media.map(|media| {
@@ -1766,6 +1771,9 @@ mod tests {
             item_lending: std::sync::Arc::default(),
             fanout: std::sync::Arc::new(FanoutState::new()),
             endpoint: None,
+            documents: crate::broker_services::document_reads(
+                tilo_workspace_service::service::ServiceSlot::default(),
+            ),
         }
     }
 
@@ -1908,14 +1916,15 @@ mod tests {
             );
         }
 
-        phase a_session_that_holds_workspaces_reads_a_record_outside_its_app;
-        // A session that holds workspaces reads an app's record outside the app, from this device's
-        // own copy; one that holds none reads only on the app's own channel.
+        phase a_session_serves_the_resources_of_its_own_workspace_service;
+        // A session reads an app's resource outside the app from this device's own workspace
+        // service: what that service holds answers. A service that holds no workspace (and a
+        // session serving none at all) leaves every resource where the app keeps it.
         {
             let wake: Wake = std::sync::Arc::new(|| ());
-            let services = |engine| {
+            let reads = |service: tilo_workspace_service::service::ServiceSlot| {
                 let mut hosted = hosted(None);
-                hosted.engine = engine;
+                hosted.documents = crate::broker_services::document_reads(service);
                 host_services(
                     Link::new(std::sync::Arc::clone(&wake)),
                     std::sync::Arc::new(Launches::default()),
@@ -1925,25 +1934,17 @@ mod tests {
                     None,
                 )
                 .committed_documents
-                .is_some()
+                .expect("the session serves the resources of its own workspaces")
             };
-            assert!(
-                !services(None),
-                "a session that holds no workspace reads a record only on the app's own channel"
-            );
-            let state = tempfile::tempdir().expect("a state directory");
-            let engine = std::sync::Arc::new(
-                crate::engine::Engine::open(
-                    held_identity(),
-                    Some(state.path()),
-                    std::iter::empty(),
-                    crate::platform::membership_check::of_this_session(),
-                )
-                .expect("this device's engine opens"),
-            );
-            assert!(
-                services(Some(engine)),
-                "this device's copy of the workspace's records is what an app's Open reads"
+            let elsewhere = tilo_desktop_model::WorkspaceId::new().to_string();
+            assert_eq!(
+                reads(tilo_workspace_service::service::ServiceSlot::default()).resource_read(
+                    &elsewhere,
+                    ui::apps::NOTES,
+                    "note-1"
+                ),
+                tilo_workspace_service::apps::services::ResourceRead::Own,
+                "a session whose service holds no workspace reads a resource only where the app keeps it"
             );
         }
 
@@ -2201,17 +2202,6 @@ mod tests {
                 "`{service}` is served now: take it off the list of services still to serve"
             );
         }
-    }
-
-    /// A device of a person, certified for their root, that holds workspaces.
-    fn held_identity() -> tilo_identity::identity_store::DeviceIdentity {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[0x34; 32]);
-        let cert = tilo_peer_state::owner::testing::member_certificate(
-            &ed25519_dalek::SigningKey::from_bytes(&[0x33; 32]),
-            &key,
-            "Laptop",
-        );
-        tilo_identity::identity_store::DeviceIdentity::kept(cert, key)
     }
 
     /// Every service the broker offers is decided here: served, served where

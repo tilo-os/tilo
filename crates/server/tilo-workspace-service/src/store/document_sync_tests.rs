@@ -18,6 +18,7 @@ fn route(record: &str) -> Route {
         cluster_id: "7".to_owned(),
         document_id: record.to_owned(),
         own: None,
+        readers: None,
     }
 }
 
@@ -108,4 +109,48 @@ fn a_part_the_store_has_not_read_is_still_found_as_the_chain_head() {
         Some(channel(&part(1))),
         "the newest part is the head, whether or not a read saw the directory change"
     );
+}
+
+#[test]
+fn a_document_a_set_of_people_reads_reaches_only_their_devices() {
+    let (reader, other) = ([1; 32], [2; 32]);
+    let readers = collab_types::Readers::people([reader])
+        .expect("one person")
+        .text();
+    let named = collab_types::reader_set_name(&readers);
+    let document = format!("{named}/so.tilo.notes.note/n1~0");
+    let mut classes = Classes::default();
+    classes.learn(
+        channel(&document),
+        &Route {
+            readers: Some(readers),
+            ..route(&document)
+        },
+    );
+    assert!(classes.reaches(&channel(&document), &reader));
+    assert!(
+        !classes.reaches(&channel(&document), &other),
+        "a member outside the set is sent nothing of it"
+    );
+
+    // A frame naming a set other than the one its id's digest names widens
+    // nothing: the document then reaches no one.
+    let claimed = format!("{named}/so.tilo.notes.note/n2~0");
+    let wider = collab_types::Readers::people([reader, other])
+        .expect("two people")
+        .text();
+    classes.learn(
+        channel(&claimed),
+        &Route {
+            readers: Some(wider),
+            ..route(&claimed)
+        },
+    );
+    assert!(!classes.reaches(&channel(&claimed), &reader));
+    assert!(!classes.reaches(&channel(&claimed), &other));
+
+    // Every member reads a `*` document.
+    let shared = "*/so.tilo.notes.note/n3~0";
+    classes.learn(channel(shared), &route(shared));
+    assert!(classes.reaches(&channel(shared), &other));
 }

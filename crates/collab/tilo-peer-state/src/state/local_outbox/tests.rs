@@ -95,6 +95,7 @@ fn local_edit(
         document_id: "tab:1".into(),
         envelope: Box::new(envelope),
         own: None,
+        readers: None,
     }
 }
 fn checkpoint(

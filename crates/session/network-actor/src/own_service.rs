@@ -29,8 +29,8 @@ use workspace_service::{ServiceSlot, WorkspaceService};
 pub struct OwnService(Arc<Inner>);
 
 struct Inner {
-    slot: ServiceSlot,
-    host: Mutex<Option<Arc<WorkspaceService>>>,
+    service: ServiceSlot,
+    installed: Mutex<Option<Arc<WorkspaceService>>>,
 }
 
 impl std::fmt::Debug for OwnService {
@@ -46,11 +46,26 @@ impl OwnService {
     /// is, for the router.
     #[must_use]
     pub fn deferred() -> (Self, Protocols) {
-        let (slot, protocols) = workspace_service::deferred_protocols();
+        let (service, protocols) = workspace_service::deferred_protocols();
         (
             Self(Arc::new(Inner {
-                slot,
-                host: Mutex::new(None),
+                service,
+                installed: Mutex::new(None),
+            })),
+            protocols,
+        )
+    }
+
+    /// [`Self::deferred`] over a [`workspace_service::ServiceSlot`] the caller
+    /// already holds: the service this serves is found there too, without the
+    /// caller having to reach this handle's thread.
+    #[must_use]
+    pub fn deferred_in(service: workspace_service::ServiceSlot) -> (Self, Protocols) {
+        let protocols = workspace_service::deferred_protocols_in(&service);
+        (
+            Self(Arc::new(Inner {
+                service,
+                installed: Mutex::new(None),
             })),
             protocols,
         )
@@ -60,7 +75,7 @@ impl OwnService {
     #[must_use]
     pub fn get(&self) -> Option<Arc<WorkspaceService>> {
         self.0
-            .host
+            .installed
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -85,13 +100,17 @@ impl OwnService {
     /// Serve `host` from now on: its protocols answer on the router, and
     /// the native owner reaches its workspaces through it. A host already
     /// installed stays; the one answered is the host in use.
-    pub fn install(&self, host: Arc<WorkspaceService>) -> Arc<WorkspaceService> {
-        let mut installed = self.0.host.lock().unwrap_or_else(PoisonError::into_inner);
+    pub fn install(&self, service: Arc<WorkspaceService>) -> Arc<WorkspaceService> {
+        let mut installed = self
+            .0
+            .installed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         if let Some(current) = installed.as_ref() {
             return Arc::clone(current);
         }
-        self.0.slot.install(Arc::clone(&host));
-        *installed = Some(Arc::clone(&host));
-        host
+        self.0.service.install(Arc::clone(&service));
+        *installed = Some(Arc::clone(&service));
+        service
     }
 }

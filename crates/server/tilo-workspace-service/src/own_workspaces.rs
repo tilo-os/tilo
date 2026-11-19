@@ -69,24 +69,41 @@ impl WorkspaceService {
     ///
     /// # Errors
     /// The host refused to create or enter the workspace, or made another workspace.
+    /// Hold `workspace`, a workspace called `name`, on this host for `caller`,
+    /// a device of the host's own person: the host creates the workspace
+    /// unless it holds it already. The embedder writes into it through the
+    /// host, never into a replica of its own
+    /// ([`crate::workspaces::Workspaces::commit_own_document`]).
+    ///
+    /// # Errors
+    /// The host refused to create the workspace, or made another workspace.
+    pub async fn hold_own_workspace(
+        &self,
+        workspace: &str,
+        name: &str,
+        caller: &DeviceCert,
+    ) -> Result<(), String> {
+        if self.workspaces().summary(workspace).await.is_ok() {
+            return Ok(());
+        }
+        let mut arguments = Map::new();
+        arguments.insert("name".into(), name.into());
+        arguments.insert("workspace".into(), workspace.into());
+        let created: CreatedWorkspace =
+            answer(self.ask_own(caller, CREATE_WORKSPACE, arguments).await?)?;
+        if created.workspace.workspace != workspace {
+            return Err("this device's host made another workspace than the workspace's".into());
+        }
+        Ok(())
+    }
+
     pub async fn place_own_workspace(
         &self,
         workspace: &str,
         name: &str,
         caller: &DeviceCert,
     ) -> Result<String, String> {
-        if self.workspaces().summary(workspace).await.is_err() {
-            let mut arguments = Map::new();
-            arguments.insert("name".into(), name.into());
-            arguments.insert("workspace".into(), workspace.into());
-            let created: CreatedWorkspace =
-                answer(self.ask_own(caller, CREATE_WORKSPACE, arguments).await?)?;
-            if created.workspace.workspace != workspace {
-                return Err(
-                    "this device's host made another workspace than the workspace's".into(),
-                );
-            }
-        }
+        self.hold_own_workspace(workspace, name, caller).await?;
         let mut arguments = Map::new();
         arguments.insert("workspace".into(), workspace.into());
         arguments.insert("expires_in_seconds".into(), OWN_INVITATION_SECONDS.into());

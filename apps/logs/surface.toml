@@ -28,6 +28,13 @@ params = [
   { name = "enabled", type = { option = "bool" }, required = false },
 ]
 
+[[resources.verbs]]
+id = "select-entry"
+kind = "read"
+params = [
+  { name = "entry_id", type = "text", required = true },
+]
+
 [[resources.types]]
 name = "Priority"
 cases = [

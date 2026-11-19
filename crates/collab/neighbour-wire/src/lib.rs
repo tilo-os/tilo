@@ -562,6 +562,12 @@ pub enum NeighbourMsg {
         /// person's devices are sent it, and only they write it. In the clear
         /// for a sealed record too, so a host that cannot read it routes it.
         own: Option<collab_types::OwnResource>,
+        /// The reader set of the resource store's document this writes, as
+        /// [`collab_types::Readers`] writes it: only its people's devices are
+        /// sent it. In the clear, so a server that cannot read the document, nor
+        /// tell the set from the digest its id carries, routes it. `None` for
+        /// an app's own document, which every member reads.
+        readers: Option<String>,
     },
     /// Cooperative scrollback request, published on the workspace when a peer's
     /// local broker has no in-memory scrollback for a range an app asked for.
@@ -1291,6 +1297,7 @@ mod tests {
                         kind: "notes.page".into(),
                         owner: [7; 32],
                     }),
+                    readers: None,
                 },
             ),
             (

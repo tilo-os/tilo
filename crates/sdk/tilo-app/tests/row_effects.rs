@@ -766,3 +766,34 @@ fn a_row_specializes_a_declared_effect_only_it_can_shape() {
         }
     );
 }
+
+/// What a row's status says of an effect is what a caller of that row meets:
+/// the effect the status makes unavailable is refused with its reason, while
+/// the same effect on another row is invoked.
+#[test]
+fn a_row_status_refuses_what_a_caller_invokes_there() {
+    let mut app = TestApp::<RowPublishingApp>::new().unwrap();
+    let stop = |job: &str| JobEffect::Stop {
+        job: job.into(),
+        force: None,
+    };
+    let busy = app
+        .effect_on("job:3:step", &stop("job:3:step"))
+        .unwrap_err();
+    assert!(
+        matches!(
+            &busy,
+            tilo_actions::ApiError::Unavailable { code, reason }
+                if code == "busy" && reason == "This job is busy and cannot be stopped now"
+        ),
+        "{busy}"
+    );
+    let phrased = app.effect_on("job:2", &stop("job:2")).unwrap_err();
+    assert!(
+        matches!(phrased, tilo_actions::ApiError::ConfirmationRequired),
+        "the status asks the phrase its caller types: {phrased}"
+    );
+    app.effect_on("job:1", &stop("job:1"))
+        .expect("the idle job is stopped");
+    RAN.with(|ran| assert_eq!(ran.borrow().as_slice(), [stop("job:1")]));
+}

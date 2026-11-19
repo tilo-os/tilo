@@ -1,0 +1,10 @@
+# The desktop's start module now carries the resource model and the collaboration
+# state the page renders a workspace's shared documents through: tilo-desktop-model's
+# shared_resource, tilo-resource's table, the collaboration resource layer, the
+# peer state that holds them and the action policy that judges a member's write.
+# That code is the shared desktop document the page opens first, not an app's, so
+# the splitter cannot defer it to an app's module.
+reason = "the page's start module carries the resource model and the collaboration state the shared desktop document is read and written through, which the desktop opens first; a follow-up should load the peer state and the action policy on first use"
+run = "rd69a89520c"
+measured = 19571658
+bytes = 2228224

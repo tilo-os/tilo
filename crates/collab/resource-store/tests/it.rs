@@ -1250,14 +1250,3 @@ mod store {
         let _ = notes;
     }
 }
-
-#[test]
-fn a_store_document_is_told_from_an_apps_own_document_by_its_name() {
-    use tilo_resource_store::is_store_document;
-    assert!(is_store_document("*/tasks.issue#0"));
-    assert!(is_store_document("0123456789abcdef/board-7#12"));
-    assert!(is_store_document("*/tasks.issue/i-1~0"));
-    assert!(!is_store_document("derived:default@tab:0"));
-    assert!(!is_store_document("notes/archive"));
-    assert!(!is_store_document("*/tasks.issue"));
-}

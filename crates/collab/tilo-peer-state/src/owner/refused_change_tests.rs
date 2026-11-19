@@ -46,6 +46,7 @@ async fn a_device_that_may_not_write_refuses_its_own_change_and_files_why() {
                     document: String::new(),
                     envelope: Box::new(envelope),
                     own: None,
+                    readers: None,
                 },
             },
             change.unwrap().0,

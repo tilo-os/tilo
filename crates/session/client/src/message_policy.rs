@@ -251,6 +251,7 @@ mod tests {
                     document_id: "notes".into(),
                     envelope: envelope(),
                     own: None,
+                    readers: None,
                 },
                 Some(comment()),
             ),

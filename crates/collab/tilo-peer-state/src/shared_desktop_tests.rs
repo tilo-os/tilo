@@ -207,6 +207,7 @@ fn write_of(
         document_id: record.into(),
         envelope: Box::new(envelope),
         own: None,
+        readers: None,
     }
 }
 

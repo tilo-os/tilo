@@ -255,7 +255,7 @@ impl WorkspaceCard {
 /// named them. Never the id itself: nobody is shown their key.
 fn display_name(id: &UserId, ws: &Workspace) -> String {
     ws.person_name(id)
-        .map_or_else(ui::presence::guest_label, str::to_owned)
+        .map_or_else(ui::presence::unnamed_person_label, str::to_owned)
 }
 
 /// `holder` as a share row shows them: their face's id and the name they go by.
@@ -791,8 +791,8 @@ mod workspace_tests {
             assert_eq!(card.shares[0].with.len(), 1);
             assert_eq!(card.shares[0].with[0].id, "ada");
             assert_eq!(
-                card.shares[0].with[0].name, "Guest",
-                "a person the workspace has not named reads as a guest, never their key"
+                card.shares[0].with[0].name, "Someone without a name yet",
+                "a person the workspace has not named reads as such, never by their key"
             );
             assert_eq!(
                 workspace_shares_label(card).as_deref(),
@@ -908,8 +908,8 @@ mod workspace_tests {
             let card = &workspace_cards(&tree)[0];
             assert_eq!(
                 workspace_access_label(card),
-                "Shared with Guest and 3 others",
-                "a member nobody named is a guest, never their key"
+                "Shared with Someone without a name yet and 3 others",
+                "a member nobody named is someone without a name yet, never their key"
             );
         }
 
@@ -979,7 +979,7 @@ mod workspace_tests {
             let names: Vec<&str> = card.others().map(|person| person.name.as_str()).collect();
             assert_eq!(
                 names,
-                ["Ada Lovelace", "Guest"],
+                ["Ada Lovelace", "Someone without a name yet"],
                 "someone who named themselves is never a guest; only someone nobody named is"
             );
         }

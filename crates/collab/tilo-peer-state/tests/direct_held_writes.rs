@@ -124,6 +124,7 @@ fn sealed(key: &SigningKey) -> NeighbourMsg {
         document_id: RECORD.into(),
         envelope: Box::new(op),
         own: None,
+        readers: None,
     }
 }
 

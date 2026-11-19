@@ -41,6 +41,13 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "deny-access"
+kind = "read"
+params = [
+  { name = "proposal", type = "text", required = true },
+]
+
+[[resources.verbs]]
 id = "add"
 kind = "read"
 
@@ -51,6 +58,13 @@ kind = "read"
 [[resources.verbs]]
 id = "cancel"
 kind = "read"
+
+[[resources.verbs]]
+id = "copy"
+kind = "read"
+params = [
+  { name = "item", type = "text", required = true },
+]
 
 [[resources.verbs]]
 id = "copy-identity"
@@ -69,6 +83,13 @@ params = [
 [[resources.verbs]]
 id = "open-workspace-vault"
 kind = "read"
+
+[[resources.verbs]]
+id = "reveal"
+kind = "read"
+params = [
+  { name = "item", type = "text", required = true },
+]
 
 [[resources.verbs]]
 id = "filter"

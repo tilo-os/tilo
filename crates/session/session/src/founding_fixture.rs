@@ -16,6 +16,7 @@ use crate::engine::{Engine, Founder, ServiceAnswer};
 pub(crate) fn serve(engine: &Arc<Engine>) {
     crate::sync::serve_alone(
         engine,
+        tilo_workspace_service::service::ServiceSlot::default(),
         Some(DeviceKeyGroups {
             keys: Arc::new(TestGroupKeys::default()),
             sink: None,

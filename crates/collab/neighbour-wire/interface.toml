@@ -496,6 +496,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "NeighbourMsg::AppDocument.envelope" = "#4 Box<SignedOp>"
 "NeighbourMsg::AppDocument.own" = "#5 Option<OwnResource>"
 "NeighbourMsg::AppDocument.peer" = "#0 PeerId"
+"NeighbourMsg::AppDocument.readers" = "#6 Option<String>"
 "NeighbourMsg::DocumentContentLacks" = "#24 struct"
 "NeighbourMsg::DocumentContentLacks.app_id" = "#2 String"
 "NeighbourMsg::DocumentContentLacks.cluster_id" = "#3 String"

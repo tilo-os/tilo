@@ -115,6 +115,7 @@ impl Writer {
             document_id: doc.into(),
             envelope: Box::new(envelope),
             own: None,
+            readers: None,
         })
         .unwrap()
     }
@@ -150,7 +151,7 @@ async fn a_members_resource_writes_are_queryable_on_the_governor_and_after_a_res
         (write.app.as_str(), write.workspace.as_str()),
         (APP, workspace.as_str())
     );
-    assert!(tilo_resource_store::is_store_document(&write.record));
+    assert!(collab_types::is_store_document(&write.record));
     assert_eq!(
         title(&workspaces, &workspace, "i-1").await,
         Some(Value::Text("First".into())),

@@ -307,13 +307,15 @@ impl Workspace for PageWorkspace {
                 name: here
                     .person(&member)
                     .map(|(name, _)| name)
-                    .filter(|name| !name.is_empty() && *name != tilo_desktop::here::guest_label())
+                    .filter(|name| {
+                        !name.is_empty() && *name != tilo_desktop::here::unnamed_person_label()
+                    })
                     .or_else(|| {
                         here.profile_name(&member)
                             .filter(|name| !name.is_empty())
                             .map(str::to_owned)
                     })
-                    .unwrap_or_else(sheet::unnamed_person),
+                    .unwrap_or_else(ui::presence::unnamed_person_label),
                 key: member,
             })
             .collect()

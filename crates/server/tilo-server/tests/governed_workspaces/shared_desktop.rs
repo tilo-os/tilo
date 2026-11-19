@@ -176,6 +176,7 @@ impl Page<'_> {
                     document_id: DESKTOP_DOCUMENT.into(),
                     envelope: Box::new(op),
                     own: None,
+                    readers: None,
                 }
             })
             .collect()

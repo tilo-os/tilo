@@ -89,7 +89,7 @@ ClearSourceArgs = TypedDict("ClearSourceArgs", {
 
 class Sources(Resource):
     """Image sources — `imager.sources`."""
-    __surface__ = "so.tilo.imager@06b639baa1648282"
+    __surface__ = "so.tilo.imager@c966cede61f39371"
     @property
     def source(self) -> Source | None:
         """Read only."""
@@ -116,6 +116,10 @@ class Sources(Resource):
         """Runs `clear-source` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("clear-source", items)
 
+    def status(self) -> None:
+        """Runs the app's action."""
+        return self.action("status")
+
     def export_config(self) -> None:
         """Runs the app's action."""
         return self.action("export-config")
@@ -130,6 +134,6 @@ class Sources(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"select_source", "select_source_many", "clear_source", "clear_source_many", "export_config", "rescan", "choose_drive"})
+    __actions__ = frozenset({"select_source", "select_source_many", "clear_source", "clear_source_many", "status", "export_config", "rescan", "choose_drive"})
 
 

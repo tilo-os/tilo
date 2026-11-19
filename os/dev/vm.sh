@@ -3,7 +3,7 @@
 # screenshots, pull logs, and shut down. Designed for machines where qemu lives
 # in a distrobox and the host is immutable (see os/dev/_common.sh for config).
 #
-#   ./os/dev/vm.sh boot [--gl|--vulkan] [--disk PATH] [--serial ID] [--tpm] [--secboot] [--attach PATH]
+#   ./os/dev/vm.sh boot [--gl|--vulkan] [--disk PATH] [--serial ID] [--tpm] [--secboot] [--attach PATH ...]
 #                       [--validation-sysext PATH]
 #                                              start the VM (detached); --serial gives
 #                                              the boot disk a stable hardware serial
@@ -140,7 +140,8 @@ start_vm() {
 }
 
 cmd_boot() {
-  local mode=2d disk="$TILO_DISK" attach="" disk_serial=""
+  local mode=2d disk="$TILO_DISK" disk_serial=""
+  local -a attaches=()
   local validation="${TILO_VM_VALIDATION_SYSEXT:-}"
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --vulkan) mode=vulkan;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
@@ -149,10 +150,10 @@ cmd_boot() {
     --serial) disk_serial="$2"; shift;;
     --tpm) TILO_TPM=1;; --no-tpm) TILO_TPM=0;;
     --secboot) TILO_SECBOOT=1;;
-    # Attach a SECOND virtio disk (/dev/vdb), creating it blank if absent. Lets a
-    # booted image install onto a fresh disk (encryption tests) without building
-    # the installer medium.
-    --attach) attach="$2"; shift;;
+    # Attach a second (or further) virtio disk, creating it blank if absent.
+    # The first is /dev/vdb, the install target with a serial a machine plan
+    # can name; later ones are extra data disks with their own serials.
+    --attach) attaches+=("$2"); shift;;
     # The release check's signed validation extension (os/dev/validation-access.sh),
     # read-only under the serial its unit in the disk copy's /etc binds to.
     --validation-sysext) validation="$2"; shift;;
@@ -160,9 +161,16 @@ cmd_boot() {
   [ -f "$disk" ] || die "disk not found: $disk (run os/dev/build-image.sh)"
   [[ "$disk_serial" =~ ^[A-Za-z0-9._-]{0,20}$ ]] || die "boot: --serial must be up to 20 of [A-Za-z0-9._-]"
   local disks=(--disk "$disk,format=qcow2,id=tilo-disk${disk_serial:+,serial=$disk_serial}")
-  if [ -n "$attach" ]; then
-    disks+=(--disk "$attach,format=qcow2,id=tilo-install-target,serial=tilo-install-target,create=$TILO_TARGET_SIZE")
-    msg "attaching $attach as /dev/vdb"
+  if [ "${#attaches[@]}" -gt 0 ]; then
+    local index=0 extra id serial
+    for extra in "${attaches[@]}"; do
+      if [ "$index" -eq 0 ]; then id=tilo-install-target; serial=tilo-install-target
+      else id="tilo-attach-$index"; serial="$id"; fi
+      disks+=(--disk "$extra,format=qcow2,id=$id,serial=$serial,create=$TILO_TARGET_SIZE")
+      if [ "$index" -eq 0 ]; then msg "attaching $extra as /dev/vdb"
+      else msg "attaching $extra as an extra disk"; fi
+      index=$((index + 1))
+    done
   fi
   if [ -n "$validation" ]; then
     [ -f "$validation" ] || die "validation extension not found: $validation"
@@ -524,6 +532,7 @@ GUEST_TESTS=(
   "os/tests/h264-boot-check.py h264-boot-check.py"
   "os/tests/input-hotplug-check.sh input-hotplug-check.sh"
   "os/tests/installed-admin-actions.sh installed-admin-actions.sh"
+  "os/tests/native_atspi_smoke.sh native-atspi-smoke.sh"
   "os/tests/projection-boot-check.sh projection-boot-check.sh"
   "os/tests/live-update-check.sh live-update-check.sh"
 )

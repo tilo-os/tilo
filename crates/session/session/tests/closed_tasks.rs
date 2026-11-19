@@ -22,7 +22,7 @@
 
 use std::time::Instant;
 
-use crate::common::people::{Device, Person, Site};
+use crate::common::people::{Device, Person, Site, join_together};
 use serde_json::{Value, json};
 use tilo_server_protocol::workspaces::Role;
 
@@ -181,9 +181,18 @@ fn an_agents_step_makes_an_issue_with_tasks_closed_and_the_persons_devices_read_
     // they open the app in it.
     let mut laptop = ada.device("Ada's laptop");
     let mut phone = ada.device("Ada's phone");
-    for device in [&mut laptop, &mut phone] {
+    for device in [&laptop, &phone] {
         device.install_tasks();
-        device.join(&site.admit(ada.public));
+    }
+    // The workspace's entry admits both, and neither joins through the other: both sessions boot
+    // before either is waited for.
+    let hers = site.admit(ada.public);
+    let her_phones = site.admit(ada.public);
+    join_together(
+        &mut [&mut laptop, &mut phone],
+        &[hers.as_str(), her_phones.as_str()],
+    );
+    for device in [&laptop, &phone] {
         device.wait_holding(&site.workspace);
         // The shell shows the workspace: what the API acts in.
         device.wait_showing(&site.workspace);

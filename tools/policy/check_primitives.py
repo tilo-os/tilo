@@ -381,6 +381,10 @@ def lower(root: Path, baseline_path: Path, files: list[str]) -> bool:
     """
     found = {}
     for file in files:
+        # The hook hands an empty argument when the staged sources end with a
+        # newline; it names no file.
+        if not file.strip():
+            continue
         path = root / file
         # A source a commit deletes has no counts: its allowance drops, as a
         # lowered one does.

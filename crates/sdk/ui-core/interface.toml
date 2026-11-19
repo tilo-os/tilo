@@ -752,6 +752,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "WorkGroup.id" = "String"
 "WorkGroup.kind" = "String"
 "WorkGroup.label" = "Option<String> optional"
+"WorkGroup.session" = "Option<String> optional"
 "WorkspaceSync" = "struct"
 "WorkspaceSync.cannot_keep_writes" = "bool optional"
 "WorkspaceSync.state" = "WorkspaceSyncState"

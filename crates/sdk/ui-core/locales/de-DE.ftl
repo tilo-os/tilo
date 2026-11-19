@@ -1261,3 +1261,4 @@ format-lifetime-session = Bis zur Abmeldung
 format-lifetime-until = Bis
 format-lifetime-until-at = Bis { $when }
 format-lifetime-always = Immer
+person-unnamed = Jemand ohne Namen

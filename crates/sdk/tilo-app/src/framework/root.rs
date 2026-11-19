@@ -430,6 +430,10 @@ struct RowBindings {
     /// How each top-level collection item stands now, by row id, where the
     /// view knows what its document does not hold.
     presentations: std::collections::HashMap<String, tilo_actions::ResourcePresentation>,
+    /// The reads each top-level collection item answers, by row id: the
+    /// app's registered readers of its committed state, a launch replaying
+    /// what it carries.
+    reads: std::collections::HashMap<String, Vec<tilo_actions::ActionSpec>>,
 }
 
 impl ResourceRoot {
@@ -761,12 +765,13 @@ impl ResourceRoot {
     /// of the view: the edits each row's views offer
     /// ([`Publishes::row_edits`](super::Publishes::row_edits)), and, where
     /// `items_of` names the collection's kind, the effects on each row
-    /// (`Publishes::row_status`) and how each item of that collection stands
-    /// (`Publishes::item_presentation`).
+    /// (`Publishes::row_status`), how each item of that collection stands
+    /// (`Publishes::item_presentation`) and the reads it answers
+    /// (`Publishes::item_reads`).
     ///
     /// One walk asks every surface about every row, so binding costs the view
     /// plus surfaces × rows, never the view once per row. Each row's edits,
-    /// statuses and presentations arrive in tree order of the surfaces
+    /// statuses, presentations and reads arrive in tree order of the surfaces
     /// offering them.
     #[inline(never)]
     fn row_bindings(&self, rows: &[ResourceSpec], items_of: Option<&str>) -> RowBindings {
@@ -782,6 +787,7 @@ impl ResourceRoot {
             offered: std::collections::HashMap::new(),
             statuses: std::collections::HashMap::new(),
             presentations: std::collections::HashMap::new(),
+            reads: std::collections::HashMap::new(),
         };
         if rows.is_empty() {
             return bindings;
@@ -831,11 +837,18 @@ impl ResourceRoot {
             }
             for (index, row) in rows.iter().enumerate() {
                 let id = row.id.as_str();
-                if let Some((field, item)) = items.get(index).and_then(Option::as_ref)
-                    && !bindings.presentations.contains_key(id)
-                    && let Some(presentation) = surface.item_presentation(field, item)
-                {
-                    bindings.presentations.insert(id.to_owned(), presentation);
+                if let Some((field, item)) = items.get(index).and_then(Option::as_ref) {
+                    if !bindings.presentations.contains_key(id)
+                        && let Some(presentation) = surface.item_presentation(field, item)
+                    {
+                        bindings.presentations.insert(id.to_owned(), presentation);
+                    }
+                    if !bindings.reads.contains_key(id) {
+                        let reads = surface.item_reads(field, item);
+                        if !reads.is_empty() {
+                            bindings.reads.insert(id.to_owned(), reads);
+                        }
+                    }
                 }
             }
         });
@@ -897,6 +910,13 @@ impl ResourceRoot {
             && presentation.is_valid()
         {
             row.presentation = Some(presentation);
+        }
+        if let Some(reads) = bindings.reads.remove(row.id.as_str()) {
+            for read in reads {
+                if !row.actions.iter().any(|known| known.id == read.id) {
+                    row.actions.push(read);
+                }
+            }
         }
     }
 

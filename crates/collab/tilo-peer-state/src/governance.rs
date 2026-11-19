@@ -246,7 +246,9 @@ fn bounded_display_name(value: &str) -> Option<&str> {
 /// own signed device certificate) wins; the issuer's `invitee_name` is only a
 /// fallback. A recipient-bound invitation names a known person, so the issuer's
 /// name wins there. Either way the value is bounded display text; roles and
-/// access come only from the receipt and capability rows.
+/// access come only from the receipt and capability rows. With neither, the
+/// person has no name yet: nothing is stored, and every surface says so in its
+/// own words rather than reading a made-up name as theirs.
 fn member_display_name<'a>(
     grant: &'a crate::join::InviteGrant,
     cert: &'a tilo_user_identity::DeviceCert,
@@ -258,7 +260,7 @@ fn member_display_name<'a>(
     } else {
         issued.or(chosen)
     };
-    preferred.unwrap_or("Guest")
+    preferred.unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -357,7 +359,7 @@ mod display_name_tests {
             let unnamed = cert("");
             assert_eq!(
                 member_display_name(&grant(None, Some(&"y".repeat(200))), &unnamed),
-                "Guest"
+                ""
             );
         }
 

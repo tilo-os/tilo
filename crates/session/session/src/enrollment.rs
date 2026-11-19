@@ -25,6 +25,7 @@ use tilo_peer_state::{
     DocumentMutation, ENROLLMENT_KIND, MachineRecovery, PersonalSync, machines,
     update_person_resource,
 };
+use tilo_service::{Answer, Question};
 
 use crate::i18n::{t, t_args};
 use crate::platform::notice::Notice;
@@ -345,6 +346,28 @@ pub(crate) fn approve_line(
 /// The tag the ask about `ask` is told and withdrawn under.
 pub(crate) fn tag(ask: &str) -> String {
     format!("enroll:{ask}")
+}
+
+/// The kind the session's question sheet reads a machine asking to join as.
+pub(crate) const KIND: &str = "network.machine-enrol";
+
+/// The question resource a machine's ask is published as while it waits: the
+/// same ask as its notice, so an agent answers it where it answers a disk
+/// unlock, through the question's own `answer` and `cancel` actions.
+pub(crate) fn question(machine: &Waiting) -> Question {
+    Question {
+        handle: format!("machine-enrol:{}", machine.ask),
+        kind: KIND.to_owned(),
+        app_id: None,
+        label: machine.label.clone(),
+        details: serde_json::to_value(machine).unwrap_or_default(),
+    }
+}
+
+/// Whether the person's answer to [`question`] admits the machine: answering
+/// it does, and its cancel (a declined question) turns the machine away.
+pub(crate) const fn admits(answer: Option<&Answer>) -> bool {
+    answer.is_some()
 }
 
 /// The action a notice offers to admit the machine whose ask is `ask`.

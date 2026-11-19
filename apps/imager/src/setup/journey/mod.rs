@@ -10510,10 +10510,10 @@ mod tests {
         let original_choices = persisted(&mut app);
         for save in [false, true] {
             app.effect(&InstallerPreviewEffect::EditPreview {
-                section: "devices".into(),
+                section: "machine".into(),
             })
             .unwrap();
-            assert_eq!(status(&mut app)["page"], "devices");
+            assert_eq!(status(&mut app)["page"], "machine");
             app.effect(&InstallerPreviewEffect::SetPreviewDeviceName {
                 value: "Ada's laptop".into(),
             })

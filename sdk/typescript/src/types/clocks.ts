@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.clocks@931161d584af886b";
+export const SURFACE = "so.tilo.clocks@0c6cd6613646c99c";
 
 export interface Alarm {
   label: string;
@@ -228,11 +228,13 @@ export interface Collection extends tilo.Resource {
     section: string;
   }): Promise<void>;
   dismissNotice(): Promise<void>;
+  floatStopwatch(): Promise<void>;
+  unfloatStopwatch(): Promise<void>;
 }
 
 /** The actions `Collection` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const COLLECTION_ACTIONS = ["addWorldClock", "addWorldClockMany", "removeWorldClock", "removeWorldClockMany", "addAlarm", "addAlarmMany", "setAlarmEnabled", "setAlarmEnabledMany", "editAlarm", "editAlarmMany", "removeAlarm", "removeAlarmMany", "addTimer", "addTimerMany", "pauseTimer", "pauseTimerMany", "resumeTimer", "resumeTimerMany", "addMinute", "addMinuteMany", "removeTimer", "removeTimerMany", "startStopwatch", "startStopwatchMany", "pauseStopwatch", "pauseStopwatchMany", "lap", "lapMany", "resetStopwatch", "resetStopwatchMany", "show", "dismissNotice"] as const;
+export const COLLECTION_ACTIONS = ["addWorldClock", "addWorldClockMany", "removeWorldClock", "removeWorldClockMany", "addAlarm", "addAlarmMany", "setAlarmEnabled", "setAlarmEnabledMany", "editAlarm", "editAlarmMany", "removeAlarm", "removeAlarmMany", "addTimer", "addTimerMany", "pauseTimer", "pauseTimerMany", "resumeTimer", "resumeTimerMany", "addMinute", "addMinuteMany", "removeTimer", "removeTimerMany", "startStopwatch", "startStopwatchMany", "pauseStopwatch", "pauseStopwatchMany", "lap", "lapMany", "resetStopwatch", "resetStopwatchMany", "show", "dismissNotice", "floatStopwatch", "unfloatStopwatch"] as const;
 
 /** The `clocks.collection` kind at `path`. */
 export function collection(ws: tilo.Workspace, path: string): Collection {

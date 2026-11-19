@@ -201,14 +201,34 @@ impl ChromeBody {
     }
 
     /// The band past a square body's open side its shadow may fall in: the side facing away from
-    /// the screen edge it stands on.
-    fn open_side_reach(&self, rect: Rect) -> Rect {
-        const REACH: f64 = 96.0;
+    /// the screen edge it stands on, as far as the body's own lift can paint. The lift's
+    /// [`shadow_bounds`] are the shadow's real extent, so the band never guesses a reach that
+    /// clips a larger shadow or leaves a smaller one painting where it may not.
+    fn open_side_reach(&self, rect: Rect, theme: &Theme) -> Rect {
+        let Some(bounds) = crate::surface::floating_lift(theme)
+            .iter()
+            .filter_map(|token| crate::surface::shadow_bounds(rect, token))
+            .reduce(|one, two| one.union(two))
+        else {
+            return Rect::new(rect.x0, rect.y1, rect.x1, rect.y1);
+        };
         match self.edge {
-            ChromeEdge::Top => Rect::new(rect.x0, rect.y1, rect.x1, rect.y1 + REACH),
-            ChromeEdge::Bottom => Rect::new(rect.x0, rect.y0 - REACH, rect.x1, rect.y0),
-            ChromeEdge::Leading => Rect::new(rect.x1, rect.y0, rect.x1 + REACH, rect.y1),
-            ChromeEdge::Trailing => Rect::new(rect.x0 - REACH, rect.y0, rect.x0, rect.y1),
+            ChromeEdge::Top => {
+                let reach = (bounds.y1 - rect.y1).max(0.0);
+                Rect::new(rect.x0, rect.y1, rect.x1, rect.y1 + reach)
+            }
+            ChromeEdge::Bottom => {
+                let reach = (rect.y0 - bounds.y0).max(0.0);
+                Rect::new(rect.x0, rect.y0 - reach, rect.x1, rect.y0)
+            }
+            ChromeEdge::Leading => {
+                let reach = (bounds.x1 - rect.x1).max(0.0);
+                Rect::new(rect.x1, rect.y0, rect.x1 + reach, rect.y1)
+            }
+            ChromeEdge::Trailing => {
+                let reach = (rect.x0 - bounds.x0).max(0.0);
+                Rect::new(rect.x0 - reach, rect.y0, rect.x0, rect.y1)
+            }
         }
     }
 
@@ -229,7 +249,7 @@ impl ChromeBody {
         } else {
             // A square body stands on its screen edge: its shadow falls only past its open
             // side, onto what it covers (below a top bar, beside a side rail).
-            let cast = self.open_side_reach(rect);
+            let cast = self.open_side_reach(rect, theme);
             scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &cast);
             crate::surface::floating_shadow(scene, transform, rect, 0.0, 1.0, theme);
             scene.pop_layer();

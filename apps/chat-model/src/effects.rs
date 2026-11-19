@@ -52,6 +52,7 @@ pub enum ChatEffect {
     /// Ask the device's model about the latest message.
     #[effect(kind = "outside")]
     #[effect(row, returns, item = channels)]
+    #[effect(on = crate::rows::Channel)]
     ModelControl {
         channel: String,
         #[param("Model command", choices = ["ask", "stop", "retry", "continue"])]
@@ -60,9 +61,11 @@ pub enum ChatEffect {
     /// Show or hide reasoning actually supplied by the provider, in the
     /// caller's own view.
     #[effect(view, row, item = messages, audience = "agents", presence)]
+    #[effect(on = crate::rows::Message)]
     ShowAgentReasoning { message: String, expanded: bool },
     /// Open conversation
     #[effect(view, row, item = channels)]
+    #[effect(on = crate::rows::Channel)]
     OpenChannel { channel: String },
     /// Open category
     #[effect(view, row, item = categories)]
@@ -77,9 +80,11 @@ pub enum ChatEffect {
     /// Scrolls the caller's own view to the message: the view its row
     /// discloses through, under the reader's read of the chat's messages.
     #[effect(view, row, item = messages, presence)]
+    #[effect(on = crate::rows::Message, on = crate::rows::Report)]
     RevealMessage { message: String },
     /// Reveal message range
     #[effect(view, row, returns, item = messages, audience = "agents")]
+    #[effect(on = crate::rows::Message)]
     RevealMessageRange {
         message: String,
         #[param("Start offset in the declared unit")]
@@ -95,6 +100,7 @@ pub enum ChatEffect {
     /// nothing of the conversation stands around it, and the window says how
     /// tall the view is.
     #[effect(view, row, item = messages)]
+    #[effect(on = crate::rows::Message)]
     ShowView { message: String },
     /// Open the conversation with an agent: where search's agent hit goes.
     #[effect(view, returns, presence)]

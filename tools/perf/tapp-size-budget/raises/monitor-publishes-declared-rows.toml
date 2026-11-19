@@ -1,0 +1,6 @@
+# The monitor app publishes its rows as declared rows, which its package carries.
+reason = "the monitor app publishes its readings as declared rows instead of hand-painted views"
+run = "rbdc7ad3857"
+
+[apps."so.tilo.monitor"]
+x86_64 = 65536

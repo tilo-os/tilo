@@ -156,6 +156,7 @@ impl Serving {
         actions: Arc<std::sync::OnceLock<DeviceActions>>,
         protocols: tilo_network_actor::own_service::Protocols,
         documents: Option<super::PeerDocuments>,
+        service: tilo_workspace_service::service::ServiceSlot,
     ) -> Self {
         Self {
             bound,
@@ -164,6 +165,7 @@ impl Serving {
                 actions,
                 protocols,
                 documents,
+                service,
             },
         }
     }
@@ -182,6 +184,9 @@ pub(crate) struct Beside {
     /// Where what admission takes in from another device is handed to this device's apps: `None` on
     /// a session that serves no apps.
     pub(crate) documents: Option<super::PeerDocuments>,
+    /// Where this device's own workspace service is installed: what answers for it beside this
+    /// thread, the session's reads of a workspace's resources included.
+    pub(crate) service: tilo_workspace_service::service::ServiceSlot,
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
@@ -593,6 +598,7 @@ async fn listening(
         actions,
         protocols,
         documents,
+        service,
     }: Beside,
     bound: &Bound,
 ) -> Option<Listening> {
@@ -628,8 +634,7 @@ async fn listening(
         tokio::runtime::Handle::current(),
         Some(tilo_endpoint_reachability::REST_AFTER),
     );
-    // This device's app wire is served on the same endpoint: another of the person's devices
-    // reaches what this one publishes here, beside the workspaces' own traffic.
+    // This device's app wire is served on the same endpoint, where other devices reach it.
     let mut served: tilo_network_actor::own_service::Protocols = Vec::new();
     // What the session serves beside its own peer networks: this device's exit for the person's other
     // devices, when it offers one.
@@ -644,7 +649,10 @@ async fn listening(
     // This device's own workspace service answers here: the workspaces it founds are held there,
     // and their other devices and members join, sync and act with it on its own ALPNs. A device
     // action service of the session's own, pushed above, answers that ALPN in its place.
-    let (own_service, serving_own) = match identity.zip(engine).map(|_| OwnService::deferred()) {
+    let (own_service, serving_own) = match identity
+        .zip(engine)
+        .map(|_| OwnService::deferred_in(service))
+    {
         Some((service, protocols)) => (
             Some(service.clone()),
             Some(tilo_network_actor::OwnServing { service, protocols }),
@@ -674,8 +682,7 @@ async fn listening(
         link,
         documents,
     );
-    // A workspace this device makes is founded on its own service from now on, and carried on
-    // this network.
+    // A workspace this device makes is founded on its own service from now on, carried here.
     if let (true, Some(service), Some(identity), Some(engine)) =
         (opened, &own_service, identity, engine)
     {

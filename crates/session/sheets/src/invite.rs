@@ -293,13 +293,6 @@ pub fn made(invite: &str, role: &str, recipient: &str, expires_at_ns: u64) -> Cr
     }
 }
 
-/// How the sheet names a person who chose no name: never by a piece of their key, which tells
-/// nobody who they are.
-#[must_use]
-pub fn unnamed_person() -> String {
-    word("invite-person-unnamed")
-}
-
 /// An invitation that still works, in the sheet's words. `invitee` is how the
 /// invitation names the person it is for, and `bound` whether it names one at
 /// all: an invitation naming nobody is for whoever holds it.

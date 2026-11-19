@@ -49,7 +49,7 @@ impl PresenceCtx {
                     .and_then(super::shown_name)
                     .map(str::to_owned)
             })
-            .unwrap_or_else(super::guest_label);
+            .unwrap_or_else(super::unnamed_person_label);
         let label = match placed.activity.as_deref().map(str::trim) {
             Some(activity) if is_agent && !activity.is_empty() => format!("{name} · {activity}"),
             _ => name,
@@ -118,12 +118,18 @@ mod tests {
 
             let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
             let stranger = presence.placed_cursor(placed(key));
-            assert_eq!(stranger.label, "Guest", "a person nobody named is a guest");
+            assert_eq!(
+                stranger.label, "Someone without a name yet",
+                "a person nobody named is someone without a name yet"
+            );
             let keyed = presence.placed_cursor(PlacedPointer {
                 name: Some(key.into()),
                 ..placed(key)
             });
-            assert_eq!(keyed.label, "Guest", "a key their presence says is no name");
+            assert_eq!(
+                keyed.label, "Someone without a name yet",
+                "a key their presence says is no name"
+            );
             let named = presence.placed_cursor(PlacedPointer {
                 user: MemberId::agent(key),
                 name: Some("Ada".into()),
@@ -145,7 +151,7 @@ mod tests {
             presence.set_display_name(MemberId::person(key), key);
             assert_eq!(
                 presence.display_name(&MemberId::person(key)),
-                "Guest",
+                "Someone without a name yet",
                 "nor is a key the roster says"
             );
         }

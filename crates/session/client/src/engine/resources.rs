@@ -54,7 +54,7 @@ impl Engine {
         if !resources.filled {
             resources.filled = true;
             for (app, doc) in self.documents(&id).unwrap_or_default() {
-                if tilo_resource_store::is_store_document(&doc) {
+                if collab_types::is_store_document(&doc) {
                     resources.read.insert(doc, (app, None));
                 }
             }

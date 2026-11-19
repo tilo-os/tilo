@@ -666,6 +666,7 @@ impl Workspaces {
         let refused = |error: CollaborationError| EntryRefusal::Refused(error.to_string());
         let user = person(&join.user_public_key).map_err(refused)?;
         let now = tilo_clock::unix_now_ns();
+        let address = self.invitation_addr().await;
         let issued = {
             let state = self.workspace(workspace).await.map_err(refused)?;
             let mut governed = state.lock().await;
@@ -753,9 +754,9 @@ impl Workspaces {
                             inviter_name: None,
                         },
                         false,
+                        &address,
                         now,
                     )
-                    .await
                     .map_err(refused)?;
                 governed
                     .admissions

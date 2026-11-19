@@ -41,6 +41,7 @@ fn write(fixture: &Fixture, seq: u64, sealed: bool) -> Envelope {
         document_id: record.into(),
         envelope: Box::new(op),
         own: None,
+        readers: None,
     })
     .unwrap();
     Envelope::Delta {

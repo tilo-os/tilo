@@ -75,6 +75,7 @@ impl StatePeer {
                 document_id: record.into(),
                 envelope: Box::new(envelope),
                 own: self.core.own_write(app, record, &source),
+                readers: None,
             },
             now,
             true,
@@ -107,6 +108,7 @@ impl StatePeer {
             document_id,
             envelope,
             own,
+            readers,
         } = message
         else {
             return Err("not a document message".into());
@@ -238,6 +240,7 @@ impl StatePeer {
                         document_id,
                         envelope,
                         own: own.clone(),
+                        readers,
                     },
                     Held {
                         retained_replay,
@@ -367,6 +370,7 @@ impl StatePeer {
                         document_id: route.record,
                         envelope,
                         own: own.clone(),
+                        readers,
                     },
                     Held {
                         retained_replay,
@@ -421,6 +425,7 @@ impl StatePeer {
                             document_id: route.record,
                             envelope,
                             own: own.clone(),
+                            readers,
                         },
                         Held {
                             retained_replay,
@@ -467,6 +472,7 @@ impl StatePeer {
                     document_id: route.record,
                     envelope,
                     own: own.clone(),
+                    readers,
                 },
                 Held {
                     retained_replay,
@@ -508,6 +514,7 @@ impl StatePeer {
                         document_id: route.record,
                         envelope,
                         own: own.clone(),
+                        readers,
                     },
                     Held {
                         retained_replay,
@@ -526,6 +533,7 @@ impl StatePeer {
                         document_id: route.record,
                         envelope,
                         own: own.clone(),
+                        readers,
                     },
                     Held {
                         retained_replay,
@@ -597,6 +605,7 @@ impl StatePeer {
                     document_id: route.record,
                     envelope,
                     own: own.clone(),
+                    readers,
                 },
                 Held {
                     retained_replay,
@@ -627,6 +636,7 @@ impl StatePeer {
                         document_id: route.record,
                         envelope,
                         own: own.clone(),
+                        readers,
                     },
                     Held {
                         retained_replay,

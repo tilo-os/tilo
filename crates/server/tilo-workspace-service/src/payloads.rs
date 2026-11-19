@@ -38,6 +38,9 @@ pub struct Route {
     /// The member's own record this is, as the frame says
     /// ([`neighbour_wire::NeighbourMsg::AppDocument`]'s `own`).
     pub own: Option<collab_types::OwnResource>,
+    /// The reader set of the resource store's document this writes, as the
+    /// frame says ([`neighbour_wire::NeighbourMsg::AppDocument`]'s `readers`).
+    pub readers: Option<String>,
 }
 
 /// What a checkpoint body is, once the adapter has confirmed it is a whole

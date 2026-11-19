@@ -4,7 +4,7 @@
 
 use std::cell::RefCell;
 
-use tilo_app::framework::Effected;
+use tilo_app::framework::{Effected, Publishes};
 use tilo_app::prelude::*;
 
 thread_local! {
@@ -131,5 +131,75 @@ fn items_offer_their_effects_and_open_and_labelled_items_are_published() {
         answered["minted"],
         serde_json::json!([churn]),
         "and the ids it minted"
+    );
+}
+
+/// The action of a read that answers with the item's note, as an app's
+/// registered reader publishes it: the spec a view hands out for the item it
+/// knows, never an operation the app's handler answers.
+fn note_read(id: &str) -> tilo_actions::ActionSpec {
+    let id = id.to_owned();
+    tilo_actions::ActionSpec::typed_operation(
+        "read-note",
+        "Read note",
+        "Read this query's note from its committed state",
+        tilo_actions::OperationKind::Effect,
+        "test.queries.read",
+        Vec::new(),
+        move |_args| tilo_actions::EncodedAction {
+            type_id: "test.queries.read".into(),
+            payload: id.as_bytes().to_vec(),
+        },
+    )
+}
+
+struct QueriesReadApp;
+
+impl ResourceApp for QueriesReadApp {
+    type Resource = Queries;
+    const ID: &'static str = "so.tilo.test-queries";
+    const TITLE: &'static str = "Queries";
+
+    fn view(cx: &mut ViewCx<Queries>) -> Element {
+        cx.effects(|_effect: QueryEffect, _| Ok(Effected::done()));
+        cx.publishing(
+            Publishes::new().item_reads(|field, id| {
+                (field == "queries")
+                    .then(|| note_read(id))
+                    .into_iter()
+                    .collect()
+            }),
+            Box::new(Column::new()),
+        )
+    }
+}
+
+#[test]
+fn a_view_publishes_the_reads_its_items_answer() {
+    let mut app = TestApp::<QueriesReadApp>::new().unwrap();
+    app.invoke(Queries::SAVE.with("Top customers")).unwrap();
+    let id = app.state().queries.ids().next().cloned().unwrap();
+    let item = tilo_resource::items::item_resource_id::<Queries>("queries", &id);
+
+    let resources = app.harness().resources();
+    let published = find(&resources, &item).expect("the item is published");
+    let read = published
+        .actions
+        .iter()
+        .find(|action| action.id == "read-note")
+        .expect("the read the view declares is on the item");
+    assert_eq!(
+        read.operation_type.as_deref(),
+        Some("test.queries.read"),
+        "it is the registered reader's operation, not the app's handler's"
+    );
+    assert_eq!(
+        published
+            .actions
+            .iter()
+            .filter(|action| action.id == "read-note")
+            .count(),
+        1,
+        "a read declared twice is published once"
     );
 }

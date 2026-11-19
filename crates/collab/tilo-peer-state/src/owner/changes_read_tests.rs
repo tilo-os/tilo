@@ -31,6 +31,7 @@ fn commit(joined: &Enrolled, edit: impl FnOnce(&mut AutoCommit)) {
                     document: String::new(),
                     envelope,
                     own: None,
+                    readers: None,
                 },
             })
         })

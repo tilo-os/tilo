@@ -2,7 +2,7 @@
 //! the profile's own workspace, whose record holds what this profile keeps of
 //! it (the person's grants to apps, effect records), and the workspaces it
 //! joined, the profile's own workspace included once its host placed it.
-use super::{joined::Joined, workspace::ProfileWorkspace};
+use super::{service::ServiceWorkspaces, workspace::ProfileWorkspace};
 use std::sync::Arc;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_identity::broker::WorkspaceMembership;
@@ -10,14 +10,17 @@ use tilo_workspace_service::apps::services::WorkspaceAuthority;
 
 pub(super) struct Workspaces {
     pub(super) profile: Arc<ProfileWorkspace>,
-    pub(super) joined: Arc<Joined>,
+    pub(super) workspaces: Arc<ServiceWorkspaces>,
 }
 
 impl Workspaces {
-    pub(super) fn new(profile: &Arc<ProfileWorkspace>, joined: &Arc<Joined>) -> Self {
+    pub(super) fn new(
+        profile: &Arc<ProfileWorkspace>,
+        workspaces: &Arc<ServiceWorkspaces>,
+    ) -> Self {
         Self {
             profile: Arc::clone(profile),
-            joined: Arc::clone(joined),
+            workspaces: Arc::clone(workspaces),
         }
     }
 }
@@ -28,17 +31,17 @@ impl WorkspaceAuthority for Workspaces {
     /// profile's workspace file, so a profile that joined any workspace reads
     /// a merged copy; one that joined none borrows its own tree.
     fn with_tree(&self, read: &mut dyn FnMut(&Layout)) -> Result<(), String> {
-        if self.joined.is_empty() {
+        if self.workspaces.is_empty() {
             return self.profile.with_tree(read);
         }
         let mut tree = self.profile.snapshot()?;
-        let joined: Vec<_> = self
-            .joined
+        let held: Vec<_> = self
+            .workspaces
             .workspaces()
             .into_iter()
-            .filter(|joined| !tree.workspaces.iter().any(|own| own.id() == joined.id()))
+            .filter(|held| !tree.workspaces.iter().any(|own| own.id() == held.id()))
             .collect();
-        tree.workspaces.extend(joined);
+        tree.workspaces.extend(held);
         read(&tree);
         Ok(())
     }
@@ -61,10 +64,10 @@ impl WorkspaceAuthority for Workspaces {
         let Some(read) = read else {
             return Ok(());
         };
-        let joined = WorkspaceId::parse(workspace)
-            .and_then(|id| self.joined.workspace(id))
+        let held = WorkspaceId::parse(workspace)
+            .and_then(|id| self.workspaces.workspace(id))
             .filter(|held| held.id().to_string() == workspace);
-        read(joined.as_ref());
+        read(held.as_ref());
         Ok(())
     }
 
@@ -80,7 +83,7 @@ impl WorkspaceMembership for Workspaces {
             found = true;
             read(held);
         });
-        if !found && let Some(held) = self.joined.workspace(*workspace) {
+        if !found && let Some(held) = self.workspaces.workspace(*workspace) {
             read(&held);
         }
     }

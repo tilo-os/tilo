@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.terminal@2222358fc45cc0b3";
+export const SURFACE = "so.tilo.terminal@6ed34a137bebf2bb";
 
 export interface Command {
   command: string;
@@ -214,11 +214,14 @@ export interface Session extends tilo.Resource {
   selectAll(): Promise<void>;
   historyTop(): Promise<void>;
   historyLive(): Promise<void>;
+  openLink(args: {
+    url: string;
+  }): Promise<void>;
 }
 
 /** The actions `Session` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const SESSION_ACTIONS = ["run", "rerun", "rerunTest", "stop", "stopMany", "recordCommand", "recordCommandMany", "recordTarget", "recordTargetMany", "recordRelaySession", "recordRelaySessionMany", "claimPane", "claimPaneMany", "inspectSession", "readScreen", "inspectEditor", "copyVisible", "copySelection", "selectAll", "historyTop", "historyLive"] as const;
+export const SESSION_ACTIONS = ["run", "rerun", "rerunTest", "stop", "stopMany", "recordCommand", "recordCommandMany", "recordTarget", "recordTargetMany", "recordRelaySession", "recordRelaySessionMany", "claimPane", "claimPaneMany", "inspectSession", "readScreen", "inspectEditor", "copyVisible", "copySelection", "selectAll", "historyTop", "historyLive", "openLink"] as const;
 
 /** The `terminal.session` kind at `path`. */
 export function session(ws: tilo.Workspace, path: string): Session {

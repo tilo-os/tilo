@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
-use tilo_resource_store::{Admit, Received, Refusal, Store, is_store_document};
+use collab_types::is_store_document;
+use tilo_resource_store::{Admit, Received, Refusal, Store};
 
 use super::{GovernedWorkspace, Workspaces};
 
@@ -285,8 +286,9 @@ fn changes_of(
 
 impl GovernedWorkspace {
     /// Takes `author`'s write `envelope` of the store document `doc` of `app` into the
-    /// workspace's store. A sealed write is read with the workspace's keys; a device that holds
-    /// none keeps and forwards it, as it does any sealed write, and indexes nothing of it.
+    /// workspace's store, `named` the reader set the write names in the clear. A sealed write is
+    /// read with its reader set's keys, under the scope the document's id derives; a device that
+    /// holds none keeps and forwards it, as it does any sealed write, and indexes nothing of it.
     ///
     /// # Errors
     /// The write does not open or decode, or the store cannot keep it.
@@ -297,12 +299,23 @@ impl GovernedWorkspace {
         author: [u8; 32],
         (app, doc): (&str, &str),
         envelope: &collab_types::SignedOp,
+        named: Option<&str>,
     ) -> Result<bool, String> {
         // The reader set picks the key: every member's for `*`, else the set the store met the
-        // document under.
-        let known = match doc.split_once('/') {
-            Some((collab_types::EVERY_MEMBER, _)) => Some(collab_types::EVERY_MEMBER.to_owned()),
-            _ => self.resources.readers(doc),
+        // document under, else the set the write names in the clear, when the id names that
+        // set's digest.
+        let in_id = collab_types::store_document_readers(doc).ok_or("not a resource document")?;
+        let known = if in_id == collab_types::EVERY_MEMBER {
+            Some(collab_types::EVERY_MEMBER.to_owned())
+        } else {
+            self.resources.readers(doc).or_else(|| {
+                named
+                    .filter(|readers| {
+                        collab_types::reader_set_name(readers) == in_id
+                            && collab_types::Readers::parse(readers).is_some()
+                    })
+                    .map(str::to_owned)
+            })
         };
         let payload = match envelope.encryption {
             None => envelope.payload.clone(),
@@ -315,8 +328,9 @@ impl GovernedWorkspace {
                 };
                 let ciphertext =
                     collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
-                // The scope the writer sealed it for, which its signature covers.
-                keys.open_content(envelope.artifact, &metadata, &ciphertext)
+                // Sealed for the document's own scope, which its id derives, and no other.
+                let scope = collab_types::document_artifact_id(app, self.workspace(), doc);
+                keys.open_content(scope, &metadata, &ciphertext)
                     .map_err(|error| error.to_string())?
                     .to_vec()
             }
@@ -330,9 +344,9 @@ impl GovernedWorkspace {
                 return Err("a resource document's write came in segments".into());
             }
         };
-        let (changes, named) = changes_of(mutation)?;
+        let (changes, named_in_document) = changes_of(mutation)?;
         let readers = known
-            .or(named)
+            .or(named_in_document)
             .ok_or("a write of a resource document of readers this device never met")?;
         // Every change of one write is its author's: whether they may write the document is
         // asked once, of the workspace's one permission check.
@@ -371,6 +385,7 @@ impl Workspaces {
             app_id,
             document_id,
             envelope,
+            readers,
             ..
         } = &message
         else {
@@ -385,7 +400,7 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let mut governed = governed.lock().await;
         if governed
-            .take_resources(author, (app_id, document_id), envelope)
+            .take_resources(author, (app_id, document_id), envelope, readers.as_deref())
             .await?
         {
             // Whoever follows the workspace's writes (its bots) is woken by a resource's
