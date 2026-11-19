@@ -82,7 +82,8 @@ pub struct AddArgs {
     /// Its addresses as `address/prefix`, comma separated (static only).
     #[arg(long)]
     addresses: Option<String>,
-    /// Its gateway (static only).
+    /// Its default gateways, one for each address family, comma separated
+    /// (static only).
     #[arg(long)]
     gateway: Option<String>,
     /// Its DNS servers, comma separated (static only).

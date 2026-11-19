@@ -316,10 +316,12 @@ is not applied yet.
 The same entry names the machine itself: its hostname, which drives it uses for
 what — the system disk, the data pool, a mirror — by serial or WWN rather than
 by kernel name, and how each network interface is set up (DHCP or static
-addresses, gateway, DNS, a VLAN tag, membership in a bond). These are typed
+addresses, a default gateway for each address family, DNS, a VLAN tag,
+membership in a bond). These are typed
 actions on the document like any other, so they carry history and an author,
 and they refuse what a machine cannot be: a static interface with no address, a
-second system disk, the disk the system runs from repurposed, a drive holding
+second gateway of one family (a dual-stack link names one of each),
+a second system disk, the disk the system runs from repurposed, a drive holding
 data used without the person naming its serial to confirm erasing it. The
 device writes the whole desired configuration as a request for a root-run
 helper, which applies the hostname and the network as NetworkManager keyfiles

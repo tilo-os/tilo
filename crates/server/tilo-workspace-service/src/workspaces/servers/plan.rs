@@ -82,7 +82,8 @@ pub struct AddressBy {
     pub addressing: String,
     /// `address/prefix` entries, comma separated, for static addressing.
     pub addresses: String,
-    /// The gateway; empty for none.
+    /// The default gateways, comma separated: at most one for each address
+    /// family; empty for none.
     pub gateway: String,
     /// DNS servers, comma separated; empty for none.
     pub dns: String,
