@@ -357,9 +357,12 @@ const drawing = async (tab, ...others) => {
         const s = globalThis.tiloMount?.state?.() ?? {};
         const frames = s.frames ?? 0;
         if (frames !== (w.presented.at(-1)?.[1] ?? -1)) w.presented.push([now, frames]);
-        const seen = [s.desktopRevision ?? null, globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.length ?? null];
+        // The layout revision, the window count and the frames the GPU has
+        // left unreported: a change that reached the page, and a page whose
+        // GPU is behind rather than drawing nothing.
+        const seen = [s.desktopRevision ?? null, globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.length ?? null, s.gpuStalls ?? null];
         const last = w.changes.at(-1);
-        if (!last || last[1] !== seen[0] || last[2] !== seen[1]) w.changes.push([now, ...seen]);
+        if (!last || last[1] !== seen[0] || last[2] !== seen[1] || last[3] !== seen[2]) w.changes.push([now, ...seen]);
         if (now < 300000) requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
