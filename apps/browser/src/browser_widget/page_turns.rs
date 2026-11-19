@@ -22,7 +22,7 @@
 
 use std::time::{Duration, Instant};
 
-use ui::webview::{PageActor, PageFailure, PageReply, PageRequest, WebViewCommand};
+use tilo_webview::{PageActor, PageFailure, PageReply, PageRequest, WebViewCommand};
 
 use super::{
     BrowserWidget, PAGE_LOAD_WAIT, PAGE_NAVIGATION_WAIT, PAGE_OPERATION_TIMEOUT, PageOperation,
@@ -126,7 +126,7 @@ impl BrowserWidget {
             deadline: Instant::now() + PAGE_OPERATION_TIMEOUT,
         });
         let request = self.page_resource_request(request);
-        self.engine.send(ui::webview::WebViewCommand::Page {
+        self.engine.send(tilo_webview::WebViewCommand::Page {
             request_id: self.page_request_seq,
             actor,
             request,
@@ -146,7 +146,7 @@ impl BrowserWidget {
     pub(super) fn accept_page_resource(
         &mut self,
         request_id: u32,
-        result: Result<ui::webview::PageReply, ui::webview::PageFailure>,
+        result: Result<tilo_webview::PageReply, tilo_webview::PageFailure>,
     ) {
         let Some(index) = self
             .page_resource_reads
@@ -193,7 +193,7 @@ impl BrowserWidget {
         if self.page_resource.attached()
             && let Ok(reply) = self.page_resource_reply(
                 &read.acted,
-                Err(ui::webview::PageFailure::new(
+                Err(tilo_webview::PageFailure::new(
                     "timeout",
                     "the engine did not answer",
                 )),
@@ -228,7 +228,7 @@ impl BrowserWidget {
             return false;
         };
         let read = self.page_resource_reads.remove(index);
-        self.engine.send(ui::webview::WebViewCommand::CancelPage {
+        self.engine.send(tilo_webview::WebViewCommand::CancelPage {
             request_id: read.request_id,
         });
         true
@@ -397,7 +397,7 @@ impl BrowserWidget {
     pub(super) fn start_page_operation(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
-        actor: Option<ui::webview::PageActor>,
+        actor: Option<tilo_webview::PageActor>,
         request: PageRequest,
     ) -> Result<(), String> {
         let request = match request {
@@ -413,7 +413,7 @@ impl BrowserWidget {
             other => other,
         };
         if let PageRequest::Press { key, .. } = &request
-            && let Err(why) = ui::webview::PageKey::parse_detailed(&key.chord())
+            && let Err(why) = tilo_webview::PageKey::parse_detailed(&key.chord())
         {
             return Err(why);
         }

@@ -125,7 +125,7 @@ impl BrowserWidget {
         };
         // The cancel names the request it stops: another actor's action in
         // this tab is never stopped by it.
-        self.engine.send(ui::webview::WebViewCommand::CancelPage {
+        self.engine.send(tilo_webview::WebViewCommand::CancelPage {
             request_id: operation.request_id,
         });
         tracing::info!(

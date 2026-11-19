@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
 static PRIVATE_ROOT: OnceLock<PathBuf> = OnceLock::new();
-use ui::webview::chromium::{
+use tilo_webview::chromium::{
     PRIVATE_ROOT_HELPER, PRIVATE_ROOT_LOCK, PRIVATE_ROOT_MARKER, PRIVATE_ROOT_MARKER_CONTENT,
     PRIVATE_ROOT_PREFIX, is_owned_private_root,
 };

@@ -16,8 +16,8 @@ use super::{
     ChromiumEngine, CommandQueue, Routes, Runtime, Shared, damage, deliver_damage, deliver_frame,
     fail_routes, protocol, queue_download_event, route_native_event, spawn_named,
 };
-use crate::time::Duration;
-use crate::webview::WebViewEvent;
+use crate::WebViewEvent;
+use tilo_clock::time::Duration;
 use tilo_lock::MutexRecover as _;
 
 const OUTBOX_EVENTS: usize = 1024;
@@ -557,10 +557,10 @@ impl Server {
         if self.runtime.strong_count() > 0 {
             return;
         }
-        let deadline = crate::time::now() + Duration::from_secs(40);
+        let deadline = tilo_clock::now() + Duration::from_secs(40);
         let mut state = self.lock_state();
         while !state.host_exited {
-            let Some(left) = deadline.checked_duration_since(crate::time::now()) else {
+            let Some(left) = deadline.checked_duration_since(tilo_clock::now()) else {
                 tracing::warn!("The Chromium engine did not exit in time");
                 return;
             };

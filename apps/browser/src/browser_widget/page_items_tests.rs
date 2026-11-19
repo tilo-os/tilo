@@ -6,12 +6,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use serde_json::json;
-use ui::tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
-use ui::webview::page::STRUCK;
-use ui::webview::{
+use tilo_webview::page::STRUCK;
+use tilo_webview::{
     FillInto, PageFailure, PageNavigation, PageReply, PageRequest, PageResourceNote, ReleasedText,
     WebViewCommand, WebViewEngine as _,
 };
+use ui::tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
 
 use super::tests::{effect_operation, synced};
 use super::*;

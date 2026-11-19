@@ -3,8 +3,8 @@
 
 use super::tests::{dispatch, laid_out};
 use super::*;
-use crate::webview::test_engine::TestEngine;
 use automerge::AutoCommit;
+use tilo_webview::test_engine::TestEngine;
 use winit::event::WindowEvent;
 
 tilo_test_env::scenario! {
@@ -12,7 +12,7 @@ tilo_test_env::scenario! {
 
     phase the_input_method_opens_where_the_page_reports_its_caret;
     {
-        use crate::webview::TextField;
+        use tilo_webview::TextField;
         use winit::event::Ime;
         let ime_commands = |engine: &TestEngine| -> Vec<WebViewCommand> {
             engine
@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
 
     phase a_dense_page_reports_its_caret_in_its_own_pixels;
     {
-        use crate::webview::TextField;
+        use tilo_webview::TextField;
         let engine = TestEngine::new();
         let mut view = WebView::new(engine.clone()).with_scale_factor(2.0);
         view.set_viewport(Rect::new(100.0, 50.0, 500.0, 350.0), 2.0);

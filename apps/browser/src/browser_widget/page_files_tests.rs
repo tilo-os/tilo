@@ -6,10 +6,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tilo_webview::{FileChooser, FileChooserMode, WebViewEngine as _};
 use ui::portal::{MultiOutcome, PortalOutcome};
 use ui::process::ProcessServices;
 use ui::tilo_actions::ResourceSpec;
-use ui::webview::{FileChooser, FileChooserMode, WebViewEngine as _};
 
 use super::tests::synced;
 use super::*;

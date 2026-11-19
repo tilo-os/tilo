@@ -12,12 +12,12 @@ use std::os::unix::net::UnixStream;
 use tilo_desktop_surface::{PeerRead, StreamState};
 use tilo_live::live::Track;
 use tilo_live::page::PageObject;
+use tilo_webview::test_engine::TestEngine;
+use tilo_webview::{WebViewCommand, WebViewEngine};
 use ui::floating_surface::{FloatingSurfaceClientMessage, FloatingSurfaceHostMessage, PaintPart};
 use ui::webview::paint::PaintEngine;
 use ui::webview::paint::stream::Item;
 use ui::webview::paint::stream::wire::{CODEC, Payload, Receiver};
-use ui::webview::test_engine::TestEngine;
-use ui::webview::{WebViewCommand, WebViewEngine};
 
 use super::*;
 

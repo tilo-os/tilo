@@ -642,8 +642,8 @@ decorator_trait! {
             state: &mut crate::widget::Edits<'_>,
             path: &ModelPath,
         ) -> bool;
-        fn start_deferred_text() -> Option<crate::webview::text_input::Receipt>;
-        fn commit_deferred_text(text: &str) -> Option<crate::webview::text_input::Receipt>;
+        fn start_deferred_text() -> Option<tilo_webview::text_input::Receipt>;
+        fn commit_deferred_text(text: &str) -> Option<tilo_webview::text_input::Receipt>;
         fn on_external_event(payload: &str, state: &mut crate::widget::Edits<'_>, root: &ModelPath);
         fn on_nav_gesture(
             dir: crate::gesture::NavDirection,

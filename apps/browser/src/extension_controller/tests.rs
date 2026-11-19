@@ -52,8 +52,8 @@ tilo_test_env::scenario! {
 
     phase a_popup_is_as_big_as_its_page_and_closes_when_its_page_closes_it;
     {
-        let window: SharedEngine = ui::webview::test_engine::TestEngine::new();
-        let page = ui::webview::test_engine::TestEngine::new();
+        let window: SharedEngine = tilo_webview::test_engine::TestEngine::new();
+        let page = tilo_webview::test_engine::TestEngine::new();
         let mut controller = ExtensionController::new(true);
         controller.refresh = false;
         controller.panel = Some(Panel::Popup {
@@ -67,14 +67,14 @@ tilo_test_env::scenario! {
             Some(Panel::Popup { size, .. }) => *size,
             _ => None,
         };
-        page.push_event(ui::webview::WebViewEvent::DocumentSize {
+        page.push_event(tilo_webview::WebViewEvent::DocumentSize {
             width: 380.0,
             height: 430.0,
             scroll_y: 0.0,
         });
         assert!(controller.sync(&window, ""));
         assert_eq!(shown(&controller), Some((380.0, 430.0)));
-        page.push_event(ui::webview::WebViewEvent::DocumentSize {
+        page.push_event(tilo_webview::WebViewEvent::DocumentSize {
             width: 2000.0,
             height: 2000.0,
             scroll_y: 0.0,
@@ -83,14 +83,14 @@ tilo_test_env::scenario! {
         assert_eq!(shown(&controller), Some(POPUP_MAX));
         assert_eq!(controller.page_width(1200.0), Some(POPUP_MAX.0));
         assert_eq!(controller.page_width(500.0), Some(500.0));
-        page.push_event(ui::webview::WebViewEvent::TabClosed);
+        page.push_event(tilo_webview::WebViewEvent::TabClosed);
         assert!(controller.sync(&window, ""));
         assert!(controller.panel.is_none());
     }
 
     phase an_extensions_button_menu_shows_its_items_and_a_choice_reaches_it;
     {
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         let id = "a".repeat(32);
@@ -183,7 +183,7 @@ tilo_test_env::scenario! {
 
     phase a_button_without_a_popup_tells_the_extension_of_the_click;
     {
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         controller.installed = vec![installed("clicker", None, toolbar::Access::default())];
@@ -200,7 +200,7 @@ tilo_test_env::scenario! {
 
     phase a_buttons_keyboard_shortcut_acts_as_a_click_on_it;
     {
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         let (clicker, opener) = ("c".repeat(32), "d".repeat(32));
@@ -245,8 +245,8 @@ tilo_test_env::scenario! {
 
     phase the_toolbar_shows_what_an_extension_set_for_this_page;
     {
-        use ui::webview::ExtensionActionChange as Change;
-        let window = ui::webview::test_engine::TestEngine::new();
+        use tilo_webview::ExtensionActionChange as Change;
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         let id = "a".repeat(32);
@@ -262,7 +262,7 @@ tilo_test_env::scenario! {
             change,
         };
         let button = |controller: &ExtensionController| controller.model().pinned.remove(0);
-        let clicks = |window: &ui::webview::test_engine::TestEngine| {
+        let clicks = |window: &tilo_webview::test_engine::TestEngine| {
             window
                 .commands()
                 .iter()
@@ -358,7 +358,7 @@ tilo_test_env::scenario! {
         // A window opened beside running extensions is told the icons they
         // set for every tab as its page opens, before its read of the profile
         // says where their files are.
-        let window: SharedEngine = ui::webview::test_engine::TestEngine::new();
+        let window: SharedEngine = tilo_webview::test_engine::TestEngine::new();
         let mut controller = ExtensionController::new(true);
         controller.refresh = false;
         let id = "a".repeat(32);
@@ -372,9 +372,9 @@ tilo_test_env::scenario! {
             WebViewEvent::ExtensionAction {
                 id: id.clone(),
                 global: true,
-                change: ui::webview::ExtensionActionChange {
+                change: tilo_webview::ExtensionActionChange {
                     icon: Some(Some(ExtensionActionIcon::Path("/off.png".into()))),
-                    ..ui::webview::ExtensionActionChange::default()
+                    ..tilo_webview::ExtensionActionChange::default()
                 },
             },
             &window,
@@ -405,7 +405,7 @@ tilo_test_env::scenario! {
 
     phase a_popup_is_no_tab_and_finds_the_page_it_opened_over;
     {
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         controller.installed = vec![installed(
@@ -704,7 +704,7 @@ tilo_test_env::scenario! {
         let mut controller = ExtensionController::new(true);
         controller.panel = Some(Panel::Popup {
             id: "settings:abc".into(),
-            engine: ui::webview::test_engine::TestEngine::new(),
+            engine: tilo_webview::test_engine::TestEngine::new(),
             size: None,
             site: None,
             beneath: None,

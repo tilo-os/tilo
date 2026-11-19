@@ -18,16 +18,16 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
+use tilo_webview::test_engine::TestEngine;
+use tilo_webview::{
+    MediaElementInfo, NavigationCommand, NavigationDirection, PageReply, PageRequest, SharedEngine,
+    WebViewCommand, WebViewEvent,
+};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::{ActionBinding, ControlInvocation};
-use ui::webview::test_engine::TestEngine;
-use ui::webview::{
-    MediaElementInfo, NavigationCommand, NavigationDirection, PageReply, PageRequest, SharedEngine,
-    WebViewCommand, WebViewEvent,
-};
 use ui::widget::{
     AppKind, AppWidget, BannerNotice, Button, Column, Container, ContextMenu, Continuable,
     EmptyState, FloatingSurfaceProvider, IconDescriptor, MenuItem, Popover, RuleEdge, WebView,
@@ -156,9 +156,9 @@ struct PageOperation {
     request_id: u32,
     /// Who asked, as the engine is told: the invoker the action API
     /// admitted, or `None` for the tab's one unnamed actor.
-    actor: Option<ui::webview::PageActor>,
+    actor: Option<tilo_webview::PageActor>,
     /// The action as it was asked, for an answer that says what ran.
-    acted: ui::webview::PageRequest,
+    acted: tilo_webview::PageRequest,
     phase: PagePhase,
     deadline: std::time::Instant,
     /// A load that settled while the request was with the engine: an answer
@@ -572,7 +572,7 @@ pub struct BrowserWidget {
     navigation_hold: crate::back_hold::NavigationHold,
     navigation_pointer_down: Option<NavigationDirection>,
     back_menu: ContextMenu,
-    back_entries: Vec<ui::webview::NavigationEntry>,
+    back_entries: Vec<tilo_webview::NavigationEntry>,
     menu_direction: Option<NavigationDirection>,
     history_request: u32,
     pending_history: Option<PendingHistory>,
@@ -643,7 +643,7 @@ pub struct BrowserWidget {
     item_fill_results: Vec<ui::tilo_actions::InvocationUpdate>,
     /// What this window sent released for one site: struck out of everything
     /// it answers afterwards.
-    struck: ui::webview::StruckTexts,
+    struck: tilo_webview::StruckTexts,
     /// What the window knows of its page's forms: the actions the page
     /// publishes for them, from a read of it or from site memory.
     forms: crate::page_forms::PageForms,
@@ -1048,7 +1048,7 @@ impl BrowserWidget {
                     self.service_view = Some(view);
                     self.bootstrap_done = false;
                 }
-                Err(error) => self.engine = ui::webview::chromium::UnavailableEngine::new(error),
+                Err(error) => self.engine = tilo_webview::chromium::UnavailableEngine::new(error),
             }
             self.structure_dirty = true;
         }
@@ -1518,7 +1518,7 @@ impl BrowserWidget {
             item_lending: None,
             item_fills: Vec::new(),
             item_fill_results: Vec::new(),
-            struck: ui::webview::StruckTexts::default(),
+            struck: tilo_webview::StruckTexts::default(),
             forms: crate::page_forms::PageForms::default(),
             forms_read: forms_read::FormsRead::default(),
             page_review: page_review_view::PageReview::default(),
@@ -3684,7 +3684,7 @@ impl BrowserWidget {
     fn open_navigation_menu(
         &mut self,
         direction: NavigationDirection,
-        entries: Vec<ui::webview::NavigationEntry>,
+        entries: Vec<tilo_webview::NavigationEntry>,
     ) {
         let control = match direction {
             NavigationDirection::Back => "browser.back",
@@ -4656,7 +4656,7 @@ impl Widget for BrowserWidget {
             && let Some(input) = ui::widget::WebView::map_key(&key.logical_key)
         {
             let held = ctx.modifiers.state();
-            let modifiers = ui::webview::KeyModifiers {
+            let modifiers = tilo_webview::KeyModifiers {
                 ctrl: held.control_key(),
                 shift: held.shift_key(),
                 alt: held.alt_key(),
@@ -5964,14 +5964,14 @@ impl BrowserWidget {
     /// action reaches the engine under that actor's name, so a tab
     /// several actors work in tells each what changed since its own last
     /// read and keeps what each did under its name. The name is the admitted
-    /// actor and nothing else ([`ui::webview::PageActor::of`]).
+    /// actor and nothing else ([`tilo_webview::PageActor::of`]).
     pub(crate) fn admit_for(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
         invoker: Option<&ui::tilo_actions::ActionInvoker>,
         operation: BrowserOperation,
     ) -> Result<ui::framework::Effected, String> {
-        let actor = invoker.and_then(|invoker| ui::webview::PageActor::of(&invoker.acting.by));
+        let actor = invoker.and_then(|invoker| tilo_webview::PageActor::of(&invoker.acting.by));
         self.admitted_to_page(invocation, actor.as_ref(), invoker, &operation);
         if matches!(operation, BrowserOperation::ReadServiceSession) {
             if let Some(pending) = &self.service_forget {

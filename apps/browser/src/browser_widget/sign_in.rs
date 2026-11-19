@@ -8,7 +8,7 @@
 //! window that sent credentials holds a sign-in from then on, so reading its
 //! page takes the authority to operate it.
 
-use ui::webview::HttpAuthCredentials;
+use tilo_webview::HttpAuthCredentials;
 use ui::widget::Widget;
 
 use super::BrowserWidget;

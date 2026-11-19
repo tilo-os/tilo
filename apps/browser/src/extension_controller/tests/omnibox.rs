@@ -9,8 +9,8 @@ tilo_test_env::scenario! {
     phase what_follows_an_extensions_keyword_reaches_it_and_enter_sends_it_there;
     {
         use crate::extension_omnibox::OmniboxRow;
-        use ui::webview::{OmniboxInput, OmniboxSuggestion};
-        let window = ui::webview::test_engine::TestEngine::new();
+        use tilo_webview::{OmniboxInput, OmniboxSuggestion};
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         let (finder, off) = ("f".repeat(32), "e".repeat(32));

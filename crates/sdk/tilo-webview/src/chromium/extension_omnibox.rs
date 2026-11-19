@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use crate::webview::{OmniboxInput, OmniboxSuggestion, WebViewEvent};
+use crate::{OmniboxInput, OmniboxSuggestion, WebViewEvent};
 
 const SUGGESTIONS: usize = 16;
 const TEXT_BYTES: usize = 2048;

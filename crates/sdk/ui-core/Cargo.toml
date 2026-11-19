@@ -60,7 +60,7 @@ lazy-engine = ["tilo-search/lazy-engine"]
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
 # (default: none). Settings are not guarded here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
-local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboration/local-daemons"]
+local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client", "collaboration/local-daemons", "tilo-webview/local-daemons"]
 # The collaboration manager's built-in transport: the collaboration wire's
 # client on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
@@ -133,13 +133,13 @@ dx12-shader-cache = []
 # (`webview::adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the
 # adblock-rust dependency.
-webview-adblock = ["dep:tilo-content-blocker"]
+webview-adblock = ["tilo-webview/webview-adblock"]
 # The compiler is not linked: `webview::adblock` opens it from
 # libtilo_adblock_engine.so the first time an app compiles lists. The engine
 # library's own build (crates/runtime/engines/adblock) turns this on, so the
 # shared runtime every app maps leaves adblock-rust out; any other build links
 # the compiler.
-lazy-adblock = ["webview-adblock", "dep:tilo-engine-loader"]
+lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock", "dep:tilo-engine-loader"]
 # Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
 # (`dmabuf_import`). Shared by the WebView's rendered pages and the video
 # decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
@@ -171,10 +171,6 @@ tilo-sort = { version = "0.1.0", path = "../../platform/tilo-sort" }
 # Initials, as the login and boot sign-in screens draw them too.
 tilo-face = { version = "0.1.0", path = "../../platform/tilo-face" }
 registry-types = { version = "0.1.0", path = "../../packaging/registry-types" }
-# Only the session vocabulary and the engine launch boundary: this crate is
-# in libruntime_dylib.so, and browser-continuity's capture (with SQLite) must
-# never be unified into it.
-browser-continuity-core.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 fnv.workspace = true
@@ -183,6 +179,10 @@ fnv.workspace = true
 # native backends. Re-exported under the toolkit's own module paths.
 tilo-process-services = { version = "0.1.0", path = "../tilo-process-services" }
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
+# The web engine client the `WebView` widget displays: the Chromium helper transport,
+# the page protocol and their commands, so code that talks to a web engine links that
+# crate instead of the toolkit.
+tilo-webview = { version = "0.1.0", path = "../tilo-webview" }
 # The part painter interface every painter set draws through (`part_paint`).
 tilo-theme-sdk = { version = "0.1.0", path = "../theme-sdk" }
 # The interpreter a theme's painter sets loaded from wasm run on
@@ -252,10 +252,6 @@ percent-encoding.workspace = true
 form_urlencoded.workspace = true
 # First-frame marks are shared with the greeter's startup metrics capture.
 tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
-# Filter-list compiler for the WebView's built-in ad blocking (feature
-# `webview-adblock`): adblock-rust's EasyList→WebKit-content-blocker
-# conversion; blocking then runs inside WebKit's network process, not in Rust.
-tilo-content-blocker = { version = "0.1.0", path = "../../browser/content-blocker", optional = true }
 # Opens the engine libraries the toolkit uses on first use (`lazy-*`).
 tilo-engine-loader = { version = "0.1.0", path = "../../runtime/engine-loader", optional = true }
 # runtime-collab is the collaboration wire and its client. Its vocabulary

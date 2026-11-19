@@ -28,7 +28,7 @@
 //! What is kept here is which read is with the engine. What the page asks
 //! is [`crate::page_forms::PageForms`]'s.
 
-use ui::webview::{PageFailure, PageReply, PageRequest, WebViewCommand};
+use tilo_webview::{PageFailure, PageReply, PageRequest, WebViewCommand};
 
 use super::BrowserWidget;
 use crate::site_memory::Place;

@@ -82,7 +82,7 @@ class BrowserRuntimeRelease(unittest.TestCase):
         self.assertTrue(release.runtime_version(ROOT).endswith('-chromium'))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ('crates/sdk/ui-core/src/webview/chromium/runtime.rs',
+            for name in ('crates/sdk/tilo-webview/src/chromium/runtime.rs',
                          'apps/browser/tilo-app.toml', 'os/Containerfile'):
                 target = root / name
                 target.parent.mkdir(parents=True, exist_ok=True)

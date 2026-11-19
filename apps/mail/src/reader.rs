@@ -17,14 +17,14 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+#[cfg(test)]
+use tilo_webview::{SharedEngine, WebViewCommand};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
-#[cfg(test)]
-use ui::webview::{SharedEngine, WebViewCommand};
 use ui::widget::DrawChild;
 use ui::widget::{
     AvatarFace, AvatarSize, Banner, BannerContent, BannerKind, Button, ButtonFace, ChipFace,
@@ -1704,7 +1704,7 @@ mod tests {
     use super::*;
     use crate::model::Folder;
     use crate::state::MailState;
-    use ui::webview::test_engine::TestEngine;
+    use tilo_webview::test_engine::TestEngine;
 
     fn shared() -> Shared {
         MailState::shared(MailState::new_sample(crate::avatars::Avatars::new()))
@@ -2134,7 +2134,7 @@ mod tests {
 
         phase an_html_body_is_as_tall_as_its_document_and_scrolls_with_the_reader;
         {
-            use ui::webview::WebViewEvent;
+            use tilo_webview::WebViewEvent;
             let shared = shared();
             let id = message_from(&shared, "hello@fieldnotes.example");
             let mut reader = reader_for(&shared, id, 960.0, 820.0);
@@ -2201,7 +2201,7 @@ mod tests {
 
         phase an_opened_html_mail_is_never_presented_blank;
         {
-            use ui::webview::WebViewEvent;
+            use tilo_webview::WebViewEvent;
             let shared = shared();
             let id = message_from(&shared, "hello@fieldnotes.example");
             let mut reader = reader_for(&shared, id, 960.0, 820.0);
@@ -2354,7 +2354,7 @@ mod tests {
 
         phase a_followed_link_opens_in_the_browser_and_its_address_shows_first;
         {
-            use ui::webview::WebViewEvent;
+            use tilo_webview::WebViewEvent;
             let shared = shared();
             let id = message_from(&shared, "hello@fieldnotes.example");
             let mut reader = reader_for(&shared, id, 960.0, 820.0);
@@ -2416,7 +2416,7 @@ mod tests {
 
         phase find_and_copy_reach_the_html_body;
         {
-            use ui::webview::WebViewEvent;
+            use tilo_webview::WebViewEvent;
             let shared = shared();
             let id = message_from(&shared, "hello@fieldnotes.example");
             let mut reader = reader_for(&shared, id, 960.0, 820.0);
@@ -2499,7 +2499,7 @@ mod tests {
 
     #[test]
     fn an_html_body_appears_painted_at_the_scale_it_is_shown_at() {
-        use ui::webview::WebViewEvent;
+        use tilo_webview::WebViewEvent;
         let shared = shared();
         let id = message_from(&shared, "hello@fieldnotes.example");
         let mut reader = reader_for(&shared, id, 960.0, 820.0);
@@ -2528,7 +2528,7 @@ mod tests {
         }
         assert!(reader.html.pending(), "held back until the engine paints");
         engine.hold_frames(false);
-        let frame = ui::webview::WebViewEngine::frames(&*engine)
+        let frame = tilo_webview::WebViewEngine::frames(&*engine)
             .lock()
             .unwrap()
             .clone()

@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use crate::webview::WebViewEvent;
+use crate::WebViewEvent;
 
 /// Extension `id`'s sign-in, when its page is a web page of a bounded length and the host
 /// numbered it as it numbers tabs' requests.

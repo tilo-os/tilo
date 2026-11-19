@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use ui::webview::{PageActor, PageFailure, PageReply, PageRequest};
+use tilo_webview::{PageActor, PageFailure, PageReply, PageRequest};
 
 use super::{BrowserWidget, PageOperation};
 use crate::page_forms::{self, FORM_CHANGED, FormRun, FormSource, answer_id};

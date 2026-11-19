@@ -14,9 +14,9 @@ impl ResourceApp for TestBrowser {
     const ID: &'static str = "so.tilo.browser";
     const TITLE: &'static str = "Browser";
     fn view(cx: &mut ViewCx<crate::Browser>) -> Element {
-        let engine = cx.take_lent::<std::sync::Arc<ui::webview::test_engine::TestEngine>>();
+        let engine = cx.take_lent::<std::sync::Arc<tilo_webview::test_engine::TestEngine>>();
         assert!(engine.is_some(), "test browser requires its lent engine");
-        let engine = engine.unwrap_or_else(ui::webview::test_engine::TestEngine::new);
+        let engine = engine.unwrap_or_else(tilo_webview::test_engine::TestEngine::new);
         crate::resource::browser_view(
             cx,
             crate::BrowserWindow::new(crate::BrowserWidget::with_engine(engine, true), false),
@@ -103,7 +103,7 @@ impl Fixture {
 fn live() -> TestResult<TestApp<TestBrowser>> {
     Ok(TestApp::for_person_with_lent(
         &"68".repeat(32),
-        ui::webview::test_engine::TestEngine::new(),
+        tilo_webview::test_engine::TestEngine::new(),
     )?)
 }
 #[test]
@@ -568,9 +568,9 @@ impl ResourceApp for OpeningBrowser {
         cx.on_open(|anchor| {
             OPENED_VIEW_ANCHORS.with_borrow_mut(|values| values.push(anchor.to_owned()));
         });
-        let engine = cx.take_lent::<std::sync::Arc<ui::webview::test_engine::TestEngine>>();
+        let engine = cx.take_lent::<std::sync::Arc<tilo_webview::test_engine::TestEngine>>();
         assert!(engine.is_some(), "test browser requires its lent engine");
-        let engine = engine.unwrap_or_else(ui::webview::test_engine::TestEngine::new);
+        let engine = engine.unwrap_or_else(tilo_webview::test_engine::TestEngine::new);
         crate::resource::browser_view(
             cx,
             crate::BrowserWindow::new(crate::BrowserWidget::with_engine(engine, true), false),
@@ -586,7 +586,7 @@ fn static_browser_open_and_registered_framework_opener_publish_once_and_dispatch
         // without pretending this fixture has native service credential storage.
         let mut app = TestApp::<OpeningBrowser>::for_person_with_lent(
             &"68".repeat(32),
-            ui::webview::test_engine::TestEngine::new(),
+            tilo_webview::test_engine::TestEngine::new(),
         )?;
         let published = app.harness().resources();
         let root = published

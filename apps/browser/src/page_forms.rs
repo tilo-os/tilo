@@ -16,9 +16,9 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 
+use tilo_webview::{FormSubmit, PageRequest};
 use ui::tilo_actions::{ActionParam, ActionSpec, InvocationId, ParamType};
 use ui::tilo_resource::Effect as _;
-use ui::webview::{FormSubmit, PageRequest};
 
 use crate::effects::BrowserEffect;
 use crate::site_memory::{self, Place, RememberedForm, RememberedQuestion};
@@ -942,7 +942,7 @@ impl PageForms {
     /// form the read did not find, one that asks or offers something else
     /// now, one that is gone. A page that was not read publishes nothing
     /// that was read from it, so any form the engine names is news.
-    pub fn told_otherwise(&self, place: &Place, told: &[ui::webview::PageFormChange]) -> bool {
+    pub fn told_otherwise(&self, place: &Place, told: &[tilo_webview::PageFormChange]) -> bool {
         let Some(read) = self.reading(place) else {
             return !told.is_empty();
         };
@@ -1257,7 +1257,7 @@ mod tests {
         // offers something else, one that is gone.
         {
             let told = |form: &str, signature: Option<&str>, offers: Option<&str>, gone: bool| {
-                [ui::webview::PageFormChange {
+                [tilo_webview::PageFormChange {
                     form: form.into(),
                     signature: signature.map(str::to_owned),
                     offers: offers.map(str::to_owned),

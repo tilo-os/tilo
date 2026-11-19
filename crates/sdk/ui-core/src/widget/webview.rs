@@ -1,4 +1,4 @@
-//! `WebView` — a leaf widget that displays the live output of a [`crate::webview::WebViewEngine`]
+//! `WebView` — a leaf widget that displays the live output of a [`tilo_webview::WebViewEngine`]
 //! and forwards pointer, scroll and keyboard input into it.
 use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
@@ -15,10 +15,10 @@ use crate::gesture::NavDirection;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::webview::{KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::control_size::ControlSize;
+use tilo_webview::{KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand};
 
 /// Pixels scrolled per mouse-wheel line tick, in logical units (scaled
 /// by the display factor before being sent to the engine).
@@ -61,10 +61,10 @@ const MAX_FRAME_SIDE: f64 = 8192.0 - 16.0;
 const MAX_FRAME_PIXELS: f64 = 16.0 * 1024.0 * 1024.0 * 0.99;
 
 pub struct WebView {
-    text_input: crate::webview::text_input::Guard,
+    text_input: tilo_webview::text_input::Guard,
     history_operation: Option<(
         tilo_actions::InvocationId,
-        crate::webview::text_input::Receipt,
+        tilo_webview::text_input::Receipt,
     )>,
     rect: Rect,
     engine: SharedEngine,
@@ -97,11 +97,11 @@ pub struct WebView {
     cached_image: Option<PenikoImage>,
     cached_trace_id: Option<u64>,
     cached_key: (usize, u32, u32),
-    cached_damage: Option<crate::webview::FrameDamage>,
+    cached_damage: Option<tilo_webview::FrameDamage>,
     drawing: Option<Drawn>,
     submitted: Option<Drawn>,
     damage: Option<Vec<Rect>>,
-    accepts: Option<fn(&crate::webview::Frame) -> bool>,
+    accepts: Option<fn(&tilo_webview::Frame) -> bool>,
     page: crate::webview::paint::PageRenderer,
     painted_seq: u64,
     test_id: String,
@@ -115,7 +115,7 @@ struct Drawn {
     backing: vello::peniko::Color,
     /// The frame's pixels, held so their allocation is not another frame's.
     frame: Blob<u8>,
-    damage: Option<crate::webview::FrameDamage>,
+    damage: Option<tilo_webview::FrameDamage>,
     /// Logical pixels per frame pixel, as bits.
     scale_bits: u64,
     size: (u32, u32),
@@ -338,7 +338,7 @@ impl WebView {
     /// view goes on drawing the last frame it showed. Whatever the engine
     /// delivers between a host's look at the view and its draw, the draw
     /// shows a frame the host accepted.
-    pub fn accept_frames(&mut self, accepts: fn(&crate::webview::Frame) -> bool) {
+    pub fn accept_frames(&mut self, accepts: fn(&tilo_webview::Frame) -> bool) {
         self.accepts = Some(accepts);
     }
 
@@ -417,22 +417,18 @@ impl WebView {
             };
             self.painted_seq = page.seq;
             self.page.draw(&mut canvas, &page);
-            crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
+            tilo_webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
             return None;
         }
 
         if let Some(stale) = self.adopt_frame() {
-            crate::webview::profile::record_draw(
-                self.rect.width(),
-                self.rect.height(),
-                Some(stale),
-            );
+            tilo_webview::profile::record_draw(self.rect.width(), self.rect.height(), Some(stale));
             return None;
         }
 
         if let Some(img) = self.cached_image.clone() {
             let (_, iw, ih) = self.cached_key;
-            crate::webview::profile::record_draw(
+            tilo_webview::profile::record_draw(
                 self.rect.width(),
                 self.rect.height(),
                 Some((iw, ih)),
@@ -452,7 +448,7 @@ impl WebView {
                 self.rect.x0 + f64::from(iw) * scale,
                 self.rect.y0 + f64::from(ih) * scale,
             ));
-            crate::webview::frame_trace::drawn(self.cached_trace_id);
+            tilo_webview::frame_trace::drawn(self.cached_trace_id);
             let frame = img.data.clone();
             let brush = vello::peniko::ImageBrush::new(img);
             scene.fill(
@@ -472,11 +468,11 @@ impl WebView {
                 size: (iw, ih),
             });
         }
-        crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
+        tilo_webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
         None
     }
 
-    fn note_image_delta(&self, image: &PenikoImage, damage: Option<&crate::webview::FrameDamage>) {
+    fn note_image_delta(&self, image: &PenikoImage, damage: Option<&tilo_webview::FrameDamage>) {
         let Some(previous) = self
             .cached_image
             .as_ref()
@@ -568,7 +564,7 @@ impl WebView {
         }
         self.last_sent_size = (w, h);
         self.last_sent_scale = scale;
-        crate::webview::profile::record_resize(w, h, scale);
+        tilo_webview::profile::record_resize(w, h, scale);
         self.engine.send(WebViewCommand::Resize {
             width: w,
             height: h,
@@ -596,7 +592,7 @@ impl WebView {
         let retry = (expected, observed);
         if self.stale_resize_retry != Some(retry) {
             self.stale_resize_retry = Some(retry);
-            crate::webview::profile::record_resize(expected.0, expected.1, scale);
+            tilo_webview::profile::record_resize(expected.0, expected.1, scale);
             self.engine.send(WebViewCommand::Resize {
                 width: expected.0,
                 height: expected.1,
@@ -610,7 +606,7 @@ impl WebView {
         self.focused && self.engine.supports_text_input() && self.text_input.ready()
     }
 
-    fn page_field(&self) -> Option<crate::webview::TextField> {
+    fn page_field(&self) -> Option<tilo_webview::TextField> {
         (self.focused && self.engine.supports_composition())
             .then(|| self.engine.text_field())
             .flatten()
@@ -860,23 +856,21 @@ impl Widget for WebView {
         !self.engine.supports_composition()
     }
 
-    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+    fn start_deferred_text(&mut self) -> Option<tilo_webview::text_input::Receipt> {
         let receipt = self.focused.then(|| self.text_input.start()).flatten();
         Some(receipt.unwrap_or_else(|| {
-            crate::webview::text_input::Receipt::failed(
-                crate::webview::text_input::Failure::Rejected,
-            )
+            tilo_webview::text_input::Receipt::failed(tilo_webview::text_input::Failure::Rejected)
         }))
     }
 
-    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+    fn commit_deferred_text(&mut self, text: &str) -> Option<tilo_webview::text_input::Receipt> {
         let receipt = self
             .focused
             .then(|| self.text_input.commit(&self.engine, text))
             .flatten();
         Some(receipt.unwrap_or_else(|| {
-            let receipt = crate::webview::text_input::Receipt::pending();
-            receipt.complete(Err(crate::webview::text_input::Failure::Rejected));
+            let receipt = tilo_webview::text_input::Receipt::pending();
+            receipt.complete(Err(tilo_webview::text_input::Failure::Rejected));
             receipt
         }))
     }
@@ -1043,7 +1037,7 @@ impl Widget for WebView {
                             *ctx.focus_target = Some(ctx.node_id);
                         }
                         self.text_input.invalidate(&self.engine);
-                        crate::webview::profile::record_input("mouse");
+                        tilo_webview::profile::record_input("mouse");
                         self.engine.send(WebViewCommand::MouseButton {
                             button: mapped,
                             down,
@@ -1092,7 +1086,7 @@ impl Widget for WebView {
                     }
                 };
                 let (x, y) = self.to_engine(self.last_mouse);
-                crate::webview::profile::record_input("scroll");
+                tilo_webview::profile::record_input("scroll");
                 self.engine.send(WebViewCommand::Scroll { dx, dy, x, y });
                 *ctx.handled = true;
                 crate::widget::note_view_only_pan();
@@ -1107,7 +1101,7 @@ impl Widget for WebView {
                     if key_event.state == ElementState::Pressed {
                         self.text_input.invalidate(&self.engine);
                     }
-                    crate::webview::profile::record_input("key");
+                    tilo_webview::profile::record_input("key");
                     let m = ctx.modifiers.state();
                     self.engine.send(WebViewCommand::Key {
                         key,
@@ -1118,7 +1112,7 @@ impl Widget for WebView {
                             alt: m.alt_key(),
                             meta: m.super_key(),
                         },
-                        code: crate::webview::key_code::dom_code(key_event.physical_key),
+                        code: tilo_webview::key_code::dom_code(key_event.physical_key),
                     });
                     *ctx.handled = true;
                 }
@@ -1293,10 +1287,10 @@ impl crate::widget::ResourceOperations for WebView {
 mod tests {
     use super::*;
     use crate::testing::Dispatch;
-    use crate::webview::WebViewEngine; // send()/commands() on the concrete TestEngine
-    use crate::webview::test_engine::TestEngine;
     use automerge::AutoCommit;
     use std::sync::Arc;
+    use tilo_webview::WebViewEngine; // send()/commands() on the concrete TestEngine
+    use tilo_webview::test_engine::TestEngine;
     use winit::event::{ElementState, WindowEvent};
 
     tilo_test_env::scenario! {
@@ -1304,7 +1298,7 @@ mod tests {
 
         phase native_history_operation_waits_for_renderer_ack_and_rejects_focus_change;
         {
-            use crate::webview::text_input::Transactions;
+            use tilo_webview::text_input::Transactions;
             use serde_json::{Value, json};
             struct Acknowledged {
                 inner: SharedEngine,
@@ -1318,10 +1312,10 @@ mod tests {
                 fn send(&self, command: WebViewCommand) {
                     self.inner.send(command);
                 }
-                fn frames(&self) -> crate::webview::FrameSlot {
+                fn frames(&self) -> tilo_webview::FrameSlot {
                     self.inner.frames()
                 }
-                fn drain_events(&self) -> Vec<crate::webview::WebViewEvent> {
+                fn drain_events(&self) -> Vec<tilo_webview::WebViewEvent> {
                     self.inner.drain_events()
                 }
                 fn supports_text_input(&self) -> bool {
@@ -1332,8 +1326,8 @@ mod tests {
                 }
                 fn text_input(
                     &self,
-                    request: crate::webview::text_input::Request,
-                ) -> Option<crate::webview::text_input::Receipt> {
+                    request: tilo_webview::text_input::Request,
+                ) -> Option<tilo_webview::text_input::Receipt> {
                     let mut transactions = self.transactions.lock().unwrap();
                     let (receipt, command) = transactions.admit(request)?;
                     if matches!(
@@ -1509,7 +1503,7 @@ mod tests {
     }
 
     struct NativeHistory {
-        inner: crate::webview::SharedEngine,
+        inner: tilo_webview::SharedEngine,
         requests: std::sync::Mutex<Vec<crate::undo::UndoRequest>>,
         modifiers: std::sync::Mutex<Vec<KeyModifiers>>,
         pointer_modifiers: std::sync::Mutex<Vec<KeyModifiers>>,
@@ -1531,13 +1525,13 @@ mod tests {
         fn set_modifiers(&self, modifiers: KeyModifiers) {
             self.modifiers.lock().unwrap().push(modifiers);
         }
-        fn frames(&self) -> crate::webview::FrameSlot {
+        fn frames(&self) -> tilo_webview::FrameSlot {
             self.inner.frames()
         }
-        fn drain_events(&self) -> Vec<crate::webview::WebViewEvent> {
+        fn drain_events(&self) -> Vec<tilo_webview::WebViewEvent> {
             self.inner.drain_events()
         }
-        fn wrapped(&self) -> Option<&crate::webview::SharedEngine> {
+        fn wrapped(&self) -> Option<&tilo_webview::SharedEngine> {
             Some(&self.inner)
         }
         fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
@@ -2156,7 +2150,7 @@ mod tests {
                     "hover re-rendered the page at {scale}"
                 );
 
-                *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                *engine.frames().lock().unwrap() = Some(tilo_webview::Frame {
                     trace_id: None,
                     damage: None,
                     rgba: Arc::new(vec![255; physical.0 as usize * physical.1 as usize * 4]),
@@ -2339,7 +2333,7 @@ mod tests {
                 view.set_viewport(Rect::new(0.0, 0.0, 400.0, 300.0), 2.0);
                 engine.send(WebViewCommand::Navigate("about:frame-regression".into()));
                 let current = engine.frames().lock().unwrap().clone().unwrap();
-                let stale = crate::webview::Frame {
+                let stale = tilo_webview::Frame {
                     trace_id: None,
                     damage: None,
                     rgba: Arc::new(vec![255; 400 * 300 * 4]),
@@ -2377,7 +2371,7 @@ mod tests {
 
         phase a_caret_that_blinks_damages_and_uploads_only_the_caret;
         {
-            use crate::webview::{Frame, FrameDamage, PixelRect};
+            use tilo_webview::{Frame, FrameDamage, PixelRect};
             let engine = TestEngine::new();
             let mut view = WebView::new(engine.clone());
             // 200x100 logical at 2x: a 400x200 frame.
@@ -2505,7 +2499,7 @@ mod tests {
                         ),
                         scale as f32,
                     );
-                    *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                    *engine.frames().lock().unwrap() = Some(tilo_webview::Frame {
                         trace_id: None,
                         damage: None,
                         rgba: Arc::new(vec![255; painted.0 as usize * painted.1 as usize * 4]),
@@ -2537,14 +2531,14 @@ mod tests {
                 let engine = TestEngine::new();
                 let mut view = WebView::new(engine.clone());
                 view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
-                let frame = crate::webview::Frame {
+                let frame = tilo_webview::Frame {
                     trace_id: Some(101),
                     damage: None,
                     rgba: Arc::new(vec![255; 16 * 16 * 4]),
                     width: 16,
                     height: 16,
                 };
-                crate::webview::frame_trace::take_for_test();
+                tilo_webview::frame_trace::take_for_test();
                 for available in [Some(frame), None] {
                     *engine.frames().lock().unwrap() = available;
                     let mut scene = Scene::new();
@@ -2562,11 +2556,11 @@ mod tests {
                             .contains(&vello_encoding::DrawTag::IMAGE)
                     );
                     assert_eq!(
-                        crate::webview::frame_trace::take_for_test(),
+                        tilo_webview::frame_trace::take_for_test(),
                         (vec![101], false)
                     );
                 }
-                *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                *engine.frames().lock().unwrap() = Some(tilo_webview::Frame {
                     trace_id: Some(102),
                     damage: None,
                     rgba: Arc::new(vec![255; 8 * 8 * 4]),
@@ -2588,7 +2582,7 @@ mod tests {
                         .contains(&vello_encoding::DrawTag::IMAGE)
                 );
                 assert_eq!(
-                    crate::webview::frame_trace::take_for_test(),
+                    tilo_webview::frame_trace::take_for_test(),
                     (vec![], false)
                 );
             }
@@ -2597,7 +2591,7 @@ mod tests {
                 let engine = TestEngine::new();
                 let mut view = WebView::new(engine.clone());
                 view.set_viewport(Rect::new(0.0, 0.0, 16.0, 16.0), 1.0);
-                *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                *engine.frames().lock().unwrap() = Some(tilo_webview::Frame {
                     trace_id: Some(201),
                     damage: None,
                     rgba: Arc::new(vec![255; 16 * 16 * 4]),
@@ -2606,12 +2600,12 @@ mod tests {
                 });
                 let mut root = crate::widget::Column::new()
                     .push(Box::new(crate::widget::Row::new().push(Box::new(view))));
-                crate::webview::frame_trace::take_for_test();
+                tilo_webview::frame_trace::take_for_test();
                 for pass in 0..3 {
                     if pass == 1 {
                         *engine.frames().lock().unwrap() = None;
                     } else if pass == 2 {
-                        *engine.frames().lock().unwrap() = Some(crate::webview::Frame {
+                        *engine.frames().lock().unwrap() = Some(tilo_webview::Frame {
                             trace_id: Some(202),
                             damage: None,
                             rgba: Arc::new(vec![128; 16 * 16 * 4]),
@@ -2639,7 +2633,7 @@ mod tests {
                         _ => vec![201],
                     };
                     assert_eq!(
-                        crate::webview::frame_trace::take_for_test(),
+                        tilo_webview::frame_trace::take_for_test(),
                         (expected, false),
                         "pass {pass}"
                     );
@@ -2670,10 +2664,10 @@ mod tests {
     fn shaded_frame(
         (width, height): (u32, u32),
         shade: u8,
-        marked: Option<crate::webview::PixelRect>,
+        marked: Option<tilo_webview::PixelRect>,
         generation: u64,
-        recent: &[(u64, crate::webview::PixelRect)],
-    ) -> crate::webview::Frame {
+        recent: &[(u64, tilo_webview::PixelRect)],
+    ) -> tilo_webview::Frame {
         let mut rgba = [shade, shade, shade, 255].repeat(width as usize * height as usize);
         if let Some(rect) = marked {
             for y in rect.y..rect.y + rect.height {
@@ -2683,12 +2677,12 @@ mod tests {
                 }
             }
         }
-        crate::webview::Frame {
+        tilo_webview::Frame {
             trace_id: None,
             rgba: Arc::new(rgba),
             width,
             height,
-            damage: Some(crate::webview::FrameDamage {
+            damage: Some(tilo_webview::FrameDamage {
                 generation,
                 recent: recent
                     .iter()
@@ -2701,7 +2695,7 @@ mod tests {
     #[test]
     fn a_caret_frame_uploads_only_the_caret_to_the_gpu() {
         use crate::offscreen::OffscreenRenderer;
-        use crate::webview::PixelRect;
+        use tilo_webview::PixelRect;
         let background = vello::peniko::Color::from_rgba8(0, 0, 255, 255);
         let pixel = |rendered: &[u8], x, y| OffscreenRenderer::sample(rendered, 64, x, y);
         {
@@ -2830,10 +2824,10 @@ pub use component::WebViewProps;
 mod shared_page_tests {
     use super::*;
     use crate::time::testing::with_monotonic_time;
-    use crate::webview::WebViewCommand;
     use crate::webview::paint::stream::wire::Payload;
     use crate::webview::paint::{self, PaintEngine};
-    use crate::webview::test_engine::TestEngine;
+    use tilo_webview::WebViewCommand;
+    use tilo_webview::test_engine::TestEngine;
 
     const TOP: &str =
         include_str!("../../../../browser/paint-stream/tests/fixtures/layers.top.json");

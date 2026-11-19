@@ -1,12 +1,12 @@
 //! A person's file chooser, between the host and the embedder
-//! ([`crate::webview::file_chooser`]).
+//! ([`crate::file_chooser`]).
 
 use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
 
 use super::ChromiumEngine;
-use crate::webview::file_chooser::{
+use crate::file_chooser::{
     FileChooser, FileChooserMode, MAX_FILE_CHOOSER_TITLE, MAX_FILE_CHOOSER_TYPES, accepted_type,
 };
 

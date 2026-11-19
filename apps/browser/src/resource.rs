@@ -83,7 +83,7 @@ fn launch_search(arguments: &[String]) -> Option<String> {
 fn window_mode(cx: &ViewCx<Browser>) -> BrowsingMode {
     BrowsingMode::of_launch(
         cx.is_private(),
-        cx.launch_flag(ui::webview::VISITOR_WINDOW_FLAG),
+        cx.launch_flag(tilo_webview::VISITOR_WINDOW_FLAG),
     )
 }
 
@@ -91,13 +91,13 @@ pub struct BrowserShell;
 
 impl ResourceApp for BrowserShell {
     type Resource = Browser;
-    const ID: &'static str = ui::webview::BROWSER_APP_ID;
+    const ID: &'static str = tilo_webview::BROWSER_APP_ID;
     const TITLE: &'static str = "Browser";
     const TITLE_KEY: &'static str = "browser-app-title";
     const ICON: Option<&'static str> = Some("browser");
     const ARGUMENTS: usize = 1;
     const PRIVATE_WINDOWS: bool = true;
-    const FLAGS: &'static [&'static str] = &[ui::webview::VISITOR_WINDOW_FLAG];
+    const FLAGS: &'static [&'static str] = &[tilo_webview::VISITOR_WINDOW_FLAG];
     /// The window is the page it was launched on: its view opens that page itself.
     const OPENS_LAUNCH_LINK: bool = false;
 
@@ -410,7 +410,7 @@ mod tests {
     fn the_manifest_asks_for_the_engine_runtime_this_build_drives() {
         let expected = format!(
             "\noptional-runtimes = [\"{}\"]\n",
-            ui::webview::chromium::runtime::RUNTIME_REF
+            tilo_webview::chromium::runtime::RUNTIME_REF
         );
         assert!(include_str!("../tilo-app.toml").contains(&expected));
     }
@@ -780,7 +780,7 @@ mod tests {
     fn a_window_launched_as_a_visitor_holds_none_of_the_persons_ownership() {
         use ui::permissions::policy::Answer::{Allow, Ask};
         let answers = |arguments: &[&str]| {
-            let engine = ui::webview::test_engine::TestEngine::new();
+            let engine = tilo_webview::test_engine::TestEngine::new();
             crate::browser_widget::test_window_engine::install(engine);
             let mut app = TestApp::<BrowserShell>::launched(arguments).expect("Browser opens");
             app.settle();
@@ -806,7 +806,7 @@ mod tests {
             (answers, accounts)
         };
         let url = "https://github.com/ada";
-        let (visitor, accounts) = answers(&[ui::webview::VISITOR_WINDOW_FLAG, url]);
+        let (visitor, accounts) = answers(&[tilo_webview::VISITOR_WINDOW_FLAG, url]);
         assert_eq!(visitor, [Allow, Allow, Ask]);
         let refused = accounts.expect_err("a visitor's window holds no accounts");
         assert!(
@@ -834,16 +834,16 @@ mod tests {
                 action.contract.requires_confirmation(),
             )
         };
-        let field = |purpose| ui::webview::TextField {
+        let field = |purpose| tilo_webview::TextField {
             purpose,
             multiline: false,
             bounds: None,
             composition: None,
         };
-        let engine = ui::webview::test_engine::TestEngine::new();
+        let engine = tilo_webview::test_engine::TestEngine::new();
         crate::browser_widget::test_window_engine::install(engine.clone());
         let mut app = TestApp::<BrowserShell>::launched(&[
-            ui::webview::VISITOR_WINDOW_FLAG,
+            tilo_webview::VISITOR_WINDOW_FLAG,
             "https://github.com/login",
         ])
         .expect("Browser opens");
@@ -967,11 +967,11 @@ mod tests {
     #[test]
     fn an_agent_reaches_a_loaded_pages_actions_from_the_windows_row_and_from_the_top() {
         let url = "https://github.com/ada";
-        for arguments in [&[ui::webview::VISITOR_WINDOW_FLAG, url][..], &[url][..]] {
-            let engine = ui::webview::test_engine::TestEngine::new();
+        for arguments in [&[tilo_webview::VISITOR_WINDOW_FLAG, url][..], &[url][..]] {
+            let engine = tilo_webview::test_engine::TestEngine::new();
             crate::browser_widget::test_window_engine::install(engine.clone());
             let mut app = TestApp::<BrowserShell>::launched(arguments).expect("Browser opens");
-            engine.push_event(ui::webview::WebViewEvent::LoadFinished);
+            engine.push_event(tilo_webview::WebViewEvent::LoadFinished);
             app.settle();
             let reached = reachable_by_an_agent(&mut app);
             for action in [

@@ -7,11 +7,11 @@ use std::sync::Arc;
 use crate::page_resource::agent_handle;
 
 use serde_json::{Value, json};
+use tilo_webview::test_engine::TestEngine;
+use tilo_webview::{PageRequest, WebViewCommand, WebViewEngine as _};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{ActionInvoker, ActionSpec, InvocationUpdate, InvokerDevice, ResourceSpec};
 use ui::tilo_resource::Effect as _;
-use ui::webview::test_engine::TestEngine;
-use ui::webview::{PageRequest, WebViewCommand, WebViewEngine as _};
 
 use crate::effects::BrowserEffect;
 use crate::resource::BrowserShell;
@@ -805,7 +805,7 @@ fn field_reads(engine: &TestEngine) -> usize {
 /// rewrote is not read until the engine tells of it, and then once.
 #[test]
 fn the_review_follows_what_the_engine_tells_and_reads_on_no_timer() {
-    use ui::webview::{PageChange, PageFieldChange};
+    use tilo_webview::{PageChange, PageFieldChange};
     let (engine, mut app) = window();
     engine.set_page_events(true);
     let ada = agent("ada");
@@ -1016,7 +1016,7 @@ fn the_fields_of_a_frame_are_reviewed_under_their_frame() {
         [(
             None,
             Some("d3e3".to_owned()),
-            ui::webview::FrameId::parse("3")
+            tilo_webview::FrameId::parse("3")
         )]
     );
 }

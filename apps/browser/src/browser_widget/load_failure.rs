@@ -41,7 +41,7 @@ pub(super) fn page_failed_title() -> String {
 /// `error`. A message the engine wrote for people (its runtime missing or
 /// not starting) is shown as it is.
 pub(super) fn page_failed_message(error: &str) -> String {
-    use ui::webview::chromium::runtime::{FAILED_MESSAGE, NOT_INSTALLED_MESSAGE};
+    use tilo_webview::chromium::runtime::{FAILED_MESSAGE, NOT_INSTALLED_MESSAGE};
     if error == FAILED_MESSAGE || error == NOT_INSTALLED_MESSAGE {
         return error.to_owned();
     }
@@ -96,7 +96,7 @@ mod tests {
                 "{key} is in the catalogue"
             );
         }
-        let missing = ui::webview::chromium::runtime::NOT_INSTALLED_MESSAGE;
+        let missing = tilo_webview::chromium::runtime::NOT_INSTALLED_MESSAGE;
         assert_eq!(page_failed_message(missing), missing);
         for problem in [
             AddressProblem::Empty,

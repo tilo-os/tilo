@@ -325,8 +325,8 @@ mod tests {
     use super::*;
     use crate::extension_controller::{ExtensionController, SidePanelWidths, side_panel_width};
     use crate::extension_toolbar::{Access, Installed};
-    use ui::webview::test_engine::TestEngine;
-    use ui::webview::{
+    use tilo_webview::test_engine::TestEngine;
+    use tilo_webview::{
         ExtensionShortcut, ExtensionSidePanelChange, KeyInput, KeyModifiers, WebViewCommand,
         WebViewEvent,
     };
@@ -555,7 +555,7 @@ mod tests {
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
         widget.extensions = ExtensionController::new(true);
         let conventions = ui::platform::PlatformConventions::default();
-        let command = KeyModifiers::command(conventions);
+        let command = conventions.command_key_modifiers();
         let alt_shift = KeyModifiers {
             alt: true,
             shift: true,

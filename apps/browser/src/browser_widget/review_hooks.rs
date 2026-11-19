@@ -221,9 +221,9 @@ impl BrowserWidget {
     pub fn debug_page_dialog(&mut self) {
         self.page_dialogs.sync(&self.engine);
         self.page_dialogs
-            .apply(&WebViewEvent::PageDialog(ui::webview::PageDialog {
+            .apply(&WebViewEvent::PageDialog(tilo_webview::PageDialog {
                 id: 1,
-                kind: ui::webview::PageDialogKind::Confirm,
+                kind: tilo_webview::PageDialogKind::Confirm,
                 origin: "https://shop.example.org".into(),
                 message: "Remove all 3 items from your basket?".into(),
                 default_text: String::new(),
@@ -242,7 +242,7 @@ impl BrowserWidget {
         } else {
             ("https://staging.example.org", "Staging")
         };
-        let challenge = ui::webview::HttpAuthChallenge {
+        let challenge = tilo_webview::HttpAuthChallenge {
             id: 1,
             asker: asker.into(),
             proxy: false,

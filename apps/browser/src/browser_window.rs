@@ -131,7 +131,7 @@ impl BrowserWindow {
         }
     }
 
-    pub fn engine_handle(&self) -> ui::webview::SharedEngine {
+    pub fn engine_handle(&self) -> tilo_webview::SharedEngine {
         self.page.engine_handle()
     }
 
@@ -629,7 +629,7 @@ impl Widget for BrowserWindow {
         ) {
             self.page
                 .engine_handle()
-                .set_modifiers(ui::webview::KeyModifiers {
+                .set_modifiers(tilo_webview::KeyModifiers {
                     ctrl: modifiers.control_key(),
                     shift: modifiers.shift_key(),
                     alt: modifiers.alt_key(),
@@ -958,8 +958,8 @@ impl AppWidget for BrowserWindow {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use tilo_webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
     use ui::framework::HostDelivery as _;
-    use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
     /// A page engine that resources commands and replays queued events and new tab
     /// intents.
@@ -993,7 +993,7 @@ mod tests {
         fn navigate_owned(
             &self,
             request_id: u32,
-            command: ui::webview::NavigationCommand,
+            command: tilo_webview::NavigationCommand,
         ) -> Result<(), String> {
             if request_id == 0 || request_id > i32::MAX as u32 {
                 return Err("Invalid owned navigation request".into());
@@ -1455,7 +1455,7 @@ mod tests {
                     .filter_map(|command| match command {
                         WebViewCommand::ScopedNavigation {
                             request_id,
-                            command: ui::webview::NavigationCommand::Navigate { url },
+                            command: tilo_webview::NavigationCommand::Navigate { url },
                         } => {
                             assert!(*request_id > 0, "typed navigation has an owner");
                             Some(url.clone())
@@ -1479,7 +1479,7 @@ mod tests {
             .iter()
             .filter_map(|command| match command {
                 WebViewCommand::ScopedNavigation {
-                    command: ui::webview::NavigationCommand::Navigate { url },
+                    command: tilo_webview::NavigationCommand::Navigate { url },
                     ..
                 } => Some(url.clone()),
                 _ => None,

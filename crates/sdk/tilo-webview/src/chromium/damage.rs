@@ -3,14 +3,14 @@
 //! (packet kind 4, `--tilo-frame-damage`) and this process applies them to
 //! the tab's frame it keeps whole ([`FrameStore`]), so the frame is neither
 //! sent, converted nor compared whole again, and the view repaints and
-//! uploads only where it changed ([`crate::webview::FrameDamage`]).
+//! uploads only where it changed ([`crate::FrameDamage`]).
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::sync::Arc;
 
 use super::protocol::{self, MAX_PACKET, invalid};
-use crate::webview::{Frame, FrameDamage, PixelRect};
+use crate::{Frame, FrameDamage, PixelRect};
 
 /// The most rects one damage packet carries: the host sends at most 16, an owner passing
 /// a slow client's on folds several into one.
@@ -264,7 +264,7 @@ impl FrameStore {
         let (width, height) = (whole.width, whole.height);
         let rgba = whole.rgba.clone();
         Applied::Changed(Frame {
-            trace_id: crate::webview::frame_trace::received(tab, &rgba, width, height),
+            trace_id: crate::frame_trace::received(tab, &rgba, width, height),
             rgba,
             width,
             height,
@@ -278,7 +278,7 @@ impl Whole {
     /// when no view holds it any more, a copy otherwise.
     fn take_spare(&mut self, current: u64) -> Vec<u8> {
         if let Some((spare, at)) = self.spare.take()
-            && let Some(changed) = crate::webview::changed_since(&self.recent, current, at)
+            && let Some(changed) = crate::changed_since(&self.recent, current, at)
             && let Ok(mut pixels) = Arc::try_unwrap(spare)
         {
             let stride = self.width as usize * 4;

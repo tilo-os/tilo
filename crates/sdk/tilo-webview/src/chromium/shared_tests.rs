@@ -316,7 +316,7 @@ tilo_test_env::scenario! {
             std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "webview::chromium::shared_tests::shared_owner_child",
+                    "chromium::shared_tests::shared_owner_child",
                     "--ignored",
                 ])
                 .env("TILO_TEST_SHARED_HOST", &host)
@@ -394,7 +394,7 @@ tilo_test_env::scenario! {
         let mut owner = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "webview::chromium::shared_tests::shared_owner_child",
+                "chromium::shared_tests::shared_owner_child",
                 "--ignored",
             ])
             .env("TILO_TEST_SHARED_HOST", &host)

@@ -2,7 +2,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use ui::webview::{ContextMenuItem, SharedEngine, WebViewCommand};
+use tilo_webview::{ContextMenuItem, SharedEngine, WebViewCommand};
 use ui::widget::{ContextMenu, MenuItem};
 use vello::kurbo::Rect;
 
@@ -254,7 +254,7 @@ mod tests {
 
         phase menu_actions_keep_native_target_and_reject_stale_accessibility_requests;
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
             let mut menu = opened(vec![command(26501, "Open link in new tab")]);
             assert!(!menu.activate("browser.context:6:26501", &engine));
@@ -321,7 +321,7 @@ mod tests {
 
         phase a_row_chosen_in_a_submenu_reaches_the_page_and_a_disabled_one_never_does;
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
             let mut menu = opened(vec![
                 ContextMenuItem::Submenu {

@@ -30,7 +30,7 @@ mod tests {
         const TITLE: &'static str = "Browser";
         fn view(cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
             let engine = cx
-                .take_lent::<std::sync::Arc<ui::webview::test_engine::TestEngine>>()
+                .take_lent::<std::sync::Arc<tilo_webview::test_engine::TestEngine>>()
                 .unwrap();
             crate::resource::browser_view(
                 cx,
@@ -223,7 +223,7 @@ mod tests {
                 },
             ],
         });
-        let engine = ui::webview::test_engine::TestEngine::new();
+        let engine = tilo_webview::test_engine::TestEngine::new();
         let mut app = ui::framework::testing::TestApp::<TestBrowser>::for_person_with_lent(
             &"19".repeat(32),
             engine.clone(),

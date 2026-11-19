@@ -3,7 +3,7 @@
 //! A page's offer and a kept file both ride the download row an agent already finds:
 //! answering keeps the file or discards it, and reading a kept file answers its text.
 
-use ui::webview::WebViewCommand;
+use tilo_webview::WebViewCommand;
 
 use super::BrowserWidget;
 use crate::downloads::DownloadStatus;

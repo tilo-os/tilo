@@ -131,9 +131,9 @@ impl BrowserWidget {
 mod tests {
     use super::super::BrowserOperation;
     use super::*;
+    use tilo_webview::WebViewCommand;
+    use tilo_webview::test_engine::TestEngine;
     use ui::tilo_actions::{InvocationId, InvocationUpdate};
-    use ui::webview::WebViewCommand;
-    use ui::webview::test_engine::TestEngine;
 
     fn opened(engine: &TestEngine) -> Vec<String> {
         engine

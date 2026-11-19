@@ -46,7 +46,7 @@ fn native_engine_command_cannot_read_migration_files_even_through_aliases() {
             command.env("TILO_TEST_ENGINE_EXCLUSION_CONTROL", "1");
         }
         let output = command.arg("--exact")
-        .arg("webview::chromium::engine_exclusion_tests::native_engine_command_cannot_read_migration_files_even_through_aliases")
+        .arg("chromium::engine_exclusion_tests::native_engine_command_cannot_read_migration_files_even_through_aliases")
         .arg("--nocapture").env(CHILD_ROOT, root.path())
         .env("TILO_TEST_ENGINE_READ_EXCLUSION_PROC", format!("/proc/{}/fd/{}/Bookmarks", std::process::id(), held.as_raw_fd()))
         .output_locked().unwrap();
@@ -115,7 +115,7 @@ fn dedicated_service_factory_binds_import_and_confirms_child_exit_before_cleanup
         .tempdir()
         .unwrap();
     let helper = root.path().join("protocol-host");
-    crate::testing::write_executable(
+    crate::test_support::write_executable(
         &helper,
         r#"#!/usr/bin/python3
 import json,struct,sys,pathlib,os

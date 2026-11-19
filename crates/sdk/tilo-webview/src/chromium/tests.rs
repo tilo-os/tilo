@@ -562,7 +562,7 @@ tilo_test_env::scenario! {
 
     phase credential_protocol_encodes_actions_without_secret_fields;
     {
-        use crate::webview::{CredentialAction, CredentialRequest};
+        use crate::{CredentialAction, CredentialRequest};
         let request = CredentialRequest {
             request_id: 7,
             origin: "https://example.test".into(),
@@ -619,7 +619,7 @@ tilo_test_env::scenario! {
 
     phase page_requests_are_encoded_bounded_and_always_answered;
     {
-        use crate::webview::{
+        use crate::{
             PageActor, PageFailure, PageKey, PageNavigation, PageResourceNote, PageReply, PageRequest,
         };
         // phase: page_requests_encode_to_the_host_page_op
@@ -643,7 +643,7 @@ tilo_test_env::scenario! {
             );
             // A text released for one site is written once, printed by nothing and held by
             // nothing once it is written.
-            let released = crate::webview::ReleasedText::new("released-for-one-site".to_owned());
+            let released = crate::ReleasedText::new("released-for-one-site".to_owned());
             let command = WebViewCommand::Page {
                 request_id: 5,
                 actor: None,
@@ -651,7 +651,7 @@ tilo_test_env::scenario! {
                     element: "d2e9".into(),
                     text: released.clone(),
                     at: "https://example.test".into(),
-                    into: crate::webview::FillInto::Password,
+                    into: crate::FillInto::Password,
                 },
             };
             assert!(command_within_limits(&command));
@@ -693,7 +693,7 @@ tilo_test_env::scenario! {
                         element: None,
                         key: PageKey {
                             key: "NotAKey".into(),
-                            modifiers: crate::webview::KeyModifiers::default(),
+                            modifiers: crate::KeyModifiers::default(),
                         },
                         frame: None,
                     },
@@ -741,7 +741,7 @@ tilo_test_env::scenario! {
         }
         // phase: reading_on_searching_and_forms_encode_to_the_host_page_op
         {
-            use crate::webview::FormSubmit;
+            use crate::FormSubmit;
             let read_on = WebViewCommand::Page {
                 request_id: 9,
                 actor: None,
@@ -1223,7 +1223,7 @@ tilo_test_env::scenario! {
     // says nothing more than it always did, so a host that knows no answerer
     // reads it as before.
     {
-        use crate::webview::{AnsweredBy, PageActor};
+        use crate::{AnsweredBy, PageActor};
         let rev = || AnsweredBy::Actor(PageActor::listed("agent:rev").expect("a named actor"));
         assert_eq!(
             encode_command(WebViewCommand::AnswerHeldRequest {
@@ -1889,16 +1889,16 @@ tilo_test_env::scenario! {
         assert_eq!(
             engine.drain_events(),
             [
-                WebViewEvent::PageDialog(crate::webview::PageDialog {
+                WebViewEvent::PageDialog(crate::PageDialog {
                     id: 4,
-                    kind: crate::webview::PageDialogKind::Prompt,
+                    kind: crate::PageDialogKind::Prompt,
                     origin: "https://example.org".into(),
                     message: "Your name?".into(),
                     default_text: "Ada".into(),
                 }),
-                WebViewEvent::PageDialog(crate::webview::PageDialog {
+                WebViewEvent::PageDialog(crate::PageDialog {
                     id: 5,
-                    kind: crate::webview::PageDialogKind::Leave { reload: true },
+                    kind: crate::PageDialogKind::Leave { reload: true },
                     origin: "https://example.org".into(),
                     message: String::new(),
                     default_text: String::new(),
@@ -1937,7 +1937,7 @@ tilo_test_env::scenario! {
         engine.send(WebViewCommand::AnswerPageDialog {
             id: 6,
             accept: true,
-            text: Some("x".repeat(crate::webview::MAX_PAGE_DIALOG_ANSWER + 1)),
+            text: Some("x".repeat(crate::MAX_PAGE_DIALOG_ANSWER + 1)),
         });
         assert_eq!(queued(), 0, "an answer past the host's bound is never sent");
     }
@@ -2010,7 +2010,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         let encoded: String = bytes.iter().map(|byte| format!("\\{:03o}", byte)).collect();
-        crate::testing::write_executable(
+        crate::test_support::write_executable(
             &host,
             &format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '{encoded}'\ncat >/dev/null\nprintf done > '{}'\n",
@@ -2055,7 +2055,7 @@ tilo_test_env::scenario! {
 
         let fixture = tempfile::tempdir().unwrap();
         let host = fixture.path().join("not-ready");
-        crate::testing::write_executable(&host, "#!/bin/sh\nexit 7\n");
+        crate::test_support::write_executable(&host, "#!/bin/sh\nexit 7\n");
         // A host that exits before it is ready fails the page once it is reaped; the
         // window never waited for it.
         let readiness_root = private_root();
@@ -2078,7 +2078,7 @@ tilo_test_env::scenario! {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "webview::chromium::tests::private_packaged_helper_discovery_failure_child",
+                "chromium::tests::private_packaged_helper_discovery_failure_child",
                 "--ignored",
             ])
             .env_remove(runtime::HOST_OVERRIDE_ENV)
@@ -2110,7 +2110,7 @@ tilo_test_env::scenario! {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "webview::chromium::tests::private_process_lifecycle_child",
+                "chromium::tests::private_process_lifecycle_child",
                 "--ignored",
             ])
             .env("TILO_TEST_PRIVATE_HOST", &host)
@@ -2179,7 +2179,7 @@ tilo_test_env::scenario! {
         let encoded: String = ready.iter().map(|byte| format!("\\{:03o}", byte)).collect();
         let dir = tempfile::tempdir().unwrap();
         let host = dir.path().join("host");
-        crate::testing::write_executable(
+        crate::test_support::write_executable(
             &host,
             &format!(
                 "#!/bin/sh\n\
@@ -2314,7 +2314,7 @@ tilo_test_env::scenario! {
         let mut saw_detach = false;
         while !saw_detach {
             saw_detach = detached.drain_events().contains(&WebViewEvent::TabDetached);
-            assert!(crate::time::now() < deadline, "detach acknowledgment");
+            assert!(tilo_clock::now() < deadline, "detach acknowledgment");
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(
@@ -2519,7 +2519,7 @@ pub(super) fn helper_fixture_after(
     )
     .unwrap();
     let encoded: String = bytes.iter().map(|byte| format!("\\{:03o}", byte)).collect();
-    crate::testing::write_executable(
+    crate::test_support::write_executable(
         &path,
         &format!("#!/bin/sh\n{prologue}printf '{encoded}'\n{trailing}\n"),
     );

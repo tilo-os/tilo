@@ -10,7 +10,7 @@
 //! prompt: never the page's title, and never the realm, which is the
 //! server's own text and is shown as its words. The engine asks only for the
 //! page's own document and what it loads from its own origin
-//! ([`ui::webview::http_auth`]), and an answer names the asker the prompt
+//! ([`tilo_webview::http_auth`]), and an answer names the asker the prompt
 //! showed, so what is typed goes to the one shown or nowhere.
 //!
 //! The password is a secret. It lives in the prompt's zeroizing field until
@@ -23,12 +23,12 @@
 //! says so; a newer one takes the place of one still open.
 use std::sync::{Arc, Weak};
 
-use ui::framework::LiveRow;
-use ui::tilo_actions::ResourcePresentation;
-use ui::webview::{
+use tilo_webview::{
     HttpAuthChallenge, HttpAuthCredentials, SharedEngine, WebViewCommand, WebViewEngine,
     WebViewEvent,
 };
+use ui::framework::LiveRow;
+use ui::tilo_actions::ResourcePresentation;
 use ui::widget::{ModalDialog, PromptOutcome, SecretAnswer, SecretKind, SecretPrompt, Widget};
 
 use crate::CATALOG;
@@ -350,7 +350,7 @@ fn shown_realm(realm: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::webview::test_engine::TestEngine;
+    use tilo_webview::test_engine::TestEngine;
     use ui::widget::FieldRole;
 
     const PASSWORD: &str = "correct-horse-9";

@@ -1,7 +1,7 @@
 //! Pointer-only navigation-button hold gesture.
 use ui::time::{Duration, Instant};
 
-use ui::webview::NavigationDirection;
+use tilo_webview::NavigationDirection;
 
 #[derive(Default)]
 pub struct NavigationHold {

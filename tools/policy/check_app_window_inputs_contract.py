@@ -61,10 +61,6 @@ NATIVE_RUNNER_FILES = {
     "render_thread.rs",
     "render_thread/remote.rs",
     "surface_services.rs",
-    "webview/chromium/mod.rs",
-    "webview/chromium/runtime.rs",
-    "webview/frame_trace.rs",
-    "webview/profile.rs",
     "window_icon.rs",
 }
 

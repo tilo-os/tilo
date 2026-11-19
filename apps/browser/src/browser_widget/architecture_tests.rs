@@ -86,7 +86,7 @@ fn effect_operation(payload: &[u8]) -> BrowserOperation {
         .expect("a browser effect")
         .operation()
 }
-use ui::webview::WebViewEngine;
+use tilo_webview::WebViewEngine;
 
 pub(super) fn compose(widget: &mut BrowserWidget) {
     let doc = AutoCommit::new();
@@ -380,7 +380,7 @@ fn owned_navigation_rejects_unrelated_completion_and_preserves_redirect_output()
         ) -> Result<(), String> {
             self.1.navigate_owned(request_id, command)
         }
-        fn frames(&self) -> ui::webview::FrameSlot {
+        fn frames(&self) -> tilo_webview::FrameSlot {
             self.1.frames()
         }
         fn drain_events(&self) -> Vec<WebViewEvent> {
@@ -502,7 +502,7 @@ fn loading_state_starts_stops_and_animates_only_while_live() {
             fn send(&self, command: WebViewCommand) {
                 self.capture.send(command);
             }
-            fn frames(&self) -> ui::webview::FrameSlot {
+            fn frames(&self) -> tilo_webview::FrameSlot {
                 self.capture.frames()
             }
             fn drain_events(&self) -> Vec<WebViewEvent> {
@@ -678,7 +678,7 @@ fn loading_state_starts_stops_and_animates_only_while_live() {
     }
 
     {
-        let engine = ui::webview::chromium::UnavailableEngine::new("offline".into());
+        let engine = tilo_webview::chromium::UnavailableEngine::new("offline".into());
         let mut widget = BrowserWidget::with_engine(engine, false);
         assert!(
             widget.progress < 1.0,
@@ -730,7 +730,7 @@ fn hosted_browser_affordances_are_canonical_peer_local_actions() {
                 .contains(&WebViewCommand::DownloadDecision {
                     id: 1,
                     allow: true,
-                    by: ui::webview::AnsweredBy::Person,
+                    by: tilo_webview::AnsweredBy::Person,
                 })
         );
     }
@@ -980,7 +980,7 @@ fn session_history_menus_request_real_entries_and_ignore_stale_replies() {
             fn send(&self, command: WebViewCommand) {
                 self.capture.send(command);
             }
-            fn frames(&self) -> ui::webview::FrameSlot {
+            fn frames(&self) -> tilo_webview::FrameSlot {
                 self.capture.frames()
             }
             fn drain_events(&self) -> Vec<WebViewEvent> {
@@ -999,8 +999,8 @@ fn session_history_menus_request_real_entries_and_ignore_stale_replies() {
         widget.can_go_forward = true;
         widget.current_uri = "https://b.test".into();
 
-        widget.request_navigation_history(ui::webview::NavigationDirection::Back);
-        widget.request_navigation_history(ui::webview::NavigationDirection::Forward);
+        widget.request_navigation_history(tilo_webview::NavigationDirection::Back);
+        widget.request_navigation_history(tilo_webview::NavigationDirection::Forward);
         let stale_direction_request = widget.history_request;
         engine
             .events
@@ -1008,8 +1008,8 @@ fn session_history_menus_request_real_entries_and_ignore_stale_replies() {
             .unwrap()
             .push(WebViewEvent::NavigationHistory {
                 request_id: stale_direction_request,
-                direction: ui::webview::NavigationDirection::Back,
-                entries: vec![ui::webview::NavigationEntry {
+                direction: tilo_webview::NavigationDirection::Back,
+                entries: vec![tilo_webview::NavigationEntry {
                     id: 11,
                     url: "https://a.test".into(),
                     title: "A".into(),
@@ -1023,8 +1023,8 @@ fn session_history_menus_request_real_entries_and_ignore_stale_replies() {
             WebViewEvent::UriChanged("https://new.test".into()),
             WebViewEvent::NavigationHistory {
                 request_id: stale_page_request,
-                direction: ui::webview::NavigationDirection::Forward,
-                entries: vec![ui::webview::NavigationEntry {
+                direction: tilo_webview::NavigationDirection::Forward,
+                entries: vec![tilo_webview::NavigationEntry {
                     id: 33,
                     url: "https://c.test".into(),
                     title: "C".into(),
@@ -1051,7 +1051,7 @@ fn media_fullscreen_and_renderer_events_drive_tab_state() {
             fn send(&self, command: WebViewCommand) {
                 self.capture.send(command);
             }
-            fn frames(&self) -> ui::webview::FrameSlot {
+            fn frames(&self) -> tilo_webview::FrameSlot {
                 self.capture.frames()
             }
             fn drain_events(&self) -> Vec<WebViewEvent> {
@@ -1089,7 +1089,7 @@ fn media_fullscreen_and_renderer_events_drive_tab_state() {
             fn send(&self, command: WebViewCommand) {
                 self.capture.send(command);
             }
-            fn frames(&self) -> ui::webview::FrameSlot {
+            fn frames(&self) -> tilo_webview::FrameSlot {
                 self.capture.frames()
             }
             fn drain_events(&self) -> Vec<WebViewEvent> {

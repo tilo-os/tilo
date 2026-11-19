@@ -272,7 +272,7 @@ def links_keys() -> frozenset[str]:
 # name, so with it on the edge puts nothing on the runtime's link line.
 LAZY_EDGES = {
     ("tilo-ui", "tilo-highlight-grammars"): "lazy-highlight",
-    ("tilo-ui", "tilo-content-blocker"): "lazy-adblock",
+    ("tilo-webview", "tilo-content-blocker"): "lazy-adblock",
     ("tilo-ui", "tilo-theme-painter-wasm"): "lazy-painter",
 }
 # Crates replaced because their tables are pointers the loader relocates in

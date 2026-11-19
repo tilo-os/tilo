@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
-use ui::webview::{SharedEngine, WebViewCommand};
+use tilo_webview::{SharedEngine, WebViewCommand};
 
 use crate::extension_toolbar as toolbar;
 
@@ -89,7 +89,7 @@ impl ExtensionHost {
         &mut self,
         id: &str,
         global: bool,
-        change: &ui::webview::ExtensionActionChange,
+        change: &tilo_webview::ExtensionActionChange,
     ) -> bool {
         let before = self.action_state(id);
         if global {
@@ -388,7 +388,7 @@ mod tests {
 
         phase a_page_shows_its_own_badge_until_its_next_document;
         {
-            use ui::webview::ExtensionActionChange as Change;
+            use tilo_webview::ExtensionActionChange as Change;
             let mut host = ExtensionHost::new();
             let a = id('a');
             let badge = |text: &str| Change {

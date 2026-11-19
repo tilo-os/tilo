@@ -45,7 +45,7 @@ Browser processes that use one profile therefore share one host. The first
 process to open the profile holds `<profile>.lock`, starts the host and serves
 `<profile>.sock` beside the profile directory; every later process connects
 there and drives its own tabs through that host (see
-`crates/sdk/ui-core/src/webview/chromium/shared.rs`). The owning process calls
+`crates/sdk/tilo-webview/src/chromium/shared.rs`). The owning process calls
 `ui::webview::chromium::serve_shared_until_idle()` after its event loop exits,
 so the host outlives every process still using it.
 

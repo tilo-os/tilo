@@ -10,10 +10,10 @@
 //! forms remembered of the site stand there, under its stored data, each
 //! with the button that forgets it.
 
+use tilo_webview::SiteStatus;
 use ui::i18n::ArgValue;
 use ui::tilo_resource::Effect as _;
 use ui::tokens::TextRole;
-use ui::webview::SiteStatus;
 use ui::widget::{Button, ListRow, Text, Widget};
 
 use super::BrowserWidget;

@@ -11,12 +11,12 @@ use std::sync::Arc;
 
 use crate::page_resource::agent_handle;
 
+use tilo_webview::{FormSubmit, PageFailure, PageNavigation, PageResourceNote, WebViewEngine as _};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{
     ActionFailure, ActionInvoker, ActionSpec, ApiError, InvocationUpdate, ParamType,
 };
 use ui::tilo_resource::Replica;
-use ui::webview::{FormSubmit, PageFailure, PageNavigation, PageResourceNote, WebViewEngine as _};
 
 use super::*;
 use crate::effects::BrowserEffect;
@@ -119,7 +119,7 @@ fn open(url: &str) -> (Arc<TestEngine>, TestApp<BrowserShell>) {
 
 /// A window an agent opened on `url`, whose page holds `forms`.
 fn open_on(url: &str, forms: &[serde_json::Value]) -> (Arc<TestEngine>, TestApp<BrowserShell>) {
-    launch_on(&[ui::webview::VISITOR_WINDOW_FLAG, url], forms)
+    launch_on(&[tilo_webview::VISITOR_WINDOW_FLAG, url], forms)
 }
 
 /// Close the window and open another on `url` over a new engine whose page
@@ -133,7 +133,7 @@ fn visit_again(
     page_holds(&engine, forms);
     crate::browser_widget::test_window_engine::install(engine.clone());
     let mut app = app
-        .relaunch(&[ui::webview::VISITOR_WINDOW_FLAG, url])
+        .relaunch(&[tilo_webview::VISITOR_WINDOW_FLAG, url])
         .expect("Browser opens again");
     engine.push_event(WebViewEvent::LoadFinished);
     settle(&mut app);
@@ -1086,7 +1086,7 @@ fn a_form_in_a_frame_is_answered_through_fill_page_form_with_its_frame() {
                     .clone(),
                 submit: FormSubmit::No,
                 cross_origin: false,
-                frame: ui::webview::FrameId::parse("3"),
+                frame: tilo_webview::FrameId::parse("3"),
             }
         )],
         "the frame is named to the engine by its number"
@@ -1489,7 +1489,7 @@ fn a_first_visit_publishes_a_forms_action_with_no_agent_read() {
 /// nothing; told that it offers other answers or is gone, it reads once.
 #[test]
 fn a_form_the_page_draws_later_is_an_action_once_the_engine_tells_of_it() {
-    use ui::webview::{FrameId, PageChange, PageFieldChange, PageFormChange};
+    use tilo_webview::{FrameId, PageChange, PageFieldChange, PageFormChange};
     let (engine, mut app) = open(APPLY);
     engine.set_page_events(true);
     assert!(form_actions(&mut app).is_empty());
@@ -1687,7 +1687,7 @@ impl SlowEngine {
     }
 }
 
-impl ui::webview::WebViewEngine for SlowEngine {
+impl tilo_webview::WebViewEngine for SlowEngine {
     fn create_tab(&self) -> Result<SharedEngine, String> {
         self.engine.create_tab()
     }
@@ -1703,7 +1703,7 @@ impl ui::webview::WebViewEngine for SlowEngine {
     fn accept_page_dialogs(&self) {
         self.engine.accept_page_dialogs();
     }
-    fn take_popups(&self) -> Vec<ui::webview::Popup> {
+    fn take_popups(&self) -> Vec<tilo_webview::Popup> {
         self.engine.take_popups()
     }
     fn adopt_popup(&self, popup: u32) -> Result<SharedEngine, String> {
@@ -1718,11 +1718,11 @@ impl ui::webview::WebViewEngine for SlowEngine {
     fn navigate_owned(
         &self,
         request_id: u32,
-        command: ui::webview::NavigationCommand,
+        command: tilo_webview::NavigationCommand,
     ) -> Result<(), String> {
         self.engine.navigate_owned(request_id, command)
     }
-    fn frames(&self) -> ui::webview::FrameSlot {
+    fn frames(&self) -> tilo_webview::FrameSlot {
         self.engine.frames()
     }
     fn drain_events(&self) -> Vec<WebViewEvent> {
@@ -1741,7 +1741,7 @@ impl ui::webview::WebViewEngine for SlowEngine {
     fn supports_composition(&self) -> bool {
         self.engine.supports_composition()
     }
-    fn text_field(&self) -> Option<ui::webview::TextField> {
+    fn text_field(&self) -> Option<tilo_webview::TextField> {
         self.engine.text_field()
     }
 }
@@ -1754,7 +1754,7 @@ fn a_read_answered_after_its_page_has_gone_is_dropped() {
     let engine = TestEngine::new();
     let slow = SlowEngine::over(&engine);
     crate::browser_widget::test_window_engine::install(slow.clone());
-    let mut app = TestApp::<BrowserShell>::launched(&[ui::webview::VISITOR_WINDOW_FLAG, APPLY])
+    let mut app = TestApp::<BrowserShell>::launched(&[tilo_webview::VISITOR_WINDOW_FLAG, APPLY])
         .expect("Browser opens");
     engine.push_event(WebViewEvent::LoadFinished);
     settle(&mut app);
@@ -2067,8 +2067,8 @@ fn clearing_all_site_data_forgets_every_remembered_form() {
 }
 
 /// The site's status as the engine answers it for the site panel.
-fn site_status(request_id: u32, generation: u64) -> ui::webview::SiteStatus {
-    ui::webview::SiteStatus {
+fn site_status(request_id: u32, generation: u64) -> tilo_webview::SiteStatus {
+    tilo_webview::SiteStatus {
         request_id,
         origin: SITE.into(),
         generation,

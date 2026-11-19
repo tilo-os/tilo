@@ -19,12 +19,12 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use tilo_webview::{FillInto, ReleasedText};
 use ui::collaboration::browser_service_sessions::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, Client,
     ItemField, Pending,
 };
 use ui::tilo_actions::InvocationId;
-use ui::webview::{FillInto, ReleasedText};
 
 use crate::page_items::{ItemAnswer, ItemAsk, ItemSource};
 

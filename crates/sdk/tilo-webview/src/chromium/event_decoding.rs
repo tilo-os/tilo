@@ -106,7 +106,7 @@ pub(super) fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
         });
     }
     if value["event"] == "extension_side_panel" {
-        use crate::webview::ExtensionSidePanelChange as Change;
+        use crate::ExtensionSidePanelChange as Change;
         let url = match &value["url"] {
             Value::Null => None,
             url => Some(url.as_str().filter(|url| own(url))?.to_owned()),
@@ -133,7 +133,7 @@ pub(super) fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
     let icon = |value: &Value| {
         if let Some(path) = value["path"].as_str() {
             return (path.starts_with('/') && path.len() <= 2048)
-                .then(|| crate::webview::ExtensionActionIcon::Path(path.into()));
+                .then(|| crate::ExtensionActionIcon::Path(path.into()));
         }
         let side = |key: &str| {
             u32::try_from(value[key].as_u64()?)
@@ -143,7 +143,7 @@ pub(super) fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
         let (width, height) = (side("width")?, side("height")?);
         let length = usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?;
         let rgba = decode_base64_bounded(value["data"].as_str()?, length)?;
-        (rgba.len() == length).then_some(crate::webview::ExtensionActionIcon::Pixels {
+        (rgba.len() == length).then_some(crate::ExtensionActionIcon::Pixels {
             width,
             height,
             rgba,
@@ -166,7 +166,7 @@ pub(super) fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
     Some(WebViewEvent::ExtensionAction {
         id: id.into(),
         global: value["global"].as_bool()?,
-        change: crate::webview::ExtensionActionChange {
+        change: crate::ExtensionActionChange {
             badge: field!(change, "badge", text),
             title: field!(change, "title", text),
             popup: field!(change, "popup", popup),
@@ -178,7 +178,7 @@ pub(super) fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
 
 pub(super) fn decode_site_event(value: &Value, event: &str) -> Option<WebViewEvent> {
     Some(match event {
-        "site_status" => WebViewEvent::SiteStatus(crate::webview::SiteStatus {
+        "site_status" => WebViewEvent::SiteStatus(crate::SiteStatus {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             origin: value["origin"].as_str()?.into(),
             generation: wire_u64(&value["generation"])?,
@@ -216,7 +216,7 @@ pub(super) fn decode_site_event(value: &Value, event: &str) -> Option<WebViewEve
 const MAX_PAGE_DIALOG_TEXT: usize = 16 * 1024;
 
 /// A `js_dialog` event: the page's question, its texts within the host's bounds.
-pub(super) fn decode_page_dialog(value: &Value) -> Option<crate::webview::PageDialog> {
+pub(super) fn decode_page_dialog(value: &Value) -> Option<crate::PageDialog> {
     let text = |key: &str| {
         value[key]
             .as_str()
@@ -224,15 +224,15 @@ pub(super) fn decode_page_dialog(value: &Value) -> Option<crate::webview::PageDi
             .map(str::to_owned)
     };
     let kind = match value["kind"].as_str()? {
-        "alert" => crate::webview::PageDialogKind::Alert,
-        "confirm" => crate::webview::PageDialogKind::Confirm,
-        "prompt" => crate::webview::PageDialogKind::Prompt,
-        "beforeunload" => crate::webview::PageDialogKind::Leave {
+        "alert" => crate::PageDialogKind::Alert,
+        "confirm" => crate::PageDialogKind::Confirm,
+        "prompt" => crate::PageDialogKind::Prompt,
+        "beforeunload" => crate::PageDialogKind::Leave {
             reload: value["reload"].as_bool()?,
         },
         _ => return None,
     };
-    Some(crate::webview::PageDialog {
+    Some(crate::PageDialog {
         id: u32::try_from(value["id"].as_u64()?)
             .ok()
             .filter(|_| valid_id(value))?,
@@ -248,9 +248,7 @@ pub(super) fn decode_page_dialog(value: &Value) -> Option<crate::webview::PageDi
 
 /// An `extension_shortcuts` event: the keys extensions' commands hold, each a key as
 /// Chrome names it with its modifiers, at most 256.
-pub(super) fn decode_extension_shortcuts(
-    value: &Value,
-) -> Option<Vec<crate::webview::ExtensionShortcut>> {
+pub(super) fn decode_extension_shortcuts(value: &Value) -> Option<Vec<crate::ExtensionShortcut>> {
     const NAMED: [&str; 13] = [
         "Comma", "Period", "Space", "Home", "End", "PageUp", "PageDown", "Delete", "Tab", "Up",
         "Down", "Left", "Right",
@@ -268,9 +266,9 @@ pub(super) fn decode_extension_shortcuts(
                     || NAMED.contains(key)
             })?;
             let flag = |name: &str| entry[name].as_bool();
-            Some(crate::webview::ExtensionShortcut {
+            Some(crate::ExtensionShortcut {
                 key: key.to_owned(),
-                modifiers: crate::webview::KeyModifiers {
+                modifiers: crate::KeyModifiers {
                     ctrl: flag("ctrl")?,
                     shift: flag("shift")?,
                     alt: flag("alt")?,
@@ -296,8 +294,8 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
         .ok_or("missing event name")?;
     let text = |key: &str| value.get(key).is_some_and(Value::is_string);
     let valid = match event {
-        "credential_result" => crate::webview::CredentialReply::decode(value).is_some(),
-        "service_session_result" => crate::webview::ServiceSessionReply::decode(value).is_some(),
+        "credential_result" => crate::CredentialReply::decode(value).is_some(),
+        "service_session_result" => crate::ServiceSessionReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
         "extension_action"
         | "extension_open_popup"
@@ -469,8 +467,7 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
             value["request_id"]
                 .as_u64()
                 .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
-                && crate::webview::NavigationDirection::from_wire(value["direction"].as_str())
-                    .is_some()
+                && crate::NavigationDirection::from_wire(value["direction"].as_str()).is_some()
                 && value["entries"].as_array().is_some_and(|entries| {
                     entries.len() <= 12
                         && entries.iter().all(|entry| {
@@ -482,9 +479,9 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
         }
         "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
         "text_field" | "ime_composition_bounds" => text_field::valid_event(event, value),
-        "page_result" | "text_input_result" => crate::webview::page::decode_result(value).is_some(),
-        "page_resource" => crate::webview::page::decode_resource_event(value).is_some(),
-        "page_changed" => crate::webview::page::decode_changed_event(value).is_some(),
+        "page_result" | "text_input_result" => crate::page::decode_result(value).is_some(),
+        "page_resource" => crate::page::decode_resource_event(value).is_some(),
+        "page_changed" => crate::page::decode_changed_event(value).is_some(),
         "paint_snapshot" | "paint_resource" => {
             value["request_id"]
                 .as_u64()

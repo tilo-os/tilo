@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 use crate::page_resource::agent_handle;
 
-use ui::tilo_actions::{ActionInvoker, ActionSpec, InvocationId, InvocationUpdate};
-use ui::webview::{
+use tilo_webview::{
     FrameId, PageActor, PageFailure, PageKey, PageNavigation, PageResourceNote, WebViewEngine as _,
 };
+use ui::tilo_actions::{ActionInvoker, ActionSpec, InvocationId, InvocationUpdate};
 
 use super::page_turns::{MAX_WAITING_PAGE_ACTIONS, PAGE_TURN_WAIT};
 use super::tests::{effect_operation, synced};
@@ -844,7 +844,7 @@ fn an_action_that_navigates_completes_on_the_page_it_opened() {
         outline: None,
         data: None,
         image: None,
-        navigation: ui::webview::PageNavigation::Started,
+        navigation: tilo_webview::PageNavigation::Started,
         loading: true,
         record: PageResourceNote::default(),
     }));
@@ -1277,7 +1277,7 @@ fn run_page_action(widget: &mut BrowserWidget, id: &str, args: &serde_json::Valu
 fn an_agent_typing_into_a_password_field_signs_a_visitors_page_in() {
     use ui::permissions::policy::Answer::{Allow, Ask};
     let field = |purpose| {
-        Some(ui::webview::TextField {
+        Some(tilo_webview::TextField {
             purpose,
             multiline: false,
             bounds: None,
@@ -2330,7 +2330,7 @@ fn a_pages_forms_are_read_and_answered_by_the_names_they_ask_under() {
             PageRequest::FillForm {
                 form: "form1".into(),
                 answers: object(first_answers),
-                submit: ui::webview::FormSubmit::First,
+                submit: tilo_webview::FormSubmit::First,
                 cross_origin: false,
                 frame: None,
             },
@@ -2339,14 +2339,14 @@ fn a_pages_forms_are_read_and_answered_by_the_names_they_ask_under() {
                 answers: object(
                     serde_json::json!({"Which country?": "Portugal", "Newsletter": false})
                 ),
-                submit: ui::webview::FormSubmit::Button("Send application".into()),
+                submit: tilo_webview::FormSubmit::Button("Send application".into()),
                 cross_origin: true,
                 frame: None,
             },
             PageRequest::FillForm {
                 form: "form1".into(),
                 answers: object(serde_json::json!({"Arrival": "2027-02-03"})),
-                submit: ui::webview::FormSubmit::No,
+                submit: tilo_webview::FormSubmit::No,
                 cross_origin: false,
                 frame: None,
             },
@@ -2516,7 +2516,7 @@ fn a_forms_answers_are_bounded_before_they_reach_the_page() {
         vec![PageRequest::FillForm {
             form: "form1".into(),
             answers: serde_json::Map::new(),
-            submit: ui::webview::FormSubmit::First,
+            submit: tilo_webview::FormSubmit::First,
             cross_origin: false,
             frame: None,
         }]

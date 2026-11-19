@@ -22,12 +22,12 @@ use tilo_desktop_surface::{
     DesktopHandle, DesktopSurface, NeighbourMsg, PeerId, PeerStreamStart, PeerSurfaces,
     StreamState, SurfaceId, TileSource, seed_tree,
 };
+use tilo_webview::test_engine::TestEngine;
+use tilo_webview::{WebViewCommand, WebViewEngine};
 use ui::headless::FrameHarness;
 use ui::offscreen::OffscreenRenderer;
 use ui::webview::paint::stream::wire::Payload;
 use ui::webview::paint::{PageCanvas, PaintEngine};
-use ui::webview::test_engine::TestEngine;
-use ui::webview::{WebViewCommand, WebViewEngine};
 
 /// The engine's page: a snapshot with a header, a sidebar and a button.
 const TOP: &str = include_str!("../../../browser/paint-stream/tests/fixtures/layers.top.json");

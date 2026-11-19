@@ -272,7 +272,7 @@ tilo_test_env::scenario! {
             "the owner draws none of it"
         );
 
-        let other = crate::webview::PixelRect {
+        let other = crate::PixelRect {
             x: 40,
             y: 30,
             width: 4,
@@ -285,7 +285,7 @@ tilo_test_env::scenario! {
         assert_eq!(folded.rects, [caret(), other]);
         assert!(queued(&tx).is_empty());
 
-        let all = crate::webview::PixelRect {
+        let all = crate::PixelRect {
             x: 0,
             y: 0,
             width: 64,
@@ -339,7 +339,7 @@ tilo_test_env::scenario! {
     }
 }
 
-fn wire_damage(rects: Vec<crate::webview::PixelRect>, bgra: [u8; 4]) -> damage::WireDamage {
+fn wire_damage(rects: Vec<crate::PixelRect>, bgra: [u8; 4]) -> damage::WireDamage {
     let area: u32 = rects.iter().map(|rect| rect.width * rect.height).sum();
     damage::WireDamage {
         width: 64,
@@ -349,8 +349,8 @@ fn wire_damage(rects: Vec<crate::webview::PixelRect>, bgra: [u8; 4]) -> damage::
     }
 }
 
-fn caret() -> crate::webview::PixelRect {
-    crate::webview::PixelRect {
+fn caret() -> crate::PixelRect {
+    crate::PixelRect {
         x: 20,
         y: 10,
         width: 2,

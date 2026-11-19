@@ -22,7 +22,6 @@ mod text_field;
 pub use service_session_probe::service_session_capability;
 pub use shared::serve_shared_until_idle;
 
-use crate::time::Duration;
 use std::collections::{HashMap, VecDeque};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -30,6 +29,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::mpsc::sync_channel;
 use std::sync::{Arc, Condvar, Mutex, Weak};
+use tilo_clock::time::Duration;
 
 use super::{
     FrameSlot, KeyInput, MouseButton, NavigationCommand, WebViewCommand, WebViewEngine,
@@ -41,7 +41,7 @@ use tilo_lock::MutexRecover as _;
 
 /// How long the engine holds a page's departure for an answer: the longest it
 /// lets one wait (`apps/browser/chromium/src/departures.h`). Browser answers
-/// within it ([`crate::webview::HeldRequest`]), and a person asked on another
+/// within it ([`crate::HeldRequest`]), and a person asked on another
 /// device needs the time to get to it.
 const HOLD_WAIT_MS: u64 = 600_000;
 
@@ -858,7 +858,7 @@ fn supervise_child(
         }
         let mut deadline = None;
         if supervisor_shared.stopping.load(Ordering::Acquire) {
-            let began = shutdown_started.get_or_insert_with(crate::time::now);
+            let began = shutdown_started.get_or_insert_with(tilo_clock::now);
             let Some(left) = HOST_SHUTDOWN_GRACE.checked_sub(began.elapsed()) else {
                 let _ = child.kill();
                 break child.wait().is_ok();
@@ -1443,13 +1443,13 @@ impl WebViewEngine for ChromiumEngine {
         *self.shared.text_field.lock_recover()
     }
 
-    fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+    fn handle_undo_request(&self, request: crate::UndoRequest) -> bool {
         if !self.supports_text_input() || !self.shared.native_edit_history.load(Ordering::Acquire) {
             return false;
         }
         let direction = match request {
-            crate::undo::UndoRequest::Undo => "undo",
-            crate::undo::UndoRequest::Redo => "redo",
+            crate::UndoRequest::Undo => "undo",
+            crate::UndoRequest::Redo => "redo",
         };
         self.tx
             .push(json!({"op":"edit_history","tab":self.tab,"direction":direction}))
@@ -2158,14 +2158,14 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             *request_id > 0
                 && i32::try_from(*request_id).is_ok()
                 && !(nodes.is_empty() && families.is_empty())
-                && nodes.len() <= super::paint::MAX_SHOWN_FIELDS
+                && nodes.len() <= crate::MAX_SHOWN_FIELDS
                 && nodes
                     .iter()
                     .all(|node| *node > 0 && i32::try_from(*node).is_ok())
-                && families.len() <= super::paint::MAX_SHOWN_FAMILIES
-                && families.iter().all(|family| {
-                    !family.is_empty() && family.len() <= super::paint::MAX_FAMILY_LIST
-                })
+                && families.len() <= crate::MAX_SHOWN_FAMILIES
+                && families
+                    .iter()
+                    .all(|family| !family.is_empty() && family.len() <= crate::MAX_FAMILY_LIST)
         }
         WebViewCommand::ExtensionAccess {
             id,

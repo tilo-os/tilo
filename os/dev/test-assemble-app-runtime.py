@@ -315,7 +315,7 @@ class EngineRuntimeShips(unittest.TestCase):
         return ASSEMBLER.engine_pins(SOURCE.parents[2])
 
     def test_the_browser_pins_exactly_the_engine_the_source_names(self):
-        source = (SOURCE.parents[2] / 'crates/sdk/ui-core/src/webview/chromium/runtime.rs').read_text()
+        source = (SOURCE.parents[2] / 'crates/sdk/tilo-webview/src/chromium/runtime.rs').read_text()
         version = re.search(r'pub const RUNTIME_REF: &str = "([^"]+)";', source).group(1)
         self.assertEqual(self.pinned(), [version])
 

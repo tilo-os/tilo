@@ -8,7 +8,7 @@ tilo_test_env::scenario! {
 
     phase an_extension_asks_for_more_access_through_the_window;
     {
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         let set = |permissions: &[&str], origins: &[&str]| ExtensionPermissionSet {
@@ -24,7 +24,7 @@ tilo_test_env::scenario! {
         off.enabled = false;
         controller.installed = vec![installed("permit", Some("popup.html"), access), off];
         controller.tell_access(&shared);
-        let grants = |window: &ui::webview::test_engine::TestEngine| {
+        let grants = |window: &tilo_webview::test_engine::TestEngine| {
             window
                 .commands()
                 .into_iter()
@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
     phase the_person_sees_and_revokes_what_an_extension_was_allowed_later;
     {
         use ui::framework::HostDelivery as _;
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let profile = tempfile::tempdir().unwrap();
         let path = profile.path().join("permit");
@@ -235,7 +235,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
-    let window = ui::webview::test_engine::TestEngine::new();
+    let window = tilo_webview::test_engine::TestEngine::new();
     let shared: SharedEngine = window.clone();
     let mut controller = ExtensionController::new(true);
     let shortcuts = serde_json::json!({"_execute_action": {"suggested_key": "Alt+Shift+Y"}});
@@ -250,7 +250,7 @@ fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
     };
     controller.installed = vec![installed("reader", None, tabs)];
     controller.tell_access(&shared);
-    let told = |window: &ui::webview::test_engine::TestEngine| {
+    let told = |window: &tilo_webview::test_engine::TestEngine| {
         window
             .commands()
             .into_iter()
@@ -292,7 +292,8 @@ fn the_engine_learns_what_each_extension_may_do_as_it_changes() {
     assert_eq!(told(&window).len(), 2, "told once while it stays the same");
     // Turned off, it does not run: its keyboard shortcuts go back to the
     // page, and come back when it is turned on.
-    let shortcuts_told = |window: &ui::webview::test_engine::TestEngine| match told(window).last() {
+    let shortcuts_told = |window: &tilo_webview::test_engine::TestEngine| match told(window).last()
+    {
         Some(WebViewCommand::ExtensionAccess { id, commands, .. }) if id == "reader" => {
             commands.clone()
         }

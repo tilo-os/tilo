@@ -218,7 +218,7 @@ impl Mixer {
 
     fn run(&self) {
         let mut output: Option<Box<dyn Output>> = None;
-        let mut silent_since = crate::time::now();
+        let mut silent_since = tilo_clock::now();
         let mut retry_after = None;
         loop {
             let packet = {
@@ -251,8 +251,8 @@ impl Mixer {
                 close(&mut output);
                 continue;
             };
-            silent_since = crate::time::now();
-            if retry_after.is_some_and(|at: crate::time::Instant| at > silent_since) {
+            silent_since = tilo_clock::now();
+            if retry_after.is_some_and(|at: tilo_clock::time::Instant| at > silent_since) {
                 continue;
             }
             if output.is_none() {
@@ -270,7 +270,7 @@ impl Mixer {
             {
                 tracing::warn!(%error, "page audio output failed; reopening");
                 close(&mut output);
-                retry_after = Some(crate::time::now() + REOPEN_BACKOFF);
+                retry_after = Some(tilo_clock::now() + REOPEN_BACKOFF);
             }
         }
     }

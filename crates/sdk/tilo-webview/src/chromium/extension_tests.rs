@@ -121,12 +121,12 @@ tilo_test_env::scenario! {
             Some(WebViewEvent::ExtensionAction {
                 id: id.into(),
                 global: false,
-                change: crate::webview::ExtensionActionChange {
+                change: crate::ExtensionActionChange {
                     badge: Some(Some("12".into())),
                     title: Some(None),
                     popup: Some(Some(format!("chrome-extension://{id}/popup.html"))),
                     enabled: Some(Some(false)),
-                    icon: Some(Some(crate::webview::ExtensionActionIcon::Path(
+                    icon: Some(Some(crate::ExtensionActionIcon::Path(
                         "/on.png".into()
                     ))),
                 },
@@ -141,14 +141,14 @@ tilo_test_env::scenario! {
             Some(WebViewEvent::ExtensionAction {
                 id: id.into(),
                 global: true,
-                change: crate::webview::ExtensionActionChange {
+                change: crate::ExtensionActionChange {
                     popup: Some(Some(String::new())),
-                    icon: Some(Some(crate::webview::ExtensionActionIcon::Pixels {
+                    icon: Some(Some(crate::ExtensionActionIcon::Pixels {
                         width: 1,
                         height: 1,
                         rgba: vec![1, 2, 3, 4],
                     })),
-                    ..crate::webview::ExtensionActionChange::default()
+                    ..crate::ExtensionActionChange::default()
                 },
             })
         );
@@ -187,7 +187,7 @@ tilo_test_env::scenario! {
 
     phase a_page_menu_arrives_with_check_marks_separators_and_submenus;
     {
-        use crate::webview::ContextMenuItem;
+        use crate::ContextMenuItem;
         let event = |value: Value| {
             validate_event(&value).ok()?;
             decode_event(&value)
@@ -269,7 +269,7 @@ tilo_test_env::scenario! {
 
     phase an_extensions_button_menu_arrives_and_a_choice_names_its_item;
     {
-        use crate::webview::ExtensionMenuItem;
+        use crate::ExtensionMenuItem;
         let id = "abcdefghijklmnopabcdefghijklmnop";
         let event = |value: Value| {
             validate_event(&value).ok()?;
@@ -373,7 +373,7 @@ tilo_test_env::scenario! {
             Some(WebViewEvent::ExtensionNotification {
                 id: id.into(),
                 notification: "copy".into(),
-                notice: Some(crate::webview::ExtensionNotice {
+                notice: Some(crate::ExtensionNotice {
                     title: "Copying".into(),
                     message: "Two files".into(),
                     context: String::new(),
@@ -445,7 +445,7 @@ tilo_test_env::scenario! {
     phase an_extensions_request_for_more_access_reaches_the_browser_and_its_answer_the_engine;
     {
         let id = "abcdefghijklmnopabcdefghijklmnop";
-        let set = |permissions: &[&str], origins: &[&str]| crate::webview::ExtensionPermissionSet {
+        let set = |permissions: &[&str], origins: &[&str]| crate::ExtensionPermissionSet {
             permissions: permissions.iter().map(|&entry| entry.to_owned()).collect(),
             origins: origins.iter().map(|&entry| entry.to_owned()).collect(),
         };
@@ -482,7 +482,7 @@ tilo_test_env::scenario! {
             },
             WebViewCommand::ExtensionGrants {
                 id: id.into(),
-                optional: crate::webview::ExtensionPermissionSet {
+                optional: crate::ExtensionPermissionSet {
                     permissions: vec![String::new(); 513],
                     origins: Vec::new(),
                 },
@@ -629,7 +629,7 @@ tilo_test_env::scenario! {
 
     phase what_follows_an_extensions_keyword_goes_to_it_and_its_suggestions_come_back;
     {
-        use crate::webview::{OmniboxInput, OmniboxSuggestion};
+        use crate::{OmniboxInput, OmniboxSuggestion};
         let id = "abcdefghijklmnopabcdefghijklmnop";
         let omnibox = |input: OmniboxInput| WebViewCommand::ExtensionOmnibox {
             id: id.into(),
@@ -731,7 +731,7 @@ tilo_test_env::scenario! {
 
     phase an_extensions_side_panel_opens_closes_and_follows_its_options;
     {
-        use crate::webview::ExtensionSidePanelChange as Change;
+        use crate::ExtensionSidePanelChange as Change;
         let id = "abcdefghijklmnopabcdefghijklmnop";
         let page = format!("chrome-extension://{id}/panel.html");
         let event = |value: Value| {
@@ -787,7 +787,7 @@ tilo_test_env::scenario! {
 
     phase a_side_panels_tab_and_a_shortcut_pressed_in_the_browsers_field_reach_the_host;
     {
-        use crate::webview::{ExtensionShortcut, KeyModifiers, NamedKey};
+        use crate::{ExtensionShortcut, KeyModifiers, NamedKey};
         let id = "abcdefghijklmnopabcdefghijklmnop";
         assert_eq!(
             encode_command(WebViewCommand::ExtensionSidePanelPage { id: id.into() }),

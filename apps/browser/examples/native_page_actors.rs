@@ -517,7 +517,7 @@ fn main() -> Result<(), Failure> {
     }
     let host = host_argument()?;
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(ui::webview::chromium::runtime::HOST_OVERRIDE_ENV, &host);
+    environment.set(tilo_webview::chromium::runtime::HOST_OVERRIDE_ENV, &host);
     let server = FixtureServer::start()?;
     let url = format!("http://{}/", server.address);
     let mut app = App::new()?;

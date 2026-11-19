@@ -18,7 +18,7 @@
 //! loaded, is that read. What the engine says is never what a field holds:
 //! that is read from the page.
 
-use ui::webview::PageChange;
+use tilo_webview::PageChange;
 
 use super::BrowserWidget;
 use crate::site_memory::Place;

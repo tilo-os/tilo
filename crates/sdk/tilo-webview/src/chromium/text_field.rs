@@ -2,7 +2,7 @@
 //! wire: the `key` and `ime_*` ops the host is told, and its `text_field`
 //! and `ime_composition_bounds` reports.
 
-use crate::webview::{KeyInput, WebViewCommand};
+use crate::{KeyInput, WebViewCommand};
 use serde_json::{Value, json};
 use std::sync::Mutex;
 use tilo_lock::MutexRecover as _;
@@ -13,7 +13,7 @@ pub(super) const IME_COMPOSITION_LIMIT: usize = 4096;
 
 /// A box the host reports in physical view pixels: finite, inside the largest view the
 /// host draws, and not empty.
-pub(super) fn wire_rect(value: &Value) -> Option<vello::kurbo::Rect> {
+pub(super) fn wire_rect(value: &Value) -> Option<kurbo::Rect> {
     let number = |key: &str| {
         value
             .get(key)
@@ -22,15 +22,15 @@ pub(super) fn wire_rect(value: &Value) -> Option<vello::kurbo::Rect> {
     };
     let (x, y) = (number("x")?, number("y")?);
     let (width, height) = (number("width")?, number("height")?);
-    (width >= 0.0 && height > 0.0).then(|| vello::kurbo::Rect::new(x, y, x + width, y + height))
+    (width >= 0.0 && height > 0.0).then(|| kurbo::Rect::new(x, y, x + width, y + height))
 }
 
 /// The focused field after a host's `text_field` or `ime_composition_bounds` event.
 pub(super) fn text_field_event(
     event_name: &str,
     value: &Value,
-    known: Option<crate::webview::TextField>,
-) -> Option<crate::webview::TextField> {
+    known: Option<crate::TextField>,
+) -> Option<crate::TextField> {
     if event_name == "ime_composition_bounds" {
         let mut field = known?;
         field.composition = wire_rect(value);
@@ -40,15 +40,15 @@ pub(super) fn text_field_event(
         return None;
     }
     let purpose = match value.get("purpose").and_then(Value::as_str) {
-        Some("password") => crate::ime::InputPurpose::Password,
-        Some("email") => crate::ime::InputPurpose::Email,
-        Some("url") => crate::ime::InputPurpose::Url,
-        Some("phone") => crate::ime::InputPurpose::Phone,
-        Some("number") => crate::ime::InputPurpose::Number,
-        Some("search") => crate::ime::InputPurpose::Search,
-        _ => crate::ime::InputPurpose::Text,
+        Some("password") => crate::InputPurpose::Password,
+        Some("email") => crate::InputPurpose::Email,
+        Some("url") => crate::InputPurpose::Url,
+        Some("phone") => crate::InputPurpose::Phone,
+        Some("number") => crate::InputPurpose::Number,
+        Some("search") => crate::InputPurpose::Search,
+        _ => crate::InputPurpose::Text,
     };
-    Some(crate::webview::TextField {
+    Some(crate::TextField {
         purpose,
         multiline: value.get("multiline").and_then(Value::as_bool) == Some(true),
         bounds: wire_rect(value),
@@ -75,7 +75,7 @@ pub(super) fn valid_event(event: &str, value: &Value) -> bool {
 
 /// Takes a host report into the engine's focused field; the window places the input
 /// method from it on its next frame.
-pub(super) fn update(field: &Mutex<Option<crate::webview::TextField>>, event: &str, value: &Value) {
+pub(super) fn update(field: &Mutex<Option<crate::TextField>>, event: &str, value: &Value) {
     let mut field = field.lock_recover();
     *field = text_field_event(event, value, *field);
 }
@@ -84,7 +84,7 @@ pub(super) fn update(field: &Mutex<Option<crate::webview::TextField>>, event: &s
 pub(super) fn within_limits(command: &WebViewCommand) -> bool {
     match command {
         WebViewCommand::Key { key, code, .. } => {
-            code.is_none_or(crate::webview::key_code::known)
+            code.is_none_or(crate::key_code::known)
                 && !matches!(key, KeyInput::Character(text) if text.len() > 65536)
         }
         WebViewCommand::ImeComposition { text, .. } => text.len() <= IME_COMPOSITION_LIMIT,
