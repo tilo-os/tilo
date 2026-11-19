@@ -94,15 +94,13 @@ pub enum CameraEffect {
         seconds: String,
     },
     /// Show composition grid
-    #[effect(kind = "outside")]
-    #[effect(label = "camera-a11y-composition-grid")]
+    #[effect(screen, label = "camera-a11y-composition-grid")]
     SetGrid {
         #[param("Whether the grid is shown")]
         on: bool,
     },
     /// Show level guide
-    #[effect(kind = "outside")]
-    #[effect(label = "camera-settings-level")]
+    #[effect(screen, label = "camera-settings-level")]
     SetLevel {
         #[param("Whether the level guide is shown")]
         on: bool,
@@ -159,7 +157,7 @@ pub enum CameraEffect {
     /// Open camera privacy settings
     #[effect(kind = "outside")]
     #[effect(row, on = Capture)]
-    #[effect(label = "camera-a11y-camera-privacy")]
+    #[effect(own_device, label = "camera-a11y-camera-privacy")]
     OpenCameraPrivacy,
     /// Use camera
     #[effect(kind = "outside")]
@@ -253,6 +251,7 @@ fn capture_handoff(is_video: bool, content_hash: Option<&str>) -> Option<ActionS
 pub(crate) fn handoff_spec(is_video: bool, bindings: &RowBindings) -> Option<ActionSpec> {
     let hash = bindings
         .arguments(HANDOFF_ACTION)?
+        .first()?
         .get("content_hash")?
         .as_str()?;
     capture_handoff(is_video, Some(hash))
@@ -863,10 +862,8 @@ mod tests {
                 );
             }
             {
-                let ids: Vec<String> = CameraEffect::specs()
-                    .into_iter()
-                    .map(|spec| spec.id.clone())
-                    .collect();
+                let specs = CameraEffect::specs();
+                let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
                 for id in [
                     "use-mode",
                     "use-lens",
@@ -881,10 +878,29 @@ mod tests {
                     "set-default-lens",
                 ] {
                     assert!(
-                        ids.iter().any(|known| known == id),
+                        ids.contains(&id),
                         "missing preference {id}: {ids:?}"
                     );
                 }
+                // The grid and the level change only this window, and the
+                // privacy sheet opens on the person's own device: neither
+                // asks a workspace's grants.
+                for id in ["set-grid", "set-level"] {
+                    let spec = specs
+                        .iter()
+                        .find(|spec| spec.id == id)
+                        .expect("a capture preference");
+                    assert!(
+                        spec.contract.only_shows(),
+                        "{id} only changes this window's viewfinder"
+                    );
+                }
+                let privacy = CameraEffect::spec("open-camera-privacy")
+                    .expect("the privacy sheet");
+                assert!(
+                    privacy.contract.is_own_device(),
+                    "the privacy sheet is of the person's own device"
+                );
             }
             {
                 let resources = provide_resources(&CameraResourceCtx {
