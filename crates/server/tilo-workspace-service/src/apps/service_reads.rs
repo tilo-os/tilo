@@ -34,14 +34,24 @@ enum Held {
 /// A read waits on the service's state from the calling thread, as the broker's read API is
 /// synchronous: the service's own tasks must be driven by a runtime with a worker of its own, never
 /// by the thread that calls here.
+///
+/// A workspace the service holds no copy of is answered by `fallback`, when there is one: a device
+/// that joined a workspace another device serves keeps that workspace in its own replica, and the
+/// service it governs its own workspaces on holds none of it.
 #[derive(Clone)]
-pub struct ServiceReads(Held);
+pub struct ServiceReads {
+    held: Held,
+    fallback: Option<std::sync::Arc<dyn NativeDocumentReads>>,
+}
 
 impl ServiceReads {
     /// Reads of the resources of the workspaces `workspaces` governs.
     #[must_use]
     pub const fn new(workspaces: Workspaces) -> Self {
-        Self(Held::Service(workspaces))
+        Self {
+            held: Held::Service(workspaces),
+            fallback: None,
+        }
     }
 
     /// Reads of the resources of the workspaces held by the service whose embedder holds
@@ -49,20 +59,78 @@ impl ServiceReads {
     /// reaching the service's own thread.
     #[must_use]
     pub const fn on(service: ServiceSlot) -> Self {
-        Self(Held::Unopened(service))
+        Self {
+            held: Held::Unopened(service),
+            fallback: None,
+        }
+    }
+
+    /// The reads that answer for a workspace this service holds no copy of: the device's own
+    /// replica of the workspaces another device serves.
+    #[must_use]
+    pub fn answered_by(self, fallback: std::sync::Arc<dyn NativeDocumentReads>) -> Self {
+        Self {
+            fallback: Some(fallback),
+            ..self
+        }
     }
 
     /// The workspaces to answer from, once a service holds any.
     fn workspaces(&self) -> Option<Workspaces> {
-        match &self.0 {
+        match &self.held {
             Held::Service(workspaces) => Some(workspaces.clone()),
             Held::Unopened(service) => Some(service.service()?.workspaces().clone()),
         }
+    }
+
+    /// Whether this service holds anything of `workspace`: the one it governs, or a member copy.
+    fn holds_workspace(&self, workspace: &str) -> bool {
+        self.workspaces()
+            .is_some_and(|workspaces| block_on(workspaces.holds_workspace(workspace)))
+    }
+
+    /// Whether this service holds `app`'s `resource` in a workspace it holds.
+    fn service_holds_resource(&self, workspace: &str, app: &str, resource: &str) -> bool {
+        self.workspaces()
+            .is_some_and(|workspaces| block_on(workspaces.holds_resource(workspace, app, resource)))
+    }
+
+    /// The reads for `workspace` when this service holds no copy of it, or `None` when it does or
+    /// nothing else answers.
+    fn elsewhere(&self, workspace: &str) -> Option<&std::sync::Arc<dyn NativeDocumentReads>> {
+        if self.holds_workspace(workspace) {
+            return None;
+        }
+        self.fallback.as_ref()
+    }
+
+    /// The reads for `app`'s `resource` in `workspace`: the service's when it holds the workspace
+    /// and anything of the resource, and the device's own replica for a workspace it holds none of,
+    /// or a resource only that replica holds.
+    fn resource_elsewhere(
+        &self,
+        workspace: &str,
+        app: &str,
+        resource: &str,
+    ) -> Option<&std::sync::Arc<dyn NativeDocumentReads>> {
+        let fallback = self.fallback.as_ref()?;
+        if !self.holds_workspace(workspace) {
+            return Some(fallback);
+        }
+        if self.service_holds_resource(workspace, app, resource) {
+            return None;
+        }
+        fallback
+            .holds_resource(workspace, app, resource)
+            .then_some(fallback)
     }
 }
 
 impl NativeDocumentReads for ServiceReads {
     fn seals_documents(&self, workspace: &str) -> bool {
+        if let Some(elsewhere) = self.elsewhere(workspace) {
+            return elsewhere.seals_documents(workspace);
+        }
         self.workspaces()
             .is_some_and(|workspaces| block_on(workspaces.seals_resources(workspace)))
     }
@@ -73,10 +141,16 @@ impl NativeDocumentReads for ServiceReads {
         app: &str,
         resource: &str,
     ) -> Option<collab_types::OwnResource> {
+        if let Some(elsewhere) = self.resource_elsewhere(workspace, app, resource) {
+            return elsewhere.own_resource(workspace, app, resource);
+        }
         block_on(self.workspaces()?.own_resource(workspace, app, resource))
     }
 
     fn resource_read(&self, workspace: &str, app: &str, resource: &str) -> ResourceRead {
+        if let Some(elsewhere) = self.resource_elsewhere(workspace, app, resource) {
+            return elsewhere.resource_read(workspace, app, resource);
+        }
         match self.workspaces() {
             Some(workspaces) if block_on(workspaces.holds_resource(workspace, app, resource)) => {
                 ResourceRead::Sealed
@@ -86,6 +160,9 @@ impl NativeDocumentReads for ServiceReads {
     }
 
     fn holds_resource(&self, workspace: &str, app: &str, resource: &str) -> bool {
+        if let Some(elsewhere) = self.resource_elsewhere(workspace, app, resource) {
+            return elsewhere.holds_resource(workspace, app, resource);
+        }
         self.workspaces()
             .is_some_and(|workspaces| block_on(workspaces.holds_resource(workspace, app, resource)))
     }
@@ -94,7 +171,12 @@ impl NativeDocumentReads for ServiceReads {
         &self,
         context: &NativeDocumentReadContext,
     ) -> Option<AwaitingDocument> {
-        let _ = context;
+        let route = context.route();
+        if let Some(elsewhere) =
+            self.resource_elsewhere(&route.cluster_id, &route.app_id, &route.document_id)
+        {
+            return elsewhere.await_arriving_document(context);
+        }
         // The service keeps what the workspace retains, and a resource it holds nothing of is one
         // the workspace has none of.
         None
@@ -102,6 +184,11 @@ impl NativeDocumentReads for ServiceReads {
 
     fn chain_head_answer(&self, context: &NativeDocumentReadContext) -> Option<ChainHeadAnswer> {
         let route = context.route();
+        if let Some(elsewhere) =
+            self.resource_elsewhere(&route.cluster_id, &route.app_id, &route.document_id)
+        {
+            return elsewhere.chain_head_answer(context);
+        }
         if !matches!(
             neighbour_wire::document_sync(&route.document_id),
             neighbour_wire::DocumentSync::ChainHead { .. }
@@ -125,6 +212,11 @@ impl NativeDocumentReads for ServiceReads {
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
         context.revalidate()?;
         let route = context.route();
+        if let Some(elsewhere) =
+            self.resource_elsewhere(&route.cluster_id, &route.app_id, &route.document_id)
+        {
+            return elsewhere.authorize(context);
+        }
         let workspaces = self
             .workspaces()
             .ok_or("this device's workspace service holds no workspaces")?;
@@ -145,6 +237,11 @@ impl NativeDocumentReads for ServiceReads {
     ) -> Result<NativeDocumentRead, String> {
         context.revalidate()?;
         let route = context.route();
+        if let Some(elsewhere) =
+            self.resource_elsewhere(&route.cluster_id, &route.app_id, &route.document_id)
+        {
+            return elsewhere.capture(context, known_revision, maximum);
+        }
         let reader = context.certificate().device_public_key;
         let workspaces = self
             .workspaces()
@@ -192,6 +289,11 @@ impl NativeDocumentReads for ServiceReads {
     ) -> Result<Option<bool>, String> {
         context.revalidate()?;
         let route = context.route();
+        if let Some(elsewhere) =
+            self.resource_elsewhere(&route.cluster_id, &route.app_id, &route.document_id)
+        {
+            return elsewhere.unchanged(context, known_revision);
+        }
         let reader = context.certificate().device_public_key;
         let Some(workspaces) = self.workspaces() else {
             return Ok(None);

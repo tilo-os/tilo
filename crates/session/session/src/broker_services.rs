@@ -165,15 +165,20 @@ pub(crate) type HeldDocuments =
 pub(crate) type HeldResources =
     BrokerService<Arc<dyn tilo_workspace_service::apps::services::ResourceServices>>;
 
-/// The resources this session reads outside their apps, from this device's own workspace service:
-/// the one the workspaces it holds are governed on.
+/// The resources this session reads outside their apps: the workspaces this device's own service
+/// holds, and, for the workspaces it joined at a device serving them, its own replica of them.
 pub(crate) fn document_reads(
     service: tilo_workspace_service::service::ServiceSlot,
+    engine: Option<&Arc<crate::engine::Engine>>,
 ) -> HeldDocuments {
-    BrokerService::served(Arc::new(
-        tilo_workspace_service::apps::service_reads::ServiceReads::on(service),
-    )
-        as Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>)
+    let reads = tilo_workspace_service::apps::service_reads::ServiceReads::on(service);
+    let reads: Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads> = match engine {
+        Some(engine) => Arc::new(reads.answered_by(Arc::new(
+            crate::resource_reads::OwnReplica::new(Arc::clone(engine)),
+        ))),
+        None => Arc::new(reads),
+    };
+    BrokerService::served(reads)
 }
 
 /// Where this device's own workspace service is installed, and what the session's own roles read

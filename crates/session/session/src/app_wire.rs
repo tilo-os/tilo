@@ -1776,6 +1776,7 @@ mod tests {
             endpoint: None,
             documents: crate::broker_services::document_reads(
                 tilo_workspace_service::service::ServiceSlot::default(),
+                None,
             ),
             resources: crate::broker_services::resources(
                 tilo_workspace_service::service::ServiceSlot::default(),
@@ -1930,7 +1931,7 @@ mod tests {
             let wake: Wake = std::sync::Arc::new(|| ());
             let reads = |service: tilo_workspace_service::service::ServiceSlot| {
                 let mut hosted = hosted(None);
-                hosted.documents = crate::broker_services::document_reads(service);
+                hosted.documents = crate::broker_services::document_reads(service, None);
                 host_services(
                     Link::new(std::sync::Arc::clone(&wake)),
                     std::sync::Arc::new(Launches::default()),

@@ -303,8 +303,9 @@ image = { workspace = true, features = ["png"] }
 resvg = { version = "0.47", default-features = false }
 tilo-shell-surface = { path = "../shell-surface" }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
-# action vocabulary.
-tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+# action vocabulary; and a window's record as an instance opens it (`instance::document`), which
+# the tests that read a program's answer as the person and an agent do.
+tilolang-tilo = { path = "../../platform/tilolang-tilo", features = ["document"] }
 # The outside origins the session's own services keep records in step with: the mail and
 # YouTube connectors' clients, and the registry that makes an origin's connector reachable
 # (`tilolang_tilo::origin::remote`).
