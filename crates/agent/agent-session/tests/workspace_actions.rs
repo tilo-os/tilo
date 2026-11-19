@@ -164,6 +164,9 @@ mod hosted_secret_use;
 #[path = "workspace_actions/hosted_web_call.rs"]
 mod hosted_web_call;
 #[cfg(test)]
+#[path = "workspace_actions/import_rate.rs"]
+mod import_rate;
+#[cfg(test)]
 #[path = "workspace_actions/invocations_read.rs"]
 mod invocations_read;
 #[cfg(test)]
