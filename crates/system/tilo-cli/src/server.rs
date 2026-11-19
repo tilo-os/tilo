@@ -6,9 +6,9 @@
 //! the device asking: it reads the servers this computer enrolled
 //! ([`home_peer_registry_path`]) and asks one of them, over the workspace's
 //! own session, for its health, a service's journal, a restart, a reboot, an
-//! update, a rollback or a drain ([`ServerOperation`]). Every answer is the
-//! server's own ([`ServerOperationResult`]), recorded in its entry in that
-//! workspace.
+//! update, a rollback, a drain or making Tilo its default start
+//! ([`ServerOperation`]). Every answer is the server's own
+//! ([`ServerOperationResult`]), recorded in its entry in that workspace.
 
 use anyhow::{Context as _, Result, bail};
 use clap::Subcommand;
@@ -92,6 +92,13 @@ pub enum ServerCmd {
         /// The server.
         server: String,
     },
+    /// Make Tilo the server's default start, in the retained OS's place after
+    /// any network-boot entries; asked again, it restores the order it
+    /// wrote.
+    SetDefaultStart {
+        /// The server.
+        server: String,
+    },
 }
 
 pub fn serve(cmd: ServerCmd) -> Result<std::process::ExitCode> {
@@ -118,6 +125,9 @@ pub fn serve(cmd: ServerCmd) -> Result<std::process::ExitCode> {
                 }
                 ServerCmd::Rollback { server } => (server, ServerOperation::Rollback, false),
                 ServerCmd::Drain { server } => (server, ServerOperation::Drain, false),
+                ServerCmd::SetDefaultStart { server } => {
+                    (server, ServerOperation::SetDefaultStart, false)
+                }
                 ServerCmd::List => return list(),
             };
             let result = ask(&server, &operation)?;

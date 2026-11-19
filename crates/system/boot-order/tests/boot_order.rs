@@ -19,7 +19,8 @@ use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Output};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use tilo_boot_order::{EFI_GLOBAL, Host, LOADER_VENDOR, Refusal, enlist, ids, main};
+use tilo_boot_order::default_start::{self, Change, default_start};
+use tilo_boot_order::{EFI_GLOBAL, LOADER_VENDOR, Machine, Refusal, enlist, ids, main};
 
 const ESP: &str = "11111111-2222-3333-4444-555555555555";
 const WIN_ESP: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -61,6 +62,30 @@ fn boot_option(description: &str, esp: &str, path: &str) -> Vec<u8> {
     option.extend(utf16(&format!("{description}\0")));
     option.extend(nodes);
     option
+}
+
+/// A network-boot option: a PCI root, a MAC node and an IPv4 node, as the
+/// firmware's PXE entry has.
+fn network_option(description: &str) -> Vec<u8> {
+    let mut pci_root = vec![1u8, 1];
+    pci_root.extend(8u16.to_le_bytes());
+    pci_root.extend([0, 0, 2, 0]);
+    let mut mac = vec![3u8, 0x0b];
+    mac.extend(10u16.to_le_bytes());
+    mac.extend([0xbc, 0xfc, 0xe7, 0xca, 0x95, 0x2e]);
+    let mut ipv4 = vec![3u8, 0x0c];
+    ipv4.extend(8u16.to_le_bytes());
+    ipv4.extend([65, 108, 204, 128]);
+    let nodes: Vec<u8> = [pci_root, mac, ipv4, vec![0x7f, 0xff, 4, 0]].concat();
+    let mut option = 1u32.to_le_bytes().to_vec();
+    option.extend(u16::try_from(nodes.len()).unwrap().to_le_bytes());
+    option.extend(utf16(&format!("{description}\0")));
+    option.extend(nodes);
+    option
+}
+
+fn order(ids: &[u16]) -> Vec<u8> {
+    ids.iter().flat_map(|id| id.to_le_bytes()).collect()
 }
 
 /// Firmware in a directory; `efibootmgr -q -o` rewrites `BootOrder`, and can
@@ -119,7 +144,7 @@ impl Firmware {
     }
 }
 
-impl Host for Firmware {
+impl Machine for Firmware {
     fn efivars(&self) -> PathBuf {
         self.vars.clone()
     }
@@ -444,5 +469,181 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .contains("never creates or replaces an EFI boot option")
         );
+    }
+}
+
+/// A firmware where a network entry boots before a retained OS, and Tilo is
+/// the current entry but not in `BootOrder`.
+fn alongside_firmware() -> Firmware {
+    let firmware = Firmware::new();
+    firmware.put("Boot0002", &network_option("UEFI: PXE IPv4"));
+    firmware.put("BootOrder", &order(&[2, 1]));
+    firmware
+}
+
+fn saved(path: &std::path::Path) -> Option<Change> {
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+}
+
+tilo_test_env::scenario! {
+    /// Making the running Tilo the default start, and undoing it.
+    fn the_default_start_takes_the_retained_os_place_and_restores_it;
+
+    phase tilo_takes_the_retained_os_place_after_network_boot;
+    {
+        let firmware = alongside_firmware();
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("boot-order.json");
+        let done = default_start(&firmware, &path).unwrap();
+        assert!(done.changed && !done.restored, "{done:?}");
+        assert_eq!(firmware.order(), ["0002", "0100"]);
+        assert!(done.message.contains("where Boot0001 did"), "{}", done.message);
+        let written = saved(&path).unwrap();
+        assert_eq!(written.boot_current, "0100");
+        assert_eq!(written.original_order, ["0002", "0001"]);
+        assert_eq!(written.changed_order, ["0002", "0100"]);
+        assert_eq!(written.restored_at_ns, None);
+    }
+
+    phase asking_again_restores_the_recorded_order;
+    {
+        let firmware = alongside_firmware();
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("boot-order.json");
+        default_start(&firmware, &path).unwrap();
+        let done = default_start(&firmware, &path).unwrap();
+        assert!(done.changed && done.restored, "{done:?}");
+        assert_eq!(firmware.order(), ["0002", "0001"]);
+        assert!(done.message.contains("Boot0001 starts by default"), "{}", done.message);
+        assert!(saved(&path).unwrap().restored_at_ns.is_some());
+        // A restored note does not put the change back; asking again is a new
+        // change, recorded again.
+        let done = default_start(&firmware, &path).unwrap();
+        assert!(done.changed && !done.restored);
+        assert_eq!(firmware.order(), ["0002", "0100"]);
+        assert_eq!(saved(&path).unwrap().restored_at_ns, None);
+    }
+
+    phase an_already_default_tilo_writes_nothing;
+    {
+        let firmware = alongside_firmware();
+        firmware.put("BootOrder", &order(&[2, 0x100]));
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("boot-order.json");
+        let done = default_start(&firmware, &path).unwrap();
+        assert!(!done.changed && !done.restored, "{done:?}");
+        assert_eq!(firmware.order(), ["0002", "0100"]);
+        assert!(saved(&path).is_none());
+        assert_eq!(firmware.calls.get(), 0);
+    }
+
+    phase with_only_network_entries_tilo_starts_after_them;
+    {
+        let firmware = Firmware::new();
+        firmware.put("Boot0002", &network_option("UEFI: PXE IPv4"));
+        firmware.put("BootOrder", &order(&[2]));
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("boot-order.json");
+        let done = default_start(&firmware, &path).unwrap();
+        assert!(done.changed, "{done:?}");
+        assert_eq!(firmware.order(), ["0002", "0100"]);
+        assert!(done.message.contains("after the network boot entries"), "{}", done.message);
+    }
+
+    phase refusing_firmware_states_leave_everything_as_it_was;
+    {
+        let refuse = |firmware: &Firmware, expected: &str| {
+            let work = tempfile::tempdir().unwrap();
+            let path = work.path().join("boot-order.json");
+            let message = default_start(firmware, &path).unwrap_err().0;
+            assert!(message.contains(expected), "{expected}: {message}");
+            assert!(saved(&path).is_none(), "{expected}: nothing may be written");
+        };
+
+        let pending = alongside_firmware();
+        pending.put("BootNext", &1u16.to_le_bytes());
+        refuse(&pending, "BootNext is set");
+        assert_eq!(pending.order(), ["0002", "0001"]);
+
+        let unreadable = alongside_firmware();
+        // A boot option whose device path node has no length.
+        let mut broken = 1u32.to_le_bytes().to_vec();
+        broken.extend(4u16.to_le_bytes());
+        broken.extend(utf16("retained\0"));
+        broken.extend([4u8, 1, 0, 0]);
+        unreadable.put("Boot0001", &broken);
+        refuse(&unreadable, "malformed device path");
+        assert_eq!(unreadable.order(), ["0002", "0001"]);
+
+        let inactive = alongside_firmware();
+        let mut option = boot_option("retained", WIN_ESP, WINDOWS);
+        option[0] = 0;
+        inactive.put("Boot0001", &option);
+        refuse(&inactive, "inactive");
+
+        let mut not_root = alongside_firmware();
+        not_root.root = false;
+        refuse(&not_root, "as root only");
+
+        let absent = Firmware::new();
+        absent.put("BootOrder", &[]);
+        refuse(&absent, "absent or empty");
+    }
+
+    phase a_changed_order_or_missing_entry_refuses_the_restore;
+    {
+        let firmware = alongside_firmware();
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("boot-order.json");
+        default_start(&firmware, &path).unwrap();
+
+        firmware.put("BootOrder", &order(&[2, 1]));
+        let message = default_start(&firmware, &path).unwrap_err().0;
+        assert!(message.contains("leaving firmware this tool did not change"), "{message}");
+        assert_eq!(firmware.order(), ["0002", "0001"]);
+
+        firmware.put("BootOrder", &order(&[2, 0x100]));
+        fs::remove_file(firmware.path("Boot0001", EFI_GLOBAL)).unwrap();
+        let message = default_start(&firmware, &path).unwrap_err().0;
+        assert!(message.contains("Boot0001 is absent"), "{message}");
+        assert_eq!(firmware.order(), ["0002", "0100"]);
+    }
+
+    phase a_failed_efibootmgr_writes_nothing_and_reports;
+    {
+        let firmware = alongside_firmware();
+        firmware.fail.set(true);
+        let work = tempfile::tempdir().unwrap();
+        let path = work.path().join("boot-order.json");
+        assert_eq!(
+            default_start(&firmware, &path).unwrap_err().0,
+            "efibootmgr failed: Could not set BootOrder"
+        );
+        assert!(saved(&path).is_none());
+        assert_eq!(firmware.order(), ["0002", "0001"]);
+    }
+
+    phase the_command_line_answers_help_and_rejects_arguments;
+    {
+        let firmware = Firmware::new();
+        let ask = |words: &[&str]| {
+            let args: Vec<OsString> = words.iter().map(OsString::from).collect();
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = default_start::main(&firmware, &args, &mut out, &mut err);
+            (
+                code,
+                String::from_utf8(out).unwrap(),
+                String::from_utf8(err).unwrap(),
+            )
+        };
+        let (code, out, _) = ask(&["--help"]);
+        assert_eq!(code, 0);
+        assert!(out.starts_with("usage: tilo-default-start [-h]"), "{out}");
+        let (code, _, err) = ask(&["--now"]);
+        assert_eq!(code, 2);
+        assert!(err.ends_with("unrecognized arguments: --now\n"), "{err}");
+        assert_eq!(firmware.calls.get(), 0);
     }
 }

@@ -9,8 +9,9 @@
 //! journal), and the rest with what it asked a root helper to do.
 //!
 //! The server daemon is unprivileged, so anything that changes the machine
-//! itself — restarting a unit, rebooting, staging an update, pausing updates
-//! or going back to the previous system — is written at one fixed path
+//! itself — restarting a unit, rebooting, staging an update, pausing updates,
+//! going back to the previous system or making Tilo the default start — is
+//! written at one fixed path
 //! ([`CONTROL_REQUEST`]) for a root unit to carry out
 //! (`os/usr/libexec/tilo-server-control`), the way the update policy is
 //! ([`super::policy`]). The helper answers at [`CONTROL_RESULT`]. Nothing the
@@ -51,7 +52,7 @@ struct ControlRequest {
     /// Names this request, so a stale answer is never taken for it.
     id: String,
     /// What to do: `restart`, `reboot`, `update`, `pause-updates`,
-    /// `resume-updates`, `rollback` or `logs`.
+    /// `resume-updates`, `rollback`, `set-default-start` or `logs`.
     verb: String,
     /// The systemd unit a `restart` or `logs` names.
     service: String,
@@ -244,6 +245,30 @@ async fn carry_out(
             "rollback",
             "boots the previous system from now on".into(),
         )?,
+        ServerOperation::SetDefaultStart => {
+            // The root helper's answer is the sentence: it names the entry
+            // Tilo took the place of, or that it restored the order.
+            let answer = ask_root(
+                state_root,
+                ControlRequest {
+                    id: request_id(),
+                    verb: "set-default-start".into(),
+                    service: String::new(),
+                    lines: 0,
+                },
+                wait,
+            )
+            .await?;
+            if !answer.ok {
+                return Err(answer.text);
+            }
+            ServerOperationResult {
+                operation: "set-default-start".into(),
+                done: true,
+                summary: answer.text,
+                answer: ServerAnswer::Nothing,
+            }
+        }
         ServerOperation::Drain => {
             let workspaces = workspaces.ok_or_else(|| {
                 "this server keeps no admin workspace, so it has nothing to drain".to_owned()

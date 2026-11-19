@@ -57,6 +57,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         firewalld \
         fuse3 \
         ca-certificates \
+        efibootmgr \
         iproute \
         NetworkManager \
         NetworkManager-wifi \

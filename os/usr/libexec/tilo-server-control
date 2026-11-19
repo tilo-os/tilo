@@ -12,7 +12,7 @@
 # The request is one `key=value` line per field:
 #
 #   id=<request id>
-#   verb=<restart|logs|reboot|update|pause-updates|resume-updates|rollback>
+#   verb=<restart|logs|reboot|update|pause-updates|resume-updates|rollback|set-default-start>
 #   service=<a systemd unit, for restart and logs>
 #   lines=<how many journal lines, for logs>
 #
@@ -33,6 +33,7 @@ systemctl="${TILO_SERVER_CONTROL_SYSTEMCTL:-systemctl}"
 update_service="${TILO_SERVER_CONTROL_UPDATE_SERVICE:-bootc-fetch-apply-updates.service}"
 update_timer="${TILO_SERVER_CONTROL_UPDATE_TIMER:-bootc-fetch-apply-updates.timer}"
 apply_timer="${TILO_SERVER_CONTROL_APPLY_TIMER:-tilo-server-update-apply.timer}"
+boot_order="${TILO_SERVER_CONTROL_BOOT_ORDER:-/usr/libexec/tilo-default-start}"
 max_lines=500
 
 id=
@@ -96,7 +97,7 @@ case "$verb" in
     restart|logs)
         valid_unit "$service" || refuse "'$service' is not a systemd unit"
         ;;
-    reboot|update|pause-updates|resume-updates|rollback)
+    reboot|update|pause-updates|resume-updates|rollback|set-default-start)
         [ -z "$service" ] || refuse "$verb takes no service"
         ;;
     *)
@@ -161,6 +162,15 @@ case "$verb" in
     rollback)
         if out=$("$deployment" rollback --yes 2>&1); then
             ok=1 body="boots the previous system from now on"
+        else
+            ok=0 body=$out
+        fi
+        ;;
+    set-default-start)
+        # The one sentence the tool prints says which entry Tilo took the
+        # place of, or that it restored the order it wrote.
+        if out=$("$boot_order" 2>&1); then
+            ok=1 body=$out
         else
             ok=0 body=$out
         fi

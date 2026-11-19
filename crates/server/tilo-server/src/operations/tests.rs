@@ -77,6 +77,12 @@ async fn every_mutation_reaches_the_helper_and_is_kept() {
             let id = identity_of(request);
             format!("{id} 1\nNov 18 tilo-server: serving\n")
         }
+        "set-default-start" => {
+            let id = identity_of(request);
+            format!(
+                "{id} 1\nTilo (Boot0100) now starts by default where Boot0001 did; 1 boot entry ahead kept their place\n"
+            )
+        }
         _ => format!("{} 1\n{verb} done", identity_of(request)),
     });
     let ask = |operation| {
@@ -122,6 +128,18 @@ async fn every_mutation_reaches_the_helper_and_is_kept() {
     assert_eq!(reboot.operation, "reboot");
     let rollback = ask(ServerOperation::Rollback).await;
     assert!(!rollback.done);
+
+    // Making Tilo the default start changes firmware, not a boot: it waits for
+    // the helper's answer and keeps its sentence, which names what changed.
+    let default_start = ask(ServerOperation::SetDefaultStart).await;
+    assert!(default_start.done, "{default_start:?}");
+    assert_eq!(default_start.operation, "set-default-start");
+    assert!(
+        default_start.summary.contains("where Boot0001 did"),
+        "{}",
+        default_start.summary
+    );
+    assert_eq!(default_start.answer, ServerAnswer::Nothing);
 }
 
 #[tokio::test]

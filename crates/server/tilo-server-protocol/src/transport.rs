@@ -129,6 +129,10 @@ pub enum ServerOperation {
     Rollback,
     /// Suspend its workspaces' Linux machines and hand their work off.
     Drain,
+    /// Make Tilo the firmware's default start, in the retained OS's place
+    /// after any network-boot entries; asked again, it restores the order it
+    /// wrote.
+    SetDefaultStart,
 }
 
 impl ServerOperation {
@@ -146,12 +150,13 @@ impl ServerOperation {
             Self::ResumeUpdates => "resume-updates",
             Self::Rollback => "rollback",
             Self::Drain => "drain",
+            Self::SetDefaultStart => "set-default-start",
         }
     }
 
     /// The operations a person asks of a server, in the order their actions
     /// are listed.
-    pub const NAMES: [&'static str; 9] = [
+    pub const NAMES: [&'static str; 10] = [
         "status",
         "logs",
         "restart",
@@ -161,6 +166,7 @@ impl ServerOperation {
         "resume-updates",
         "rollback",
         "drain",
+        "set-default-start",
     ];
 
     /// The operation `name` is, with the unit a `restart` or `logs` names and
@@ -182,6 +188,7 @@ impl ServerOperation {
             "resume-updates" => Self::ResumeUpdates,
             "rollback" => Self::Rollback,
             "drain" => Self::Drain,
+            "set-default-start" => Self::SetDefaultStart,
             _ => return None,
         })
     }
@@ -211,7 +218,8 @@ impl ServerOperation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerOperationResult {
     /// What was asked, in one word: `status`, `logs`, `restart`, `reboot`,
-    /// `update`, `pause-updates`, `resume-updates`, `rollback` or `drain`.
+    /// `update`, `pause-updates`, `resume-updates`, `rollback`, `drain` or
+    /// `set-default-start`.
     pub operation: String,
     /// Whether the server did it now. `false` when it asked a root helper
     /// to do something that ends or changes a boot, where an immediate answer

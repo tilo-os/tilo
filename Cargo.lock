@@ -18583,7 +18583,10 @@ name = "tilo-boot-order"
 version = "0.1.0"
 dependencies = [
  "rustix 1.1.6",
+ "serde",
+ "serde_json",
  "tempfile",
+ "tilo-clock",
  "tilo-pycompat",
  "tilo-test-env",
  "workspace-hack",

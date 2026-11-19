@@ -69,6 +69,9 @@ COPY bin/tilo-esp-write /usr/libexec/tilo-esp-write
 COPY bin/tilo-image-trust /usr/libexec/tilo/tilo-image-trust
 COPY bin/tilo-image-policy-check /usr/libexec/tilo-image-policy-check
 COPY bin/tilo-board-successor /usr/libexec/tilo-board-successor
+# Making Tilo the default start after an alongside install: the same tool the
+# installer image ships, called by tilo-server-control.
+COPY bin/tilo-default-start /usr/libexec/tilo-default-start
 # The disk an installed server stores workspaces on is encrypted, and opening it
 # in early boot is the desktop image's own program, not a server variant of it:
 # tilo-auth opens the system volume (a recovery key, the TPM for a signed boot
@@ -96,6 +99,7 @@ RUN chown 0:10001 /usr/libexec/tilo/tilo-hosted-jail \
         /usr/libexec/tilo-board-successor /usr/bin/fs \
         /usr/libexec/tilo/tilo-auth /usr/libexec/tilo/tilo-boot-signin \
         /usr/libexec/tilo/tilo-rollback /usr/libexec/tilo/tilo-crypto \
+        /usr/libexec/tilo-default-start \
     && for name in tilo-server tilo-server-admin tilo-enroll tilo-linux-vm; do \
          ln -s ../libexec/tilo/"$name" /usr/bin/"$name"; \
        done \

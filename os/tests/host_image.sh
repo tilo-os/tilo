@@ -32,6 +32,7 @@ inside skopeo --version >/dev/null || die 'no skopeo'
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside setpriv --help >/dev/null || die 'no setpriv'
 inside bootc --version >/dev/null || die 'no bootc'
+inside efibootmgr --version >/dev/null || die 'no efibootmgr, so a server cannot change its boot order'
 
 # The programs, at the paths their units and scripts name.
 for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
@@ -45,6 +46,7 @@ for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
   usr/libexec/tilo-hosted-prepare usr/libexec/tilo-hosted-serve \
   usr/libexec/tilo-update-channel usr/libexec/tilo-update-policy-set \
   usr/libexec/tilo-server-update-policy usr/libexec/tilo-server-control \
+  usr/libexec/tilo-default-start \
   usr/libexec/tilo-server-device-config \
   usr/libexec/tilo-image-trust-staged \
   usr/libexec/tilo-esp-mount; do

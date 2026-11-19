@@ -14,11 +14,18 @@ path = "src/lib.rs"
 name = "tilo-boot-order"
 path = "src/main.rs"
 
+[[bin]]
+name = "tilo-default-start"
+path = "src/default_start_main.rs"
+
 [dependencies]
 # No-follow opens of EFI variables and the effective user, without FFI.
 rustix = { workspace = true, features = ["fs", "process", "std"] }
 # The command line as argparse read it.
 tilo-pycompat = { path = "../tilo-pycompat" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

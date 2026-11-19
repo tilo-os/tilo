@@ -3,10 +3,11 @@
 //! Each operation a server is asked for is one action here (`server.status`,
 //! `server.logs`, `server.restart`, `server.reboot`, `server.update`,
 //! `server.pause-updates`, `server.resume-updates`, `server.rollback`,
-//! `server.drain`). An action keeps the request in that server's entry in
-//! the workspace's document; the server the entry names carries it out and
-//! keeps what it found or did; and the action answers with that, read live
-//! for the operations that read (its health and a service's journal).
+//! `server.drain`, `server.set-default-start`). An action keeps the request in
+//! that server's entry in the workspace's document; the server the entry names
+//! carries it out and keeps what it found or did; and the action answers with
+//! that, read live for the operations that read (its health and a service's
+//! journal).
 //!
 //! Every device of the person holds that workspace and asks these, and so does
 //! the agent at that device: what a person may ask of their own servers is
@@ -41,7 +42,7 @@ const ANSWER_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// What a person asks of a server, in catalogue order: each is one operation
 /// on that server's entry in the workspace.
-pub(super) const SERVER_VERBS: [ServerVerb; 9] = [
+pub(super) const SERVER_VERBS: [ServerVerb; 10] = [
     asking(
         "server.status",
         "status",
@@ -102,6 +103,13 @@ pub(super) const SERVER_VERBS: [ServerVerb; 9] = [
         "server.drain",
         "drain",
         "Drain a server before taking it out of service",
+        roles::GOVERNANCE_KIND,
+        status_params,
+    ),
+    asking(
+        "server.set-default-start",
+        "set-default-start",
+        "Have Tilo start by default on a server",
         roles::GOVERNANCE_KIND,
         status_params,
     ),

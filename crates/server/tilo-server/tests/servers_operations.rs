@@ -293,6 +293,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
         ("server.reboot", "reboot", false),
         ("server.rollback", "rollback", false),
         ("server.drain", "drain", true),
+        ("server.set-default-start", "set-default-start", true),
     ] {
         let argument = if action == "server.restart" || action == "server.logs" {
             serde_json::json!({"service": "tilo-server.service", "lines": 5})
@@ -328,6 +329,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
         "reboot",
         "rollback",
         "drain",
+        "set-default-start",
     ] {
         assert!(asked.iter().any(|asked| asked == operation), "{asked:?}");
     }
