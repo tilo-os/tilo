@@ -10,6 +10,7 @@
 //!   ([`routing`]) and the `OpenAPI` description ([`openapi`]) both read;
 //! - [`answers`]: the types every answer goes out through, which the
 //!   description's schemas are made from;
+//! - [`lines`]: a listing's lines, which its answer carries as `text`;
 //! - [`errors`]: the one refusal shape, and its statuses;
 //! - [`idempotency`]: retried mutating calls answer what the first did;
 //! - [`events`] and [`webhooks`]: what happens, as a stream and posted.
@@ -18,6 +19,7 @@ pub mod answers;
 pub mod errors;
 pub mod events;
 pub mod idempotency;
+pub mod lines;
 mod model_asks;
 pub mod names;
 pub mod openapi;
@@ -480,7 +482,8 @@ impl<'a> Caller<'a> {
                     .await
                     .map_err(ApiError::from)?;
                 listed.retain(|workspace| crate::account::labelled(workspace, &labels));
-                shaped::<answers::WorkspaceList>(json!({"workspaces": listed})).map(Answer::ok)
+                shaped::<answers::WorkspaceList>(json!({"workspaces": listed}))
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::workspaces)))
             }
             "createWorkspace" => {
                 let new: answers::NewWorkspace = self.json_body()?;
@@ -508,7 +511,8 @@ impl<'a> Caller<'a> {
             }
             "listKeys" => {
                 let listed = self.account("account/keys#list", json!({})).await?;
-                shaped::<answers::KeyList>(listed).map(Answer::ok)
+                shaped::<answers::KeyList>(listed)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::keys)))
             }
             "mintKey" => {
                 let new: answers::NewKey = self.json_body()?;
@@ -711,14 +715,14 @@ impl<'a> Caller<'a> {
                     .call("tilo_do", json!({"path": "workspace/members#list"}))
                     .await?;
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
             }
             "addMember" => {
                 let new: answers::NewMember = self.json_body()?;
                 let added = json!({"path": "workspace/members#add", "args": new});
                 let listed = self.call("tilo_do", added).await?;
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
             }
             "setMemberRole" => {
                 let new: answers::MemberRole = self.json_body()?;
@@ -729,7 +733,7 @@ impl<'a> Caller<'a> {
                 });
                 let listed = self.call("tilo_do", moved).await?;
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
             }
             "revokeInvitation" => {
                 let invite = self.params.get("invite").to_owned();
@@ -737,7 +741,7 @@ impl<'a> Caller<'a> {
                     json!({"path": "workspace/members#revoke", "args": {"invite": invite}});
                 let listed = self.call("tilo_do", revoked).await?;
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
             }
             "removeMember" => {
                 let person = self.params.get("person").to_owned();
@@ -745,14 +749,14 @@ impl<'a> Caller<'a> {
                     json!({"path": "workspace/members#remove", "args": {"person": person}});
                 let listed = self.call("tilo_do", removed).await?;
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
             }
             "listWaitList" => {
                 let listed = self
                     .call("tilo_do", json!({"path": "workspace/members#wait-list"}))
                     .await?;
                 shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::wait_list)))
             }
             "unlistWaiting" => {
                 let entry = self.params.get("entry").to_owned();
@@ -760,21 +764,21 @@ impl<'a> Caller<'a> {
                     json!({"path": "workspace/members#unlist", "args": {"entry": entry}});
                 let listed = self.call("tilo_do", unlisted).await?;
                 shaped::<answers::WaitList>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::wait_list)))
             }
             "listServers" => {
                 let listed = self
                     .call("tilo_do", json!({"path": "workspace/servers#list"}))
                     .await?;
                 shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::servers)))
             }
             "addServer" => {
                 let new: answers::NewServer = self.json_body()?;
                 let added = json!({"path": "workspace/servers#add", "args": new});
                 let listed = self.call("tilo_do", added).await?;
                 shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::servers)))
             }
             "removeServer" => {
                 let server = self.params.get("server").to_owned();
@@ -782,7 +786,7 @@ impl<'a> Caller<'a> {
                     json!({"path": "workspace/servers#remove", "args": {"server": server}});
                 let listed = self.call("tilo_do", removed).await?;
                 shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::servers)))
             }
             "moveServer" => {
                 let server = self.params.get("server").to_owned();
@@ -793,7 +797,7 @@ impl<'a> Caller<'a> {
                 });
                 let listed = self.call("tilo_do", moved).await?;
                 shaped::<answers::Servers>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::servers)))
             }
             "invitePerson" => {
                 let new: answers::NewInvitation = self.json_body()?;
@@ -807,7 +811,7 @@ impl<'a> Caller<'a> {
                 let named = json!({"path": "workspace/members#name", "args": new});
                 let listed = self.call("tilo_do", named).await?;
                 shaped::<answers::Members>(listed.get("result").cloned().unwrap_or_default())
-                    .map(Answer::ok)
+                    .map(|typed| Answer::ok(lines::with_text(typed, lines::members)))
             }
             "runProgram" => {
                 let program: answers::Program = self.json_body()?;

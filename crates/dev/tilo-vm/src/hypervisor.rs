@@ -901,13 +901,15 @@ impl Hypervisor for Qemu {
             (true, false) => "--gl",
             _ => "--2d",
         };
-        let mut args = vec!["boot", display, "--disk", disk.as_str()];
-        if let (true, Some(node)) = (vm.entry.gl, vm.entry.render_node.as_deref()) {
-            args.extend(["--rendernode", node]);
-        }
+        let args = ["boot", display, "--disk", disk.as_str()];
         let mut command = Self::script(vm, &args)
             .env("TILO_MEM", vm.memory().to_string())
             .env("TILO_SMP", vm.cpus().to_string());
+        // vm.sh takes the render node from the environment (os/dev/_common.sh), not as an
+        // argument of `boot`.
+        if let (true, Some(node)) = (vm.entry.gl, vm.entry.render_node.as_deref()) {
+            command = command.env("TILO_RENDERNODE", node);
+        }
         if vm.entry.sound {
             command = command.env("TILO_VM_AUDIO_WAV", crate::sound::wav_path(&disk));
         }

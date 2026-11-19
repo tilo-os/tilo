@@ -8,6 +8,10 @@
 //! - Every label key a view names literally is a message of
 //!   `locales/en-US.ftl`, and every shipped translation has every message of
 //!   the source catalog.
+//! - An app that opens a window commits its public surface (`surface.toml`):
+//!   what a receiver without the app decides its changes against, and what
+//!   `tilo-app certify` compares the built binary with. An app missing the
+//!   file is the one place that comparison cannot happen.
 //!
 //! The checks read the same shipped module trees as the portability lint.
 
@@ -111,7 +115,106 @@ pub fn check_app(start: &Path) -> Result<ContractReport> {
     if let Some(source) = &catalog {
         report.findings.extend(check_translations(app_dir, source)?);
     }
+    if opens_a_window(app_dir)? && !app_dir.join("surface.toml").is_file() {
+        report.findings.push(ContractFinding {
+            path: PathBuf::from("tilo-app.toml"),
+            line: 0,
+            level: Level::Error,
+            rule: "surface-committed",
+            message: "an app that opens a window commits its public surface: write it with \
+                      `tilo-app surface` (docs/architecture/resources.md §6)"
+                .to_owned(),
+        });
+    }
     Ok(report)
+}
+
+/// Whether the app in `app_dir` opens a window that publishes its resources:
+/// its `src/main.rs` starts one with `ui::main!(…)`, or, starting none there,
+/// its manifest's entry point is a `gui` one. An app whose `ui::main!` names
+/// only a `definition` is drawn in another device's window and publishes nothing
+/// of its own.
+pub(crate) fn opens_a_window(app_dir: &Path) -> Result<bool> {
+    let main = app_dir.join("src/main.rs");
+    let Ok(source) = std::fs::read_to_string(&main) else {
+        return Ok(false);
+    };
+    let tokens: TokenStream = source
+        .parse()
+        .map_err(|error| anyhow::anyhow!("parse {}: {error}", main.display()))?;
+    match ui_main(tokens) {
+        Some(UiMain::Definition) => return Ok(false),
+        Some(UiMain::Window) => return Ok(true),
+        None => {}
+    }
+    let manifest = std::fs::read_to_string(app_dir.join("tilo-app.toml")).unwrap_or_default();
+    let table: toml::Table = toml::from_str(&manifest).unwrap_or_default();
+    Ok(table
+        .get("entrypoint")
+        .and_then(|entry| entry.get("type"))
+        .and_then(toml::Value::as_str)
+        == Some("gui"))
+}
+
+/// What a `ui::main!` invocation starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UiMain {
+    /// A window of the app's own.
+    Window,
+    /// Only a `definition`, for another device's window.
+    Definition,
+}
+
+/// The first `ui::main!(…)` in `tokens`, at any depth.
+fn ui_main(tokens: TokenStream) -> Option<UiMain> {
+    use proc_macro2::TokenTree;
+    let trees: Vec<TokenTree> = tokens.into_iter().collect();
+    for (at, tree) in trees.iter().enumerate() {
+        if let TokenTree::Group(group) = tree {
+            if let Some(found) = ui_main(group.stream()) {
+                return Some(found);
+            }
+            continue;
+        }
+        let window = trees.get(at..at.saturating_add(6));
+        let Some(
+            [
+                TokenTree::Ident(ui),
+                TokenTree::Punct(first),
+                TokenTree::Punct(second),
+                TokenTree::Ident(main),
+                TokenTree::Punct(bang),
+                TokenTree::Group(args),
+            ],
+        ) = window
+        else {
+            continue;
+        };
+        if ui != "ui"
+            || first.as_char() != ':'
+            || second.as_char() != ':'
+            || main != "main"
+            || bang.as_char() != '!'
+        {
+            continue;
+        }
+        let mut inside = args.stream().into_iter();
+        return match (inside.next(), inside.next()) {
+            (None, _) => None,
+            (Some(TokenTree::Ident(name)), next)
+                if name == "definition"
+                    && match &next {
+                        None => true,
+                        Some(TokenTree::Punct(punct)) => matches!(punct.as_char(), '=' | ','),
+                        Some(_) => false,
+                    } =>
+            {
+                Some(UiMain::Definition)
+            }
+            _ => Some(UiMain::Window),
+        };
+    }
+    None
 }
 
 /// The message ids of `locales/en-US.ftl`, when the app has one.
@@ -492,6 +595,39 @@ fn collect_use(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether an app whose `src/main.rs` is `main` and whose manifest says
+    /// `manifest` opens a window.
+    fn windowed(main: &str, manifest: &str) -> bool {
+        let dir = tempfile::tempdir().expect("a directory for the app");
+        std::fs::create_dir(dir.path().join("src")).expect("src");
+        std::fs::write(dir.path().join("src/main.rs"), main).expect("main.rs");
+        std::fs::write(dir.path().join("tilo-app.toml"), manifest).expect("tilo-app.toml");
+        opens_a_window(dir.path()).expect("reads the app")
+    }
+
+    #[test]
+    fn an_app_opening_a_window_commits_its_surface() {
+        let gui = "[entrypoint]\ntype = \"gui\"\n";
+        assert!(windowed("ui::main!(sample::App);\n", gui));
+        // A comment naming the macro starts no window.
+        assert!(windowed(
+            "// ui::main!(definition = x)\nfn main() { ui::main!(sample::App); }\n",
+            "[entrypoint]\ntype = \"cli\"\n"
+        ));
+        // `ui::main!(definition = ..)` registers a definition another device's window draws:
+        // the windowed app that draws it commits the surface.
+        assert!(!windowed(
+            "ui::main!(definition = sample::definition);\n",
+            gui
+        ));
+        assert!(!windowed(
+            "fn main() { batch(); }\n",
+            "[entrypoint]\ntype = \"cli\"\n"
+        ));
+        // Starting no window in its source, a `gui` entry point still says it opens one.
+        assert!(windowed("fn main() { app::start(); }\n", gui));
+    }
 
     fn findings(source: &str, catalog: &[&str]) -> Vec<ContractFinding> {
         let catalog: BTreeSet<String> = catalog.iter().map(|id| (*id).to_owned()).collect();

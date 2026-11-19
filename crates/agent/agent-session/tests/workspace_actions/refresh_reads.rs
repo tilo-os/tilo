@@ -217,3 +217,100 @@ async fn a_refresh_reads_what_the_action_names_however_full_the_workspace() {
         counted[1].0
     );
 }
+
+/// The trackers a listing and an open are counted in: one of a few issues, and
+/// one of an imported tracker's thousands, kept in many parts.
+const TRACKERS: [usize; 2] = [25, 3_000];
+
+/// What one list of a tracker's only writer reads: the tracker's own document,
+/// whose keys the serving device hands it afresh for every action, once to decide it
+/// opens and once to merge it, and nothing of the parts it wrote.
+const WRITER_READS: u64 = 2;
+
+/// The issues one `create-many` makes, as an import hands them over.
+const ISSUE_LIST: usize = 200;
+
+/// An issue as an import brings it: a title and a body of a few paragraphs.
+fn issue(index: usize) -> Value {
+    let said = "What was seen, what was tried, and what should happen next. ".repeat(8);
+    json!({
+        "title": format!("Issue {index}"),
+        "body": format!("## Issue {index}\n\n{said}"),
+        "status": "todo",
+    })
+}
+
+/// What `asked` read of the replica, beside what it answered.
+async fn counted<T>(asked: impl std::future::Future<Output = T>) -> (T, u64) {
+    let before = replica_reads();
+    let answered = asked.await;
+    (answered, replica_reads().saturating_sub(before))
+}
+
+/// What one tracker costs in reads once `size` issues are in it: the least
+/// one more list of its writer read, and what listing the app and opening it
+/// read after.
+async fn tracker_reads(agent: &Agent<'_>, size: usize) -> (u64, u64, u64) {
+    let (base, _) = workspace(agent, &format!("Tracker {size}")).await;
+    agent.act(&base, "tasks", "open", &json!({})).await;
+    let issues: Vec<Value> = (0..size).map(issue).collect();
+    for list in issues.chunks(ISSUE_LIST) {
+        agent
+            .act(
+                &base,
+                "tasks/Issues",
+                "create-many",
+                &json!({ "issues": list }),
+            )
+            .await;
+    }
+    let mut wrote = Vec::new();
+    for index in 0..3 {
+        let list = json!({ "issues": [issue(size + index)] });
+        let (_, reads) = counted(agent.act(&base, "tasks/Issues", "create-many", &list)).await;
+        wrote.push(reads);
+    }
+    let (_, listed) = counted(agent.get(&format!("{base}/resources?path=tasks"))).await;
+    let (_, opened) = counted(agent.act(&base, "tasks", "open", &json!({}))).await;
+    (wrote.into_iter().min().unwrap_or_default(), listed, opened)
+}
+
+/// An import's lists land without reading back the parts the import wrote, and
+/// the tracker lists and opens from its head and its own record: what each
+/// reads at three thousand issues is what it reads at twenty-five.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tracker_lists_and_opens_at_any_size_and_its_writer_reads_nothing_back() {
+    let on_server = api_on_server(ISSUER).await;
+    let api = Arc::clone(&on_server.api);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let browser = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let agent = Agent {
+        api: &api,
+        token: approved_key(&on_server, &ada, &browser, "Importer").await,
+    };
+    let mut seen = Vec::new();
+    for size in TRACKERS {
+        let (wrote, listed, opened) = tracker_reads(&agent, size).await;
+        eprintln!("{size} issues: a list read {wrote}, listing {listed}, opening {opened}");
+        seen.push((size, wrote, listed, opened));
+    }
+    for (size, wrote, listed, opened) in &seen {
+        assert!(
+            *wrote <= WRITER_READS,
+            "{size} issues: a list of the only writer read {wrote} documents, more than the \
+             {WRITER_READS} of the record it acts on"
+        );
+        assert!(
+            *listed <= CEILING && *opened <= CEILING,
+            "{size} issues: listing read {listed} records and opening {opened}, more than {CEILING}"
+        );
+    }
+    let ((_, _, small_list, small_open), (_, _, large_list, large_open)) = (seen[0], seen[1]);
+    assert!(
+        large_list <= small_list.saturating_add(1) && large_open <= small_open.saturating_add(1),
+        "a tracker of {} issues lists in {large_list} reads and opens in {large_open}, one of {} \
+         in {small_list} and {small_open}",
+        TRACKERS[1],
+        TRACKERS[0]
+    );
+}

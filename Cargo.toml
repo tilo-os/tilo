@@ -873,17 +873,19 @@ zeroize = "1"
 # ---------------------------------------------------------------------------
 iroh = "1.0.3"
 iroh-base = "1.0.3"
-# Disable unused RPC support and its platform certificate dependencies.
-iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
-# iroh-blobs' BAO tree and RPC layer, for the content store's file-backed
-# provider (versions follow iroh-blobs).
-bao-tree = { version = "0.16", default-features = false, features = ["experimental-mixed"] }
+# Disable unused RPC support and its platform certificate dependencies. The
+# content store serves its own blobs, so the filesystem store is not built.
+iroh-blobs = { version = "0.103.0", default-features = false, features = ["hide-proto-docs"] }
+# iroh-blobs' BAO tree and RPC layer, for the content store's provider
+# (versions follow iroh-blobs). `fs` lets a whole blob's ranges be read from
+# its file instead of held in memory.
+bao-tree = { version = "0.16", default-features = false, features = ["experimental-mixed", "fs"] }
 irpc = { version = "0.17.0", default-features = false }
 ref-cast = "1.0.24"
 # Content-defined chunking for the native backend (normalised FastCDC).
 fastcdc = { version = "3.2", default-features = false }
-# Embedded metadata database of the storage daemon (already in the graph
-# through iroh-blobs' store).
+# The storage daemon's content area: its index, its inline blobs and every
+# whole blob's outboard.
 redb = "4.1.0"
 # ---------------------------------------------------------------------------
 # Media: images, codecs, capture and playback

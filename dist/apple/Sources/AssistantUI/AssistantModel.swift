@@ -123,6 +123,8 @@ public final class AssistantModel {
     /// The piece whose words are laid out for the person to mark a part of them: Select text in
     /// a piece's menu. Nil: none are.
     public var selecting: PieceWords?
+    /// A live artifact open in the Mac Split Studio stage or iPhone full-screen sheet.
+    public var stagedLive: LiveThing?
     #if os(macOS)
     /// Where Copy in a piece's menu puts the words: the system's pasteboard. A test hands it one
     /// of its own.
@@ -355,6 +357,25 @@ public final class AssistantModel {
 
     public func subAgent(_ id: SubAgent.ID) -> SubAgent? {
         subAgents.first { $0.id == id }
+    }
+
+    /// Sub-agents that are currently running or waiting for input.
+    public var activeSubAgents: [SubAgent] {
+        subAgents.filter { $0.state == .working || $0.state == .needsYou }
+    }
+
+    /// Every live artifact shared in `chat`, newest first, deduplicated by id.
+    public func liveThings(in chat: Chat) -> [LiveThing] {
+        var seen: Set<LiveThing.ID> = []
+        var result: [LiveThing] = []
+        for item in conversation(chat).items.reversed() {
+            if case .message(let message) = item.content {
+                for thing in message.live.reversed() where seen.insert(thing.id).inserted {
+                    result.append(thing)
+                }
+            }
+        }
+        return result
     }
 
     public func tasks(_ state: AssistantTask.State) -> [AssistantTask] {
@@ -746,6 +767,8 @@ extension EnvironmentValues {
     /// The view that draws a live Tilo thing. Whoever implements `AssistantSource` supplies it;
     /// the frame draws an empty place where there is none.
     @Entry public var liveThingView: (@MainActor (LiveThing) -> AnyView)?
+    /// The full-size interactive live view for the Mac Split Studio stage and iPhone full-screen sheet.
+    @Entry public var liveStageView: (@MainActor (LiveThing) -> AnyView)?
     /// Whether what stands in a protected field is put out of sight: while the app is not in
     /// front, when the system keeps a picture of its window.
     @Entry public var coversSecrets = false

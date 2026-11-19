@@ -362,7 +362,7 @@ pub async fn prune_obsolete_workspace_content(
             live.insert(thumbnail_hash);
         }
     }
-    let present = hydrator.store.store().blobs().list().hashes().await?;
+    let present = hydrator.store.blob_hashes().await?;
     let obsolete = present
         .into_iter()
         .filter(|hash| !live.contains(hash))
@@ -381,9 +381,7 @@ pub async fn prune_obsolete_workspace_content(
         let selected = hashes.iter().copied().collect::<HashSet<_>>();
         let store = Arc::clone(&hydrator.store);
         let namespace = Arc::clone(namespace);
-        let runtime = store
-            .runtime()
-            .unwrap_or_else(tokio::runtime::Handle::current);
+        let runtime = tokio::runtime::Handle::current();
         let generation = generation.clone();
         let batch_removed = tokio::task::spawn_blocking(move || -> Result<Option<u64>> {
             let mut namespace = namespace.lock_recover();
@@ -735,14 +733,7 @@ mod tests {
         let bytes = b"owner-created bytes";
         let (owner_endpoint, owner_router, chunk, manifest) = owner_manifest_source(bytes).await;
 
-        let nas_store = Arc::new(
-            ContentStore::open_with_gc_interval(
-                temp.path().join("blobs"),
-                Duration::from_millis(10),
-            )
-            .await
-            .unwrap(),
-        );
+        let nas_store = Arc::new(ContentStore::open(temp.path().join("blobs")).await.unwrap());
         let (nas_endpoint, _) = crate::sync::bind_ephemeral_endpoint().await.unwrap();
         let nas_hydrator = Hydrator::new(nas_endpoint.clone(), nas_store.clone());
         nas_hydrator.add_peer(owner_endpoint.addr());
@@ -757,11 +748,8 @@ mod tests {
             )
             .unwrap();
         let namespace = Arc::new(Mutex::new(namespace));
-        assert!(
-            hydrate_full_workspace(&namespace, &nas_hydrator)
-                .await
-                .full_content_replication
-        );
+        let status = hydrate_full_workspace(&namespace, &nas_hydrator).await;
+        assert!(status.full_content_replication, "{status:?}");
 
         let nas_router = Router::builder(nas_endpoint.clone())
             .accept(iroh_blobs::ALPN, nas_store.blobs_protocol(None))
@@ -802,15 +790,10 @@ mod tests {
         .unwrap();
         assert!(!nas_store.has(chunk).await);
         assert!(!nas_store.has(manifest).await);
-        nas_store.store().shutdown().await.unwrap();
+        nas_store.shutdown().await.unwrap();
         drop(nas_hydrator);
         drop(nas_store);
-        let restarted = ContentStore::open_with_gc_interval(
-            temp.path().join("blobs"),
-            Duration::from_millis(10),
-        )
-        .await
-        .unwrap();
+        let restarted = ContentStore::open(temp.path().join("blobs")).await.unwrap();
         assert!(!restarted.has(chunk).await);
         assert!(!restarted.has(manifest).await);
         nas_router.shutdown().await.unwrap();

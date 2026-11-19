@@ -887,34 +887,68 @@ impl Resolved {
 }
 
 /// The provider and model `named` names in `config`, as provider/model: the
+/// Whether `offered` matches `wanted`, by id (with or without `models/`), or by label.
+fn model_matches(offered: &ModelDescriptor, wanted: &str) -> bool {
+    let bare = offered.id.strip_prefix("models/").unwrap_or(&offered.id);
+    let wanted_bare = wanted.strip_prefix("models/").unwrap_or(wanted);
+    offered.id.eq_ignore_ascii_case(wanted)
+        || bare.eq_ignore_ascii_case(wanted_bare)
+        || offered.label.eq_ignore_ascii_case(wanted)
+}
+
 /// provider by its id or else by the name the person gave it, whatever the
 /// case, switched on, and a model it offers. A model's own name may hold a
-/// slash; a provider is named up to the first.
+/// slash; a provider is named up to the first. Also matches a bare model name
+/// across enabled providers.
 fn named_selection<'a>(
     config: &'a agent_provider_config::ProviderConfig,
     named: &str,
 ) -> Option<(&'a ProviderProfile, &'a ModelDescriptor)> {
-    let (provider, model) = named.trim().split_once('/')?;
-    let (provider, model) = (provider.trim(), model.trim());
+    let trimmed = named.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
     let on = || config.profiles.iter().filter(|profile| profile.enabled);
-    let profile = on()
-        .find(|profile| profile.id == provider)
-        .or_else(|| on().find(|profile| profile.display_label().eq_ignore_ascii_case(provider)))?;
-    let model = profile.models.iter().find(|offered| offered.id == model)?;
-    Some((profile, model))
+    if let Some((provider, model)) = trimmed.split_once('/') {
+        let (provider, model) = (provider.trim(), model.trim());
+        if let Some(profile) = on()
+            .find(|profile| profile.id.eq_ignore_ascii_case(provider))
+            .or_else(|| on().find(|profile| profile.display_label().eq_ignore_ascii_case(provider)))
+            && let Some(found) = profile
+                .models
+                .iter()
+                .find(|offered| model_matches(offered, model))
+        {
+            return Some((profile, found));
+        }
+        if let Some(found) = on().find_map(|profile| {
+            profile
+                .models
+                .iter()
+                .find(|offered| model_matches(offered, model))
+                .map(|found| (profile, found))
+        }) {
+            return Some(found);
+        }
+    }
+    on().find_map(|profile| {
+        profile
+            .models
+            .iter()
+            .find(|offered| model_matches(offered, trimmed))
+            .map(|found| (profile, found))
+    })
 }
 
 /// The other kind of a person's main thread: their assistant answers there
 /// as a request and works there as a task, and Settings chooses one model
-/// for both with one ask. No other kind of work has such a companion.
+/// for both with one ask. A sub-agent with no dedicated model falls back to
+/// the person's task model.
 const fn beside_in_main_thread(kind: Interaction) -> Option<Interaction> {
     match kind {
         Interaction::Task => Some(Interaction::Request),
-        Interaction::Request => Some(Interaction::Task),
-        Interaction::OneShot
-        | Interaction::Subtask
-        | Interaction::Classifier
-        | Interaction::Dictation => None,
+        Interaction::Request | Interaction::Subtask => Some(Interaction::Task),
+        Interaction::OneShot | Interaction::Classifier | Interaction::Dictation => None,
     }
 }
 

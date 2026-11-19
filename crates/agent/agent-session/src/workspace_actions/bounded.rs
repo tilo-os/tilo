@@ -675,6 +675,21 @@ impl Worker {
         bounded_permissions(&policy, who).ok()
     }
 
+    /// Set aside the least recently used replicas within bounds until one more fits.
+    fn evict_bounded(&mut self) {
+        while self.bounded.len() >= super::MAX_MOUNTED {
+            let Some(oldest) = self
+                .bounded
+                .iter()
+                .min_by_key(|(_, held)| held.held.used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.bounded.remove(&oldest);
+        }
+    }
+
     /// `who`'s replica of the record at `route` (a part: of the record it is
     /// held beside), opened as them on their access now, or the one held
     /// for them while that access is unchanged.
@@ -693,7 +708,11 @@ impl Worker {
         // record that does not exist.
         let holder = self.mount_held(route, state).map_err(unavailable)?;
         let key = (holder.clone(), who.person.clone(), who.agent.clone());
-        if let Some(held) = self.parked.unpark(&key, super::publish::REUSE_WAIT) {
+        // A replica set aside heard of nothing written while it was: it merges what the
+        // workspace holds whole, as one opened anew does.
+        let unparked = self.parked.unpark(&key, super::publish::REUSE_WAIT);
+        let whole = unparked.is_some();
+        if let Some(held) = unparked {
             self.bounded.insert(key.clone(), held);
         }
         self.clock = self.clock.wrapping_add(1);
@@ -724,17 +743,7 @@ impl Worker {
         }
         if !current {
             self.bounded.remove(&key);
-            while self.bounded.len() >= super::MAX_MOUNTED {
-                let Some(oldest) = self
-                    .bounded
-                    .iter()
-                    .min_by_key(|(_, held)| held.held.used)
-                    .map(|(key, _)| key.clone())
-                else {
-                    break;
-                };
-                self.bounded.remove(&oldest);
-            }
+            self.evict_bounded();
             let (bytes, heads) = state.document(&holder).map_err(unavailable)?;
             let app = ConfinedReplica::open(
                 &self.catalogue,
@@ -776,10 +785,15 @@ impl Worker {
             .get_mut(&key)
             .ok_or_else(|| unavailable("the record did not mount".into()))?;
         held.held.used = clock;
-        // A replica taken back from a save that outlived the grace was set
-        // aside when the workspace last caught up: what others wrote since is
-        // merged before it acts, only the changes after the heads it holds.
-        super::catch_up::catch_up(&holder, &mut held.held, state, None);
+        // What others wrote since it was last used is merged before it acts, only the
+        // changes after the heads it holds; a replica opened anew or taken back from a save
+        // that outlived the grace merges what the workspace holds of every part it has.
+        let behind = held.held.behind.take();
+        if whole || !current {
+            super::catch_up::catch_up(&holder, &mut held.held, state, None);
+        } else if let Some(behind) = behind {
+            super::catch_up::catch_up(&holder, &mut held.held, state, Some(&behind));
+        }
         super::catch_up::hold_parts(&holder, &mut held.held, state);
         super::catch_up::tell_kept(&mut held.held, state, kept);
         if holder != *route && !held.held.parts.contains_key(route) {
@@ -1064,6 +1078,7 @@ impl Worker {
         // It holds what it wrote: the next merge into it takes only what
         // others wrote since, never its own change read back.
         super::caught_up_with_own(&holder, &mut held.held, &wrote);
+        self.behind_all_but(&super::Writer::Bounded(key.clone()), &wrote);
         self.bounded.insert(key, held);
         Ok((output, left_at))
     }

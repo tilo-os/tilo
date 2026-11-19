@@ -26,12 +26,12 @@ use crate::clock::unix_now_ms;
 use fs_protocol::{AvailabilityPolicy, Residency};
 use tilo_lock::MutexRecover as _;
 
-/// Bound catalog I/O so opening Settings does not serialize one backend status query per chunk
+/// Bound catalog I/O so opening Settings does not serialize one store status query per chunk
 /// across a large workspace.
 const MAX_CONCURRENT_CATALOG_INSPECTIONS: usize = 8;
 
-/// The one process-local bridge from durable eviction intent to backend GC, so no caller can
-/// silently replace exact-content receipts or the exact absence
+/// The one process-local bridge from durable eviction intent to removal from the store, so no
+/// caller can silently replace exact-content receipts or the exact absence
 /// observation with a Hydrator-lifetime approximation.
 #[derive(Clone)]
 pub struct EvictionCoordinator {
@@ -53,7 +53,7 @@ impl EvictionCoordinator {
         }
     }
 
-    /// The same fail-closed dry run used immediately before GC.
+    /// The same fail-closed dry run used immediately before removal.
     pub async fn plan(
         &self,
         document_id: FileDocumentId,
@@ -118,7 +118,7 @@ impl EvictionCoordinator {
                     Some(request_id) => request_id,
                     None => queue.enqueue(plan, now_ms)?.id,
                 };
-                runtime.block_on(store.release_eviction_to_backend_gc(
+                runtime.block_on(store.evict_request(
                     queue,
                     request_id,
                     registry,
@@ -134,26 +134,22 @@ impl EvictionCoordinator {
 
     /// The runtime a handoff waits on the store through. The handoff holds the availability
     /// lock, which the daemon's workers take too; a worker blocked on it can leave the daemon's
-    /// timers undriven, and the backend sweep waits on timers. The store's own runtime never
-    /// takes that lock.
+    /// timers undriven. The store has no runtime of its own, so this is the daemon's.
     #[must_use]
     pub fn handoff_runtime(&self) -> tokio::runtime::Handle {
-        self.hydrator
-            .store
-            .runtime()
-            .unwrap_or_else(|| self.hydrator.runtime_handle.clone())
+        self.hydrator.runtime_handle.clone()
     }
 
-    /// As [`Self::prepare`], but makes the actual backend-GC handoff an explicit caller-supplied
-    /// critical section, so storage can keep its live namespace and dirty guards from validation
-    /// through durable enqueue and tag release.
+    /// As [`Self::prepare`], but makes the actual removal an explicit caller-supplied critical
+    /// section, so storage can keep its live namespace and dirty guards from validation through the
+    /// durable enqueue and the removal itself.
     ///
     /// The handoff runs while the availability and queue locks are held. Those are synchronous
     /// guards, so the whole section runs on a blocking thread, where the handoff may wait on
     /// async store work with [`Self::handoff_runtime`]'s `block_on`, once and never nested.
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "policy must remain stable from exact-plan revalidation through backend tag release"
+        reason = "policy must remain stable from exact-plan revalidation through removal"
     )]
     pub async fn prepare_with_handoff<F>(
         &self,
@@ -215,7 +211,7 @@ impl EvictionCoordinator {
         .map_err(|_| anyhow::anyhow!("eviction handoff panicked"))?
     }
 
-    /// Observe exact backend state once and atomically project completed work into durable local
+    /// Observe exact store state once and atomically project completed work into durable local
     /// residency. A record whose content changed since is deliberately not changed.
     pub async fn observe_once(
         &self,
@@ -336,7 +332,7 @@ fn plan_for_mode(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlobExtent {
     pub hash: Hash,
-    /// Distinguishes an absent blob from a partial blob whose stored byte count the backend
+    /// Distinguishes an absent blob from a partial blob whose stored byte count the store
     /// cannot determine.
     pub locally_present: bool,
     /// Bytes verified locally. For a present partial blob, `None` means the count is unknown;
@@ -390,7 +386,7 @@ pub enum EvictionMode {
     DestructiveOverride,
 }
 
-pub const EVICTION_QUEUE_SCHEMA_VERSION: u16 = 2;
+pub const EVICTION_QUEUE_SCHEMA_VERSION: u16 = 3;
 pub const MAX_EVICTION_REQUESTS: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -400,8 +396,8 @@ pub struct EvictionRequestId(pub Uuid);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state")]
 pub enum EvictionRequestState {
-    AwaitingBackendGc,
-    /// Every requested hash was observed `NotFound` in one complete backend observation; the only
+    AwaitingEviction,
+    /// Every requested hash was observed `NotFound` in one complete store observation; the only
     /// successful terminal state.
     Completed {
         observed_at_ms: u64,
@@ -453,8 +449,8 @@ struct EvictionQueueDocument {
 /// Crash-safe log for explicit eviction intent and observed completion.
 ///
 /// The log does not trigger deletion by itself: the content-store bridge reauthorizes a
-/// pending request, releases only its deterministic service-owned tags, and lets iroh-blobs'
-/// background GC collect them. Completion is recorded only after exact backend observation.
+/// pending request and removes exactly its approved blobs from the store. Completion is recorded
+/// only after one observation finds them all absent.
 pub struct EvictionQueue {
     path: PathBuf,
     requests: BTreeMap<EvictionRequestId, EvictionRequest>,
@@ -476,9 +472,9 @@ pub enum EvictionQueueError {
     NonCanonicalHashes(EvictionRequestId),
     #[error("unknown eviction request {0:?}")]
     UnknownRequest(EvictionRequestId),
-    #[error("backend observation does not exactly cover request {0:?}")]
+    #[error("store observation does not exactly cover request {0:?}")]
     IncompleteObservation(EvictionRequestId),
-    #[error("eviction request {0:?} is no longer awaiting backend GC")]
+    #[error("eviction request {0:?} is no longer awaiting eviction")]
     RequestNotPending(EvictionRequestId),
     #[error("eviction queue contains too many requests")]
     TooManyRequests,
@@ -487,7 +483,7 @@ pub enum EvictionQueueError {
 }
 
 #[derive(Debug, Error)]
-pub enum BackendGcAuthorizationError {
+pub enum EvictionAuthorizationError {
     #[error(transparent)]
     Plan(#[from] PlanError),
     #[error(transparent)]
@@ -564,7 +560,7 @@ impl EvictionQueue {
                     return Err(EvictionQueueError::UnknownRequest(id));
                 };
                 request.requested_at_ms = requested_at_ms;
-                request.state = EvictionRequestState::AwaitingBackendGc;
+                request.state = EvictionRequestState::AwaitingEviction;
                 if let Err(error) = self.persist() {
                     self.requests.insert(id, previous);
                     return Err(error);
@@ -601,7 +597,7 @@ impl EvictionQueue {
             mode: plan.mode,
             requested_hashes,
             requested_at_ms,
-            state: EvictionRequestState::AwaitingBackendGc,
+            state: EvictionRequestState::AwaitingEviction,
         };
         self.requests.insert(id, request);
         if let Err(error) = self.persist() {
@@ -620,7 +616,7 @@ impl EvictionQueue {
     /// newly shared safety root changes the plan, so enqueue-time authority is never enough.
     ///
     /// Deletes and unprotects nothing; completion still requires one all-absent observation.
-    fn revalidate_for_backend_gc(
+    fn revalidate_eviction(
         &self,
         id: EvictionRequestId,
         fresh_plan: &EvictionPlan,
@@ -629,7 +625,7 @@ impl EvictionQueue {
             .requests
             .get(&id)
             .ok_or(EvictionQueueError::UnknownRequest(id))?;
-        if !matches!(request.state, EvictionRequestState::AwaitingBackendGc) {
+        if !matches!(request.state, EvictionRequestState::AwaitingEviction) {
             return Err(EvictionQueueError::RequestNotPending(id));
         }
         if request.document_id != fresh_plan.document_id
@@ -642,25 +638,25 @@ impl EvictionQueue {
         Ok(request.requested_hashes.clone())
     }
 
-    /// Recompute all policy and shared-root decisions before a backend handoff.
+    /// Recompute all policy and shared-root decisions before a removal.
     ///
     /// The returned hashes are authorized only while the caller keeps `registry` and `catalog`
     /// stable; they are not evidence of deletion, and
     /// [`ContentStore::observe_eviction_request`](crate::store::ContentStore::observe_eviction_request)
     /// remains the only completion path.
-    pub fn authorize_backend_gc(
+    pub fn authorize_eviction(
         &self,
         id: EvictionRequestId,
         registry: &AvailabilityRegistry,
         catalog: &EvictionCatalog,
         now_ms: u64,
         requirements: EvictionRequirements,
-    ) -> Result<Vec<Hash>, BackendGcAuthorizationError> {
+    ) -> Result<Vec<Hash>, EvictionAuthorizationError> {
         let request = self
             .requests
             .get(&id)
             .ok_or(EvictionQueueError::UnknownRequest(id))?;
-        if !matches!(request.state, EvictionRequestState::AwaitingBackendGc) {
+        if !matches!(request.state, EvictionRequestState::AwaitingEviction) {
             return Err(EvictionQueueError::RequestNotPending(id).into());
         }
         // Either mode releases only what the person explicitly gave up.
@@ -671,10 +667,10 @@ impl EvictionQueue {
             now_ms,
             requirements,
         )?;
-        Ok(self.revalidate_for_backend_gc(id, &fresh_plan)?)
+        Ok(self.revalidate_eviction(id, &fresh_plan)?)
     }
 
-    /// Record one all-or-nothing backend observation. Partial samples never change durable state,
+    /// Record one all-or-nothing store observation. Partial samples never change durable state,
     /// and completed requests stay completed.
     pub(crate) fn record_observation(
         &mut self,
@@ -717,7 +713,7 @@ impl EvictionQueue {
         let state = if remaining_hashes.is_empty() {
             match previous {
                 EvictionRequestState::Completed { .. } => previous,
-                EvictionRequestState::AwaitingBackendGc => {
+                EvictionRequestState::AwaitingEviction => {
                     EvictionRequestState::Completed { observed_at_ms }
                 }
             }
@@ -776,7 +772,7 @@ fn request_id(
     hashes: &[Hash],
 ) -> EvictionRequestId {
     let mut digest_builder = blake3::Hasher::new();
-    digest_builder.update(b"tilo.collaborative-fs.eviction-request.v2\0");
+    digest_builder.update(b"tilo.collaborative-fs.eviction-request.v3\0");
     digest_builder.update(document_id.0.as_bytes());
     digest_builder.update(content_hash.as_bytes());
     digest_builder.update(&[match mode {
@@ -827,7 +823,7 @@ pub struct EvictionPlan {
     pub shared_and_protected: Vec<BlobExtent>,
     pub already_absent: Vec<Hash>,
     pub reclaimable_bytes: u64,
-    /// Number of present reclaimable blobs left out of `reclaimable_bytes` because the backend
+    /// Number of present reclaimable blobs left out of `reclaimable_bytes` because the store
     /// reported an unknown partial size.
     pub unaccounted_reclaimable_blobs: usize,
     pub protected_shared_bytes: u64,
@@ -1471,13 +1467,13 @@ mod tests {
                         200,
                     )
                     .unwrap();
-                assert_eq!(observation.state, EvictionRequestState::AwaitingBackendGc);
+                assert_eq!(observation.state, EvictionRequestState::AwaitingEviction);
                 assert_eq!(observation.remaining_hashes, vec![hash(7), hash(8)]);
                 assert_eq!(observation.observed_remaining_bytes, 12);
                 assert_eq!(observation.unaccounted_remaining_blobs, 1);
                 assert_eq!(
                     EvictionQueue::open(&path).unwrap().get(id).unwrap().state,
-                    EvictionRequestState::AwaitingBackendGc
+                    EvictionRequestState::AwaitingEviction
                 );
             }
         }
@@ -1504,7 +1500,7 @@ mod tests {
                 let request = reopened.get(first.id).unwrap();
                 assert_eq!(request.requested_at_ms, 100);
                 assert_eq!(request.requested_hashes, vec![hash(7), hash(8)]);
-                assert_eq!(request.state, EvictionRequestState::AwaitingBackendGc);
+                assert_eq!(request.state, EvictionRequestState::AwaitingEviction);
             }
             {
                 let temp = TempDir::new().unwrap();
@@ -1523,13 +1519,13 @@ mod tests {
                 assert!(!second.inserted);
                 let request = queue.get(first.id).unwrap();
                 assert_eq!(request.requested_at_ms, 200);
-                assert_eq!(request.state, EvictionRequestState::AwaitingBackendGc);
+                assert_eq!(request.state, EvictionRequestState::AwaitingEviction);
 
                 drop(queue);
                 let reopened = EvictionQueue::open(path).unwrap();
                 assert_eq!(
                     reopened.get(first.id).unwrap().state,
-                    EvictionRequestState::AwaitingBackendGc
+                    EvictionRequestState::AwaitingEviction
                 );
             }
             {
@@ -1547,7 +1543,7 @@ mod tests {
                             mode: EvictionMode::Safe,
                             requested_hashes: Vec::new(),
                             requested_at_ms: u64::try_from(value).unwrap(),
-                            state: EvictionRequestState::AwaitingBackendGc,
+                            state: EvictionRequestState::AwaitingEviction,
                         },
                     );
                 }
@@ -1572,7 +1568,7 @@ mod tests {
                 let id = queue.enqueue(&plan, 100).unwrap().id;
 
                 assert_eq!(
-                    queue.revalidate_for_backend_gc(id, &plan).unwrap(),
+                    queue.revalidate_eviction(id, &plan).unwrap(),
                     vec![hash(7), hash(8)]
                 );
 
@@ -1580,20 +1576,20 @@ mod tests {
                 let protected = newly_shared.reclaimable.remove(0);
                 newly_shared.shared_and_protected.push(protected);
                 assert!(matches!(
-                    queue.revalidate_for_backend_gc(id, &newly_shared),
+                    queue.revalidate_eviction(id, &newly_shared),
                     Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
                 ));
 
                 let changed_content = queued_plan(document_id, hash(43));
                 assert!(matches!(
-                    queue.revalidate_for_backend_gc(id, &changed_content),
+                    queue.revalidate_eviction(id, &changed_content),
                     Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
                 ));
 
                 let mut changed_mode = plan.clone();
                 changed_mode.mode = EvictionMode::DestructiveOverride;
                 assert!(matches!(
-                    queue.revalidate_for_backend_gc(id, &changed_mode),
+                    queue.revalidate_eviction(id, &changed_mode),
                     Err(EvictionQueueError::FreshPlanMismatch(found)) if found == id
                 ));
             }
@@ -1625,7 +1621,7 @@ mod tests {
 
                 assert_eq!(
                     queue
-                        .authorize_backend_gc(
+                        .authorize_eviction(
                             id,
                             &registry,
                             &catalog,
@@ -1639,14 +1635,14 @@ mod tests {
                 other.residency = Residency::Resident { bytes: 14 };
                 registry.put(other).unwrap();
                 assert!(matches!(
-                    queue.authorize_backend_gc(
+                    queue.authorize_eviction(
                         id,
                         &registry,
                         &catalog,
                         now,
                         EvictionRequirements::default(),
                     ),
-                    Err(BackendGcAuthorizationError::Queue(
+                    Err(EvictionAuthorizationError::Queue(
                         EvictionQueueError::FreshPlanMismatch(found)
                     )) if found == id
                 ));
@@ -1668,7 +1664,7 @@ mod tests {
                 ));
                 assert_eq!(
                     queue.get(id).unwrap().state,
-                    EvictionRequestState::AwaitingBackendGc
+                    EvictionRequestState::AwaitingEviction
                 );
 
                 let completed = queue
@@ -1703,7 +1699,7 @@ mod tests {
                     .unwrap();
                 assert_eq!(repeated.state, completed.state);
                 assert!(matches!(
-                    reopened.revalidate_for_backend_gc(id, &plan),
+                    reopened.revalidate_eviction(id, &plan),
                     Err(EvictionQueueError::RequestNotPending(found)) if found == id
                 ));
             }

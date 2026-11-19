@@ -54,7 +54,7 @@ async fn stored_media_is_readable_only_by_reference_bounded_and_durable() {
             let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
             let media = DocumentMedia::new(Arc::clone(&store));
             let hash = media.store(&photos, b"durable".to_vec()).await.unwrap();
-            store.store().shutdown().await.unwrap();
+            store.shutdown().await.unwrap();
             hash
         };
         let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
@@ -129,7 +129,7 @@ async fn ranged_reads_after_a_restart_read_only_the_range() {
         let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
         let media = DocumentMedia::new(Arc::clone(&store));
         let hash = media.store(&photos, data.clone()).await.unwrap();
-        store.store().shutdown().await.unwrap();
+        store.shutdown().await.unwrap();
         hash
     };
     let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
@@ -173,7 +173,7 @@ async fn ranged_reads_after_a_restart_read_only_the_range() {
     }
     assert_eq!(store.local(hash).await.unwrap().as_ref(), data);
     assert!(!store.is_cached(hash));
-    store.store().shutdown().await.unwrap();
+    store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -187,14 +187,11 @@ async fn cold_ranged_reads_verify_only_selected_chunk_groups() {
         let store = Arc::new(ContentStore::open(dir.path()).await.unwrap());
         let media = DocumentMedia::new(Arc::clone(&store));
         let hash = media.store(&photos, data.clone()).await.unwrap();
-        store.store().shutdown().await.unwrap();
+        store.shutdown().await.unwrap();
         hash
     };
     let damaged = data.len() - 100;
-    let path = dir
-        .path()
-        .join("data")
-        .join(format!("{}.data", hash.to_hex()));
+    let path = dir.path().join("files/data").join(hash.to_hex());
     let mut file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
     file.seek(SeekFrom::Start(damaged as u64)).unwrap();
     file.write_all(&[data[damaged] ^ 0xff]).unwrap();
@@ -224,7 +221,7 @@ async fn cold_ranged_reads_verify_only_selected_chunk_groups() {
         }
     );
     assert!(!store.is_cached(hash));
-    store.store().shutdown().await.unwrap();
+    store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -236,10 +233,10 @@ async fn ranged_reads_keep_the_verified_file_chunk_fallback() {
     let manifest = store.manifest(content).await.unwrap();
     let chunk = manifest.chunks()[0];
     let hash = Hash::from(chunk.hash);
-    assert!(matches!(
-        store.store().blobs().status(hash).await.unwrap(),
-        BlobStatus::NotFound
-    ));
+    assert!(
+        store.files().get_inline(hash.as_bytes()).is_none(),
+        "the chunk lives in the file-backed entry, not inline"
+    );
     document_reference(&store, &photos, hash).await.unwrap();
     let media = DocumentMedia::new(Arc::clone(&store));
     assert_eq!(

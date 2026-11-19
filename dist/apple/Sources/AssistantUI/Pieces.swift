@@ -486,24 +486,55 @@ struct Fine: View {
 struct LiveThingPlace: View {
     let thing: LiveThing
     @Environment(\.liveThingView) private var draw
+    @Environment(AssistantModel.self) private var model: AssistantModel?
+
+    private var isStaged: Bool { model?.stagedLive?.id == thing.id }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Group {
-                if let draw {
-                    draw(thing).buttonStyle(BoxButtonStyle())
-                } else {
-                    VStack(spacing: 6) {
-                        Mark(side: 22)
-                        Text(thing.title).font(.tilo(14, .medium)).foregroundStyle(Token.ink)
-                        Fine(words: AssistantWords.liveThing.said)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 360)
+            if isStaged {
+                HStack(spacing: 8) {
+                    Circle().fill(Token.asst).frame(width: 7, height: 7)
+                    Text(thing.title).font(.tilo(13, .semibold)).foregroundStyle(Token.ink).lineLimit(1)
+                    Spacer(minLength: 8)
+                    Button("Open in Stage") { model?.stagedLive = thing }
+                        .buttonStyle(BoxButtonStyle())
                 }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            } else {
+                HStack(spacing: 8) {
+                    Text(thing.title).font(.small12).foregroundStyle(Token.ink2).lineLimit(1)
+                    Spacer(minLength: 8)
+                    if model != nil {
+                        #if os(macOS)
+                        Button("Open in Stage ⤢") { model?.stagedLive = thing }
+                            .buttonStyle(BoxButtonStyle())
+                        #else
+                        Button("Open Full Screen ⤢") { model?.stagedLive = thing }
+                            .buttonStyle(BoxButtonStyle())
+                        #endif
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                Rectangle().fill(Token.line).frame(height: 1)
+                Group {
+                    if let draw {
+                        draw(thing).buttonStyle(BoxButtonStyle())
+                    } else {
+                        VStack(spacing: 6) {
+                            Mark(side: 22)
+                            Text(thing.title).font(.tilo(14, .medium)).foregroundStyle(Token.ink)
+                            Fine(words: AssistantWords.liveThing.said)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 360)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel(thing.title)
             }
-            .frame(maxWidth: .infinity)
-            .accessibilityLabel(thing.title)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Token.raised)

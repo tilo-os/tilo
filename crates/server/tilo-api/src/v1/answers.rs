@@ -103,6 +103,10 @@ pub struct UnattendedChange {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceList {
     pub workspaces: Vec<Workspace>,
+    /// The listing as a person reads it ([`super::lines`]): what `tilo`
+    /// prints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -184,6 +188,10 @@ pub struct KeyRow {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct KeyList {
     pub keys: Vec<KeyRow>,
+    /// The listing as a person reads it ([`super::lines`]): what `tilo`
+    /// prints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -581,7 +589,7 @@ pub struct View {
 }
 
 /// The workspace's people, each with their role, and the invitations still
-/// open.
+/// open, with `text`: the listing as a person reads it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Members(pub Map<String, Value>);
 
@@ -630,6 +638,10 @@ pub struct Servers {
     /// How many copies the workspace wants kept and where they stand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copies: Option<Value>,
+    /// The listing as a person reads it ([`super::lines`]): what `tilo`
+    /// prints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// One server keeping the workspace.
@@ -664,7 +676,8 @@ pub struct NewServer {
 }
 
 /// The addresses left at the workspace's entry while it takes people by
-/// invitation, oldest first, and whether the entry mails invitations.
+/// invitation, oldest first, and whether the entry mails invitations, with
+/// `text`: the listing as a person reads it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WaitList(pub Map<String, Value>);
 

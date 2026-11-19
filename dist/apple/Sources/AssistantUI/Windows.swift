@@ -212,7 +212,11 @@ public struct MacWindow: View {
             // The middle of the window is read as one part, between the sidebar and the Tasks panel.
             .accessibilityElement(children: .contain)
             .accessibilityLabel((model.place == .assistantView ? AssistantWords.assistantView : AssistantWords.conversation).said)
-            if model.showsPanel, model.chat != nil {
+            if let staged = model.stagedLive, case .chat(let chat) = model.place {
+                Rectangle().fill(Token.line).frame(width: 1)
+                SplitStudioStage(staged: staged, artifacts: model.liveThings(in: chat))
+                    .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.showsPanel, model.chat != nil {
                 Rectangle().fill(Token.line).frame(width: 1)
                 TasksPanel { model.showsPanel = false }
                     .frame(width: Measure.panel)
@@ -236,9 +240,26 @@ public struct MacWindow: View {
                 .accessibilityAddTraits(.isHeader)
             }
             Spacer(minLength: 8)
+            if let active = model.activeSubAgents.first {
+                Button {
+                    model.open(.subAgent(active.id))
+                } label: {
+                    HStack(spacing: 6) {
+                        Circle().fill(Token.asst).frame(width: 6, height: 6)
+                        Text(model.activeSubAgents.count == 1 ? active.title : "\(model.activeSubAgents.count) sub-agents")
+                            .font(.small12).foregroundStyle(Token.ink).lineLimit(1)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Token.raised, in: Capsule())
+                    .overlay { Capsule().strokeBorder(Token.line, lineWidth: 1) }
+                }
+                .buttonStyle(.plain)
+            }
             if model.chat != nil {
                 BarButton(sign: .panel, isOn: model.showsPanel,
                           label: (model.showsPanel ? AssistantWords.hideTasks : AssistantWords.showTasks).said) {
+                    model.stagedLive = nil
                     model.showsPanel.toggle()
                 }
             }
@@ -249,6 +270,72 @@ public struct MacWindow: View {
         .frame(minHeight: 48)
         // With the sidebar away, the window's three buttons stand here.
         .padding(.leading, model.showsSidebar ? 0 : 64)
+    }
+}
+
+/// Variant A (Split Studio): full-height live Tilo stage right beside the conversation.
+private struct SplitStudioStage: View {
+    let staged: LiveThing
+    let artifacts: [LiveThing]
+    @Environment(AssistantModel.self) private var model
+    @Environment(\.liveStageView) private var drawStage
+    @Environment(\.liveThingView) private var drawInline
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        let list = artifacts.contains(where: { $0.id == staged.id }) ? artifacts : [staged] + artifacts
+                        ForEach(list) { item in
+                            let selected = item.id == staged.id
+                            Button {
+                                model.stagedLive = item
+                            } label: {
+                                Text(item.title)
+                                    .font(.tilo(12, selected ? .semibold : .medium))
+                                    .foregroundStyle(selected ? Token.ink : Token.ink2)
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(selected ? Token.content : Token.clear, in: RoundedRectangle(cornerRadius: 7))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 7)
+                                            .strokeBorder(selected ? Token.asst : Token.line, lineWidth: 1)
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                Button {
+                    model.stagedLive = nil
+                } label: {
+                    Text("×").font(.tilo(16, .medium)).foregroundStyle(Token.ink2)
+                        .frame(width: 28, height: 28)
+                        .background(Token.content, in: RoundedRectangle(cornerRadius: 7))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close stage")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Token.raised)
+            Rectangle().fill(Token.line).frame(height: 1)
+            Group {
+                if let draw = drawStage ?? drawInline {
+                    draw(staged)
+                } else {
+                    VStack(spacing: 8) {
+                        Mark(side: 28)
+                        Text(staged.title).font(.title15).foregroundStyle(Token.ink)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(Token.content)
     }
 }
 #endif
@@ -313,6 +400,11 @@ public struct PhoneRoot: View {
         .sheet(item: $model.selecting) {
             SelectTextSheet(words: $0).presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
         }
+        .sheet(item: $model.stagedLive) { thing in
+            PhoneLiveStageSheet(thing: thing)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
         .environment(\.coversSecrets, !inFront)
         // An iPhone's Settings show the version alone, so the app says its build itself: at
         // its way in and in its list, in the words of the Mac's About window.
@@ -340,6 +432,7 @@ public struct PhoneRoot: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16).padding(.vertical, 6)
                 }
+                PhoneNowStrip(chat: chat)
                 ConversationView(chat: chat, head: textSize.isAccessibilitySize ? head : nil)
                     // A touch on the conversation puts the keyboard away. What is touched still takes the touch.
                     .simultaneousGesture(TapGesture().onEnded { Self.putKeyboardAway() })
@@ -389,6 +482,96 @@ public struct PhoneRoot: View {
         case .chat(.subAgent(let id)): model.subAgent(id)?.title ?? AssistantWords.subAgents.said
         case .assistantView: AssistantWords.assistantView.said
         }
+    }
+}
+
+/// Phone 3 (Focus Feed + Now Strip): pinned strip for running sub-agents, waiting approvals, and latest live artifact.
+private struct PhoneNowStrip: View {
+    let chat: Chat
+    @Environment(AssistantModel.self) private var model
+
+    var body: some View {
+        let active = model.activeSubAgents
+        let latestLive = model.liveThings(in: chat).first
+        if !active.isEmpty || model.waiting > 0 || latestLive != nil {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    if model.waiting > 0 {
+                        Button {
+                            model.showsPanel = true
+                        } label: {
+                            HStack(spacing: 6) {
+                                Circle().fill(Token.you).frame(width: 6, height: 6)
+                                Text("\(model.waiting) waiting").font(.tilo(12, .semibold)).foregroundStyle(Token.ink)
+                            }
+                            .padding(.horizontal, 11).padding(.vertical, 6)
+                            .background(Token.youTint, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    ForEach(active) { agent in
+                        Button {
+                            model.open(.subAgent(agent.id))
+                        } label: {
+                            HStack(spacing: 6) {
+                                Circle().fill(Token.asst).frame(width: 6, height: 6)
+                                Text(agent.title).font(.tilo(12, .medium)).foregroundStyle(Token.ink).lineLimit(1)
+                            }
+                            .padding(.horizontal, 11).padding(.vertical, 6)
+                            .background(Token.asstTint, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if let latestLive {
+                        Button {
+                            model.stagedLive = latestLive
+                        } label: {
+                            HStack(spacing: 6) {
+                                Circle().fill(Token.on).frame(width: 6, height: 6)
+                                Text("\(latestLive.title) ⤢").font(.tilo(12, .medium)).foregroundStyle(Token.ink).lineLimit(1)
+                            }
+                            .padding(.horizontal, 11).padding(.vertical, 6)
+                            .background(Token.raised, in: Capsule())
+                            .overlay { Capsule().strokeBorder(Token.line, lineWidth: 1) }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+            }
+            .background(Token.content)
+            Rectangle().fill(Token.line).frame(height: 1)
+        }
+    }
+}
+
+/// Full-screen interactive live Tilo sheet on iPhone.
+private struct PhoneLiveStageSheet: View {
+    let thing: LiveThing
+    @Environment(AssistantModel.self) private var model
+    @Environment(\.liveStageView) private var drawStage
+    @Environment(\.liveThingView) private var drawInline
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(thing.title).font(.title15).foregroundStyle(Token.ink).lineLimit(1)
+                Spacer()
+                Button("Done") { model.stagedLive = nil }
+                    .font(.tilo(14, .semibold))
+                    .foregroundStyle(Token.asst)
+                    .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Token.raised)
+            Rectangle().fill(Token.line).frame(height: 1)
+            if let draw = drawStage ?? drawInline {
+                draw(thing).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .background(Token.content)
     }
 }
 #endif

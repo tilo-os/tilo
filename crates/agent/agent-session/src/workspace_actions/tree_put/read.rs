@@ -76,8 +76,11 @@ fn history(tree: &mut Namespace, arguments: &Map<String, Value>) -> Result<Value
     }
     let named = chunks.tree();
     let words = &ui::history_source::sentence::ThreadWords;
-    let mut listed: Vec<Value> = Vec::new();
+    // A change a mounted folder wrote says no time: it is placed at the time of the change
+    // before it in its document, so each document's changes keep the order they were made in.
+    let mut listed: Vec<(i64, Value)> = Vec::new();
     for (chunk, doc) in &documents {
+        let mut before = 0;
         for mut entry in ui::history_source::verbs::entries_after(doc, &[], words) {
             let Some(fields) = entry.as_object_mut() else {
                 continue;
@@ -92,12 +95,18 @@ fn history(tree: &mut Namespace, arguments: &Map<String, Value>) -> Result<Value
                 fields.insert("path".to_owned(), path.into());
             }
             fields.insert("chunk".to_owned(), (*chunk).into());
-            listed.push(entry);
+            let time = fields.get("time_ms").and_then(Value::as_i64).unwrap_or(0);
+            before = before.max(time);
+            listed.push((before, entry));
         }
     }
-    listed.sort_by_key(|entry| entry.get("time_ms").and_then(Value::as_i64).unwrap_or(0));
+    listed.sort_by_key(|(time, _)| *time);
     let total = listed.len();
-    let shown = listed.split_off(total.saturating_sub(last));
+    let shown: Vec<Value> = listed
+        .split_off(total.saturating_sub(last))
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .collect();
     Ok(json!({
         "versions": shown,
         "total": total,

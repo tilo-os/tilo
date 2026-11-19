@@ -489,6 +489,6 @@ mod tests {
         router.shutdown().await.unwrap();
         client_endpoint.close().await;
         server_endpoint.close().await;
-        client_store.store().shutdown().await.unwrap();
+        client_store.shutdown().await.unwrap();
     }
 }

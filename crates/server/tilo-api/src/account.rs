@@ -200,7 +200,7 @@ pub(crate) fn not_branched(error: &ServerError) -> Option<Outcome> {
 
 /// A tool's result: the typed value as JSON text when the caller asked for
 /// typed answers (`structured`), else the agents' `text`.
-fn tool_result(structured: bool, text: &str, typed: &Value, is_error: bool) -> Value {
+pub(crate) fn tool_result(structured: bool, text: &str, typed: &Value, is_error: bool) -> Value {
     if structured {
         json!({
             "content": [{"type": "text", "text": typed.to_string()}],
@@ -246,19 +246,30 @@ pub(crate) fn answer(structured: bool, path: &str, outcome: Outcome) -> Value {
     }
 }
 
-/// A parameter of an account action, as `tilo_ls` lists parameters.
-struct Param {
-    name: &'static str,
-    required: bool,
+/// A parameter of an account or workspace action the API answers itself, as
+/// `tilo_ls` lists parameters.
+pub(crate) struct Param {
+    pub(crate) name: &'static str,
+    pub(crate) required: bool,
     ty: &'static str,
 }
 
-const fn param(name: &'static str, required: bool, ty: &'static str) -> Param {
+/// One action the API answers itself: (resource, action, label, kind,
+/// parameters).
+pub(crate) type ActionRow = (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static [Param],
+);
+
+pub(crate) const fn param(name: &'static str, required: bool, ty: &'static str) -> Param {
     Param { name, required, ty }
 }
 
-/// The account's actions: (resource, action, label, kind, parameters).
-const ACTIONS: [(&str, &str, &str, &str, &[Param]); 9] = [
+/// The account's actions.
+const ACTIONS: [ActionRow; 9] = [
     (
         "workspaces",
         "list",
@@ -348,8 +359,14 @@ const ACTIONS: [(&str, &str, &str, &str, &[Param]); 9] = [
 /// The action rows of the account's `resource`, as `tilo_ls` types them,
 /// and the same as text lines.
 fn actions_of(resource: &str) -> (Vec<Value>, String) {
+    listed_actions(&ACTIONS, resource)
+}
+
+/// The rows of `table` for `resource`, as `tilo_ls` types them, and the same
+/// as text lines.
+pub(crate) fn listed_actions(table: &[ActionRow], resource: &str) -> (Vec<Value>, String) {
     let mut text = String::new();
-    let rows = ACTIONS
+    let rows = table
         .iter()
         .filter(|row| row.0 == resource)
         .map(|(_, action, label, kind, params)| {
@@ -477,11 +494,8 @@ impl Server {
                             workspace["id"].as_str().unwrap_or_default(),
                             workspace["name"].as_str().unwrap_or_default(),
                         );
-                        let _ = write!(
-                            text,
-                            "\n{name} (id {id}, on {})",
-                            workspace["host"].as_str().unwrap_or_default()
-                        );
+                        text.push('\n');
+                        text.push_str(&crate::v1::lines::workspace(workspace));
                         rows.push(json!({
                             "path": format!("account/workspaces/{id}"), "name": id, "label": name,
                             "kind": "account.workspace", "has_children": false, "actions": [],
@@ -581,30 +595,12 @@ impl Server {
             .into_iter()
             .flatten()
         {
-            let when = |field: &str, none: &str| {
-                row[field]
-                    .as_u64()
-                    .map_or_else(|| none.to_owned(), crate::pages::date)
-            };
-            let _ = match row.get("grant") {
-                Some(grant) => write!(
-                    text,
-                    "\n{} (grant {}, reaches {}, {}, last used {}, expires {})",
-                    row["name"].as_str().unwrap_or_default(),
-                    grant.as_str().unwrap_or_default(),
-                    row["scope"].as_str().unwrap_or_default(),
-                    row["kind"].as_str().unwrap_or_default(),
-                    when("last_used_at_ms", "never"),
-                    when("expires_at_ms", "never"),
-                ),
-                None => write!(
-                    text,
-                    "\n{} (id {}, on {})",
-                    row["name"].as_str().unwrap_or_default(),
-                    row["id"].as_str().unwrap_or_default(),
-                    row["host"].as_str().unwrap_or_default(),
-                ),
-            };
+            text.push('\n');
+            text.push_str(&if row.get("grant").is_some() {
+                crate::v1::lines::key(row)
+            } else {
+                crate::v1::lines::workspace(row)
+            });
         }
         tool_result(
             structured,

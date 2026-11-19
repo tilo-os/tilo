@@ -27,6 +27,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
 
     private let engine: AnyView?
     private let live: (@MainActor (LiveThing) -> AnyView)?
+    private let liveStage: (@MainActor (LiveThing) -> AnyView)?
     private let makeWindow: @MainActor (NSRect, NSWindow.StyleMask) -> NSWindow
     private var viewMenu = NSMenu()
     private var windowMenu = NSMenu()
@@ -41,6 +42,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
     /// in one that is never put on a screen. `closed` is what the build says of being told while
     /// the app is closed: the bundle's own word, and nothing in a build without the push right.
     public init(source: any AssistantSource, engine: AnyView? = nil, live: (@MainActor (LiveThing) -> AnyView)? = nil,
+                liveStage: (@MainActor (LiveThing) -> AnyView)? = nil,
                 closed: ClosedBuild? = ClosedBuild(info: Bundle.main.infoDictionary),
                 window: @escaping @MainActor (NSRect, NSWindow.StyleMask) -> NSWindow = { frame, style in
                     NSWindow(contentRect: frame, styleMask: style, backing: .buffered, defer: true)
@@ -48,6 +50,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         model = AssistantModel(source: source)
         self.engine = engine
         self.live = live
+        self.liveStage = liveStage
         self.closed = closed
         makeWindow = window
     }
@@ -71,6 +74,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         made.isRestorable = false
         let root = AssistantRoot(model: model, engine: engine) { MacWindow() }
             .environment(\.liveThingView, live)
+            .environment(\.liveStageView, liveStage ?? live)
         let hosting = NSHostingView(rootView: root)
         // The window's sizes are the window's: its smallest is said above.
         hosting.sizingOptions = []
