@@ -23,7 +23,12 @@ pub(crate) fn parts<R: Resource>(
         resource.actions.push(withhold(spec, reason));
     };
     for decl in R::declarations() {
-        add(declaration_spec(&decl));
+        let mut spec = declaration_spec(&decl);
+        // An item verb needs its item here as it does where its state reads.
+        if let Some(item) = decl.item {
+            spec.type_mut().contract.item = Some(item.to_owned());
+        }
+        add(spec);
     }
     let vocabulary = vocabulary::<R>();
     add(apply_spec(vocabulary));

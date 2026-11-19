@@ -318,7 +318,7 @@ fn index(resources: &[ResourceSpec]) -> BTreeMap<String, &ResourceSpec> {
 /// cannot run stands where a row that would do something should be, and the person who typed its
 /// name meant the thing that works.
 fn offered(contract: &tilo_actions::ActionContract) -> bool {
-    contract.reaches_people() && matches!(contract.availability, Availability::Available)
+    contract.offered_to_people() && matches!(contract.availability, Availability::Available)
 }
 
 fn action_target(resource: &ResourceSpec, action: &str) -> Option<ActionTarget> {

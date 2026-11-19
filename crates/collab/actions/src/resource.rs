@@ -914,7 +914,10 @@ impl ResourceSpec {
     #[must_use]
     pub fn listed_for_people(&self) -> bool {
         listed_for_people(&self.kind, &self.label)
-            && self.actions.iter().any(ActionSpec::reaches_people)
+            && self
+                .actions
+                .iter()
+                .any(|action| action.contract.offered_to_people())
     }
 
     /// How many of its actions a person may take.
@@ -922,7 +925,7 @@ impl ResourceSpec {
     pub fn person_action_count(&self) -> usize {
         self.actions
             .iter()
-            .filter(|action| action.reaches_people())
+            .filter(|action| action.contract.offered_to_people())
             .count()
     }
 
@@ -932,9 +935,13 @@ impl ResourceSpec {
     pub fn open_action(&self) -> Option<&ActionSpec> {
         self.actions
             .iter()
-            .filter(|action| action.reaches_people())
+            .filter(|action| action.contract.offered_to_people())
             .find(|action| action.kind == OperationKind::View)
-            .or_else(|| self.actions.iter().find(|action| action.reaches_people()))
+            .or_else(|| {
+                self.actions
+                    .iter()
+                    .find(|action| action.contract.offered_to_people())
+            })
     }
 
     #[must_use]

@@ -136,7 +136,7 @@ pub(crate) fn host_commands(
         .filter(|resource| is_app_resource(resource))
     {
         for spec in &resource.actions {
-            if !spec.reaches_people() {
+            if !spec.contract.offered_to_people() {
                 continue;
             }
             let group = if spec.kind == OperationKind::View {

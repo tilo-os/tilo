@@ -1844,8 +1844,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 if shared.contains(&name.trim().to_lowercase()) {
                     let _ = write!(line, "  {}", child.id);
                 }
-                if !child.actions.is_empty() {
-                    let _ = write!(line, "  {}", actions_note(&child.actions, &called));
+                let listed: Vec<ActionDescriptor> = child.listed_actions().cloned().collect();
+                if !listed.is_empty() {
+                    let called = |action| forms.called(action, &resolved.app_id);
+                    let _ = write!(line, "  {}", actions_note(&listed, &called));
                 }
                 let row = child.listing_row(
                     &resolved.path,
@@ -1859,11 +1861,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             (self.other_resources(&parsed, &resolved, (&mut lines, &mut rows))).await;
             entries.extend(lines.into_iter().zip(rows.into_iter().map(Some)));
         }
+        // What acts on an item this resource holds is listed on that item,
+        // bound to it; a call naming the item still finds it here.
+        let own: Vec<ActionDescriptor> = resolved
+            .actions
+            .iter()
+            .filter(|action| !action.contract.needs_an_item())
+            .cloned()
+            .collect();
         if want_actions {
             entries.extend(
-                resolved
-                    .actions
-                    .iter()
+                own.iter()
                     .map(|action| (action_line(action, called(action)), None)),
             );
         }
@@ -1880,7 +1888,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let kind = forms.kind(&child.kind).unwrap_or(&child.kind).to_owned();
             let listed = kinds.entry(kind).or_insert_with(|| json!([]));
             if let Value::Array(listed) = listed {
-                for action in &child.actions {
+                for action in child.listed_actions() {
                     if !listed
                         .iter()
                         .any(|row| row["id"] == action.address.action.as_str())
@@ -1953,7 +1961,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "path": resolved.path,
                 "kind": kind,
                 "rows": rows,
-                "actions": actions_named(&resolved.actions),
+                "actions": actions_named(&own),
                 "kinds": kinds,
             });
             if let (Some(fields), Some(next)) = (answer.as_object_mut(), next) {

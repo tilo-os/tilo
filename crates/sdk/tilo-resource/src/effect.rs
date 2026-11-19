@@ -550,13 +550,19 @@ fn kept_specs(
 
 fn offered_specs(check: Check, decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
     // Offered on an item or a row (`item = field`, `on = Row`) as well as
-    // here: the declaration's own audience, unchanged. Whether a listing
-    // shows the unbound action beside the bound ones is the listing's, never
-    // a silent change of who the action is for.
+    // here, where it acts on the item a caller names: its audience is the
+    // declaration's, and it says it needs an item, so a listing holding none
+    // leaves it to the items that offer it bound.
     decls
         .into_iter()
         .filter(|decl| !decl.row)
-        .map(|decl| decl.spec_checked(operation, check))
+        .map(|decl| {
+            let mut spec = decl.spec_checked(operation, check);
+            if let Some(target) = decl.items.first() {
+                spec.type_mut().contract.item = Some(target.key().to_owned());
+            }
+            spec
+        })
         .collect()
 }
 

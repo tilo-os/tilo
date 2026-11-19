@@ -81,7 +81,7 @@ pub(crate) fn opening(row: &CatalogueRow) -> Option<(u8, SearchEntry)> {
     let opens_quietly = action.kind == OperationKind::View
         && contract.availability.is_available()
         && contract.advertised_confirmation() == ConfirmationPolicy::None
-        && contract.reaches_people()
+        && contract.offered_to_people()
         && action.input == InputSpec::None
         && action.params.is_empty();
     if !opens_quietly || row.resource.label.trim().is_empty() {

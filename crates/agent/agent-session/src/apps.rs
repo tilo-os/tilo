@@ -355,7 +355,7 @@ const fn answers(contract: &tilo_actions::ActionContract) -> bool {
 #[must_use]
 pub fn offered_to_agents(descriptor: &ActionDescriptor) -> bool {
     descriptor.kind != tilo_actions::OperationKind::Document
-        && descriptor.contract.reaches_agents()
+        && descriptor.contract.offered_to_agents()
         && !tagged(descriptor, tilo_actions::OWN_DEVICE_SCOPE)
         && !tagged(descriptor, tilo_actions::ATTENDED_TAG)
         && !tagged(descriptor, tilo_actions::HOST_RENDER_TAG)
@@ -371,7 +371,7 @@ pub fn offered_to_agents(descriptor: &ActionDescriptor) -> bool {
 pub fn offered_when_host_renders(descriptor: &ActionDescriptor) -> bool {
     descriptor.kind != tilo_actions::OperationKind::Document
         && tagged(descriptor, tilo_actions::HOST_RENDER_TAG)
-        && descriptor.contract.reaches_agents()
+        && descriptor.contract.offered_to_agents()
         && !tagged(descriptor, tilo_actions::OWN_DEVICE_SCOPE)
         && !tagged(descriptor, tilo_actions::ATTENDED_TAG)
         && answers(&descriptor.contract)
