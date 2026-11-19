@@ -67,6 +67,8 @@ impl GovernanceTransport for Endpoint {
 #[derive(Clone, Default)]
 pub struct Policy {
     pub allowed: Arc<Mutex<BTreeSet<Ed25519PublicKey>>>,
+    /// The readers of the restricted document used by the group tests.
+    pub document_readers: Arc<Mutex<BTreeSet<Ed25519PublicKey>>>,
     /// Devices allowed only until a wall-clock second: a grant that
     /// expires.
     pub until: Arc<Mutex<BTreeMap<Ed25519PublicKey, u64>>>,
@@ -111,6 +113,16 @@ impl Directory {
 }
 
 impl KeyDirectory for Directory {
+    fn document_devices(
+        &self,
+        _: WorkspaceId,
+        _: &str,
+        _: &str,
+        _: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        Some(self.policy.document_readers.lock().unwrap().clone())
+    }
+
     fn allowed_devices(&self, _: WorkspaceId, now: u64) -> Option<BTreeSet<Ed25519PublicKey>> {
         if self.policy.unknown.load(Ordering::SeqCst) {
             return None;

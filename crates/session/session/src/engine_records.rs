@@ -523,7 +523,7 @@ impl Inner {
                     None => (doc.save(), true, heads),
                 }
             };
-            let sealed = match engine.seal_keys(room) {
+            let sealed = match engine.resource_write_keys(room, (app, record)) {
                 Ok(SealKeys::Here(keys)) => Some(keys),
                 Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
                     unwritten.insert((workspace.clone(), app.clone()));
@@ -628,8 +628,8 @@ impl Inner {
                     DocumentMutation::Snapshot(bytes) => (bytes, true),
                     DocumentMutation::Incremental(bytes) => (bytes, false),
                 };
-                // Sealed under the record channel's keys, once it holds them.
-                let sealed = match engine.seal_keys(room) {
+                // A write waits until this device holds its document keys.
+                let sealed = match engine.resource_write_keys(room, (&app, &record)) {
                     Ok(SealKeys::Here(keys)) => Some(keys),
                     Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
                         unwritten.insert((workspace.clone(), app.clone()));

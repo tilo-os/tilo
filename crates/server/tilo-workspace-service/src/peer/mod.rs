@@ -56,7 +56,7 @@ use replay::{
 };
 use session::inbound_bytes;
 #[cfg(test)]
-use session::{finish_peer_outcome, run_peer_stream};
+use session::{finish_peer_outcome, serve_peer_stream};
 pub use session::{run_peer, run_peer_until};
 use state::{
     FanoutStamp, PreparedRecipients, StateCommit, authorized_state_source, desktop_refusal,

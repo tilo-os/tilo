@@ -667,13 +667,7 @@ impl Session {
         // index of what the broker receives from the apps and from peers.
         changes.waking(options.wake.handle());
         let resource_index = engine.as_ref().map(|engine| {
-            crate::resource_index::RecordIndex::start(
-                std::sync::Arc::clone(engine)
-                    as std::sync::Arc<dyn crate::resource_index::DocumentSource>,
-                std::sync::Arc::new(crate::resource_index::AppReader::of_device()),
-                Some(std::sync::Arc::clone(&options.content)),
-                crate::platform::records::Changes::clone(&changes),
-            )
+            crate::resource_index::start_on_device(engine, &options.content, &changes)
         });
         let resource_changes = resource_index.clone().map(|index| {
             index as std::sync::Arc<dyn tilo_broker_core::services::DocumentIndexChanges>

@@ -337,6 +337,7 @@ pub struct PolicyEdit {
     pub revoked: Vec<tilo_action_policy::GrantId>,
     pub sandbox_granted: Vec<String>,
     pub sandbox_revoked: Vec<String>,
+    pub custom_roles: Vec<Change>,
 }
 
 impl PolicyEdit {
@@ -347,6 +348,7 @@ impl PolicyEdit {
             && self.revoked.is_empty()
             && self.sandbox_granted.is_empty()
             && self.sandbox_revoked.is_empty()
+            && self.custom_roles.is_empty()
     }
 
     #[must_use]
@@ -356,6 +358,7 @@ impl PolicyEdit {
         self.revoked.extend(other.revoked);
         self.sandbox_granted.extend(other.sandbox_granted);
         self.sandbox_revoked.extend(other.sandbox_revoked);
+        self.custom_roles.extend(other.custom_roles);
         self
     }
 }
@@ -465,12 +468,44 @@ impl PolicyEdit {
             .grants
             .iter()
             .filter(|grant| after.grants.iter().all(|held| held.id != grant.id))
+            .filter(|grant| {
+                !matches!(&grant.grantee, tilo_action_policy::Grantee::CustomRole(id) if !after.custom_roles.contains_key(id))
+            })
             .map(|grant| grant.id.clone())
             .collect();
+        let mut custom_roles = Vec::new();
+        for (id, name) in &after.custom_roles {
+            if before.custom_roles.get(id) != Some(name) {
+                custom_roles.push(Change::DefineRole {
+                    id: id.clone(),
+                    name: name.clone(),
+                });
+            }
+        }
+        for id in before.custom_roles.keys() {
+            if !after.custom_roles.contains_key(id) {
+                custom_roles.push(Change::RemoveRole { id: id.clone() });
+            }
+        }
+        let empty = std::collections::BTreeSet::new();
+        for person in after.members.keys() {
+            let held = before.assigned_roles.get(person).unwrap_or(&empty);
+            let wanted = after.assigned_roles.get(person).unwrap_or(&empty);
+            custom_roles.extend(
+                held.symmetric_difference(wanted)
+                    .filter(|role| after.custom_roles.contains_key(*role))
+                    .map(|role| Change::SetMemberCustomRole {
+                        person: person.clone(),
+                        role: role.clone(),
+                        assigned: wanted.contains(role),
+                    }),
+            );
+        }
         Self {
             members,
             granted,
             revoked,
+            custom_roles,
             ..Self::default()
         }
     }

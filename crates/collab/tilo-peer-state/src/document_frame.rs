@@ -56,6 +56,25 @@ impl DocumentRoute {
     pub fn artifact(&self) -> collab_types::ArtifactId {
         document_artifact_id(&self.app_id, &self.cluster_id, &self.document)
     }
+
+    /// The independent group for sealing this document.
+    pub fn key_scope(&self) -> Result<neighbour_wire::KeyScope, DocumentError> {
+        self.key_scope_for(None)
+    }
+
+    /// The independent key group for this route and its declared readers.
+    pub fn key_scope_for(
+        &self,
+        readers: Option<&str>,
+    ) -> Result<neighbour_wire::KeyScope, DocumentError> {
+        neighbour_wire::KeyScope::document(
+            self.workspace_id()?,
+            &self.app_id,
+            &self.document,
+            readers,
+        )
+        .ok_or_else(|| DocumentError::Route("readers do not match the document".into()))
+    }
 }
 
 /// Why a document envelope was not produced or accepted.
@@ -263,6 +282,13 @@ pub fn open_frame(
     };
     let decrypted_payload = match envelope.encryption {
         Some(metadata) => {
+            collab_types::validate_document_payload_route(
+                &route.app_id,
+                &route.cluster_id,
+                &route.document,
+                &envelope,
+            )
+            .map_err(|error| DocumentError::Payload(error.to_string()))?;
             let keys =
                 keys.ok_or_else(|| DocumentError::Payload("route has no content key".into()))?;
             // A key holder's compaction of the record's sealed history
@@ -270,7 +296,7 @@ pub fn open_frame(
             let ciphertext = collab_types::sealed_ciphertext(&envelope)
                 .map_err(|error| DocumentError::Payload(error.to_string()))?;
             Some(
-                keys.open_content(route.artifact(), &metadata, &ciphertext)
+                keys.open_content(envelope.artifact, &metadata, &ciphertext)
                     .map_err(|error| DocumentError::Payload(error.to_string()))?
                     .to_vec(),
             )

@@ -30,6 +30,7 @@ use super::{Outcome, Worker, commit_failed, invoke_arguments};
 
 mod by_path;
 mod read;
+pub(super) mod sealed;
 mod write;
 
 /// Whether `target` is one of Files' verbs on the workspace's own folder, by a path in the
@@ -282,28 +283,52 @@ impl Worker {
         caller: &Caller,
         verbs: &[&str],
     ) -> bool {
-        if self.serves_as_owner(caller) {
+        let owner = self.serves_as_owner(caller);
+        if owner && !super::bounded::governed(&self.shared, workspace_id) {
             return true;
         }
-        let Some(who) = self.bounded(caller) else {
+        let workspace = workspace_id.to_string();
+        let who = self.bounded(caller);
+        let policy = match &who {
+            Some(who) => self.policy_for(workspace_id, who, &workspace, None).ok(),
+            None if owner => self
+                .shared
+                .link
+                .get()
+                .and_then(|link| link.workspace_policy(workspace_id, caller)),
+            None => None,
+        };
+        let Some(policy) = policy.filter(|policy| policy.workspace == workspace) else {
             return false;
         };
-        self.permissions_across(workspace_id, &who, &workspace_id.to_string())
-            .is_some_and(|permissions| {
-                // The nodes a mount writing a file and every receiver of the change decide it at.
-                if verbs.is_empty() {
-                    return permissions.answer(
-                        &fs_protocol::file_action::verb_node(None, tree::LIST),
-                        ActionKind::Read,
-                    ) == Answer::Allow;
-                }
-                verbs.iter().all(|verb| {
-                    permissions.answer(
-                        &fs_protocol::file_action::verb_node(None, verb),
-                        ActionKind::Undoable,
-                    ) == Answer::Allow
-                })
+        let document = tree::document_id();
+        let node = collab_types::document_node(&workspace, FILES_APP, &document);
+        let clock = ui::permissions::policy::Context::at_secs(policy.unix_time);
+        if policy.access.answer(&node, ActionKind::Read, &clock) != Answer::Allow
+            || (!verbs.is_empty()
+                && policy.access.answer(&node, ActionKind::Undoable, &clock) != Answer::Allow)
+        {
+            return false;
+        }
+        let permissions = match &who {
+            Some(who) => super::bounded::bounded_permissions(&policy, who).ok(),
+            None => Some(policy.permissions()),
+        };
+        permissions.is_some_and(|permissions| {
+            // The nodes a mount writing a file and every receiver of the change decide it at.
+            if verbs.is_empty() {
+                return permissions.answer(
+                    &fs_protocol::file_action::verb_node(None, tree::LIST),
+                    ActionKind::Read,
+                ) == Answer::Allow;
+            }
+            verbs.iter().all(|verb| {
+                permissions.answer(
+                    &fs_protocol::file_action::verb_node(None, verb),
+                    ActionKind::Undoable,
+                ) == Answer::Allow
             })
+        })
     }
 
     /// Answer one of Files' verbs on the folder of the workspace `named`, its `write-file`
@@ -614,6 +639,7 @@ impl Worker {
         let mut pending: std::collections::BTreeMap<String, Vec<u8>> =
             std::collections::BTreeMap::new();
         let mut pending_bytes = 0_usize;
+        let sealing = self.file_sealing(workspace_id, true).map_err(refused)?;
         let mut files = Vec::with_capacity(puttings.len());
         for putting in puttings {
             let known = kept.get(&putting.hash).cloned();
@@ -628,7 +654,8 @@ impl Worker {
                 // same way; files of the same content are named once, and a
                 // folder's manifests are kept together.
                 let (manifest, added) =
-                    manifest_into(&store, &putting.hash, size, &mut pending).map_err(refused)?;
+                    manifest_into(&store, &putting.hash, size, &mut pending, sealing.as_ref())
+                        .map_err(refused)?;
                 pending_bytes = pending_bytes.saturating_add(added);
                 let named = (size, manifest);
                 kept.insert(putting.hash.clone(), named.clone());
@@ -664,6 +691,15 @@ impl Worker {
             // the tree's own record carries included.
             None => tree.document_writes(&std::collections::BTreeMap::new()),
         };
+        self.check_file_keys(workspace_id, sealing.as_ref())
+            .map_err(refused)?;
+        if !self.may_on_tree(
+            workspace_id,
+            caller,
+            &[verbs::NEW_FOLDER, verbs::NEW_FILE, verbs::WRITE],
+        ) {
+            return Err(Outcome::Rejected(ActionCallError::NotPermitted));
+        }
         self.commit_tree_writes(workspace_id, named, held.as_ref(), writes)
             .map_err(|reason| commit_failed(reason, true))?;
         self.keep_tree(workspace_id, named, tree);
@@ -716,13 +752,13 @@ fn size_of(store: &tilo_content::ContentStore, hash: &str) -> Option<u64> {
 /// is not at the address the manifest names.
 fn manifest_bytes(
     store: &tilo_content::ContentStore,
-    hash: &str,
+    mut reader: impl std::io::Read,
     size: u64,
+    sealing: Option<&sealed::FileSealing>,
 ) -> Result<Vec<u8>, String> {
-    use std::io::Read as _;
-    let mut reader = store
-        .open(hash)
-        .ok_or_else(|| format!("this workspace holds no tilo.content:{hash}"))?;
+    if let Some(sealing) = sealing {
+        return sealing.manifest(store, reader, size);
+    }
     let mut failed: Option<String> = None;
     let mut keep = |chunk: &fs_content::ChunkRef, bytes: &[u8]| {
         if failed.is_some() {
@@ -769,8 +805,12 @@ fn manifest_of(
     store: &tilo_content::ContentStore,
     hash: &str,
     size: u64,
+    sealing: Option<&sealed::FileSealing>,
 ) -> Result<String, String> {
-    let encoded = manifest_bytes(store, hash, size)?;
+    let reader = store
+        .open(hash)
+        .ok_or_else(|| format!("this workspace holds no tilo.content:{hash}"))?;
+    let encoded = manifest_bytes(store, reader, size, sealing)?;
     store
         .put_public(&encoded)
         .map_err(|error| error.to_string())
@@ -792,8 +832,12 @@ fn manifest_into(
     hash: &str,
     size: u64,
     pending: &mut std::collections::BTreeMap<String, Vec<u8>>,
+    sealing: Option<&sealed::FileSealing>,
 ) -> Result<(String, usize), String> {
-    let encoded = manifest_bytes(store, hash, size)?;
+    let reader = store
+        .open(hash)
+        .ok_or_else(|| format!("this workspace holds no tilo.content:{hash}"))?;
+    let encoded = manifest_bytes(store, reader, size, sealing)?;
     let address = hex::encode(blake3::hash(&encoded).as_bytes());
     if store.has(&address) || pending.contains_key(&address) {
         return Ok((address, 0));

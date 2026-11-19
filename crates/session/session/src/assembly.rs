@@ -219,7 +219,7 @@ pub(crate) struct Shared {
     /// The session revision the file access list and what apps may capture were
     /// last worked out at: both follow every change of the session, so a
     /// revocation reaches the running app at once.
-    pub(crate) capabilities_fed: Cell<Option<(u64, u64)>>,
+    pub(crate) capabilities_fed: Cell<Option<(u64, u64, u64)>>,
     /// What publishes the person's file access list to the Files daemon
     /// while the session runs; `None` where no Files workspace serves.
     #[cfg(target_os = "linux")]
