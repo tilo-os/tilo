@@ -42,13 +42,23 @@ pub(super) async fn admit_person(
     device: &Device,
     role: Role,
 ) {
-    let invitation = hosted
-        .server
+    admit_person_at(&hosted.server, host, workspace, device, role).await;
+}
+
+/// [`admit_person`] on whatever `server` serves the workspace, `holder` its device.
+pub(super) async fn admit_person_at(
+    server: &tilo_server::daemon::Server,
+    holder: &Device,
+    workspace: &str,
+    device: &Device,
+    role: Role,
+) {
+    let invitation = server
         .workspaces()
         .unwrap()
         .issue(
             workspace,
-            &host.cert,
+            &holder.cert,
             IssueInvitationRequest {
                 request_id: device.cert.device_public_key,
                 role,

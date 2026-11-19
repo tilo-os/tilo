@@ -1603,3 +1603,13 @@ reason = "An agent the workspace's governor works is the agent resource's own `o
 words = ["host"]
 identifiers = ["on_host", "SET_AGENT_ON_HOST", "SetAgentOnHost", "test_host"]
 paths = ["crates/server/tilo-workspace-service/src/workspaces/removed_keeper_tests.rs"]
+
+[[allow]]
+reason = "Terminal's own `run` action, by the name it publishes, which executes a command line; the server's agents and shells and tokio's mpsc constructor, as their crates name them."
+words = ["run", "host", "channel"]
+identifiers = ["run", "HostAgents", "host_shells", "unbounded_channel"]
+paths = [
+    "crates/agent/agent-session/tests/workspace_actions/hosted_agent_terminal.rs",
+    "crates/collab/action-policy/tests/agent_answers.rs",
+    "crates/platform/tilo-workspace-agent/src/tests.rs",
+]

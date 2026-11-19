@@ -80,14 +80,15 @@ impl AgentAccessRow {
     }
 
     /// The answers offered for `cell`, by their place in [`ANSWERS`]: the one it holds, and every
-    /// one its person may give it in this app ([`agent_answers::may_give`]).
+    /// one its person may give it at the row's scope ([`agent_answers::may_give`]).
     #[must_use]
     pub fn choices(&self, cell: &AnswerCell) -> Vec<usize> {
         ANSWERS
             .iter()
             .enumerate()
             .filter(|(_, answer)| {
-                **answer == cell.answer || agent_answers::may_give(&self.app, cell.kind, **answer)
+                **answer == cell.answer
+                    || agent_answers::may_give(Some(&self.scope), cell.kind, **answer)
             })
             .map(|(index, _)| index)
             .collect()

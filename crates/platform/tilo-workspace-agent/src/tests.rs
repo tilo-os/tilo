@@ -187,7 +187,7 @@ fn nobody_is_made_an_agents_keeper_by_a_name_somebody_else_wrote() {
 }
 
 #[test]
-fn a_bound_allows_an_outside_effect_unasked_only_within_the_persons_account() {
+fn a_bound_allows_an_outside_effect_unasked_only_within_the_persons_account_or_for_one_action() {
     let mut agents = as_person(ADA);
     agents.apply(make("Claude")).unwrap();
     let agent = agents.state().unwrap().agents[0].id.0.clone();
@@ -239,10 +239,26 @@ fn a_bound_allows_an_outside_effect_unasked_only_within_the_persons_account() {
             ))
             .unwrap();
     }
+    // Elsewhere one action its person names goes unasked: running a command in Terminal.
+    agents
+        .apply(set_bound(
+            &agent,
+            vec![rule(
+                "workspace:ws/app:so.tilo.terminal/kind:terminal.session/**/action:run",
+                &["outside"],
+                "allow",
+            )],
+        ))
+        .unwrap();
     for bad in [
         rule("workspace:ws", &["outside"], "allow"),
         rule(
             "workspace:ws/app:so.tilo.file-explorer",
+            &["outside"],
+            "allow",
+        ),
+        rule(
+            "workspace:ws/app:so.tilo.terminal/kind:terminal.session",
             &["outside"],
             "allow",
         ),

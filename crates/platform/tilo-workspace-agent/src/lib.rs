@@ -160,24 +160,17 @@ impl Bound {
         Ok(tilo_action_policy::Rule::new(node, kinds, answer))
     }
 
-    /// Whether its person may give it: an outside effect is carried out unasked
-    /// only within their own account
+    /// Whether its person may give it: an outside effect is carried out unasked only within their
+    /// own account, or for one action they named
     /// ([`tilo_action_policy::agent_answers::may_give`]).
     fn may_be_given(&self) -> Result<bool, Refusal> {
         use tilo_action_policy::agent_answers::{AnswerScope, may_give};
         let rule = self.rule()?;
-        let app = match AnswerScope::of_node(&rule.node) {
-            Some(
-                AnswerScope::App { app }
-                | AnswerScope::Kind { app, .. }
-                | AnswerScope::Action { app, .. },
-            ) => app,
-            None => String::new(),
-        };
+        let scope = AnswerScope::of_node(&rule.node);
         Ok(rule
             .kinds
             .iter()
-            .all(|kind| may_give(&app, kind, rule.answer)))
+            .all(|kind| may_give(scope.as_ref(), kind, rule.answer)))
     }
 }
 
@@ -638,7 +631,8 @@ impl WorkspaceAgents {
         for rule in &bound {
             if !rule.may_be_given()? {
                 return Err(Refusal::new(
-                    "an agent acts unasked on an outside effect only within its person's own account",
+                    "an agent acts unasked on an outside effect only within its person's own account, \
+                     or for one action they name",
                 ));
             }
         }
@@ -856,7 +850,8 @@ impl WorkspaceAgents {
             for rule in &agent.bound {
                 if !rule.may_be_given()? {
                     return Err(Refusal::new(
-                        "an agent acts unasked on an outside effect only within its person's own account",
+                        "an agent acts unasked on an outside effect only within its person's own account, \
+                     or for one action they name",
                     ));
                 }
             }

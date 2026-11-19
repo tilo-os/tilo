@@ -128,6 +128,9 @@ mod hosted_agent_questions;
 #[path = "workspace_actions/hosted_agent_sessions.rs"]
 mod hosted_agent_sessions;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_agent_terminal.rs"]
+mod hosted_agent_terminal;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_agent_turns.rs"]
 mod hosted_agent_turns;
 #[cfg(test)]
