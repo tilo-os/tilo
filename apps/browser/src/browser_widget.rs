@@ -4985,6 +4985,9 @@ pub(crate) struct PagePublication {
     sign_in: Option<ui::framework::LiveRow>,
     search_index: crate::search_provider::BrowserSearchIndex,
     personal_bookmarks: Rc<crate::personal_bookmarks::PersonalBookmarkState>,
+    /// What each row's effects say of themselves right now, by row id: what
+    /// this window can do with it, and what it cannot and why.
+    statuses: Vec<(String, Vec<ui::framework::EffectStatus>)>,
 }
 
 impl PagePublication {
@@ -5011,6 +5014,14 @@ impl PagePublication {
 
     pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
         search_entries(&self.search_index, &self.personal_bookmarks)
+    }
+
+    /// What the row uid=1000(quinten) gid=1000(quinten) Gruppen=1000(quinten),10(wheel),995(libvirt) Kontext=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023's effects say of themselves right now.
+    pub(crate) fn row_status(&self, id: &str) -> Vec<ui::framework::EffectStatus> {
+        self.statuses
+            .iter()
+            .find(|(row, _)| row == id)
+            .map_or_else(Vec::new, |(_, statuses)| statuses.clone())
     }
 }
 
@@ -5042,6 +5053,7 @@ impl BrowserWidget {
             sign_in: self.page_sign_in.resource(),
             search_index: self.search_index.clone(),
             personal_bookmarks: Rc::clone(&self.personal_bookmarks),
+            statuses: self.row_statuses(),
         }
     }
 
@@ -5052,10 +5064,24 @@ impl BrowserWidget {
         self.window_rows()
     }
 
-    /// [`Self::window_row`] as the published tree, for tests that read it.
+    /// [`Self::window_row`] as the published tree, with what each row can do
+    /// now laid over it as a publication lays it over: for tests that read it.
     #[cfg(test)]
     pub(crate) fn published(&self) -> ui::tilo_actions::ResourceSpec {
-        self.window_row().into_resource()
+        fn lay_over(
+            row: &mut ui::tilo_actions::ResourceSpec,
+            statuses: &[(String, Vec<ui::framework::EffectStatus>)],
+        ) {
+            if let Some((_, for_row)) = statuses.iter().find(|(id, _)| id == row.id.as_str()) {
+                ui::framework::apply_statuses(row, for_row);
+            }
+            for child in &mut row.children {
+                lay_over(child, statuses);
+            }
+        }
+        let mut resource = self.window_row().into_resource();
+        lay_over(&mut resource, &self.row_statuses());
+        resource
     }
 
     /// [`Self::live_rows`] beneath the root they join, which the window's own
@@ -5063,14 +5089,11 @@ impl BrowserWidget {
     pub(crate) fn window_row(&self) -> ui::framework::LiveRow {
         use crate::effects::BrowserEffect as E;
         use ui::framework::LiveRow;
-        use ui::tilo_resource::Effect as _;
         let mut browser = LiveRow::typed::<crate::resource::Browser>(
             crate::resource::Browser::KIND,
             crate::resource::CATALOG.t("browser-window-name"),
-        );
-        for spec in E::specs() {
-            browser = browser.operation(spec);
-        }
+        )
+        .vocabulary::<E>();
         for row in self.window_rows() {
             browser = browser.row(row);
         }
@@ -5098,14 +5121,7 @@ impl BrowserWidget {
         } else {
             &self.current_uri
         });
-        let mut page = LiveRow::typed::<crate::row_types::Page>(
-            "browser.page",
-            if site.is_empty() {
-                CATALOG.t("browser-page-untitled")
-            } else {
-                site
-            },
-        );
+        let mut bindings = ui::tilo_resource::RowBindings::new();
         if self.person_bookmarks.is_some()
             && !self.current_uri.trim().is_empty()
             && !self
@@ -5113,73 +5129,54 @@ impl BrowserWidget {
                 .bookmarks
                 .contains(&self.current_uri)
         {
-            page = page.operation(
-                E::BookmarkPersonalPage {
-                    url: self.current_uri.clone(),
-                    title: self.title.clone(),
-                }
-                .bound(),
+            bindings = bindings.bind(
+                E::BOOKMARK_PERSONAL_PAGE,
+                [
+                    ("url", self.current_uri.clone().into()),
+                    ("title", self.title.clone().into()),
+                ],
             );
         }
-        let back = E::Back.bound();
-        page = page.operation(if self.can_go_back {
-            back
-        } else {
-            back.unavailable(
-                "history_boundary",
-                CATALOG.t("browser-action-no-previous-page"),
-            )
-        });
-        let forward = E::Forward.bound();
-        page = page.operation(if self.can_go_forward {
-            forward
-        } else {
-            forward.unavailable("history_boundary", CATALOG.t("browser-action-no-next-page"))
-        });
-        page = page.operation(E::Reload.bound());
-        let stop = E::Stop.bound();
-        page = page.operation(if self.progress < 1.0 {
-            stop
-        } else {
-            stop.unavailable("history_boundary", CATALOG.t("browser-action-page-idle"))
-        });
-        page = page.operation(E::Navigate { url: String::new() }.bound_asking(&["url"]));
-        page = page.operation(
-            E::OpenTab {
-                url: String::new(),
-                background: None,
-            }
-            .bound_asking(&["url", "background"]),
-        );
-        let mut pip = E::PictureInPicture.bound();
-        if self.active_pip {
-            pip.type_mut().label = CATALOG.t("browser-action-close-picture-in-picture");
-        }
-        page = page.operation(pip);
-        let web_page = is_supported_web_url(&self.current_uri);
-        let mut reader = E::ReaderView.bound();
-        if self.reader_view {
-            reader.type_mut().label = CATALOG.t("browser-action-close-reader-view");
-        }
-        page = page.operation(if web_page {
-            reader
-        } else {
-            reader.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
-        });
-        let review = E::ReviewPage.bound();
-        page = page.operation(if web_page {
-            review
-        } else {
-            review.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
-        });
-        for spec in self.daily.zoom_actions() {
-            page = page.operation(spec);
-        }
-        // A permission the page waits on is one of the page's own actions, so a
-        // reader answers it beside its other buttons.
-        for spec in self.capabilities.permission_answers() {
-            page = page.operation(spec);
-        }
+        bindings = bindings
+            .offer(E::BACK)
+            .offer(E::FORWARD)
+            .offer(E::RELOAD)
+            .offer(E::STOP)
+            .offer(E::NAVIGATE)
+            .offer(E::OPEN_TAB)
+            .offer(E::PICTURE_IN_PICTURE)
+            .offer(E::READER_VIEW)
+            .offer(E::REVIEW_PAGE)
+            .offer(E::ZOOM_IN)
+            .offer(E::ZOOM_OUT)
+            .offer(E::RESET_ZOOM)
+            .offer(E::READ_PAGE)
+            .offer(E::FIND_PAGE_ELEMENT)
+            .offer(E::FIND_PAGE_TEXT)
+            .offer(E::CLICK_PAGE)
+            .offer(E::FILL_PAGE)
+            .offer(E::SELECT_PAGE)
+            .offer(E::FILL_PAGE_FILES)
+            .offer(E::PRESS_PAGE)
+            .offer(E::FILL_PAGE_SECRET)
+            .offer(E::SUBMIT_PAGE)
+            .offer(E::FILL_PAGE_FORM)
+            .offer(E::READ_PAGE_CHANGES)
+            .offer(E::READ_PAGE_ELEMENT_AT)
+            .offer(E::HOVER_PAGE)
+            .offer(E::DRAG_PAGE)
+            .offer(E::POINTER_PATH)
+            .offer(E::WAIT_PAGE_SETTLED)
+            .offer(E::SHOW_PAGE_FIELD)
+            .offer(E::READ_PAGE_CONSOLE)
+            .offer(E::READ_PAGE_NETWORK)
+            .offer(E::READ_PAGE_RECORD)
+            .offer(E::READ_PAGE_FIELDS)
+            .offer(E::READ_PAGE_FORMS)
+            .offer(E::READ_PAGE_TABLE)
+            .offer(E::CAPTURE_PAGE)
+            .offer(E::POINTER_PAGE)
+            .offer(E::SCROLL_PAGE);
         // A departure the page started on its own waits on the person: the
         // action states the number the window holds it under, one per hold
         // whatever the engine calls it, and the page it leaves from, what it
@@ -5187,6 +5184,7 @@ impl BrowserWidget {
         // leaves. One is asked about at a time, the oldest first: an action's
         // address is the page's and its own name, which two answers cannot
         // share, and a window publishing two would publish none of its actions.
+        let mut leaving = Vec::new();
         if let Some(held) = self.holds.waiting().next() {
             let id = held.number().to_string();
             let mut bound: Vec<(String, serde_json::Value)> = held
@@ -5208,268 +5206,65 @@ impl BrowserWidget {
                 "browser-action-let-leave",
                 &[("request", ui::i18n::ArgValue::Text(held.describing()))],
             );
-            page = page.operation(send);
-            let mut keep = E::KeepHeldRequest { id }
+            let keep = E::KeepHeldRequest { id }
                 .bound()
                 .stating_bound("id", "The held request's id");
-            keep.type_mut().label = CATALOG.t("browser-action-keep-page");
-            page = page.operation(keep);
-        }
-        let element = String::new();
-        for (spec, asking) in [
-            (
-                E::ReadPage {
-                    from: None,
-                    frame: None,
-                },
-                &["from", "frame"][..],
-            ),
-            (
-                E::FindPageElement {
-                    role: None,
-                    name: None,
-                    nth: None,
-                    frame: None,
-                    frames: None,
-                },
-                &["role", "name", "nth", "frame", "frames"][..],
-            ),
-            (
-                E::FindPageText {
-                    text: String::new(),
-                    frame: None,
-                    frames: None,
-                },
-                &["text", "frame", "frames"][..],
-            ),
-            (
-                E::ClickPage {
-                    element: element.clone(),
-                    frame: None,
-                },
-                &["element", "frame"][..],
-            ),
-            (
-                E::FillPage {
-                    element: element.clone(),
-                    text: String::new(),
-                    frame: None,
-                },
-                &["element", "text", "frame"][..],
-            ),
-            (
-                E::SelectPage {
-                    element: element.clone(),
-                    values: Vec::new(),
-                    frame: None,
-                },
-                &["element", "values", "frame"][..],
-            ),
-            (
-                E::FillPageFiles {
-                    element: element.clone(),
-                    paths: Vec::new(),
-                    frame: None,
-                },
-                &["element", "paths", "frame"][..],
-            ),
-            (
-                E::PressPage {
-                    key: String::new(),
-                    element: None,
-                    frame: None,
-                },
-                &["key", "element", "frame"][..],
-            ),
-            (
-                E::FillPageSecret {
-                    element: element.clone(),
-                    text: String::new(),
-                    frame: None,
-                },
-                &["element", "text", "frame"][..],
-            ),
-            (
-                E::SubmitPage {
-                    element,
-                    cross_origin: None,
-                    frame: None,
-                },
-                &["element", "cross_origin", "frame"][..],
-            ),
-            (
-                E::FillPageForm {
-                    form: String::new(),
-                    answers: serde_json::Map::new(),
-                    submit: None,
-                    submit_button: None,
-                    cross_origin: None,
-                    frame: None,
-                },
-                &[
-                    "form",
-                    "answers",
-                    "submit",
-                    "submit_button",
-                    "cross_origin",
-                    "frame",
-                ][..],
-            ),
-            (E::ReadPageChanges { frame: None }, &["frame"][..]),
-            (
-                E::ReadPageElementAt {
-                    x: 0.0,
-                    y: 0.0,
-                    frame: None,
-                },
-                &["x", "y", "frame"][..],
-            ),
-            (
-                E::HoverPage {
-                    element: None,
-                    x: None,
-                    y: None,
-                },
-                &["element", "x", "y"][..],
-            ),
-            (
-                E::DragPage {
-                    from: None,
-                    from_x: None,
-                    from_y: None,
-                    to: None,
-                    to_x: None,
-                    to_y: None,
-                    steps: None,
-                },
-                &["from", "from_x", "from_y", "to", "to_x", "to_y", "steps"][..],
-            ),
-            (
-                E::PointerPath {
-                    element: None,
-                    points: Vec::new(),
-                },
-                &["element", "points"][..],
-            ),
-            (
-                E::WaitPageSettled {
-                    quiet_ms: None,
-                    timeout_ms: None,
-                    text: None,
-                    gone: None,
-                    frame: None,
-                },
-                &["quiet_ms", "timeout_ms", "text", "gone", "frame"][..],
-            ),
-            (
-                E::ShowPageField {
-                    element: String::new(),
-                    frame: None,
-                },
-                &["element", "frame"][..],
-            ),
-            (E::ReadPageConsole { since: None }, &["since"][..]),
-            (E::ReadPageNetwork { since: None }, &["since"][..]),
-            (E::ReadPageRecord { since: None }, &["since"][..]),
-            (E::ReadPageFields { frame: None }, &["frame"][..]),
-            (E::ReadPageForms { frame: None }, &["frame"][..]),
-            (
-                E::ReadPageTable {
-                    element: None,
-                    from: None,
-                    frame: None,
-                },
-                &["element", "from", "frame"][..],
-            ),
-            (
-                E::CapturePage {
-                    element: None,
-                    max_width: None,
-                    frame: None,
-                },
-                &["element", "max_width", "frame"][..],
-            ),
-            (
-                E::PointerPage {
-                    steps: Vec::new(),
-                    button: None,
-                },
-                &["steps", "button"][..],
-            ),
-            (
-                E::ScrollPage {
-                    element: None,
-                    to: Some(String::new()),
-                    by: None,
-                    into_view: Some(String::new()),
-                    frame: None,
-                },
-                &["element", "to", "by", "into_view", "frame"][..],
-            ),
-        ] {
-            let observes = matches!(
-                spec.clone().operation(),
-                BrowserOperation::Page(request) if request.only_observes()
-            );
-            let mut spec = spec.bound_asking(asking);
-            // Reading a page that holds the person's sign-ins takes the
-            // authority to operate it; without them it takes only what any
-            // visitor has.
-            if observes && !self.page_holds_sign_in() {
-                spec.type_mut().contract.kind = ui::tilo_actions::ActionKind::Read;
-            }
-            page = page.operation(if web_page {
-                spec
-            } else {
-                spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
-            });
+            leaving.extend([send, keep]);
         }
         // A field filled from the vault by reference is offered only where this
         // window has a way to its person's vault.
         if self.item_source.is_some() {
-            let spec = E::FillPageItem {
-                element: String::new(),
-                item: String::new(),
-                reason: None,
-            }
-            .bound_asking(&["element", "item", "reason"][..]);
-            page = page.operation(if web_page {
-                spec
-            } else {
-                spec.unavailable("no_web_page", CATALOG.t("browser-action-needs-page"))
-            });
+            bindings = bindings.offer(E::FILL_PAGE_ITEM);
         }
-        // Each form the page is known to ask is an action of its own.
-        for spec in self.form_actions() {
-            page = page.operation(spec);
+        let mut page = LiveRow::typed_with::<crate::row_types::Page>(
+            "browser.page",
+            if site.is_empty() {
+                CATALOG.t("browser-page-untitled")
+            } else {
+                site
+            },
+            &bindings,
+        )
+        // Each form the page is known to ask is an action of its own; a
+        // permission the page waits on is one of its own actions, so a reader
+        // answers it beside its other buttons; and a departure it started on
+        // its own waits on the person.
+        .specialized(self.form_actions())
+        .specialized(self.capabilities.permission_answers())
+        .specialized(leaving);
+        if self.active_pip {
+            page = page.labelled(
+                E::PICTURE_IN_PICTURE,
+                CATALOG.t("browser-action-close-picture-in-picture"),
+            );
+        }
+        if self.reader_view {
+            page = page.labelled(
+                E::READER_VIEW,
+                CATALOG.t("browser-action-close-reader-view"),
+            );
         }
 
-        let mut session = LiveRow::typed::<crate::row_types::Session>(
+        let mut session = LiveRow::typed_with::<crate::row_types::Session>(
             "browser.session",
             if self.history_paused() {
                 CATALOG.t("browser-history-paused")
             } else {
                 CATALOG.t("browser-history-recording")
             },
+            &ui::tilo_resource::RowBindings::new().offer(E::TOGGLE_PAUSE),
         );
-        let mut pause = E::TogglePause.bound();
         if self.history_paused() {
-            pause.type_mut().label = CATALOG.t("browser-action-resume-history");
+            session = session.labelled(E::TOGGLE_PAUSE, CATALOG.t("browser-action-resume-history"));
         }
-        session = session.operation(pause);
 
         // The Library's views are the Library row's: a view on these rows would
         // be their disclosure, and with it every action here.
-        let mut history = LiveRow::typed::<crate::row_types::History>(
+        let mut history = LiveRow::typed_with::<crate::row_types::History>(
             "browser.history",
             CATALOG.t("browser-resource-history"),
+            &ui::tilo_resource::RowBindings::new().offer(E::CLEAR_HISTORY),
         );
-        let clear = E::ClearHistory.bound();
-        history = history.operation(if self.history.is_empty() {
-            clear.unavailable("already_empty", CATALOG.t("browser-history-already-empty"))
-        } else {
-            clear
-        });
         // Newest first: the resource keeps visits by address, so its own order is
         // the alphabet's.
         let mut newest: Vec<&crate::history::HistoryEntry> =
@@ -5481,31 +5276,24 @@ impl BrowserWidget {
             } else {
                 entry.title.as_str()
             };
-            let mut row =
-                LiveRow::typed::<crate::row_types::Visit>(history_resource_id(&entry.url), title)
-                    .operation(
-                        E::Open {
-                            url: entry.url.clone(),
-                        }
-                        .bound(),
-                    );
+            let mut bindings = ui::tilo_resource::RowBindings::new()
+                .bind(E::OPEN, [("url", entry.url.clone().into())]);
             // Only a window that keeps a resource offers the row its removal.
             if self.person_history.is_some() {
-                row = row.operation(
-                    E::ForgetVisit {
-                        url: entry.url.clone(),
-                    }
-                    .bound(),
-                );
+                bindings = bindings.bind(E::FORGET_VISIT, [("url", entry.url.clone().into())]);
             }
-            history = history.row(row);
+            history = history.row(LiveRow::typed_with::<crate::row_types::Visit>(
+                history_resource_id(&entry.url),
+                title,
+                &bindings,
+            ));
         }
 
-        let mut bookmarks = LiveRow::typed::<crate::row_types::Bookmarks>(
+        let bookmarks = LiveRow::typed_with::<crate::row_types::Bookmarks>(
             "browser.bookmarks",
             CATALOG.t("browser-resource-bookmarks"),
+            &ui::tilo_resource::RowBindings::new().offer(E::SHOW_BOOKMARKS),
         );
-        bookmarks = bookmarks.operation(E::ShowBookmarks.bound());
         // Each bookmark is an item of the document; this window adds opening its
         // page.
         let bookmark_rows: Vec<LiveRow> = self
@@ -5514,25 +5302,20 @@ impl BrowserWidget {
             .iter()
             .take(MATERIALIZED_LIMIT)
             .map(|entry| {
-                LiveRow::typed::<crate::row_types::Bookmark>(
+                LiveRow::typed_with::<crate::row_types::Bookmark>(
                     bookmark_resource_id(&entry.id),
                     entry.title.clone(),
-                )
-                .operation(
-                    E::Open {
-                        url: entry.url.clone(),
-                    }
-                    .bound(),
+                    &ui::tilo_resource::RowBindings::new()
+                        .bind(E::OPEN, [("url", entry.url.clone().into())]),
                 )
             })
             .collect();
 
-        let mut downloads = LiveRow::typed::<crate::row_types::Downloads>(
+        let mut downloads = LiveRow::typed_with::<crate::row_types::Downloads>(
             "browser.downloads",
             CATALOG.t("browser-resource-downloads"),
+            &ui::tilo_resource::RowBindings::new().offer(E::START_DOWNLOAD),
         );
-        downloads =
-            downloads.operation(E::StartDownload { url: String::new() }.bound_asking(&["url"]));
         for entry in self
             .downloads
             .entries()
@@ -5543,41 +5326,42 @@ impl BrowserWidget {
             let id = entry.id.clone();
             // No show view: a search hit shows the download through its own
             // resource.
-            let mut child = LiveRow::typed::<crate::row_types::Download>(
-                entry.resource_id(),
-                entry.display_name(),
-            );
+            let mut bindings = ui::tilo_resource::RowBindings::new();
             match entry.status {
                 DownloadStatus::AwaitingDestination => {
                     // Save and Discard ride the download's own id, so an agent
                     // answers the question the person's prompt asks.
-                    child = child
-                        .operation(E::SaveDownload { id: id.clone() }.bound())
-                        .operation(E::DiscardDownload { id }.bound());
+                    bindings = bindings
+                        .bind(E::SAVE_DOWNLOAD, [("id", id.clone().into())])
+                        .bind(E::DISCARD_DOWNLOAD, [("id", id.into())]);
                 }
                 DownloadStatus::Downloading => {
-                    child = child.operation(E::CancelDownload { id }.bound());
+                    bindings = bindings.bind(E::CANCEL_DOWNLOAD, [("id", id.into())]);
                 }
                 DownloadStatus::Failed | DownloadStatus::Cancelled => {
-                    child = child.operation(E::RetryDownload { id }.bound());
+                    bindings = bindings.bind(E::RETRY_DOWNLOAD, [("id", id.into())]);
                 }
                 DownloadStatus::Completed => {
-                    child = child
-                        .operation(E::ReadDownload { id: id.clone() }.bound())
-                        .operation(E::OpenDownload { id: id.clone() }.bound())
-                        .operation(E::RevealDownload { id }.bound());
+                    bindings = bindings
+                        .bind(E::READ_DOWNLOAD, [("id", id.clone().into())])
+                        .bind(E::OPEN_DOWNLOAD, [("id", id.clone().into())])
+                        .bind(E::REVEAL_DOWNLOAD, [("id", id.into())]);
                 }
             }
-            downloads = downloads.row(child);
+            downloads = downloads.row(LiveRow::typed_with::<crate::row_types::Download>(
+                entry.resource_id(),
+                entry.display_name(),
+                &bindings,
+            ));
         }
 
-        let mut extensions = LiveRow::typed::<crate::row_types::Extensions>(
+        let mut extensions = LiveRow::typed_with::<crate::row_types::Extensions>(
             "browser.extensions",
             CATALOG.t("browser-resource-extensions"),
+            &ui::tilo_resource::RowBindings::new().offer(E::SHOW_EXTENSIONS),
         );
-        extensions = extensions.operation(E::ShowExtensions.bound());
         if let Some(add) = self.extensions.add_action() {
-            extensions = extensions.operation(add);
+            extensions = extensions.specialized([add]);
         }
         // Each installed extension with what its Library row offers, and no disk
         // read per publication.
@@ -5588,37 +5372,25 @@ impl BrowserWidget {
         // Library is a presentation resource, not a collection of tabs, so
         // keyboard users, assistive technology, action search and agents use the
         // same section operations as the visible surface.
-        let mut library = LiveRow::typed::<crate::row_types::Library>(
+        let library = LiveRow::typed_with::<crate::row_types::Library>(
             "browser.library",
             CATALOG.t("browser-resource-library"),
+            &ui::tilo_resource::RowBindings::new()
+                .offer(E::SHOW_HISTORY)
+                .offer(E::SHOW_BOOKMARKS)
+                .offer(E::SHOW_DOWNLOADS)
+                .offer(E::SHOW_EXTENSIONS)
+                .offer(E::SET_LIBRARY_FILTER)
+                .offer(E::CLEAR_LIBRARY_FILTER),
         );
-        for effect in [
-            E::ShowHistory,
-            E::ShowBookmarks,
-            E::ShowDownloads,
-            E::ShowExtensions,
-        ] {
-            library = library.operation(effect.bound());
-        }
-        library = library.operation(
-            E::SetLibraryFilter {
-                query: String::new(),
-            }
-            .bound_asking(&["query"]),
-        );
-        let clear_filter = E::ClearLibraryFilter.bound();
-        library = library.operation(if self.library_filter.get().trim().is_empty() {
-            clear_filter.unavailable("already_clear", CATALOG.t("browser-library-already-clear"))
-        } else {
-            clear_filter
-        });
 
-        let mut settings = LiveRow::typed::<crate::row_types::Settings>(
+        let settings = LiveRow::typed_with::<crate::row_types::Settings>(
             "browser.settings",
             CATALOG.t("browser-resource-settings"),
+            &ui::tilo_resource::RowBindings::new()
+                .offer(E::REQUEST_SITE_DATA_CLEAR)
+                .offer(E::READ_ALL_REMEMBERED_FORMS),
         );
-        settings = settings.operation(E::RequestSiteDataClear.bound());
-        settings = settings.operation(E::ReadAllRememberedForms.bound());
 
         let mut rows = vec![
             page, session, history, bookmarks, downloads, extensions, library, settings,
@@ -5630,40 +5402,182 @@ impl BrowserWidget {
         for selection in &self.service_selections {
             rows.push(selection.resource());
         }
-        rows.push(
-            LiveRow::typed::<crate::row_types::ServiceSessions>(
-                "browser.service-sessions",
-                CATALOG.t("browser-resource-accounts"),
-            )
-            .operation({
-                let list = E::ListServiceSessions.bound();
-                if self.browsing_mode.holds_account_credentials() {
-                    list
-                } else {
-                    list.unavailable(
-                        "no_account_credentials",
-                        crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_OWNERSHIP),
-                    )
-                }
-            }),
-        );
+        rows.push(LiveRow::typed_with::<crate::row_types::ServiceSessions>(
+            "browser.service-sessions",
+            CATALOG.t("browser-resource-accounts"),
+            &ui::tilo_resource::RowBindings::new().offer(E::LIST_SERVICE_SESSIONS),
+        ));
         if self.service_view.is_some()
             || self.service_pending.is_some()
             || self.service_forget.is_some()
             || self.service_observation.is_some()
         {
-            rows.push(
-                LiveRow::typed::<crate::row_types::ServiceStatus>(
-                    "browser.service-status",
-                    CATALOG.t("browser-resource-account"),
-                )
-                .operation(E::ReadServiceSession.bound()),
-            );
+            rows.push(LiveRow::typed_with::<crate::row_types::ServiceStatus>(
+                "browser.service-status",
+                CATALOG.t("browser-resource-account"),
+                &ui::tilo_resource::RowBindings::new().offer(E::READ_SERVICE_SESSION),
+            ));
         }
         if self.person_bookmarks.is_some() {
             rows.push(self.personal_bookmark_resources());
         }
         rows.extend(self.continuity_resource());
+        rows
+    }
+}
+
+impl BrowserWidget {
+    /// What each row's effects say of themselves right now: the page's ways
+    /// back and forward at a boundary, what a page that is not a web page
+    /// cannot do, a zoom at its largest, a history with nothing to clear, and
+    /// the site's request answered both ways.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One place names what every row can do now; splitting it hides which row a status is about."
+    )]
+    pub(crate) fn row_statuses(&self) -> Vec<(String, Vec<ui::framework::EffectStatus>)> {
+        use crate::effects::BrowserEffect as E;
+        use ui::framework::EffectStatus;
+        use ui::tilo_actions::ActionKind;
+        let mut page: Vec<EffectStatus> = Vec::new();
+        if !self.can_go_back {
+            page.push(EffectStatus::unavailable(
+                E::BACK,
+                "history_boundary",
+                CATALOG.t("browser-action-no-previous-page"),
+            ));
+        }
+        if !self.can_go_forward {
+            page.push(EffectStatus::unavailable(
+                E::FORWARD,
+                "history_boundary",
+                CATALOG.t("browser-action-no-next-page"),
+            ));
+        }
+        if self.progress >= 1.0 {
+            page.push(EffectStatus::unavailable(
+                E::STOP,
+                "history_boundary",
+                CATALOG.t("browser-action-page-idle"),
+            ));
+        }
+        macro_rules! at_its_limit {
+            ($effect:expr, $step:expr, $limit:expr) => {
+                if !self.daily.can_zoom($step) {
+                    page.push(EffectStatus::unavailable($effect, "zoom_limit", $limit));
+                }
+            };
+        }
+        at_its_limit!(E::ZOOM_IN, 1, "The page is at its largest");
+        at_its_limit!(E::ZOOM_OUT, -1, "The page is at its smallest");
+        at_its_limit!(E::RESET_ZOOM, 0, "The page is at its own size");
+        let web_page = is_supported_web_url(&self.current_uri);
+        let needs_page = CATALOG.t("browser-action-needs-page");
+        macro_rules! needs_web_page {
+            ($($effect:expr),* $(,)?) => {
+                $(
+                    if !web_page {
+                        page.push(EffectStatus::unavailable(
+                            $effect,
+                            "no_web_page",
+                            needs_page.clone(),
+                        ));
+                    }
+                )*
+            };
+        }
+        needs_web_page!(
+            E::READER_VIEW,
+            E::REVIEW_PAGE,
+            E::READ_PAGE,
+            E::FIND_PAGE_ELEMENT,
+            E::FIND_PAGE_TEXT,
+            E::CLICK_PAGE,
+            E::FILL_PAGE,
+            E::SELECT_PAGE,
+            E::FILL_PAGE_FILES,
+            E::PRESS_PAGE,
+            E::FILL_PAGE_SECRET,
+            E::SUBMIT_PAGE,
+            E::FILL_PAGE_FORM,
+            E::READ_PAGE_CHANGES,
+            E::READ_PAGE_ELEMENT_AT,
+            E::HOVER_PAGE,
+            E::DRAG_PAGE,
+            E::POINTER_PATH,
+            E::WAIT_PAGE_SETTLED,
+            E::SHOW_PAGE_FIELD,
+            E::READ_PAGE_CONSOLE,
+            E::READ_PAGE_NETWORK,
+            E::READ_PAGE_RECORD,
+            E::READ_PAGE_FIELDS,
+            E::READ_PAGE_FORMS,
+            E::READ_PAGE_TABLE,
+            E::CAPTURE_PAGE,
+            E::POINTER_PAGE,
+            E::SCROLL_PAGE,
+            E::FILL_PAGE_ITEM,
+        );
+        // Reading a page that holds the person's sign-ins takes the authority
+        // to operate it; without them it takes only what any visitor has.
+        macro_rules! reads_as_visitor {
+            ($($effect:expr),* $(,)?) => {
+                $(
+                    if !self.page_holds_sign_in() {
+                        page.push(EffectStatus::of_kind($effect, ActionKind::Read));
+                    }
+                )*
+            };
+        }
+        reads_as_visitor!(
+            E::READ_PAGE,
+            E::FIND_PAGE_ELEMENT,
+            E::FIND_PAGE_TEXT,
+            E::READ_PAGE_CHANGES,
+            E::READ_PAGE_ELEMENT_AT,
+            E::WAIT_PAGE_SETTLED,
+            E::READ_PAGE_CONSOLE,
+            E::READ_PAGE_NETWORK,
+            E::READ_PAGE_RECORD,
+            E::READ_PAGE_FIELDS,
+            E::READ_PAGE_FORMS,
+            E::READ_PAGE_TABLE,
+            E::CAPTURE_PAGE,
+        );
+        let mut rows: Vec<(String, Vec<EffectStatus>)> = Vec::new();
+        if !page.is_empty() {
+            rows.push(("browser.page".to_owned(), page));
+        }
+        if self.history.is_empty() {
+            rows.push((
+                "browser.history".to_owned(),
+                vec![EffectStatus::unavailable(
+                    E::CLEAR_HISTORY,
+                    "already_empty",
+                    CATALOG.t("browser-history-already-empty"),
+                )],
+            ));
+        }
+        if self.library_filter.get().trim().is_empty() {
+            rows.push((
+                "browser.library".to_owned(),
+                vec![EffectStatus::unavailable(
+                    E::CLEAR_LIBRARY_FILTER,
+                    "already_clear",
+                    CATALOG.t("browser-library-already-clear"),
+                )],
+            ));
+        }
+        if !self.browsing_mode.holds_account_credentials() {
+            rows.push((
+                "browser.service-sessions".to_owned(),
+                vec![EffectStatus::unavailable(
+                    E::LIST_SERVICE_SESSIONS,
+                    "no_account_credentials",
+                    crate::CATALOG.t(crate::browsing_mode::NO_ACCOUNT_OWNERSHIP),
+                )],
+            ));
+        }
         rows
     }
 }

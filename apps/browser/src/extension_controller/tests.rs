@@ -527,9 +527,9 @@ tilo_test_env::scenario! {
             [
                 "show-extensions",
                 "turn-off-extension",
+                "pin-extension",
                 "use-extension",
                 "open-extension-settings",
-                "pin-extension",
                 "remove-extension"
             ]
         );

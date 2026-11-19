@@ -1470,3 +1470,9 @@ reason = "The retained-change payload's own `channel` field, the stream of a rec
 words = ["channel"]
 identifiers = ["channel"]
 paths = ["crates/server/tilo-workspace-service/src/peer/private_transport_tests.rs"]
+
+[[allow]]
+reason = "The browser effect that reads what the tab did, which the window must offer and narrow: `record` is the public effect's own name (read-page-record)."
+words = ["record"]
+identifiers = ["ReadPageRecord", "READ_PAGE_RECORD"]
+paths = ["apps/browser/src/browser_widget.rs"]

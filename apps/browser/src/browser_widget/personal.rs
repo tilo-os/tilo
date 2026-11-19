@@ -171,15 +171,11 @@ impl BrowserWidget {
         personal
     }
     pub(super) fn personal_bookmark_resources(&self) -> LiveRow {
-        let mut root = LiveRow::typed::<crate::personal_bookmarks::PersonalBookmarks>(
+        let mut root = LiveRow::typed_with::<crate::row_types::PersonalBookmarksList>(
             crate::personal_bookmarks::SCOPE,
             crate::CATALOG.t("browser-resource-personal-bookmarks"),
-        )
-        .operation(
-            crate::effects::BrowserEffect::ImportPersonalBookmarks {
-                bundle: String::new(),
-            }
-            .bound_asking(&["bundle"]),
+            &ui::tilo_resource::RowBindings::new()
+                .offer(crate::effects::BrowserEffect::IMPORT_PERSONAL_BOOKMARKS),
         );
         let state = view::ViewState {
             bookmarks: &self.personal_bookmarks.bookmarks,
@@ -225,111 +221,102 @@ fn requested(state: &PersonalBookmarkState, request: &ViewRequest) -> Option<Liv
     };
     crate::personal_bookmarks::resolve(state, &id)
 }
-/// The row `id` names, as the page offers it before what a control asks of
-/// it.
-fn named_row<'a>(
-    state: &'a PersonalBookmarkState,
-    id: &str,
-) -> Option<(crate::personal_bookmarks::Named<'a>, LiveRow)> {
-    let named = crate::personal_bookmarks::named(state, id)?;
-    let row = named.row(id);
-    Some((named, row))
-}
 pub(crate) fn request_resource(
     state: &PersonalBookmarkState,
     request: ViewRequest,
 ) -> Option<LiveRow> {
     use crate::imported_folders::NodeKind;
-    use crate::personal_bookmarks::{Named, flat_id, node_id};
+    use crate::personal_bookmarks::{
+        Named, flat_id, flat_row, forgotten, named, node_id, opened, removed_from, showing,
+    };
     match request {
         ViewRequest::Open { source, id } => {
-            let (named, row) = named_row(state, &node_id(&source, &id))?;
-            match named {
-                Named::Placement(_, node) => match &node.kind {
-                    NodeKind::Bookmark { url } => {
-                        Some(row.effect(&crate::effects::BrowserEffect::Open { url: url.clone() }))
-                    }
-                    _ => None,
-                },
-                Named::Flat(_) => None,
-            }
+            let Named::Placement(_, node) = named(state, &node_id(&source, &id))? else {
+                return None;
+            };
+            let NodeKind::Bookmark { url } = &node.kind else {
+                return None;
+            };
+            Some(LiveRow::typed_with::<
+                crate::row_types::PersonalBookmarkPlacement,
+            >(
+                node_id(&source, &id), &node.title, &opened(url)
+            ))
         }
         ViewRequest::Remove { source, id } => {
-            let (named, row) = named_row(state, &node_id(&source, &id))?;
-            match named {
-                Named::Placement(_, node) => Some(row.effect(
-                    &crate::effects::BrowserEffect::RemovePersonalImportedNode {
-                        source: blake3::Hash::from(source).to_hex().to_string(),
-                        id: node.id.clone(),
-                    },
-                )),
-                Named::Flat(_) => None,
-            }
+            let Named::Placement(tree, node) = named(state, &node_id(&source, &id))? else {
+                return None;
+            };
+            Some(LiveRow::typed_with::<
+                crate::row_types::PersonalBookmarkPlacement,
+            >(
+                node_id(&source, &id),
+                &node.title,
+                &removed_from(tree, node),
+            ))
         }
         ViewRequest::FlatOpen { url } => {
-            let (named, row) = named_row(state, &flat_id(&url))?;
-            match named {
-                Named::Flat(_) => Some(row.effect(&crate::effects::BrowserEffect::Open { url })),
-                Named::Placement(..) => None,
-            }
+            let Named::Flat(entry) = named(state, &flat_id(&url))? else {
+                return None;
+            };
+            Some(flat_row(entry, flat_id(&url)))
         }
         ViewRequest::FlatRemove { url } => {
-            let (named, row) = named_row(state, &flat_id(&url))?;
-            match named {
-                Named::Flat(_) => {
-                    Some(row.effect(&crate::effects::BrowserEffect::RemovePersonalBookmark { url }))
-                }
-                Named::Placement(..) => None,
-            }
+            let Named::Flat(entry) = named(state, &flat_id(&url))? else {
+                return None;
+            };
+            Some(LiveRow::typed_with::<crate::row_types::PersonalBookmark>(
+                flat_id(&url),
+                &entry.title,
+                &forgotten(&url),
+            ))
         }
         ViewRequest::Folder {
             source,
             id: Some(id),
             offset: 0,
         } => {
-            let (named, row) = named_row(state, &node_id(&source, &id))?;
-            match named {
-                Named::Placement(_, node) if matches!(node.kind, NodeKind::Folder) => Some(
-                    row.effect(&crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
-                        source: blake3::Hash::from(source).to_hex().to_string(),
-                        id: Some(node.id.clone()),
-                        offset: 0,
-                    }),
-                ),
-                _ => None,
+            let Named::Placement(_, node) = named(state, &node_id(&source, &id))? else {
+                return None;
+            };
+            if !matches!(node.kind, NodeKind::Folder) {
+                return None;
             }
+            Some(LiveRow::typed_with::<
+                crate::row_types::PersonalBookmarkFolder,
+            >(
+                node_id(&source, &id),
+                &node.title,
+                &showing(&source, Some(node.id.clone()), 0),
+            ))
         }
         ViewRequest::Folder { source, id, offset } => {
-            let effect = crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
-                source: blake3::Hash::from(source).to_hex().to_string(),
-                id,
-                offset: u32::try_from(offset).ok()?,
-            };
-            navigation_row(&effect)
+            navigation_row(&source, id, u32::try_from(offset).ok()?)
         }
         ViewRequest::Overview { offset } => {
-            let effect = crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
-                source: String::new(),
-                id: None,
-                offset: u32::try_from(offset).ok()?,
-            };
-            navigation_row(&effect)
+            navigation_row(&[0; 32], None, u32::try_from(offset).ok()?)
         }
     }
 }
-/// The route to another page of the personal bookmarks, named by the effect
-/// that takes it, so each page of the list is a row of its own.
-fn navigation_row(effect: &crate::effects::BrowserEffect) -> Option<LiveRow> {
+/// The route to another page of the personal bookmarks: `offset` of the folder
+/// `folder` of the tree from `source` brought, the overview when both are
+/// absent, so each page of the list is a row of its own.
+fn navigation_row(source: &[u8; 32], folder: Option<String>, offset: u32) -> Option<LiveRow> {
+    let shown = crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
+        source: blake3::Hash::from(*source).to_hex().to_string(),
+        id: folder.clone(),
+        offset,
+    };
     let id = format!(
         "{}.navigation:{}",
         crate::personal_bookmarks::SCOPE,
-        blake3::hash(&serde_json::to_vec(&effect.arguments()).ok()?).to_hex()
+        blake3::hash(&serde_json::to_vec(&shown.arguments()).ok()?).to_hex()
     );
-    Some(
-        LiveRow::typed::<crate::row_types::PersonalBookmarkNavigation>(
-            id,
-            crate::CATALOG.t("browser-resource-bookmark-navigation"),
-        )
-        .effect(effect),
-    )
+    Some(LiveRow::typed_with::<
+        crate::row_types::PersonalBookmarkNavigation,
+    >(
+        id,
+        crate::CATALOG.t("browser-resource-bookmark-navigation"),
+        &crate::personal_bookmarks::showing(source, folder, offset),
+    ))
 }

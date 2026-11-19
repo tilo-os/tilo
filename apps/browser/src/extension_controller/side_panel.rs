@@ -368,21 +368,4 @@ impl ExtensionController {
             Command::CloseSidePanel(shown.to_owned())
         })
     }
-
-    pub(super) fn side_panel_action(
-        &self,
-        extension: &Installed,
-    ) -> Option<ui::tilo_actions::ActionSpec> {
-        use crate::effects::BrowserEffect as E;
-        use ui::tilo_resource::Effect as _;
-        if !extension.enabled || !extension.side_panel() {
-            return None;
-        }
-        let id = extension.id.clone();
-        Some(if self.side_panel_shown() == Some(id.as_str()) {
-            E::CloseExtensionSidePanel { id }.bound()
-        } else {
-            E::OpenExtensionSidePanel { id }.bound()
-        })
-    }
 }
