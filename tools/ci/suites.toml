@@ -361,11 +361,12 @@ inputs = [
   "keys/cosign.pub", "keys/cosign-dev.pub", "keys/extensions.pub", "keys/tpm2-pcr-signing.public.pem",
   "scripts/browser/build-host.py", "scripts/browser/cef-lock.json",
   "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py",
+  "tools/ci/app-models.sh",
   "tools/ci/install-xwayland-satellite.sh", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py",
   "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py",
   "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml",
   "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py",
-  "tools/web/wasm-opt-flags",
+  "tools/web/wasm-opt-flags", "tools/web/wasm-split",
 ]
 suites = ["os/tests/containerfile_sources.sh"]
 
