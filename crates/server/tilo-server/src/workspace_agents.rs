@@ -1234,10 +1234,12 @@ impl HostAgents {
         // An agent acts for its keeper: one whose keeper is no longer a member works
         // here no more, whatever the workspace's list of its agents still says, and is
         // ended where the workspace is governed
-        // ([`crate::workspaces::Workspaces::remove_member`]).
-        let (_, members) = self
+        // ([`crate::workspaces::Workspaces::remove_member`]). The server's own person keeps
+        // theirs: a listing leaves the server's own account out, and its agents work all
+        // the same.
+        let kept = self
             .workspaces
-            .membership(workspace)
+            .kept_people(workspace)
             .await
             .map_err(|error| error.to_string())?;
         Ok(agents
@@ -1249,9 +1251,7 @@ impl HostAgents {
                 agent.is_active()
                     && agent.on_host
                     && agent.mcp_client.is_none()
-                    && members
-                        .get(&agent.keeper)
-                        .is_some_and(|member| !member.removed)
+                    && kept.contains(&agent.keeper)
                     && (sub_agents::worked_here(agent) || self.codes(agent))
             })
             .map(|agent| (agent.id.0.clone(), agent.clone()))

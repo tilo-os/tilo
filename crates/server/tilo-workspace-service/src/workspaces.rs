@@ -1693,6 +1693,29 @@ impl Workspaces {
         Ok(self.workspace(workspace).await?.lock().await.listing())
     }
 
+    /// Every person `workspace` still keeps, by person (hex root): its members that
+    /// nothing removed, the server's own person among them. What the server decides who
+    /// acts here by, an agent through its keeper, never what a listing shows: that
+    /// leaves the server's own account out ([`Self::membership`]).
+    ///
+    /// # Errors
+    ///
+    /// The workspace is not governed here.
+    pub async fn kept_people(
+        &self,
+        workspace: &str,
+    ) -> Result<std::collections::BTreeSet<String>, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let governed = state.lock().await;
+        Ok(governed
+            .summary()
+            .members
+            .into_iter()
+            .filter(|member| !member.removed)
+            .filter_map(|member| member.id.person_id().map(str::to_owned))
+            .collect())
+    }
+
     /// Every person `workspace` has, as [`Self::people`] lists them, by person
     /// (hex root), with the workspace's governance generation: its owner among
     /// them, also where the owner is this host's own person.
