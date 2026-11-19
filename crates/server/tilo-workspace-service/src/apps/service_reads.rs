@@ -18,6 +18,7 @@ use super::collab_app_broker::{
     NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
 };
 use crate::service::ServiceSlot;
+use crate::workspace_documents::{DeviceDocuments, DocumentRead};
 use crate::workspaces::Workspaces;
 
 /// The workspaces a service holds, as their resources are read: the service itself, or where its
@@ -233,6 +234,63 @@ struct Captured(Vec<u8>);
 impl DocumentBytes for Captured {
     fn bytes(&self) -> &[u8] {
         &self.0
+    }
+}
+
+/// The most bytes of one document a session's own read hands out, as the desktop engine it
+/// replaces did.
+const MAX_DEVICE_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
+
+/// [`DeviceDocuments`] over the service's own copy of the workspaces it holds, resolved from
+/// [`ServiceSlot`] on every call: what this session's own roles read on this device.
+#[derive(Clone)]
+pub struct ServiceDocuments(ServiceSlot);
+
+impl ServiceDocuments {
+    /// Reads of the documents of the workspaces held by the service whose embedder holds
+    /// `service`, from the moment it is.
+    #[must_use]
+    pub const fn on(service: ServiceSlot) -> Self {
+        Self(service)
+    }
+
+    /// The workspaces to answer from, once a service holds any.
+    fn workspaces(&self) -> Option<Workspaces> {
+        Some(self.0.service()?.workspaces().clone())
+    }
+}
+
+impl DeviceDocuments for ServiceDocuments {
+    fn read(
+        &self,
+        workspace: &str,
+        app: &str,
+        resource: &str,
+        since: Option<&[[u8; 32]]>,
+    ) -> Result<DocumentRead, String> {
+        let workspaces = self
+            .workspaces()
+            .ok_or("this device's workspace service holds no workspaces")?;
+        block_on(workspaces.own_read(
+            workspace,
+            (app, resource),
+            since.unwrap_or_default(),
+            MAX_DEVICE_DOCUMENT_BYTES,
+        ))
+    }
+
+    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+        let workspaces = self
+            .workspaces()
+            .ok_or("this device's workspace service holds no workspaces")?;
+        block_on(workspaces.own_listing(workspace))
+    }
+
+    fn workspaces(&self) -> Vec<String> {
+        let Some(workspaces) = self.workspaces() else {
+            return Vec::new();
+        };
+        block_on(workspaces.held_workspaces())
     }
 }
 

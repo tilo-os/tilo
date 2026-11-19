@@ -43,6 +43,68 @@ pub struct HostCommit {
     pub checkpoint: bool,
 }
 
+/// What this device's service holds of one document, as it reads it for the device itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DocumentRead {
+    /// The document whole, saved, at the heads and revision it stands at.
+    Whole {
+        /// Names exactly these heads: equal revisions are equal documents.
+        revision: [u8; 32],
+        /// The document's heads.
+        heads: Vec<[u8; 32]>,
+        /// The document, saved.
+        bytes: Vec<u8>,
+    },
+    /// Only the changes since the heads the reader holds, which they complete to `heads`.
+    Changes {
+        /// The revision the completed document stands at.
+        revision: [u8; 32],
+        /// The heads the changes complete to.
+        heads: Vec<[u8; 32]>,
+        /// The changes, as raw change chunks.
+        bytes: Vec<u8>,
+    },
+    /// The document stands where the reader last read it.
+    Unchanged([u8; 32]),
+    /// This device holds nothing of it.
+    Absent,
+    /// It is not here yet: a checkpoint of it is arriving, or the keys that open it are on their
+    /// way, and it reads once they are.
+    Pending,
+}
+
+/// The documents of the workspaces a device's service holds, read for that device itself: what
+/// the session's own roles read on worker threads, without an app or a peer asking.
+///
+/// Synchronous, as those roles read: the service's tasks must be driven by a runtime with a
+/// worker of its own, never by the thread that calls here.
+pub trait DeviceDocuments: Send + Sync + 'static {
+    /// `app`'s `resource` of `workspace` whole, or, for `since` heads the service holds, only
+    /// what changed after them.
+    ///
+    /// # Errors
+    ///
+    /// The service is not open, holds no such workspace, the device may not read it, or it cannot
+    /// be read now.
+    fn read(
+        &self,
+        workspace: &str,
+        app: &str,
+        resource: &str,
+        since: Option<&[[u8; 32]]>,
+    ) -> Result<DocumentRead, String>;
+
+    /// Every document `workspace` holds, by its app and route.
+    ///
+    /// # Errors
+    ///
+    /// The service is not open or holds no such workspace.
+    fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String>;
+
+    /// The workspaces the service holds, by their ids.
+    fn workspaces(&self) -> Vec<String>;
+}
+
 /// In-process access to the workspaces this server hosts.
 #[derive(Clone)]
 pub struct WorkspaceDocuments {

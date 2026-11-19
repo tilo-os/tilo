@@ -1484,6 +1484,7 @@ identifiers = [
 paths = [
     "crates/server/tilo-workspace-service/src/workspaces/member.rs",
     "crates/server/tilo-workspace-service/src/workspaces/member_tests.rs",
+    "crates/server/tilo-workspace-service/src/apps/service_reads/tests.rs",
     "crates/server/tilo-workspace-service/src/service.rs",
 ]
 
