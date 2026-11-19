@@ -150,19 +150,26 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// Ask the server `action` with `argument`, as the laptop's session with
-    /// the laptop itself: the person's own device asking its Servers
-    /// workspace.
+    /// Ask the server `action` with `argument` on `client`, the laptop's
+    /// session with the laptop itself: the person's own device asking its
+    /// Servers workspace, as it asks anything of it, on the one session it
+    /// holds.
     async fn ask(
         &self,
+        client: &tilo_server::ServerClient,
         action: &str,
         mut argument: Value,
     ) -> Result<ServerOperationResult, String> {
         argument["server"] = Value::String(hex::encode(self.nas.device_pubkey()));
-        let client = self.session().await;
-        let answer = try_ask(&client, &self.laptop, &self.admin, action, argument).await?;
-        client.close().await;
-        outcome(answer)
+        let started = std::time::Instant::now();
+        // A refusal names the operation and how long its answer took: every
+        // operation here answers in a few hundred milliseconds (measured, alone
+        // and on a loaded builder), so one that waited seconds longer is read
+        // where it happened rather than as the whole test's wall clock.
+        try_ask(client, &self.laptop, &self.admin, action, argument)
+            .await
+            .and_then(outcome)
+            .map_err(|error| format!("{action} took {:?}: {error}", started.elapsed()))
     }
 
     /// The laptop's session with its own workspace service, subscribed to the
@@ -256,8 +263,9 @@ async fn person_with_a_server() -> Fixture {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
     let fixture = person_with_a_server().await;
+    let client = fixture.session().await;
     let status = fixture
-        .ask("server.status", serde_json::json!({}))
+        .ask(&client, "server.status", serde_json::json!({}))
         .await
         .unwrap();
     assert_eq!(status.operation, "status");
@@ -274,6 +282,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
 
     let logs = fixture
         .ask(
+            &client,
             "server.logs",
             serde_json::json!({"service": "tilo-server.service", "lines": 10}),
         )
@@ -300,7 +309,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
         } else {
             serde_json::json!({})
         };
-        let result = fixture.ask(action, argument).await.unwrap();
+        let result = fixture.ask(&client, action, argument).await.unwrap();
         assert_eq!(result.operation, expected, "{action}");
         assert_eq!(result.done, done, "{action}: {result:?}");
         assert!(!result.summary.is_empty(), "{action}");
@@ -334,7 +343,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
         assert!(asked.iter().any(|asked| asked == operation), "{asked:?}");
     }
     let status = fixture
-        .ask("server.status", serde_json::json!({}))
+        .ask(&client, "server.status", serde_json::json!({}))
         .await
         .unwrap();
     let ServerAnswer::Status(read) = status.answer else {
@@ -345,6 +354,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
         "the history is the entry's: {:?}",
         read.history
     );
+    client.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
