@@ -39,6 +39,8 @@ mod canvas;
 #[path = "group_row_floats.rs"]
 mod floats;
 pub use floats::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
+#[path = "group_row_pictures.rs"]
+mod pictures;
 #[path = "group_row_scroll.rs"]
 mod scroll;
 pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};
@@ -5103,6 +5105,13 @@ impl GroupRow {
                 scene.pop_layer();
             }
         }
+        // A window wanted small that this frame drew only in part, or not at all, is drawn whole
+        // once for its picture.
+        for i in 0..self.groups.len() {
+            if in_run.get(i).copied().unwrap_or(false) {
+                self.picture_unseen_group(i, transform, (tr, theme, presence));
+            }
+        }
         if self.apart_window.is_some() {
             let groups = &self.groups;
             self.apart_drawings
@@ -7379,7 +7388,7 @@ mod tests {
         }
     }
 
-    fn drawn_strip(windows: u64) -> (GroupRow, Scene) {
+    pub(super) fn drawn_strip(windows: u64) -> (GroupRow, Scene) {
         let specs: Vec<Vec<u64>> = (1..=windows).map(|id| vec![id]).collect();
         let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
         let (mut row, _, _) = make_row_with_groups_on_display(&specs, FIXTURE_USABLE_PX, 2000.0);

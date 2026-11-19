@@ -782,32 +782,54 @@ impl OverviewPanel {
             }
         }
         if let Some(lifted) = self.carried_picture(&picture) {
-            if !self.shell.pictured.contains(&lifted.tab)
-                && let Some((_, _, window)) = picture.find(lifted.tab)
-            {
-                ui::surface::shadow(
-                    scene,
-                    transform,
-                    lifted.rect,
-                    lifted.radius,
-                    &theme.tokens.elevation.floating,
-                );
-                draw_preview_well(
-                    scene,
-                    transform,
-                    theme,
-                    PreviewWell {
-                        rect: lifted.rect,
-                        radius: lifted.radius,
-                        icon: self.metrics.icon_lg,
-                    },
-                    Some(&window.app),
-                );
-            }
+            self.paint_carried(scene, transform, theme, &picture, &lifted);
             pictures.push(lifted);
         }
         scene.pop_layer();
         pictures
+    }
+
+    /// The window being carried, held up under the pointer or finger with a shadow, where the
+    /// compositor draws no picture of it.
+    fn paint_carried(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        picture: &Picture,
+        lifted: &WindowPicture,
+    ) {
+        if self.shell.pictured.contains(&lifted.tab) {
+            return;
+        }
+        let Some((_, _, window)) = picture.find(lifted.tab) else {
+            return;
+        };
+        ui::surface::shadow(
+            scene,
+            transform,
+            lifted.rect,
+            lifted.radius,
+            &theme.tokens.elevation.floating,
+        );
+        draw_preview_well(
+            scene,
+            transform,
+            theme,
+            PreviewWell {
+                rect: lifted.rect,
+                radius: lifted.radius,
+                icon: self.metrics.icon_lg,
+            },
+            Some(&window.app),
+        );
+        draw_window_picture(
+            scene,
+            transform,
+            window.address.group,
+            lifted.rect,
+            lifted.radius,
+        );
     }
 
     /// Where the window being carried is drawn: centred under the pointer or finger, its picture's
@@ -925,6 +947,7 @@ impl OverviewPanel {
                 },
                 Some(&tile.window.app),
             );
+            draw_window_picture(scene, transform, tile.window.address.group, rect, radius);
         }
         if chrome > 0.0 {
             draw_tile_title(
@@ -1144,6 +1167,34 @@ fn paint_app_marks(
 }
 
 /// One "shared out of here" row: an icon, who holds it, and what.
+/// The window group `group` as it was last drawn, filling the well at `rect` (rounded by
+/// `radius`): scaled to cover it, centred, clipped to it. The well's app mark stays where the
+/// window has no picture: one never drawn, or one that showed a secret.
+fn draw_window_picture(scene: &mut Scene, transform: Affine, group: u64, rect: Rect, radius: f64) {
+    ui::window_pictures::with_picture(group, |picture| {
+        let drawn = picture.rect;
+        if drawn.width() <= 0.0 || drawn.height() <= 0.0 || rect.is_zero_area() {
+            return;
+        }
+        let scale = (rect.width() / drawn.width()).max(rect.height() / drawn.height());
+        let offset = (
+            rect.x0 + (rect.width() - drawn.width() * scale) / 2.0,
+            rect.y0 + (rect.height() - drawn.height() * scale) / 2.0,
+        );
+        let placed = transform
+            .pre_translate(offset.into())
+            .pre_scale(scale)
+            .pre_translate((-drawn.x0, -drawn.y0).into());
+        scene.push_clip_layer(
+            Fill::NonZero,
+            transform,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        scene.append(&picture.scene, Some(placed));
+        scene.pop_layer();
+    });
+}
+
 fn paint_share_row(
     ctx: &mut ui::paint::PaintCtx<'_>,
     row: Rect,
