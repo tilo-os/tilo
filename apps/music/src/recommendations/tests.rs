@@ -213,17 +213,21 @@ tilo_test_env::scenario! {
         assert!(state.recommendations.preferred_artists.is_empty());
         let mut forgotten = Library::default();
         forgotten.recommendations.dismissed.insert("deleted".into());
-        assert_ne!(
-            row_by_id(&forgotten, "music.recommendation:deleted")
-                .unwrap()
-                .into_resource()
-                .actions
-                .iter()
-                .find(|a| a.id == "play")
-                .unwrap()
-                .contract
-                .availability,
-            ui::tilo_actions::Availability::Available
+        assert!(
+            row_by_id(&forgotten, "music.recommendation:deleted").is_some(),
+            "a dismissed song stays a row of its own"
+        );
+        assert!(
+            crate::recommendations::row_status(&forgotten, "music.recommendation:deleted")
+                .contains(
+                    &ui::framework::EffectStatus::unavailable(
+                        crate::actions::MusicEffect::PLAY,
+                        "missing_track",
+                        crate::i18n::t("music-recommendations-missing-track"),
+                    )
+                    .on("music.recommendation:deleted")
+                ),
+            "a song the library no longer holds cannot be played from its row"
         );
     }
 }

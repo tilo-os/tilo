@@ -1,5 +1,5 @@
-use ui::framework::LiveRow;
-use ui::tilo_resource::Effect;
+use ui::framework::{EffectStatus, LiveRow};
+use ui::tilo_resource::row::RowBindings;
 
 use super::{Input, suggestion, suggestions};
 use crate::actions::{MusicEffect, Place};
@@ -7,19 +7,18 @@ use crate::model::Library;
 
 pub const PREFERENCES: &str = "music.recommendation-preferences:library";
 
+/// The row's Open of the recommendations page it belongs to.
+fn open_bindings() -> RowBindings {
+    crate::actions::open_place(Place::View("recommendations".into()))
+}
+
 pub fn row_by_id(lib: &Library, id: &str) -> Option<LiveRow> {
-    let open = || {
-        MusicEffect::Open {
-            place: Place::View("recommendations".into()),
-        }
-        .bound()
-    };
     if id == PREFERENCES {
-        let mut row = LiveRow::typed::<crate::row_types::RecommendationPreferences>(
+        let mut row = LiveRow::typed_with::<crate::row_types::RecommendationPreferences>(
             id,
             crate::i18n::t("music-recommendations-title"),
-        )
-        .operation(open());
+            &open_bindings(),
+        );
         for input in Input::ALL {
             if let Some(child) =
                 row_by_id(lib, &format!("music.recommendation-input:{}", input.key()))
@@ -33,7 +32,7 @@ pub fn row_by_id(lib: &Library, id: &str) -> Option<LiveRow> {
         let input = Input::ALL.into_iter().find(|i| i.key() == key)?;
         let enabled = lib.recommendations.enabled(input);
         return Some(
-            LiveRow::typed::<crate::row_types::RecommendationInput>(
+            LiveRow::typed_with::<crate::row_types::RecommendationInput>(
                 id,
                 format!(
                     "{}: {}",
@@ -44,8 +43,8 @@ pub fn row_by_id(lib: &Library, id: &str) -> Option<LiveRow> {
                         "music-recommendations-disabled"
                     })
                 ),
-            )
-            .operation(open()),
+                &open_bindings(),
+            ),
         );
     }
     if let Some(track) = id.strip_prefix("music.recommendation:") {
@@ -57,11 +56,11 @@ pub fn row_by_id(lib: &Library, id: &str) -> Option<LiveRow> {
             return None;
         }
         return Some(
-            LiveRow::typed::<crate::row_types::RecommendationArtist>(
+            LiveRow::typed_with::<crate::row_types::RecommendationArtist>(
                 id,
                 lib.artist(artist).map_or(artist, |a| a.name.as_str()),
-            )
-            .operation(open()),
+                &open_bindings(),
+            ),
         );
     }
     None
@@ -78,28 +77,32 @@ fn song_row(lib: &Library, id: &str, track: &str) -> Option<LiveRow> {
         || title.to_owned(),
         |s| format!("{title} — {}", s.reason.label(lib)),
     );
-    let play = MusicEffect::Play {
-        track: track.into(),
-        queued: None,
+    let bindings = open_bindings().bind(
+        MusicEffect::PLAY,
+        crate::actions::play_arguments(track, None),
+    );
+    Some(LiveRow::typed_with::<crate::row_types::Recommendation>(
+        id, label, &bindings,
+    ))
+}
+
+/// What a recommended song's row says of its effects now: one the library no
+/// longer holds cannot be played here.
+pub fn row_status(lib: &Library, id: &str) -> Vec<EffectStatus> {
+    let Some(track) = id.strip_prefix("music.recommendation:") else {
+        return Vec::new();
+    };
+    if lib.track(track).is_some() {
+        return Vec::new();
     }
-    .bound();
-    let play = if lib.track(track).is_some() {
-        play
-    } else {
-        play.unavailable(
+    vec![
+        EffectStatus::unavailable(
+            MusicEffect::PLAY,
             "missing_track",
             crate::i18n::t("music-recommendations-missing-track"),
         )
-    };
-    let row = LiveRow::typed::<crate::row_types::Recommendation>(id, label)
-        .operation(
-            MusicEffect::Open {
-                place: Place::View("recommendations".into()),
-            }
-            .bound(),
-        )
-        .operation(play);
-    Some(row)
+        .on(id),
+    ]
 }
 
 pub fn rows(lib: &Library) -> Vec<LiveRow> {

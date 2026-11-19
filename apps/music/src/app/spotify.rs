@@ -620,54 +620,54 @@ impl Music {
 
     fn rebuild_spotify_device_buttons(&mut self) {
         use ui::tilo_resource::Effect as _;
-        self.spotify_device_buttons = self
-            .spotify_devices
-            .iter()
-            .take(12)
-            .flat_map(|device| {
-                let mut effects = vec![
-                    MusicEffect::SpotifyTransfer {
-                        device: device.id.clone(),
-                    },
-                    MusicEffect::SpotifyRemotePause {
-                        device: device.id.clone(),
-                    },
-                ];
-                if let Some(track) = self
-                    .pb
-                    .current
-                    .as_ref()
-                    .filter(|track| track.starts_with("spotify:track:"))
-                {
-                    effects.push(MusicEffect::SpotifyRemotePlay {
-                        device: device.id.clone(),
-                        track: track.clone(),
-                    });
-                }
-                effects.into_iter().filter_map(move |effect| {
-                    let address = format!("music.spotify-device:{}", device.id);
-                    let id = format!("{address}:{}", effect.id());
-                    let key = match &effect {
-                        MusicEffect::SpotifyRemotePause { .. } => "music-spotify-pause-device",
-                        MusicEffect::SpotifyRemotePlay { .. } => "music-spotify-play-device",
-                        _ => "music-spotify-select-device",
-                    };
-                    let label = crate::i18n::t_args(key, &[("device", (&device.name).into())]);
-                    let row = ui::framework::LiveRow::typed::<crate::row_types::SpotifyDevice>(
-                        &address,
-                        &device.name,
-                    )
-                    .effect(&effect);
-                    let binding = tilo_actions::ActionBinding::unit_for(&row, effect.id()).ok()?;
-                    Some(
-                        ui::widget::Button::new(&id, &label)
-                            .with_enabled(!device.restricted)
-                            .tooltip(crate::i18n::t("music-spotify-device-help"))
-                            .on_action(binding),
-                    )
+        self.spotify_device_buttons =
+            self.spotify_devices
+                .iter()
+                .take(12)
+                .flat_map(|device| {
+                    let mut effects = vec![
+                        MusicEffect::SpotifyTransfer {
+                            device: device.id.clone(),
+                        },
+                        MusicEffect::SpotifyRemotePause {
+                            device: device.id.clone(),
+                        },
+                    ];
+                    if let Some(track) = self
+                        .pb
+                        .current
+                        .as_ref()
+                        .filter(|track| track.starts_with("spotify:track:"))
+                    {
+                        effects.push(MusicEffect::SpotifyRemotePlay {
+                            device: device.id.clone(),
+                            track: track.clone(),
+                        });
+                    }
+                    effects.into_iter().filter_map(move |effect| {
+                        let address = format!("music.spotify-device:{}", device.id);
+                        let id = format!("{address}:{}", effect.id());
+                        let key = match &effect {
+                            MusicEffect::SpotifyRemotePause { .. } => "music-spotify-pause-device",
+                            MusicEffect::SpotifyRemotePlay { .. } => "music-spotify-play-device",
+                            _ => "music-spotify-select-device",
+                        };
+                        let label = crate::i18n::t_args(key, &[("device", (&device.name).into())]);
+                        let bindings = device_control_bindings(&effect)?;
+                        let row = ui::framework::LiveRow::typed_with::<
+                            crate::row_types::SpotifyDevice,
+                        >(&address, &device.name, &bindings);
+                        let binding =
+                            tilo_actions::ActionBinding::unit_for(&row, effect.id()).ok()?;
+                        Some(
+                            ui::widget::Button::new(&id, &label)
+                                .with_enabled(!device.restricted)
+                                .tooltip(crate::i18n::t("music-spotify-device-help"))
+                                .on_action(binding),
+                        )
+                    })
                 })
-            })
-            .collect();
+                .collect();
         self.open_file_layout_visible = None;
     }
 
@@ -766,10 +766,38 @@ impl Music {
     }
 
     pub(super) fn spotify_device_rows(&self) -> Vec<ui::framework::LiveRow> {
+        use ui::tilo_resource::row::RowBindings;
         self.spotify_devices
             .iter()
             .map(|device| {
-                let mut row = ui::framework::LiveRow::typed::<crate::row_types::SpotifyDevice>(
+                let mut bindings = RowBindings::new();
+                if !device.restricted {
+                    let device_id = device.id.clone();
+                    bindings = bindings
+                        .bind(
+                            MusicEffect::SPOTIFY_TRANSFER,
+                            [("device", device_id.clone().into())],
+                        )
+                        .bind(
+                            MusicEffect::SPOTIFY_REMOTE_PAUSE,
+                            [("device", device_id.clone().into())],
+                        );
+                    if let Some(track) = self
+                        .pb
+                        .current
+                        .as_ref()
+                        .filter(|id| id.starts_with("spotify:track:"))
+                    {
+                        bindings = bindings.bind(
+                            MusicEffect::SPOTIFY_REMOTE_PLAY,
+                            [
+                                ("device", device_id.into()),
+                                ("track", track.clone().into()),
+                            ],
+                        );
+                    }
+                }
+                ui::framework::LiveRow::typed_with::<crate::row_types::SpotifyDevice>(
                     format!("music.spotify-device:{}", device.id),
                     if device.active {
                         format!(
@@ -780,31 +808,35 @@ impl Music {
                     } else {
                         device.name.clone()
                     },
-                );
-                if !device.restricted {
-                    row = row
-                        .effect(&MusicEffect::SpotifyTransfer {
-                            device: device.id.clone(),
-                        })
-                        .effect(&MusicEffect::SpotifyRemotePause {
-                            device: device.id.clone(),
-                        });
-                    if let Some(track) = self
-                        .pb
-                        .current
-                        .as_ref()
-                        .filter(|id| id.starts_with("spotify:track:"))
-                    {
-                        row = row.effect(&MusicEffect::SpotifyRemotePlay {
-                            device: device.id.clone(),
-                            track: track.clone(),
-                        });
-                    }
-                }
-                row
+                    &bindings,
+                )
             })
             .collect()
     }
+}
+
+/// The one device control `effect` binds, as the row's type declares it, with
+/// the device it acts on — and the song it plays — bound.
+fn device_control_bindings(effect: &MusicEffect) -> Option<ui::tilo_resource::row::RowBindings> {
+    use ui::tilo_resource::row::RowBindings;
+    Some(match effect {
+        MusicEffect::SpotifyTransfer { device } => RowBindings::new().bind(
+            MusicEffect::SPOTIFY_TRANSFER,
+            [("device", device.clone().into())],
+        ),
+        MusicEffect::SpotifyRemotePause { device } => RowBindings::new().bind(
+            MusicEffect::SPOTIFY_REMOTE_PAUSE,
+            [("device", device.clone().into())],
+        ),
+        MusicEffect::SpotifyRemotePlay { device, track } => RowBindings::new().bind(
+            MusicEffect::SPOTIFY_REMOTE_PLAY,
+            [
+                ("device", device.clone().into()),
+                ("track", track.clone().into()),
+            ],
+        ),
+        _ => return None,
+    })
 }
 
 pub(super) fn remote_item_label(item: &serde_json::Value) -> String {

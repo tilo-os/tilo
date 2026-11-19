@@ -80,37 +80,43 @@ impl ui::tilo_resource::words::RowType for SpotifyRemoteItem {
     const LABEL: &'static str = "Remote item";
 }
 
+/// One device Spotify can play on.
+#[derive(tilo_resource::Row)]
+#[row(kind = "music.spotify-device", label = "Device", effects = crate::actions::MusicEffect)]
 pub(crate) struct SpotifyDevice;
 
-impl ui::tilo_resource::words::RowType for SpotifyDevice {
-    const KIND: &'static str = "music.spotify-device";
-    const LABEL: &'static str = "Device";
-}
-
+/// The recommendations page's own preferences.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "music.recommendation-preferences",
+    label = "Recommendation preferences",
+    effects = crate::actions::MusicEffect
+)]
 pub(crate) struct RecommendationPreferences;
 
-impl ui::tilo_resource::words::RowType for RecommendationPreferences {
-    const KIND: &'static str = "music.recommendation-preferences";
-    const LABEL: &'static str = "Recommendation preferences";
-}
-
+/// One input the recommendations weigh.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "music.recommendation-input",
+    label = "Recommendation input",
+    effects = crate::actions::MusicEffect
+)]
 pub(crate) struct RecommendationInput;
 
-impl ui::tilo_resource::words::RowType for RecommendationInput {
-    const KIND: &'static str = "music.recommendation-input";
-    const LABEL: &'static str = "Recommendation input";
-}
-
+/// An artist a listener prefers, or a song's artist the recommendations name.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "music.recommendation-artist",
+    label = "Recommended artist",
+    effects = crate::actions::MusicEffect
+)]
 pub(crate) struct RecommendationArtist;
 
-impl ui::tilo_resource::words::RowType for RecommendationArtist {
-    const KIND: &'static str = "music.recommendation-artist";
-    const LABEL: &'static str = "Recommended artist";
-}
-
+/// One recommended song, or one the person dismissed.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "music.recommendation",
+    label = "Recommendation",
+    effects = crate::actions::MusicEffect
+)]
 pub(crate) struct Recommendation;
-
-impl ui::tilo_resource::words::RowType for Recommendation {
-    const KIND: &'static str = "music.recommendation";
-    const LABEL: &'static str = "Recommendation";
-}

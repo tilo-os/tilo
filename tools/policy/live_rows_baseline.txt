@@ -68,9 +68,7 @@ row-operation 6 apps/mail/src/actions.rs
 row-operation 1 apps/mail/src/contact_recipients.rs
 row-operation 1 apps/monitor/src/app.rs
 row-operation 2 apps/music/src/app/local_files.rs
-row-operation 1 apps/music/src/app/shell.rs
-row-operation 4 apps/music/src/app/spotify.rs
-row-operation 5 apps/music/src/recommendations/resources.rs
+row-operation 1 apps/music/src/app/spotify.rs
 row-operation 2 apps/pdf-viewer/src/actions.rs
 row-operation 6 apps/remote/src/actions.rs
 row-operation 11 apps/settings/src/panes/accounts.rs
