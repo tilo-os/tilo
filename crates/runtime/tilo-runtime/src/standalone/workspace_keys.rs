@@ -10,7 +10,7 @@
 //! when the group falls behind the membership. While nobody who can admit
 //! it is online, groups this device already reads keep their keys and a
 //! new request waits, sent again until a key holder answers.
-use super::joined::Joined;
+use super::service::ServiceWorkspaces;
 use collab_types::Ed25519PublicKey;
 use key_group::VaultKey;
 use std::{
@@ -60,7 +60,7 @@ pub(super) fn open(
     profile_workspace: WorkspaceId,
     storage: IdentityStorage,
     device_key: ed25519_dalek::SigningKey,
-    joined: Arc<Joined>,
+    workspaces: Arc<ServiceWorkspaces>,
     broker: Arc<Mutex<BrokerChannels>>,
 ) -> io::Result<KeyService> {
     let service = WorkspaceKeys::open(
@@ -71,21 +71,21 @@ pub(super) fn open(
             role: tilo_workspace_service::apps::workspace_keys::KeyRole::Committer,
         },
         Box::new(Directory {
-            joined: Arc::clone(&joined),
+            workspaces: Arc::clone(&workspaces),
         }),
         Arc::new(BrokerSealChecks(broker)),
     )?;
-    let park = joined.governance_wake();
+    let park = workspaces.governance_wake();
     let poke = Arc::clone(&park);
     let access = SharedKeys::with_wake(service, Arc::new(move || poke.poke()));
-    let keys = joined.group_keys();
+    let keys = workspaces.group_keys();
     keys.set(Some(access.clone()));
-    let pump = GovernancePump::spawn("tilo-runtime-groups", park, Some(access), joined, || {})?;
+    let pump = GovernancePump::spawn("tilo-runtime-groups", park, Some(access), workspaces, || {})?;
     Ok(KeyService { keys, _pump: pump })
 }
 
 struct Directory {
-    joined: Arc<Joined>,
+    workspaces: Arc<ServiceWorkspaces>,
 }
 
 impl KeyDirectory for Directory {
@@ -94,7 +94,17 @@ impl KeyDirectory for Directory {
         workspace: WorkspaceId,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        self.joined.key_holders(workspace, now)
+        let peer = self.workspaces.peer(workspace)?;
+        let at = std::time::SystemTime::UNIX_EPOCH
+            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let holders = peer.governance().key_holders(at).ok()?;
+        Some(
+            holders
+                .into_iter()
+                .map(Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
     }
 
     fn reader_devices(
@@ -103,11 +113,21 @@ impl KeyDirectory for Directory {
         people: &BTreeSet<[u8; 32]>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        self.joined.reader_key_holders(workspace, people, now)
+        let peer = self.workspaces.peer(workspace)?;
+        let at = std::time::SystemTime::UNIX_EPOCH
+            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let holders = peer.governance().reader_key_holders(people, at).ok()?;
+        Some(
+            holders
+                .into_iter()
+                .map(Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
     }
 
     fn founds(&self, workspace: WorkspaceId) -> bool {
-        self.joined.founded_here(workspace)
+        !self.workspaces.holds(workspace)
     }
 }
 
@@ -126,13 +146,11 @@ impl DeviceGroupKeys {
     /// the service runs here, on this same device.
     pub(super) fn device(
         keys: KeyProvider,
-        joined: &Arc<Joined>,
+        inbox: Arc<super::service::GovernanceInbox>,
     ) -> tilo_workspace_service::workspaces::DeviceKeyGroups {
         tilo_workspace_service::workspaces::DeviceKeyGroups {
             keys: Arc::new(Self { keys }),
-            sink: Some(Arc::new(DeviceKeySink {
-                joined: Arc::clone(joined),
-            })),
+            sink: Some(Arc::new(DeviceKeySink { inbox })),
         }
     }
 }
@@ -140,12 +158,12 @@ impl DeviceGroupKeys {
 /// Where the workspace host this runtime runs hands the group governance its
 /// members send: this device's key service, which runs in this process.
 struct DeviceKeySink {
-    joined: Arc<Joined>,
+    inbox: Arc<super::service::GovernanceInbox>,
 }
 
 impl tilo_workspace_service::workspaces::KeySink for DeviceKeySink {
     fn take(&self, messages: Vec<neighbour_wire::NeighbourMsg>) {
-        self.joined.take_governance(messages);
+        self.inbox.take_governance(messages);
     }
 
     /// Nothing to note: this device's key service reads the workspace's

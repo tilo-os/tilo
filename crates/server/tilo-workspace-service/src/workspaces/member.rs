@@ -736,6 +736,7 @@ impl Workspaces {
             document: record,
             envelope,
             own,
+            readers,
         } = &request.operation
         else {
             return Err("an app writes documents to its workspace".into());
@@ -751,6 +752,7 @@ impl Workspaces {
             document_id: record.clone(),
             envelope: envelope.clone(),
             own: own.clone(),
+            readers: readers.clone(),
         };
         let body = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
         let Some((route, retention)) = neighbour_wire::retention(&message, false) else {

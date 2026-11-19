@@ -23,6 +23,53 @@ const PROCESS_TEST: &str =
 const PROCESS_ROOT: &str = "TILO_STANDALONE_TEST_ROOT";
 const PUBLICATION_HELPER: &str = "TILO_STANDALONE_PUBLICATION_HELPER";
 
+/// A certificate authority over one held workspace and device, for the
+/// broker's own certificates: no identity store is read.
+struct FixtureAuthority {
+    workspace: uuid::Uuid,
+    cert: tilo_user_identity::DeviceCert,
+    time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+}
+
+impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority
+    for FixtureAuthority
+{
+    fn policy_time(
+        &self,
+    ) -> Result<Option<tilo_workspace_service::apps::policy_clock::PolicyTime>, String> {
+        self.time.now_ns().map_err(|error| error.to_string())?;
+        Ok(Some(self.time.clone()))
+    }
+    fn authorize(
+        &self,
+        workspace: uuid::Uuid,
+        cert: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        if workspace != self.workspace || cert != &self.cert {
+            return Err("unheld fixture identity".into());
+        }
+        tilo_user_identity::verify_device_cert_at(
+            cert,
+            self.time.now_ns().map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())
+    }
+    fn authorize_with_policy_time(
+        &self,
+        workspace: uuid::Uuid,
+        cert: &tilo_user_identity::DeviceCert,
+        time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
+    ) -> Result<(), String> {
+        if !time.same_origin(&self.time) {
+            return Err("runtime origin changed".into());
+        }
+        self.authorize(workspace, cert)
+    }
+    fn governs(&self, workspace: uuid::Uuid, _device: Option<&[u8; 32]>) -> bool {
+        workspace == self.workspace
+    }
+}
+
 #[tokio::test]
 #[allow(
     clippy::significant_drop_tightening,
@@ -44,9 +91,9 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     }
 
     let placed = WorkspaceId::new();
-    let (joined, directory) = Joined::test_hosting(placed).await;
+    let (workspaces, directory) = ServiceWorkspaces::test_hosting(placed).await;
     let actor = tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
-        joined.test_certificate().user_public_key,
+        workspaces.device_cert().user_public_key,
     );
     let mut workspace = Workspace::new(placed, "Execution isolation");
     workspace.set_owner(actor.clone());
@@ -58,9 +105,14 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     tree.desktop.workspaces.push(workspace);
     let membership = tree.shared();
     let (_origin, time) = execution_policy_clock().unwrap();
-    let admission = joined.admit_mcp_execution(&workspace_id, &actor).unwrap();
+    let admission = {
+        let workspaces = Arc::clone(&workspaces);
+        let (workspace, actor) = (workspace_id.clone(), actor.clone());
+        service::block_on_owned(async move { workspaces.admit_execution(&workspace, &actor).await })
+            .unwrap()
+    };
     let mut services = membership.services();
-    services.native_certificates = Some(Arc::new(joined::admission_tests::FixtureAuthority {
+    services.native_certificates = Some(Arc::new(FixtureAuthority {
         workspace: uuid::Uuid::parse_str(&workspace_id).unwrap(),
         cert: admission.certificate().clone(),
         time: time.clone(),
@@ -107,7 +159,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let provider = RuntimeActionProvider {
         broker,
         workspace: workspace_id.clone(),
-        joined,
+        workspaces,
         apps: None,
         session: Some(Arc::new(AdmittedRuntimeSession {
             policy_time: time,
@@ -398,7 +450,7 @@ fn written(session: &Standalone) -> Result<Option<String>, String> {
         uuid::Uuid::parse_str(WRITER_RECORD).map_err(|error| error.to_string())?,
     );
     let bytes = session
-        .joined
+        .workspaces
         .test_kept_document(workspace, WRITER_APP, record.as_str())?;
     let doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
     Ok(doc
@@ -1000,7 +1052,7 @@ tilo_test_env::scenario! {
             workspace: workspace.to_string(),
             device: [2; 32],
             policy_time: origin.capture().unwrap(),
-            joined: std::sync::Weak::new(),
+            workspaces: std::sync::Weak::new(),
         };
         assert!(certificates.governs(workspace, Some(&[2; 32])));
         assert!(certificates.governs(workspace, None));
@@ -1021,7 +1073,7 @@ tilo_test_env::scenario! {
             workspace: uuid::Uuid::from_u128(7).to_string(),
             device: [2; 32],
             policy_time: origin.capture().unwrap(),
-            joined: std::sync::Weak::new(),
+            workspaces: std::sync::Weak::new(),
         };
         let retained = certificates.policy_time().unwrap().unwrap();
         origin.invalidate();
