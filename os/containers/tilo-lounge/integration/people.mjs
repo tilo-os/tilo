@@ -328,6 +328,93 @@ const drawn = (tab, by = 2) => waits.settle({
 // timing lines below print.
 const took = from => ((Date.now() - from) / 1000).toFixed(1);
 const presented = tab => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
+// What each page drew while a step ran, from the page's own clock: every
+// presented frame's time, every animation frame the page got, and the layout
+// revision and window count it read on each. A step that took long says
+// whether the page was drawing slowly (presented frames far apart while
+// animation frames kept coming), stalled (no animation frames either), or
+// waiting for a change that had not reached it (no revision move).
+//
+// The animation frames separate the two costs the numbers otherwise mix: a
+// page whose GPU is behind still gets animation frames on time, and one whose
+// main thread is inside a long task does not.
+const drawing = async (tab, ...others) => {
+  const read = one => one.evaluate('JSON.stringify(globalThis.__drawing ?? null)').catch(() => 'null');
+  for (const one of [tab, ...others]) {
+    await one.evaluate(`(async () => {
+      const w = globalThis.__drawing = {began: performance.now(), animation: 0, animationAt: [], presented: [], changes: []};
+      // The runtime's own stage timings, off by default: which stage of a slow
+      // frame took the time, or that the page drew nothing while it ran.
+      const glue = performance.getEntriesByType('resource').map(entry => entry.name)
+        .find(name => /pkg\\/tilo_browser_runtime\\.js$/.test(name));
+      w.runtime = glue ? await import(glue).catch(() => null) : null;
+      w.runtime?.configure_frame_metrics(true);
+      w.runtime?.take_frame_metrics();
+      const tick = () => {
+        const now = Math.round(performance.now() - w.began);
+        w.animation += 1;
+        w.animationAt.push(now);
+        const s = globalThis.tiloMount?.state?.() ?? {};
+        const frames = s.frames ?? 0;
+        if (frames !== (w.presented.at(-1)?.[1] ?? -1)) w.presented.push([now, frames]);
+        const seen = [s.desktopRevision ?? null, globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.length ?? null];
+        const last = w.changes.at(-1);
+        if (!last || last[1] !== seen[0] || last[2] !== seen[1]) w.changes.push([now, ...seen]);
+        if (now < 300000) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+      return true;
+    })()`).catch(() => {});
+  }
+  return async () => {
+    const [main, ...rest] = await Promise.all([tab, ...others].map(read));
+    const summary = raw => {
+      const w = raw && JSON.parse(raw);
+      if (!w) return null;
+      const at = w.presented.map(frame => frame[0]);
+      const gaps = at.slice(1).map((time, index) => time - at[index]).sort((a, b) => a - b);
+      const spaced = (w.animationAt ?? []);
+      const between = spaced.slice(1).map((time, index) => time - spaced[index]).sort((a, b) => a - b);
+      return {
+        frames: at.length,
+        // Animation frames the page got: what its main thread was free for,
+        // and the longest it went without one: where it was inside a task.
+        animation: w.animation,
+        longestBlockedMs: between.at(-1) ?? null,
+        meanGapMs: gaps.length ? Math.round(gaps.reduce((sum, gap) => sum + gap, 0) / gaps.length) : null,
+        longestGapMs: gaps.at(-1) ?? null,
+        // Each frame's time and, oldest first, every layout revision and
+        // window count the page read: when the change reached it and when it
+        // drew are different answers.
+        presentedAtMs: at,
+        changes: w.changes,
+      };
+    };
+    const stages = async one => {
+      const raw = await one.evaluate(`(async () => {
+        const w = globalThis.__drawing;
+        return w?.runtime ? JSON.stringify(JSON.parse(w.runtime.take_frame_metrics())) : 'null';
+      })()`).catch(() => 'null');
+      const mounts = raw && JSON.parse(raw);
+      if (!mounts) return null;
+      // Each frame's stages end at its draw_total: the samples grouped that
+      // way say which stage a slow frame spent its time in.
+      return mounts.flatMap(mount => {
+        const frames = [];
+        let frame = [];
+        for (const sample of mount.samples ?? []) {
+          frame.push([sample.stage, Math.round(sample.ms)]);
+          if (sample.stage.startsWith('draw_')) {
+            frames.push({ms: Math.round(frame.reduce((sum, [, ms]) => sum + ms, 0)), stages: frame});
+            frame = [];
+          }
+        }
+        return frames.sort((a, b) => b.ms - a.ms).slice(0, 3);
+      });
+    };
+    return {page: summary(main), others: rest.map(summary), slowest: await stages(tab)};
+  };
+};
 // A person's search: the chord, the query, and Enter on the row the palette
 // offers for it.
 //
@@ -1026,12 +1113,16 @@ try {
   // workspace tells B of the window over the live session, and the wait measured
   // 56 s of its four steps on a node at load 320: six, as a page's join gets.
   const beforeB = await dump(b.tab, '4-b-before-open');
+  const crossingBegan = Date.now();
+  const crossingDrawn = await drawing(b.tab, a.tab);
   await search(a.tab, a.command, 'notes', 'Notes');
   await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
     "A's own Notes window", stepLimit(3));
   await until(b.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Notes')`,
     "A's Notes window in B", stepLimit(6));
-  report.shared = {bBefore: beforeB.windows, bAfter: (await snapshot(b.tab)).windows};
+  report.shared = {bBefore: beforeB.windows, bAfter: (await snapshot(b.tab)).windows, seconds: (Date.now() - crossingBegan) / 1000,
+    drawn: await crossingDrawn()};
+  console.log(`TIMING crossing=${report.shared.seconds}s; B drew ${JSON.stringify(report.shared.drawn.page)}; A drew ${JSON.stringify(report.shared.drawn.others[0])}`);
   console.log('ok: the window A opened is in B\'s strip');
   mark('A\'s window in B\'s strip');
   await dump(a.tab, '5-a-open');
@@ -1500,6 +1591,7 @@ try {
     const started = Date.now();
     for (const application of applications) {
       const appBegan = Date.now();
+      const openDrawn = await drawing(a.tab);
       await search(a.tab, a.command, application.label.toLowerCase(), application.label, application.id);
       const searched = Date.now();
       await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
@@ -1528,7 +1620,7 @@ try {
       // Where one app's open went: the search for it, its window arriving, the
       // frame that showed it, and the picture kept of it.
       const at = Date.now();
-      console.log(`TIMING app=${application.id} search=${((searched - appBegan) / 1000).toFixed(1)} window=${((arrived - searched) / 1000).toFixed(1)} drawn=${((at - arrived) / 1000).toFixed(1)} shot=${((Date.now() - at) / 1000).toFixed(1)}`);
+      console.log(`TIMING app=${application.id} search=${((searched - appBegan) / 1000).toFixed(1)} window=${((arrived - searched) / 1000).toFixed(1)} drawn=${((at - arrived) / 1000).toFixed(1)} shot=${((Date.now() - at) / 1000).toFixed(1)}; drew ${JSON.stringify(await openDrawn())}`);
     }
     const spent = Math.round((Date.now() - started) / 1000);
     report.applications = {offered: applications.map(application => application.id), opened, seconds: spent, presented: timings};
@@ -1545,7 +1637,10 @@ try {
     // Two fingers sideways over Notes, which does not scroll that way: the
     // strip pans by the gesture and the windows stay as they were.
     centre = await centreOf(a.tab);
+    const afterOpenDrawn = await drawing(a.tab);
+    const afterOpenBegan = Date.now();
     await search(a.tab, a.command, 'notes', 'Notes');
+    console.log(`TIMING search-after-opens=${((Date.now() - afterOpenBegan) / 1000).toFixed(1)}s; drew ${JSON.stringify(await afterOpenDrawn())}`);
     // Where Notes' own window is once the strip is at rest: with a few windows
     // open the middle of the shell can be another window's, one whose content
     // scrolls sideways itself.
