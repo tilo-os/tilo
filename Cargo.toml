@@ -4,7 +4,6 @@
 exclude = [
     "vendor/leveldb-sys",
     "vendor/hexane",
-    "vendor/iroh-blobs",
     "vendor/buffa-build",
     "vendor/swarm-discovery",
     "tools/web/wasm-split",
@@ -1664,8 +1663,6 @@ leveldb-sys = { path = "vendor/leveldb-sys" }
 # vendor/hexane/TILO-PATCH.md.
 hexane = { path = "vendor/hexane" }
 # The content store's metadata database keeps the page cache its owner bounds, not redb's
-# default gigabyte. See vendor/iroh-blobs/TILO-PATCH.md.
-iroh-blobs = { path = "vendor/iroh-blobs" }
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
 # A multicast send failure is said once, and again only when its cause
