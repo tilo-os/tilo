@@ -271,6 +271,7 @@ d-6obnc5qh = Add item
 
 d-qt2z24yc = Finish
     .doc = Marks an item done.
+    .w-already-done = Already done
 
 d-jkdyuciq = Remove item
     .doc = Takes an item off the backlog.
@@ -482,6 +483,8 @@ d-7ptc3r7a = Item row
     .w-delete = Delete
 
 d-iemy5gb4 = Add item~present
+
+d-24lyinrx = Finish~present
 
 d-qczmqkvq = Release board
     .w-a-board-a-list-per-stage = A board, a list per stage, with cards an app drags between them.

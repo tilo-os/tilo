@@ -16,7 +16,7 @@ view custom(g: Gallery) {
                 role: .caption,
                 secondary: true,
             )
-            row(gap: .section, wrap: true) {
+            row(gap: .section, wrap: true, align: .stretch) {
                 person_card("Ada Lovelace", "Leads the release", online: true) {
                     ui.Chip("Design", icon: .tag)
                     on message: set(last, "You messaged Ada")

@@ -414,12 +414,16 @@ view backlog_list(g: Gallery) {
                 }
             }
         }
-        stack(padding: .group, gap: .related, fill) {
-            ui.Text(
-                "Rows of a collection: each with a menu, a swipe, a toolbar on hover and its reactions.",
-                role: .caption,
-                secondary: true,
-            )
+        // The list is the column's body, its rows on the column's edge, where the line over it
+        // starts too; the list keeps the column's gutter over its first row itself.
+        stack(gap: .tight, fill) {
+            stack(padding: .group) {
+                ui.Text(
+                    "Rows of a collection: each with a menu, a swipe, a toolbar on hover and its reactions.",
+                    role: .caption,
+                    secondary: true,
+                )
+            }
             ui.VirtualList(selection_follows_focus: true, in_column: true, fill) {
                 for x in g.backlog_items {
                     ui.ListItem(item: x, done: x.stage == "Done") {
@@ -495,6 +499,7 @@ action add_item(g: Gallery) {
 
 /// Marks an item done.
 action finish(x: Item) {
+    require x.stage != "Done" "Already done"
     x.stage = "Done"
 }
 
@@ -512,12 +517,15 @@ action react(x: Item, emoji: Text) {
 /// The release's page: a list per stage, each card an item.
 view release_board(g: Gallery) {
     state last: Text = ""
-    stack(gap: .section, padding: .group, fill) {
-        ui.Text(
-            "A board, a list per stage, with cards an app drags between them.",
-            role: .caption,
-            secondary: true,
-        )
+    // The board keeps the column's edge itself, so it scrolls across to the pane's edges.
+    stack(gap: .tight, fill) {
+        stack(padding: .group) {
+            ui.Text(
+                "A board, a list per stage, with cards an app drags between them.",
+                role: .caption,
+                secondary: true,
+            )
+        }
         ui.Scroll(across: true) {
             ui.Board(name: "Release") {
                 for stage in ["To do", "Doing", "Done"] {
