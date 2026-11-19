@@ -324,6 +324,13 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                          "the PAM module is built on the platform its sibling setups are")
         self.assertEqual(rules("ci", "pam-module"), [],
                          "ci inherits the default profile's PAM module")
+        # The native NTFS images are generated once for the tests that read them; a test
+        # started without them fails saying so, so every profile serves them too.
+        (ntfs,) = rules("default", "ntfs-fixtures")
+        self.assertEqual(ntfs["filter"], "package(tilo-ntfs-helper)")
+        self.assertEqual(ntfs["platform"], siblings_rule["platform"])
+        self.assertEqual(rules("ci", "ntfs-fixtures"), [],
+                         "ci inherits the default profile's NTFS fixtures")
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "font-catalog": ["fonts"],
                                  "headless-audio": ["audio"],
@@ -360,7 +367,6 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                      "machine-siblings",
                                  "package(tilo-session-client) and binary(it) and "
                                  "(test(passkey_root::) or test(node_workspace::))": "page-bundle",
-                                 "package(tilo-ntfs-helper)": "ntfs-fixtures",
                                  # Only the sandbox's tests that map host ids or
                                  # make cgroups run as root.
                                  "package(tilo-sandbox) and (test(/^host_ids::/) or "
