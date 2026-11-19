@@ -943,12 +943,12 @@ fn answered_by(root: &Path, kind: Interaction) -> Result<String, ModelRefusal> {
 /// chooses them with two asks leaves it between the two, and with no
 /// default, that model answers the other kind as well. No other kind of work
 /// is answered by it, the main thread is answered by no other work's model,
-/// and a default answers before the other kind does.
+/// and a default answers before the other kind does. A sub-agent has its own
+/// rule ([`a_sub_agent_with_no_model_of_its_own_works_as_the_task_model`]).
 #[test]
 fn one_kind_of_the_main_thread_answers_for_its_other_kind_and_for_no_other_work() {
-    const OTHER_WORK: [Interaction; 4] = [
+    const OTHER_WORK: [Interaction; 3] = [
         Interaction::OneShot,
-        Interaction::Subtask,
         Interaction::Classifier,
         Interaction::Dictation,
     ];
@@ -992,5 +992,28 @@ fn one_kind_of_the_main_thread_answers_for_its_other_kind_and_for_no_other_work(
     assert_eq!(
         answered_by(dir.path(), Interaction::Task),
         Ok("made-up-default".to_owned())
+    );
+}
+
+/// A sub-agent a person's agent starts names no model of its own when the
+/// skill it works does not: it is a piece of the person's task work and the
+/// task model answers it. A model chosen only for what answers on the main
+/// thread is not the task, and does not answer a sub-agent.
+#[test]
+fn a_sub_agent_with_no_model_of_its_own_works_as_the_task_model() {
+    let dir = tempfile::tempdir().unwrap();
+    chose(dir.path(), &[Interaction::Task], false);
+    assert_eq!(
+        answered_by(dir.path(), Interaction::Subtask),
+        Ok("made-up-main".to_owned())
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    chose(dir.path(), &[Interaction::Request], false);
+    assert_eq!(
+        answered_by(dir.path(), Interaction::Subtask),
+        Err(ModelRefusal::NoModelLinked {
+            kind: Interaction::Subtask,
+        })
     );
 }
