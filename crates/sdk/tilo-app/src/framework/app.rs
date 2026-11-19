@@ -40,16 +40,12 @@ use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
 use tilo_lock::MutexRecover as _;
 
-/// The id, title and icon of an app named at launch ([`ResourceApp::named`]), and whether its
-/// manifest declares its records each member's own.
+/// The id, title and icon of an app named at launch ([`ResourceApp::named`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppName {
     pub id: &'static str,
     pub title: &'static str,
     pub icon: Option<&'static str>,
-    /// Each member of a workspace keeps their own record of the app, as the manifest that names
-    /// it says ([`ApplicationDefinition::member_resource`]).
-    pub own_resources: bool,
 }
 
 /// A framework app: one resource type and a view of it.
@@ -128,8 +124,8 @@ pub trait ResourceApp: 'static {
     /// profile of its own that is thrown away with the process — its record,
     /// settings and files never reach the person's — and that attaches to
     /// no runtime, so nothing it shows syncs or is shared. It holds none of
-    /// the person's own records ([`ResourceEnv::person`](super::ResourceEnv::person) answers `None`), and its
-    /// view tells with [`ResourceEnv::is_private`](super::ResourceEnv::is_private).
+    /// the person's own records ([`ResourceEnv::profile_resource`](super::ResourceEnv::profile_resource)
+    /// answers `None`), and its view tells with [`ResourceEnv::is_private`](super::ResourceEnv::is_private).
     const PRIVATE_WINDOWS: bool = false;
     /// The History of the folder a window shows: the changes of the workspace's tree, the one
     /// the window's rows show, each named by the path of what it changed and by whoever made
@@ -348,15 +344,15 @@ pub trait ResourceApp: 'static {
         Vec::new()
     }
 
-    /// The records the app keeps besides the one it shows: the person's own
-    /// records and the settings sections that are resource models. Each is
+    /// The records the app keeps besides the one it shows: additional
+    /// workspace records and settings sections that are resource models. Each is
     /// opened with the window and published beside the app's resource, so
     /// the palette and agents change it whether or not a view has shown it,
     /// and `tilo-app surface` commits its surface with the app's.
     ///
     /// ```ignore
     /// fn resources(resources: &mut Resources<'_>) {
-    ///     resources.person::<WatchHistory>().settings::<Playback>();
+    ///     resources.workspace_record::<WatchHistory>("watch-history").settings::<Playback>();
     /// }
     /// ```
     fn resources(resources: &mut super::Resources<'_>) {
@@ -621,7 +617,6 @@ fn application_definition(
         optional: vec![],
         opens,
         workspace_resource,
-        member_resource: app.own_resources(),
         opens_before_resource: workspace_resource && app.opens_before_resource,
         create,
     }
@@ -751,15 +746,6 @@ impl AppHooks {
 
     fn icon_name(&self) -> Option<&'static str> {
         (self.named)().map_or(self.icon, |named| named.icon)
-    }
-
-    /// Whether each member keeps their own record of the app's resource, as its manifest
-    /// declares (`[resources] own`): a window naming no record opens theirs.
-    fn own_resources(&self) -> bool {
-        match (self.named)() {
-            Some(named) => named.own_resources,
-            None => app_fleet::scope(self.id, self.kind) == app_fleet::Scope::Member,
-        }
     }
 }
 

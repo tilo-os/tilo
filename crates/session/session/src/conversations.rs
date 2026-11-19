@@ -132,10 +132,10 @@ impl Conversations {
             return None;
         }
         let id = DocumentId::of_member(person, Learned::KIND)?;
-        let checkout = DocumentCheckout::new(id.clone(), ResourceType::new(Learned::KIND));
+        let checkout = DocumentCheckout::new(id, ResourceType::new(Learned::KIND));
         let store = opened.records.store_of(CHAT_OWNER).ok()?;
-        store.open_if_held(&checkout).ok()?;
-        store.replication_snapshot(&id).ok().map(|(bytes, _)| bytes)
+        let mut previous = store.retained_document(&checkout).ok()??;
+        Some(previous.save())
     }
 
     fn learned(&self, opened: &Opened, workspace: &str, person: &str) -> Option<Learned> {

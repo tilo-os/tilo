@@ -640,7 +640,6 @@ impl TileSource for Source {
             icon: IconDescriptor::Glyph("K"),
             resource_type: ui::resource::ResourceType::new("keyboard-test"),
             workspace_resource: false,
-            member_resource: false,
             opens_before_resource: false,
             required: vec![],
             optional: vec![],

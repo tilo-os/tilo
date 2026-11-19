@@ -902,6 +902,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
             },
             beside,
             &mut |context| {
+                if let Some(records) = context.person_resources().cloned() {
+                    context.provide_person_resources(records.with_legacy_member_fixture());
+                }
                 if let Some(configure) = configure.take() {
                     configure(context);
                 }

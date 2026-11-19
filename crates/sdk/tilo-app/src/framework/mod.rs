@@ -186,16 +186,11 @@
 //!   one document item (a profile's password) is
 //!   `secrets().item(purpose, id)`, so the document names the item and the
 //!   secret stays on the device.
-//! * **One record of a kind beside the one shown** — what was watched, the
-//!   words taught to the keyboard, where reading stopped: data that grows,
-//!   has history and is undone — is a resource the app keeps with its other
-//!   records in the workspace it is open in ([`ResourceEnv::person`]). The
-//!   [`PersonResource`] is one record per kind and workspace, the same on
-//!   every device, edited with the resource's actions, attributed, in its
-//!   history and undone per step, and synced with the workspace. A
-//!   preference is still a setting. A record that is the person's rather
-//!   than a workspace's — their accounts, their contacts, the models their
-//!   agents offer — is declared with the app
+//! * **One record of a kind beside the one shown** — a workspace's watch
+//!   history, for example — is declared with [`Resources::workspace_record`].
+//!   Workspace roles govern who can read and edit it. The history attributes
+//!   each edit, and the record syncs with the workspace. The person's
+//!   accounts, contacts and agent models are declared with the app
 //!   ([`ResourceApp::PERSON_RESOURCES`]), kept in their own scope and carried
 //!   to their other devices by their personal store ([`PersonKind`]).
 //! * **What grows without end** — a chat's messages, a log — is a chain of

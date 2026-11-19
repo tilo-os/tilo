@@ -1,8 +1,4 @@
-//! Records kept beside the one a window shows. An app's own records of a
-//! kind are each member's own in the workspace, published on their own route
-//! there and merged from that member's other devices; the person's shared
-//! records ride the person's own cluster, one route per app and record, and
-//! the person's store carries them to their other devices.
+//! Profile records and compatibility with archived member records.
 
 use super::*;
 use crate::resource::person::{PERSONAL_SCOPE, PersonResources, StoredResource};
@@ -44,6 +40,7 @@ fn device() -> StoredResource {
     let mut owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     PersonResources::open(&mut owners, APP, person())
         .unwrap()
+        .with_legacy_member_fixture()
         .in_workspace(WORKSPACE)
         .unwrap()
         .open_resource(ResourceType::new("test.watched"), &|doc| {
@@ -300,6 +297,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let in_workspace = PersonResources::open(&mut owners, APP, person())
             .unwrap()
+            .with_legacy_member_fixture()
             .in_workspace(WORKSPACE)
             .unwrap()
             .open_resource(ResourceType::new("test.watched"), &|_| Ok(()))
@@ -381,6 +379,7 @@ tilo_test_env::scenario! {
             let mut owners = ResourceOwners::with_store(Rc::clone(store));
             PersonResources::open(&mut owners, APP, person())
                 .unwrap()
+                .with_legacy_member_fixture()
                 .in_workspace(WORKSPACE)
                 .unwrap()
                 .open_resource(ResourceType::new("test.watched"), &|doc| {
@@ -594,6 +593,7 @@ fn a_member_record_of_a_kind_no_manifest_declares_own_is_refused() {
     let mut owners = ResourceOwners::with_store(Rc::new(durable_store::MemoryStore::new()));
     let refused = PersonResources::open(&mut owners, "so.tilo.test-undeclared", person())
         .unwrap()
+        .with_legacy_member_fixture()
         .in_workspace(WORKSPACE)
         .unwrap()
         .open_resource(ResourceType::new("test.watched"), &|_| Ok(()));
@@ -604,4 +604,65 @@ fn a_member_record_of_a_kind_no_manifest_declares_own_is_refused() {
         ),
         "a record no manifest declares a member's own would reach every member"
     );
+}
+
+#[test]
+fn a_previous_member_record_is_readable_only_through_recovery() {
+    crate::app_surface::register_package(
+        APP,
+        b"[[resources]]\nkind = \"test.watched\"\nlabel = \"Watched\"\nversion = 1\nown = true\n",
+    );
+    let backend: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
+    let mut owners = ResourceOwners::with_store(Rc::clone(&backend));
+    let profile = PersonResources::open(&mut owners, APP, person()).unwrap();
+    let archive = profile.in_workspace(WORKSPACE).unwrap();
+    let kind = ResourceType::new("test.watched");
+    assert!(
+        archive
+            .read_previous_member_resource(kind.clone(), |_, _, _| ())
+            .unwrap()
+            .is_none()
+    );
+    let fixture = profile
+        .with_legacy_member_fixture()
+        .in_workspace(WORKSPACE)
+        .unwrap()
+        .open_resource(kind.clone(), &|doc| {
+            doc.put(automerge::ROOT, "retained", true)
+                .map_err(|error| error.to_string())
+        })
+        .unwrap();
+    assert!(matches!(
+        archive.open_resource(kind.clone(), &|_| panic!("no initialization")),
+        Err(crate::resource::ResourceOpenError::ArchivedMemberRecord)
+    ));
+    assert!(matches!(
+        archive.open_existing_resource(kind.clone()),
+        Err(crate::resource::ResourceOpenError::ArchivedMemberRecord)
+    ));
+    assert!(matches!(
+        archive.open_original_resource(kind.clone(), |_| panic!("no initialization")),
+        Err(crate::resource::ResourceOpenError::ArchivedMemberRecord)
+    ));
+    fixture.flush();
+    let mut restart = ResourceOwners::with_store(backend);
+    let cold = PersonResources::open(&mut restart, APP, person())
+        .unwrap()
+        .in_workspace(WORKSPACE)
+        .unwrap();
+    for records in [archive, cold] {
+        assert_eq!(
+            records
+                .read_previous_member_resource(kind.clone(), |doc, checkout, _| {
+                    assert_eq!(checkout.id, fixture.checkout().id);
+                    matches!(
+                        doc.get(automerge::ROOT, "retained").unwrap(),
+                        Some((automerge::Value::Scalar(value), _))
+                            if matches!(value.as_ref(), automerge::ScalarValue::Boolean(true))
+                    )
+                })
+                .unwrap(),
+            Some(true)
+        );
+    }
 }

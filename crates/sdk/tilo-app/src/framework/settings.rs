@@ -197,8 +197,7 @@ impl Hosted {
         Attached {
             workspace,
             emoji,
-            // The app's own records of a kind are kept with its others in
-            // the workspace it is open in.
+            // Hold the earlier records so the app's migration can read them.
             person: self.person.map(|records| {
                 let own = self.records.as_ref().and_then(|(store, _, _)| {
                     let (_, workspace) = store.app_and_home();
@@ -335,7 +334,8 @@ impl ViewStorage {
         self.device.as_deref()
     }
 
-    /// The person's record of `P`, opened on first use.
+    /// Open a fixture from the previous storage model.
+    #[cfg(feature = "test-support")]
     pub(crate) fn person<P: tilo_resource::Resource>(
         &self,
     ) -> Option<super::person::PersonResource<P>> {

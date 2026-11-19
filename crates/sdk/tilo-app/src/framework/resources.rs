@@ -722,10 +722,8 @@ impl<'a> Resources<'a> {
         self
     }
 
-    /// The app's own record of `P` ([`ResourceEnv::person`](super::ResourceEnv::person)): one per
-    /// kind in the workspace it is open in, each member's own there, opened with the window and
-    /// declared where the app declares its records, so a host that reads it without the window
-    /// ([`super::resource_index`]) reads it by its kind.
+    /// Declare a fixture from the previous storage model.
+    #[cfg(feature = "test-support")]
     pub fn person<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
             // Declared, not opened: a host that reads the record without the
@@ -794,7 +792,7 @@ impl<'a> Resources<'a> {
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// A part of the view over another record than the app's own — the
-    /// person's own record ([`ResourceEnv::person`](super::ResourceEnv::person)), a settings section
+    /// person's profile record ([`ResourceEnv::profile_resource`](super::ResourceEnv::profile_resource)), a settings section
     /// ([`ResourceEnv::settings`](super::ResourceEnv::settings)) — built like a view of that record: its
     /// controls bind the record's paths
     /// (`cx.checkbox("high-contrast", Appearance::paths().high_contrast)`)

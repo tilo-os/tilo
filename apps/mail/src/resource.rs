@@ -2400,9 +2400,7 @@ mod workspace_mailbox_tests {
     #[test]
     fn mail_opens_the_workspace_mailbox() {
         let definition = ui::framework::definition::<MailShell>();
-        let person = ui::permissions::MemberId::person("ad".repeat(32));
         assert!(definition.keeps_workspace_resource());
-        assert!(definition.member_resource_of(&person).is_none());
     }
 
     #[test]

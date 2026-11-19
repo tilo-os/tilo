@@ -264,9 +264,7 @@ pub(crate) struct PersonState {
     /// for a host that keeps only the settings sections, whose history is
     /// the settings document's.
     records: Option<PersonResources>,
-    /// The app's own records of a kind, in the workspace it is open in;
-    /// none for a host that keeps only the shared ones (the session's
-    /// settings).
+    /// The app's earlier member records, held for migration.
     own: Option<PersonResources>,
     app_id: &'static str,
     app_title: &'static str,
@@ -508,7 +506,8 @@ impl PersonState {
         }
     }
 
-    /// The person's record of `P`, opened on first use.
+    /// The previous storage model, for fixtures that exercise recovery.
+    #[cfg(feature = "test-support")]
     pub(crate) fn open<P: Resource>(&self) -> Option<PersonResource<P>> {
         self.open_of::<P>(self.app_id, true, true, false)
     }
@@ -523,27 +522,23 @@ impl PersonState {
         &self,
         owner: &str,
     ) -> Result<Option<Rc<P::State>>, String> {
-        let Some(record) = self.legacy_record::<P>(owner)? else {
-            return Ok(None);
-        };
-        Self::read_legacy::<P>(&record).map(Some)
+        self.read_legacy_record::<P, _>(owner, |doc, _, _| Self::read_legacy::<P>(doc))?
+            .transpose()
     }
 
     pub(crate) fn legacy_content<P: Resource>(
         &self,
         owner: &str,
     ) -> super::workspace::LegacyMemberContent<P> {
-        let Some(record) = self.legacy_record::<P>(owner)? else {
-            return Ok(None);
-        };
-        let content = record
-            .content()
-            .ok_or("the previous record has no content store")?;
-        Ok(Some((
-            record.checkout().id.as_str().to_owned(),
-            Self::read_legacy::<P>(&record)?,
-            content,
-        )))
+        self.read_legacy_record::<P, _>(owner, |doc, checkout, content| {
+            let content = content.ok_or("the previous record has no content store")?;
+            Ok((
+                checkout.id.as_str().to_owned(),
+                Self::read_legacy::<P>(doc)?,
+                content,
+            ))
+        })?
+        .transpose()
     }
 
     pub(crate) fn legacy_parts<C: super::Chained>(
@@ -551,14 +546,15 @@ impl PersonState {
         owner: &str,
         store: &ui_core::resource::ResourceStore,
     ) -> super::workspace::LegacyMemberParts<C> {
-        let Some(record) = self.legacy_record::<C::Base>(owner)? else {
+        let Some((id, content)) = self
+            .read_legacy_record::<C::Base, _>(owner, |_, checkout, content| {
+                (checkout.id.clone(), content)
+            })?
+        else {
             return Ok(None);
         };
-        let checkout = record.checkout();
-        let content = record
-            .content()
-            .ok_or("the earlier record has no content store")?;
-        let chain = C::chain_beside(&checkout.id);
+        let content = content.ok_or("the earlier record has no content store")?;
+        let chain = C::chain_beside(&id);
         let kind = ResourceType::new(C::KIND);
         let parts = store
             .held_parts(&chain)
@@ -566,20 +562,26 @@ impl PersonState {
             .map(|index| {
                 let part =
                     ui_core::resource::DocumentCheckout::new(chain.part(index), kind.clone());
-                store
-                    .open_if_held(&part)
-                    .map_err(|error| error.to_string())?;
-                let state = store
-                    .read(&part.id, C::read)
-                    .ok_or("an earlier part is busy")?
-                    .map_err(|error| error.to_string())?;
+                let doc = store
+                    .retained_document(&part)
+                    .map_err(|error| error.to_string())?
+                    .ok_or("an earlier part is unavailable")?;
+                let state = C::read(&doc).map_err(|error| error.to_string())?;
                 Ok((index, Rc::new(state)))
             })
             .collect::<Result<Vec<_>, String>>()?;
-        Ok(Some((checkout.id.as_str().to_owned(), parts, content)))
+        Ok(Some((id.as_str().to_owned(), parts, content)))
     }
 
-    fn legacy_record<P: Resource>(&self, owner: &str) -> Result<Option<StoredResource>, String> {
+    fn read_legacy_record<P: Resource, T>(
+        &self,
+        owner: &str,
+        read: impl FnOnce(
+            &tilo_resource::Doc,
+            &ui_core::resource::DocumentCheckout,
+            Option<tilo_content::ContentStore>,
+        ) -> T,
+    ) -> Result<Option<T>, String> {
         if owner != self.app_id {
             return Ok(None);
         }
@@ -591,27 +593,22 @@ impl PersonState {
         let Some(records) = &self.own else {
             return Ok(None);
         };
-        records
-            .open_existing_resource(ResourceType::new(P::KIND))
-            .map_err(|error| error.to_string())
+        records.read_previous_member_resource(ResourceType::new(P::KIND), read)
     }
 
-    fn read_legacy<P: Resource>(record: &StoredResource) -> Result<Rc<P::State>, String> {
-        record
-            .read(|doc| {
-                let read = |doc: &tilo_resource::Doc| {
-                    tilo_resource::Reader::<P>::read(doc).map(|reader| Rc::clone(reader.state()))
-                };
-                if tilo_resource::evolution::needs_migrate::<P>(doc) {
-                    let mut migrated = doc.clone();
-                    tilo_resource::evolution::migrate::<P>(&mut migrated)?;
-                    read(&migrated)
-                } else {
-                    read(doc)
-                }
-            })
-            .ok_or("the previous record is busy")?
-            .map_err(|error| error.to_string())
+    fn read_legacy<P: Resource>(doc: &tilo_resource::Doc) -> Result<Rc<P::State>, String> {
+        let read = |doc: &tilo_resource::Doc| {
+            tilo_resource::Reader::<P>::read(doc).map(|reader| Rc::clone(reader.state()))
+        };
+        let result = if tilo_resource::evolution::needs_migrate::<P>(doc) {
+            let mut migrated = doc.clone();
+            tilo_resource::evolution::migrate::<P>(&mut migrated)
+                .map_err(|error| error.to_string())?;
+            read(&migrated)
+        } else {
+            read(doc)
+        };
+        result.map_err(|error| error.to_string())
     }
 
     /// The shared record `P`, opened on first use: kept by its owner, a copy

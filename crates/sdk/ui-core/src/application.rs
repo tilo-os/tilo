@@ -49,10 +49,6 @@ pub struct ApplicationDefinition {
     /// shares), rather than a record per window: every window of the app in the workspace opens it, and
     /// the first creates it.
     pub workspace_resource: bool,
-    /// The record a window opens when it names none is the person record of the workspace
-    /// ([`DocumentId::of_member`]) rather than the workspace's record of the app: what it keeps there
-    /// (their mail) only their devices read.
-    pub member_resource: bool,
     /// The app's window shows before the workspace's record is read: a record this device has opens
     /// off the frame, and the component takes it in when it is decoded
     /// ([`ProcessContext::resource_opening`]).
@@ -998,17 +994,6 @@ impl Drop for ProcessContext {
     }
 }
 impl ApplicationDefinition {
-    /// The record a window of `author` opens when it names none, when the app keeps each member
-    /// ([`Self::member_resource`]): their own record of the workspace.
-    #[must_use]
-    pub fn member_resource_of(&self, author: &MemberId) -> Option<DocumentCheckout> {
-        self.member_resource
-            .then(|| author.person_id())
-            .flatten()
-            .and_then(|person| DocumentId::of_member(person, self.resource_type.as_str()))
-            .map(|id| DocumentCheckout::new(id, self.resource_type.clone()))
-    }
-
     /// Whether the app keeps one record per workspace, its package primary, rather than a record per
     /// window ([`Self::workspace_resource`]).
     pub fn keeps_workspace_resource(&self) -> bool {
@@ -2377,7 +2362,6 @@ mod bound_lifetime_tests {
                 optional: vec![],
                 opens: &[],
                 workspace_resource: false,
-                member_resource: false,
                 opens_before_resource: false,
                 create: factory,
             };
@@ -2428,7 +2412,6 @@ mod bound_lifetime_tests {
                 optional: vec![],
                 opens: &[],
                 workspace_resource: false,
-                member_resource: false,
                 opens_before_resource: false,
                 create: factory,
             };
@@ -2492,7 +2475,6 @@ mod bound_lifetime_tests {
                     optional: vec![],
                     opens: &[],
                     workspace_resource: false,
-                    member_resource: false,
                     opens_before_resource: false,
                     create: factory,
                 };
@@ -2583,7 +2565,6 @@ mod bound_lifetime_tests {
                     optional: vec![],
                     opens: &[],
                     workspace_resource: false,
-                    member_resource: false,
                     opens_before_resource: false,
                     create: factory,
                 };

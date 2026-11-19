@@ -469,6 +469,8 @@ pub enum ResourceOpenError {
     /// each member's own (`[resources] own`).
     #[error("the app's manifest declares no kind {0} its members keep as their own")]
     UndeclaredOwnKind(String),
+    #[error("a previous member record is available only for migration")]
+    ArchivedMemberRecord,
     #[error("record is reserved or already initialized")]
     Busy,
     /// The store's own thread is still opening the resource's document for a thread that must not

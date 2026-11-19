@@ -170,7 +170,6 @@ mod tests {
             optional: vec![],
             opens: &[],
             workspace_resource: false,
-            member_resource: false,
             opens_before_resource: false,
             create: unused,
         });
