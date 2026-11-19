@@ -10,6 +10,7 @@ use ui::tilo_resource::{self, Effect};
 use ui::widget::Element;
 
 use crate::app::MapsApp;
+use crate::rows::{OfflineRegion, PastSearch, Place, Poi, SearchResult};
 #[cfg(feature = "samples")]
 use crate::scenario::Sample;
 use crate::workspace::Workspace;
@@ -20,7 +21,7 @@ use crate::workspace::Workspace;
 #[effect(operation = "maps.effect")]
 pub enum MapsEffect {
     /// Search maps.
-    #[effect(screen)]
+    #[effect(screen, on = PastSearch)]
     Search {
         #[param("Place, address, or category, e.g. museum near me")]
         query: String,
@@ -32,25 +33,25 @@ pub enum MapsEffect {
     #[effect(screen)]
     ToggleTraffic,
     /// Open place.
-    #[effect(screen)]
+    #[effect(screen, on = SearchResult, on = Place)]
     OpenPlace {
         #[param("The place's id")]
         place: String,
     },
     /// Get directions.
-    #[effect(screen)]
+    #[effect(screen, on = SearchResult, on = Place)]
     Directions {
         #[param("The place's id")]
         place: String,
     },
     /// Open point of interest.
-    #[effect(screen)]
+    #[effect(screen, on = Poi)]
     OpenPoi {
         #[param("The point of interest's id")]
         poi: String,
     },
     /// Get directions to point of interest.
-    #[effect(screen)]
+    #[effect(screen, on = Poi)]
     PoiDirections {
         #[param("The point of interest's id")]
         poi: String,
@@ -64,7 +65,7 @@ pub enum MapsEffect {
         lon: f64,
     },
     /// Delete offline area.
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, kind = "read", on = OfflineRegion)]
     DeleteOfflineArea {
         #[param("The offline area's id")]
         area: String,
