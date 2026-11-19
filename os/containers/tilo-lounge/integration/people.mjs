@@ -668,13 +668,13 @@ const boxOf = bounds => Array.isArray(bounds) ? bounds
 // Scroll the card's body, with the wheel a mouse sends over it, until the
 // control `name` stands within it: the row a person changes lies below what the
 // card shows when many people share the workspace, and a press beside the page
-// reaches nothing. A body already scrolled to its end shows every row before
-// that end, so a wheel that moves nothing leaves the row where a person could
-// reach it.
+// reaches nothing. The wheel goes over the row's own column, because a sheet
+// laid out beside the middle of the page does not scroll under the middle. A
+// body already scrolled to its end shows every row before that end, so a wheel
+// that moves nothing leaves the row where a person could reach it.
 const scrollIntoView = async (tab, name, what) => {
   const {width, height} = SHELL;
   const corner = JSON.parse(await canvasTopLeft(tab));
-  const at = {x: corner.x + width / 2, y: corner.y + height / 2};
   for (let scrolled = 0; scrolled < 16; scrolled += 1) {
     const here = await tab.evaluate(found(name)).catch(() => '');
     if (!here) await failed(`${what} left the card as it scrolled`, tab);
@@ -683,6 +683,7 @@ const scrollIntoView = async (tab, name, what) => {
     const onPage = centre.x >= 0 && centre.x <= width && centre.y >= 0 && centre.y <= height;
     // Its middle stands clear of the card's footer, which the wheel never scrolls.
     if (centre.y <= height / 2) return JSON.parse(here);
+    const at = {x: corner.x + (x0 + x1) / 2, y: corner.y + height / 2};
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', ...at});
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', ...at, deltaX: 0, deltaY: 120});
     // The card answers the wheel on the frame it draws next: the row's place
