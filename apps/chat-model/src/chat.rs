@@ -1096,11 +1096,14 @@ pub fn conversation_entry(id: &Id, name: &str, topic: &str) -> SearchEntry {
 
 /// What a member the workspace has no name for is called: a person is someone without a name
 /// yet, the one phrase every surface says for them (their face the person glyph), never a part
-/// of their key; any other member is told apart by the end of its id.
+/// of their key. An agent is what it is, never a person's placeholder cut from an agent's id;
+/// any other member is told apart by the end of its id.
 #[must_use]
 pub fn unnamed_label(id: &MemberId) -> String {
     if id.is_person() {
         tilo_resource::word!("chat-person-unnamed").read()
+    } else if id.is_agent() {
+        tilo_resource::word!("chat-agent-unnamed").read()
     } else {
         tilo_resource::word!("chat-member-unnamed", tag = member_tag(id)).read()
     }

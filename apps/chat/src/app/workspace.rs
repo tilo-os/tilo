@@ -53,18 +53,27 @@ impl ChatApp {
             changed
         });
         let names_before = self.workspace_names.clone();
-        if let Some(capture) = self.capture_agent_presence.clone() {
+        let presence = if let Some(capture) = self.capture_agent_presence.clone() {
             self.adopt_workspace(&capture);
+            true
         } else if ui::presence::frame::frame(|presence| self.adopt_workspace(presence)).is_none() {
             // No presence this frame: nobody's answer says who is here, so the
             // resource's own words about each person stand (`live_status`).
             self.workspace_presence_answers = false;
-            return perms_changed;
-        }
+            false
+        } else {
+            true
+        };
+        // The agents' names come from the workspace's own list, not presence: an agent that
+        // works on the workspace's server is no device here, and it is named all the same.
+        self.name_agents();
         if self.workspace_names != names_before {
             // A direct conversation is named by what the member list calls its people: read the
             // conversations again.
             self.synced = None;
+        }
+        if !presence {
+            return perms_changed;
         }
         // Who is in a call is not presence: it arrives from the host and from
         // the call's own service while this frame is being built, and a call

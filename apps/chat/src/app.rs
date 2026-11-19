@@ -384,6 +384,10 @@ pub struct ChatApp {
     /// What the workspace calls this window's person, numbered like anyone else.
     pub(crate) own_label: Option<String>,
     pub(crate) workspace_colors: HashMap<MemberId, (u8, u8, u8)>,
+    /// The workspace's own list of its agents, read for their names: an agent that works on
+    /// the workspace's server has no presence here, and that list is what calls it "Video agent".
+    pub(crate) agents:
+        Option<ui::framework::ResourceOpener<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// The direct conversations that hold messages, by conversation id: the
@@ -401,7 +405,7 @@ pub struct ChatApp {
     pub(crate) motion_reduced: bool,
     pub(crate) input_floating_surface: Option<String>,
 
-    /// What the workspace's host keeps of the files members post, as it says:
+    /// What the workspace's server keeps of the files members post, as it says:
     /// a file it would not take is refused here, in plain words.
     pub(crate) workspace_files: crate::chat::WorkspaceFiles,
     /// Each shown message body, read-only in the SDK editor, by body size
@@ -771,6 +775,7 @@ impl ChatApp {
             workspace_labels: ui::presence::MemberLabels::default(),
             own_label: None,
             workspace_colors: HashMap::new(),
+            agents: None,
             capture_agent_presence: None,
             direct_held: std::collections::HashSet::new(),
             recorded_channels: std::collections::HashSet::new(),
@@ -1164,6 +1169,41 @@ impl ChatApp {
             self.drafts_resource = Some(record);
         }
         self
+    }
+
+    /// Read the workspace's own list of its agents for their names: it is the one truth a
+    /// conversation with an agent is named by, also while the agent works on the workspace's server
+    /// and has no presence here.
+    #[must_use]
+    pub(crate) fn with_agents(
+        mut self,
+        opener: ui::framework::ResourceOpener<ui::tilo_workspace_agent::WorkspaceAgents>,
+    ) -> Self {
+        self.agents = Some(opener);
+        self
+    }
+
+    /// Put every agent the workspace's list names into [`Self::workspace_names`], by its member
+    /// id, so a conversation with it, its messages and the `@` list read by its name. Read each
+    /// time names are taken: a list still on its way when the window opened is read once it is
+    /// here.
+    fn name_agents(&mut self) {
+        let Some(opener) = &self.agents else {
+            return;
+        };
+        let Some(agents) = opener.open(&ui::resource::workspace::document_id(
+            ui::tilo_workspace_agent::KIND,
+        )) else {
+            return;
+        };
+        let state = agents.get();
+        for agent in &state.agents {
+            let name = agent.name.trim();
+            if !name.is_empty() {
+                self.workspace_names
+                    .insert(MemberId::agent(agent.id.0.clone()), name.to_owned());
+            }
+        }
     }
 
     /// Follow this person's preferences from now on.

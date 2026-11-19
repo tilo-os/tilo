@@ -146,6 +146,9 @@ impl ResourceApp for ChatShell {
         let app = ChatApp::new(identity, runtime, content)
             .with_models(models)
             .with_drafts(drafts)
+            // The workspace's names for its agents, read from the list every app of the
+            // workspace opens: an agent has no presence here to be named by.
+            .with_agents(cx.resource_opener(ui::tilo_workspace_agent::OWNER))
             // The window's actions: its composer's send button is where Chat's
             // `send` lands, the action an agent's send runs too.
             .with_send_action(&cx.actions());

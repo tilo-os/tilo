@@ -85,3 +85,30 @@ fn a_conversation_with_an_agent_takes_its_first_message_before_it_is_listed() {
         "the conversation is listed once it holds a message"
     );
 }
+
+/// A conversation with an agent is named by what the workspace's own list of its agents calls
+/// it: the window and the direct messages list read "Assistant", never a placeholder cut from its
+/// id, also while the agent works on the workspace's server and no presence here names it.
+#[test]
+fn a_conversation_with_an_agent_is_named_by_the_workspaces_own_list() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut window = TestApp::<ChatShell>::in_workspace(WORKSPACE).expect("a window");
+    open_agent(&mut window);
+    window.frame();
+    let agent = ui::tilo_resource::MemberId::agent("assistant".to_owned());
+    assert_eq!(window.chat().display_name(&agent), "Assistant");
+    // The conversation is listed once it holds a message; that row is what the
+    // window's title and the direct messages list read.
+    window.harness().type_text("Remind me in 30 minutes");
+    window.settle();
+    window.harness().key("Enter");
+    window.settle();
+    let conversation = window.chat().active_channel.clone();
+    let row = window
+        .chat()
+        .direct_contacts()
+        .into_iter()
+        .find(|held| held.id == conversation)
+        .expect("the open conversation is listed");
+    assert_eq!(row.name, "Assistant", "the direct messages list names it");
+}
