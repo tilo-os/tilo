@@ -737,7 +737,7 @@ fn made_of(change: &(impl ChangeHead + ?Sized)) -> Vec<(String, Vec<String>, Ver
 /// note it the same way (`super::super::store::versions`).
 fn versions_of_changes<C: ChangeHead>(
     changes: impl IntoIterator<Item = C>,
-    stepped: &mut Stepped<'_>,
+    stepped: &mut Stepped<'_, '_, '_>,
     undone: &BTreeSet<String>,
 ) -> BTreeMap<String, Ends> {
     let mut out: BTreeMap<String, Ends> = BTreeMap::new();
@@ -841,6 +841,28 @@ pub fn ends_of<'c>(
     mirror: &Doc,
     resources: &BTreeMap<DocId, (AppId, TypeId)>,
 ) -> BTreeMap<String, Ends> {
+    let places = crate::reads::Places::of(mirror);
+    ends_of_with(
+        changes,
+        &Reflections {
+            places: std::cell::RefCell::new(places),
+        },
+        mirror,
+        resources,
+    )
+}
+
+/// [`ends_of`], reading the objects the steps wrote in `state`: a caller that reads the same
+/// changes for more than this — what they wrote, the items they placed — hands one state to
+/// each reader, so the objects a step wrote are walked up to their place once, not once a
+/// reader.
+#[must_use]
+pub fn ends_of_with<'c, 'd>(
+    changes: impl IntoIterator<Item = &'c automerge::Change>,
+    state: &Reflections<'d>,
+    mirror: &'d Doc,
+    resources: &BTreeMap<DocId, (AppId, TypeId)>,
+) -> BTreeMap<String, Ends> {
     let batch: Vec<&automerge::Change> = changes.into_iter().collect();
     let steps: Vec<&automerge::Change> = batch
         .iter()
@@ -849,7 +871,7 @@ pub fn ends_of<'c>(
         .collect();
     // What a step wrote is read off its operations once, however often it is asked: a step
     // that takes back a paste writes as many operations as the paste did.
-    let mut stepped = Stepped::new(mirror, resources);
+    let mut stepped = Stepped::new(mirror, resources, state);
     let mut out = versions_of_changes(batch.iter().copied(), &mut stepped, &BTreeSet::new());
     if steps.is_empty() {
         return out;
@@ -903,29 +925,59 @@ pub fn ends_of<'c>(
     out
 }
 
+/// What the reader of one document has walked so far: where its objects stand. Every reader
+/// that reads the same changes for what they wrote — [`crate::reads::changed_by`], the
+/// versions they made ([`stepped`]) — reads them through one of these, so an object is walked
+/// up to its place once, not once a reader.
+pub struct Reflections<'d> {
+    places: std::cell::RefCell<crate::reads::Places<'d>>,
+}
+
+impl<'d> Reflections<'d> {
+    /// The objects of `mirror` stand where they stand, none walked yet.
+    #[must_use]
+    pub fn of(mirror: &'d Doc) -> Self {
+        Self {
+            places: std::cell::RefCell::new(crate::reads::Places::of(mirror)),
+        }
+    }
+
+    /// The places walked so far, for a reader that reads what changes wrote and reports them
+    /// itself ([`crate::reads::changed_by_with`]).
+    pub fn places_mut(&self) -> std::cell::RefMut<'_, crate::reads::Places<'d>> {
+        self.places.borrow_mut()
+    }
+}
+
 /// What the changes of `mirror` that are read off what they wrote ([`stepped`]) made, each read
-/// once by its hash.
-struct Stepped<'d> {
+/// once by its hash, walking the objects they wrote in `state`.
+struct Stepped<'d, 'r, 's> {
     mirror: &'d Doc,
-    resources: &'d BTreeMap<DocId, (AppId, TypeId)>,
+    resources: &'r BTreeMap<DocId, (AppId, TypeId)>,
+    state: &'s Reflections<'d>,
     read: HashMap<automerge::ChangeHash, Vec<Version>>,
 }
 
-impl<'d> Stepped<'d> {
-    fn new(mirror: &'d Doc, resources: &'d BTreeMap<DocId, (AppId, TypeId)>) -> Self {
+impl<'d, 'r, 's> Stepped<'d, 'r, 's> {
+    fn new(
+        mirror: &'d Doc,
+        resources: &'r BTreeMap<DocId, (AppId, TypeId)>,
+        state: &'s Reflections<'d>,
+    ) -> Self {
         Self {
             mirror,
             resources,
+            state,
             read: HashMap::new(),
         }
     }
 
     /// [`stepped`] of `change`, read the first time it is asked.
     fn of(&mut self, change: &(impl ChangeHead + ?Sized)) -> &[Version] {
-        let (mirror, resources) = (self.mirror, self.resources);
+        let (mirror, resources, state) = (self.mirror, self.resources, self.state);
         self.read
             .entry(change.hash())
-            .or_insert_with(|| stepped(change, mirror, resources))
+            .or_insert_with(|| stepped_with(change, mirror, resources, state))
     }
 }
 
@@ -977,6 +1029,18 @@ pub fn stepped(
     mirror: &Doc,
     resources: &BTreeMap<DocId, (AppId, TypeId)>,
 ) -> Vec<Version> {
+    stepped_with(change, mirror, resources, &Reflections::of(mirror))
+}
+
+/// [`stepped`], walking the objects `change` wrote in `state`, where the reader of the same
+/// changes for what they wrote walks them too.
+#[must_use]
+pub fn stepped_with<'d>(
+    change: &(impl ChangeHead + ?Sized),
+    mirror: &'d Doc,
+    resources: &BTreeMap<DocId, (AppId, TypeId)>,
+    state: &Reflections<'d>,
+) -> Vec<Version> {
     let Some(stamp) = written_stamp(change) else {
         return Vec::new();
     };
@@ -985,7 +1049,11 @@ pub fn stepped(
     let Some(whole) = change.whole(mirror) else {
         return Vec::new();
     };
-    let changed = crate::reads::changed_by(std::slice::from_ref(whole.as_ref()), mirror, resources);
+    let changed = crate::reads::changed_by_with(
+        std::slice::from_ref(whole.as_ref()),
+        &mut state.places.borrow_mut(),
+        resources,
+    );
     // A package action created the items whose maps it made; a step changed them.
     let made = |resource: &str| {
         action

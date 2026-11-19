@@ -187,6 +187,37 @@ fn two_people_typing_in_one_note_each_undo_only_their_own_text() {
 }
 
 #[test]
+fn a_sync_reads_each_arrived_change_off_its_operations_once() {
+    let (mut ada, mut ben) = workspace();
+    let note = shared_note(&mut ada, &mut ben, "Shopping.\nChores.");
+    type_at(
+        &mut ada,
+        &note,
+        "Shopping.",
+        " Milk and eggs and bread and butter.",
+    );
+    undo(&mut ada);
+
+    // What Ben has not seen: the change that took Ada's typing back, which writes as many
+    // operations as the typing did.
+    let heads = ben.doc.get_heads();
+    let arriving = ada.doc.get_changes(&heads);
+    assert!(!arriving.is_empty(), "the undo is Ben's to take in");
+    // Read the count from zero: the change expands from its stored form once, however many
+    // readers of the mirror ask what it wrote — the versions it made, the fields it changed,
+    // where it stands.
+    let _ = tilolang_tilo::reads::decoded();
+    ada.send_to(&mut ben);
+    assert_eq!(
+        tilolang_tilo::reads::decoded(),
+        arriving.len(),
+        "each of the {} arrived changes is expanded once",
+        arriving.len()
+    );
+    assert_eq!(text(&ben, &note, "body"), "Shopping.\nChores.");
+}
+
+#[test]
 fn two_people_typing_in_one_paragraph_each_undo_only_their_own_words() {
     let (mut ada, mut ben) = workspace();
     let note = shared_note(&mut ada, &mut ben, "The fox jumps.");
