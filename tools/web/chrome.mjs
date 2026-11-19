@@ -36,7 +36,10 @@ export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 /** How long one step of a page test may take: `TILO_STEP_SECONDS`, for a
  * machine whose pages answer slower than one with a GPU (the page drivers give
  * every wait a whole number of steps). */
-const STEP_MS = Math.round(1000 * (Number(process.env.TILO_STEP_SECONDS) || 5));
+export const STEP_MS = Math.round(1000 * (Number(process.env.TILO_STEP_SECONDS) || 5));
+
+/** `n` steps, for a wait that takes a person more than one. */
+export const stepLimit = n => n * STEP_MS;
 
 /** Run in a page before its own scripts: the entry page's first screen (its
  * first visit's "Set up with your agent", web/first-run.mjs) counts as seen,

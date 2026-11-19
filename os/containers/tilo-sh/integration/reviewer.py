@@ -6,7 +6,10 @@ Serves `POST {"link": …}` on 127.0.0.1:PORT, the endpoint the visa run
 Chromium (person.mjs), arrives at the site, follows the link into the
 workspace it names, and approves a key of their own on the site's sign-in
 page. The answer is `{key, person, joined}`, where `joined` is the workspace
-the link landed them in with the role their key finds them holding there.
+the link landed them in with the role their key finds them holding there; a
+reviewer that gets stuck answers `{error}` with what the person was waiting
+for and what its page showed, within a step budget of the page drivers'
+`TILO_STEP_SECONDS`.
 
     python3 reviewer.py PORT SITE SERVER API_URL TILO_BIN OUT_DIR
 
@@ -21,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -29,6 +33,14 @@ from tilo import AsyncTilo
 PORT, SITE, SERVER, API_URL, TILO_BIN, OUT = sys.argv[1:7]
 PERSON = Path(__file__).with_name("person.mjs")
 counter = itertools.count(1)
+STEP_SECONDS = float(os.environ.get("TILO_STEP_SECONDS") or 5)
+# The page drivers give every wait a whole number of steps of
+# `TILO_STEP_SECONDS` (tools/web/chrome.mjs); the person's waits take a budget
+# of 36 (person.mjs). A reviewer makes a few of them, so the helper stops
+# one who outlasts this many steps and answers for it, and the caller waits
+# three steps longer than that instead of timing out ahead of its page.
+REVIEW_STEPS = 48
+REVIEW_SECONDS = REVIEW_STEPS * STEP_SECONDS
 
 
 async def role_in(key: str, workspace: str) -> str | None:
@@ -42,22 +54,39 @@ async def role_in(key: str, workspace: str) -> str | None:
 
 def review(link: str) -> dict:
     out = Path(OUT) / f"reviewer-{next(counter)}"
-    # What the reviewer's browser says goes to this helper's log as it says
-    # it, so a reviewer still on their way when the visa run stops waiting
-    # has said how far they got.
+    said: list[str] = []
+    code = 1
     with subprocess.Popen(
         ["node", str(PERSON), SITE, SERVER, str(out), "--follow", link,
          "--key", "Rosa's review", "--tilo", TILO_BIN, "--api", API_URL],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     ) as browser:
-        said: list[str] = []
         assert browser.stderr is not None and browser.stdout is not None
-        for line in browser.stderr:
-            sys.stderr.write(line)
-            sys.stderr.flush()
-            said = (said + [line])[-40:]
+
+        # What the reviewer's browser says goes to this helper's log as it
+        # says it, so a reviewer that gets stopped has said how far they got.
+        def echo() -> None:
+            for line in browser.stderr:
+                sys.stderr.write(line)
+                sys.stderr.flush()
+                said.append(line)
+                del said[:-40]
+
+        echoing = threading.Thread(target=echo, daemon=True)
+        echoing.start()
+        try:
+            code = browser.wait(timeout=REVIEW_SECONDS)
+        except subprocess.TimeoutExpired:
+            # Stopping the person lets it answer what it was waiting for and
+            # what its page showed, before the helper answers for it.
+            browser.terminate()
+            try:
+                code = browser.wait(timeout=2 * STEP_SECONDS)
+            except subprocess.TimeoutExpired:
+                browser.kill()
+                code = browser.wait()
         printed = browser.stdout.read()
-        code = browser.wait(timeout=600)
+    echoing.join(timeout=STEP_SECONDS)
     if code != 0:
         return {"error": f"the reviewer did not get in: {''.join(said)[-1500:]}"}
     person = json.loads(printed.strip().splitlines()[-1])
