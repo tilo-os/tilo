@@ -598,10 +598,7 @@ const maybePublished = async (tab, name, timeout = stepLimit(3)) => {
 };
 // The page point at the centre of a node's `bounds`, in canvas coordinates.
 const centreOfNode = async (tab, node) => {
-  const [x0, y0, x1, y1] = Array.isArray(node.bounds)
-    ? node.bounds
-    : [node.bounds.x0 ?? node.bounds.x, node.bounds.y0 ?? node.bounds.y,
-       node.bounds.x1 ?? node.bounds.x + node.bounds.width, node.bounds.y1 ?? node.bounds.y + node.bounds.height];
+  const [x0, y0, x1, y1] = boxOf(node.bounds);
   const corner = JSON.parse(await canvasTopLeft(tab));
   return {x: Math.round(corner.x + (x0 + x1) / 2), y: Math.round(corner.y + (y0 + y1) / 2)};
 };
@@ -645,6 +642,11 @@ const press = async (tab, name, nth = 0) => {
   const corner = JSON.parse(await canvasTopLeft(tab));
   const x = corner.x + (x0 + x1) / 2;
   const y = corner.y + (y0 + y1) / 2;
+  // Only a control on screen can be pressed: one laid out where a card has
+  // scrolled it away is no place a person can reach, and a press beside the
+  // page lands nowhere. The caller scrolls it in first, as a person does.
+  const inside = x >= corner.x && x <= corner.x + corner.width
+    && y >= corner.y && y <= corner.y + corner.height;
   // What stands at the point the press is for: a control drawn by the shell
   // is under page chrome only when something of the page covers it, and then
   // the press is that element's.
@@ -654,9 +656,45 @@ const press = async (tab, name, nth = 0) => {
     return JSON.stringify({tag: element.tagName, className: String(element.className),
       semantic: element.dataset?.tiloSemantic ?? null});
   })()`);
-  presses.push({name, bounds: node.bounds, at: {x, y}, under});
+  presses.push({name, bounds: node.bounds, at: {x, y}, inside, under});
+  if (!inside) return false;
   await click(tab, x, y);
   return true;
+};
+// A published control's `bounds` as its four edges, whichever shape they came in.
+const boxOf = bounds => Array.isArray(bounds) ? bounds
+  : [bounds.x0 ?? bounds.x, bounds.y0 ?? bounds.y,
+     bounds.x1 ?? bounds.x + bounds.width, bounds.y1 ?? bounds.y + bounds.height];
+// Scroll the card's body, with the wheel a mouse sends over it, until the
+// control `name` stands within it: the row a person changes lies below what the
+// card shows when many people share the workspace, and a press beside the page
+// reaches nothing. A body already scrolled to its end shows every row before
+// that end, so a wheel that moves nothing leaves the row where a person could
+// reach it.
+const scrollIntoView = async (tab, name, what) => {
+  const {width, height} = SHELL;
+  const corner = JSON.parse(await canvasTopLeft(tab));
+  const at = {x: corner.x + width / 2, y: corner.y + height / 2};
+  for (let scrolled = 0; scrolled < 16; scrolled += 1) {
+    const here = await tab.evaluate(found(name)).catch(() => '');
+    if (!here) await failed(`${what} left the card as it scrolled`, tab);
+    const [x0, y0, x1, y1] = boxOf(JSON.parse(here).bounds);
+    const centre = {x: (x0 + x1) / 2, y: (y0 + y1) / 2};
+    const onPage = centre.x >= 0 && centre.x <= width && centre.y >= 0 && centre.y <= height;
+    // Its middle stands clear of the card's footer, which the wheel never scrolls.
+    if (centre.y <= height / 2) return JSON.parse(here);
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', ...at});
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', ...at, deltaX: 0, deltaY: 120});
+    // The card answers the wheel on the frame it draws next: the row's place
+    // moving is that frame's answer.
+    const moved = await tab.waitFor(`(() => { const now = ${found(name)}; return now && now !== ${JSON.stringify(here)} ? now : ''; })()`,
+      {timeout: stepLimit(1)}).catch(() => '');
+    if (!moved) {
+      if (onPage) return JSON.parse(here);
+      await failed(`${what} never came on screen as the card scrolled`, tab);
+    }
+  }
+  await failed(`${what} never came on screen as the card scrolled`, tab);
 };
 // Press the control `name` once the desktop publishes it, where it is drawn.
 const pressWhen = async (tab, name, what, timeout = stepLimit(3), nth = 0) => {
@@ -1793,6 +1831,10 @@ try {
     await search(a.tab, a.command, 'workspace settings', 'Workspace settings');
     await waitFor(a.tab, 'Commenter', "the invitee's role in the People tab");
     await dump(a.tab, '12-a-people-sheet');
+    // The card's body scrolls under its tabs: where many people share the
+    // Lounge, the invitee's row lies below the card, and a person scrolls it
+    // up before pressing the role there.
+    await scrollIntoView(a.tab, 'Commenter', "the invitee's role button");
     await pressWhen(a.tab, 'Commenter', "the invitee's role button");
     await pressWhen(a.tab, 'Viewer', 'the Viewer choice of the role menu');
     // The row says the new role once the serving device answered with the workspace after the change.
@@ -1871,11 +1913,17 @@ try {
   report.logs = {a: a.tab.log.slice(-10), b: b.tab.log.slice(-10), c: invited?.tab.log.slice(-10) ?? null};
   if (errors.length) failed(`pages reported errors: ${errors.slice(0, 5).join('; ')}`);
 
-  // The shell one person arranged is the shell the other shows: neither page's
-  // write of the shared desktop was refused.
+  // The shell one person arranged is the shell the other shows: neither of the
+  // two people sharing it had a write of the shared desktop refused. What the
+  // invitation's person writes is not asked of them: the link brings them in as
+  // a Commenter, and A makes them a Viewer, so the workspace refuses their
+  // changes to its layout as those roles say it must, and their page keeps
+  // showing the layout it holds.
   const refused = both.filter(line => /the workspace refused a change/.test(line));
   report.refused = refused;
-  if (refused.length) failed(`a page's change was refused: ${refused.slice(0, 5).join('; ')}`);
+  const refusedOfTheSharing = [...a.tab.log, ...b.tab.log]
+    .filter(line => /the workspace refused a change/.test(line));
+  if (refusedOfTheSharing.length) failed(`a page's change was refused: ${refusedOfTheSharing.slice(0, 5).join('; ')}`);
   // A frame repainted in part must leave no stale pixel. A page built with the
   // retained-frame check says so where it happens; the check also says when it
   // could not read its two frames back. A stale pixel on either page fails the
