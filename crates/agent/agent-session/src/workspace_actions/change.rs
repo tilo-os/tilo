@@ -140,11 +140,15 @@ impl Workspace {
                     }
                     // One of this service's own writes landing, counted off what it handed
                     // ([`Workspace::unlanded`]); a write too large for one frame lands a
-                    // segment at a time, each its own.
+                    // segment at a time, each its own. A count of zero names no write of ours
+                    // still to land: the next landing there is merged like any other's. The
+                    // entry waits for a refresh to take it, so reading a zero as ours would
+                    // swallow the server's own writes to that document until then.
                     let ours = author == Some(own)
                         && self.unlanded.get_mut(&route).is_some_and(|handed| {
+                            let ours = *handed > 0;
                             *handed = handed.saturating_sub(1);
-                            true
+                            ours
                         });
                     if !ours {
                         from_others.insert(route.clone());
