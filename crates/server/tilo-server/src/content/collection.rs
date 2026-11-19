@@ -55,6 +55,11 @@ pub async fn run(workspaces: Workspaces, stores: Arc<WorkspaceStores>) {
             .checked_sub(GRACE)
             .unwrap_or(SystemTime::UNIX_EPOCH);
         for summary in workspaces.list().await {
+            if let Err(error) =
+                super::migrate_files::migrate(&workspaces, &stores, &summary.workspace).await
+            {
+                tracing::warn!(workspace = %summary.workspace, %error, "legacy Files encryption will retry");
+            }
             collect(&workspaces, &stores, &summary.workspace, before).await;
         }
     }
@@ -249,8 +254,17 @@ pub(crate) fn named_by(
     documents: &[(Route, Vec<u8>)],
     read: &impl Fn(&str) -> Option<Vec<u8>>,
 ) -> Result<BTreeSet<String>, String> {
+    named_by_matching(documents, &|_| true, read)
+}
+
+/// The content named by the selected apps, with the content their manifests name.
+pub(super) fn named_by_matching(
+    documents: &[(Route, Vec<u8>)],
+    include: &impl Fn(&str) -> bool,
+    read: &impl Fn(&str) -> Option<Vec<u8>>,
+) -> Result<BTreeSet<String>, String> {
     let mut live = BTreeSet::new();
-    for ((app, record), document) in documents {
+    for ((app, record), document) in documents.iter().filter(|((app, _), _)| include(app)) {
         named_in(document, &mut live).map_err(|why| format!("{record} of {app}: {why}"))?;
     }
     made_of(read, &mut live);
@@ -362,6 +376,7 @@ fn made_of(read: &impl Fn(&str) -> Option<Vec<u8>>, live: &mut BTreeSet<String>)
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+    use std::collections::BTreeMap;
 
     use automerge::transaction::Transactable as _;
     use automerge::{AutoCommit, ObjType, ROOT};
@@ -414,7 +429,7 @@ mod tests {
     }
 
     /// A workspace host as tilo.sh runs one, under `state`.
-    async fn host(state: &std::path::Path) -> crate::daemon::Server {
+    async fn serving_workspace(state: &std::path::Path) -> crate::daemon::Server {
         let root = ed25519_dalek::SigningKey::from_bytes(&[81; 32]);
         let host = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
         let mut cert = tilo_user_identity::DeviceCert {
@@ -447,6 +462,67 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn encrypted_legacy_files_are_published_in_the_same_workspace() {
+        use fs_protocol::tree::{FILES_APP, TreeChunks, chunk_document_id};
+        let state = tempfile::tempdir().unwrap();
+        let server = serving_workspace(state.path()).await;
+        let workspaces = server.workspaces().unwrap();
+        let workspace = workspaces.create("Old Files").await.unwrap().workspace;
+        let governor = workspaces.serving_certificate();
+        let stores = server.content();
+        let store = stores.get(&workspace).unwrap();
+        let clear = b"legacy file kept by this workspace";
+        let hash = store.put_public(clear).unwrap();
+        let mut namespace = fs::Namespace::new("old files").unwrap();
+        namespace
+            .create_file(
+                fs::ROOT_INO,
+                "legacy.txt",
+                Some(&hash.parse().unwrap()),
+                clear.len() as u64,
+                1,
+            )
+            .unwrap();
+        for write in namespace.document_writes(&BTreeMap::new()) {
+            workspaces
+                .author_workspace_document(
+                    &workspace,
+                    governor,
+                    (FILES_APP, &chunk_document_id(write.chunk)),
+                    |doc| {
+                        doc.load_incremental(&write.changes)
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        super::super::migrate_files::migrate(workspaces, &stores, &workspace)
+            .await
+            .unwrap();
+        let snapshot = workspaces.whole_documents(&workspace, None).await.unwrap();
+        assert!(snapshot.is_whole());
+        let mut tree = TreeChunks::default();
+        for ((app, doc), bytes) in snapshot.documents {
+            if app == FILES_APP {
+                tree.read_resource(&doc, &bytes).unwrap();
+            }
+        }
+        let sealed = tree.file_hash(&hash);
+        assert_ne!(
+            sealed, hash,
+            "the published Files index redirects the old version"
+        );
+        assert!(
+            Manifest::decode(&store.read(sealed).unwrap())
+                .unwrap()
+                .sealed()
+                .is_some()
+        );
+    }
+
     /// A pass that has read a workspace's records holds nothing of it while
     /// it looks them over: an edit then lands at once, and content the edit
     /// names stays, though the records the pass read named none of it.
@@ -457,7 +533,7 @@ mod tests {
     )]
     async fn a_workspace_takes_edits_while_a_pass_runs_and_keeps_what_they_name() {
         let state = tempfile::tempdir().unwrap();
-        let server = host(state.path()).await;
+        let server = serving_workspace(state.path()).await;
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Notes").await.unwrap().workspace;
         let governor = workspaces.serving_certificate().clone();
@@ -557,7 +633,7 @@ mod tests {
     async fn an_attachment_a_draft_named_comes_back_from_the_device_that_uploaded_it() {
         const APP: &str = tilo_app_id::apps::CHAT;
         let state = tempfile::tempdir().unwrap();
-        let server = host(state.path()).await;
+        let server = serving_workspace(state.path()).await;
         let workspaces = server.workspaces().unwrap().clone();
         let workspace = workspaces.create("Lounge").await.unwrap().workspace;
         let governor = workspaces.serving_certificate().clone();

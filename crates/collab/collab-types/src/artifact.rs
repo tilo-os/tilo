@@ -8,6 +8,19 @@ use uuid::Uuid;
 #[serde(transparent)]
 pub struct ArtifactId(pub Uuid);
 
+/// The root document kind of a workspace's Files tree.
+pub const FILES_TREE_KIND: &str = "files.tree";
+
+/// The authenticated data address for the bytes of the workspace's Files tree.
+#[must_use]
+pub fn file_content_artifact(workspace: crate::WorkspaceId) -> ArtifactId {
+    crate::document_artifact_id(
+        tilo_app_id::apps::FILE_EXPLORER,
+        &workspace.to_string(),
+        "file-content",
+    )
+}
+
 impl ArtifactId {
     /// Mint a fresh artifact id.
     pub fn new() -> Self {

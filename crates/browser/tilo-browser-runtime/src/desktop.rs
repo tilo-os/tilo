@@ -1139,8 +1139,14 @@ impl Tiles {
         let handed = self.shared.opened_content.borrow_mut().remove(&instance);
         if let Some(hash) = handed {
             let name = self.shared.content_names.borrow().get(&hash).cloned();
-            let (file, _) =
-                crate::content_open::opened_file(&hash, &self.inputs.content, name.as_deref())?;
+            let (file, _) = crate::content_open::opened_file(
+                &hash,
+                &self.inputs.content,
+                name.as_deref(),
+                self.inputs
+                    .peer
+                    .map(|peer| (peer, self.inputs.workspace.as_str())),
+            )?;
             context.provide_open_file(file);
         }
         if let Some(page) = self.shared.page_stores(&self.inputs.author) {

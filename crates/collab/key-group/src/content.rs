@@ -51,7 +51,9 @@
 
 use std::collections::BTreeMap;
 
-use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, WorkspaceId};
+use collab_types::{
+    ArtifactId, ContentRetention, EncryptionMetadata, EncryptionScheme, WorkspaceId,
+};
 use serde::{Deserialize, Serialize};
 use tilo_seal::{Context, Label, SymmetricKey};
 use zeroize::{Zeroize as _, Zeroizing};
@@ -152,7 +154,14 @@ impl ContentKeyring {
         metadata: &EncryptionMetadata,
         payload: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
-        if metadata.retention().is_none() {
+        let document_group = match metadata.scheme {
+            EncryptionScheme::DocumentContentKey { group, .. } => Some(group),
+            _ => None,
+        };
+        if metadata.retention().is_none()
+            || (workspace.is_document_key_group() && document_group != Some(workspace))
+            || document_group.is_some_and(|group| group != workspace)
+        {
             return Err(Error::InvalidState(
                 "payload is not content-key ciphertext for this workspace".into(),
             ));
@@ -194,7 +203,18 @@ impl ContentKeyring {
         let sealed =
             tilo_seal::envelope::seal(key, Context::new(Label::GroupContent, &record), plaintext)
                 .map_err(Error::ContentCrypto)?;
-        Ok((EncryptionMetadata::content_key(epoch, retention), sealed))
+        let metadata = if workspace.is_document_key_group() {
+            EncryptionMetadata {
+                epoch,
+                scheme: EncryptionScheme::DocumentContentKey {
+                    group: workspace,
+                    retention,
+                },
+            }
+        } else {
+            EncryptionMetadata::content_key(epoch, retention)
+        };
+        Ok((metadata, sealed))
     }
 
     /// Keep every key of `other` this keyring lacks, after the keys it

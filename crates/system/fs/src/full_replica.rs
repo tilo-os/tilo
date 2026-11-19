@@ -280,7 +280,8 @@ pub async fn hydrate_full_workspace(
                 if chunk.len == 0 || chunk.len > MAX_REPLICA_CHUNK_BYTES {
                     return status.failed(&anyhow::anyhow!("manifest has an invalid chunk length"));
                 }
-                hydrated_bytes = match hydrated_bytes.checked_add(u64::from(chunk.len)) {
+                let stored_len = manifest.stored_len(&chunk);
+                hydrated_bytes = match hydrated_bytes.checked_add(stored_len) {
                     Some(total) if total <= MAX_REPLICA_TOTAL_BYTES => total,
                     _ => {
                         return status
@@ -289,13 +290,13 @@ pub async fn hydrate_full_workspace(
                 };
                 let chunk_hash = Hash::from(chunk.hash);
                 let chunk_bytes = match hydrator
-                    .read_chunk(chunk_hash, u64::from(chunk.len), manifest_hash)
+                    .read_chunk(chunk_hash, stored_len, manifest_hash)
                     .await
                 {
                     Ok(bytes) => bytes,
                     Err(error) => return status.failed(&error),
                 };
-                if chunk_bytes.len() != chunk.len as usize {
+                if chunk_bytes.len() as u64 != stored_len {
                     return status.failed(&anyhow::anyhow!("durable chunk length mismatch"));
                 }
                 if !hydrator.store.has(chunk_hash).await {

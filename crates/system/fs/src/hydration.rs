@@ -26,8 +26,10 @@ use fs_protocol::SyncState;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 mod batch;
+mod file_keys;
 mod ranges;
 pub use batch::{FetchReport, Want};
+pub use file_keys::FileKeys;
 pub use ranges::Priority;
 
 type FetchResult = std::result::Result<Bytes, String>;
@@ -98,6 +100,8 @@ pub struct Hydrator {
         AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
     source: Option<Arc<dyn ContentSource>>,
+    file_keys: Option<FileKeys>,
+    scoped_file_keys: Option<file_keys::ScopedFileKeys>,
 }
 
 /// Chunk entries held by the manifest cache: roughly 40 bytes each, so about 20 MiB.
@@ -144,12 +148,21 @@ impl Hydrator {
             blob_connections: AsyncMutex::new(HashMap::new()),
             runtime_handle: tokio::runtime::Handle::current(),
             source: None,
+            file_keys: None,
+            scoped_file_keys: None,
         }
     }
 
     #[must_use]
     pub fn with_source(mut self, source: Arc<dyn ContentSource>) -> Self {
         self.source = Some(source);
+        self
+    }
+
+    /// Require governed content keys for new file versions.
+    #[must_use]
+    pub fn with_file_keys(mut self, keys: FileKeys) -> Self {
+        self.file_keys = Some(keys);
         self
     }
 
@@ -477,6 +490,30 @@ impl Hydrator {
         size: u64,
         priority: Priority,
     ) -> Result<Vec<u8>> {
+        self.read_in(manifest_hash, offset, size, priority, None)
+            .await
+    }
+
+    pub(crate) async fn read_scoped(
+        &self,
+        manifest_hash: Hash,
+        offset: u64,
+        size: u64,
+        workspace: Option<collab_types::WorkspaceId>,
+    ) -> Result<Vec<u8>> {
+        self.read_in(manifest_hash, offset, size, Priority::Foreground, workspace)
+            .await
+    }
+
+    async fn read_in(
+        &self,
+        manifest_hash: Hash,
+        offset: u64,
+        size: u64,
+        priority: Priority,
+        workspace: Option<collab_types::WorkspaceId>,
+    ) -> Result<Vec<u8>> {
+        self.authorize_scoped_read(workspace)?;
         let manifest = self.manifest_index(manifest_hash).await?;
         let end = offset.saturating_add(size).min(manifest.total_len());
         let start = offset.min(end);
@@ -489,10 +526,15 @@ impl Hydrator {
                 .await
                 .ok_or_else(|| anyhow!("{manifest_hash} was evicted while it was read"));
         }
+        let decoder = self.decoder(&manifest, workspace).await?;
         let wants: Vec<Want> = manifest
             .overlapping(start..end)
             .map(|(_, _, chunk)| {
-                Want::chunk(Hash::from(chunk.hash), u64::from(chunk.len), manifest_hash)
+                Want::chunk(
+                    Hash::from(chunk.hash),
+                    manifest.stored_len(chunk),
+                    manifest_hash,
+                )
             })
             .collect();
         if wants.len() > 1 {
@@ -504,9 +546,13 @@ impl Hydrator {
             let bytes = match self.store.local(hash).await {
                 Some(bytes) => bytes,
                 None => {
-                    self.read_chunk(hash, u64::from(chunk.len), manifest_hash)
+                    self.read_chunk(hash, manifest.stored_len(chunk), manifest_hash)
                         .await?
                 }
+            };
+            let bytes = match &decoder {
+                Some(decoder) => decoder.open(&bytes, chunk.len)?,
+                None => bytes,
             };
             crate::store::copy_part(&mut out, &bytes, chunk_start, start, end);
         }
@@ -529,9 +575,17 @@ impl Hydrator {
         if content::is_file_backed(&manifest) {
             self.ensure_range(manifest_hash, &manifest, start..end, priority)
                 .await?;
+        } else if manifest.sealed().is_some() {
+            for (_, _, chunk) in manifest.overlapping(start..end) {
+                self.read_chunk(
+                    Hash::from(chunk.hash),
+                    manifest.stored_len(chunk),
+                    manifest_hash,
+                )
+                .await?;
+            }
         } else {
-            let _ = self
-                .read_with(manifest_hash, start, end.saturating_sub(start), priority)
+            self.read_with(manifest_hash, start, end.saturating_sub(start), priority)
                 .await?;
         }
         Ok(manifest)
@@ -552,11 +606,34 @@ impl Hydrator {
     /// [`read`](Self::read) served only from local content: `None` when the manifest or any part of the
     /// range would have to be fetched. Safe on a latency-critical thread.
     pub async fn read_local(&self, manifest_hash: Hash, offset: u64, size: u64) -> Option<Vec<u8>> {
-        let manifest = self.local_manifest_index(manifest_hash).await?;
-        let end = offset.saturating_add(size);
-        self.store
-            .read_local(manifest_hash, &manifest, offset..end)
+        self.read_local_scoped(manifest_hash, offset, size, None)
             .await
+    }
+
+    pub(crate) async fn read_local_scoped(
+        &self,
+        manifest_hash: Hash,
+        offset: u64,
+        size: u64,
+        workspace: Option<collab_types::WorkspaceId>,
+    ) -> Option<Vec<u8>> {
+        self.authorize_scoped_read(workspace).ok()?;
+        let manifest = self.local_manifest_index(manifest_hash).await?;
+        let end = offset.saturating_add(size).min(manifest.total_len());
+        let start = offset.min(end);
+        let Some(decoder) = self.decoder(&manifest, workspace).await.ok()? else {
+            return self
+                .store
+                .read_local(manifest_hash, &manifest, start..end)
+                .await;
+        };
+        let mut out = Vec::new();
+        for (_, chunk_start, chunk) in manifest.overlapping(start..end) {
+            let sealed = self.store.local(Hash::from(chunk.hash)).await?;
+            let bytes = decoder.open(&sealed, chunk.len).ok()?;
+            crate::store::copy_part(&mut out, &bytes, chunk_start, start, end);
+        }
+        Some(out)
     }
 
     /// The blobs `manifest_hash`'s content is made of, as a [`ContentSource`] hands them over: the
@@ -649,9 +726,14 @@ impl Hydrator {
             let target = file.as_file().try_clone()?;
             tokio::task::spawn_blocking(move || files.copy_to(&key, &(0..len), &target)).await??;
         } else {
+            let decoder = self.decoder(&manifest, None).await?;
             for chunk in manifest.chunks() {
                 let Some(bytes) = self.store.local(Hash::from(chunk.hash)).await else {
                     return Ok(false);
+                };
+                let bytes = match &decoder {
+                    Some(decoder) => decoder.open(&bytes, chunk.len)?,
+                    None => bytes,
                 };
                 file.write_all(&bytes)?;
             }
@@ -737,7 +819,7 @@ impl Hydrator {
             self.fetch_many(
                 window
                     .iter()
-                    .map(|c| Want::chunk(Hash::from(c.hash), u64::from(c.len), manifest_hash))
+                    .map(|c| Want::chunk(Hash::from(c.hash), manifest.stored_len(c), manifest_hash))
                     .collect(),
             )
             .await;
@@ -745,7 +827,7 @@ impl Hydrator {
                 let hash = Hash::from(chunk.hash);
                 if !self.store.has(hash).await {
                     let _ = self
-                        .read_chunk(hash, u64::from(chunk.len), manifest_hash)
+                        .read_chunk(hash, manifest.stored_len(chunk), manifest_hash)
                         .await?;
                 }
             }
@@ -893,7 +975,7 @@ mod tests {
         }
     }
 
-    async fn local_endpoint() -> Endpoint {
+    pub(super) async fn local_endpoint() -> Endpoint {
         Endpoint::builder(presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
             .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))

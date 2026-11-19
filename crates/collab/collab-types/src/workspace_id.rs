@@ -40,6 +40,13 @@ impl WorkspaceId {
         self.0
     }
 
+    /// The MLS wire uses the workspace-id field for document groups.
+    /// These use a reserved UUID variant distinct from workspace UUIDs.
+    #[must_use]
+    pub const fn is_document_key_group(self) -> bool {
+        self.0.as_bytes()[8] >> 5 == 7
+    }
+
     /// A workspace id built from a number, for tests that count workspaces.
     #[must_use]
     pub const fn from_u128(value: u128) -> Self {

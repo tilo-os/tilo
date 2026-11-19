@@ -64,12 +64,6 @@ fn file_at<'a>(tree: &'a Tree, dir: &str, name: &str) -> Option<&'a TreeEntry> {
         .map(|(_, node)| node)
 }
 
-/// What a tree names a file of `bytes` by: the address of its content manifest.
-fn manifest_of(bytes: &[u8]) -> String {
-    let (manifest, _) = fs_content::build(bytes, None);
-    blake3::hash(&manifest.encode()).to_hex().to_string()
-}
-
 /// How many chunks a file of `bytes` is kept as.
 fn chunks_of(bytes: &[u8]) -> usize {
     fs_content::build(bytes, None).0.chunks().len()
@@ -77,10 +71,8 @@ fn chunks_of(bytes: &[u8]) -> usize {
 
 /// The bytes of the file whose manifest is `manifest`, read from `workspace`'s
 /// own content on its host alone: the manifest, then every chunk it lists.
-fn kept_bytes(on_server: &OnServer, workspace: &str, manifest: &str) -> Option<Vec<u8>> {
-    let store = on_server.hosted.server.content().get(workspace).ok()?;
-    let listed = store.read(manifest)?;
-    fs_content::whole(listed, u64::MAX, |chunk| store.read(&hex::encode(chunk)))
+async fn kept_bytes(on_server: &OnServer, workspace: &str, manifest: &str) -> Option<Vec<u8>> {
+    super::put_files::opened_file_bytes(&on_server.hosted.server, workspace, manifest).await
 }
 
 /// Put `bytes` into `workspace`'s Files at `dir/name`, as the API puts a file.
@@ -106,16 +98,20 @@ async fn put_file(key: &Key<'_>, workspace: &str, dir: &str, name: &str, bytes: 
 
 /// Wait until `workspace`'s host keeps the file `dir/name` as `bytes`: its tree
 /// names it, and its content holds every byte of it.
-async fn keeps(on_server: &OnServer, workspace: &str, (dir, name): (&str, &str), bytes: &[u8]) {
-    let manifest = manifest_of(bytes);
+async fn keeps(
+    on_server: &OnServer,
+    workspace: &str,
+    (dir, name): (&str, &str),
+    bytes: &[u8],
+) -> String {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let tree = tree_of(on_server, workspace).await;
         let named = file_at(&tree, dir, name).and_then(|node| node.hash.clone());
-        if named.as_deref() == Some(manifest.as_str())
-            && kept_bytes(on_server, workspace, &manifest).as_deref() == Some(bytes)
+        if let Some(hash) = &named
+            && kept_bytes(on_server, workspace, hash).await.as_deref() == Some(bytes)
         {
-            return;
+            return hash.clone();
         }
         assert!(
             Instant::now() < deadline,
@@ -172,8 +168,12 @@ async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
     }
     // The host keeps every one of them whole before the branch: what the
     // branch then lacks is the branch's loss.
+    let mut source_hashes = std::collections::BTreeMap::new();
     for (dir, name, bytes) in files {
-        keeps(&on_server, &source, (dir, name), bytes).await;
+        source_hashes.insert(
+            (dir, name),
+            keeps(&on_server, &source, (dir, name), bytes).await,
+        );
     }
 
     let (status, branched) = backend
@@ -190,22 +190,29 @@ async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
     // branch's own content holds every byte of it: its manifest and every
     // chunk the manifest lists.
     let tree = tree_of(&on_server, &branch).await;
+    let mut branch_hashes = std::collections::BTreeMap::new();
     for (dir, name, bytes) in files {
         let node = file_at(&tree, dir, name)
             .unwrap_or_else(|| panic!("the branch's tree lacks {dir}/{name}"));
-        assert_eq!(node.hash.as_deref(), Some(manifest_of(bytes).as_str()));
+        let hash = node.hash.as_deref().expect("the file names its content");
+        assert_ne!(
+            hash,
+            source_hashes[&(dir, name)],
+            "the branch seals {dir}/{name} under its own keys"
+        );
         assert_eq!(node.size, bytes.len() as u64);
         assert_eq!(
-            kept_bytes(&on_server, &branch, &manifest_of(bytes)).as_deref(),
+            kept_bytes(&on_server, &branch, hash).await.as_deref(),
             Some(bytes),
             "the branch's content holds {dir}/{name} whole"
         );
+        branch_hashes.insert((dir, name), hash.to_owned());
     }
 
     // A file changed in the branch is changed there alone, and the reverse.
     let in_branch = b"Acme's own terms.\n".repeat(300);
     put_file(&backend, &branch, "contracts", "terms.txt", &in_branch).await;
-    keeps(&on_server, &branch, ("contracts", "terms.txt"), &in_branch).await;
+    let edited = keeps(&on_server, &branch, ("contracts", "terms.txt"), &in_branch).await;
     let in_source = b"The template's next terms.\n".repeat(300);
     put_file(&backend, &source, "", "README.txt", &in_source).await;
     keeps(&on_server, &source, ("", "README.txt"), &in_source).await;
@@ -224,18 +231,15 @@ async fn a_branch_holds_the_files_and_each_tree_goes_its_own_way() {
     };
     assert_eq!(
         named(&source_tree, "contracts", "terms.txt"),
-        Some(manifest_of(&small)),
+        source_hashes.remove(&("contracts", "terms.txt")),
         "the branch's edit stays in the branch"
     );
     assert_eq!(
         named(&branch_tree, "", "README.txt"),
-        Some(manifest_of(&readme)),
+        branch_hashes.remove(&("", "README.txt")),
         "the source's edit stays in the source"
     );
-    assert_eq!(
-        named(&branch_tree, "contracts", "terms.txt"),
-        Some(manifest_of(&in_branch))
-    );
+    assert_eq!(named(&branch_tree, "contracts", "terms.txt"), Some(edited));
     assert!(
         file_at(&branch_tree, "contracts", "later.txt").is_none(),
         "a file added to the source after the branch is not in the branch"
@@ -309,12 +313,12 @@ async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
     let source = made["id"].as_str().unwrap().to_owned();
     let scan = varied(700_000, 4);
     put_file(&backend, &source, "scans", "passport.pdf", &scan).await;
-    keeps(&on_server, &source, ("scans", "passport.pdf"), &scan).await;
+    let scan_hash = keeps(&on_server, &source, ("scans", "passport.pdf"), &scan).await;
 
     // The tree names the file, but one of its chunks has not reached the host
     // yet, as when a device that wrote it is still sending it.
     let store = on_server.hosted.server.content().get(&source).unwrap();
-    let (manifest, _) = fs_content::build(&scan, None);
+    let manifest = fs_content::Manifest::decode(&store.read(&scan_hash).unwrap()).unwrap();
     let chunk = hex::encode(manifest.chunks()[1].hash);
     let held = store.read(&chunk).expect("the host keeps the chunk");
     store.release(&chunk).unwrap();
@@ -329,7 +333,7 @@ async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
         "{refused}"
     );
     let said = refused["error"]["message"].as_str().unwrap_or_default();
-    assert!(said.contains("the files its records name"), "{refused}");
+    assert!(said.contains("the files its documents name"), "{refused}");
     assert!(listed_as(&backend, "Scans: Acme").await.is_empty());
     assert!(
         !workspaces
@@ -348,10 +352,7 @@ async fn a_file_still_gathered_makes_no_branch_until_it_is_here() {
     assert_eq!(status, 201, "{branched}");
     assert!(!replayed, "the refusal was not kept: the call ran again");
     let branch = branched["id"].as_str().unwrap().to_owned();
-    assert_eq!(
-        kept_bytes(&on_server, &branch, &manifest_of(&scan)).as_deref(),
-        Some(scan.as_slice())
-    );
+    keeps(&on_server, &branch, ("scans", "passport.pdf"), &scan).await;
     // Asked once more under that key, it answers the same branch and makes
     // no second one.
     let (status, replayed, again) = branch_retried(&backend, &source, "Scans: Acme", retry).await;
@@ -380,37 +381,30 @@ async fn content_only_earlier_named_does_not_stop_a_branch() {
     // version, its current state the second. The host let the first go.
     let first = varied(300_000, 5);
     put_file(&backend, &source, "", "draft.txt", &first).await;
-    keeps(&on_server, &source, ("", "draft.txt"), &first).await;
+    let first_hash = keeps(&on_server, &source, ("", "draft.txt"), &first).await;
     let second = varied(300_000, 6);
     put_file(&backend, &source, "", "draft.txt", &second).await;
-    keeps(&on_server, &source, ("", "draft.txt"), &second).await;
+    let second_hash = keeps(&on_server, &source, ("", "draft.txt"), &second).await;
     let store = on_server.hosted.server.content().get(&source).unwrap();
-    let (old, _) = fs_content::build(&first, None);
-    let (now, _) = fs_content::build(&second, None);
+    let old = fs_content::Manifest::decode(&store.read(&first_hash).unwrap()).unwrap();
+    let now = fs_content::Manifest::decode(&store.read(&second_hash).unwrap()).unwrap();
     let kept_now: Vec<String> = now
         .chunks()
         .iter()
         .map(|chunk| hex::encode(chunk.hash))
         .collect();
-    store.release(&manifest_of(&first)).unwrap();
+    store.release(&first_hash).unwrap();
     for chunk in old.chunks() {
         let chunk = hex::encode(chunk.hash);
         if !kept_now.contains(&chunk) {
             store.release(&chunk).unwrap();
         }
     }
-    assert!(!store.has(&manifest_of(&first)));
+    assert!(!store.has(&first_hash));
 
     let (status, branched) = branch_of(&backend, &source, "Drafts: Acme").await;
     assert_eq!(status, 201, "{branched}");
     let branch = branched["id"].as_str().unwrap().to_owned();
-    let tree = tree_of(&on_server, &branch).await;
-    assert_eq!(
-        file_at(&tree, "", "draft.txt").and_then(|node| node.hash.clone()),
-        Some(manifest_of(&second))
-    );
-    assert_eq!(
-        kept_bytes(&on_server, &branch, &manifest_of(&second)).as_deref(),
-        Some(second.as_slice())
-    );
+    let branch_hash = keeps(&on_server, &branch, ("", "draft.txt"), &second).await;
+    assert_ne!(branch_hash, second_hash);
 }

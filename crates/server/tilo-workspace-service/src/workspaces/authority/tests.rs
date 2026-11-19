@@ -113,6 +113,106 @@ fn invitation(request_id: u8, role: Role) -> IssueInvitationRequest {
     }
 }
 
+#[tokio::test]
+async fn page_role_assignments_change_the_documents_key_holders() {
+    use tilo_action_policy::Change;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let reviewer = admit(workspaces, &workspace, &owner, 1).await;
+    let person = hex::encode(reviewer.user_public_key);
+    let change = |request_id, change| WorkspacesRequest::EditRoles {
+        workspace: workspace.clone(),
+        request_id: [request_id; 32],
+        change,
+    };
+    let define = change(
+        2,
+        Change::DefineRole {
+            id: "reviewers".into(),
+            name: "Reviewers".into(),
+        },
+    );
+    assert!(matches!(
+        workspaces.page_workspaces(&reviewer, define.clone()).await,
+        WorkspacesReply::Refused(_)
+    ));
+    let WorkspacesReply::Roles(updated) = workspaces.page_workspaces(&owner, define).await else {
+        panic!("the owner can create a role from the page");
+    };
+    assert_eq!(
+        updated.custom_roles.get("reviewers").map(String::as_str),
+        Some("Reviewers")
+    );
+
+    let app = "so.tilo.notes";
+    let document = "review";
+    let access = |request_id, recipient: &str, access: &str| WorkspacesRequest::SetDocumentAccess {
+        workspace: workspace.clone(),
+        request_id: [request_id; 32],
+        app: app.into(),
+        document: document.into(),
+        recipient: recipient.into(),
+        access: access.into(),
+    };
+    let private = access(3, "everyone", "no-access");
+    assert!(matches!(
+        workspaces.page_workspaces(&reviewer, private.clone()).await,
+        WorkspacesReply::Refused(_)
+    ));
+    for request in [private, access(4, "role:reviewers", "view")] {
+        let reply = workspaces.page_workspaces(&owner, request).await;
+        assert!(matches!(reply, WorkspacesReply::Workspace(_)), "{reply:?}");
+    }
+    let holds_keys = || async {
+        let state = workspaces.state(&workspace).await.unwrap();
+        let chunk = neighbour_wire::document_chunk(document, 1);
+        [document, chunk.as_str()].map(|part| {
+            state
+                .document_key_holders(app, part, tilo_clock::wall())
+                .unwrap()
+                .contains(&reviewer.device_public_key)
+        })
+    };
+    assert_eq!(holds_keys().await, [false, false]);
+
+    for (request_id, assigned) in [(5, true), (6, false)] {
+        let request = change(
+            request_id,
+            Change::SetMemberCustomRole {
+                person: person.clone(),
+                role: "reviewers".into(),
+                assigned,
+            },
+        );
+        let WorkspacesReply::Roles(updated) = workspaces.page_workspaces(&owner, request).await
+        else {
+            panic!("the owner can change a member's assignments from the page");
+        };
+        assert_eq!(
+            updated
+                .assigned_roles
+                .get(&person)
+                .is_some_and(|roles| roles.contains("reviewers")),
+            assigned
+        );
+        assert_eq!(holds_keys().await, [assigned, assigned]);
+        if assigned {
+            let recipient = format!("member:{person}");
+            for (id, level, expected) in [(7, "no-access", false), (8, "inherit", true)] {
+                let reply = workspaces
+                    .page_workspaces(&owner, access(id, &recipient, level))
+                    .await;
+                assert!(matches!(reply, WorkspacesReply::Workspace(_)), "{reply:?}");
+                assert_eq!(holds_keys().await, [expected, expected]);
+            }
+        }
+    }
+}
+
 /// A page's rename reaches the workspace's one name: the owner's device and a
 /// moderator's may, a member at an Editor's role may not, and every list of
 /// the workspace names it as the answer does.

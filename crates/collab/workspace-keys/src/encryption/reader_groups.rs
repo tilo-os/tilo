@@ -21,6 +21,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use collab_types::{Ed25519PublicKey, Readers};
+use neighbour_wire::KeyScope;
 use tilo_desktop_model::WorkspaceId;
 
 use super::KeyDirectory;
@@ -37,6 +38,7 @@ struct ReaderGroup {
 pub(super) struct Directory {
     workspaces: Box<dyn KeyDirectory>,
     groups: HashMap<WorkspaceId, ReaderGroup>,
+    documents: HashMap<WorkspaceId, KeyScope>,
 }
 
 impl Directory {
@@ -44,6 +46,7 @@ impl Directory {
         Self {
             workspaces,
             groups: HashMap::new(),
+            documents: HashMap::new(),
         }
     }
 
@@ -59,6 +62,19 @@ impl Directory {
             });
         }
         Some(group)
+    }
+
+    pub(super) fn register_scope(&mut self, scope: KeyScope) -> Option<WorkspaceId> {
+        if !matches!(scope, KeyScope::Document { .. }) {
+            return None;
+        }
+        let group = scope.group();
+        let held = self.documents.entry(group).or_insert_with(|| scope.clone());
+        (held == &scope).then_some(group)
+    }
+
+    pub(super) fn document_scope(&self, group: WorkspaceId) -> Option<&KeyScope> {
+        self.documents.get(&group)
     }
 
     /// Every reader set's group known here: its workspace and readers, as a store keeps them.
@@ -78,15 +94,25 @@ impl Directory {
             .iter()
             .filter(|(_, group)| group.workspace == workspace)
             .map(|(group, _)| *group)
+            .chain(
+                self.documents.iter().filter_map(|(group, scope)| {
+                    (scope.workspace() == workspace).then_some(*group)
+                }),
+            )
             .collect()
     }
 
     /// The workspace whose transport carries `group`'s governance: the workspace of a reader
     /// set's group, else the group's own.
     pub(super) fn carrier(&self, group: WorkspaceId) -> WorkspaceId {
-        self.groups
-            .get(&group)
-            .map_or(group, |reader_group| reader_group.workspace)
+        self.document_scope(group).map_or_else(
+            || {
+                self.groups
+                    .get(&group)
+                    .map_or(group, |reader_group| reader_group.workspace)
+            },
+            KeyScope::workspace,
+        )
     }
 
     /// The group governance naming `group` that arrived in `workspace` is for: the workspace's
@@ -101,14 +127,10 @@ impl Directory {
 
     /// Forget the reader sets' groups of `workspace`, deleted, answering them.
     pub(super) fn forget(&mut self, workspace: WorkspaceId) -> Vec<WorkspaceId> {
-        let groups: Vec<WorkspaceId> = self
-            .groups
-            .iter()
-            .filter(|(_, reader_group)| reader_group.workspace == workspace)
-            .map(|(group, _)| *group)
-            .collect();
+        let groups = self.of(workspace);
         for group in &groups {
             self.groups.remove(group);
+            self.documents.remove(group);
         }
         groups
     }
@@ -120,12 +142,46 @@ impl KeyDirectory for Directory {
         workspace: WorkspaceId,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        if let Some(KeyScope::Document {
+            workspace,
+            app,
+            document,
+        }) = self.document_scope(workspace)
+        {
+            return self
+                .workspaces
+                .document_devices(*workspace, app, document, now);
+        }
+        if KeyScope::requires_document(workspace) {
+            return None;
+        }
         match self.groups.get(&workspace) {
             Some(group) => self
                 .workspaces
                 .reader_devices(group.workspace, &group.people, now),
             None => self.workspaces.allowed_devices(workspace, now),
         }
+    }
+
+    fn document_devices(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        self.workspaces
+            .document_devices(workspace, app, document, now)
+    }
+
+    fn requires_document_keys(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+    ) -> Option<bool> {
+        self.workspaces
+            .requires_document_keys(workspace, app, document)
     }
 
     fn reader_devices(
@@ -153,6 +209,6 @@ impl KeyDirectory for Directory {
     /// A reader set's group is founded by whichever of its devices first needs its keys: two
     /// founded at once settle on the genesis with the lower digest, as any group's do.
     fn founds(&self, workspace: WorkspaceId) -> bool {
-        self.groups.contains_key(&workspace) || self.workspaces.founds(workspace)
+        self.groups.contains_key(&workspace) || self.workspaces.founds(self.carrier(workspace))
     }
 }
