@@ -291,6 +291,7 @@ impl SealingMember {
             .draft_sealed_compaction(
                 (app, record),
                 None,
+                None,
                 &mut |op| self.open(op),
                 &mut |frame| {
                     self.keys
@@ -306,7 +307,7 @@ impl SealingMember {
         }
         let messages = candidate
             .publication_mut()
-            .admit_sealed_compaction(app, record, ops, now)
+            .admit_sealed_compaction(app, record, None, ops, now)
             .unwrap();
         // The compaction took this device's next place in the record's
         // sequence, as its engine's own writes see it: the writes after it

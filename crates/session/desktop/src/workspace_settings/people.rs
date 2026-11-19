@@ -17,6 +17,7 @@ pub struct Person {
     pub role: String,
     /// Their role, by the key a role change names it.
     pub role_key: String,
+    pub additional_roles: Vec<String>,
     /// Their extra permissions, only when they have any.
     pub extra: Option<String>,
     pub offers: Offers,
@@ -45,6 +46,8 @@ pub struct PeopleContent {
     pub you_tag: String,
     pub remove: String,
     pub people: Vec<Person>,
+    pub custom_roles: Vec<(String, String)>,
+    pub manage_roles: bool,
     /// What an empty list says instead: its title and detail.
     pub empty: (String, String),
     pub note: Option<String>,
@@ -169,13 +172,25 @@ pub fn content(
     holders: &[MemberHolder],
     delegations: &[MemberDelegation],
 ) -> PeopleContent {
-    content_of(
+    let mut content = content_of(
         &members(ws, names, viewer),
         viewer,
         is_owner,
         holders,
         delegations,
-    )
+    );
+    content.custom_roles.extend(
+        ws.policy
+            .custom_roles
+            .iter()
+            .map(|(id, name)| (id.clone(), name.clone())),
+    );
+    for person in &mut content.people {
+        if let Some(roles) = ws.policy.assigned_roles.get(&person.user) {
+            person.additional_roles.extend(roles.iter().cloned());
+        }
+    }
+    content
 }
 
 /// What the People tab shows of `members`, in their order, to `viewer` .
@@ -211,6 +226,7 @@ pub fn content_of(
                     role_label(member.role)
                 },
                 role_key: member.role.key().to_owned(),
+                additional_roles: Vec::new(),
                 extra: (member.grants > 0).then(|| {
                     t_args(
                         "workspace-settings-member-extra",
@@ -238,6 +254,8 @@ pub fn content_of(
         you_tag: t("workspace-settings-you"),
         remove: t("workspace-settings-remove"),
         people,
+        custom_roles: Vec::new(),
+        manage_roles: administers,
         empty: (
             t("workspace-settings-members-empty-title"),
             t("workspace-settings-members-empty-detail"),

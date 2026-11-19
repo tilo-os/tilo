@@ -180,6 +180,9 @@ impl ContentStore {
         manifest: &Manifest,
         range: Range<u64>,
     ) -> Option<Vec<u8>> {
+        if manifest.sealed().is_some() {
+            return None;
+        }
         let end = range.end.min(manifest.total_len());
         let start = range.start.min(end);
         if content::is_file_backed(manifest) {

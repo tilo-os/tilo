@@ -337,7 +337,8 @@ impl Engine {
         std::fs::create_dir_all(&epochs)?;
         std::fs::create_dir_all(&cfg.state_dir)?;
         let state = NativeState::open(&cfg.state_dir.join("meta.redb"))?;
-        let placeholders = start_placeholders(&live, &content, &runtime, &status)?;
+        let placeholders =
+            start_placeholders(&live, &cfg.mount_point, &content, &runtime, &status)?;
 
         let persisted = state.capture_state()?;
         let mut journal_cfg = JournalConfig::new(&live);
@@ -431,6 +432,7 @@ impl Engine {
 
     fn run(mut self, stop: &AtomicBool) -> Result<()> {
         let mut generation = self.fs.namespace.lock_recover().subscribe_changes();
+        let mut policy_revisions = self.fs.file_policy_revisions();
         let mut last_project = Instant::now();
         let mut last_lease = Instant::now()
             .checked_sub(LEASE_TICK)
@@ -453,7 +455,14 @@ impl Engine {
                 self.scheduler.cut();
             }
             let remote = generation.has_changed().unwrap_or(false);
-            if remote || last_project.elapsed() >= PROJECT_FALLBACK {
+            let policy_changed = policy_revisions.as_mut().is_some_and(|revisions| {
+                let changed = revisions.has_changed().unwrap_or(false);
+                if changed {
+                    revisions.borrow_and_update();
+                }
+                changed
+            });
+            if remote || policy_changed || last_project.elapsed() >= PROJECT_FALLBACK {
                 generation.borrow_and_update();
                 if remote {
                     self.leases.arbitrate();
@@ -1235,17 +1244,21 @@ fn prepare_workspace(
 /// before anything can reach them.
 fn start_placeholders(
     live: &Path,
+    mount: &Path,
     content: &Arc<Hydrator>,
     runtime: &tokio::runtime::Handle,
     status: &Mutex<BackendStatus>,
 ) -> Result<Arc<Placeholders>> {
     let placeholders = Arc::new(
         Placeholders::start(
-            Arc::new(ContentFetcher::new(
-                Arc::clone(content),
-                runtime.clone(),
-                DEFAULT_PARALLEL_CHUNKS,
-            )),
+            Arc::new(
+                ContentFetcher::new(
+                    Arc::clone(content),
+                    runtime.clone(),
+                    DEFAULT_PARALLEL_CHUNKS,
+                )
+                .with_tree(live.to_path_buf(), mount.to_path_buf()),
+            ),
             // Content arrives in parallel ranged requests straight into the
             // store's area and is cloned into place, so a sequential reader
             // is served best by a deep read-ahead: more windows in flight,

@@ -633,6 +633,94 @@ impl Workspaces {
         .await
     }
 
+    pub(super) async fn edit_roles(
+        &self,
+        workspace: &str,
+        caller: &DeviceCert,
+        request_id: [u8; 32],
+        change: tilo_action_policy::Change,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        if !change.is_custom_role_change() {
+            return Err(CollaborationError::new("expected a custom role change"));
+        }
+        let now = tilo_clock::unix_now_ns();
+        let workspace = self.workspace(workspace).await?;
+        let mut workspace = workspace.lock().await;
+        self.ensure_keeper(&mut workspace, caller.user_public_key, now)
+            .await?;
+        self.authorize(caller, Some(&workspace), WorkspaceOp::Change(&change), now)?;
+        let key = self.inner.host.key.clone();
+        self.administer(
+            &mut workspace,
+            request_id,
+            request_digest(&("custom-role", &change))?,
+            |peer| {
+                peer.governance_mut()
+                    .change_custom_role(change, &key, system_time(now))
+            },
+            now,
+        )
+        .await
+    }
+
+    pub(super) async fn set_document_access(
+        &self,
+        workspace: &str,
+        caller: &DeviceCert,
+        request_id: [u8; 32],
+        (recipient, app, document): (&str, &str, &str),
+        access: &str,
+        now: u64,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        let workspace = self.workspace(workspace).await?;
+        let mut workspace = workspace.lock().await;
+        self.ensure_keeper(&mut workspace, caller.user_public_key, now)
+            .await?;
+        let at = system_time(now);
+        let document = if app.is_empty() {
+            document
+        } else {
+            let document =
+                collab_types::document_access_target(app, document).ok_or_else(|| {
+                    CollaborationError::new("this document has no workspace access rules")
+                })?;
+            workspace
+                .peer()
+                .check_document_read(caller.device_public_key, app, document, at)?;
+            if workspace.peer().own_resource(app, document).is_some() {
+                return Err(CollaborationError::new("this document belongs to a person"));
+            }
+            document
+        };
+        let policy = workspace.peer().governance().governed_policy()?;
+        let actor = hex::encode(caller.user_public_key);
+        let changes = collab_types::document_access_changes(
+            &policy,
+            &actor,
+            (recipient, app, document),
+            access,
+        )
+        .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
+        for change in &changes {
+            self.authorize(caller, Some(&workspace), WorkspaceOp::Change(change), now)?;
+        }
+        let key = self.inner.host.key.clone();
+        let completion = self
+            .administer(
+                &mut workspace,
+                request_id,
+                request_digest(&("document-access", recipient, app, document, access))?,
+                |peer| {
+                    peer.governance_mut()
+                        .change_document_access(changes, &key, at)
+                },
+                now,
+            )
+            .await;
+        drop(workspace);
+        completion
+    }
+
     /// Hold the person `request.user_public_key` in `workspace` at
     /// `request.place`, whether or not a device of theirs has joined: what an
     /// administrator does when they know the person's key rather than handing

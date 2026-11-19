@@ -28,6 +28,7 @@ pub fn tab(content: PeopleContent) -> sheet::People {
                 you: entry.you,
                 role: entry.role,
                 role_key: Some(entry.role_key),
+                additional_roles: entry.additional_roles,
                 extra: entry.extra,
                 offers: match entry.offers {
                     domain::people::Offers::Nothing => sheet::Offers::Nothing,
@@ -45,6 +46,30 @@ pub fn tab(content: PeopleContent) -> sheet::People {
                 allows: domain::role_capability_preview(role),
             })
             .collect(),
+        custom_roles: content
+            .custom_roles
+            .into_iter()
+            .map(|(key, label)| sheet::RoleChoice {
+                key,
+                label,
+                allows: String::new(),
+            })
+            .collect(),
+        role_editor: sheet::RoleEditor {
+            manage: content.manage_roles,
+            title: t("workspace-settings-custom-roles"),
+            create: t("workspace-settings-create-role"),
+            name: t("workspace-settings-role-name"),
+            rename: t("workspace-settings-rename-role"),
+            save: t("workspace-settings-save-role"),
+            remove_decision: sheet::Decision {
+                title: t("workspace-settings-delete-role"),
+                description: t("workspace-settings-delete-role-detail"),
+                keep: t("workspace-settings-keep-role"),
+                review: String::new(),
+                confirm: t("workspace-settings-delete-role-confirm"),
+            },
+        },
         empty: content.empty,
         note: content.note,
         holders_header: content.holders_header,

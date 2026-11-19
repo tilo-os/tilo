@@ -110,6 +110,15 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
         files(&server, "open", json!({"content": content, "name": name})).await;
     }
 
+    let initial = tree_when(&hosted, WORKSPACE, |tree| {
+        content_at(tree, "", "visa.pdf").is_some() && content_at(tree, "", "permit.pdf").is_some()
+    })
+    .await;
+    let visa_hash = content_at(&initial, "", "visa.pdf").unwrap();
+    let permit_hash = content_at(&initial, "", "permit.pdf").unwrap();
+    assert_sealed_file(&hosted.server, WORKSPACE, &visa_hash, &visa).await;
+    assert_sealed_file(&hosted.server, WORKSPACE, &permit_hash, &permit).await;
+
     // The task gets its folder, the folder on the way is made with it, and both files move
     // into it in one call.
     files(
@@ -132,12 +141,12 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
     assert!(folder_at(&tree, "Tasks", "12 Plan the launch"), "{moved}");
     assert_eq!(
         content_at(&tree, TASK, "visa.pdf"),
-        Some(manifest_of(&visa)),
+        Some(visa_hash.clone()),
         "the file is the same file in its new folder: {moved}"
     );
     assert_eq!(
         content_at(&tree, TASK, "permit.pdf"),
-        Some(manifest_of(&permit))
+        Some(permit_hash.clone())
     );
     assert!(
         file_at(&tree, "", "visa.pdf").is_none() && file_at(&tree, "", "permit.pdf").is_none(),
@@ -164,17 +173,17 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
     .await;
     assert_eq!(
         content_at(&tree, TASK, "Visa form.pdf"),
-        Some(manifest_of(&visa))
+        Some(visa_hash.clone())
     );
     assert!(file_at(&tree, TASK, "visa.pdf").is_none());
     assert_eq!(
         content_at(&tree, TASK, "permit (2).pdf"),
-        Some(manifest_of(&permit)),
+        Some(permit_hash.clone()),
         "{copied}"
     );
     assert_eq!(
         content_at(&tree, TASK, "permit.pdf"),
-        Some(manifest_of(&permit)),
+        Some(permit_hash.clone()),
         "what was copied is still there"
     );
 
@@ -198,7 +207,7 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
     .await;
     assert_eq!(
         content_at(&tree, TASK, "permit (2).pdf"),
-        Some(manifest_of(&permit))
+        Some(permit_hash.clone())
     );
 
     // The folder is read by its path, with no window: what it holds, and what a file in it
@@ -272,12 +281,12 @@ async fn a_devices_agent_keeps_a_folder_for_a_task_by_paths_in_the_workspace() {
     let tree = tree_of(&hosted, WORKSPACE).await;
     assert_eq!(
         content_at(&tree, TASK, "permit.pdf"),
-        Some(manifest_of(&permit)),
+        Some(permit_hash.clone()),
         "a refused verb changed nothing"
     );
     assert_eq!(
         content_at(&tree, TASK, "Visa form.pdf"),
-        Some(manifest_of(&visa))
+        Some(visa_hash.clone())
     );
     assert!(
         !folder_at(&tree, "", "elsewhere") && !folder_at(&tree, "", "home"),
@@ -1140,11 +1149,13 @@ async fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
     );
     assert!(file_at(&tree, TASK, "copy.md").is_none());
     assert!(file_at(&tree, TASK, "other.md").is_none());
-    assert_eq!(
-        content_at(&tree, TASK, "report.md"),
-        Some(manifest_of(b"The hall is booked.\n")),
-        "the report is as the agent wrote it"
-    );
+    assert_sealed_file(
+        &serving,
+        &workspace,
+        &content_at(&tree, TASK, "report.md").unwrap(),
+        b"The hall is booked.\n",
+    )
+    .await;
     assert!(file_at(&tree, TASK, "Taken.md").is_none());
     assert!(!folder_at(&tree, "Tasks", "13 Other") && !folder_at(&tree, "", "Elsewhere"));
     let listed = done(&free, "list", json!({"folder": TASK})).await;
@@ -1215,11 +1226,13 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
         content_at(tree, TASK, "report.md").is_some()
     })
     .await;
-    assert_eq!(
-        content_at(&tree, TASK, "report.md"),
-        Some(manifest_of(NOTES.as_bytes())),
-        "{written}"
-    );
+    assert_sealed_file(
+        &server,
+        &workspace,
+        &content_at(&tree, TASK, "report.md").unwrap(),
+        NOTES.as_bytes(),
+    )
+    .await;
 
     // The name is taken: a second write is refused and the report is as it was.
     let moved = "Launch moved to Monday.\n";
@@ -1270,11 +1283,13 @@ async fn with_no_page_open_a_file_is_written_from_text_and_from_content_and_take
         content_at(tree, &exports, "plan.pdf").is_some()
     })
     .await;
-    assert_eq!(
-        content_at(&tree, &exports, "plan.pdf"),
-        Some(manifest_of(&pdf)),
-        "{exported}"
-    );
+    assert_sealed_file(
+        &server,
+        &workspace,
+        &content_at(&tree, &exports, "plan.pdf").unwrap(),
+        &pdf,
+    )
+    .await;
     // History's undo of the call takes the file back, with the folder made for it.
     asked(
         &provider,

@@ -4,6 +4,114 @@
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, WorkspaceOperation};
 use tilo_server_protocol::WorkspaceId;
 
+/// The recipient's policy snapshot for ordinary document frames. Attached
+/// devices instead replicate the workspace as stores or key holders.
+pub(super) struct DocumentRead {
+    governed: bool,
+    access: Option<tilo_action_policy::MemberAccess>,
+}
+
+impl DocumentRead {
+    pub(super) fn of(
+        runtime: &crate::workspace::WorkspaceRuntime,
+        peer: &AuthenticatedPeer,
+    ) -> Self {
+        let governed = !runtime.attached(&peer.device_public_key)
+            && (runtime.admission == crate::workspace_access::AdmissionMode::Governed
+                || runtime.device_access.is_some());
+        let access = runtime
+            .device_access
+            .as_ref()
+            .and_then(|access| access.get(&peer.device_public_key))
+            .cloned();
+        Self { governed, access }
+    }
+
+    /// Governance and other non-document traffic use their own admission.
+    pub(super) fn allows(&self, store: &crate::store::WorkspaceStore, frame: &Envelope) -> bool {
+        let Some(body) = document_policy_body(store, frame) else {
+            return true;
+        };
+        if !self.governed {
+            return true;
+        }
+        let Some(access) = &self.access else {
+            return false;
+        };
+        if let Some(neighbour_wire::KeyScope::Document {
+            workspace,
+            app,
+            document,
+            readers,
+        }) = key_scope(body)
+        {
+            let now = tilo_clock::wall();
+            let node = collab_types::document_node(access.workspace(), &app, &document);
+            return workspace.to_string() == access.workspace()
+                && readers.as_deref().is_none_or(|readers| {
+                    access
+                        .person_id()
+                        .is_some_and(|person| readers.split(',').any(|reader| reader == person))
+                })
+                && access.allows(&node, tilo_action_policy::ActionKind::Read, now);
+        }
+        let Some((route, _)) = store.payloads().open_document(body) else {
+            return false;
+        };
+        if route.cluster_id != access.workspace() {
+            return false;
+        }
+        let now = tilo_clock::wall();
+        let node =
+            collab_types::document_node(&route.cluster_id, &route.app_id, &route.document_id);
+        let mut context = tilo_action_policy::Context::at_time(now);
+        let owner = route
+            .own
+            .filter(|own| own.names(&route.document_id))
+            .map(|own| own.person());
+        if let Some(owner) = &owner {
+            context = context.with_own_resource(&route.document_id, owner);
+        }
+        access.answer(&node, tilo_action_policy::ActionKind::Read, &context)
+            == tilo_action_policy::Answer::Allow
+    }
+}
+
+fn key_scope(body: &[u8]) -> Option<neighbour_wire::KeyScope> {
+    use neighbour_wire::NeighbourMsg;
+    if !NeighbourMsg::is_governance(body) && !NeighbourMsg::is_access_request(body) {
+        return None;
+    }
+    let (NeighbourMsg::MlsGovernance {
+        workspace: scope, ..
+    }
+    | NeighbourMsg::MlsAccessRequest {
+        workspace: scope, ..
+    }) = postcard::from_bytes(body).ok()?
+    else {
+        return None;
+    };
+    neighbour_wire::KeyScope::parse(&scope)
+}
+
+pub(super) fn document_policy_body<'a>(
+    store: &crate::store::WorkspaceStore,
+    frame: &'a Envelope,
+) -> Option<&'a [u8]> {
+    let Envelope::Delta { delta, .. } = frame else {
+        return None;
+    };
+    let body = crate::coedit::retention_view(delta).map_or(delta.as_slice(), |(_, _, body)| body);
+    let document = store.payloads().is_document(body);
+    let scoped_keys = || {
+        matches!(
+            key_scope(body),
+            Some(neighbour_wire::KeyScope::Document { .. })
+        )
+    };
+    (document || scoped_keys()).then_some(body)
+}
+
 /// Handle `OpenDocument`: under the admission a replay has, mark the record
 /// held by the device, so its live changes reach it from now on, then answer
 /// it in `answer` with everything retained of the record and, after it,
@@ -23,7 +131,7 @@ pub(super) async fn handle_open_document(
 ) -> Result<Option<Envelope>, PeerError> {
     let Envelope::OpenDocument {
         workspace_id,
-        channel,
+        channel: requested,
         own,
     } = envelope
     else {
@@ -44,7 +152,7 @@ pub(super) async fn handle_open_document(
     // A browser environment's device opens its own record and no other.
     if session
         .environment(&peer.device_public_key)
-        .is_some_and(|scope| !scope.reaches(Some(channel)))
+        .is_some_and(|scope| !scope.reaches(Some(requested)))
     {
         return refused(crate::workspace_access::DenyReason::OutOfEnvironmentScope.refusal());
     }
@@ -58,7 +166,7 @@ pub(super) async fn handle_open_document(
     let heading = crate::timing::start();
     let head = {
         let store = ws.lock().await.store.clone();
-        tokio::task::spawn_blocking(move || store.chain_head_channel(&channel))
+        tokio::task::spawn_blocking(move || store.chain_head_channel(&requested))
             .await
             .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??
     };
@@ -75,11 +183,11 @@ pub(super) async fn handle_open_document(
         // and is sent nothing of it. A host the workspace is attached to keeps
         // all of the workspace.
         // The record may be one nothing was written of yet: what the device
-        // says it is counts when it names the channel opened.
-        let read = head.unwrap_or(channel);
+        // says it is counts when it names the requested opened.
+        let read = head.unwrap_or(requested);
         let named_owner = own
             .as_ref()
-            .filter(|own| own.names(&channel))
+            .filter(|own| own.names(&requested))
             .map(|own| own.record.owner);
         if !runtime.attached(&peer.device_public_key)
             && (!runtime.store.reaches_person(&read, &peer.user_public_key)
@@ -87,19 +195,19 @@ pub(super) async fn handle_open_document(
         {
             return Ok(Some(Envelope::DocumentOpened {
                 workspace_id,
-                channel,
+                channel: requested,
                 answer: tilo_server_protocol::DocumentAnswer::NotYours,
             }));
         }
         // Its person's device opening their own record says whose it is.
         if let Some(own) = own
             .as_ref()
-            .filter(|own| own.names(&channel) && own.record.owner == peer.user_public_key)
+            .filter(|own| own.names(&requested) && own.record.owner == peer.user_public_key)
         {
             runtime.store.learn_own(&own.app_id, &own.record);
         }
         let device = &peer.device_public_key;
-        runtime.hold_document(device, session.outbound, channel);
+        runtime.hold_document(device, session.outbound, requested);
         if let Some(head) = head {
             runtime.hold_document(device, session.outbound, head);
         }
@@ -115,16 +223,47 @@ pub(super) async fn handle_open_document(
     // Sent whether or not the device holds the head already: an answer of no
     // frames says the chain has no part at all, never "you have it", so a
     // device whose copy has not opened yet never takes the chain as empty.
-    let read = head.unwrap_or(channel);
+    let read = head.unwrap_or(requested);
     let frames = frames_of(store, governed, workspace_id, read).await?;
+    if !still_readable(&ws, peer, session, (requested, head), &frames).await? {
+        return Ok(Some(Envelope::DocumentOpened {
+            workspace_id,
+            channel: requested,
+            answer: tilo_server_protocol::DocumentAnswer::NotYours,
+        }));
+    }
     let sent = u32::try_from(frames.len()).unwrap_or(u32::MAX);
     crate::timing::event("document.open.total", opened, u64::from(sent));
     answer.extend(frames);
     Ok(Some(Envelope::DocumentOpened {
         workspace_id,
-        channel,
+        channel: requested,
         answer: tilo_server_protocol::DocumentAnswer::Sent { frames: sent },
     }))
+}
+
+/// Apply the current policy after loading the retained frames.
+async fn still_readable(
+    workspace: &crate::workspace::SharedWorkspace,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    (requested, head): ([u8; 32], Option<[u8; 32]>),
+    frames: &[Envelope],
+) -> Result<bool, PeerError> {
+    let mut runtime = crate::workspace_io::fresh_membership(workspace).await?;
+    let policy = DocumentRead::of(&runtime, peer);
+    let allowed = frames
+        .iter()
+        .all(|frame| policy.allows(&runtime.store, frame));
+    if !allowed {
+        let device = &peer.device_public_key;
+        runtime.unhold_document(device, session.outbound, &requested);
+        if let Some(head) = head {
+            runtime.unhold_document(device, session.outbound, &head);
+        }
+    }
+    drop(runtime);
+    Ok(allowed)
 }
 
 /// Everything `store` retains of the document on `read`, beside the writes

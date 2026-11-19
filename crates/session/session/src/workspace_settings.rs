@@ -10,7 +10,7 @@ mod page;
 #[cfg(target_os = "linux")]
 mod shell;
 
-pub use agents::Host as AgentsHost;
+pub use agents::Host as AgentsSource;
 pub use page::PageAgents;
 #[cfg(target_os = "linux")]
 pub(crate) use shell::*;
@@ -61,5 +61,95 @@ impl domain::AppDirectory for Directory {
             .filter(|app| app.platforms.iter().any(|platform| here.contains(platform)))
             .map(|app| app.id.to_owned())
             .collect()
+    }
+}
+
+/// The shared document permission controls used by native and hosted settings.
+#[must_use]
+pub fn document_access_pane(
+    mut routes: Vec<(String, String)>,
+    rules: Vec<collab_types::DocumentAccessRule>,
+    mut recipients: Vec<tilo_sheets::workspace_settings::Choice>,
+) -> tilo_sheets::workspace_settings::DocumentAccess {
+    use sheet::Choice;
+    use tilo_desktop_surface::i18n::t;
+    use tilo_sheets::workspace_settings as sheet;
+    routes = routes
+        .into_iter()
+        .filter_map(|(app, document)| {
+            if app.is_empty() {
+                Some((app, document))
+            } else {
+                let document = collab_types::document_access_target(&app, &document)?.to_owned();
+                Some((app, document))
+            }
+        })
+        .collect();
+    routes.sort();
+    routes.dedup();
+    let documents = routes
+        .into_iter()
+        .map(|(app, document)| {
+            if app.is_empty() {
+                let label = if document.is_empty() {
+                    t("workspace-settings-access-all-apps")
+                } else {
+                    let name = crate::app_names::listed_name(&document)
+                        .unwrap_or_else(|| document.clone());
+                    tilo_desktop_surface::i18n::t_args(
+                        "workspace-settings-access-app-default",
+                        &[("app", name.into())],
+                    )
+                };
+                return ((app, document), label);
+            }
+            let name = crate::app_names::listed_name(&app).unwrap_or_else(|| app.clone());
+            let label = if document.is_empty()
+                || (app == fs_protocol::tree::FILES_APP
+                    && document == fs_protocol::tree::document_id())
+            {
+                name
+            } else {
+                format!("{name} · {document}")
+            };
+            ((app, document), label)
+        })
+        .collect();
+    recipients.insert(
+        0,
+        Choice {
+            key: "everyone".into(),
+            label: t("workspace-settings-document-everyone"),
+        },
+    );
+    let levels = [
+        ("inherit", "workspace-settings-document-inherit"),
+        ("no-access", "workspace-settings-document-no-access"),
+        ("view", "workspace-settings-document-view"),
+        ("edit", "workspace-settings-document-edit"),
+    ]
+    .into_iter()
+    .map(|(key, label)| Choice {
+        key: key.into(),
+        label: t(label),
+    })
+    .collect();
+    let mut by_document = std::collections::BTreeMap::<_, std::collections::BTreeMap<_, _>>::new();
+    for rule in rules {
+        by_document
+            .entry((rule.app, rule.document))
+            .or_default()
+            .insert(rule.recipient, rule.access);
+    }
+    sheet::DocumentAccess {
+        title: t("workspace-settings-document-access"),
+        documents,
+        rules: by_document,
+        recipients,
+        levels,
+        document_label: t("workspace-settings-document-label"),
+        access_label: t("workspace-settings-document-access"),
+        apply: t("workspace-settings-document-apply"),
+        empty: t("workspace-settings-document-empty"),
     }
 }

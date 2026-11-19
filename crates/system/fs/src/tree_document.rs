@@ -899,32 +899,31 @@ impl TreePublisher {
     /// This device's connection to the session's identity service, bound to the workspace whose tree
     /// it publishes, as an app's connection is.
     fn connect_identity(&self) -> Result<BrokerSigningIdentity> {
-        let mut stream =
-            tilo_files::native::socket::connect(&self.identity).with_context(|| {
-                format!(
-                    "connect to the identity service at {}",
-                    self.identity.display()
-                )
-            })?;
-        let handshake = PresentationHandshake {
-            handshake: Handshake {
-                workspace_id: self.cluster.clone(),
-                app_id: FILES_APP.to_owned(),
-                surface: None,
-            },
-            presentation_version: PRESENTATION_VERSION,
-        };
-        let bytes =
-            serde_json::to_vec(&handshake).context("this connection's handshake is JSON")?;
-        HANDSHAKE_FRAMING
-            .write(&mut stream, &bytes)
-            .context("name this device's app and workspace on the identity connection")?;
-        stream
-            .flush()
-            .context("the identity service reads this connection's handshake")?;
-        BrokerSigningIdentity::from_connected_io(stream)
-            .context("the identity service answers this device")
+        connect_identity(&self.identity, &self.cluster)
     }
+}
+
+/// The Files endpoint proves the same app and workspace for document and file data keys.
+pub(super) fn connect_identity(identity: &Path, workspace: &str) -> Result<BrokerSigningIdentity> {
+    let mut stream = tilo_files::native::socket::connect(identity)
+        .with_context(|| format!("connect to the identity service at {}", identity.display()))?;
+    let handshake = PresentationHandshake {
+        handshake: Handshake {
+            workspace_id: workspace.to_owned(),
+            app_id: FILES_APP.to_owned(),
+            surface: None,
+        },
+        presentation_version: PRESENTATION_VERSION,
+    };
+    let bytes = serde_json::to_vec(&handshake).context("this connection's handshake is JSON")?;
+    HANDSHAKE_FRAMING
+        .write(&mut stream, &bytes)
+        .context("name this device's app and workspace on the identity connection")?;
+    stream
+        .flush()
+        .context("the identity service reads this connection's handshake")?;
+    BrokerSigningIdentity::from_connected_io(stream)
+        .context("the identity service answers this device")
 }
 
 /// Whether the changes `bytes` of record `chunk` build on something this device holds, in the
