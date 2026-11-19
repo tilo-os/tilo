@@ -57,6 +57,42 @@ pub fn notification_resource(id: u32) -> String {
     format!("{NOTIFICATION_PREFIX}{id}")
 }
 
+/// The live notifications, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.notifications", label = "Notifications")]
+pub struct NotificationsReading;
+
+/// One live notification, as a declared type: what its banner offers.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.notification", label = "Notification")]
+pub struct NotificationRow;
+
+/// The deadlines apps handed over, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "session.notification-schedules",
+    label = "Scheduled notifications"
+)]
+pub struct SchedulesReading;
+
+/// One deadline, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "session.notification-schedule",
+    label = "Scheduled notification"
+)]
+pub struct ScheduleRow;
+
+/// The person's priority contacts, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.priority-contacts", label = "Priority contacts")]
+pub struct PriorityContactsReading;
+
+/// One priority contact, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.priority-contact", label = "Priority contact")]
+pub struct PriorityContactRow;
+
 /// What a notification's resource offers: what its banner does.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.session.notification")]
@@ -156,9 +192,8 @@ pub enum PriorityContactEffect {
 }
 
 fn schedule(deadline: &Deadline) -> ResourceSpec {
-    let mut published = offer::<ScheduleEffect>(ResourceSpec::new(
+    let mut published = offer::<ScheduleEffect>(tilo_resource::typed_resource::<ScheduleRow>(
         schedule_resource(&deadline.token),
-        SCHEDULE_KIND,
         deadline.title.clone(),
     ))
     .with_presentation(ResourcePresentation {
@@ -179,9 +214,8 @@ fn priority_contact(contact: &PriorityContact) -> ResourceSpec {
     } else {
         contact.name.clone()
     };
-    offer::<PriorityContactEffect>(ResourceSpec::new(
+    offer::<PriorityContactEffect>(tilo_resource::typed_resource::<PriorityContactRow>(
         priority_contact_resource(&contact.id),
-        PRIORITY_CONTACT_KIND,
         label,
     ))
 }
@@ -226,12 +260,12 @@ fn resource(notification: &Notification) -> ResourceSpec {
     };
     let invokes = invocable(notification).next().is_some();
     let replies = notification.takes_reply();
-    let mut published = offer::<NotificationEffect>(ResourceSpec::new(
-        notification_resource(notification.id),
-        NOTIFICATION_KIND,
-        label,
-    ))
-    .with_presentation(presentation);
+    let mut published =
+        offer::<NotificationEffect>(tilo_resource::typed_resource::<NotificationRow>(
+            notification_resource(notification.id),
+            label,
+        ))
+        .with_presentation(presentation);
     published.retain_actions(|spec| match spec.id.as_str() {
         "invoke" => invokes,
         "reply" => replies,
@@ -243,23 +277,22 @@ fn resource(notification: &Notification) -> ResourceSpec {
 impl Service for Notifications {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            ResourceSpec::new(
+            tilo_resource::typed_resource::<NotificationsReading>(
                 NOTIFICATIONS_RESOURCE,
-                NOTIFICATIONS_KIND,
                 crate::i18n::name(NOTIFICATIONS_KIND, "Notifications"),
             )
             .with_children(self.live().iter().map(resource)),
-            offer::<SchedulesEffect>(ResourceSpec::new(
+            offer::<SchedulesEffect>(tilo_resource::typed_resource::<SchedulesReading>(
                 SCHEDULES_RESOURCE,
-                SCHEDULES_KIND,
                 crate::i18n::name(SCHEDULES_KIND, "Scheduled notifications"),
             ))
             .with_children(self.schedules().deadlines().iter().map(schedule)),
-            offer::<PriorityContactsEffect>(ResourceSpec::new(
-                PRIORITY_CONTACTS_RESOURCE,
-                PRIORITY_CONTACTS_KIND,
-                crate::i18n::name(PRIORITY_CONTACTS_KIND, "Priority contacts"),
-            ))
+            offer::<PriorityContactsEffect>(
+                tilo_resource::typed_resource::<PriorityContactsReading>(
+                    PRIORITY_CONTACTS_RESOURCE,
+                    crate::i18n::name(PRIORITY_CONTACTS_KIND, "Priority contacts"),
+                ),
+            )
             .with_children(
                 self.priority_contacts()
                     .contacts()
