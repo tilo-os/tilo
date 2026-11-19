@@ -3347,12 +3347,14 @@ pub(crate) fn invoke_resource_action(
 }
 
 /// The resource a local invocation of `address` resolves to in `widget`'s
-/// filtered tree, read from the component's shared tree without building,
-/// copying or filtering the rest of it: executing an action reads the
-/// resource's identity and the action alone, whatever its kind ([`shared_target`]).
-/// `None` defers to the whole tree: the tree does not resolve the address
-/// itself (the unbound and provider fallbacks), or the action is not
-/// permitted there.
+/// filtered tree, found in the component's shared tree without building the
+/// rest of it ([`shared_target`]), then read as the widget publishes it: what
+/// a surface says of a row now (its status: whether the effect can be used
+/// there, and how it is named) is laid over the published tree and not kept in
+/// the shared one, so a caller cannot invoke what the palette refuses. `None`
+/// defers to the whole tree: the tree does not
+/// resolve the address itself (the unbound and provider fallbacks), or the
+/// action is not permitted there.
 fn resolve_published_action(
     widget: &dyn Widget,
     doc: &AutoCommit,
@@ -3363,7 +3365,22 @@ fn resolve_published_action(
         return None;
     }
     let forest = crate::resources::shared_resources(widget, doc);
-    shared_target(&forest, Some(binding), address)
+    let found = shared_target(&forest, Some(binding), address)?;
+    let Some(publisher) =
+        crate::widget::capability::capability::<dyn crate::resources::PublishesResources>(widget)
+    else {
+        return Some(found);
+    };
+    publisher
+        .resource_for(None, doc, found.id.as_str())
+        .and_then(|resource| filter_resource(binding, resource))
+        .filter(|resource| {
+            resource
+                .actions
+                .iter()
+                .any(|action| action.id == address.action)
+        })
+        .or(Some(found))
 }
 
 /// The node `address` names in `forest`, exactly as [`resolve_resource_invocation`] finds it in
