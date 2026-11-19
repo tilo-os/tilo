@@ -63,6 +63,9 @@ const COUNT_EVERY: Duration = Duration::from_secs(1);
 /// burst of writes becomes one write per record, and a single write waits no
 /// longer than a person notices.
 const BATCH: Duration = Duration::from_millis(200);
+/// How often changes whose batch is due, but that wait for the workspace, are looked at again
+/// when nothing woke the task sooner.
+const WAITING_LOOK: Duration = Duration::from_millis(50);
 
 /// How many bytes of changes one write of a record carries at most: well under the most a
 /// document write may carry, so changes made while a record could not go out go out over
@@ -242,6 +245,7 @@ impl TreeReplica {
             documents: BTreeMap::new(),
             unread: BTreeSet::new(),
             unreadable: BTreeSet::new(),
+            lacking: BTreeSet::new(),
             waiting: BTreeSet::new(),
             held_until: None,
             dirty_since: None,
@@ -392,6 +396,8 @@ struct Sync {
     unread: BTreeSet<TreeChunk>,
     /// The records whose read failed, said once each.
     unreadable: BTreeSet<TreeChunk>,
+    /// The chunks the tree lists that neither this device nor the workspace holds, said once each.
+    lacking: BTreeSet<TreeChunk>,
     /// The records whose changes waited to go out, said once each.
     waiting: BTreeSet<TreeChunk>,
     /// When the first record the host refused may write again, while one waits.
@@ -468,14 +474,20 @@ impl Sync {
             // A change of this namespace's own goes out once its batch is due; the session's
             // news, and a look now and then, read what the records hold.
             // A record the host refused waits its turn without the task looking every moment.
+            // Changes whose batch is due but that wait for the workspace (a chunk's word that it
+            // holds it, a refusal's wait) are looked at again now and then: every pass takes the
+            // namespace, which every request of the mount waits for.
             let wait = self.dirty_since.map_or(LOOK_AGAIN, |since| {
                 let held = self.held_until.map_or(Duration::ZERO, |until| {
                     until.saturating_duration_since(Instant::now())
                 });
-                BATCH
-                    .saturating_sub(since.elapsed())
-                    .max(held)
-                    .max(Duration::from_millis(5))
+                let batch = BATCH.saturating_sub(since.elapsed());
+                let floor = if batch.is_zero() {
+                    WAITING_LOOK
+                } else {
+                    Duration::from_millis(5)
+                };
+                batch.max(held).max(floor)
             });
             session_moved = false;
             tokio::select! {
@@ -615,27 +627,15 @@ impl Sync {
                 Ok(
                     ResourceReading::Captured { heads, bytes, .. }
                     | ResourceReading::Changes { heads, bytes, .. },
-                ) => readings.push((chunk, heads, bytes)),
-                Ok(ResourceReading::Unchanged(_)) => {}
-                Ok(ResourceReading::Pending) | Err(_) => {
-                    if let Err(error) = &reading
-                        && self.unreadable.insert(chunk)
-                    {
-                        // Said once per record: the read is tried again on every pass.
-                        tracing::warn!(%error, chunk, workspace = %self.workspace, "a record of the workspace's tree cannot be read here");
+                ) => {
+                    if self.unreadable.remove(&chunk) {
+                        tracing::info!(chunk, workspace = %self.workspace, "a document of the workspace's tree reads here now");
                     }
-                    // Nothing here yet: once the host answered with none, the workspace has
-                    // no such record, and this device's first change founds it.
-                    if chunk == 0
-                        && holds_none(engine.resource_answer(
-                            &workspace,
-                            &route.app_id,
-                            &route.document,
-                        ))
-                    {
-                        self.status.lock_recover().opened = true;
-                    }
+                    readings.push((chunk, heads, bytes));
                 }
+                Ok(ResourceReading::Unchanged(_)) => {}
+                Ok(ResourceReading::Pending) => self.not_read(chunk, None),
+                Err(error) => self.not_read(chunk, Some(&error)),
             }
         }
         if paced {
@@ -697,6 +697,32 @@ impl Sync {
         }
     }
 
+    /// Document `chunk` of the tree did not read here, with `error` when its read failed.
+    fn not_read(&mut self, chunk: TreeChunk, error: Option<&str>) {
+        // A document the workspace has not answered for yet is one still on its way (a device
+        // starting reads before its keys and the documents arrive): only one the workspace said
+        // it holds some of and that still does not read is said, once.
+        let answered = self.documents.get(&chunk).and_then(|held| held.answered);
+        if let Some(error) = error
+            && holds_some(answered)
+            && self.unreadable.insert(chunk)
+        {
+            tracing::warn!(%error, chunk, workspace = %self.workspace, "a record of the workspace's tree cannot be read here");
+        }
+        // Nothing here yet: once the host answered with none, the workspace has no such
+        // document, and this device's first change founds it.
+        let route = route(self.workspace, chunk);
+        if chunk == 0
+            && holds_none(self.link.engine().resource_answer(
+                &self.workspace.to_string(),
+                &route.app_id,
+                &route.document,
+            ))
+        {
+            self.status.lock_recover().opened = true;
+        }
+    }
+
     /// The namespace, only when it can be had now. A worker that waited on a step over the
     /// whole tree (a merge, a count, a keep) would answer no client meanwhile, and a step says
     /// when it is done through the change watch this task follows, so a pass that cannot read
@@ -717,11 +743,11 @@ impl Sync {
             // one beside it.
             return;
         }
-        let heads = {
+        let (heads, listed) = {
             let Some(mut namespace) = self.namespace_now() else {
                 return;
             };
-            namespace.document_heads()
+            (namespace.document_heads(), namespace.listed_chunks())
         };
         let dirty: Vec<TreeChunk> = heads
             .iter()
@@ -738,7 +764,14 @@ impl Sync {
         if since.elapsed() < BATCH {
             return;
         }
-        let (due, mut waiting) = self.due(dirty, heads.keys().copied().collect());
+        // Every chunk the tree's own document lists, whether or not this namespace holds a
+        // document of it: one listed but held nowhere here (its nodes were never journaled, or
+        // it came from another device) is one the tree must not go out naming until the
+        // workspace says it holds it.
+        let held_here: BTreeSet<TreeChunk> = heads.keys().copied().collect();
+        let mut held_now = held_here.clone();
+        held_now.extend(listed);
+        let (due, mut waiting) = self.due(dirty, held_now, &held_here);
         if due.is_empty() {
             self.dirty_since = waiting.then_some(since);
             return;
@@ -789,7 +822,8 @@ impl Sync {
     fn due(
         &mut self,
         dirty: Vec<TreeChunk>,
-        held_now: Vec<TreeChunk>,
+        held_now: BTreeSet<TreeChunk>,
+        held_here: &BTreeSet<TreeChunk>,
     ) -> (Vec<(TreeChunk, Vec<automerge::ChangeHash>)>, bool) {
         let link = self.link.clone();
         let engine = link.engine();
@@ -801,6 +835,7 @@ impl Sync {
         // The chunks the workspace's server does not hold yet go out first, and alone: every
         // other document of the tree waits until the server holds them, since it may name them.
         let unheld = unheld_chunks(&self.documents, held_now);
+        self.ask_after(&unheld, held_here);
         for chunk in dirty {
             if !self.documents.contains_key(&chunk) {
                 self.open(chunk);
@@ -865,6 +900,27 @@ impl Sync {
             due.push((chunk, sent));
         }
         (due, waiting)
+    }
+
+    /// Open each chunk of `unheld` that nothing asked the workspace about yet, so its answer comes;
+    /// and say once of each chunk the tree lists that neither this device (none of `held_here`)
+    /// nor the workspace holds: the tree's changes wait for it rather than go out naming a chunk
+    /// the workspace lacks.
+    fn ask_after(&mut self, unheld: &BTreeSet<TreeChunk>, held_here: &BTreeSet<TreeChunk>) {
+        for chunk in unheld {
+            if !self.documents.contains_key(chunk) {
+                self.open(*chunk);
+            }
+            let answered = self.documents.get(chunk).and_then(|held| held.answered);
+            if holds_none(answered) && !held_here.contains(chunk) && self.lacking.insert(*chunk) {
+                tracing::error!(
+                    chunk,
+                    workspace = %self.workspace,
+                    "the workspace's tree lists a chunk that neither this device nor the \
+                     workspace holds; its changes wait rather than go out naming it"
+                );
+            }
+        }
     }
 
     /// Ask whether each document this device wrote that the server did not hold is durable there

@@ -135,6 +135,11 @@ impl KeptDocuments {
     /// Add what each document of `namespace` changed since it was last kept to its journal: called
     /// under the namespace's lock, so a change is on disk before anything answers for it.
     ///
+    /// The tree's own document goes last. It lists the chunks, and a process that ends between
+    /// two documents' frames must not come back with a tree that lists a chunk whose nodes it
+    /// never journaled: that tree would go out naming a chunk nobody holds. A chunk journaled
+    /// before the tree that lists it is only a chunk not listed yet.
+    ///
     /// # Errors
     /// A journal could not be added to; the documents journaled before it are kept.
     #[allow(
@@ -143,7 +148,9 @@ impl KeptDocuments {
     )]
     pub fn journal(&self, namespace: &mut Namespace) -> io::Result<()> {
         let mut kept = self.heads.lock_recover();
-        for (chunk, heads) in namespace.document_heads() {
+        let mut documents: Vec<_> = namespace.document_heads().into_iter().collect();
+        documents.sort_by_key(|(chunk, _)| (*chunk == 0, *chunk));
+        for (chunk, heads) in documents {
             let known = kept.journaled.get(&chunk).cloned().unwrap_or_default();
             if known == heads {
                 continue;
@@ -313,6 +320,40 @@ mod tests {
         assert_eq!(again.document_heads(), heads);
         for n in [0, 1_023, 1_024, 2_499] {
             assert!(holds(&mut again, &format!("file-{n}.txt")), "file-{n}.txt");
+        }
+    }
+
+    /// The tree's own document is journaled after the chunks it lists: a process that ends
+    /// between the two comes back with a chunk not listed yet, never with a tree listing a chunk
+    /// whose nodes it lost.
+    #[test]
+    fn a_new_chunk_is_journaled_before_the_tree_that_lists_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (kept, mut namespace) = open(dir.path());
+        let before = namespace.document_heads().len();
+        let mut n = 0;
+        while namespace.document_heads().len() == before {
+            namespace
+                .create_file(ROOT_INO, format!("file-{n}.txt"), None, 1, 1)
+                .unwrap();
+            n += 1;
+        }
+        let new: Vec<TreeChunk> = namespace
+            .document_heads()
+            .into_keys()
+            .filter(|chunk| *chunk != 0)
+            .collect();
+        // The tree's own journal cannot be written: the process ends there.
+        let tree = file(dir.path(), 0, JOURNAL);
+        let _ = std::fs::remove_file(&tree);
+        std::fs::create_dir(&tree).unwrap();
+        assert!(kept.journal(&mut namespace).is_err());
+        for chunk in new {
+            let journal = std::fs::metadata(file(dir.path(), chunk, JOURNAL));
+            assert!(
+                journal.is_ok_and(|journal| journal.len() > 0),
+                "chunk {chunk} is journaled before the tree's own document"
+            );
         }
     }
 
