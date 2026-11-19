@@ -1804,7 +1804,7 @@ mod tests {
         {
             let shown = agent_question();
             assert!(shown.dialog.title.contains("notes-agent"));
-            assert!(shown.dialog.title.contains("delete three notes"));
+            assert!(shown.dialog.title.contains("Delete three notes"));
             assert!(shown.dialog.detail.contains("the recipes notebook"));
             assert!(shown.dialog.detail.contains("Home"));
             assert!(!shown.dialog.detail.contains("network-agent"));
