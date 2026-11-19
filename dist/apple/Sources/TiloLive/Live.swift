@@ -698,9 +698,6 @@ public final class LiveStage: ObservableObject {
     /// The place the web view rests in while nothing is in front (`EngineRest`).
     func rests(in place: LivePlatformView) {
         self.restPlace = place
-        // A place that has been taken out of the window says nothing of where the engine may
-        // stand: the next one in is the place it rests in.
-        guard place.window != nil else { return }
         if front == nil { home() }
     }
 
@@ -876,16 +873,30 @@ private struct HolderView: NSViewRepresentable {
     func makeCoordinator() -> Holder { holder }
 }
 #else
+private final class WindowedHolderView: UIView {
+    var onWindow: ((UIView) -> Void)?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { onWindow?(self) }
+    }
+}
+
 private struct HolderView: UIViewRepresentable {
     let holder: Holder
 
     func makeUIView(context: Context) -> UIView {
-        let view = UIView()
+        let view = WindowedHolderView()
         view.clipsToBounds = true
+        view.onWindow = holder.made
+        holder.made(view)
         return view
     }
 
-    func updateUIView(_ view: UIView, context: Context) { holder.made(view) }
+    func updateUIView(_ view: UIView, context: Context) {
+        if let hosted = view as? WindowedHolderView { hosted.onWindow = holder.made }
+        holder.made(view)
+    }
 
     static func dismantleUIView(_ view: UIView, coordinator: Coordinator) { coordinator.gone(view) }
 
