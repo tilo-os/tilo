@@ -1,11 +1,18 @@
 # Repository policy tooling
 
 This directory owns fast, deterministic checks of repository structure and
-cross-cutting contracts. Run the complete local and CI policy suite with:
+cross-cutting contracts. `t` carries the suite on a build server, one step per
+job, and CI carries it whole as its quality job:
 
 ```sh
-tools/policy/run.sh
+t test policy            # the whole suite
+t test policy/<step>     # one step
 ```
+
+[`run.sh`](run.sh) is the same steps side by side, for CI. On a development machine
+it refuses and names the way to hand the suite to `t`; its `--local` flag takes it
+here anyway, for a machine with no server to hand it to. Dozens of checks at once
+take the machine they are on, and that work belongs on the server.
 
 Build selection and execution helpers belong in `tools/ci/`; application
 publication tooling belongs in `tools/apps/`.

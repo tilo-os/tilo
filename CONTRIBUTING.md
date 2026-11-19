@@ -69,27 +69,39 @@ you change.
 Tilo is one Cargo workspace. Select a package with `-p` and its `name` from its
 `Cargo.toml`; the [code map](docs/codemap.md) says which crate owns what.
 
+Builds and tests happen on a build server, through `t`: it compiles the same
+cargo commands on warm builds, so the machine you edit on keeps its cores and
+its memory for the editor.
+
 ```sh
-cargo build --locked -p example-counter
-cargo test --locked -p example-counter
+t cargo build --locked -p example-counter
+t cargo test --locked -p example-counter
 ```
 
-For an app, `cargo run --locked -p notes` opens it in its own window (replace
-`notes` with the package name of the app you changed). Append a test name to
-`cargo test` to run only that test.
+For an app, `t cargo build --locked -p notes` builds it on the server, and
+`cargo desktop --apps "notes"` opens the desktop with it here (replace `notes`
+with the package name of the app you changed). Append a test name to `t cargo
+test` to select only that test.
 
 Some packages are large (`tilo-session` pulls the whole desktop in); check them
-with `cargo check --locked -p tilo-session --tests` while you iterate and run their
-tests once before you send the change.
+with `t cargo check --locked -p tilo-session --tests` while you iterate and test
+them once before you send the change. `t test` covers the checks your change
+reaches, whichever they are.
 
 Repository rules (formatting, licences, dependency hygiene, platform code only
-in `crates/platform/`) are checked by the policy suite:
+in `crates/platform/`) are checked by the policy suite, which `t` splits into one
+check per step:
 
 ```sh
-bash tools/policy/run.sh
+t test policy            # the whole suite
+t test policy/<step>     # one step; tools/policy/steps.toml names them
 ```
 
-[`docs/policies.md`](docs/policies.md) explains each rule.
+Dozens of checks reading the whole tree at once take the machine they are on, so
+[`tools/policy/run.sh`](tools/policy/run.sh) refuses on a development machine and
+says to hand the suite to `t`; its `--local` flag takes it here anyway, for a
+machine with no server to hand it to. [`docs/policies.md`](docs/policies.md)
+explains each rule.
 
 ## Run it
 

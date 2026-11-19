@@ -14,13 +14,17 @@ Where a rule is described in more depth elsewhere (`AGENTS.md`,
 repeating it. A rule listed here as a check and described differently elsewhere
 is defined by the check.
 
-Most checks run locally in the hooks a checkout enables with
+Most checks live in the hooks a checkout enables with
 `python3 tools/dev/install-git-hooks.py` (`.githooks/pre-commit` and
 `.githooks/commit-msg` for the rules, `.githooks/pre-push` for the lint of what
-a push changes, and of the crates whose own source names what it changed), and in
-CI ([`.forgejo/workflows/`](../.forgejo/workflows)), which runs the policy suite
+a push changes, and of the crates whose own source names what it changed), in CI
+([`.forgejo/workflows/`](../.forgejo/workflows)), which covers the policy suite
 [`tools/policy/run.sh`](../tools/policy/run.sh), the diff-based checks, formatting,
-`cargo deny`, Clippy and the tests.
+`cargo deny`, Clippy and the tests, and as `t`'s checks on a build server
+([`tools/policy/steps.toml`](../tools/policy/steps.toml) is the list, one job per
+step, so `t test policy` covers the suite and `t test policy/<step>` one step).
+[`run.sh`](../tools/policy/run.sh) works through the same steps side by side and
+refuses on a development machine, where they would take the machine they are on.
 
 The pre-commit hook judges the commit, not the repository: each check applies
 only to the files the commit stages, read from the index, so a commit's cost
