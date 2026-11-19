@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use bounded_zip::{BoundedArchive, ZipError, ZipLimits};
-use ui::webview::ExtensionPermissionSet;
+use tilo_webview::ExtensionPermissionSet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtensionInfo {

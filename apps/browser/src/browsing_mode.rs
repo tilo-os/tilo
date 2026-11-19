@@ -9,7 +9,7 @@ pub enum BrowsingMode {
     #[default]
     Normal,
     Private,
-    /// A window opened for an agent ([`ui::webview::VISITOR_WINDOW_FLAG`]): a
+    /// A window opened for an agent ([`tilo_webview::VISITOR_WINDOW_FLAG`]): a
     /// fresh profile thrown away with it, and none of the person's account
     /// ownership.
     Visitor,

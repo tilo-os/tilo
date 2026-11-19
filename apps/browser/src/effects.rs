@@ -6,11 +6,11 @@
 //! Only the person at the device may invoke them: each reaches the engine, the
 //! files or a portal here.
 
-use ui::tilo_resource::{self, Effect};
-use ui::webview::{
+use tilo_webview::{
     FormSubmit, FrameId, KeyModifiers, PageKey, PageRequest, PointerButton, PointerPoint,
     PointerStep, PointerStepKind, ScrollTarget,
 };
+use ui::tilo_resource::{self, Effect};
 
 /// How long a settle waits for the page to go quiet, and at most, by default.
 const PAGE_SETTLE_QUIET_MS: u32 = 500;
@@ -1435,7 +1435,7 @@ impl BrowserEffect {
                 password,
             } => BrowserOperation::AnswerPageSignIn {
                 sign_in,
-                credentials: Some(ui::webview::HttpAuthCredentials::new(username, password)),
+                credentials: Some(tilo_webview::HttpAuthCredentials::new(username, password)),
             },
             Self::CancelPageSignIn { sign_in } => BrowserOperation::AnswerPageSignIn {
                 sign_in,
@@ -1842,7 +1842,7 @@ pub enum BrowserOperation {
     /// cancel it with none. The credentials print as nothing.
     AnswerPageSignIn {
         sign_in: u32,
-        credentials: Option<ui::webview::HttpAuthCredentials>,
+        credentials: Option<tilo_webview::HttpAuthCredentials>,
     },
     /// Answer the site's permission request `request`: allow it when `allow`,
     /// else deny it.

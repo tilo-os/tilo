@@ -10,8 +10,8 @@
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, Weak};
 
+use tilo_webview::{ExtensionNotice, SharedEngine, WebViewCommand, WebViewEngine};
 use ui::notify::{Notification, Notifier};
-use ui::webview::{ExtensionNotice, SharedEngine, WebViewCommand, WebViewEngine};
 
 pub const SCHEME: &str = "tilo-browser-extension";
 
@@ -272,7 +272,7 @@ mod tests {
         phase a_change_shows_and_a_clearing_withdraws_under_one_tag;
         {
             let notifier = Recording::default();
-            let window = ui::webview::test_engine::TestEngine::new();
+            let window = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = window.clone();
             let notice = ExtensionNotice {
                 title: "Hello".into(),

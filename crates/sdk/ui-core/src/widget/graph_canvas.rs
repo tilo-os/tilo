@@ -33,8 +33,9 @@ pub struct GraphCanvas {
     /// What each node is called, in order, for a connection that names a node rather than a
     /// control in one.
     node_ids: Vec<String>,
-    /// What the graph is, for assistive technology.
-    name: Option<String>,
+    /// What the graph is called: shown over it, as a chart's title, and its name for assistive
+    /// technology.
+    title: Option<String>,
     /// Where its described nodes stand, as its props said ([`Described`](crate::component::Described)).
     layout: String,
 }
@@ -79,7 +80,7 @@ impl GraphCanvas {
             connections,
             grid_gap: None,
             node_ids: Vec::new(),
-            name: None,
+            title: None,
             layout: String::new(),
         }
     }
@@ -138,13 +139,27 @@ impl GraphCanvas {
             connections,
             grid_gap: Some(gap),
             node_ids: Vec::new(),
-            name: None,
+            title: None,
             layout: String::new(),
         }
     }
 
+    /// Show `title` over the graph, in a chart's title style, a related gap over its nodes.
+    #[must_use]
+    pub fn with_title(mut self, title: Option<String>) -> Self {
+        if let Some(title) = &title {
+            let heading = super::Text::new(title).with_role(crate::tokens::TextRole::Heading);
+            self.parts.children.insert(0, Box::new(heading));
+        }
+        self.title = title;
+        self
+    }
+
     fn connection_rects(&self) -> Vec<(Rect, Rect)> {
-        let nodes = self.parts.children[0].as_ref();
+        let Some(nodes) = self.parts.children.last() else {
+            return Vec::new();
+        };
+        let nodes = nodes.as_ref();
         let end = |id: &str| {
             self.node_ids
                 .iter()
@@ -184,9 +199,17 @@ impl Widget for GraphCanvas {
         if let Some(gap) = &self.grid_gap {
             gap.set(theme.gap_standard);
         }
+        // The title, if any, over the nodes, a related gap apart.
         let node = self.parts.build(
             Style {
                 size: Size::auto(),
+                flex_direction: taffy::FlexDirection::Column,
+                gap: Size {
+                    width: taffy::LengthPercentage::length(0.0),
+                    height: taffy::LengthPercentage::length(f32::from(
+                        theme.tokens.spacing.rhythm.related,
+                    )),
+                },
                 ..Style::default()
             },
             tree,
@@ -231,7 +254,7 @@ impl Widget for GraphCanvas {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                .with_optional_name(self.name.clone()),
+                .with_optional_name(self.title.clone()),
         )
     }
 }

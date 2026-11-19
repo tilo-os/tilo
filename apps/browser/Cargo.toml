@@ -42,6 +42,8 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-browser-import-engine/thin", "tilo-accounts-engine/thin"]
 
 [dependencies]
+# The web engine client: the Chromium helper, the page protocol and their commands.
+tilo-webview = { version = "0.1.0", path = "../../crates/sdk/tilo-webview" }
 tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
 fnv.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }

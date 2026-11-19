@@ -13,7 +13,7 @@ use crate::tokens::TextRole;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunnelDirection {
@@ -95,17 +95,31 @@ impl FunnelChart {
 
 impl FunnelMarks {
     fn content_rect(&self) -> Rect {
-        Rect::new(
-            self.frame.rect.x0 + 90.0,
-            self.frame.rect.y0
-                + if self.frame.title.is_empty() {
-                    14.0
-                } else {
-                    48.0
-                },
-            self.frame.rect.x1 - 90.0,
-            self.frame.rect.y1 - 14.0,
-        )
+        self.frame.inside()
+    }
+    /// The same margin on both sides of the centred funnel: a stage's name where it stands beside
+    /// a stage too narrow for it, and the conversion beside the other edge, a step from the
+    /// stages; never more than a quarter of the chart a side.
+    fn measure_margins(&self, tr: &mut TextRenderer, theme: &Theme) -> Margins {
+        let name_style = theme
+            .text(TextRole::Label)
+            .with_weight(TextWeight::Semibold);
+        let names = self
+            .stages
+            .iter()
+            .map(|stage| f64::from(tr.measure_style(&stage.label, None, &name_style).0))
+            .fold(0.0, f64::max);
+        let conversion = if self.style.show_conversion {
+            crate::widget::plot::widest(tr, theme, ["100%"])
+        } else {
+            0.0
+        };
+        let side = (names.max(conversion) + crate::widget::plot::step(theme))
+            .min(self.frame.rect.width() / 4.0);
+        let mut margins = Margins::header(theme, &self.frame.title, 0);
+        margins.left = side;
+        margins.right = side;
+        margins
     }
     fn valid(&self) -> Vec<usize> {
         self.stages
@@ -339,6 +353,10 @@ impl PlotMarks for FunnelMarks {
             .collect()
     }
 
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.frame.margins = self.measure_margins(tr, theme);
+    }
+
     fn paint(
         &mut self,
         scene: &mut Scene,
@@ -380,7 +398,10 @@ impl PlotMarks for FunnelMarks {
                     &label,
                     theme.tokens.colors.text_dim,
                     transform
-                        * Affine::translate((geometry.bounds.x1 + 10.0, geometry.bounds.y0 + 4.0)),
+                        * Affine::translate((
+                            geometry.bounds.x1 + crate::widget::plot::step(theme),
+                            geometry.bounds.y0 + f64::from(theme.tokens.spacing.s1),
+                        )),
                     None,
                     &theme.text(TextRole::Caption),
                 );

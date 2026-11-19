@@ -42,6 +42,7 @@ enum Key {
     Record(usize, u64),
     Versioned(u64),
     Shared(usize),
+    Generation(usize),
 }
 
 thread_local! {
@@ -57,6 +58,7 @@ thread_local! {
 pub(crate) fn reading<R>(owner: &WakeHandle, pass: impl FnOnce() -> R) -> (R, Reads) {
     // The store tells this pass which resources it read.
     crate::resource::observe_reads(read_resource);
+    crate::resource::observe_generation_reads(read_generation);
     let _feeding = crate::wake::FeedsComponent::begin();
     let pass_reading = PassReading::begin(owner);
     let result = pass();
@@ -190,6 +192,20 @@ fn read_resource(
                 Some(frontier(document)),
                 Box::new(move || store.read(&id, frontier)),
             )
+        },
+    );
+}
+
+/// A pass compared `store`'s write generation (a reader of many resources that skips them all while
+/// it stays put, and so reads none of them): the pass reads again once it moved.
+#[inline(never)]
+fn read_generation(store: &crate::resource::ResourceStore) {
+    probe(
+        || Key::Generation(store.key()),
+        || {
+            let store = store.clone();
+            let now = move || Some(store.write_generation());
+            (now(), Box::new(now))
         },
     );
 }

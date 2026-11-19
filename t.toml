@@ -3125,8 +3125,9 @@ on = ["idle"]
 # environment (the product's fonts, lavapipe) on x86_64, where the visual goldens are recorded.
 # A run narrows with its inputs, which are part of its key: `app` lays out one package of `apps/tl`
 # (`--input app=apps/tl/tasks`), `press` presses a control by its words before each window is read
-# (`--input press="Mark Buy oat milk and eggs done"`), and `dump=true` prints every frame laid out
-# rather than only those a finding came from. Strict's whole-tree verdict (an allow-list line that
+# (`--input press="Mark Buy oat milk and eggs done"`), `dump=true` prints every frame laid out
+# rather than only those a finding came from, and `shot_height=2200` takes the shots in a window
+# that tall, so the lower part of a long page shows. Strict's whole-tree verdict (an allow-list line that
 # no longer shows, a view no scenario reaches) is the run that names no app and no press; a
 # narrowed run still fails on a finding the allow-list does not name.
 [[check]]
@@ -3142,7 +3143,7 @@ env = { TILO_TEST_NTFS_FIXTURES = "0" }
 requires = ["arch=x86_64"]
 outputs = ["/target/layout-check/{size}/**"]
 timeout_secs = 1800
-dispatch_inputs = { app = "", press = "", dump = "false" }
+dispatch_inputs = { app = "", press = "", dump = "false", shot_height = "" }
 [check.matrix]
 size = ["320x568", "390x844", "1280x800"]
 

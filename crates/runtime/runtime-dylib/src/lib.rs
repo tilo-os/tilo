@@ -39,6 +39,7 @@ pub use tilo_rich_text;
 pub use tilo_rt;
 pub use tilo_server_protocol;
 pub use tilo_user_identity;
+pub use tilo_webview;
 pub use ui;
 pub use vte;
 pub use xattr;

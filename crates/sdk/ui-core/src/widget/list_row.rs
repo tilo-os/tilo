@@ -391,17 +391,6 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// Show the row as a row of an outline: a sidebar's tree reads many rows at once, so its
-    /// title takes the label's size and the row the tree's own height
-    /// ([`crate::widget::TREE_ROW_HEIGHT`]) unless it says another.
-    #[must_use]
-    pub fn outline(mut self) -> Self {
-        self.outline = true;
-        self.row_height
-            .get_or_insert(f64::from(crate::widget::TREE_ROW_HEIGHT));
-        self
-    }
-
     /// Stand the row `px` tall, rather than the list's row height for what it holds: a tree's
     /// own row token, shorter than a list's. What the row holds still fits inside it.
     #[must_use]

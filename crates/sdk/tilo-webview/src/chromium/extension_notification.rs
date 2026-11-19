@@ -3,7 +3,7 @@
 
 use serde_json::Value;
 
-use crate::webview::WebViewEvent;
+use crate::WebViewEvent;
 
 /// An extension's notification as the host tells of it (`extension_notifications.h`):
 /// what it shows, or that it is gone.
@@ -42,7 +42,7 @@ pub(super) fn decode(id: &str, value: &Value) -> Option<WebViewEvent> {
                     .and_then(|progress| u8::try_from(progress).ok())?,
             ),
         };
-        Some(crate::webview::ExtensionNotice {
+        Some(crate::ExtensionNotice {
             title: text(&value["title"])?,
             message: text(&value["message"])?,
             context: text(&value["context"])?,

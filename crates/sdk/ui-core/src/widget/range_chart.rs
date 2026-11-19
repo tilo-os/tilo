@@ -15,7 +15,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct RangeBar {
@@ -144,14 +144,40 @@ impl RangeChart {
 }
 
 impl RangeMarks {
-    fn height(&self) -> f32 {
-        let head = if self.frame.title.is_empty() {
-            54.0
-        } else {
-            82.0
-        };
-        let count = f64::from(u32::try_from(self.bars.len()).unwrap_or(u32::MAX));
-        crate::num::f32_of_f64((head + count * self.style.row_height).max(140.0))
+    /// Measure the margins the chart's words take, in `theme`'s type: the row labels before the
+    /// bars (never wider than the style's label width), the axis's labels and title under them,
+    /// and half the last tick's label past the end, so it stands whole.
+    fn measure_margins(&self, tr: &mut TextRenderer, theme: &Theme) -> Margins {
+        let step = crate::widget::plot::step(theme);
+        let labels = crate::widget::plot::widest(
+            tr,
+            theme,
+            self.bars
+                .iter()
+                .filter(|bar| bar.valid())
+                .map(|bar| bar.label.as_str()),
+        )
+        .min(self.style.label_width);
+        let domain = self.domain();
+        let ticks = crate::widget::plot::widest(
+            tr,
+            theme,
+            self.ticks(domain)
+                .into_iter()
+                .map(|value| self.format(value)),
+        );
+        let mut margins = Margins::header(theme, &self.frame.title, 0)
+            .labels_under(theme, if self.axis_title.is_empty() { 1 } else { 2 });
+        margins.left = if labels > 0.0 { labels + step } else { 0.0 };
+        margins.right = ticks / 2.0;
+        margins
+    }
+    fn ticks(&self, domain: (f64, f64)) -> Vec<f64> {
+        crate::charts::nice_ticks(
+            domain.0,
+            domain.1,
+            usize::from(self.style.tick_count.max(2)),
+        )
     }
     fn domain(&self) -> (f64, f64) {
         if let Some((min, max)) = self.style.range
@@ -176,17 +202,7 @@ impl RangeMarks {
         }
     }
     fn plot(&self) -> Rect {
-        Rect::new(
-            self.frame.rect.x0 + self.style.label_width,
-            self.frame.rect.y0
-                + if self.frame.title.is_empty() {
-                    16.0
-                } else {
-                    44.0
-                },
-            self.frame.rect.x1 - 16.0,
-            self.frame.rect.y1 - 38.0,
-        )
+        self.frame.inside()
     }
     fn x(&self, value: f64, domain: (f64, f64)) -> f64 {
         ((value - domain.0) / (domain.1 - domain.0)).mul_add(self.plot().width(), self.plot().x0)
@@ -216,9 +232,19 @@ impl PlotMarks for RangeMarks {
     fn frame_mut(&mut self) -> &mut PlotFrame<String> {
         &mut self.frame
     }
-    /// One row per bar under the axis head, unless set.
-    fn layout_height(&self) -> Option<f32> {
-        Some(self.frame.height.unwrap_or_else(|| self.height()))
+    fn keeps_natural_height(&self) -> bool {
+        true
+    }
+    /// One row per bar between the title and the axis under them, unless set.
+    fn natural_height(&self, tr: &mut TextRenderer, theme: &Theme, _width: f64) -> f64 {
+        let margins = self.measure_margins(tr, theme);
+        let rows = f64::from(
+            u32::try_from(self.bars.iter().filter(|bar| bar.valid()).count()).unwrap_or(u32::MAX),
+        );
+        margins.top + rows * self.style.row_height + margins.bottom
+    }
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.frame.margins = self.measure_margins(tr, theme);
     }
     fn hit(&self, point: Point) -> Option<String> {
         self.hit_mark(point).map(str::to_owned)
@@ -275,11 +301,10 @@ impl PlotMarks for RangeMarks {
         let plot = self.plot();
         let domain = self.domain();
         let span = domain.1 - domain.0;
-        for value in crate::charts::nice_ticks(
-            domain.0,
-            domain.1,
-            usize::from(self.style.tick_count.max(2)),
-        ) {
+        let step = crate::widget::plot::step(theme);
+        let line = crate::widget::plot::caption_line(theme);
+        let caption = theme.text(TextRole::Caption);
+        for value in self.ticks(domain) {
             let fraction = if span > 0.0 {
                 (value - domain.0) / span
             } else {
@@ -295,23 +320,30 @@ impl PlotMarks for RangeMarks {
                     &Line::new((x, plot.y0), (x, plot.y1)),
                 );
             }
+            let label = self.format(value);
+            let (width, _) = tr.measure_style(&label, None, &caption);
             tr.draw_style(
                 scene,
-                &self.format(value),
+                &label,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((x - 12.0, plot.y1 + 9.0)),
+                transform * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + step)),
                 None,
-                &theme.text(TextRole::Caption),
+                &caption,
             );
         }
         if !self.axis_title.is_empty() {
+            let (width, _) = tr.measure_style(&self.axis_title, None, &caption);
             tr.draw_style(
                 scene,
                 &self.axis_title,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((plot.center().x - 32.0, plot.y1 + 25.0)),
+                transform
+                    * Affine::translate((
+                        plot.center().x - f64::from(width) / 2.0,
+                        plot.y1 + step + line + f64::from(theme.tokens.spacing.s1),
+                    )),
                 None,
-                &theme.text(TextRole::Caption),
+                &caption,
             );
         }
         self.hits.clear();
@@ -336,11 +368,15 @@ impl PlotMarks for RangeMarks {
                 scene,
                 &bar.label,
                 theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.frame.rect.x0 + 10.0, row_y + 12.0)),
+                transform
+                    * Affine::translate((
+                        self.frame.rect.x0,
+                        row_y + (self.style.row_height - line) / 2.0,
+                    )),
                 Some(crate::num::f32_of_f64(
-                    (self.style.label_width - 22.0).max(16.0),
+                    (self.frame.margins.left - step).max(1.0),
                 )),
-                &theme.text(TextRole::Caption),
+                &caption,
             );
             let x0 = self.x(bar.start.min(bar.end), domain);
             let x1 = self.x(bar.start.max(bar.end), domain);

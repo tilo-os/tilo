@@ -16,14 +16,17 @@ use tilo_paint_stream::wire::Payload;
 use tilo_paint_stream::{
     BlobRef, Color as PaintColor, Frame, Item, ItemKey, LayerId, Patch, Point, ROOT,
 };
+use tilo_webview::{MAX_FAMILY_LIST, MAX_SHOWN_FAMILIES, MAX_SHOWN_FIELDS};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 
-use super::{FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
+use tilo_webview::{
+    FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent,
+};
 
 const MIN_CAPTURE_INTERVAL: Duration = Duration::from_millis(50);
 /// How long the engine is given to answer before it is looked at again.
@@ -36,12 +39,6 @@ const LOOK_DOUBLINGS: u32 = 5;
 /// The looks at one capture whose answers are still told from any other answer.
 const MAX_LOOKS: usize = 8;
 const MAX_RESOURCE_REQUESTS: usize = 8;
-/// Fields one ask of the engine names: a page with more is asked again for the rest.
-pub const MAX_SHOWN_FIELDS: usize = 64;
-/// Family lists one ask of the engine names, and the longest list it is asked about: a
-/// longer one is set in the class it asks for.
-pub const MAX_SHOWN_FAMILIES: usize = 32;
-pub const MAX_FAMILY_LIST: usize = 256;
 /// Password fields remembered of one page.
 const MAX_SECRET_FIELDS: usize = 4096;
 /// How soon the engine is asked again what class of face it sets the page's text in, while
@@ -1586,7 +1583,7 @@ fn draw_border(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::webview::test_engine::TestEngine;
+    use tilo_webview::test_engine::TestEngine;
 
     const TOP: &str =
         include_str!("../../../../browser/paint-stream/tests/fixtures/layers.top.json");

@@ -1,9 +1,9 @@
 //! Private service credentials are resolved from canonical ownership, never document state.
 use browser_continuity::sessions::{Service, SessionCookies};
-use ui::tilo_resource::Effect;
-use ui::webview::{
+use tilo_webview::{
     ServiceSessionReply, ServiceSessionRequest, SharedEngine, WebViewCommand, WebViewEngine,
 };
+use ui::tilo_resource::Effect;
 use ui::widget::BannerNotice;
 
 mod forget;
@@ -249,7 +249,7 @@ impl ServiceView {
         }
         let mut profile = crate::service_profiles::Profile::prepare(&session)
             .map_err(|_| "This account could not be opened".to_owned())?;
-        let engine = match ui::webview::chromium::ChromiumEngine::with_service_session(
+        let engine = match tilo_webview::chromium::ChromiumEngine::with_service_session(
             profile
                 .path()
                 .map_err(|_| "This account could not be opened")?,
@@ -575,9 +575,9 @@ use browser_continuity::session_engine as native;
 type NativeRestart = native::NativeRestart<EngineAdapter, crate::service_profiles::Profile>;
 type NativeCleanup = native::NativeCleanup<EngineAdapter, crate::service_profiles::Profile>;
 #[derive(Clone)]
-struct EngineAdapter(std::sync::Arc<ui::webview::chromium::ChromiumEngine>);
+struct EngineAdapter(std::sync::Arc<tilo_webview::chromium::ChromiumEngine>);
 impl std::ops::Deref for EngineAdapter {
-    type Target = ui::webview::chromium::ChromiumEngine;
+    type Target = tilo_webview::chromium::ChromiumEngine;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -587,7 +587,7 @@ impl native::Engine for EngineAdapter {
         self.0.shutdown_service_session()
     }
     fn reopen(path: &std::path::Path, id: &str) -> Result<Self, String> {
-        ui::webview::chromium::ChromiumEngine::with_service_session(path, id).map(Self)
+        tilo_webview::chromium::ChromiumEngine::with_service_session(path, id).map(Self)
     }
     fn attach_waker(&self, wake: native::Wake) {
         self.0.set_waker(Box::new(move || wake()));
@@ -626,7 +626,7 @@ pub fn service_session_capability() -> Result<serde_json::Value, String> {
             binding: selection.binding,
         })?;
     }
-    let sdk = ui::webview::chromium::service_session_capability()?;
+    let sdk = tilo_webview::chromium::service_session_capability()?;
     if sdk
         .get("service_session_protocol")
         .and_then(serde_json::Value::as_u64)
@@ -678,8 +678,8 @@ mod lifecycle_tests {
     use super::*;
     use browser_continuity::sessions::{Cookie, SameSite};
     use std::os::unix::fs::PermissionsExt;
+    use tilo_webview::WebViewEngine;
     use ui::component_lifecycle::ComponentLifecycle;
-    use ui::webview::WebViewEngine;
     use ui::widget::{Widget, WindowCloseAdmission};
 
     tilo_test_env::scenario! {
@@ -765,7 +765,7 @@ mod lifecycle_tests {
         assert!(proof.get("authenticated").is_none());
     }
 
-    struct ReapFixture(std::sync::Arc<ui::webview::chromium::ChromiumEngine>);
+    struct ReapFixture(std::sync::Arc<tilo_webview::chromium::ChromiumEngine>);
     impl Drop for ReapFixture {
         fn drop(&mut self) {
             // A receiver assertion can unwind while its cleanup worker owns the supervisor
@@ -912,7 +912,7 @@ while True:
         )?;
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700))?;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(ui::webview::chromium::runtime::HOST_OVERRIDE_ENV, &helper);
+        env.set(tilo_webview::chromium::runtime::HOST_OVERRIDE_ENV, &helper);
         let is_discord = service == Service::Discord;
         let id = if is_discord {
             "restart-discord-selected"
@@ -967,7 +967,7 @@ while True:
                 b"refuse",
             )?;
         }
-        let engine = ui::webview::chromium::ChromiumEngine::with_service_session(
+        let engine = tilo_webview::chromium::ChromiumEngine::with_service_session(
             &path,
             &session.session_id,
         )?;
@@ -1006,7 +1006,7 @@ while True:
                 .drain_events()
                 .into_iter()
                 .find_map(|event| match event {
-                    ui::webview::WebViewEvent::ServiceSessionResult(reply) => Some(reply),
+                    tilo_webview::WebViewEvent::ServiceSessionResult(reply) => Some(reply),
                     _ => None,
                 });
             first.is_some()
@@ -1059,7 +1059,7 @@ while True:
                 .drain_events()
                 .into_iter()
                 .find_map(|event| match event {
-                    ui::webview::WebViewEvent::ServiceSessionResult(reply) => Some(reply),
+                    tilo_webview::WebViewEvent::ServiceSessionResult(reply) => Some(reply),
                     _ => None,
                 });
             verified.is_some()
@@ -1159,7 +1159,7 @@ while True:
         drop(view);
         let profile = crate::service_profiles::Profile::prepare_in(root.path(), &session)?;
         require!(!profile.needs_import());
-        let engine = ui::webview::chromium::ChromiumEngine::with_service_session(
+        let engine = tilo_webview::chromium::ChromiumEngine::with_service_session(
             profile.path()?,
             &session.session_id,
         )?;
@@ -1272,7 +1272,7 @@ while True:
         )?;
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700))?;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(ui::webview::chromium::runtime::HOST_OVERRIDE_ENV, &helper);
+        env.set(tilo_webview::chromium::runtime::HOST_OVERRIDE_ENV, &helper);
         let session = SessionCookies {
             schema: 1,
             session_id: "lifecycle-selected-session".into(),
@@ -1296,7 +1296,7 @@ while True:
         };
         let profile = crate::service_profiles::Profile::prepare_in(root.path(), &session)?;
         let path = profile.path()?.to_owned();
-        let engine = ui::webview::chromium::ChromiumEngine::with_service_session(
+        let engine = tilo_webview::chromium::ChromiumEngine::with_service_session(
             &path,
             &session.session_id,
         )?;
@@ -1329,7 +1329,7 @@ while True:
                 .drain_events()
                 .into_iter()
                 .find_map(|event| match event {
-                    ui::webview::WebViewEvent::ServiceSessionResult(reply) => Some(reply),
+                    tilo_webview::WebViewEvent::ServiceSessionResult(reply) => Some(reply),
                     _ => None,
                 });
             reply.is_some()

@@ -2442,8 +2442,8 @@
       "doc": "Nodes that are views of their own, placed where each says (or in rows when none says), and the connections between them drawn under them: a pipeline, a flow, the parts of a system.",
       "props": [
         {
-          "name": "name",
-          "doc": "What the graph is, for assistive technology.",
+          "name": "title",
+          "doc": "What the graph is called: shown over it, as every chart's title is, and its name for assistive technology.",
           "type": {
             "option": "text"
           }
@@ -2487,7 +2487,7 @@
       ],
       "semantics": {
         "role": "Group",
-        "label": "name"
+        "label": "title"
       }
     },
     {

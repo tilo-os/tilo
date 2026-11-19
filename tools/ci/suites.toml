@@ -503,7 +503,7 @@ inputs = [
   "os/external-assets/github-assets.tsv",
   "apps/browser/tilo-app.toml",
   "apps/browser/src/browser_widget/engine_runtime.rs",
-  "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
+  "crates/sdk/tilo-webview/src/chromium/runtime.rs",
 ]
 suites = [
   "scripts/browser/test_build_host.py",
@@ -2175,7 +2175,7 @@ inputs = [
   "os/dev/assert-native-arch.sh",
   "os/scripts/verify-elf-hardening.sh",
   "apps/browser/tilo-app.toml",
-  "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
+  "crates/sdk/tilo-webview/src/chromium/runtime.rs",
   "os/Containerfile",
 ]
 readers = [

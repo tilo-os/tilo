@@ -27,12 +27,12 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use tilo_webview::{FrameId, PageActor, PageFailure, PageReply, PageRequest, WebViewCommand};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tilo_actions::{ActionBinding, Actor, MemberId};
 use ui::tilo_resource::Resource as _;
 use ui::tokens::TextRole;
-use ui::webview::{FrameId, PageActor, PageFailure, PageReply, PageRequest, WebViewCommand};
 use ui::widget::{
     Button, ChipStyle, Element, EmptyState, ListRow, Row, Section, SectionHeader, Spacer, Text,
     Tone, Widget,
@@ -50,7 +50,7 @@ use crate::resource::{Browser, CATALOG};
 
 /// How often the page is read again while its review shows and nothing said
 /// it changed, for an engine that does not say when the page changes itself
-/// ([`ui::webview::WebViewEngine::tells_page_events`]): the page's own
+/// ([`tilo_webview::WebViewEngine::tells_page_events`]): the page's own
 /// script may change a field at any time.
 const REREAD_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 /// The engine's answers to one round of reads never stay pending longer.

@@ -7,13 +7,13 @@
 //! refusal and a source that never answers each end the action with nothing filled.
 //!
 //! What the window sent this way it strikes out of everything it answers afterwards
-//! ([`ui::webview::StruckTexts`]): a page may log what it was given, or send it in an address.
+//! ([`tilo_webview::StruckTexts`]): a page may log what it was given, or send it in an address.
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use tilo_webview::{PageActor, PageRequest};
 use ui::tilo_actions::{ActionInvoker, InvocationId, InvocationUpdate};
-use ui::webview::{PageActor, PageRequest};
 
 use super::{BrowserWidget, action_failed};
 use crate::page_items::{ASKED_FIRST, ItemAnswer, ItemAsk, ItemSource, released_origin};
@@ -107,7 +107,7 @@ impl BrowserWidget {
                 "This window has no way to its person's vault and fills nothing from it".into(),
             );
         };
-        if !ui::webview::page::is_element_ref(&element) {
+        if !tilo_webview::page::is_element_ref(&element) {
             return Err("`fill-page-item` names no element of the page outline".into());
         }
         if ui::tilo_actions::remote::person_vault::ItemRef::parse(&item).is_none() {

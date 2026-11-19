@@ -192,10 +192,10 @@ fn find_bar_controls_share_the_find_fields_centre_line() {
 #[test]
 fn download_status_shares_the_toolbar_rows_centre_line() {
     {
-        use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
+        use tilo_webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
         struct Downloading {
-            inner: std::sync::Arc<ui::webview::test_engine::TestEngine>,
+            inner: std::sync::Arc<tilo_webview::test_engine::TestEngine>,
             pending: std::sync::Mutex<Vec<WebViewEvent>>,
         }
         impl WebViewEngine for Downloading {
@@ -213,7 +213,7 @@ fn download_status_shares_the_toolbar_rows_centre_line() {
         }
 
         let engine = std::sync::Arc::new(Downloading {
-            inner: ui::webview::test_engine::TestEngine::new(),
+            inner: tilo_webview::test_engine::TestEngine::new(),
             pending: std::sync::Mutex::new(vec![WebViewEvent::NativeDownloadRequested {
                 id: 7,
                 url: "https://example.test/archive.tar".into(),

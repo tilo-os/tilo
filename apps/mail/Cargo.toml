@@ -32,6 +32,8 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+# The page reader displays a web engine's frames through the toolkit; it talks to the engine through this client.
+tilo-webview = { version = "0.1.0", path = "../../crates/sdk/tilo-webview" }
 # A page builds MIME too (drafts, and the sends a capable device delivers),
 # but has no hostname to read: the `live` build names Message-IDs from it, and
 # Mail names every Message-ID itself.

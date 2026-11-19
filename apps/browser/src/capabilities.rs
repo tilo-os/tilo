@@ -1,9 +1,9 @@
 //! Device-local permission and download surfaces backed by engine outcomes.
 use std::collections::BTreeMap;
+use tilo_webview::{SharedEngine, WebViewCommand, WebViewEvent};
 use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tokens::TextRole;
-use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::{Button, Column, EmptyState, ListRow, Text, Widget};
 
 /// How long a site's permission question stands before the engine withdraws it;
@@ -425,7 +425,7 @@ impl Capabilities {
                     WebViewCommand::PermissionDecision { id, allow }
                 } else {
                     // The person at the window chose.
-                    let by = ui::webview::AnsweredBy::Person;
+                    let by = tilo_webview::AnsweredBy::Person;
                     WebViewCommand::DownloadDecision { id, allow, by }
                 });
             })
@@ -598,7 +598,7 @@ impl Capabilities {
             engine.send(WebViewCommand::DownloadDecision {
                 id,
                 allow: false,
-                by: ui::webview::AnsweredBy::Person,
+                by: tilo_webview::AnsweredBy::Person,
             });
         }
     }
@@ -749,7 +749,7 @@ mod tests {
 
         phase an_extensions_question_is_asked_first_and_answered_once;
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
             let mut capabilities = Capabilities::default();
             capabilities.apply(WebViewEvent::PermissionRequested {
@@ -812,7 +812,7 @@ mod tests {
 
         phase an_extensions_question_whose_page_closed_goes_unanswered;
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
             let mut capabilities = Capabilities::default();
             for request in [4, 5] {
@@ -844,7 +844,7 @@ mod tests {
 
         phase a_sites_permission_request_is_published_with_the_page_and_answered_once;
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
             let mut capabilities = Capabilities::default();
             assert!(capabilities.resource().is_none(), "nothing is asked");
@@ -896,7 +896,7 @@ mod tests {
     )]
     fn download_resources_outlive_origin_and_offer_host_actions_when_complete() {
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
             let mut capabilities = Capabilities::default();
             capabilities.apply(WebViewEvent::PermissionRequested {
@@ -991,7 +991,7 @@ mod tests {
         }
 
         {
-            let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = tilo_webview::test_engine::TestEngine::new();
             let mut capabilities = Capabilities::default();
             for state in ["progress", "failed", "complete"] {
                 capabilities.apply(WebViewEvent::DownloadUpdated {
@@ -1046,7 +1046,7 @@ mod tests {
         }
 
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
             let mut capabilities = Capabilities::default();
             capabilities.apply(WebViewEvent::DownloadUpdated {
@@ -1100,7 +1100,7 @@ mod tests {
         }
 
         {
-            let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = tilo_webview::test_engine::TestEngine::new();
             let mut capabilities = Capabilities::default();
             capabilities.apply(WebViewEvent::DownloadUpdated {
                 id: 7,

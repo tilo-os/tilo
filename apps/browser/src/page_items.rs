@@ -4,15 +4,15 @@
 //! never what the item keeps. `fill-page-item` names a field and that reference. The window
 //! says where its page is, by the address its engine committed, and asks whoever keeps the
 //! vault for the item's text for that one site ([`ItemSource`]). What comes back is the text
-//! in a type that prints nothing and is held once ([`ui::webview::ReleasedText`]), or that its
+//! in a type that prints nothing and is held once ([`tilo_webview::ReleasedText`]), or that its
 //! person is asked first, or a refusal. The window hands a released text to its engine with
 //! the site it was released for, and the engine writes it only into that site's own page.
 //!
 //! A window has a source only where something reaches its person's vault for it. Without one
 //! it does not offer the action.
 
+use tilo_webview::{FillInto, ReleasedText};
 use ui::tilo_actions::{ActionInvoker, InvocationId};
-use ui::webview::{FillInto, ReleasedText};
 
 /// The failure code of a fill that was not made because its person is asked first: the code a
 /// use of a vault item by reference ends with wherever its person must allow it.

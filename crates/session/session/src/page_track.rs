@@ -685,9 +685,9 @@ mod over_the_live_session {
     use ui::webview::paint::stream::wire::{Payload, Receiver};
 
     use super::*;
+    use tilo_webview::test_engine::TestEngine;
+    use tilo_webview::{WebViewCommand, WebViewEngine};
     use ui::webview::paint::PaintEngine;
-    use ui::webview::test_engine::TestEngine;
-    use ui::webview::{WebViewCommand, WebViewEngine};
 
     const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
     const TAB: u64 = 0x5EED_0000_0000_0007;

@@ -380,7 +380,7 @@ pub mod workspace_emoji;
 pub use native::warmup;
 /// Private completion receipts shared by native and browser text editors.
 pub mod text_input {
-    pub use crate::webview::text_input::{Failure, Receipt, Resolver};
+    pub use tilo_webview::text_input::{Failure, Receipt, Resolver};
 }
 pub mod webview;
 pub mod widget;

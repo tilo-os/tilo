@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use super::{extension_id, valid_id};
-use crate::webview::WebViewEvent;
+use crate::WebViewEvent;
 
 const MENU_LEVEL_ROWS: usize = 24;
 const MENU_DEPTH: usize = 4;
@@ -20,7 +20,7 @@ pub(super) fn decode_context_items(
     value: &Value,
     depth: usize,
     left: &mut usize,
-) -> Option<Vec<crate::webview::ContextMenuItem>> {
+) -> Option<Vec<crate::ContextMenuItem>> {
     let items = value.as_array()?;
     if items.len() > MENU_LEVEL_ROWS || depth > MENU_DEPTH {
         return None;
@@ -30,8 +30,7 @@ pub(super) fn decode_context_items(
         .map(|item| {
             take_row(left)?;
             if item.get("separator").is_some() {
-                return (item["separator"] == true)
-                    .then_some(crate::webview::ContextMenuItem::Separator);
+                return (item["separator"] == true).then_some(crate::ContextMenuItem::Separator);
             }
             if !valid_id(item) {
                 return None;
@@ -45,13 +44,13 @@ pub(super) fn decode_context_items(
                 Some(enabled) => enabled.as_bool()?,
             };
             if let Some(nested) = item.get("items") {
-                return Some(crate::webview::ContextMenuItem::Submenu {
+                return Some(crate::ContextMenuItem::Submenu {
                     label,
                     enabled,
                     items: decode_context_items(nested, depth + 1, left)?,
                 });
             }
-            Some(crate::webview::ContextMenuItem::Command {
+            Some(crate::ContextMenuItem::Command {
                 id: u32::try_from(item["id"].as_u64()?).ok()?,
                 label,
                 checked: match item.get("checked") {
@@ -70,7 +69,7 @@ pub(super) fn decode_extension_menu(value: &Value) -> Option<WebViewEvent> {
         value: &Value,
         depth: usize,
         left: &mut usize,
-    ) -> Option<Vec<crate::webview::ExtensionMenuItem>> {
+    ) -> Option<Vec<crate::ExtensionMenuItem>> {
         let items = value.as_array()?;
         if items.len() > MENU_LEVEL_ROWS || depth > MENU_DEPTH {
             return None;
@@ -81,7 +80,7 @@ pub(super) fn decode_extension_menu(value: &Value) -> Option<WebViewEvent> {
                 take_row(left)?;
                 let kind = item["type"].as_str()?;
                 if kind == "separator" {
-                    return Some(crate::webview::ExtensionMenuItem::Separator);
+                    return Some(crate::ExtensionMenuItem::Separator);
                 }
                 let label = item["label"]
                     .as_str()
@@ -92,7 +91,7 @@ pub(super) fn decode_extension_menu(value: &Value) -> Option<WebViewEvent> {
                     if kind != "normal" {
                         return None;
                     }
-                    return Some(crate::webview::ExtensionMenuItem::Submenu {
+                    return Some(crate::ExtensionMenuItem::Submenu {
                         label,
                         enabled,
                         items: rows(nested, depth + 1, left)?,
@@ -107,7 +106,7 @@ pub(super) fn decode_extension_menu(value: &Value) -> Option<WebViewEvent> {
                     "checkbox" | "radio" => Some(item["checked"].as_bool()?),
                     _ => return None,
                 };
-                Some(crate::webview::ExtensionMenuItem::Command {
+                Some(crate::ExtensionMenuItem::Command {
                     key,
                     label,
                     checked,

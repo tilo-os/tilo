@@ -393,7 +393,7 @@ pub struct PageDeparture {
     /// when the window cannot say.
     #[serde(default)]
     pub page: String,
-    /// What the page does, as `ui::webview::HeldKind` names it (`submit`,
+    /// What the page does, as `tilo_webview::HeldKind` names it (`submit`,
     /// `navigate`, `request`, `download`, `payment`).
     #[serde(default)]
     pub kind: String,

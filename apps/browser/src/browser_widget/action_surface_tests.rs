@@ -13,7 +13,7 @@ fn effect_operation(payload: &[u8]) -> BrowserOperation {
 
 #[test]
 fn the_page_zooms_through_its_actions() {
-    let engine = ui::webview::test_engine::TestEngine::new();
+    let engine = tilo_webview::test_engine::TestEngine::new();
     let mut widget = BrowserWidget::with_engine(engine.clone(), true);
     let zoom = |widget: &BrowserWidget, id: &str| {
         let published = widget.published();

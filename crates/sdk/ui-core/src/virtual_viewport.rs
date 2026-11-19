@@ -916,6 +916,13 @@ where
         let (Some(top), Some(height)) = (self.item_top(index), self.item_height(index)) else {
             return false;
         };
+        // The first item is shown with the list's leading edge over it: revealing it brings the
+        // list back to its start, not to a gutter short of it.
+        let (top, height) = if index == 0 {
+            (0.0, top + height)
+        } else {
+            (top, height)
+        };
         let previous = self.offset;
         self.set_offset(alignment.offset_for(top, height, self.offset, self.viewport));
         self.offset.to_bits() != previous.to_bits()
@@ -1426,6 +1433,13 @@ where
     pub fn scroll_to_index(&mut self, index: usize, alignment: ScrollAlignment) -> bool {
         let (Some(top), Some(height)) = (self.item_top(index), self.item_height(index)) else {
             return false;
+        };
+        // The first item is shown with the list's leading edge over it: revealing it brings the
+        // list back to its start, not to a gutter short of it.
+        let (top, height) = if index == 0 {
+            (0.0, top + height)
+        } else {
+            (top, height)
         };
         let previous = self.offset;
         self.set_offset(alignment.offset_for(top, height, self.offset, self.viewport));

@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
-use ui::webview::ExtensionPermissionSet;
+use tilo_webview::ExtensionPermissionSet;
 
 use crate::extensions::ExtensionInfo;
 
@@ -290,7 +290,7 @@ pub struct ActionState {
 }
 
 impl ActionState {
-    pub fn apply(&mut self, change: &ui::webview::ExtensionActionChange) {
+    pub fn apply(&mut self, change: &tilo_webview::ExtensionActionChange) {
         if let Some(badge) = &change.badge {
             self.badge = badge_text(badge.as_deref().unwrap_or_default());
         }
@@ -335,7 +335,7 @@ pub struct PageValues {
 }
 
 impl PageValues {
-    pub fn apply(&mut self, change: &ui::webview::ExtensionActionChange) {
+    pub fn apply(&mut self, change: &tilo_webview::ExtensionActionChange) {
         if let Some(badge) = &change.badge {
             self.badge = badge.as_deref().map(badge_text);
         }
@@ -764,7 +764,7 @@ mod tests {
 
         phase a_page_shows_what_the_extension_set_for_it_over_what_every_page_shows;
         {
-            use ui::webview::ExtensionActionChange as Change;
+            use tilo_webview::ExtensionActionChange as Change;
             let id = "a".repeat(32);
             let own = |page: &str| format!("chrome-extension://{id}/{page}");
             let list = [installed(

@@ -1764,7 +1764,7 @@ impl NotesApp {
             // The page-tree shot shows the whole tree, so it keeps every note that holds
             // others open rather than only the ancestors of the note it shows.
             let mut expanded = ancestors;
-            if matches!(scenario, Some("page_tree" | "migrated")) {
+            if matches!(scenario, Some("page_tree" | "page_tree_flat" | "migrated")) {
                 expanded = self.workspace.pages().iter().map(|page| page.id).collect();
             }
             self.sidebar

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use ui::webview::{
+use tilo_webview::{
     HttpAuthChallenge, HttpAuthCredentials, PageDialog, PageDialogKind, WebViewCommand,
     WebViewEngine as _,
 };

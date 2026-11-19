@@ -79,6 +79,8 @@ winit.workspace = true
 neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
 
 [dev-dependencies]
+# The peer-page test drives a synchronous web engine.
+tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 # The integration tests count named scopes on the frame path.
 tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }

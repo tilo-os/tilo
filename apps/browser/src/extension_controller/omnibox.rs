@@ -2,7 +2,7 @@
 //! extension what is typed goes to, what it is told, and what Enter asks of
 //! it ([`crate::extension_omnibox`]).
 
-use ui::webview::SharedEngine;
+use tilo_webview::SharedEngine;
 
 use super::ExtensionController;
 use crate::effects::ExtensionRequest;

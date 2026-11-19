@@ -19,7 +19,6 @@ impl SceneFrames {
             self.ids.push(id);
         }
     }
-    #[cfg(feature = "native")]
     fn take(&mut self) -> (Vec<u64>, bool) {
         (
             std::mem::take(&mut self.ids),
@@ -48,20 +47,20 @@ mod receipt {
         let id = NEXT
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .ok()?;
-        let (_, host) = crate::native_scenario::host_clock::sample();
+        let (_, host) = crate::diagnostics::clock_sample();
         let scroll_marker_delta = if *SCROLL_MARKER
             .get_or_init(|| std::env::var("TILO_WEBVIEW_SCROLL_MARKER").is_ok_and(|v| v == "1"))
         {
-            crate::webview::scroll_marker::decode(rgba, width, height)
+            crate::scroll_marker::decode(rgba, width, height)
         } else {
             None
         };
-        crate::native_scenario::log::emit_json(
+        crate::diagnostics::emit_json(
             "tilo-webview-received",
             serde_json::json!({
                 "frame_id": id, "tab_id": tab, "process_id": std::process::id(),
                 "scroll_marker_delta": scroll_marker_delta,
-                "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                "host_clock": crate::diagnostics::CLOCK_NAME,
                 "received_host_lo_s": host.map(|h| h.lo_s), "received_host_hi_s": host.map(|h| h.hi_s),
             }),
         );
@@ -71,7 +70,7 @@ mod receipt {
     /// Record identical pixels without claiming another scene or presentation.
     pub(crate) fn unchanged(tab: u32, received: Option<u64>, retained: Option<u64>) {
         if let Some(received) = received {
-            crate::native_scenario::log::emit_json(
+            crate::diagnostics::emit_json(
                 "tilo-webview-unchanged",
                 serde_json::json!({
                     "process_id": std::process::id(), "tab_id": tab,
@@ -92,28 +91,27 @@ mod receipt {
 }
 
 /// Discard observations from any offscreen draw before this window scene.
-#[cfg(feature = "native")]
-pub(crate) fn begin_scene() {
+pub fn begin_scene() {
     if enabled() {
         DRAWN.with(|scene| {
             scene.borrow_mut().take();
         });
     }
 }
-pub(crate) fn drawn(id: Option<u64>) {
+/// Note that a view drew frame `id` in this scene.
+pub fn drawn(id: Option<u64>) {
     if let Some(id) = id {
         DRAWN.with(|scene| scene.borrow_mut().record(id));
     }
 }
 /// Called after recording a complete scene, even when it has no fresh input. Missing CPU
 /// IDs or overflow must be rejected by the measurement analyzer.
-#[cfg(feature = "native")]
-pub(crate) fn finish_scene(cpu_frame_id: Option<u64>) {
+pub fn finish_scene(cpu_frame_id: Option<u64>) {
     if !enabled() {
         return;
     }
     let (ids, overflow) = DRAWN.with(|scene| scene.borrow_mut().take());
-    crate::native_scenario::log::emit_json(
+    crate::diagnostics::emit_json(
         "tilo-webview-scene",
         serde_json::json!({
             "process_id": std::process::id(), "cpu_frame_id": cpu_frame_id,
@@ -154,7 +152,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn take_for_test() -> (Vec<u64>, bool) {
+/// Empty the frame ids recorded in this scene, for a test that inspects one.
+pub fn take_for_test() -> (Vec<u64>, bool) {
     DRAWN.with(|scene| scene.borrow_mut().take())
 }

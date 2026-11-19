@@ -2,8 +2,8 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use tilo_webview::{SharedEngine, WebViewCommand};
 use ui::lock::MutexRecover as _;
-use ui::webview::{SharedEngine, WebViewCommand};
 
 // Small first-run safety net authored for Tilo; the maintained lists are loaded from
 // cache and refreshed below.
@@ -329,8 +329,8 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        let engine = ui::webview::chromium::ChromiumEngine::with_private_host(&host, &root).unwrap()
-            as SharedEngine;
+        let engine = tilo_webview::chromium::ChromiumEngine::with_private_host(&host, &root)
+            .unwrap() as SharedEngine;
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/filters", listener.local_addr().unwrap());
@@ -478,7 +478,7 @@ mod tests {
         const LAST_SUCCESS: u64 = 1_700_000_123;
         if std::env::var_os("TILO_TEST_FILTER_RESTART_CHILD").is_some() {
             crate::storage::configure(None).unwrap();
-            let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = tilo_webview::test_engine::TestEngine::new();
             start(&engine, None);
             // The refresh starts on the cache reader's thread, once the cached rules are
             // handed over.

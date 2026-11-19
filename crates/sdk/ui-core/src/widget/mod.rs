@@ -2510,8 +2510,7 @@ pub use cartesian_plot::{
     AxisLabelFormat, AxisRange, AxisScale, AxisTick, CartesianAnimationStyle, CartesianAnnotation,
     CartesianAnnotationKind, CartesianBrush, CartesianBrushSelection, CartesianGesturePolicy,
     CartesianPan, CartesianPlot, CartesianRenderingStyle, CartesianStyle, CartesianTooltipAnchor,
-    CartesianTooltipStyle, CartesianZoom, LegendPosition, MarkerShape, PlotAxis, PlotDatum,
-    PlotSeries, SeriesKind,
+    CartesianTooltipStyle, CartesianZoom, MarkerShape, PlotAxis, PlotDatum, PlotSeries, SeriesKind,
 };
 pub mod pie_chart;
 pub use pie_chart::{PieChart, PieSlice, PieStyle, PieTooltipAnchor};

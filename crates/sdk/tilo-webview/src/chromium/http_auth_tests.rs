@@ -1,5 +1,5 @@
 use super::*;
-use crate::webview::{HttpAuthChallenge, HttpAuthCredentials};
+use crate::{HttpAuthChallenge, HttpAuthCredentials};
 
 #[test]
 fn a_servers_sign_in_reaches_only_a_tab_that_answers_them() {
@@ -129,7 +129,7 @@ fn a_servers_sign_in_reaches_only_a_tab_that_answers_them() {
         json!({"op":"http_auth_reply","tab":1,"id":8,"asker":"proxy.example:3128"})
     );
     // What the host would end the engine over is never sent.
-    let long = "x".repeat(crate::webview::http_auth::MAX_HTTP_AUTH_CREDENTIAL + 1);
+    let long = "x".repeat(crate::http_auth::MAX_HTTP_AUTH_CREDENTIAL + 1);
     for refused in [
         answer(0, "https://example.org", None),
         answer(9, "", None),

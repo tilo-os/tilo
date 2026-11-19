@@ -1,13 +1,13 @@
 //! A server's sign-in, between the host and the embedder
-//! ([`crate::webview::http_auth`]).
+//! ([`crate::http_auth`]).
 
 use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
 
 use super::ChromiumEngine;
-use crate::webview::http_auth::{HttpAuthChallenge, answers};
-use crate::webview::{WebViewCommand, WebViewEvent};
+use crate::http_auth::{HttpAuthChallenge, answers};
+use crate::{WebViewCommand, WebViewEvent};
 
 impl ChromiumEngine {
     /// Tell the host this tab answers sign-ins, once it asked and the host

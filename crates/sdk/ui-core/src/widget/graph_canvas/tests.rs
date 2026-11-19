@@ -47,3 +47,28 @@ fn retained_ports_have_real_accessibility_and_authored_positions() {
     harness.click_at(300.0, 135.0);
     assert!(harness.a11y_node_named("Destination input").is_some());
 }
+
+#[test]
+fn a_titled_graph_shows_its_title_over_its_nodes() {
+    let nodes = vec![GraphCanvasNode {
+        x: 0.0,
+        y: 0.0,
+        width: 180.0,
+        content: Box::new(Button::new("output", "Source output")),
+    }];
+    let harness = FrameHarness::new(
+        crate::State::new(),
+        Box::new(GraphCanvas::new(nodes, Vec::new()).with_title(Some("Release pipeline".into()))),
+        (500, 300),
+    );
+    let inspection = harness.inspection();
+    let output = target(&inspection.root, "output").expect("the node");
+    let theme = crate::Theme::light();
+    let band = crate::widget::chart_navigation::title_band(&theme, "Release pipeline");
+    assert!(
+        (output.rect[1] - band).abs() < 1.0,
+        "the nodes start a chart's title band under the title: {:?}, band {band}",
+        output.rect
+    );
+    assert!(harness.a11y_node_named("Release pipeline").is_some());
+}

@@ -250,6 +250,7 @@ members = [
     "crates/sdk/tilo-history",
     "crates/sdk/tilo-cpu-raster",
     "crates/sdk/ui-kms",
+    "crates/sdk/tilo-webview",
     "crates/sdk/tilo-process-services",
     "crates/sdk/tilo-formats",
     "crates/sdk/tilo-resource",

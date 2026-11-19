@@ -33,6 +33,11 @@ const TYPES = {
 
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/** How long one step of a page test may take: `TILO_STEP_SECONDS`, for a
+ * machine whose pages answer slower than one with a GPU (the page drivers give
+ * every wait a whole number of steps). */
+const STEP_MS = Math.round(1000 * (Number(process.env.TILO_STEP_SECONDS) || 5));
+
 /** Run in a page before its own scripts: the entry page's first screen (its
  * first visit's "Set up with your agent", web/first-run.mjs) counts as seen,
  * so a test that opens the site in a fresh profile gets the desktop it drives,
@@ -451,9 +456,11 @@ export async function launch({args = [], media = false} = {}) {
   // unanswered then is a browser or a page that stopped: the test that is
   // waiting on it fails and names the command, instead of waiting for ever.
   const ANSWER_TIMEOUT_MS = 180_000;
-  // A screenshot comes with the page's next frame: one that takes longer was
-  // asked of a document the page left.
-  const CAPTURE_TIMEOUT_MS = 15_000;
+  // A screenshot comes with the page's next frame: one that takes longer than
+  // a few steps was asked of a document the page left. Steps are the drivers'
+  // (`TILO_STEP_SECONDS`), which wait a whole number of them for everything
+  // else a page answers.
+  const CAPTURE_TIMEOUT_MS = 3 * STEP_MS;
   const stop = error => {
     for (const waiting of pending.values()) waiting.reject(error);
     pending.clear();

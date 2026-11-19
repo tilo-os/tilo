@@ -6,10 +6,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use taffy::prelude::*;
+use tilo_webview::{FrameSlot, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
-use ui::webview::{FrameSlot, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -123,7 +123,7 @@ fn render_live_shot_to_png(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use ui::time::{Duration, Instant};
 
-    let real_engine: SharedEngine = ui::webview::chromium::ChromiumEngine::new()
+    let real_engine: SharedEngine = tilo_webview::chromium::ChromiumEngine::new()
         .map_err(|e| format!("Chromium engine failed to boot: {e}"))?;
     let probe = LiveProbe::new(real_engine);
     let engine: SharedEngine = probe.clone();
@@ -299,7 +299,7 @@ mod tests {
     use super::*;
     #[test]
     fn observing_events_preserves_visible_failures() {
-        let engine = ui::webview::chromium::UnavailableEngine::new("missing runtime".into());
+        let engine = tilo_webview::chromium::UnavailableEngine::new("missing runtime".into());
         let probe = LiveProbe::new(engine);
         probe.send(WebViewCommand::Navigate("https://example.org".into()));
         let events = probe.drain_events();

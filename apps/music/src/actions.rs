@@ -8,7 +8,8 @@ use ui::tilo_resource::{self, Effect};
 
 use crate::row_types::{
     Album, Artist, LocalFile as LocalFileRow, Membership, Player, Playlist, Queue, QueueItem,
-    Source, Track,
+    Recommendation, RecommendationArtist, RecommendationInput, RecommendationPreferences, Source,
+    SpotifyDevice, Track,
 };
 use tilo_actions::ActionSpec;
 use ui::framework::EffectStatus;
@@ -245,14 +246,14 @@ pub enum MusicEffect {
         name: String,
     },
     /// Transfer Spotify playback
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = SpotifyDevice)]
     #[effect(job, returns)]
     SpotifyTransfer {
         #[param("Spotify Connect device ID")]
         device: String,
     },
     /// Play on a Spotify device
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = SpotifyDevice)]
     #[effect(job, returns)]
     SpotifyRemotePlay {
         #[param("Spotify Connect device ID")]
@@ -261,7 +262,7 @@ pub enum MusicEffect {
         track: String,
     },
     /// Pause a Spotify device
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = SpotifyDevice)]
     #[effect(job, returns)]
     SpotifyRemotePause {
         #[param("Spotify Connect device ID")]
@@ -343,7 +344,7 @@ pub enum MusicEffect {
     #[effect(label = "music-open-audio-file")]
     OpenFile,
     /// Open
-    #[effect(view, row, on = Artist, on = Album, on = Playlist, on = Membership, on = Queue, on = QueueItem)]
+    #[effect(view, row, on = Artist, on = Album, on = Playlist, on = Membership, on = Queue, on = QueueItem, on = RecommendationPreferences, on = RecommendationInput, on = RecommendationArtist, on = Recommendation)]
     Open { place: Place },
     /// Open album
     #[effect(view, row, on = Track)]
@@ -364,7 +365,7 @@ pub enum MusicEffect {
     /// Plays a track on its own, or (with `queued`) this exact occurrence of
     /// it in the queue, which a stale queue result cannot select.
     #[effect(kind = "outside")]
-    #[effect(row, job, returns, on = Track, on = QueueItem, on = crate::row_types::LocalFile)]
+    #[effect(row, job, returns, on = Track, on = QueueItem, on = crate::row_types::LocalFile, on = Recommendation)]
     #[effect(label = "music-recommendations-play")]
     Play {
         track: String,
@@ -803,6 +804,9 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
     /// play, a queue item at either end, a protected stream that cannot be
     /// kept here, and the words the transport's own controls use.
     pub(crate) fn row_status(&self, id: &str) -> Vec<EffectStatus> {
+        if id.starts_with("music.recommendation") {
+            return crate::recommendations::row_status(self.lib, id);
+        }
         if id == PLAYER_RESOURCE_ID || (id == LOCAL_FILE_RESOURCE_ID && self.is_current_file()) {
             return transport_status(
                 self.playback,
@@ -867,7 +871,10 @@ impl<D: DeviceFacts + ?Sized> MusicRows<'_, D> {
 
 /// The arguments a song-shaped effect binds: the song, and the queue
 /// occurrence it names, when it names one.
-fn play_arguments(track: &str, queued: Option<usize>) -> [(&'static str, serde_json::Value); 2] {
+pub(crate) fn play_arguments(
+    track: &str,
+    queued: Option<usize>,
+) -> [(&'static str, serde_json::Value); 2] {
     [
         ("track", track.to_owned().into()),
         (

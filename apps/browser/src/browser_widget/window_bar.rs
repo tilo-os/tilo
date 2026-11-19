@@ -473,7 +473,7 @@ impl BrowserWidget {
                 }
                 Some(BarCommand::DeveloperTools) => self
                     .engine
-                    .send(ui::webview::WebViewCommand::ShowDeveloperTools),
+                    .send(tilo_webview::WebViewCommand::ShowDeveloperTools),
                 Some(BarCommand::Zoom(step)) => {
                     (self
                         .daily
@@ -547,8 +547,8 @@ mod tests {
 #[cfg(test)]
 mod more_menu_tests {
     use super::*;
-    use ui::webview::WebViewCommand;
-    use ui::webview::test_engine::TestEngine;
+    use tilo_webview::WebViewCommand;
+    use tilo_webview::test_engine::TestEngine;
 
     fn names(actions: &[ToolbarAction]) -> Vec<String> {
         actions

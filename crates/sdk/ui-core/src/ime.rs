@@ -1,13 +1,5 @@
 //! Focused widget IME intent shared by native windows and browser input bridges.
-/// Keyed, ephemeral equality check for a field's text and selection. This is invalidation metadata,
-/// never a persisted text hash or insertion authority.
-pub fn edit_fingerprint(text: &str, anchor: usize, focus: usize, key: &[u8; 32]) -> [u8; 32] {
-    let mut hash = blake3::Hasher::new_keyed(key);
-    hash.update(&anchor.to_le_bytes());
-    hash.update(&focus.to_le_bytes());
-    hash.update(text.as_bytes());
-    *hash.finalize().as_bytes()
-}
+pub use tilo_webview::{InputPurpose, edit_fingerprint};
 
 /// Scope a private field stamp to its editable subtarget inside one widget.
 pub fn scoped_fingerprint(scope: &[u8], field: [u8; 32], key: &[u8; 32]) -> [u8; 32] {
@@ -16,34 +8,6 @@ pub fn scoped_fingerprint(scope: &[u8], field: [u8; 32], key: &[u8; 32]) -> [u8;
     hash.update(&field);
     hash.update(scope);
     *hash.finalize().as_bytes()
-}
-
-/// What a field holds, for an input method to pick its layout: an email field gets `@`, a phone field
-/// the dial pad, a PIN the digit pad.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum InputPurpose {
-    /// Free text.
-    #[default]
-    Text,
-    /// A person's name.
-    Name,
-    Search,
-    Email,
-    Url,
-    /// A number, with sign and decimal separator.
-    Number,
-    /// A number with a fractional part.
-    Decimal,
-    Phone,
-    /// Digits only, such as a pairing passkey.
-    Pin,
-    /// A code sent to the person to confirm a sign-in.
-    OneTimeCode,
-    Password,
-    Date,
-    Time,
-    /// A terminal, whose keyboard wants the extra keys.
-    Terminal,
 }
 
 /// Which letters an input method capitalises on its own.

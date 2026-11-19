@@ -40,6 +40,11 @@ const MAX_TEXT_BYTES: usize = 1024;
 
 type ShortcutWire = (String, HashMap<String, OwnedValue>);
 
+/// One bound global shortcut, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal.shortcut", label = "Global shortcut")]
+pub struct ShortcutResource;
+
 /// What a bound shortcut offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.portal.shortcut")]
@@ -405,9 +410,8 @@ impl crate::Published for Shortcuts {
                     .description
                     .clone()
                     .unwrap_or_else(|| bound.id.clone());
-                offer::<ShortcutEffect>(ResourceSpec::new(
+                offer::<ShortcutEffect>(tilo_resource::typed_resource::<ShortcutResource>(
                     resource_of(&path, &bound.id),
-                    "portal.shortcut",
                     label,
                 ))
                 .with_presentation(ResourcePresentation {

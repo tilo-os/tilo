@@ -46,8 +46,8 @@
 //!   names nobody;
 //! - nobody, when the window dropped it at its own deadline.
 
+use tilo_webview::{AnsweredBy, HeldKind, HeldRequest, PageActor};
 use ui::tilo_actions::{ActionInvoker, InvocationId};
-use ui::webview::{AnsweredBy, HeldKind, HeldRequest, PageActor};
 
 use super::{BrowserWidget, WebViewCommand, action_failed};
 

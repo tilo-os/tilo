@@ -12,7 +12,7 @@
 
 use std::time::Instant;
 
-use ui::webview::{
+use tilo_webview::{
     PageFailure, PageNavigation, PageReply, PageRequest, PageResourceNote, WebViewCommand,
 };
 
@@ -61,7 +61,7 @@ impl BrowserWidget {
     pub(super) fn admitted_to_page(
         &mut self,
         invocation: ui::tilo_actions::InvocationId,
-        actor: Option<&ui::webview::PageActor>,
+        actor: Option<&tilo_webview::PageActor>,
         invoker: Option<&ui::tilo_actions::ActionInvoker>,
         operation: &crate::effects::BrowserOperation,
     ) {

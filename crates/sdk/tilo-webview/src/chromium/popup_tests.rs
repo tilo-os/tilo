@@ -17,7 +17,7 @@ fn a_pages_popup_is_routed_from_the_moment_it_opens_until_it_closes() {
             .iter()
             .cloned()
             .collect::<Vec<_>>(),
-        vec![crate::webview::Popup {
+        vec![crate::Popup {
             id: popup,
             url: "https://accounts.example/".into(),
             width: 420,

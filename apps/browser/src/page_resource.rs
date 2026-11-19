@@ -83,10 +83,10 @@
 use std::time::Instant;
 
 use serde_json::Value;
+use tilo_webview::{PageActor, PageFailure, PageReply, PageRequest, PageResourceNote};
 use ui::framework::PersonResource;
 use ui::tilo_actions::{Acting, ActionInvoker, Actor, InvocationId, InvokerDevice};
 use ui::tilo_resource::{self, ActionCx, Atom, Map, Model, Refusal, resource};
-use ui::webview::{PageActor, PageFailure, PageReply, PageRequest, PageResourceNote};
 
 /// How many actions of one tab the resource holds: the newest, as the engine
 /// holds them.

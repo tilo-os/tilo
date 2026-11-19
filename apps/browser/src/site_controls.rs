@@ -2,13 +2,13 @@
 use std::collections::BTreeSet;
 
 pub use browser_model::urls::origin;
+use tilo_webview::{SharedEngine, SiteStatus, WebViewCommand, WebViewEvent};
 use ui::time::{Duration, Instant};
 use ui::{
     LocalState,
     icons::Icon,
     text_render::TextKind,
     tokens::TextRole,
-    webview::{SharedEngine, SiteStatus, WebViewCommand, WebViewEvent},
     widget::{
         Button, ButtonRole, Column, Container, Property, PropertyList, Row, ScrollAxis, Scrollable,
         Spacer, Text, Widget, toggle_group::Segment,
@@ -602,15 +602,15 @@ mod tests {
     use super::*;
     use ui::framework::HostDelivery as _;
 
-    struct NativeRecordingEngine(std::sync::Arc<ui::webview::test_engine::TestEngine>);
-    impl ui::webview::WebViewEngine for NativeRecordingEngine {
+    struct NativeRecordingEngine(std::sync::Arc<tilo_webview::test_engine::TestEngine>);
+    impl tilo_webview::WebViewEngine for NativeRecordingEngine {
         fn supports_native_filtering(&self) -> bool {
             true
         }
         fn send(&self, command: WebViewCommand) {
             self.0.send(command);
         }
-        fn frames(&self) -> ui::webview::FrameSlot {
+        fn frames(&self) -> tilo_webview::FrameSlot {
             self.0.frames()
         }
         fn drain_events(&self) -> Vec<WebViewEvent> {
@@ -640,7 +640,7 @@ mod tests {
         }
 
         {
-            let recorder = ui::webview::test_engine::TestEngine::new();
+            let recorder = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = std::sync::Arc::new(NativeRecordingEngine(recorder.clone()));
             let mut controls = SiteControls::default();
             controls.initialize(&engine);
@@ -777,7 +777,7 @@ mod tests {
         }
 
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
             let mut controls = SiteControls::default();
             controls.committed = Some("https://one.test".into());
@@ -827,8 +827,8 @@ mod tests {
             ui::widget::find_test_id(panel.as_ref(), "browser.site.reset").is_none(),
             "an engine that cannot reset is not asked to"
         );
-        let capture = ui::webview::test_engine::TestEngine::new();
-        let engine: ui::webview::SharedEngine = capture.clone();
+        let capture = tilo_webview::test_engine::TestEngine::new();
+        let engine: tilo_webview::SharedEngine = capture.clone();
         controls.pending.set(Some(Pending::Action {
             origin: "https://one.test".into(),
             generation: 3,
@@ -893,7 +893,7 @@ mod tests {
         {
             for kind in ["enable", "disable"] {
                 for dismiss in [false, true] {
-                    let recorder = ui::webview::test_engine::TestEngine::new();
+                    let recorder = tilo_webview::test_engine::TestEngine::new();
                     let engine: SharedEngine = recorder.clone();
                     let mut controls = protection_toggle(kind);
                     assert!(controls.apply(toggle_reply(kind, true)));
@@ -946,7 +946,7 @@ mod tests {
                 "https://one.test/other",
                 "new-generation",
             ] {
-                let recorder = ui::webview::test_engine::TestEngine::new();
+                let recorder = tilo_webview::test_engine::TestEngine::new();
                 let engine: SharedEngine = recorder.clone();
                 let mut controls = protection_toggle("disable");
                 assert!(controls.apply(toggle_reply("disable", true)));
@@ -975,7 +975,7 @@ mod tests {
                 "action",
                 "navigation",
             ] {
-                let recorder = ui::webview::test_engine::TestEngine::new();
+                let recorder = tilo_webview::test_engine::TestEngine::new();
                 let engine: SharedEngine = recorder.clone();
                 let mut controls = protection_toggle("disable");
                 let mut reply = toggle_reply("disable", case != "failure");

@@ -12,14 +12,14 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
+use tilo_webview::test_engine::TestEngine;
+use tilo_webview::{PageNavigation, WebViewCommand, WebViewEngine as _};
 use ui::framework::testing::TestApp;
 use ui::tilo_actions::{
     Acting, ActionAddress, ActionInvoker, Actor, InvocationUpdate, InvokerDevice,
 };
 use ui::tilo_resource::history;
 use ui::tilo_resource::{Effect as _, Invoke};
-use ui::webview::test_engine::TestEngine;
-use ui::webview::{PageNavigation, WebViewCommand, WebViewEngine as _};
 
 use super::*;
 use crate::effects::BrowserEffect;
@@ -1091,7 +1091,7 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
 /// The engine holds the request `id` the page sends on its own, and sets
 /// that down at `seq` of its record: no actor's action reached it.
 fn engine_holds(engine: &TestEngine, seq: u64, id: u32) -> Value {
-    let mut request = ui::webview::HeldRequest::new(id, ui::webview::HeldKind::Request);
+    let mut request = tilo_webview::HeldRequest::new(id, tilo_webview::HeldKind::Request);
     request.method = "POST".into();
     request.origin = "https://orders.test".into();
     engine.hold(request);
@@ -1130,7 +1130,7 @@ fn engine_ends_hold(engine: &TestEngine, seq: u64, id: u32) -> Value {
         "ok": true, "message": "POST https://orders.test", "url": PAGE,
         "to_url": "https://orders.test"});
     engine.emit_page_resource(seq, entry.clone());
-    engine.push_event(ui::webview::WebViewEvent::HeldRequestClosed { id });
+    engine.push_event(tilo_webview::WebViewEvent::HeldRequestClosed { id });
     entry
 }
 
@@ -1751,7 +1751,7 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
     let engine = TestEngine::new();
     engine.set_page_data("forms", json!({ "forms": [order_form()] }));
     let mut app = open(&engine);
-    engine.push_event(ui::webview::WebViewEvent::LoadFinished);
+    engine.push_event(tilo_webview::WebViewEvent::LoadFinished);
     for _ in 0..3 {
         app.settle();
     }
@@ -1790,7 +1790,7 @@ fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
     app.settle();
 
     // It sends the form, and the window holds the submission for the person.
-    let mut submission = ui::webview::HeldRequest::new(1, ui::webview::HeldKind::Submit);
+    let mut submission = tilo_webview::HeldRequest::new(1, tilo_webview::HeldKind::Submit);
     submission.method = "POST".into();
     submission.origin = "https://shop.test".into();
     engine.hold(submission);
@@ -1875,8 +1875,8 @@ fn a_sign_ins_password_is_never_written() {
     let engine = TestEngine::new();
     let mut app = open(&engine);
     let ada = agent("ada");
-    engine.push_event(ui::webview::WebViewEvent::HttpAuth(
-        ui::webview::HttpAuthChallenge {
+    engine.push_event(tilo_webview::WebViewEvent::HttpAuth(
+        tilo_webview::HttpAuthChallenge {
             id: 4,
             asker: ASKER.into(),
             proxy: false,
@@ -1929,7 +1929,7 @@ fn a_sign_ins_password_is_never_written() {
         [(
             4,
             ASKER.to_owned(),
-            Some(ui::webview::HttpAuthCredentials::new("ada", PASSWORD))
+            Some(tilo_webview::HttpAuthCredentials::new("ada", PASSWORD))
         )],
         "the credentials reach the engine, for the asker that was shown"
     );

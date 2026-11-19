@@ -845,7 +845,7 @@ impl Widget for EmbeddedApp {
             .unwrap_or(false)
     }
 
-    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+    fn start_deferred_text(&mut self) -> Option<tilo_webview::text_input::Receipt> {
         self.runs();
         self.app
             .mutate_node(self.app.focused_node?, |widget| {
@@ -855,7 +855,7 @@ impl Widget for EmbeddedApp {
             .flatten()
     }
 
-    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+    fn commit_deferred_text(&mut self, text: &str) -> Option<tilo_webview::text_input::Receipt> {
         self.runs();
         self.app
             .mutate_node(self.app.focused_node?, |widget| {

@@ -22,13 +22,13 @@ pub(crate) struct Playing {
     duration_ms: AtomicU64,
 }
 
-/// `effect` on this device's player row, which offers it whatever plays.
+/// `effect` on this device's player row, whose type declares the transport's
+/// controls whatever plays.
 fn on_player(effect: &MusicEffect) -> Option<ui::tilo_actions::ActionBinding<()>> {
     let player = ui::framework::LiveRow::typed::<crate::row_types::Player>(
         crate::actions::PLAYER_RESOURCE_ID,
         crate::i18n::CATALOG.t("music-resource-player"),
-    )
-    .effect(effect);
+    );
     ui::tilo_actions::ActionBinding::unit_for(&player, effect.id()).ok()
 }
 

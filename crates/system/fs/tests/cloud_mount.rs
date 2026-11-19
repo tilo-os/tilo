@@ -1407,11 +1407,13 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
         std::fs::read_to_string(mount.join("Docs/new.txt")).unwrap(),
         "written by a POSIX tool and appended"
     );
-    assert_eq!(
-        tilo_test_env::wait_for("the appended file on the server", || server
-            .get("Docs/new.txt")),
-        b"written by a POSIX tool and appended"
-    );
+    // The upload is queued, so the file's arrival is what is waited on, never its bytes already
+    // being there.
+    wait_until("the appended file on the server", || {
+        server
+            .get("Docs/new.txt")
+            .is_some_and(|bytes| bytes == b"written by a POSIX tool and appended")
+    });
 
     let CloudResponse::Mounts(mounts) =
         service.request(CloudRequest::List, tilo_test_env::hang_bound())

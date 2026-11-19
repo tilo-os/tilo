@@ -1,5 +1,5 @@
 use super::*;
-use crate::webview::{FileChooser, FileChooserMode};
+use crate::{FileChooser, FileChooserMode};
 
 #[test]
 fn a_persons_file_chooser_reaches_only_a_tab_that_answers_them() {
@@ -118,7 +118,7 @@ fn a_persons_file_chooser_reaches_only_a_tab_that_answers_them() {
         (9, vec!["proof.pdf".to_string()]),
         (
             9,
-            vec!["/a".to_string(); crate::webview::file_chooser::MAX_FILE_CHOOSER_PATHS + 1],
+            vec!["/a".to_string(); crate::file_chooser::MAX_FILE_CHOOSER_PATHS + 1],
         ),
     ] {
         engine.send(WebViewCommand::AnswerFileChooser { id, paths });

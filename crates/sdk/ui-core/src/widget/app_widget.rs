@@ -1375,7 +1375,7 @@ mod component_adapter {
                 .unwrap_or(true)
         }
 
-        fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        fn start_deferred_text(&mut self) -> Option<tilo_webview::text_input::Receipt> {
             self.owes_sync = true;
             self.in_root_mut(|root| root.start_deferred_text())
                 .flatten()
@@ -1384,7 +1384,7 @@ mod component_adapter {
         fn commit_deferred_text(
             &mut self,
             text: &str,
-        ) -> Option<crate::webview::text_input::Receipt> {
+        ) -> Option<tilo_webview::text_input::Receipt> {
             self.owes_sync = true;
             self.in_root_mut(|root| root.commit_deferred_text(text))
                 .flatten()

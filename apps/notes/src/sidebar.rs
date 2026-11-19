@@ -649,7 +649,11 @@ impl PageSidebar {
         .with_accessible_name(CATALOG.t("notes-title"))
         .with_tree(Rc::clone(&marks))
         .with_indent_guides()
+        // The page tree is its column's body, as a window's navigation list is: its rows keep
+        // the column's gutter, and the scroll bar floats over them while it is wanted.
         .filling()
+        .in_column()
+        .overlay_scrollbar()
         .selection_follows_focus()
         .rename_on_double_click()
         .tab_indents(true)

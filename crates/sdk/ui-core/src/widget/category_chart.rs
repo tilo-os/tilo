@@ -15,7 +15,7 @@ use crate::tokens::TextRole;
 use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_value};
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks, ValueAxis};
 
 #[derive(Clone, Debug)]
 pub struct Category {
@@ -173,22 +173,6 @@ pub struct CategoryMarks {
     style: CategoryChartStyle,
     frame: PlotFrame<(usize, usize)>,
     toggles: chart_legend::SeriesToggles,
-    margins: Margins,
-}
-
-/// What a bar chart keeps around its bars, measured from its words in the theme's type as it is
-/// laid out: the title's band and the legend's rows over them, the value labels' column before
-/// them, and the category labels' line under them.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Margins {
-    /// From the chart's top to its legend's first row.
-    legend: f64,
-    /// From the chart's top to the plot's top rule.
-    top: f64,
-    /// From the chart's leading edge to the plot.
-    left: f64,
-    /// From the plot's bottom rule to the chart's bottom.
-    bottom: f64,
 }
 
 pub type CategoryChart = Plot<CategoryMarks>;
@@ -204,7 +188,6 @@ impl CategoryChart {
             style: CategoryChartStyle::default(),
             frame: PlotFrame::new(340.0, 120.0),
             toggles: chart_legend::SeriesToggles::default(),
-            margins: Margins::default(),
         })
     }
     #[must_use]
@@ -252,16 +235,7 @@ impl CategoryChart {
 
 impl CategoryMarks {
     fn plot_rect(&self) -> Rect {
-        let rect = self.frame.rect;
-        let Margins {
-            top, left, bottom, ..
-        } = self.margins;
-        Rect::new(
-            (rect.x0 + left).min(rect.x1),
-            (rect.y0 + top).min(rect.y1),
-            rect.x1,
-            (rect.y1 - bottom).max(rect.y0 + top),
-        )
+        self.frame.inside()
     }
 
     fn shows_legend(&self) -> bool {
@@ -279,38 +253,16 @@ impl CategoryMarks {
 
     /// Measure the margins the chart's words take, in `theme`'s type.
     fn measure_margins(&self, tr: &mut TextRenderer, theme: &Theme) -> Margins {
-        let rect = self.frame.rect;
-        let caption = theme.text(TextRole::Caption);
-        let line = f64::from(caption.line_height_px());
-        let rhythm = &theme.tokens.spacing.rhythm;
-        let related = f64::from(rhythm.related);
-        let legend = crate::widget::chart_navigation::title_band(theme, &self.frame.title);
         let legend_rows = if self.shows_legend() {
-            chart_legend::rows(
-                self.series.iter().map(|series| series.name.as_str()),
-                rect.x0,
-                rect.x1,
-            )
+            self.frame
+                .legend_rows(self.series.iter().map(|series| series.name.as_str()))
         } else {
             0
         };
-        let legend_height = if legend_rows == 0 {
-            0.0
-        } else {
-            crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + related
-        };
-        let (min, max) = self.range();
-        let widest = crate::charts::nice_ticks(min, max, crate::widget::plot::AXIS_TICKS)
-            .into_iter()
-            .map(|value| f64::from(tr.measure_style(&self.axis_label(value), None, &caption).0))
-            .fold(0.0_f64, f64::max);
-        Margins {
-            legend,
-            // Half a label's line over the top rule, so the top value's label stands whole.
-            top: legend + legend_height + line / 2.0,
-            left: widest + f64::from(theme.tokens.spacing.s2),
-            bottom: f64::from(theme.tokens.spacing.s2) + line,
-        }
+        let widest = ValueAxis::widest(tr, theme, self.range(), |value| self.axis_label(value));
+        Margins::header(theme, &self.frame.title, legend_rows)
+            .value_axis(theme, widest)
+            .labels_under(theme, 1)
     }
 
     fn value(&self, series: usize, category: usize) -> Option<&CategoryValue> {
@@ -550,9 +502,7 @@ impl CategoryMarks {
         if !self.shows_legend() {
             return None;
         }
-        let rect = self.frame.rect;
-        let y = rect.y0 + self.margins.legend;
-        Some(Rect::new(rect.x0, y, rect.x1, y))
+        Some(self.frame.legend_area())
     }
 
     /// The corners of `bar`: a stack is one bar, rounded only at its ends.
@@ -744,7 +694,7 @@ impl PlotMarks for CategoryMarks {
         Some(self.series.get(series)?.id.as_str())
     }
     fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        self.margins = self.measure_margins(tr, theme);
+        self.frame.margins = self.measure_margins(tr, theme);
         self.toggles.place(
             self.series
                 .iter()

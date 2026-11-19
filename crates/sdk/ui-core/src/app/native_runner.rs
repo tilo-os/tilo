@@ -2703,7 +2703,7 @@ impl AppHandler {
         // pre-seeded scenes are empty too.
 
         let t_draw_start = if perf { Some(crate::time::now()) } else { None };
-        crate::webview::frame_trace::begin_scene();
+        tilo_webview::frame_trace::begin_scene();
         // Floating chrome (menus, popovers, sheets, the palette, tooltips)
         // records what lies below it, and the render worker blurs that
         // backdrop under the material before the frame renders.
@@ -2822,7 +2822,7 @@ impl AppHandler {
         } else {
             record_main_stage(&mut native_main_stages, MainStage::AfterProfilerCommit);
         }
-        crate::webview::frame_trace::finish_scene(
+        tilo_webview::frame_trace::finish_scene(
             app.profiler
                 .as_ref()
                 .and_then(|p| p.history().back())

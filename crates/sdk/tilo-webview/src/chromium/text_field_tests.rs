@@ -1,6 +1,6 @@
 use super::super::{command_within_limits, encode_command, validate_event};
 use super::{IME_COMPOSITION_LIMIT, text_field_event};
-use crate::webview::WebViewCommand;
+use crate::WebViewCommand;
 use serde_json::json;
 
 tilo_test_env::scenario! {
@@ -58,10 +58,10 @@ tilo_test_env::scenario! {
             "multiline":false,"x":20,"y":40,"width":200,"height":30});
         assert!(validate_event(&field).is_ok());
         let reported = text_field_event("text_field", &field, None).unwrap();
-        assert_eq!(reported.purpose, crate::ime::InputPurpose::Email);
+        assert_eq!(reported.purpose, crate::InputPurpose::Email);
         assert_eq!(
             reported.bounds,
-            Some(vello::kurbo::Rect::new(20.0, 40.0, 220.0, 70.0))
+            Some(kurbo::Rect::new(20.0, 40.0, 220.0, 70.0))
         );
         assert_eq!(reported.composition, None);
         let bounds = json!({"event":"ime_composition_bounds","x":60,"y":44,"width":32,"height":22});
@@ -69,7 +69,7 @@ tilo_test_env::scenario! {
         let composing = text_field_event("ime_composition_bounds", &bounds, Some(reported)).unwrap();
         assert_eq!(
             composing.composition,
-            Some(vello::kurbo::Rect::new(60.0, 44.0, 92.0, 66.0))
+            Some(kurbo::Rect::new(60.0, 44.0, 92.0, 66.0))
         );
         assert!(
             text_field_event("text_field", &field, Some(composing))
@@ -107,26 +107,26 @@ tilo_test_env::scenario! {
     phase keys_carry_their_place_on_the_keyboard;
     {
         let cmd = encode_command(WebViewCommand::Key {
-            key: crate::webview::KeyInput::Character("с".into()),
+            key: crate::KeyInput::Character("с".into()),
             down: true,
-            modifiers: crate::webview::KeyModifiers {
+            modifiers: crate::KeyModifiers {
                 ctrl: true,
-                ..crate::webview::KeyModifiers::default()
+                ..crate::KeyModifiers::default()
             },
             code: Some("KeyC"),
         })
         .unwrap();
         assert_eq!(cmd["code"], "KeyC");
         assert!(command_within_limits(&WebViewCommand::Key {
-            key: crate::webview::KeyInput::Named(crate::webview::NamedKey::Enter),
+            key: crate::KeyInput::Named(crate::NamedKey::Enter),
             down: true,
-            modifiers: crate::webview::KeyModifiers::default(),
+            modifiers: crate::KeyModifiers::default(),
             code: Some("Space"),
         }));
         assert!(!command_within_limits(&WebViewCommand::Key {
-            key: crate::webview::KeyInput::Character("a".into()),
+            key: crate::KeyInput::Character("a".into()),
             down: true,
-            modifiers: crate::webview::KeyModifiers::default(),
+            modifiers: crate::KeyModifiers::default(),
             code: Some("NotAKey"),
         }));
     }

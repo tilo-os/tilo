@@ -17,6 +17,8 @@ portal = ["tilo-ui/portal"]
 presentation-feedback = ["tilo-ui/presentation-feedback"]
 
 [dependencies]
+# The page-view shots run against a synchronous web engine.
+tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
 # Scenarios used to live as [[example]] targets of tilo-ui and therefore
 # inherited its dependency graph. Keep the same direct crates they `use`.
 accesskit = "0.25.0"

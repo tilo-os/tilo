@@ -152,6 +152,20 @@ impl PlatformConventions {
     pub fn command_modifier_down(self, modifiers: winit::keyboard::ModifiersState) -> bool {
         modifiers.contains(self.command_modifier())
     }
+
+    /// The modifiers of a shortcut sent to a web page: the platform's command modifier
+    /// alone (Command on macOS, Control elsewhere), for select all, copy and the page's
+    /// own keys.
+    #[must_use]
+    pub fn command_key_modifiers(self) -> tilo_webview::KeyModifiers {
+        let command = self.command_modifier();
+        tilo_webview::KeyModifiers {
+            ctrl: command.control_key(),
+            meta: command.super_key(),
+            shift: false,
+            alt: false,
+        }
+    }
 }
 
 /// A semantic shortcut whose display and matching use platform conventions.
@@ -538,6 +552,18 @@ mod tests {
                     DialogActionOrder::PrimaryLast
                 );
             }
+        }
+    }
+
+    /// A page's own shortcut goes with the platform's command modifier: Command on macOS,
+    /// Control everywhere else, never both.
+    #[test]
+    fn a_pages_shortcut_carries_the_platforms_command_modifier() {
+        let mac = PlatformConventions::new(Platform::MacOs).command_key_modifiers();
+        assert!(mac.meta && !mac.ctrl && !mac.shift && !mac.alt);
+        for platform in [Platform::Linux, Platform::Windows, Platform::Android] {
+            let other = PlatformConventions::new(platform).command_key_modifiers();
+            assert!(other.ctrl && !other.meta && !other.shift && !other.alt);
         }
     }
 }

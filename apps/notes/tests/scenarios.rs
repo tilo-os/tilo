@@ -515,6 +515,10 @@ fn reached(
                         && node.bounds.is_some_and(|bounds| bounds.to_rect().width() > 0.0)
                 })
         }
+        // A notebook kept mostly at its top level shows its first note.
+        Some("page_tree_flat") => driver
+            .expect(&SemanticExpectation::named("note_title").value("Einkaufsliste"))
+            .is_ok(),
         Some("import_success") => {
             !blocks.iter().any(|block| {
                 matches!(block.kind, BlockKind::Heading(1)) && block.text() == "Project brief"

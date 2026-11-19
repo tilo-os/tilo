@@ -15,10 +15,10 @@ use tilo_ui::Widget;
 use tilo_ui::headless::Framed;
 use tilo_ui::state::State;
 use tilo_ui::theme::Theme;
-use tilo_ui::webview::chromium::ChromiumEngine;
-use tilo_ui::webview::text_input::{Failure, Receipt};
-use tilo_ui::webview::{KeyInput, KeyModifiers, SharedEngine, WebViewCommand, WebViewEvent};
 use tilo_ui::widget::WebView;
+use tilo_webview::chromium::ChromiumEngine;
+use tilo_webview::text_input::{Failure, Receipt};
+use tilo_webview::{KeyInput, KeyModifiers, SharedEngine, WebViewCommand, WebViewEvent};
 
 // Exercise the production decorator blanket implementation, which stands in for
 // its inner widget in retained layout and focused dispatch.

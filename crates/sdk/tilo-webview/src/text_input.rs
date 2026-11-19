@@ -2,14 +2,17 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::time::{Duration, Instant};
+use tilo_clock::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Lease(String, bool);
 
 impl Lease {
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    /// The lease a reply names: 32 lowercase hex digits, single-line unless its multiline
+    /// flag says otherwise.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
         (value.len() == 32
             && value
                 .bytes()
@@ -18,14 +21,14 @@ impl Lease {
     }
 
     pub(crate) fn stamp(&self, key: &[u8; 32]) -> [u8; 32] {
-        crate::ime::edit_fingerprint(&self.0, usize::from(self.1), 0, key)
+        crate::edit_fingerprint(&self.0, usize::from(self.1), 0, key)
     }
 }
 
 pub enum Request {
     History {
         lease: Lease,
-        request: crate::undo::UndoRequest,
+        request: crate::UndoRequest,
     },
     Prepare,
     Start(Lease),
@@ -50,7 +53,7 @@ pub enum Failure {
 pub struct Receipt {
     result: Arc<Mutex<Option<Result<Option<Lease>, Failure>>>>,
     canceled: Arc<AtomicBool>,
-    history: Arc<Mutex<Option<(crate::undo::UndoStatus, Instant)>>>,
+    history: Arc<Mutex<Option<(crate::UndoStatus, Instant)>>>,
     deadline: Instant,
 }
 
@@ -74,19 +77,21 @@ impl Receipt {
     pub fn was_canceled(&self) -> bool {
         self.is_canceled()
     }
-    pub(crate) fn pending() -> Self {
+    /// A receipt nothing has completed yet.
+    #[must_use]
+    pub fn pending() -> Self {
         Self {
             result: Arc::new(Mutex::new(None)),
             canceled: Arc::new(AtomicBool::new(false)),
             history: Arc::new(Mutex::new(None)),
-            deadline: crate::time::now() + Duration::from_secs(10),
+            deadline: tilo_clock::now() + Duration::from_secs(10),
         }
     }
 
-    fn history_status(&self) -> Option<crate::undo::UndoStatus> {
+    fn history_status(&self) -> Option<crate::UndoStatus> {
         let history = self.history.lock().ok()?;
         let (status, expires) = history.as_ref()?;
-        (crate::time::now() < *expires && !self.is_canceled()).then(|| status.clone())
+        (tilo_clock::now() < *expires && !self.is_canceled()).then(|| status.clone())
     }
 
     pub fn failed(failure: Failure) -> Self {
@@ -97,7 +102,7 @@ impl Receipt {
 
     pub fn poll(&self) -> Option<Result<Option<Lease>, Failure>> {
         let mut result = self.result.lock_recover();
-        if result.is_none() && crate::time::now() >= self.deadline {
+        if result.is_none() && tilo_clock::now() >= self.deadline {
             *result = Some(Err(Failure::Unknown));
         }
         result.clone()
@@ -114,7 +119,8 @@ impl Receipt {
         self.canceled.load(Ordering::Acquire)
     }
 
-    pub(crate) fn complete(&self, value: Result<Option<Lease>, Failure>) {
+    /// Complete a receipt once; a later completion is ignored.
+    pub fn complete(&self, value: Result<Option<Lease>, Failure>) {
         let mut result = self.result.lock_recover();
         if result.is_none() {
             *result = Some(value);
@@ -123,7 +129,7 @@ impl Receipt {
 }
 
 #[derive(Default)]
-pub(crate) struct Transactions {
+pub struct Transactions {
     next: u32,
     pending: std::collections::HashMap<u32, (Receipt, bool)>,
 }
@@ -142,8 +148,8 @@ impl Transactions {
         let (action, lease, text, returns_lease) = match request {
             Request::History { lease, request } => (
                 match request {
-                    crate::undo::UndoRequest::Undo => "undo_text_input",
-                    crate::undo::UndoRequest::Redo => "redo_text_input",
+                    crate::UndoRequest::Undo => "undo_text_input",
+                    crate::UndoRequest::Redo => "redo_text_input",
                 },
                 Some(lease),
                 None,
@@ -160,8 +166,8 @@ impl Transactions {
                 ("commit_text_input", Some(lease), Some(text), false)
             }
         };
-        let expires = crate::time::wall()
-            .duration_since(crate::time::UNIX_EPOCH)
+        let expires = tilo_clock::wall()
+            .duration_since(tilo_clock::time::UNIX_EPOCH)
             .ok()?
             .as_millis()
             .checked_add(5000)
@@ -245,12 +251,12 @@ impl Transactions {
                 && history.as_object().is_some_and(|fields| fields.len() == 2)
             {
                 *receipt.history.lock_recover() = Some((
-                    crate::undo::UndoStatus {
+                    crate::UndoStatus {
                         can_undo,
                         can_redo,
                         ..Default::default()
                     },
-                    crate::time::now() + Duration::from_millis(500),
+                    tilo_clock::now() + Duration::from_millis(500),
                 ));
             } else {
                 result = Err(Failure::Unknown);
@@ -296,7 +302,7 @@ struct Activation {
 
 enum FinalValue {
     Text(zeroize::Zeroizing<String>),
-    History(crate::undo::UndoRequest),
+    History(crate::UndoRequest),
 }
 
 struct Final {
@@ -307,7 +313,7 @@ struct Final {
 }
 
 /// An original-field transaction.
-pub(crate) struct Guard {
+pub struct Guard {
     lease: Option<Lease>,
     history: Option<Receipt>,
     pending: Option<Pending>,
@@ -331,8 +337,8 @@ impl Default for Guard {
             activation: None,
             active_receipt: None,
             activated: false,
-            poll_at: crate::time::now(),
-            next: crate::time::now(),
+            poll_at: tilo_clock::now(),
+            next: tilo_clock::now(),
             revoked: false,
         }
     }
@@ -354,7 +360,7 @@ impl Guard {
             activation.receipt.complete(Err(Failure::Rejected));
         }
         self.revoked = true;
-        self.next = crate::time::now();
+        self.next = tilo_clock::now();
     }
 
     fn completed(
@@ -384,7 +390,7 @@ impl Guard {
                     .is_some_and(|receipt| receipt.poll().is_none());
                 if unchanged && focused && !self.revoked && admitted {
                     self.active_receipt.clone_from(&pending.final_receipt);
-                    self.next = crate::time::now() + Duration::from_millis(500);
+                    self.next = tilo_clock::now() + Duration::from_millis(500);
                     if let Some(receipt) = pending.final_receipt {
                         receipt.complete(Ok(None));
                     }
@@ -443,7 +449,7 @@ impl Guard {
     }
 
     pub fn pump(&mut self, engine: &super::SharedEngine, focused: bool) {
-        self.poll_at = crate::time::now() + Duration::from_millis(50);
+        self.poll_at = tilo_clock::now() + Duration::from_millis(50);
         if self
             .active_receipt
             .as_ref()
@@ -493,7 +499,7 @@ impl Guard {
                 final_text.receipt.complete(Err(Failure::Rejected));
                 self.retiring = Some(final_text.lease);
             } else if final_text.needs_check {
-                if crate::time::now() >= self.next {
+                if tilo_clock::now() >= self.next {
                     self.pending = engine
                         .text_input(Request::Check(final_text.lease.clone()))
                         .map(|receipt| Pending {
@@ -501,7 +507,7 @@ impl Guard {
                             operation: Operation::Check(final_text.lease.clone()),
                             final_receipt: None,
                         });
-                    self.next = crate::time::now() + Duration::from_millis(500);
+                    self.next = tilo_clock::now() + Duration::from_millis(500);
                 }
                 self.final_text = Some(final_text);
                 return;
@@ -531,10 +537,10 @@ impl Guard {
                 return;
             }
         }
-        if crate::time::now() < self.next {
+        if tilo_clock::now() < self.next {
             return;
         }
-        self.next = crate::time::now() + Duration::from_millis(500);
+        self.next = tilo_clock::now() + Duration::from_millis(500);
         let (request, operation) = if let Some(lease) = self.retiring.clone() {
             (Request::Cancel(lease.clone()), Operation::Cancel(lease))
         } else if focused {
@@ -553,7 +559,7 @@ impl Guard {
             final_receipt: None,
         });
     }
-    pub fn history_status(&self) -> Option<crate::undo::UndoStatus> {
+    pub fn history_status(&self) -> Option<crate::UndoStatus> {
         if !self.ready() || self.revoked || self.activated {
             return None;
         }
@@ -616,12 +622,12 @@ impl Guard {
             lease,
             receipt: receipt.clone(),
         });
-        self.next = crate::time::now();
+        self.next = tilo_clock::now();
         self.poll_at = self.next;
         Some(receipt)
     }
 
-    pub fn history(&mut self, request: crate::undo::UndoRequest) -> Option<Receipt> {
+    pub fn history(&mut self, request: crate::UndoRequest) -> Option<Receipt> {
         if self.activated {
             return None;
         }
@@ -656,7 +662,7 @@ impl Guard {
                 .as_ref()
                 .is_some_and(|pending| matches!(pending.operation, Operation::Check(_))),
         });
-        self.next = crate::time::now();
+        self.next = tilo_clock::now();
         self.poll_at = self.next;
         Some(receipt)
     }
@@ -680,7 +686,7 @@ impl Drop for Guard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::webview::{FrameSlot, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
+    use crate::{FrameSlot, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent};
 
     #[derive(Default)]
     struct Controlled {
@@ -813,7 +819,7 @@ mod tests {
                 "another field cannot inherit an observation"
             );
             guard.lease = original;
-            receipt.history.lock().unwrap().as_mut().unwrap().1 = crate::time::now();
+            receipt.history.lock().unwrap().as_mut().unwrap().1 = tilo_clock::now();
             assert!(
                 guard.history_status().is_none(),
                 "expired observation is unavailable"
@@ -838,8 +844,8 @@ mod tests {
             activation: None,
             active_receipt: None,
             activated: false,
-            poll_at: crate::time::now(),
-            next: crate::time::now(),
+            poll_at: tilo_clock::now(),
+            next: tilo_clock::now(),
             revoked: false,
         }
     }
@@ -880,10 +886,10 @@ mod tests {
         {
             let (guard, _controlled, _engine, _check) = checked_guard();
             let deadline = guard.deadline();
-            crate::time::testing::with_monotonic_time(deadline + Duration::from_millis(25), || {
-                assert!(deadline <= crate::time::now());
+            tilo_clock::testing::with_monotonic_time(deadline + Duration::from_millis(25), || {
+                assert!(deadline <= tilo_clock::now());
                 assert!(
-                    guard.deadline() <= crate::time::now(),
+                    guard.deadline() <= tilo_clock::now(),
                     "an unresolved native reply must remain due until its guard is serviced"
                 );
             });
@@ -909,7 +915,7 @@ mod tests {
             requests[2].1.complete(Ok(None));
             drop(requests);
             guard.pump(&engine, true);
-            guard.next = crate::time::now();
+            guard.next = tilo_clock::now();
             guard.pump(&engine, true);
             let fresh = Lease::parse("fedcba9876543210fedcba9876543210").unwrap();
             controlled.requests.lock().unwrap()[3]
@@ -931,7 +937,7 @@ mod tests {
         {
             for changed in [false, true] {
                 let (mut guard, controlled, engine, check) = checked_guard();
-                let receipt = guard.history(crate::undo::UndoRequest::Undo).unwrap();
+                let receipt = guard.history(crate::UndoRequest::Undo).unwrap();
                 guard.pump(&engine, true);
                 assert!(receipt.poll().is_none());
                 assert_eq!(controlled.requests.lock().unwrap().len(), 1);
@@ -951,7 +957,7 @@ mod tests {
                     );
                 } else {
                     assert!(
-                        matches!(&requests[1].0, Request::History { lease: original, request: crate::undo::UndoRequest::Undo } if *original == lease())
+                        matches!(&requests[1].0, Request::History { lease: original, request: crate::UndoRequest::Undo } if *original == lease())
                     );
                     requests[1].1.complete(Ok(None));
                     drop(requests);
@@ -961,7 +967,7 @@ mod tests {
             }
             let mut guard = leased_guard();
             assert!(guard.start().is_some());
-            assert!(guard.history(crate::undo::UndoRequest::Redo).is_none());
+            assert!(guard.history(crate::UndoRequest::Redo).is_none());
         }
 
         phase canceled_start_while_check_is_pending_cannot_activate;
@@ -1067,7 +1073,7 @@ mod tests {
                 1,
                 "busy cleanup obeys its bounded retry cadence"
             );
-            guard.next = crate::time::now();
+            guard.next = tilo_clock::now();
             guard.pump(&engine, false);
             assert!(
                 controlled

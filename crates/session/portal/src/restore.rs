@@ -30,6 +30,11 @@ const VENDOR: &str = "tilo";
 const VERSION: u32 = 1;
 const GRANT_PREFIX: &str = "portal:restore:";
 
+/// One remembered share, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal.restore", label = "Remembered share")]
+pub struct GrantRow;
+
 /// What a remembered share offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.portal.restore")]
@@ -132,9 +137,8 @@ impl crate::Published for Grants {
                     .map(|source| source.label.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                offer::<GrantEffect>(ResourceSpec::new(
+                offer::<GrantEffect>(tilo_resource::typed_resource::<GrantRow>(
                     format!("{GRANT_PREFIX}{}", grant.id),
-                    "portal.restore",
                     grant.app_id,
                 ))
                 .with_presentation(ResourcePresentation {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use wire_frame::Framing;
 
-use crate::webview::Frame;
+use crate::Frame;
 
 pub(super) const MAX_PACKET: u32 = 64 * 1024 * 1024;
 
@@ -61,7 +61,7 @@ impl WireFrame {
 /// The frame to draw from pixels already in RGBA.
 pub(super) fn rgba_frame(tab: u32, width: u32, height: u32, rgba: Vec<u8>) -> Frame {
     Frame {
-        trace_id: crate::webview::frame_trace::received(tab, &rgba, width, height),
+        trace_id: crate::frame_trace::received(tab, &rgba, width, height),
         damage: None,
         width,
         height,

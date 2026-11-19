@@ -423,7 +423,7 @@ reason = "Words of other languages and Unicode planes."
 words = ["plane"]
 paths = [
     "apps/imager/locales/de-DE.ftl",
-    "crates/sdk/ui-core/src/webview/page/tests.rs",
+    "crates/sdk/tilo-webview/src/page/tests.rs",
     "tools/android/mediation/README.md",
 ]
 

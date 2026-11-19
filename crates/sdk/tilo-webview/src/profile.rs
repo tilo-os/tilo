@@ -2,10 +2,10 @@
 //! setting `TILO_WEBVIEW_PROFILE` in the environment. What it measures, from the engine
 //! thread and the widget.
 
-use crate::time::{Duration, Instant};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_clock::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
 use tilo_sort::CompactSort as _;
 
@@ -76,7 +76,7 @@ pub fn record_input(kind: &'static str) {
     }
     let mut s = state().lock_recover();
     if s.pending_input.is_none() {
-        s.pending_input = Some((crate::time::now(), kind));
+        s.pending_input = Some((tilo_clock::now(), kind));
     }
 }
 
@@ -86,7 +86,7 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
     if !enabled() {
         return;
     }
-    let now = crate::time::now();
+    let now = tilo_clock::now();
     let mut s = state().lock_recover();
     s.started.get_or_insert(now);
 

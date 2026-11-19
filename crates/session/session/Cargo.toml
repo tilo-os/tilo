@@ -448,6 +448,8 @@ settings-store = { path = "../../system/settings-store", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
+# The page track and window-share tests drive a synchronous web engine.
+tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
 pollster.workspace = true
 # A check that answers a sheet as the person does asks the questions service the
 # sheets show, and reads its answer back.

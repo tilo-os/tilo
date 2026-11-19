@@ -12,6 +12,8 @@
 #   press   a control's words, pressed before each window is read (default: none)
 #   dump    `true` prints every frame laid out at the size, not only the frames a finding came
 #           from (default: false)
+#   shot_height  takes the shots in a window this tall at the size's width, so the lower part
+#           of a long page shows (default: the size's own height)
 #
 #   t test layout-check/390x844 --input app=apps/tl/tasks \
 #       --input press="Mark Buy oat milk and eggs done" --input dump=true
@@ -45,6 +47,7 @@ mkdir -p -- "$out"
 app=${T_INPUT_APP:-}
 press=${T_INPUT_PRESS:-}
 dump=${T_INPUT_DUMP:-false}
+shot_height=${T_INPUT_SHOT_HEIGHT:-}
 case $dump in true|false) ;; *) echo "dump must be true or false, not $dump" >&2; exit 2 ;; esac
 
 # Every app in `apps/tl`: a package directory with an `app.tl`, as the library's own tests find
@@ -65,6 +68,8 @@ fi
 
 presses=()
 [[ -z $press ]] || presses=(--press "$press")
+tall=()
+[[ -z $shot_height ]] || tall=(--shot-height "$shot_height")
 # A narrowing input reads its own layouts: `dump` prints every frame laid out, where the whole
 # tree's run prints the frames its findings came from.
 read_frames=(--dump-findings "$size")
@@ -79,7 +84,7 @@ verdict=(--strict)
 status=0
 "$target/debug/tilolang" layout-check "${apps[@]}" \
     --allow crates/lang/tilolang-cli/tests/layout_check/allowed \
-    "${verdict[@]}" "${read_frames[@]}" "${presses[@]}" --shots "$out" >"$out/report.txt" 2>"$out/dump.txt" || status=$?
+    "${verdict[@]}" "${read_frames[@]}" "${presses[@]}" "${tall[@]}" --shots "$out" >"$out/report.txt" 2>"$out/dump.txt" || status=$?
 cat -- "$out/report.txt"
 if [[ ! -s $out/report.txt ]]; then
     echo "layout-check: laying the apps out at $size wrote no report; it said:" >&2
