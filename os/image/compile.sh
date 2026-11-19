@@ -35,8 +35,8 @@ chromium_engine() {
     aarch64) cef_platform=linuxarm64 ;;
     *) echo "no Chromium engine for $(uname -m)" >&2; return 1 ;;
   esac
-  cef_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["chromium_version"])' scripts/browser/cef-lock.json)" \
-    && python3 scripts/browser/build-host.py --platform "$cef_platform" \
+  cef_version="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["chromium_version"])' scripts/browser/cef-lock.json)" \
+    && python3 -I scripts/browser/build-host.py --platform "$cef_platform" \
          --sdk-archive "$assets/cef-${cef_version}-${cef_platform}-minimal.tar.bz2" \
          --runtime "$dest"/chromium-engine --work "$work" --jobs "${TILO_CARGO_BUILD_JOBS:-$(nproc)}" \
     && test -x "$dest"/chromium-engine/chromium/tilo-chromium-host
@@ -61,8 +61,8 @@ if [[ ${1:-} == --dev ]]; then
   export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$(pwd)/target} LC_ALL=C.UTF-8 TZ=UTC CARGO_INCREMENTAL=0 SOURCE_DATE_EPOCH=0
   : "${TILO_DEV_RUST_LTO:=off}"
   case "$TILO_DEV_RUST_LTO" in thin|off) ;; *) echo 'TILO_DEV_RUST_LTO must be thin or off' >&2; exit 1 ;; esac
-  dev_cargo_args=$(python3 os/scripts/install-components.py --dev --dry-run --format cargo)
-  dev_bins=$(python3 os/scripts/install-components.py --dev --dry-run --format bins)
+  dev_cargo_args=$(python3 -I os/scripts/install-components.py --dev --dry-run --format cargo)
+  dev_bins=$(python3 -I os/scripts/install-components.py --dev --dry-run --format bins)
   [[ -n $dev_cargo_args && -n $dev_bins ]] || { echo 'install-components.py names no dev components' >&2; exit 1; }
   printf 'dev image build: cargo build --release %s\n' "$dev_cargo_args"
   # Cargo compares mtimes, and a tree synced to a build host (rsync keeps the checkout's
@@ -233,7 +233,7 @@ else
   echo 'compiling without a compiler cache' >&2
 fi
 
-python3 crates/system/ntfs-mount/native/build.py --out "$out/ntfs-mount/fuse-handoff.so"
+python3 -I crates/system/ntfs-mount/native/build.py --out "$out/ntfs-mount/fuse-handoff.so"
 
 case "$TILO_RUST_LTO" in \
          thin|off) ;; \
@@ -276,7 +276,7 @@ case "$TILO_RUST_LTO" in \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
        cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-server ${RELEASE_BINS} --features tilo-server/web,tilo-model-gateway/local-models,tilo-model-gateway/host-backend,imager/installation,imager/destination \
-    && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py $target/cargo-timings/cargo-timing.html; } \
+    && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 -I os/scripts/cargo-timings-summary.py $target/cargo-timings/cargo-timing.html; } \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
@@ -414,7 +414,7 @@ case "$TILO_RUST_LTO" in \
            [ "$thin_status" = 0 ]; \
          else \
            build_thin_apps "${TILO_CARGO_TIMINGS:+--timings}" \
-           && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py $target/cargo-timings/cargo-timing.html; }; \
+           && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 -I os/scripts/cargo-timings-summary.py $target/cargo-timings/cargo-timing.html; }; \
          fi \
          && for m in apps/*/tilo-app.toml; do \
               p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \

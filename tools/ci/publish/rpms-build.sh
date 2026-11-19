@@ -27,7 +27,7 @@ esac
 cd "$repo_root"
 mkdir -p "$out"
 . os/base-snapshot.env
-fingerprint=$(python3 os/dev/rpm-snapshot-fingerprint.py)
+fingerprint=$(python3 -I os/dev/rpm-snapshot-fingerprint.py)
 [[ $fingerprint =~ ^[0-9a-f]{64}$ ]] || die 'no valid package-set fingerprint'
 # Both tags are written `once` (oci-publish.sh): a package set is published once, so a tag names
 # one digest forever and a read of it is a read of content the tree names.
@@ -37,7 +37,7 @@ mirrored=registry.tilo.so/tilo/rpms:dev-set-$fingerprint-$arch
 # tells them apart.
 tagged() {
   local status=0 digest
-  digest=$(python3 "$repo_root/os/dev/registry-manifest.py" digest "$1" 2>"$scratch/registry.err") || status=$?
+  digest=$(python3 -I "$repo_root/os/dev/registry-manifest.py" digest "$1" 2>"$scratch/registry.err") || status=$?
   case $status in
     0) printf '%s' "$digest" ;;
     1) return 1 ;;
@@ -58,7 +58,7 @@ else
   if [[ -s $set_file ]]; then
     packages=$(tr '\n' ' ' < "$set_file")
   else
-    packages=$(python3 os/dev/derive-rpm-package-set.py --arch "$arch" | tr '\n' ' ')
+    packages=$(python3 -I os/dev/derive-rpm-package-set.py --arch "$arch" | tr '\n' ' ')
   fi
   [[ -n ${packages// /} ]] || die "no packages for $arch"
   assets=$(pinned_assets virtio-win-0.1.302-1.noarch.rpm)

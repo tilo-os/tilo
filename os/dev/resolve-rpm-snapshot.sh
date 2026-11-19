@@ -53,7 +53,7 @@ case $arch in
     ;;
 esac
 
-fingerprint="$(python3 "$repo/os/dev/rpm-snapshot-fingerprint.py")"
+fingerprint="$(python3 -I "$repo/os/dev/rpm-snapshot-fingerprint.py")"
 [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] \
   || { printf 'resolve-rpm-snapshot: invalid fingerprint\n' >&2; exit 1; }
 tag="set-$fingerprint-$arch"
@@ -72,21 +72,21 @@ manifest_digest() {
   if command -v skopeo >/dev/null; then
     skopeo inspect --format '{{.Digest}}' "docker://$1"
   else
-    python3 "$repo/os/dev/registry-manifest.py" digest "$1"
+    python3 -I "$repo/os/dev/registry-manifest.py" digest "$1"
   fi
 }
 manifest_raw() {
   if command -v skopeo >/dev/null; then
     skopeo inspect --raw "docker://$1"
   else
-    python3 "$repo/os/dev/registry-manifest.py" raw "$1"
+    python3 -I "$repo/os/dev/registry-manifest.py" raw "$1"
   fi
 }
 manifest_config() {
   if command -v skopeo >/dev/null; then
     skopeo inspect --config "docker://$1"
   else
-    python3 "$repo/os/dev/registry-manifest.py" config "$1"
+    python3 -I "$repo/os/dev/registry-manifest.py" config "$1"
   fi
 }
 
@@ -123,7 +123,7 @@ cosign verify --key "$repo/keys/cosign.pub" "$ref" >/dev/null \
 
 work="$(mktemp -d)"
 trap 'rm -rf -- "$TMPDIR_RESOLVE" "$work"' EXIT
-python3 "$repo/os/dev/derive-rpm-package-set.py" --arch "$arch" | LC_ALL=C sort -u > "$work/set.txt"
+python3 -I "$repo/os/dev/derive-rpm-package-set.py" --arch "$arch" | LC_ALL=C sort -u > "$work/set.txt"
 package_set_sha256="$(sha256sum "$work/set.txt" | cut -d' ' -f1)"
 
 provenance="$(cosign verify-attestation --key "$repo/keys/cosign.pub" \

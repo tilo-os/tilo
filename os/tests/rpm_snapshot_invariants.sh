@@ -81,7 +81,7 @@ if grep -Fxq edk2-aarch64 <<<"$arm_packages" \
 else
   bad 'Windows VM firmware package selection crosses architectures'
 fi
-has "$rpms_build" 'packages=$(python3 os/dev/derive-rpm-package-set.py --arch "$arch"' \
+has "$rpms_build" 'packages=$(python3 -I os/dev/derive-rpm-package-set.py --arch "$arch"' \
   'snapshot package selection uses the invariant-tested parser for the explicit native architecture'
 # Each architecture's snapshot is built on a node of that architecture, and refuses any other.
 has "$rpms_build" '[[ $(uname -m) == "$arch" ]] || die' \

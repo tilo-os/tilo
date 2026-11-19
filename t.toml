@@ -3976,7 +3976,7 @@ arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "rpm-package-set"
-run = "mkdir -p /target/publish/rpm-package-set && for arch in x86_64 aarch64; do python3 os/dev/derive-rpm-package-set.py --arch $arch > /target/publish/rpm-package-set/$arch.txt; done"
+run = "mkdir -p /target/publish/rpm-package-set && for arch in x86_64 aarch64; do python3 -I os/dev/derive-rpm-package-set.py --arch $arch > /target/publish/rpm-package-set/$arch.txt; done"
 outputs = ["/target/publish/rpm-package-set/x86_64.txt", "/target/publish/rpm-package-set/aarch64.txt"]
 default = false
 

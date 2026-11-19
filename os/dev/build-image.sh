@@ -101,13 +101,13 @@ case "${TILO_PUBLIC_TRUST_MODE:-production}" in
       || die "development trust requires TILO_IMAGE=localhost/tilo-development:<tag>"
     [ -n "${TILO_PUBLIC_TRUST_BUNDLE:-}" ] && [ -n "${TILO_PUBLIC_TRUST_MANIFEST_SHA256:-}" ] \
       || die "development trust requires a public bundle and independently pinned manifest digest"
-    python3 "$TILO_OS_DIR/dev/hardware_profile.py" --development-target "${TILO_TARGET_IMGREF:-}" >/dev/null \
+    python3 -I "$TILO_OS_DIR/dev/hardware_profile.py" --development-target "${TILO_TARGET_IMGREF:-}" >/dev/null \
       || die "development trust requires an explicit isolated development registry origin"
     _tilo_profile_args=(--development-trust)
-    _tilo_trust_result=$(python3 "$TILO_OS_DIR/dev/development-trust.py" validate \
+    _tilo_trust_result=$(python3 -I "$TILO_OS_DIR/dev/development-trust.py" validate \
       "$TILO_PUBLIC_TRUST_BUNDLE" --expected-manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256") \
       || die "invalid development public trust bundle"
-    _tilo_dev_owner=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["identities"]["registry-owner.pub"])' <<< "$_tilo_trust_result")
+    _tilo_dev_owner=$(python3 -I -c 'import json,sys; print(json.load(sys.stdin)["identities"]["registry-owner.pub"])' <<< "$_tilo_trust_result")
     [ -z "${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}" ] || [ "$TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY" = "$_tilo_dev_owner" ] \
       || die "registry owner differs from development public bundle"
     TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$_tilo_dev_owner
@@ -152,7 +152,7 @@ esac
 if [ "$TILO_HARDWARE_PROFILE" != generic ]; then
     [ "${TILO_SKIP_BUILD:-0}" != 1 ] \
       || die "TILO_SKIP_BUILD cannot apply a hardware profile; rebuild the image with its firmware and device tree"
-    python3 "$TILO_OS_DIR/dev/hardware_profile.py" "$TILO_HARDWARE_PROFILE" \
+    python3 -I "$TILO_OS_DIR/dev/hardware_profile.py" "$TILO_HARDWARE_PROFILE" \
       "$TILO_OS_DIR/hardware/profiles" "${TILO_BUILD_ARCH:-$(uname -m)}" "$TILO_OS_DIR/hardware/firmware" \
       "${TILO_TARGET_IMGREF:-}" "${_tilo_profile_args[@]}" \
       || die "hardware-profile build inputs are invalid; see os/hardware/README.md"
@@ -195,7 +195,7 @@ esac
 # not before. TILO_WITH_WINDOWS is therefore derived, never taken from the caller.
 TILO_WITH_WINDOWS=1
 if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 0 ]; then
-  TILO_WITH_WINDOWS=$(python3 "$TILO_OS_DIR/dev/windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH" \
+  TILO_WITH_WINDOWS=$(python3 -I "$TILO_OS_DIR/dev/windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH" \
     --fex-ref "${FEX_PAYLOAD_REF:-}" --guest-ref "${WINDOWS_GUEST_REF:-}") \
     || die "Windows provider inputs are incomplete; see os/docs/windows-provider-packaging.md"
   [ "$TILO_WITH_WINDOWS" = 1 ] \
@@ -211,7 +211,7 @@ if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ];
       aarch64) _tilo_cef_platform=linuxarm64 ;;
       *) die "unsupported browser engine architecture" ;;
     esac
-    _tilo_cef_version=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["chromium_version"])' \
+    _tilo_cef_version=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["chromium_version"])' \
       "$TILO_REPO/scripts/browser/cef-lock.json") || die "could not read the pinned CEF version"
     _tilo_native_assets+=("cef-${_tilo_cef_version}-${_tilo_cef_platform}-minimal.tar.bz2")
   fi
@@ -733,7 +733,7 @@ else
       --manifest-sha256 "$TILO_PUBLIC_TRUST_MANIFEST_SHA256" \
       --signer "$TILO_PCR_PREDICTION_SIGNER" --target "$TILO_TARGET_IMGREF" \
       > "$_tilo_signing_work/receipt.json"
-    _tilo_signed_rootfs=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["signed_rootfs_id"])' "$_tilo_signing_work/receipt.json")
+    _tilo_signed_rootfs=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["signed_rootfs_id"])' "$_tilo_signing_work/receipt.json")
     [[ "$_tilo_signed_rootfs" =~ ^sha256:[0-9a-f]{64}$ ]] || die "signer did not return an immutable rootfs image ID"
     build_image "$TILO_PROVISIONAL_CFS_DIGEST" "$TILO_IMAGE" --target final --pull=never --skip-unused-stages=true \
       --build-context "rootfs=container-image://$_tilo_signed_rootfs"

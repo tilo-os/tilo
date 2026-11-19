@@ -252,7 +252,7 @@ case ${1:-} in
     out=${4:?}
     profile=os/hardware/profiles/$board.json
     [[ -f $profile ]] || die "no hardware profile $profile"
-    arch=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["architecture"])' "$profile")
+    arch=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["architecture"])' "$profile")
     [[ $(uname -m) == "$arch" ]] || die "the $board image builds natively on $arch, not on $(uname -m)"
     guest_tools
     revision=$(git rev-parse --verify HEAD) || die 'the build names its commit: git = true'
