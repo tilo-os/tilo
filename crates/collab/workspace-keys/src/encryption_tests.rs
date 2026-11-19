@@ -69,7 +69,7 @@ fn sealed_device(
 }
 
 /// Run every device's protocol for `seconds` of simulated time.
-fn run(devices: &mut [&mut Device], now: &mut Instant, seconds: u64) {
+fn drive(devices: &mut [&mut Device], now: &mut Instant, seconds: u64) {
     for _ in 0..seconds.saturating_mul(4) {
         *now = now.checked_add(Duration::from_millis(250)).unwrap();
         for device in devices.iter_mut() {
@@ -100,6 +100,178 @@ fn refuses_plaintext(device: &Device) -> bool {
 }
 
 #[test]
+fn document_keys_exclude_workspace_members_and_rotate_on_access_loss() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let scope = neighbour_wire::KeyScope::Document {
+        workspace: workspace_id,
+        app: "so.tilo.notes".into(),
+        document: "review".into(),
+    };
+    let policy = Policy::readers([1, 2, 3]);
+    policy
+        .document_readers
+        .lock()
+        .unwrap()
+        .extend([public(1), public(2)]);
+    let dir = tempfile::tempdir().unwrap();
+    let mut owner = device(
+        &workspace,
+        workspace_id,
+        0,
+        1,
+        &policy,
+        &dir.path().join("owner"),
+    );
+    let mut reviewer = device(
+        &workspace,
+        workspace_id,
+        1,
+        2,
+        &policy,
+        &dir.path().join("reviewer"),
+    );
+    let mut guest = device(
+        &workspace,
+        workspace_id,
+        2,
+        3,
+        &policy,
+        &dir.path().join("guest"),
+    );
+    let mut now = Instant::now();
+    owner.service.access(workspace_id, now);
+    guest.service.access(workspace_id, now);
+    owner.service.access_scope(scope.clone(), now);
+    reviewer.service.access_scope(scope.clone(), now);
+    drive(&mut [&mut owner, &mut reviewer, &mut guest], &mut now, 8);
+
+    let KeyAccess::Ready(old_keys) = reviewer.service.access_scope(scope.clone(), now) else {
+        panic!("the reviewer must hold the restricted document's key");
+    };
+    let KeyAccess::Ready(workspace_keys) = guest.service.access(workspace_id, now) else {
+        panic!("the guest still holds the workspace's shared key");
+    };
+    assert!(matches!(
+        guest.service.access_scope(scope.clone(), now),
+        KeyAccess::Unavailable
+    ));
+    let artifact =
+        collab_types::document_artifact_id("so.tilo.notes", &workspace_id.to_string(), "review");
+    let (metadata, ciphertext) = old_keys
+        .seal_content(artifact, ContentRetention::Delta, b"limited")
+        .unwrap();
+    assert!(
+        workspace_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .is_err()
+    );
+
+    let group = scope.group();
+    policy.document_readers.lock().unwrap().remove(&public(2));
+    reviewer = device(
+        &workspace,
+        workspace_id,
+        1,
+        2,
+        &policy,
+        &dir.path().join("reviewer"),
+    );
+    assert!(matches!(
+        owner.service.access_scope(scope.clone(), now),
+        KeyAccess::Waiting
+    ));
+    assert!(matches!(
+        reviewer.service.access(group, now),
+        KeyAccess::Unavailable
+    ));
+    drive(&mut [&mut owner, &mut reviewer, &mut guest], &mut now, 8);
+    let KeyAccess::Ready(new_keys) = owner.service.access_scope(scope.clone(), now) else {
+        panic!("the owner must receive the rotated key");
+    };
+    assert!(new_keys.epoch() > old_keys.epoch());
+    let (metadata, ciphertext) = new_keys
+        .seal_content(artifact, ContentRetention::Delta, b"after removal")
+        .unwrap();
+    assert!(
+        old_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .is_err()
+    );
+    assert_eq!(
+        &*new_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .unwrap(),
+        b"after removal"
+    );
+    policy.document_readers.lock().unwrap().insert(public(2));
+    assert!(matches!(
+        reviewer.service.access(group, now),
+        KeyAccess::Waiting
+    ));
+    drive(&mut [&mut owner, &mut reviewer, &mut guest], &mut now, 8);
+    let KeyAccess::Ready(restored) = reviewer.service.access_scope(scope, now) else {
+        panic!("a reader who regains access must join the current group");
+    };
+    assert!(restored.epoch() > new_keys.epoch());
+    assert_eq!(
+        &*restored
+            .open_content(artifact, &metadata, &ciphertext)
+            .unwrap(),
+        b"after removal"
+    );
+
+    let service = SharedKeys::new(reviewer.service);
+    let document = ("so.tilo.notes", "review");
+    let readers = BTreeSet::from([*public(1).as_bytes(), *public(2).as_bytes()]);
+    assert!(
+        service
+            .seal_scoped_checkpoint(
+                workspace_id,
+                document,
+                &BTreeSet::from([*public(2).as_bytes()]),
+                b"merged"
+            )
+            .is_err()
+    );
+    let (checkpoint, sealed) = service
+        .seal_scoped_checkpoint(workspace_id, document, &readers, b"merged")
+        .unwrap();
+    assert_eq!(checkpoint.key_group(workspace_id), restored.workspace());
+    assert_eq!(
+        &*restored
+            .open_content(artifact, &checkpoint, &sealed)
+            .unwrap(),
+        b"merged"
+    );
+    assert!(
+        workspace_keys
+            .open_content(artifact, &checkpoint, &sealed)
+            .is_err()
+    );
+
+    let service = SharedKeys::new(owner.service);
+    let old_write = sealed_write(artifact, &workspace_keys);
+    let (renewed, payload) = service
+        .renew_scoped_document(workspace_id, document, &readers, &old_write)
+        .unwrap();
+    assert_eq!(renewed.key_group(workspace_id), restored.workspace());
+    assert_eq!(
+        &*restored.open_content(artifact, &renewed, &payload).unwrap(),
+        b"the edit"
+    );
+    assert!(
+        workspace_keys
+            .open_content(artifact, &renewed, &payload)
+            .is_err()
+    );
+    service.forget_workspace(workspace_id).unwrap();
+    let state = KeyDir::new(dir.path().join("owner").join("groups"));
+    assert!(!state.held().contains(&group));
+    assert!(state.scopes().is_empty());
+}
+
+#[test]
 fn observing_live_keys_never_opens_a_group_or_rejoins_after_removal() {
     let workspace = Arc::new(Workspace::default());
     let workspace_id = WorkspaceId::new();
@@ -120,13 +292,13 @@ fn observing_live_keys_never_opens_a_group_or_rejoins_after_removal() {
     let mut now = Instant::now();
     owner.service.access(workspace_id, now);
     member.service.access(workspace_id, now);
-    run(&mut [&mut owner, &mut member], &mut now, 5);
+    drive(&mut [&mut owner, &mut member], &mut now, 5);
     assert!(member.service.existing_keys(workspace_id).is_some());
     assert!(member.service.existing_keys(WorkspaceId::new()).is_none());
     assert!(owner.service.existing_keys(WorkspaceId::new()).is_none());
 
     policy.allowed.lock().unwrap().remove(&public(2));
-    run(&mut [&mut owner, &mut member], &mut now, 3);
+    drive(&mut [&mut owner, &mut member], &mut now, 3);
     let generation = member.service.generation();
     let rejoin = member.service.peers.get(&workspace_id).unwrap().rejoin;
     assert!(!rejoin);
@@ -215,19 +387,19 @@ fn a_new_group_is_encrypted_from_creation_and_follows_the_policy() {
 
     // Not named yet: nobody can admit it, and its route hears when that
     // changes.
-    run(&mut [&mut owner, &mut laptop], &mut now, 5);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 5);
     assert!(matches!(
         laptop.service.access(workspace_id, now),
         KeyAccess::Unavailable
     ));
 
     policy.allowed.lock().unwrap().insert(public(2));
-    run(&mut [&mut owner, &mut laptop], &mut now, 5);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 5);
     assert!(matches!(
         laptop.service.access(workspace_id, now),
         KeyAccess::Waiting
     ));
-    run(&mut [&mut owner, &mut laptop], &mut now, 8);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 8);
     let owner_epoch = ready_epoch(&owner.service.access(workspace_id, now));
     assert_eq!(
         ready_epoch(&laptop.service.access(workspace_id, now)),
@@ -245,7 +417,7 @@ fn a_new_group_is_encrypted_from_creation_and_follows_the_policy() {
     );
 
     policy.allowed.lock().unwrap().remove(&public(2));
-    run(&mut [&mut owner, &mut laptop], &mut now, 3);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 3);
     assert!(matches!(
         laptop.service.access(workspace_id, now),
         KeyAccess::Removed
@@ -280,7 +452,7 @@ fn a_later_member_reads_old_records_and_a_removed_device_no_new_ones() {
 
     policy.allowed.lock().unwrap().insert(public(2));
     laptop.service.access(workspace_id, now);
-    run(&mut [&mut owner, &mut laptop], &mut now, 16);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 16);
     let KeyAccess::Ready(held) = laptop.service.access(workspace_id, now) else {
         panic!("the laptop holds the workspace's keys");
     };
@@ -297,7 +469,7 @@ fn a_later_member_reads_old_records_and_a_removed_device_no_new_ones() {
     assert!(held.open_content(old[1].0, metadata, payload).is_err());
 
     policy.allowed.lock().unwrap().remove(&public(2));
-    run(&mut [&mut owner, &mut laptop], &mut now, 3);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 3);
     assert!(matches!(
         laptop.service.access(workspace_id, now),
         KeyAccess::Removed
@@ -330,14 +502,14 @@ fn a_key_holder_that_cannot_tell_who_holds_the_keys_removes_no_one() {
     for device in [&mut owner, &mut laptop] {
         device.service.access(workspace_id, now);
     }
-    run(&mut [&mut owner, &mut laptop], &mut now, 8);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 8);
     let epoch = ready_epoch(&laptop.service.access(workspace_id, now));
     assert!(epoch.is_some());
     assert_eq!(ready_epoch(&owner.service.access(workspace_id, now)), epoch);
 
     // The governance is no longer known.
     policy.unknown.store(true, Ordering::SeqCst);
-    run(&mut [&mut owner, &mut laptop], &mut now, 5);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 5);
     assert_eq!(ready_epoch(&owner.service.access(workspace_id, now)), epoch);
     assert_eq!(
         ready_epoch(&laptop.service.access(workspace_id, now)),
@@ -347,7 +519,7 @@ fn a_key_holder_that_cannot_tell_who_holds_the_keys_removes_no_one() {
     // Known again, the group follows the policy: the laptop is removed.
     policy.unknown.store(false, Ordering::SeqCst);
     policy.allowed.lock().unwrap().remove(&public(2));
-    run(&mut [&mut owner, &mut laptop], &mut now, 3);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 3);
     assert!(matches!(
         laptop.service.access(workspace_id, now),
         KeyAccess::Removed
@@ -450,7 +622,7 @@ fn only_a_group_member_or_an_unfinished_member_has_a_pump_deadline() {
         "a new member asks at once"
     );
 
-    run(&mut [&mut owner, &mut member], &mut now, 5);
+    drive(&mut [&mut owner, &mut member], &mut now, 5);
     assert!(ready_epoch(&member.service.access(workspace_id, now)).is_some());
     for device in [&owner, &member] {
         let reconcile = device.service.next_pump_deadline(now).unwrap();
@@ -988,13 +1160,15 @@ fn a_new_group_announces_its_genesis_to_the_workspace() {
     };
     workspace.queues.lock().unwrap().entry(1).or_default();
     assert!(ready_epoch(&create(&mut owner, workspace_id, now)).is_some());
-    run(&mut [&mut owner], &mut now, 3);
+    drive(&mut [&mut owner], &mut now, 3);
     let genesis: Vec<_> = observer
         .take_inbound()
         .into_iter()
         .filter_map(|inbound| match inbound {
             InboundGovernance::Frame { frame, .. } => Some(frame),
-            InboundGovernance::AccessRequest { .. } => None,
+            InboundGovernance::AccessRequest { .. }
+            | InboundGovernance::DocumentFrame { .. }
+            | InboundGovernance::DocumentAccessRequest { .. } => None,
         })
         .collect();
     assert_eq!(genesis.len(), 1, "announced once per session");
@@ -1022,12 +1196,12 @@ fn delivery_survives_a_network_outage() {
     // The request gets through, then the network fails before the
     // genesis and the Welcome can. The phone, hearing of no group,
     // creates its own.
-    run(&mut [&mut phone], &mut now, 1);
+    drive(&mut [&mut phone], &mut now, 1);
     workspace.down.store(true, Ordering::SeqCst);
-    run(&mut [&mut owner, &mut phone], &mut now, 30);
+    drive(&mut [&mut owner, &mut phone], &mut now, 30);
     assert!(!owner.service.peers[&workspace_id].peer.outbox().is_empty());
     workspace.down.store(false, Ordering::SeqCst);
-    run(&mut [&mut owner, &mut phone], &mut now, 130);
+    drive(&mut [&mut owner, &mut phone], &mut now, 130);
     let epoch = ready_epoch(&phone.service.access(workspace_id, now));
     assert!(epoch.is_some());
     assert_eq!(ready_epoch(&owner.service.access(workspace_id, now)), epoch);
@@ -1056,7 +1230,7 @@ fn group_state_and_seal_checks_survive_a_restart() {
         let mut tablet = device(&workspace, workspace_id, 1, 6, &policy, tablet_dir.path());
         owner.service.access(workspace_id, now);
         tablet.service.access(workspace_id, now);
-        run(&mut [&mut owner, &mut tablet], &mut now, 5);
+        drive(&mut [&mut owner, &mut tablet], &mut now, 5);
         assert!(ready_epoch(&tablet.service.access(workspace_id, now)).is_some());
     }
     for (id, seed, dir) in [(0, 5, owner_dir.path()), (1, 6, tablet_dir.path())] {
@@ -1140,7 +1314,7 @@ fn a_restored_identity_regains_the_whole_group_on_its_new_device() {
     let mut lost = device(&workspace, workspace_id, 1, 8, &policy, lost_dir.path());
     owner.service.access(workspace_id, now);
     lost.service.access(workspace_id, now);
-    run(&mut [&mut owner, &mut lost], &mut now, 5);
+    drive(&mut [&mut owner, &mut lost], &mut now, 5);
     let KeyAccess::Ready(keys) = create(&mut owner, workspace_id, now) else {
         panic!("owner keys");
     };
@@ -1168,7 +1342,7 @@ fn a_restored_identity_regains_the_whole_group_on_its_new_device() {
         restored.service.access(workspace_id, now),
         KeyAccess::Waiting
     ));
-    run(&mut [&mut owner, &mut restored], &mut now, 5);
+    drive(&mut [&mut owner, &mut restored], &mut now, 5);
     let KeyAccess::Ready(restored_keys) = restored.service.access(workspace_id, now) else {
         panic!("the restored identity's new device is admitted");
     };
@@ -1263,7 +1437,7 @@ fn a_branched_device_rejoins_as_itself_beside_its_source() {
         branch.service.access(workspace_id, now),
         KeyAccess::Waiting
     ));
-    run(&mut [&mut source, &mut branch], &mut now, 5);
+    drive(&mut [&mut source, &mut branch], &mut now, 5);
     let KeyAccess::Ready(branch_keys) = branch.service.access(workspace_id, now) else {
         panic!("the branch is admitted as itself");
     };
@@ -1375,7 +1549,7 @@ fn a_copy_awaiting_admission_reads_with_the_copied_keys_and_seals_nothing() {
             .is_none_or(|keys| keys.is_err()),
         "the copied keys are dropped once it is admitted"
     );
-    run(&mut [&mut source, &mut branch], &mut now, 5);
+    drive(&mut [&mut source, &mut branch], &mut now, 5);
     assert!(ready_epoch(&branch.service.access(workspace_id, now)).is_some());
 }
 
@@ -1424,7 +1598,7 @@ fn a_key_holder_opens_history_and_a_current_checkpoint() {
         OpKind::Change,
     );
     laptop.service.access(workspace_id, now);
-    run(&mut [&mut owner, &mut laptop], &mut now, 5);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 5);
     let keys = SharedKeys::new(owner.service);
     let (KeyAccess::Ready(current), _) = keys.access(workspace_id) else {
         panic!("owner keys");
@@ -1488,7 +1662,7 @@ fn a_renewal_keeps_a_current_ciphertext_and_reseals_one_from_before_a_rotation()
     let stale = sealed_write(artifact, &before);
     policy.allowed.lock().unwrap().insert(public(11));
     laptop.service.access(workspace_id, now);
-    run(&mut [&mut owner, &mut laptop], &mut now, 5);
+    drive(&mut [&mut owner, &mut laptop], &mut now, 5);
     let access = SharedKeys::new(owner.service);
     let (KeyAccess::Ready(current), _) = access.access(workspace_id) else {
         panic!("the owner holds the group's keys");
@@ -1736,7 +1910,7 @@ fn a_reader_with_ownership_that_signs_later_reads_a_key_holders_group() {
         page.service.access(workspace_id, now),
         KeyAccess::Waiting
     ));
-    run(&mut [&mut page], &mut now, 30);
+    drive(&mut [&mut page], &mut now, 30);
     assert!(!page.service.peers[&workspace_id].peer.knows_group());
     assert!(page.service.signing(), "its request waits on its ownership");
     pollster::block_on(page.service.signatures());
@@ -1747,7 +1921,7 @@ fn a_reader_with_ownership_that_signs_later_reads_a_key_holders_group() {
         panic!("the desktop founds the group");
     };
     for _ in 0..10 {
-        run(&mut [&mut desktop, &mut page], &mut now, 3);
+        drive(&mut [&mut desktop, &mut page], &mut now, 3);
         pollster::block_on(page.service.signatures());
     }
     let KeyAccess::Ready(keys) = page.service.access(workspace_id, now) else {
@@ -1772,7 +1946,7 @@ fn a_reader_with_ownership_that_signs_later_reads_a_key_holders_group() {
     third.service.access(workspace_id, now);
     page.service.access(workspace_id, now);
     for _ in 0..10 {
-        run(&mut [&mut page, &mut third], &mut now, 3);
+        drive(&mut [&mut page, &mut third], &mut now, 3);
         pollster::block_on(third.service.signatures());
         assert!(page.service.peers[&workspace_id].peer.outbox().is_empty());
     }
@@ -1780,9 +1954,9 @@ fn a_reader_with_ownership_that_signs_later_reads_a_key_holders_group() {
         third.service.access(workspace_id, now),
         KeyAccess::Waiting
     ));
-    run(&mut [&mut desktop, &mut page, &mut third], &mut now, 10);
+    drive(&mut [&mut desktop, &mut page, &mut third], &mut now, 10);
     pollster::block_on(third.service.signatures());
-    run(&mut [&mut desktop, &mut page, &mut third], &mut now, 10);
+    drive(&mut [&mut desktop, &mut page, &mut third], &mut now, 10);
     assert_eq!(
         ready_epoch(&third.service.access(workspace_id, now)),
         ready_epoch(&page.service.access(workspace_id, now)),
@@ -1865,7 +2039,7 @@ fn every_member_of_a_group_that_forked_reads_the_winners_records() {
         .unwrap();
     create(&mut founder, workspace_id, now);
     joiner.service.access(workspace_id, now);
-    run(&mut [&mut founder, &mut joiner], &mut now, 10);
+    drive(&mut [&mut founder, &mut joiner], &mut now, 10);
     let KeyAccess::Ready(pair) = joiner.service.access(workspace_id, now) else {
         panic!("the joiner is in the founder's group");
     };
@@ -1880,7 +2054,7 @@ fn every_member_of_a_group_that_forked_reads_the_winners_records() {
     for _ in 0..240 {
         {
             let [a, b, c] = &mut devices;
-            run(&mut [a, b, c], &mut now, 1);
+            drive(&mut [a, b, c], &mut now, 1);
         }
         let epochs: Vec<_> = devices
             .iter_mut()
@@ -1928,7 +2102,7 @@ fn every_member_of_a_group_that_forked_reads_the_winners_records() {
     // last one time to land, then every member reads both sides' history.
     {
         let [a, b, c] = &mut devices;
-        run(&mut [a, b, c], &mut now, 10);
+        drive(&mut [a, b, c], &mut now, 10);
     }
     for device in &mut devices {
         let KeyAccess::Ready(keys) = device.service.access(workspace_id, now) else {
@@ -1962,20 +2136,20 @@ fn a_device_admitted_with_a_key_it_replaced_asks_again_at_once() {
     let mut founder = device(&workspace, workspace_id, 0, 31, &policy, dirs[0].path());
     let mut reader = device(&workspace, workspace_id, 1, 32, &policy, dirs[1].path());
     create(&mut founder, workspace_id, now);
-    run(&mut [&mut founder], &mut now, 1);
+    drive(&mut [&mut founder], &mut now, 1);
     // The reader hears the group and asks to join; the founder is away.
     reader.service.access(workspace_id, now);
-    run(&mut [&mut reader], &mut now, 1);
+    drive(&mut [&mut reader], &mut now, 1);
     // Nothing the reader says reaches anyone for a while: it asks again
     // with a fresh member key once its first one went unanswered.
     workspace.down.store(true, Ordering::SeqCst);
-    run(&mut [&mut reader], &mut now, 65);
+    drive(&mut [&mut reader], &mut now, 65);
     workspace.down.store(false, Ordering::SeqCst);
 
     // The founder comes back and admits the reader with its first key.
     let back = now;
     for _ in 0..90 {
-        run(&mut [&mut founder, &mut reader], &mut now, 1);
+        drive(&mut [&mut founder, &mut reader], &mut now, 1);
         if ready_epoch(&reader.service.access(workspace_id, now)).is_some() {
             break;
         }
@@ -2008,13 +2182,15 @@ fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
         Endpoint::join(&workspace, workspace_id, 1);
         let mut founder = device(&workspace, workspace_id, 0, seed, &policy, dir);
         create(&mut founder, workspace_id, now);
-        run(&mut [&mut founder], &mut now.clone(), 1);
+        drive(&mut [&mut founder], &mut now.clone(), 1);
         let genesis = listener
             .take_inbound()
             .into_iter()
             .find_map(|inbound| match inbound {
                 InboundGovernance::Frame { frame, .. } => Some(*frame),
-                InboundGovernance::AccessRequest { .. } => None,
+                InboundGovernance::AccessRequest { .. }
+                | InboundGovernance::DocumentFrame { .. }
+                | InboundGovernance::DocumentAccessRequest { .. } => None,
             })
             .unwrap();
         (workspace, founder, genesis)
@@ -2037,7 +2213,7 @@ fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
         dirs[2].path(),
     );
     reader.service.access(workspace_id, now);
-    run(&mut [&mut loser, &mut reader], &mut now, 10);
+    drive(&mut [&mut loser, &mut reader], &mut now, 10);
     let epoch = ready_epoch(&reader.service.access(workspace_id, now));
     assert!(epoch.is_some(), "the reader joins the loser's group");
 
@@ -2053,7 +2229,7 @@ fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
             workspace: workspace_id,
             frame: Box::new(winning),
         });
-    run(&mut [&mut reader], &mut now, 2);
+    drive(&mut [&mut reader], &mut now, 2);
     assert_eq!(
         ready_epoch(&reader.service.access(workspace_id, now)),
         epoch,
@@ -2062,7 +2238,7 @@ fn a_competing_genesis_is_judged_once_the_device_names_the_record() {
 
     // Named again, the winner's genesis decides: the reader starts over.
     reader_policy.unknown.store(false, Ordering::SeqCst);
-    run(&mut [&mut reader], &mut now, 1);
+    drive(&mut [&mut reader], &mut now, 1);
     assert!(
         reader.service.peers[&workspace_id].peer.access() == Access::Waiting,
         "the reader leaves the group whose genesis lost"
@@ -2092,7 +2268,7 @@ fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
     let mut phone = device(&workspace, workspace_id, 1, 4, &policy, phone_dir.path());
     create(&mut owner, workspace_id, now);
     phone.service.access(workspace_id, now);
-    run(&mut [&mut owner, &mut phone], &mut now, 30);
+    drive(&mut [&mut owner, &mut phone], &mut now, 30);
     let joined = ready_epoch(&phone.service.access(workspace_id, now));
     assert!(joined.is_some(), "the phone is in the channel");
     assert_eq!(
@@ -2160,13 +2336,13 @@ fn a_member_that_links_after_a_commit_is_handed_the_channels_head() {
                 .into_iter()
                 .filter_map(InboundGovernance::from_message),
         );
-    run(&mut [&mut phone], &mut now, 2);
+    drive(&mut [&mut phone], &mut now, 2);
     assert_ne!(
         ready_epoch(&phone.service.access(workspace_id, now)),
         joined,
         "the phone no longer seals under the epoch it was left at"
     );
-    run(&mut [&mut owner, &mut phone, &mut tablet], &mut now, 130);
+    drive(&mut [&mut owner, &mut phone, &mut tablet], &mut now, 130);
     let settled = ready_epoch(&owner.service.access(workspace_id, now));
     assert!(settled.is_some());
     assert_eq!(

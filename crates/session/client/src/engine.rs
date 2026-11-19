@@ -342,7 +342,7 @@ type KeptResource = Option<(KeysUsed, KeptDocument)>;
 
 /// The keys a sealed record was opened with: the channel and epoch of the record's own keys and of
 /// the channel's history keys. A rotation moves the epoch.
-type KeysUsed = [Option<(collab_types::WorkspaceId, u64)>; 2];
+type KeysUsed = [Option<(collab_types::WorkspaceId, u64)>; 3];
 
 /// What was kept opened of a record, when it was opened with exactly the keys `used` now: a
 /// record opened under other keys is forgotten.
@@ -473,7 +473,10 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
         workspace: WorkspaceId,
         write: &collab_types::SignedOp,
     ) -> Result<Vec<u8>, String> {
-        match self.handed(workspace) {
+        let group = write
+            .encryption
+            .map_or(workspace, |metadata| metadata.key_group(workspace));
+        match self.handed(group) {
             Some(handed) => handed.open(write),
             None => self.service()?.open_history_write(workspace, write),
         }
@@ -492,6 +495,28 @@ impl tilo_peer_state::owner::SealedHistoryKeys for HistoryKeys {
                 .service()?
                 .seal_checkpoint(workspace, app, record, snapshot),
         }
+    }
+
+    fn seal_scoped_checkpoint(
+        &self,
+        workspace: WorkspaceId,
+        document: (&str, &str),
+        readers: &std::collections::BTreeSet<[u8; 32]>,
+        snapshot: &[u8],
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        self.service()?
+            .seal_scoped_checkpoint(workspace, document, readers, snapshot)
+    }
+
+    fn renew_scoped(
+        &self,
+        workspace: WorkspaceId,
+        document: (&str, &str),
+        readers: &std::collections::BTreeSet<[u8; 32]>,
+        write: &collab_types::SignedOp,
+    ) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> {
+        self.service()?
+            .renew_scoped_document(workspace, document, readers, write)
     }
 
     fn renew(
@@ -742,6 +767,16 @@ impl Engine {
         let Some(held) = self.own_writes(workspace, app, record) else {
             return self.read_replica(workspace, (app, record), holding, maximum);
         };
+        let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
+        let own = self.identity.device_cert.device_public_key;
+        self.owner.with_current(id, |view| {
+            view.peer().check_document_read(
+                Admission::of(view, own).reader(own),
+                app,
+                record,
+                tilo_clock::wall(),
+            )
+        })?;
         if let Some(reading) =
             self.read_own_since(workspace, (app, record), holding, maximum, &held)?
         {
@@ -901,21 +936,33 @@ impl Engine {
             .unwrap_or(ResourceReading::Pending))
     }
 
-    /// `read` of the record of `workspace` at `route`, with how its sealed writes open — the
-    /// record's keys, then the channel's own history keys — and what this device kept opened of
-    /// it: `None` while the keys of a sealed record are not here.
+    /// `read` of the document of `workspace` at `route`, with how its sealed writes open — the
+    /// document's keys, then the workspace's own history keys — and what this device kept opened of
+    /// it: `None` while the keys of a sealed document are not here.
     fn opened<T>(
         &self,
         workspace: &str,
-        (app, record): (&str, &str),
+        (app, document_id): (&str, &str),
         read: &mut dyn FnMut(WorkspaceId, OpenSealed<'_>, &mut KeptDocument) -> Result<T, String>,
     ) -> Result<Option<T>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         let own = self.identity.device_cert.device_public_key;
-        let (sealed, admission) = self.owner.with_current(workspace, |view| {
+        let (sealed, scoped, admission) = self.owner.with_current(workspace, |view| {
+            let admission = Admission::of(view, own);
+            view.peer().check_document_read(
+                admission.reader(own),
+                app,
+                document_id,
+                tilo_clock::wall(),
+            )?;
             Ok((
-                view.peer().publication().is_sealed_document(app, record),
-                Admission::of(view, own),
+                view.peer()
+                    .publication()
+                    .is_sealed_document(app, document_id),
+                view.peer()
+                    .publication()
+                    .has_document_keys(app, document_id),
+                admission,
             ))
         })?;
         let keys: Option<tilo_workspace_keys::HistoryKeys> = if sealed {
@@ -924,11 +971,11 @@ impl Engine {
                 Some(KeyAccess::Ready(keys)) => Some(keys.into()),
                 Some(KeyAccess::Waiting | KeyAccess::Removed) => {
                     // Nothing opened under keys this device no longer holds answers a read
-                    // until the record's channel gives it keys again.
+                    // until the document_id's channel gives it keys again.
                     self.kept.lock_recover().remove(&(
                         workspace,
                         app.to_owned(),
-                        record.to_owned(),
+                        document_id.to_owned(),
                     ));
                     return Ok(None);
                 }
@@ -941,7 +988,9 @@ impl Engine {
                 // the keys it was copied with, among the history keys, open what it holds.
                 Some(KeyAccess::Unavailable) if admission != Admission::Admitted => None,
                 Some(KeyAccess::Unavailable) => {
-                    return Err("this device takes part in no channel of the record".to_owned());
+                    return Err(
+                        "this device takes part in no channel of the document_id".to_owned()
+                    );
                 }
             }
         } else {
@@ -954,13 +1003,26 @@ impl Engine {
             .keys
             .get()
             .and_then(|keys| keys.history_keys(workspace));
+        let document_keys = if scoped {
+            let route = DocumentRoute {
+                app_id: app.to_owned(),
+                cluster_id: workspace.to_string(),
+                document: document_id.to_owned(),
+            };
+            match self.exact_document_keys(&route)? {
+                SealKeys::Here(keys) => Some(tilo_workspace_keys::HistoryKeys::from(keys)),
+                SealKeys::Waiting | SealKeys::NoSecretStore => return Ok(None),
+            }
+        } else {
+            None
+        };
         // A sealed write the keys this device holds do not open yet — its epoch's key, or the key
         // of the branch it was sealed on, has not reached this device — reads as what opened
         // before it until they have, as the app's own channel holds such a write until they do;
-        // a record none of whose writes open yet is still arriving here. The record's keys open
+        // a document_id none of whose writes open yet is still arriving here. The document_id's keys open
         // what they carry; the channel's own history keys open the rest.
         let mut unopened = false;
-        let key = (workspace, app.to_owned(), record.to_owned());
+        let key = (workspace, app.to_owned(), document_id.to_owned());
         // What was opened under other keys than these — the channel rotated, as removing a member
         // rotates it — is let go, and it opens whole under the keys held now.
         let used: KeysUsed = [
@@ -969,6 +1031,9 @@ impl Engine {
             history
                 .as_ref()
                 .and_then(|history| history.as_ref().ok())
+                .map(tilo_workspace_keys::HistoryKeys::generation),
+            document_keys
+                .as_ref()
                 .map(tilo_workspace_keys::HistoryKeys::generation),
         ];
         // A sealed resource another read is opening now is waited for, and read on from what that
@@ -985,15 +1050,25 @@ impl Engine {
             read(
                 workspace,
                 &mut |write| {
-                    let opened = match (&keys, &history) {
-                        (Some(keys), Some(Ok(history))) => {
-                            keys.open(write).or_else(|_| history.open(write))
+                    let scoped = write
+                        .encryption
+                        .is_some_and(|metadata| metadata.key_group(workspace) != workspace);
+                    let opened = if scoped {
+                        document_keys
+                            .as_ref()
+                            .ok_or("the document_id's keys have not arrived")?
+                            .open(write)
+                    } else {
+                        match (&keys, &history) {
+                            (Some(keys), Some(Ok(history))) => {
+                                keys.open(write).or_else(|_| history.open(write))
+                            }
+                            (Some(keys), _) => keys.open(write),
+                            (None, Some(history)) => {
+                                history.as_ref().map_err(Clone::clone)?.open(write)
+                            }
+                            (None, None) => Err("this session's key service is not running".into()),
                         }
-                        (Some(keys), _) => keys.open(write),
-                        (None, Some(history)) => {
-                            history.as_ref().map_err(Clone::clone)?.open(write)
-                        }
-                        (None, None) => Err("this session's channel service is not running".into()),
                     };
                     unopened |= opened.is_err();
                     opened
@@ -1201,7 +1276,7 @@ impl Engine {
         use tilo_broker_core::owner_service::OwnerService as _;
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         self.check_ownership(&self.owner, workspace)?;
-        let reader = self.identity.device_cert.device_public_key;
+        let reader = certificate.device_public_key;
         self.owner.with_current(workspace, |view| {
             let certified = view.peer().certificates().iter().any(|held| {
                 held.device_public_key == certificate.device_public_key
@@ -1215,23 +1290,55 @@ impl Engine {
         })
     }
 
-    /// Every record `workspace` holds here, by its app and id. A workspace this device
+    /// A live local document read check for consumers of cached copies.
+    pub fn document_read_policy(
+        &self,
+        workspace: WorkspaceId,
+    ) -> impl Fn(&str, &str) -> bool + use<> {
+        let owner = self.owner.clone();
+        let own = self.identity.device_cert.device_public_key;
+        move |app, document_id| {
+            owner
+                .with_current(workspace, |view| {
+                    let reader = Admission::of(view, own).reader(own);
+                    view.peer()
+                        .check_document_read(reader, app, document_id, tilo_clock::wall())
+                })
+                .is_ok()
+        }
+    }
+
+    /// Every document_id `workspace` holds here, by its app and id. A workspace this device
     /// does not hold lists nothing.
     /// # Errors
     /// The workspace is not held here, or its documents cannot be listed now.
     pub fn documents(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
         let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let mut records = self
-            .owner
-            .with_current(id, |view| Ok(view.peer().records()))?;
-        // A record this device wrote that its replica holds nothing of yet is one of them too.
-        for route in self.held.lock().keys() {
-            let named = (route.app_id.clone(), route.document.clone());
-            if route.cluster_id == workspace && !records.contains(&named) {
-                records.push(named);
+        let held: Vec<_> = self
+            .held
+            .lock()
+            .keys()
+            .filter(|route| route.cluster_id == workspace)
+            .map(|route| (route.app_id.clone(), route.document.clone()))
+            .collect();
+        let own = self.identity.device_cert.device_public_key;
+        let now = tilo_clock::wall();
+        self.owner.with_current(id, |view| {
+            let reader = Admission::of(view, own).reader(own);
+            let mut documents = view.peer().records();
+            // Local writes become visible before their replica admits them.
+            for document_id in &held {
+                if !documents.contains(document_id) {
+                    documents.push(document_id.clone());
+                }
             }
-        }
-        Ok(records)
+            documents.retain(|(app, document_id)| {
+                view.peer()
+                    .check_document_read(reader, app, document_id, now)
+                    .is_ok()
+            });
+            Ok(documents)
+        })
     }
 
     /// Whether this device's person reads everything `workspace` holds here, so that it may be
@@ -1389,7 +1496,7 @@ impl Engine {
     /// group: it holds no keys, and none are coming.
     pub fn seal_keys(&self, workspace: WorkspaceId) -> Result<SealKeys, String> {
         Ok(match self.route_access(workspace) {
-            None => return Err("this session's channel service is not running".to_owned()),
+            None => return Err("this session's key service is not running".to_owned()),
             Some(KeyAccess::Ready(keys)) => SealKeys::Here(keys),
             // Asked and not admitted yet, or admitted nowhere the governance here can name:
             // either way the keys are not here yet.
@@ -1398,6 +1505,92 @@ impl Engine {
                 return Err("the workspace removed this device from its group".to_owned());
             }
             Some(KeyAccess::NoSecretStore) => SealKeys::NoSecretStore,
+        })
+    }
+
+    /// Select the keys for a session-owned document write. A local owner
+    /// writes shared documents in the clear, but isolated documents still
+    /// require the exact group.
+    ///
+    /// # Errors
+    ///
+    /// The document's workspace is unavailable or the document key request failed.
+    pub fn resource_write_keys(
+        &self,
+        workspace: WorkspaceId,
+        (app, document_id): (&str, &str),
+    ) -> Result<Option<SealKeys>, String> {
+        use tilo_broker_core::owner_service::OwnerService as _;
+        let route = DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: workspace.to_string(),
+            document: document_id.to_owned(),
+        };
+        let isolated = self.owner.with_current(workspace, |view| {
+            view.peer()
+                .requires_document_keys(app, document_id, tilo_clock::wall())
+        })?;
+        if isolated {
+            self.exact_document_keys(&route).map(Some)
+        } else if self.commits_documents(workspace) {
+            Ok(None)
+        } else {
+            self.seal_keys(workspace).map(Some)
+        }
+    }
+
+    /// Keys for a new write to this document. The workspace key remains valid
+    /// only while every workspace key holder may read the document.
+    pub fn document_seal_keys(&self, route: &DocumentRoute) -> Result<SealKeys, String> {
+        let workspace = route.workspace_id().map_err(|error| error.to_string())?;
+        let isolated = self.owner.with_current(workspace, |view| {
+            view.peer()
+                .requires_document_keys(&route.app_id, &route.document, tilo_clock::wall())
+        })?;
+        if !isolated {
+            return self.seal_keys(workspace);
+        }
+        self.exact_document_keys(route)
+    }
+
+    /// Open encrypted content referenced by a document as its current reader.
+    pub fn document_content_keys(
+        &self,
+        route: &DocumentRoute,
+        group: WorkspaceId,
+    ) -> Result<SealKeys, String> {
+        let workspace = route.workspace_id().map_err(|error| error.to_string())?;
+        if !self.document_read_policy(workspace)(&route.app_id, &route.document) {
+            return Err("this device cannot read the document's content".into());
+        }
+        if group == workspace {
+            return self.seal_keys(workspace);
+        }
+        if route
+            .key_scope()
+            .map_err(|error| error.to_string())?
+            .group()
+            != group
+        {
+            return Err("the content belongs to another document group".into());
+        }
+        self.exact_document_keys(route)
+    }
+
+    pub(crate) fn exact_document_keys(&self, route: &DocumentRoute) -> Result<SealKeys, String> {
+        let scope = route.key_scope().map_err(|error| error.to_string())?;
+        let service = self
+            .keys
+            .get()
+            .ok_or("this session's key service is not running")?;
+        let group = service
+            .register_scope(scope)
+            .ok_or("invalid document key scope")?;
+        Ok(match service.access(group).0 {
+            KeyAccess::Ready(keys) => SealKeys::Here(keys),
+            KeyAccess::Waiting | KeyAccess::Unavailable => SealKeys::Waiting,
+            KeyAccess::Removed => return Err("this device's document access was removed".into()),
+            KeyAccess::NoSecretStore => SealKeys::NoSecretStore,
         })
     }
 
@@ -1807,7 +2000,7 @@ impl Engine {
         self.link.lock_recover().clone()
     }
 
-    /// Where this session's channel service installs this device's keys: the broker, the workspace host
+    /// Where this session's key service installs this device's keys: the broker, the workspace server
     /// and every sealed read meet here.
     /// This device's own writes its replica has not taken in yet.
     pub fn held_writes(&self) -> &HeldWrites {

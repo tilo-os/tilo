@@ -35,7 +35,7 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
         late.service.access(workspace_id, now),
         KeyAccess::Waiting
     ));
-    run(&mut [&mut founder, &mut member, &mut late], &mut now, 1);
+    drive(&mut [&mut founder, &mut member, &mut late], &mut now, 1);
     let held = |device: &Device| {
         device
             .service
@@ -58,7 +58,7 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
 
     // The policy catches up with the workspace it reads.
     late_policy.allowed.lock().unwrap().insert(public(1));
-    run(&mut [&mut founder, &mut member, &mut late], &mut now, 8);
+    drive(&mut [&mut founder, &mut member, &mut late], &mut now, 8);
 
     let entry = &late.service.peers[&workspace_id];
     assert!(
@@ -98,7 +98,7 @@ fn a_device_that_entered_a_workspace_never_founds_its_group() {
         entered.service.access(workspace_id, now),
         KeyAccess::Waiting
     ));
-    run(&mut [&mut entered], &mut now, 30);
+    drive(&mut [&mut entered], &mut now, 30);
     assert!(!entered.service.peers[&workspace_id].peer.knows_group());
     assert!(matches!(
         entered.service.access(workspace_id, now),

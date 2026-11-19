@@ -17,7 +17,7 @@ use tilo_content::ContentStore;
 use tilo_fs::tree_put::Written;
 use tilo_server_protocol::WorkspaceId;
 
-use super::{manifest_of, refused, size_of};
+use super::{manifest_bytes, manifest_of, refused, sealed::FileSealing, size_of};
 use crate::workspace_actions::{Outcome, Worker, commit_failed, invoke_arguments};
 
 /// The most text one `write-file` takes, as Files on a device does: a longer file is put into
@@ -108,7 +108,11 @@ impl Asked {
 /// is a file's manifest already, with every chunk it lists kept here, is that file: the call
 /// that takes a write back names what the file held before so. Any other content is kept as a
 /// file of the tree is ([`manifest_of`]).
-fn kept(store: &ContentStore, hash: &str) -> Result<(String, u64), String> {
+fn kept(
+    store: &ContentStore,
+    hash: &str,
+    sealing: Option<&FileSealing>,
+) -> Result<(String, u64), String> {
     let size = size_of(store, hash)
         .ok_or_else(|| format!("this workspace holds no tilo.content:{hash}"))?;
     if size <= MOST_MANIFEST_BYTES
@@ -120,9 +124,15 @@ fn kept(store: &ContentStore, hash: &str) -> Result<(String, u64), String> {
             .iter()
             .all(|chunk| store.has(&hex::encode(chunk.hash)))
     {
-        return Ok((hash.to_owned(), manifest.total_len()));
+        let hash = match sealing {
+            Some(sealing) => store
+                .put_public(&sealing.reseal(store, &manifest)?)
+                .map_err(|error| error.to_string())?,
+            None => hash.to_owned(),
+        };
+        return Ok((hash, manifest.total_len()));
     }
-    Ok((manifest_of(store, hash, size)?, size))
+    Ok((manifest_of(store, hash, size, sealing)?, size))
 }
 
 /// What `write-file` answers: where the file is and how long, whether it took the place of
@@ -198,15 +208,18 @@ impl Worker {
         let store = self
             .workspace_content(workspace_id)
             .ok_or_else(|| refused("this workspace keeps no files where its tree is kept"))?;
+        let sealing = self.file_sealing(workspace_id, true).map_err(refused)?;
         let (content, size) = match &asked.source {
             Source::Text(text) => {
                 let size = u64::try_from(text.len()).unwrap_or(u64::MAX);
+                let manifest = manifest_bytes(&store, text.as_bytes(), size, sealing.as_ref())
+                    .map_err(refused)?;
                 let address = store
-                    .put_public(text.as_bytes())
+                    .put_public(&manifest)
                     .map_err(|error| refused(error.to_string()))?;
-                (manifest_of(&store, &address, size).map_err(refused)?, size)
+                (address, size)
             }
-            Source::Content(hash) => kept(&store, hash).map_err(refused)?,
+            Source::Content(hash) => kept(&store, hash, sealing.as_ref()).map_err(refused)?,
         };
         let (mut tree, held) = self.tree_in_workspace(workspace_id, named)?;
         let now = tilo_clock::unix_now_ns() / 1_000_000;
@@ -225,6 +238,15 @@ impl Worker {
             // A tree founded now: every document of it from nothing.
             None => tree.document_writes(&BTreeMap::new()),
         };
+        self.check_file_keys(workspace_id, sealing.as_ref())
+            .map_err(refused)?;
+        if !self.may_on_tree(
+            workspace_id,
+            caller,
+            &[verbs::NEW_FOLDER, verbs::NEW_FILE, verbs::WRITE],
+        ) {
+            return Err(Outcome::Rejected(ActionCallError::NotPermitted));
+        }
         self.commit_tree_writes(workspace_id, named, held.as_ref(), writes)
             .map_err(|reason| commit_failed(reason, true))?;
         self.keep_tree(workspace_id, named, tree);

@@ -40,6 +40,8 @@ fn decide_at(grants: &[Grant], node: &TreePath, kind: ActionKind, consequential:
         members: std::collections::BTreeMap::default(),
         joined: std::collections::BTreeMap::default(),
         grants: grants.to_vec(),
+        custom_roles: std::collections::BTreeMap::default(),
+        assigned_roles: std::collections::BTreeMap::default(),
     };
     let verdict =
         Authority::person(policy.party_of(Grantee::agent(AGENT))).decide(node, kind, &cx());

@@ -56,6 +56,15 @@ impl DocumentRoute {
     pub fn artifact(&self) -> collab_types::ArtifactId {
         document_artifact_id(&self.app_id, &self.cluster_id, &self.document)
     }
+
+    /// The independent group for sealing this document.
+    pub fn key_scope(&self) -> Result<neighbour_wire::KeyScope, DocumentError> {
+        Ok(neighbour_wire::KeyScope::Document {
+            workspace: self.workspace_id()?,
+            app: self.app_id.clone(),
+            document: self.document.clone(),
+        })
+    }
 }
 
 /// Why a document envelope was not produced or accepted.

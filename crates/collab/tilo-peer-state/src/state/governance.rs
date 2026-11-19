@@ -721,6 +721,43 @@ impl Naming {
     }
 }
 impl PeerGovernanceMut<'_> {
+    /// Apply an already authorized document rule as one membership op.
+    pub fn change_document_access(
+        self,
+        changes: Vec<Change>,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer.require_member_writer(key, now)?;
+        let document = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("workspace governance missing")?;
+        self.peer.write_changes(document, changes, key, now)
+    }
+
+    /// Sign one custom-role change through the workspace's governance.
+    pub fn change_custom_role(
+        self,
+        change: Change,
+        key: &dyn DeviceSigner,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        if !change.is_custom_role_change() {
+            return Err("expected a custom role change".into());
+        }
+        self.peer.require_member_writer(key, now)?;
+        let document = self
+            .peer
+            .core
+            .workspace_doc
+            .clone()
+            .ok_or("workspace governance missing")?;
+        self.peer.write_changes(document, vec![change], key, now)
+    }
+
     /// Publish root-signed revocations into pinned governance, so every
     /// replica refuses the revoked devices. The authority's root revokes any
     /// of its keys, kept on the authority's own row too so a device revoked

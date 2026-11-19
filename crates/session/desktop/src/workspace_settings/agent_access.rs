@@ -13,7 +13,7 @@ use tilo_action_policy::{ActionKind, Answer, Grantee, KindSet, decide};
 use tilo_desktop_model::Workspace;
 use tilo_sort::CompactSort as _;
 
-use super::{AppDirectory, action_name, app_display_name, grant_subjects};
+use super::{AppDirectory, action_name, app_display_name, grant_recipients};
 use crate::i18n::{t, t_args};
 
 /// The three kinds of action, in column order.
@@ -142,9 +142,9 @@ pub fn agent_access_rows(
     admission: &[tilo_action_policy::Grant],
     apps: &dyn AppDirectory,
 ) -> Vec<AgentAccessRow> {
-    let mut ids: Vec<String> = grant_subjects(ws)
+    let mut ids: Vec<String> = grant_recipients(ws)
         .into_iter()
-        .filter(|candidate| candidate.kind == super::SubjectKind::App)
+        .filter(|candidate| candidate.kind == super::RecipientKind::App)
         .map(|candidate| candidate.id)
         .collect();
     // Every app installed here is answered for, not only those with a window open: a person sets

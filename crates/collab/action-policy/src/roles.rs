@@ -8,6 +8,33 @@ use crate::{
     Verdict,
 };
 
+/// Whether this app keeps vault documents.
+#[must_use]
+pub fn is_vault_app(app: &str) -> bool {
+    app == tilo_app_id::apps::PASSWORDS || app == "dev.tilo.passwords"
+}
+
+/// Apps whose migrated contents must use independent document keys, even
+/// while only an owner has joined the workspace.
+#[must_use]
+pub fn requires_document_keys(app: &str, document: &str) -> bool {
+    is_vault_app(app)
+        || (matches!(app, tilo_app_id::apps::MAIL | "dev.tilo.mail") && document.is_empty())
+}
+
+fn private_by_default(workspace: &str) -> [Rule; 4] {
+    use tilo_app_id::apps::{MAIL, PASSWORDS};
+    [
+        TreePath::workspace(workspace).app(PASSWORDS),
+        TreePath::workspace(workspace).app("dev.tilo.passwords"),
+        TreePath::workspace(workspace).app(MAIL).resource(""),
+        TreePath::workspace(workspace)
+            .app("dev.tilo.mail")
+            .resource(""),
+    ]
+    .map(|node| Rule::new(node, KindSet::ALL, Answer::Deny))
+}
+
 /// The kind id of the workspace's own resource. Its actions are the workspace's
 /// governance: membership, roles, grants and settings.
 pub const WORKSPACE_KIND: &str = "tilo.workspace";
@@ -581,7 +608,7 @@ impl Preset {
 #[must_use]
 pub fn role_rules(role: Role, workspace: &str) -> Vec<Rule> {
     let workspace_node = TreePath::workspace(workspace);
-    match role {
+    let mut rules = match role {
         Role::Viewer => vec![Rule::new(workspace_node, KindSet::READ, Answer::Allow)],
         Role::Commenter => vec![
             Rule::new(workspace_node, KindSet::READ, Answer::Allow),
@@ -601,7 +628,11 @@ pub fn role_rules(role: Role, workspace: &str) -> Vec<Rule> {
             rules
         }
         Role::Owner => vec![Rule::new(workspace_node, KindSet::ALL, Answer::Allow)],
+    };
+    if role != Role::Owner {
+        rules.extend(private_by_default(workspace));
     }
+    rules
 }
 
 fn editor_rules(workspace: &str, moderation_answer: Answer) -> Vec<Rule> {

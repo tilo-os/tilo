@@ -116,6 +116,22 @@ impl<'peer> PeerPublication<'peer> {
             .unwrap_or_default()
     }
 
+    /// Once a document starts using its own group, keep it scoped through
+    /// subsequent writes and compaction.
+    #[must_use]
+    pub fn has_document_keys(self, app: &str, document_id: &str) -> bool {
+        self.document((app, document_id)).is_ok_and(|document| {
+            document.sealed.iter().any(|op| {
+                op.encryption.is_some_and(|metadata| {
+                    matches!(
+                        metadata.scheme,
+                        collab_types::EncryptionScheme::DocumentContentKey { .. }
+                    )
+                })
+            })
+        })
+    }
+
     /// Whether the sealed history of `record` of `app` holds `write` as itself.
     #[must_use]
     pub fn holds_sealed(self, app: &str, record: &str, write: &SignedOp) -> bool {
@@ -205,6 +221,8 @@ impl<'peer> PeerPublication<'peer> {
         let mut sealed = Vec::new();
         for (index, frame) in snapshot.encode_frames().map_err(err)?.iter().enumerate() {
             let (metadata, ciphertext) = seal(frame)?;
+            self.peer
+                .check_document_key_scope((app, record), Some(metadata), now, false)?;
             let retention = if index == 0 {
                 ContentRetention::Checkpoint
             } else {

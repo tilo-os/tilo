@@ -8,7 +8,7 @@
 use std::path::{Component, Path};
 use std::sync::atomic::Ordering;
 
-use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, now_ms};
+use super::{Access, EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, now_ms};
 use crate::namespace::{LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -321,8 +321,10 @@ impl QuickFS {
         let Some((ino, _)) = self.lookup_kind(parent, name) else {
             return Err(ENOENT);
         };
+        self.check_existing_name(parent, name)?;
         self.admit_as(None, Some(ino), fs_protocol::file_action::verbs::MOVE)?;
         let new_parent = self.ensure_dir_components(new_parents)?;
+        self.check_new_name(new_parent, new_name)?;
         self.rename_named(parent, name, new_parent, new_name)?;
         self.publish();
         Ok(())
@@ -333,6 +335,7 @@ impl QuickFS {
         let Some((ino, kind)) = self.lookup_kind(parent, name) else {
             return Ok(());
         };
+        self.check_existing_name(parent, name)?;
         if kind != FileType::Directory {
             return Err(ENOTDIR);
         }
@@ -480,6 +483,9 @@ impl QuickFS {
     pub fn entry_at(&self, rel: &Path) -> Option<TreeEntry> {
         let components = path_components(rel).ok()?;
         let ino = self.ino_at(&components)?;
+        if !self.ino_in_view(ino) {
+            return None;
+        }
         let ns = self.ns();
         let (attr, hash) = ns.attr_and_hash(ino)?;
         let mtime_ms = attr
@@ -507,6 +513,7 @@ impl QuickFS {
     pub fn read_path(&self, rel: &Path) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
+        self.check_access(ino, Access::Read)?;
         let attr = self.ns().getattr(ino);
         if attr.is_some_and(|attr| attr.kind == FileType::Directory) {
             return Err(EISDIR);
@@ -521,6 +528,7 @@ impl QuickFS {
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
         // One namespace lock for the inode's kind and content.
         let view = self.inode_view(ino, false).ok_or(ENOENT)?;
+        self.check_view_access(&view, Access::Read)?;
         if view.attr.kind == FileType::Directory {
             return Err(EISDIR);
         }
@@ -543,6 +551,9 @@ impl QuickFS {
         use std::os::unix::ffi::OsStrExt as _;
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
+        if !self.ino_in_view(ino) {
+            return Err(ENOENT);
+        }
         if self.lookup_kind_of(ino) != Some(FileType::Directory) {
             return Err(ENOTDIR);
         }

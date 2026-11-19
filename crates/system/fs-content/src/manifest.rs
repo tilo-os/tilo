@@ -9,6 +9,7 @@ use crate::tier::ChunkTier;
 pub const HEADER_MAGIC: [u8; 6] = *b"tilocf";
 /// The manifest format this crate writes.
 pub const FORMAT: u8 = 2;
+const SEALED_FORMAT: u8 = 3;
 /// Largest chunk any tier produces.
 pub const MAX_CHUNK_LEN: u32 = 4 * 1024 * 1024;
 const ENTRY: usize = 32;
@@ -20,9 +21,19 @@ pub struct ChunkRef {
     pub len: u32,
 }
 
+/// The group and epoch sealing a file version's chunks. Lengths in the
+/// manifest describe clear file ranges. The content store hashes the sealed bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SealedChunks {
+    pub group: [u8; 16],
+    pub epoch: u64,
+    pub overhead: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
     tier: ChunkTier,
+    sealed: Option<SealedChunks>,
     chunks: Vec<ChunkRef>,
     ends: Vec<u64>,
     id: [u8; 32],
@@ -48,7 +59,10 @@ impl std::error::Error for DecodeError {}
 pub fn is_manifest(bytes: &[u8]) -> bool {
     bytes.len().is_multiple_of(ENTRY)
         && bytes.get(..HEADER_MAGIC.len()) == Some(&HEADER_MAGIC[..])
-        && bytes.get(HEADER_MAGIC.len()) == Some(&FORMAT)
+        && matches!(
+            bytes.get(HEADER_MAGIC.len()),
+            Some(&FORMAT | &SEALED_FORMAT)
+        )
 }
 
 /// The bytes of the file whose content is `content`, as a workspace's tree names a file by the
@@ -58,7 +72,17 @@ pub fn is_manifest(bytes: &[u8]) -> bool {
 pub fn whole(
     content: Vec<u8>,
     max: u64,
+    chunk: impl FnMut(&[u8; 32]) -> Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    whole_with(content, max, chunk, |_, _| None)
+}
+
+/// Assemble a file, opening sealed chunks through an authorized key holder.
+pub fn whole_with(
+    content: Vec<u8>,
+    max: u64,
     mut chunk: impl FnMut(&[u8; 32]) -> Option<Vec<u8>>,
+    mut open: impl FnMut(SealedChunks, &[u8]) -> Option<Vec<u8>>,
 ) -> Option<Vec<u8>> {
     if !is_manifest(&content) {
         return (content.len() as u64 <= max).then_some(content);
@@ -70,6 +94,13 @@ pub fn whole(
     let mut file = Vec::with_capacity(usize::try_from(manifest.total_len()).unwrap_or(0));
     for part in manifest.chunks() {
         let bytes = chunk(&part.hash)?;
+        if bytes.len() as u64 != manifest.stored_len(part) {
+            return None;
+        }
+        let bytes = match manifest.sealed() {
+            Some(sealed) => open(sealed, &bytes)?,
+            None => bytes,
+        };
         if bytes.len() != part.len as usize {
             return None;
         }
@@ -96,9 +127,18 @@ fn read_u64(bytes: &[u8], at: usize) -> Option<u64> {
 
 impl Manifest {
     pub fn new(tier: ChunkTier, chunks: Vec<ChunkRef>) -> Self {
+        Self::from_chunks(tier, chunks, None)
+    }
+
+    pub fn new_sealed(tier: ChunkTier, chunks: Vec<ChunkRef>, sealed: SealedChunks) -> Self {
+        Self::from_chunks(tier, chunks, Some(sealed))
+    }
+
+    fn from_chunks(tier: ChunkTier, chunks: Vec<ChunkRef>, sealed: Option<SealedChunks>) -> Self {
         let ends = ends_of(&chunks);
         let mut m = Self {
             tier,
+            sealed,
             chunks,
             ends,
             id: [0; 32],
@@ -109,6 +149,15 @@ impl Manifest {
 
     pub const fn tier(&self) -> ChunkTier {
         self.tier
+    }
+
+    pub const fn sealed(&self) -> Option<SealedChunks> {
+        self.sealed
+    }
+
+    pub fn stored_len(&self, chunk: &ChunkRef) -> u64 {
+        u64::from(chunk.len)
+            .saturating_add(u64::from(self.sealed.map_or(0, |sealed| sealed.overhead)))
     }
 
     pub fn chunks(&self) -> &[ChunkRef] {
@@ -173,10 +222,15 @@ impl Manifest {
     pub fn encode(&self) -> Vec<u8> {
         let n = self.chunks.len();
         let length_entries = n.div_ceil(LENGTHS_PER_ENTRY);
-        let entries = n.saturating_add(length_entries).saturating_add(1);
+        let headers = if self.sealed.is_some() { 2 } else { 1 };
+        let entries = n.saturating_add(length_entries).saturating_add(headers);
         let mut out = Vec::with_capacity(entries.saturating_mul(ENTRY));
         out.extend_from_slice(&HEADER_MAGIC);
-        out.push(FORMAT);
+        out.push(if self.sealed.is_some() {
+            SEALED_FORMAT
+        } else {
+            FORMAT
+        });
         out.push(self.tier.code());
         out.extend_from_slice(&self.total_len().to_le_bytes());
         out.extend_from_slice(&(n as u64).to_le_bytes());
@@ -187,7 +241,15 @@ impl Manifest {
         for chunk in &self.chunks {
             out.extend_from_slice(&chunk.len.to_le_bytes());
         }
-        out.resize(entries.saturating_mul(ENTRY), 0);
+        // Leave the chunk positions identical to the clear format for the blob protocol.
+        let trailer = if self.sealed.is_some() { ENTRY } else { 0 };
+        out.resize(entries.saturating_mul(ENTRY).saturating_sub(trailer), 0);
+        if let Some(sealed) = self.sealed {
+            out.extend_from_slice(&sealed.group);
+            out.extend_from_slice(&sealed.epoch.to_le_bytes());
+            out.extend_from_slice(&sealed.overhead.to_le_bytes());
+            out.extend_from_slice(&[0; 4]);
+        }
         out
     }
 
@@ -207,11 +269,40 @@ impl Manifest {
         if read_u64(header, 24) != Some(0) {
             return Err(Malformed("reserved header bytes are set"));
         }
+        let sealed = if bytes.get(HEADER_MAGIC.len()) == Some(&SEALED_FORMAT) {
+            let entry = bytes
+                .len()
+                .checked_sub(ENTRY)
+                .filter(|start| *start >= ENTRY)
+                .and_then(|start| bytes.get(start..))
+                .ok_or(Malformed("missing sealed trailer"))?;
+            let group = entry
+                .get(..16)
+                .and_then(|raw| raw.try_into().ok())
+                .ok_or(Malformed("sealed group"))?;
+            let epoch = read_u64(entry, 16).ok_or(Malformed("sealed epoch"))?;
+            let overhead = entry
+                .get(24..28)
+                .and_then(|raw| raw.try_into().ok())
+                .map(u32::from_le_bytes)
+                .ok_or(Malformed("sealed overhead"))?;
+            if !(1..=256).contains(&overhead) || entry.get(28..) != Some(&[0; 4]) {
+                return Err(Malformed("invalid sealed chunk layout"));
+            }
+            Some(SealedChunks {
+                group,
+                epoch,
+                overhead,
+            })
+        } else {
+            None
+        };
+        let headers = if sealed.is_some() { 2 } else { 1 };
         let count = usize::try_from(count).map_err(|_| Malformed("chunk count"))?;
         let entries = bytes.len() / ENTRY;
         let expected = count
             .checked_add(count.div_ceil(LENGTHS_PER_ENTRY))
-            .and_then(|n| n.checked_add(1))
+            .and_then(|n| n.checked_add(headers))
             .ok_or(Malformed("chunk count"))?;
         if entries != expected {
             return Err(Malformed("entry count does not match the chunk count"));
@@ -221,7 +312,12 @@ impl Manifest {
             .and_then(|n| n.checked_mul(ENTRY))
             .ok_or(Malformed("chunk count"))?;
         let hashes = bytes.get(ENTRY..hashes_end).ok_or(Malformed("short"))?;
-        let lengths = bytes.get(hashes_end..).ok_or(Malformed("short"))?;
+        let lengths_end = bytes
+            .len()
+            .saturating_sub(if sealed.is_some() { ENTRY } else { 0 });
+        let lengths = bytes
+            .get(hashes_end..lengths_end)
+            .ok_or(Malformed("short"))?;
         let mut chunks = Vec::with_capacity(count);
         let mut sum = 0_u64;
         for (hash, len) in hashes.chunks_exact(ENTRY).zip(lengths.chunks_exact(4)) {
@@ -246,6 +342,7 @@ impl Manifest {
         let ends = ends_of(&chunks);
         Ok(Self {
             tier,
+            sealed,
             chunks,
             ends,
             id: *blake3::hash(bytes).as_bytes(),
@@ -253,7 +350,7 @@ impl Manifest {
     }
 
     pub fn verify(&self, data: &[u8]) -> bool {
-        if data.len() as u64 != self.total_len() {
+        if self.sealed.is_some() || data.len() as u64 != self.total_len() {
             return false;
         }
         self.chunks.iter().enumerate().all(|(index, chunk)| {

@@ -1737,6 +1737,16 @@ impl GroupPeer {
         self.desynchronise(vault)
     }
 
+    /// Stop using this group when the device's local policy removes access.
+    /// A later grant starts a fresh join, even if the device never received
+    /// the commit that removed it.
+    pub fn withdraw_for_policy(&mut self, vault: &VaultKey) -> Result<bool> {
+        if !matches!(self.record, MemberRecord::Joined(_)) {
+            return Ok(false);
+        }
+        self.desynchronise(vault).map(|_| true)
+    }
+
     /// Start over: wait with a fresh member key, keeping the check.
     fn desynchronise(&mut self, vault: &VaultKey) -> Result<PeerEvent> {
         if let MemberRecord::Joined(group) = &self.record {

@@ -2868,6 +2868,9 @@ impl QuickFS {
     /// `ENOENT` when `ino` does not resolve to a path the identity can see, `EROFS` when it
     /// can see it but lacks `access`.
     pub fn check_access(&self, ino: u64, access: Access) -> Result<(), i32> {
+        if !self.may_read_workspace() {
+            return Err(ENOENT);
+        }
         if self.enforcement.is_none() {
             return Ok(());
         }
@@ -2876,6 +2879,9 @@ impl QuickFS {
     }
 
     fn check_view_access(&self, view: &InodeView, access: Access) -> Result<(), i32> {
+        if !self.may_read_workspace() {
+            return Err(ENOENT);
+        }
         if self.enforcement.is_none() {
             return Ok(());
         }
@@ -2883,10 +2889,21 @@ impl QuickFS {
     }
 
     fn view_in_view(&self, view: &InodeView) -> bool {
-        self.enforcement.is_none() || view.path.as_deref().is_some_and(|path| self.in_view(path))
+        self.may_read_workspace()
+            && (self.enforcement.is_none()
+                || view.path.as_deref().is_some_and(|path| self.in_view(path)))
+    }
+
+    pub(crate) fn may_read_workspace(&self) -> bool {
+        self.admission
+            .as_ref()
+            .is_none_or(|admission| admission.reads())
     }
 
     fn check_path(&self, path: &str, access: Access) -> Result<(), i32> {
+        if !self.may_read_workspace() {
+            return Err(ENOENT);
+        }
         let Some((acl, identity)) = &self.enforcement else {
             return Ok(());
         };
@@ -2937,6 +2954,9 @@ impl QuickFS {
     /// Whether `ino` is part of the view. An inode with no resolvable path (trashed, cyclic) is
     /// not.
     fn ino_in_view(&self, ino: u64) -> bool {
+        if !self.may_read_workspace() {
+            return false;
+        }
         if self.enforcement.is_none() {
             return true;
         }
@@ -2950,6 +2970,9 @@ impl QuickFS {
     /// The entries of `ino` that belong in the view, as `readdir` would report them; `None`
     /// when `ino` is not a directory in the view. `.` and `..` always survive.
     fn visible_entries(&self, ino: u64) -> Option<Vec<(u64, FileType, fs_protocol::FileNameV1)>> {
+        if !self.may_read_workspace() {
+            return None;
+        }
         let (entries, dir_path) = {
             let mut ns = self.ns();
             (ns.readdir(ino), ns.path_for(ino))
@@ -3112,7 +3135,20 @@ impl QuickFS {
         if !self.in_view(&parent_path) {
             return Err(ENOENT);
         }
-        self.check_path(&child_path(&parent_path, name), Access::Write)
+        let path = child_path(&parent_path, name);
+        self.check_path(&path, Access::Write)?;
+        self.check_movable_path(&path)
+    }
+
+    fn check_movable_path(&self, path: &str) -> Result<(), i32> {
+        if self
+            .enforcement
+            .as_ref()
+            .is_some_and(|(acl, _)| acl.protects_workspace_tree(path))
+        {
+            return Err(EROFS);
+        }
+        Ok(())
     }
 
     /// Announce a local namespace change to the peers, the ACL view and the hydration workers.
@@ -3153,17 +3189,16 @@ impl QuickFS {
         source: VersionSource<'_>,
         previous: Option<Hash>,
     ) -> io::Result<Option<(Hash, u64)>> {
-        let store = &self.hydrator.store;
         let stored = match source {
             VersionSource::Bytes(data) => {
                 let len = data.len() as u64;
                 self.hydrator
-                    .block_on(store.write_content_after(data, previous))
+                    .block_on(self.hydrator.write_file_content(data, previous))
                     .map(|hash| hash.map(|hash| (hash, len)))
             }
             VersionSource::File { path, manifest } => self
                 .hydrator
-                .block_on(store.publish_file(path, manifest, previous)),
+                .block_on(self.hydrator.publish_file_content(path, manifest, previous)),
         };
         stored.map_err(|e| io::Error::other(e.to_string()))
     }
@@ -3367,6 +3402,10 @@ impl QuickFS {
         let new_name: &[u8] = new_name.as_ref();
         let mut namespace = self.ns();
         namespace.lookup(parent, name).ok_or(ENOENT)?;
+        if self.enforcement.is_some() {
+            let target = namespace.path_for(new_parent).ok_or(ENOENT)?;
+            self.check_movable_path(&child_path(&target, new_name))?;
+        }
         if !namespace.rename(parent, name, new_parent, new_name, now_ms()) {
             return Err(ENOENT);
         }

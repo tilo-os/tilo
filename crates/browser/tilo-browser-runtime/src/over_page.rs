@@ -85,7 +85,7 @@ type MakeWorkspaceSettings = fn(
     crate::desktop::Shared,
     tilo_desktop::here::Here,
     Option<u32>,
-    Option<crate::workspace_settings::PageRecords>,
+    Option<crate::workspace_settings::PageData>,
 ) -> Box<dyn PageSheet>;
 
 #[cfg(target_arch = "wasm32")]
@@ -156,7 +156,7 @@ impl LazySheet {
         shared: crate::desktop::Shared,
         here: tilo_desktop::here::Here,
         peer: Option<u32>,
-        records: Option<crate::workspace_settings::PageRecords>,
+        records: Option<crate::workspace_settings::PageData>,
     ) -> Self {
         Self::new(Box::new(move |code| {
             (code.workspace_settings)(

@@ -90,7 +90,7 @@ pub const DOCUMENT_URI_SCHEME: &str = "tilo-document";
 // Convenience re-exports so downstream callers can do
 // `use collab_types::{SignedOp, Role, OpKind, ArtifactKind, ...}`
 // without reaching into individual modules.
-pub use artifact::ArtifactId;
+pub use artifact::{ArtifactId, FILES_TREE_KIND, file_content_artifact};
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
     Access, CapDecision, CapOverride, DeviceCap, Effect, FsAuthority, LaunchGrants, ResourceRef,
@@ -154,6 +154,9 @@ pub use tilo_action_policy::{MemberId, PersonId, PersonIdError};
 pub use validator::{
     DEFAULT_WORKSPACE, InboundState, ValidationError, document_node, validate_admitted_inbound_op,
     validate_replayed_inbound_op,
+};
+pub use validator::{
+    DocumentAccessRule, document_access_changes, document_access_rules, document_access_target,
 };
 pub use workspace_document::{
     WORKSPACE_DOCUMENTS, WorkspaceDocument, workspace_document, workspace_document_id,

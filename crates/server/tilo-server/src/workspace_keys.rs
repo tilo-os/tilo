@@ -269,6 +269,38 @@ impl Directory {
 }
 
 impl KeyDirectory for Directory {
+    fn requires_document_keys(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+    ) -> Option<bool> {
+        let state = lock(&self.states).get(&workspace.to_string()).cloned();
+        state.and_then(|state| {
+            state
+                .requires_document_keys(app, document, tilo_clock::wall())
+                .ok()
+        })
+    }
+
+    fn document_devices(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
+        let state = lock(&self.states).get(&workspace.to_string())?.clone();
+        let readers = state.document_key_holders(app, document, at).ok()?;
+        Some(
+            readers
+                .into_iter()
+                .map(Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
+    }
+
     fn allowed_devices(
         &self,
         workspace: WorkspaceId,

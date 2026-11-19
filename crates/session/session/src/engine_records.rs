@@ -16,7 +16,6 @@ use std::sync::{Arc, mpsc};
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_broker_core::owner_service::OwnerService as _;
 use tilo_desktop_model::WorkspaceId;
 use ui::permissions::MemberId;
 use ui::resource::workspace::WorkspaceResources;
@@ -524,21 +523,18 @@ impl Inner {
                     None => (doc.save(), true, heads),
                 }
             };
-            let sealed = if engine.commits_documents(room) {
-                None
-            } else {
-                match engine.seal_keys(room) {
-                    Ok(SealKeys::Here(keys)) => Some(keys),
-                    Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
-                        unwritten.insert((workspace.clone(), app.clone()));
-                        continue;
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
-                        unwritten.insert((workspace.clone(), app.clone()));
-                        continue;
-                    }
+            let sealed = match engine.resource_write_keys(room, (app, record)) {
+                Ok(Some(SealKeys::Here(keys))) => Some(keys),
+                Ok(Some(SealKeys::Waiting | SealKeys::NoSecretStore)) => {
+                    unwritten.insert((workspace.clone(), app.clone()));
+                    continue;
                 }
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
+                    unwritten.insert((workspace.clone(), app.clone()));
+                    continue;
+                }
+                Ok(None) => None,
             };
             let (engine, route) = (Arc::clone(engine), (app.clone(), record.clone()));
             let mut writing = Writing::write(Arc::clone(&self.wake), async move {
@@ -635,21 +631,18 @@ impl Inner {
                 };
                 // In the clear where this device commits the workspace's documents, else under the
                 // record channel's keys, once it holds them.
-                let sealed = if engine.commits_documents(room) {
-                    None
-                } else {
-                    match engine.seal_keys(room) {
-                        Ok(SealKeys::Here(keys)) => Some(keys),
-                        Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
-                            unwritten.insert((workspace.clone(), app.clone()));
-                            continue;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
-                            unwritten.insert((workspace.clone(), app.clone()));
-                            continue;
-                        }
+                let sealed = match engine.resource_write_keys(room, (&app, &record)) {
+                    Ok(Some(SealKeys::Here(keys))) => Some(keys),
+                    Ok(Some(SealKeys::Waiting | SealKeys::NoSecretStore)) => {
+                        unwritten.insert((workspace.clone(), app.clone()));
+                        continue;
                     }
+                    Err(error) => {
+                        tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
+                        unwritten.insert((workspace.clone(), app.clone()));
+                        continue;
+                    }
+                    Ok(None) => None,
                 };
                 let (engine, route) = (Arc::clone(&engine), (app.clone(), record.clone()));
                 let mut writing = Writing::write(Arc::clone(&self.wake), async move {

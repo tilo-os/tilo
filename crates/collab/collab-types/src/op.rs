@@ -451,6 +451,11 @@ pub enum EncryptionScheme {
         /// Whether the op is a state baseline or an incremental change.
         retention: ContentRetention,
     },
+    /// A content-key envelope under the document's own MLS group.
+    DocumentContentKey {
+        group: crate::WorkspaceId,
+        retention: ContentRetention,
+    },
 }
 
 /// Clear storage class of a content-key ciphertext, so relays and brokers
@@ -501,12 +506,39 @@ impl EncryptionMetadata {
         }
     }
 
+    /// Metadata for content sealed under the selected workspace or document group.
+    pub fn content_group(
+        workspace: crate::WorkspaceId,
+        group: crate::WorkspaceId,
+        epoch: u64,
+        retention: ContentRetention,
+    ) -> Self {
+        if group == workspace {
+            Self::content_key(epoch, retention)
+        } else {
+            Self {
+                epoch,
+                scheme: EncryptionScheme::DocumentContentKey { group, retention },
+            }
+        }
+    }
+
     /// Storage class of a content-key ciphertext; `None` for schemes that
     /// cannot be retained (an MLS application message is single-use).
     pub const fn retention(&self) -> Option<ContentRetention> {
         match self.scheme {
             EncryptionScheme::MlsApplication => None,
-            EncryptionScheme::ContentKey { retention } => Some(retention),
+            EncryptionScheme::ContentKey { retention }
+            | EncryptionScheme::DocumentContentKey { retention, .. } => Some(retention),
+        }
+    }
+
+    /// Which group encrypted this payload. Older ciphertext belongs to the
+    /// workspace group.
+    pub const fn key_group(self, workspace: crate::WorkspaceId) -> crate::WorkspaceId {
+        match self.scheme {
+            EncryptionScheme::DocumentContentKey { group, .. } => group,
+            _ => workspace,
         }
     }
 }

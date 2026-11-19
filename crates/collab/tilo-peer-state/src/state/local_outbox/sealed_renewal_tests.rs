@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
         let author = fixture.key.verifying_key().to_bytes();
         let later = expired(fixture.now);
         let renewal = fixture
-            .renew(&fixture.write.clone(), &mut identical, later)
+            .renew(&fixture.write.clone(), &mut |_, op| identical(op), later)
             .unwrap()
             .expect("an expired unretired sealed write renews");
         let (original, renewed) = (envelope(&fixture.write), envelope(&renewal));
@@ -219,7 +219,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(held(&fixture.member).last(), Some(renewed));
         assert_eq!(
-            fixture.renew(&renewal, &mut identical, later).unwrap(),
+            fixture.renew(&renewal, &mut |_, op| identical(op), later).unwrap(),
             None,
             "a fresh renewal is not renewed again"
         );
@@ -244,7 +244,7 @@ tilo_test_env::scenario! {
         }
         assert_eq!(
             fixture
-                .renew(&fixture.write.clone(), &mut identical, later)
+                .renew(&fixture.write.clone(), &mut |_, op| identical(op), later)
                 .unwrap(),
             None,
             "a retired write is not renewed"
@@ -259,7 +259,7 @@ tilo_test_env::scenario! {
         let renewal = fixture
             .renew(
                 &fixture.write.clone(),
-                &mut |_| Ok((current, b"resealed under epoch 2".to_vec())),
+                &mut |_, _| Ok((current, b"resealed under epoch 2".to_vec())),
                 later,
             )
             .unwrap()
@@ -278,7 +278,7 @@ tilo_test_env::scenario! {
             fixture
                 .renew(
                     &write,
-                    &mut |_| {
+                    &mut |_, _| {
                         asked += 1;
                         identical(envelope(&write))
                     },
@@ -293,7 +293,7 @@ tilo_test_env::scenario! {
             fixture
                 .renew(
                     &fixture.write.clone(),
-                    &mut |_| Err("this device holds no current key".into()),
+                    &mut |_, _| Err("this device holds no current key".into()),
                     expired(fixture.now)
                 )
                 .is_err()
@@ -336,7 +336,7 @@ tilo_test_env::scenario! {
             fixture
                 .renew(
                     &fixture.write.clone(),
-                    &mut |op| {
+                    &mut |_, op| {
                         asked += 1;
                         identical(op)
                     },
@@ -353,7 +353,7 @@ tilo_test_env::scenario! {
         let mut fixture = fixture();
         let later = expired(fixture.now);
         let renewal = fixture
-            .renew(&fixture.write.clone(), &mut identical, later)
+            .renew(&fixture.write.clone(), &mut |_, op| identical(op), later)
             .unwrap()
             .unwrap();
         let restored = StatePeer::restore(
@@ -378,7 +378,7 @@ tilo_test_env::scenario! {
         assert_eq!(held(&restored), held(&fixture.member));
         fixture.member = restored;
         assert_eq!(
-            fixture.renew(&renewal, &mut identical, later).unwrap(),
+            fixture.renew(&renewal, &mut |_, op| identical(op), later).unwrap(),
             None,
             "the restored renewal is still fresh"
         );

@@ -1,5 +1,5 @@
 //! The connection's session loop: [`run_peer`] and its variants, and
-//! `run_peer_stream`, which sets a session up, races its [`reader`] and
+//! `serve_peer_stream`, which sets a session up, races its [`reader`] and
 //! [`writer`] state machines against the carrier closing, and tears it down,
 //! plus the inbound-frame helpers the reader uses.
 
@@ -93,7 +93,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(peer, read, write, ctx, connection.closed()).await
+    serve_peer_stream(peer, read, write, ctx, connection.closed()).await
 }
 
 /// [`run_peer`] over a carrier other than an iroh connection (a browser's
@@ -113,7 +113,7 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    run_peer_stream(peer, read, write, ctx, closed).await
+    serve_peer_stream(peer, read, write, ctx, closed).await
 }
 
 // Shared stream driver also exercised with a deterministic in-memory wire.
@@ -125,7 +125,7 @@ where
     clippy::significant_drop_tightening,
     reason = "the session context, the loop context and the writer's queues are borrowed by the concurrent reader and writer futures, and teardown reads the session context again; the lint does not see those uses"
 )]
-pub(super) async fn run_peer_stream<R, W>(
+pub(super) async fn serve_peer_stream<R, W>(
     peer: AuthenticatedPeer,
     read: R,
     write: W,
