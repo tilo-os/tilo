@@ -539,7 +539,7 @@ fn draw_presence_layer(
                 ),
                 now,
             );
-            // Outlines, labels, markers and the activity rail share no
+            // Outlines, labels and markers share no
             // bounds; activity is rare and brief, so it damages the window
             // while it paints and on the frame it stops.
             if scene.encoding().draw_tags.len() == before {

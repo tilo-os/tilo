@@ -734,7 +734,7 @@ pub struct ActionContract {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offload: Option<Offload>,
     /// The kind of step it takes, as its declaration names it
-    /// ([`crate::StepKind`]): what presence and the activity card say in the
+    /// ([`crate::StepKind`]): what presence says in the
     /// reader's language ("Writing in Trip plan", "Schreibt in Trip plan").
     /// `None` for an action whose declaration names none, whose step reads as
     /// the part of the record it acts on.
