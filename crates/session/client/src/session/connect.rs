@@ -39,6 +39,10 @@ const CONNECT_ATTEMPTS: u32 = 3;
 const CONNECT_BACKOFF: Duration = Duration::from_millis(500);
 const CONNECT_BACKOFF_MAX: Duration = Duration::from_secs(5);
 
+/// How long a session's handshake may take once its connection is up, when it enters no
+/// workspace through an entry: the server gives a hello ten seconds, and answers it at once.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(20);
+
 /// The dialer a session reaches its host through, and this device's
 /// statement that its endpoint speaks for it, kept for reconnects.
 #[derive(Default)]
@@ -134,7 +138,14 @@ impl Task {
             if attempt >= CONNECT_ATTEMPTS || !transient(&error) {
                 return Err(error);
             }
-            n0_future::time::sleep(connect_backoff(attempt)).await;
+            let wait = connect_backoff(attempt);
+            tracing::info!(
+                attempt,
+                %error,
+                wait_ms = wait.as_millis(),
+                "a dial of the session's server failed; it is tried again"
+            );
+            n0_future::time::sleep(wait).await;
         }
     }
 
@@ -224,7 +235,8 @@ async fn connect_entering(
         .await?;
     }
     let link = dialer.link(Purpose::Session).await?;
-    ServerClient::connect_over_link(
+    let deadline = handshake_deadline(config.entering.is_some());
+    let handshake = ServerClient::connect_over_link(
         link,
         Some(config.server_cert.user_public_key),
         Some(config.server_cert.device_public_key),
@@ -241,9 +253,28 @@ async fn connect_entering(
                     server_cert: config.server_cert.clone(),
                 }),
         },
-    )
-    .await
-    .map_err(link_error)
+    );
+    // The connection may be up while nothing answers on it: a server that is still starting, or
+    // a path a packet relay keeps open to a server that is gone. The handshake is given up on
+    // then, as a server not reached, and the session dials again; left waiting, the session
+    // would stay reconnecting for ever and every program holding it would serve a dead session.
+    match n0_future::time::timeout(deadline, handshake).await {
+        Ok(client) => client.map_err(link_error),
+        Err(_) => Err(LinkError::Unavailable(
+            "the server did not finish the session's handshake in time".into(),
+        )),
+    }
+}
+
+/// How long a session's handshake may take once its connection is up: the server's own bound on
+/// it, and for an entry the bound on letting the device in, each with ten seconds more to answer.
+fn handshake_deadline(entering: bool) -> Duration {
+    let margin = Duration::from_secs(10);
+    if entering {
+        tilo_server_protocol::entering::ENTERING_DEADLINE.saturating_add(margin)
+    } else {
+        HANDSHAKE_DEADLINE
+    }
 }
 
 /// This device's statement that `endpoint` speaks for `device`, for as long

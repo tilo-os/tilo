@@ -58,8 +58,10 @@ use entry::{Refusal, refusal};
 use governance::HostGovernance;
 use tilo_server_protocol::WorkspaceId;
 
-/// Longest wait between reconnect attempts.
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
+/// Longest wait between reconnect attempts: a server that comes back is reached again within
+/// this (and its jitter) of being back, so a device that lost it for minutes is in again within
+/// seconds, not half a minute.
+const MAX_BACKOFF: Duration = Duration::from_secs(8);
 /// Keep-alive interval on an idle session.
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 /// How long the server may leave the keep-alive unanswered before this session takes the connection
@@ -219,6 +221,19 @@ fn admission_state(status: &PeerStatus, since_ms: Option<u64>, now_ms: u64) -> A
     match since_ms {
         Some(since) if now_ms.saturating_sub(since) >= ADMISSION_TIMEOUT_MS => Admission::Overdue,
         _ => Admission::Waiting,
+    }
+}
+
+/// Say that a session without its server `since` then reached it again, after `attempts`.
+fn reached_again(since: Option<tilo_clock::time::Instant>, attempts: u32) {
+    if let Some(since) = since {
+        tracing::info!(
+            attempts,
+            away_ms = tilo_clock::now()
+                .saturating_duration_since(since)
+                .as_millis(),
+            "the session reached its server again"
+        );
     }
 }
 
@@ -1012,6 +1027,9 @@ impl Task {
         }
         let mut attempt: u32 = 0;
         let mut refusals: u32 = 0;
+        // Since when the session has been without its server, for the log line that says it is
+        // back: a person reading why their device was away sees how long it was.
+        let mut lost_at: Option<tilo_clock::time::Instant> = None;
         loop {
             if self.config.cert.is_expired_at(tilo_clock::unix_now_ns()) {
                 self.fail("certificate-expired", "This browser's certificate expired.");
@@ -1040,6 +1058,7 @@ impl Task {
             };
             let failed = match connected {
                 Ok(client) => {
+                    reached_again(lost_at.take(), attempt);
                     // Waiting for admission is timed from when this page
                     // subscribes, not from the moment the host answers, so a
                     // host that holds the connection open still reports.
@@ -1056,6 +1075,8 @@ impl Task {
                         Exit::Closed => return self.closed().await,
                         Exit::Reconnect => continue,
                         Exit::Lost(reason) => {
+                            tracing::warn!(%reason, "the session lost its server; it dials again");
+                            lost_at = Some(tilo_clock::now());
                             self.fail("transport-ended", reason);
                             None
                         }
@@ -1091,6 +1112,8 @@ impl Task {
                     refusals = 0;
                     continue;
                 }
+                tracing::info!(attempt, %error, "the session did not reach its server");
+                lost_at.get_or_insert_with(tilo_clock::now);
                 self.fail("transport-unavailable", error.to_string());
             }
             if self.emptied && !self.asked_again(&mut commands).await {
