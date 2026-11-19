@@ -179,7 +179,7 @@ fn list() -> Result<std::process::ExitCode> {
 /// the devices that approved an install wrote them there: nothing when this
 /// computer holds none or cannot open the store, which is a store that has
 /// not reached it yet.
-fn saved_recovery_keys() -> Result<Vec<tilo_peer_state::MachineRecovery>> {
+fn saved_recovery_keys() -> Result<Vec<tilo_session_client::machines::MachineRecovery>> {
     let state = tilo_paths::state_dir().context("this account has no state directory (no HOME)")?;
     let dir = identity::dir()?;
     let paths = IdentityPaths::under(&dir);
@@ -188,13 +188,8 @@ fn saved_recovery_keys() -> Result<Vec<tilo_peer_state::MachineRecovery>> {
     let cert = persist::read_device_cert(&paths.device_cert_for_user(&user))
         .or_else(|_| persist::read_device_cert(&paths.device_cert))
         .context("this computer holds no certificate for its device")?;
-    let store =
-        tilo_peer_state::PersonalStore::open_at(&state, user, cert, std::time::SystemTime::now())
-            .map_err(|error| anyhow::anyhow!(error))?;
-    Ok(store
-        .person_resource(tilo_peer_state::machines::KIND)
-        .map(|bytes| tilo_peer_state::machines::read(&bytes))
-        .unwrap_or_default())
+    tilo_session_client::machines::saved_recovery_keys(&state, user, cert)
+        .map_err(|error| anyhow::anyhow!(error))
 }
 
 /// The saved recovery key of `server`: the person's own device keeps it, and
