@@ -543,7 +543,7 @@ tilo_test_env::scenario! {
             kept,
             "the other child is the same widget"
         );
-        crate::retained_widgets::let_go_under(&[node], &mut tree, &mut nodes);
+        crate::retained_widgets::let_go_under(&[node], &tree, &mut nodes);
         let mut remount = crate::widget::Remount::new(&mut tree, &theme, &mut nodes);
         assert!(stack.remount_children(&mut remount));
         let (mounted, _) = remount.finish();
