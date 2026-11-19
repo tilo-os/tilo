@@ -10,6 +10,7 @@ use crate::{Failure, GROWTH_LIMITED, ImportPolicy, Limits, OUT_OF_FUEL, reusable
 fn limits() -> Limits {
     Limits {
         fuel_per_call: 10_000,
+        deadline: None,
         max_memory_bytes: 1 << 16,
         max_memories: 1,
         max_tables: 1,
@@ -33,7 +34,7 @@ fn start(bytes: &[u8], limits: &Limits) -> (Store<StoreLimits>, Instance) {
 struct One {
     store: Store<StoreLimits>,
     spin: TypedFunc<(), ()>,
-    fuel: u64,
+    limits: Limits,
     alive: bool,
     calls: u32,
 }
@@ -44,7 +45,7 @@ impl One {
             return Err(Failure::Trap("the instance failed earlier".to_owned()));
         }
         self.calls = self.calls.saturating_add(1);
-        host::refuel(&mut self.store, self.fuel)?;
+        host::begin(&mut self.store, &self.limits)?;
         let outcome = self
             .spin
             .call(&mut self.store, ())
@@ -64,7 +65,7 @@ fn a_spent_budget_is_an_out_of_fuel_failure_and_its_instance_is_not_asked_again(
     let mut one = One {
         store,
         spin,
-        fuel: limits.fuel_per_call,
+        limits,
         alive: true,
         calls: 0,
     };
@@ -85,7 +86,7 @@ fn a_growth_past_the_limit_is_a_memory_limit_failure() {
     .unwrap();
     let (mut store, instance) = start(&grow, &limits);
     let grow = instance.get_typed_func::<(), i32>(&store, "grow").unwrap();
-    host::refuel(&mut store, limits.fuel_per_call).unwrap();
+    host::begin(&mut store, &limits).unwrap();
     let outcome = grow
         .call(&mut store, ())
         .map_err(|error| host::classify(&error));

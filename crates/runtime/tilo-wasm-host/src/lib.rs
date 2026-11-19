@@ -3,20 +3,28 @@
 //! A guest interface belongs to its host: a tilolang app imports the `tl` table, a theme's
 //! painter set imports nothing, and another app's model imports an ABI of its own. What does not
 //! belong to any one of them is what running wasm costs and how it fails: the fuel a call may
-//! burn, the memory, tables and instances an instance may hold, the one text for a spent budget
-//! or a refused growth, and the rule that an instance whose call failed is never asked again.
-//! Those live here, once, so a host names its own limits and keeps only its own interface.
+//! burn, the wall clock it may take, the memory, tables and instances an instance may hold, the
+//! one text for a spent budget or a refused growth, and the rule that an instance whose call
+//! failed is never asked again. Those live here, once, so a host names its own limits and keeps
+//! only its own interface.
 //!
 //! The engine is wasmi, which every host has and the browser build's only engine. wasmtime is
 //! behind the `wasmtime` feature, for the compiled tier a native runtime executes beside the
 //! interpreter, and never in a wasm32 build.
+//!
+//! Fuel bounds a guest by the work it does, so it stops a loop; it does not bound a call that
+//! waits inside a host function, nor one that executes on a runtime whose instructions are not
+//! counted the way the interpreter counts them. [`Limits::deadline`] bounds a call by the clock
+//! instead, where the engine can interrupt guest code: wasmtime's epoch interruption, driven by
+//! a ticker of this layer's own. wasmi has no interruption, so on it the deadline is unenforced
+//! and fuel is the only bound; a host that needs both executes on wasmtime.
 
 mod failure;
 pub mod wasmi;
 #[cfg(feature = "wasmtime")]
 pub mod wasmtime;
 
-pub use failure::{Failure, GROWTH_LIMITED, OUT_OF_FUEL};
+pub use failure::{DEADLINE_EXCEEDED, Deadline, Failure, GROWTH_LIMITED, OUT_OF_FUEL};
 
 /// Per-call and per-instance limits.
 ///
@@ -26,6 +34,10 @@ pub use failure::{Failure, GROWTH_LIMITED, OUT_OF_FUEL};
 pub struct Limits {
     /// Fuel for one call into a module, nested calls excluded.
     pub fuel_per_call: u64,
+    /// Wall clock one call into a module may take, nested calls excluded. Enforced where the
+    /// engine interrupts its guests (wasmtime's epochs) and not on wasmi, which cannot be
+    /// interrupted; `None` leaves a call unbounded in time.
+    pub deadline: Option<std::time::Duration>,
     /// Linear memory one instance may reach, bytes.
     pub max_memory_bytes: usize,
     /// Linear memories one instance may hold.
@@ -57,3 +69,5 @@ pub fn reusable<T, E>(outcome: &Result<T, E>) -> bool {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, feature = "wasmtime"))]
+mod wasmtime_tests;
