@@ -1145,3 +1145,172 @@ fn attach_through_engine(layouts: &Layouts, engine: &Arc<crate::engine::Engine>)
         Arc::new(crate::records::testing::EngineDocuments(Arc::clone(engine)));
     layouts.attach(engine, &reads, &writes);
 }
+
+/// A layout whose write does not answer before the session ends is kept for the session after,
+/// which shows it and writes it: a desktop that ends cannot wait for its last write.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the session that cannot write the layout, and the one after it that does"
+)]
+fn a_layout_the_session_cannot_write_before_it_ends_is_kept() {
+    use ed25519_dalek::SigningKey;
+    use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
+
+    use crate::engine::Engine;
+
+    let state = tempfile::tempdir().expect("a state directory");
+    let root = SigningKey::from_bytes(&[0x70; 32]);
+    let key = SigningKey::from_bytes(&[0x71; 32]);
+    let signing = key.clone();
+    let hold = Arc::new(Hold::default());
+    let theirs = Arc::clone(&hold);
+    let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
+    let engine = Arc::new(
+        Engine::open(
+            tilo_identity::identity_store::DeviceIdentity::kept(
+                cert.clone(),
+                HeldSigner { key, hold: theirs },
+            ),
+            Some(state.path()),
+            std::iter::empty(),
+            crate::platform::membership_check::of_this_session(),
+        )
+        .expect("this device's engine opens"),
+    );
+    let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
+    let person = hex::encode(cert.user_public_key);
+    let workspace = tilo_peer_state::owner::testing::founded(engine.owner(), &cert, &signing)
+        .expect("the workspace is founded");
+    engine.bind(workspace);
+    let keys = key_group::KeyGroup::create(
+        workspace,
+        key_group::MemberKey::generate("owner").expect("a member key"),
+    )
+    .expect("the workspace's group")
+    .content_keys()
+    .expect("the workspace's keys");
+    engine.hand_keys(workspace, keys);
+
+    // One strip of one window: the person names the strip.
+    let mut ids = tilo_desktop_model::IdMinter::new(salt);
+    let (strip, group, tab) = (ids.mint(), ids.mint(), ids.mint());
+    let window = Tab {
+        id: tab,
+        title: "Notes".to_owned(),
+        tile: TileContent::LocalApp {
+            app_id: "so.tilo.notes".to_owned(),
+            label: "Notes".to_owned(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let mut workspace_layout = Workspace::new(workspace, "Home");
+    workspace_layout.strips = vec![Strip {
+        id: StripId(strip),
+        name: "Main".to_owned(),
+        window_groups: vec![WindowGroup {
+            id: group,
+            tabs: vec![window],
+            active_tab: tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }],
+    }];
+    let mut layout = Layout {
+        workspaces: vec![workspace_layout],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    layout.active_strip.insert(workspace, StripId(strip));
+
+    let (wake, heard) = woken();
+    let desktops = Layouts::new(
+        Arc::new(crate::continuations::Continuations::default()),
+        wake,
+        person.clone(),
+        Some(state.path()),
+    );
+    attach_through_engine(&desktops, &engine);
+    let mut shown = layout.clone();
+    desktops.follow(&engine, "", &mut shown);
+    let layout_key = (workspace, Route::layout());
+    assert!(
+        desktops.held(&layout_key, |held| held.pending_steps.is_empty()),
+        "nothing of the layout waits yet"
+    );
+
+    // The write of the renamed strip signs behind a hold the test never opens: it does not answer
+    // while the session ends, and the step it held is kept for the session after.
+    hold.hold();
+    shown.workspaces[0].strips[0].name = "Moved".to_owned();
+    desktops.capture(&engine, &shown);
+    desktops.wait_writes(std::time::Duration::from_millis(1));
+    assert_eq!(
+        desktops.held(&layout_key, |held| {
+            held.pending_steps
+                .last()
+                .map(|step| strips_of(&step.changed.workspace))
+        }),
+        Some(strips_of(&shown.workspaces[0])),
+        "the layout, the renamed strip with it, waits for the session after"
+    );
+    drop(desktops);
+    tilo_durable_writer::global().flush();
+    // The write the session gave up on finishes now the hold is open: the next session starts from
+    // the copy it left, not from a write still under way.
+    hold.open();
+    heard
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the write wakes the loop once it is done");
+
+    // The session after reads what the one before could not write, shows it, and writes it.
+    let (wake, _heard) = woken();
+    let next = Layouts::new(
+        Arc::new(crate::continuations::Continuations::default()),
+        wake,
+        person,
+        Some(state.path()),
+    );
+    attach_through_engine(&next, &engine);
+    assert!(
+        !next.held(&layout_key, |held| held.pending_steps.is_empty()),
+        "the layout is back"
+    );
+    let mut reopened = Layout {
+        workspaces: vec![Workspace::new(workspace, "Home")],
+        active: workspace,
+        salt,
+        ..Layout::default()
+    };
+    next.follow(&engine, "", &mut reopened);
+    assert_eq!(
+        strips_of(&reopened.workspaces[0]),
+        strips_of(&shown.workspaces[0]),
+        "the session after shows the renamed strip"
+    );
+    next.capture(&engine, &reopened);
+    next.finish_writes(&engine, &reopened, std::time::Duration::from_secs(30));
+    assert!(
+        next.held(&layout_key, |held| held.pending_steps.is_empty()),
+        "and writes it"
+    );
+    let written = next
+        .held(&layout_key, |held| held.kept.clone())
+        .expect("the layout this device wrote");
+    let kept = shared_resource::read(&written, None).expect("the layout reads");
+    let shown_then = kept
+        .tree
+        .workspaces
+        .first()
+        .expect("the layout's workspace");
+    assert_eq!(
+        strips_of(shown_then),
+        strips_of(&shown.workspaces[0]),
+        "the workspace's layout holds the renamed strip"
+    );
+}

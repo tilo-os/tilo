@@ -300,6 +300,15 @@ enum Laid {
     Failed(String, Option<Box<automerge::AutoCommit>>),
 }
 
+/// What a write that did not answer before its session ended held, kept for the session after: a
+/// desktop that ends cannot wait for its last write.
+enum Unanswered {
+    /// The steps of a layout's write, in the order the person made them.
+    Layout(Vec<PendingStep<LayoutStep>>),
+    /// The person's view a write of theirs was making.
+    View(PersonView),
+}
+
 /// What a look writes of the person's view of a workspace's layout.
 enum Viewed {
     /// The steps to write, the person's changes in the order they were made.
@@ -1038,7 +1047,7 @@ impl Layouts {
                         // The write did not answer before the session ends: what it held is what
                         // the person sees, and the session after writes it as their step.
                         if let Some(Written::View(view)) = &publishing.replaced {
-                            self.keep_view(&key, view.clone());
+                            self.keep_for_next_session(&key, Unanswered::View(view.clone()));
                         }
                         continue;
                     };
@@ -1053,6 +1062,12 @@ impl Layouts {
                 }
                 Going::Layout(mut laying) => {
                     let Some(laid) = laying.writing.finish(patience) else {
+                        // The write did not answer before the session ends: the steps it held are
+                        // the person's, and the session after writes them.
+                        self.keep_for_next_session(
+                            &key,
+                            Unanswered::Layout(laying.pending.clone()),
+                        );
                         continue;
                     };
                     self.laid(&key, laid, &laying);
@@ -2029,12 +2044,15 @@ impl Layouts {
         true
     }
 
-    /// Keep `view` as a step of the person's for the session after, where this one cannot write
-    /// it: what they see of the layout, their own windows included, is theirs to keep.
-    fn keep_view(&self, key: &Key, view: PersonView) {
-        self.held(key, |held| {
-            if held.pending_view.last().map(|step| &step.changed) != Some(&view) {
-                held.pending_view.push(view, None);
+    /// Keep what a write of `key` that did not answer before this session ends held, for the
+    /// session after: its steps are the person's, and the one after writes them.
+    fn keep_for_next_session(&self, key: &Key, kept: Unanswered) {
+        self.held(key, |held| match kept {
+            Unanswered::Layout(steps) => held.pending_steps.restore(steps),
+            Unanswered::View(view) => {
+                if held.pending_view.last().map(|step| &step.changed) != Some(&view) {
+                    held.pending_view.push(view, None);
+                }
             }
         });
         self.keep_pending();
@@ -2052,7 +2070,7 @@ impl Layouts {
             if now && unwritten {
                 // A session that ends before it can write its view keeps it for the next one, as
                 // the layout's steps are, the person's own windows with it.
-                looks.keep_view(key, view.clone());
+                looks.keep_for_next_session(key, Unanswered::View(view.clone()));
             }
         };
         if self.held(key, |held| held.writing.is_some()) {
