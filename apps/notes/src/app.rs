@@ -1623,7 +1623,7 @@ impl NotesApp {
             // it marks every note the window moves to. A presented window
             // takes no projection for this, so nothing else would.
             self.workspace.set_selected(Some(first));
-            self.sidebar.sync_from_workspace(&self.workspace);
+            self.show_selection();
         }
         let Some(sel) = self.workspace.selected() else {
             if self.main.page_id().is_some() {
@@ -1833,13 +1833,7 @@ impl NotesApp {
             self.open_when_present = None;
             self.navigate_to(page);
         }
-        ui::tilo_resource::profiling::measure("sidebar_projection", || {
-            self.sidebar.sync_from_workspace(&self.workspace);
-        });
-        if let Some(page) = selected.and_then(|id| self.workspace.get(id)) {
-            self.main
-                .set_title(page.title.clone(), &self.workspace.named("", page.id));
-        }
+        ui::tilo_resource::profiling::measure("sidebar_projection", || self.show_selection());
         ui::tilo_resource::profiling::measure("link_pages", || self.refresh_link_pages());
         self.self_dirty = true;
     }
@@ -1958,6 +1952,22 @@ impl NotesApp {
 
     /// Show `workspace` from now on; its changed notes are indexed again on
     /// the next sync, every note when the set of notes changed.
+    /// Show which note is open: the page tree marks it, and its heading and
+    /// the window's title name it as the tree does. Every change of the
+    /// open note or of the notebook comes through here, so the heading never
+    /// keeps a name read before the note's text arrived.
+    fn show_selection(&mut self) {
+        self.sidebar.sync_from_workspace(&self.workspace);
+        if let Some(page) = self
+            .workspace
+            .selected()
+            .and_then(|id| self.workspace.get(id))
+        {
+            self.main
+                .set_title(page.title.clone(), &self.workspace.named("", page.id));
+        }
+    }
+
     fn adopt(&mut self, workspace: Workspace) {
         let same_notes = workspace.pages().len() == self.workspace.pages().len()
             && workspace
@@ -2088,15 +2098,7 @@ impl NotesApp {
         {
             self.active_tag_filter = None;
         }
-        self.sidebar.sync_from_workspace(&self.workspace);
-        if let Some(page) = self
-            .workspace
-            .selected()
-            .and_then(|id| self.workspace.get(id))
-        {
-            self.main
-                .set_title(page.title.clone(), &self.workspace.named("", page.id));
-        }
+        self.show_selection();
         self.refresh_link_pages();
         Ok(())
     }
@@ -2109,11 +2111,7 @@ impl NotesApp {
             return false;
         }
         self.workspace.set_selected(Some(id));
-        self.sidebar.sync_from_workspace(&self.workspace);
-        if let Some(page) = self.workspace.get(id) {
-            self.main
-                .set_title(page.title.clone(), &self.workspace.named("", page.id));
-        }
+        self.show_selection();
         self.record_current_route();
         self.refresh_status();
         true
@@ -2770,6 +2768,9 @@ impl ui::application_view::ApplicationViewState for NotesApp {
         }
         self.active_tag_filter = active_tag;
         self.bound_page = self.workspace.selected();
+        // A window opened again on its note names it as the notebook now reads, never by the
+        // word for a new note its heading started with.
+        self.show_selection();
         self.pending_open.clear();
         self.made = None;
         self.gone = None;
