@@ -1230,3 +1230,21 @@ paths = [
     "crates/session/session/src/sync/client/network.rs",
     "crates/session/session/src/sync/client/own_service.rs",
 ]
+
+[[allow]]
+reason = "The WebAssembly host: the embedder a guest module calls back into, the wasm engines' own word for it (wasmi's `HostError`, host functions), not Tilo's name for a machine, which is a device or a server."
+words = ["host"]
+identifiers = ["host", "Host", "hosts", "Hosts", "tilo_wasm_host"]
+paths = [
+    "Cargo.toml",
+    "docs/codemap.md",
+    "docs/tilolang-engines.md",
+    "crates/lang/tilolang-runtime/Cargo.toml",
+    "crates/lang/tilolang-runtime/src/engine.rs",
+    "crates/lang/tilolang-runtime/src/engine/tests.rs",
+    "crates/lang/tilolang-runtime/src/engine/wasmi_backend.rs",
+    "crates/lang/tilolang-runtime/src/engine/wasmtime_backend.rs",
+    "crates/runtime/tilo-wasm-host/*",
+    "crates/sdk/theme-painter-wasm/Cargo.toml",
+    "crates/sdk/theme-painter-wasm/src/lib.rs",
+]

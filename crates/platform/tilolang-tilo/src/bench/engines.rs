@@ -21,7 +21,7 @@ use serde_json::{Value as Json, json};
 use tilolang::{Compiled, IdsLock, SeededEntropy};
 use tilolang_runtime::engine::{Engine, Host, HostFail, Wasm};
 use tilolang_runtime::{
-    Actor, AmStore, EngineConfig, EngineKind, EngineLimits, InvokeOutcome, ModuleHash, Runtime,
+    Actor, AmStore, DEFAULT_LIMITS, EngineConfig, EngineKind, InvokeOutcome, ModuleHash, Runtime,
     SimpleAuthority, Translation, Value,
 };
 
@@ -140,7 +140,7 @@ pub(super) fn compile_child() -> Option<Result<(), String>> {
         let bytes = std::env::split_paths(&modules)
             .map(|path| std::fs::read(path).map_err(|e| e.to_string()))
             .collect::<Result<Vec<_>, _>>()?;
-        let engine = Engine::new(EngineLimits::default())?;
+        let engine = Engine::new(DEFAULT_LIMITS)?;
         let before = status_kib("VmHWM:").ok_or("the process's memory is not readable")?;
         for module in &bytes {
             engine.compile(module).map_err(|e| e.to_string())?;
@@ -187,7 +187,7 @@ fn compile_records(
     let mut peaks = Vec::new();
     for _ in 0..config.samples {
         tilolang_runtime::engine::forget_compiled();
-        let engine = Engine::new(EngineLimits::default())?;
+        let engine = Engine::new(DEFAULT_LIMITS)?;
         engine.profile(true);
         for module in modules {
             engine.compile(module).map_err(|e| e.to_string())?;
@@ -256,7 +256,7 @@ impl Drop for CompiledDir {
 /// compiled, as an app does a moment after it starts. Nothing on any other engine.
 pub(super) fn settle(modules: impl IntoIterator<Item = impl AsRef<[u8]>>) -> Result<(), String> {
     // The compiles are the process's: any runtime's engine waits on them.
-    let engine = Engine::new(EngineLimits::default())?;
+    let engine = Engine::new(DEFAULT_LIMITS)?;
     for bytes in modules {
         engine.settle_compile(&ModuleHash::of_bytes(bytes.as_ref()));
     }
@@ -387,7 +387,7 @@ fn read_library(path: &Path) -> Result<Vec<u8>, String> {
 }
 
 fn library(config: &BenchConfig, bytes: &[u8]) -> Result<Record, String> {
-    let engine = Engine::new(EngineLimits::default())?;
+    let engine = Engine::new(DEFAULT_LIMITS)?;
     let module = engine.compile(bytes).map_err(|e| e.to_string())?;
     // The library keeps its image in its memory from `fill` to `blur`, which a move to
     // compiled code between them would lose: it is measured compiled.

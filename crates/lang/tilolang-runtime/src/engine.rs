@@ -8,7 +8,9 @@
 //!   gets a second instance from the same compiled module, which costs microseconds; guests
 //!   keep no state between calls, so instances are interchangeable.
 //! * Runaway code is stopped by fuel, a fixed budget per call. Memory growth beyond the
-//!   per-instance limit traps.
+//!   per-instance limit traps. Engine construction, the limits, the refuel and the text of every
+//!   failure are `tilo-wasm-host`'s, shared with every other wasm engine in the tree; what is
+//!   here is the runtime's own: caching, pooling, profiling and import dispatch.
 //! * Imports reach the host through the [`Host`] trait; the engine knows nothing of the ABI
 //!   beyond the signatures in [`crate::abi`].
 //! * A module may also be a linked set ([`Engine::compile_linked`]): modules instantiated into
@@ -44,6 +46,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
+
+use tilo_wasm_host::Failure;
 
 use crate::abi;
 use crate::ids::ModuleHash;
@@ -127,52 +131,33 @@ pub enum GuestAnswer {
 /// Why a call into a module failed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CallError {
-    #[error("trap: {0}")]
-    Trap(String),
+    /// The shared wasm engine layer refused the module or the call: a trap, a spent budget, a
+    /// refused growth, a missing export or an unloadable module.
+    #[error(transparent)]
+    Wasm(#[from] Failure),
+    /// Execution stopped at an action it invokes; the host resolves the action and calls again.
     #[error("the run is suspended")]
     Suspended,
-    #[error("out of fuel: {0}")]
-    OutOfFuel(String),
-    #[error("memory limit: {0}")]
-    MemoryLimit(String),
-    #[error("module has no export `{0}`")]
-    NoExport(String),
-    #[error("cannot link module: {0}")]
-    Link(String),
 }
 
-/// What a [`CallError::OutOfFuel`] and a [`CallError::MemoryLimit`] say, on every engine.
-const OUT_OF_FUEL: &str = "all fuel consumed by WebAssembly";
-const GROWTH_LIMITED: &str = "growth operation limited";
+/// Per-call and per-instance limits, as the shared wasm engine layer names them.
+pub use tilo_wasm_host::Limits as EngineLimits;
 
-/// Per-call and per-instance limits.
-#[derive(Clone, Copy, Debug)]
-pub struct EngineLimits {
-    /// Fuel for one call into a module, nested calls excluded.
-    pub fuel_per_call: u64,
-    /// Linear memory an instance may reach.
-    pub max_memory_bytes: usize,
-}
-
-impl Default for EngineLimits {
-    fn default() -> Self {
-        Self {
-            fuel_per_call: 2_000_000_000,
-            max_memory_bytes: 64 * 1024 * 1024,
-        }
-    }
-}
+/// The limits every runtime starts with: a call may burn 2 billion instructions, and an instance
+/// may reach 64 MiB of linear memory. The counts are the engines' own defaults, written down so
+/// that no module that loaded before is refused now: a linked set makes one instance per module.
+pub const DEFAULT_LIMITS: EngineLimits = EngineLimits {
+    fuel_per_call: 2_000_000_000,
+    max_memory_bytes: 64 * 1024 * 1024,
+    max_memories: 10_000,
+    max_tables: 10_000,
+    max_instances: 10_000,
+    max_table_elements: 10_000,
+};
 
 /// How wasmi turns wasm into what it runs. The compiling engines compile every function when
-/// the module is compiled.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Translation {
-    /// Validate a module when it is compiled, translate each function on its first call.
-    #[default]
-    Lazy,
-    /// Validate and translate every function when the module is compiled.
-    Eager,
-}
+/// the module is compiled. The shared wasm engine layer's choice, re-exported.
+pub use tilo_wasm_host::wasmi::Translation;
 
 /// Which engine runs the process's wasm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -362,7 +347,7 @@ trait Backend: Send + Sync + Sized + 'static {
     /// looked up.
     type Instance;
 
-    fn compile(&self, bytes: &[u8]) -> Result<Self::Module, String>;
+    fn compile(&self, bytes: &[u8]) -> Result<Self::Module, Failure>;
     fn exports(module: &Self::Module) -> Vec<String>;
     /// Import `(module, name, params, result)` of another ABI, answered by
     /// [`Host::guest_import`].
@@ -375,7 +360,7 @@ trait Backend: Send + Sync + Sized + 'static {
         linker: &Self::Linker,
         modules: &[Self::Module],
         limits: &EngineLimits,
-    ) -> Result<Self::Instance, CallError>;
+    ) -> Result<Self::Instance, Failure>;
     /// Call `export` with `cx` in the store and `fuel` to spend, and take `cx` out again.
     fn call(
         instance: &mut Self::Instance,
@@ -471,19 +456,9 @@ impl std::error::Error for Unwind {}
 impl From<&Unwind> for CallError {
     fn from(unwind: &Unwind) -> Self {
         match &unwind.0 {
-            HostFail::Trap(message) => Self::Trap(message.clone()),
+            HostFail::Trap(message) => Self::Wasm(Failure::Trap(message.clone())),
             HostFail::Suspend => Self::Suspended,
         }
-    }
-}
-
-/// What a trap says, the same on every engine: wasm's trap texts, which wasmi and wasmtime
-/// share apart from wasmi's "uninitialized element 2".
-fn trap_text(text: &str) -> String {
-    if text == "uninitialized element 2" {
-        "uninitialized element".to_owned()
-    } else {
-        text.to_owned()
     }
 }
 
@@ -667,7 +642,7 @@ impl<B: Backend> Pools<B> {
             .compiler
             .backend
             .linker(&imports)
-            .map_err(CallError::Link)?;
+            .map_err(|why| CallError::from(Failure::Link(why)))?;
         *self.linker.borrow_mut() = (abi, linker);
         Ok(Ref::map(self.linker.borrow(), |(_, linker)| linker))
     }
@@ -691,11 +666,7 @@ impl<B: Backend> Pools<B> {
                 module
             } else {
                 let started = tilo_clock::now();
-                let module = self
-                    .compiler
-                    .backend
-                    .compile(bytes)
-                    .map_err(CallError::Link)?;
+                let module = self.compiler.backend.compile(bytes)?;
                 compiling = Some(
                     compiling
                         .unwrap_or_default()
@@ -768,7 +739,7 @@ impl<B: Backend> Pools<B> {
             let mut modules = self.modules.borrow_mut();
             let c = modules
                 .get_mut(module)
-                .ok_or_else(|| CallError::Link(format!("module {module} is not compiled")))?;
+                .ok_or_else(|| Failure::Link(format!("module {module} is not compiled")))?;
             (c.modules.clone(), c.idle.pop())
         };
         if let Some(instance) = idle {
@@ -778,6 +749,7 @@ impl<B: Backend> Pools<B> {
         self.compiler
             .backend
             .instantiate(&linker, &compiled, limits)
+            .map_err(CallError::from)
     }
 
     fn call(
@@ -791,7 +763,7 @@ impl<B: Backend> Pools<B> {
         let mut instance = self.checkout(module, limits)?;
         let outcome = B::call(&mut instance, export, args, limits.fuel_per_call, cx);
         // A trapped instance may have been left mid-way through its own memory; it is dropped.
-        if outcome.is_ok()
+        if tilo_wasm_host::reusable(&outcome)
             && let Some(c) = self.modules.borrow_mut().get_mut(module)
         {
             c.idle.push(instance);
@@ -1098,11 +1070,11 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// A [`CallError::Link`] for a module that does not compile, an empty set, or a first
+    /// A [`Failure::Link`] for a module that does not compile, an empty set, or a first
     /// instance that cannot be made (an import nothing before it exports).
     pub fn compile_linked(&self, modules: &[&[u8]]) -> Result<ModuleHash, CallError> {
         if modules.is_empty() {
-            return Err(CallError::Link("a linked set of no modules".into()));
+            return Err(Failure::Link("a linked set of no modules".into()).into());
         }
         let parts: Vec<Part<'_>> = modules
             .iter()

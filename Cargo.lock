@@ -23205,6 +23205,7 @@ version = "0.1.0"
 dependencies = [
  "tilo-lock",
  "tilo-theme-sdk",
+ "tilo-wasm-host",
  "wasmi",
  "wat",
  "workspace-hack",
@@ -23778,6 +23779,17 @@ dependencies = [
  "runtime-dylib",
  "tilo-theme-painter-wasm",
  "wasmi",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-wasm-host"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.21",
+ "wasmi",
+ "wasmtime",
+ "wat",
  "workspace-hack",
 ]
 
@@ -24435,6 +24447,7 @@ dependencies = [
  "tilo-reference",
  "tilo-resource",
  "tilo-test-env",
+ "tilo-wasm-host",
  "tilolang",
  "tracing",
  "wasmi",

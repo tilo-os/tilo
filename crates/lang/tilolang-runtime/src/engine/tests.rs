@@ -15,10 +15,11 @@ use std::path::Path;
 use std::rc::Rc;
 
 use super::{
-    CallError, Engine, EngineKind, EngineLimits, GROWTH_LIMITED, Host, HostFail, OUT_OF_FUEL,
-    Shared, Tiers, Translation, Wasm, tiering,
+    CallError, DEFAULT_LIMITS, Engine, EngineKind, EngineLimits, Host, HostFail, Shared, Tiers,
+    Translation, Wasm, tiering,
 };
 use crate::ids::ModuleHash;
+use tilo_wasm_host::{Failure, GROWTH_LIMITED, OUT_OF_FUEL};
 
 /// A module without imports: arithmetic, a loop, a loop that never ends, and memory growth.
 const MODULE: &str = r#"
@@ -60,6 +61,7 @@ fn limits() -> EngineLimits {
     EngineLimits {
         fuel_per_call: 10_000_000,
         max_memory_bytes: 1 << 24,
+        ..DEFAULT_LIMITS
     }
 }
 
@@ -178,10 +180,15 @@ tilo_test_env::scenario! {
             call(&engine, &module, "grow", &[]),
         );
         assert_eq!(engine.tier(&module), Some(EngineKind::Cranelift));
-        assert_eq!(on_wasmi.0, Err(CallError::OutOfFuel(OUT_OF_FUEL.into())));
+        assert_eq!(
+            on_wasmi.0,
+            Err(CallError::from(Failure::OutOfFuel(OUT_OF_FUEL.to_owned())))
+        );
         assert_eq!(
             on_wasmi.1,
-            Err(CallError::MemoryLimit(GROWTH_LIMITED.into()))
+            Err(CallError::from(Failure::MemoryLimit(
+                GROWTH_LIMITED.to_owned()
+            )))
         );
         assert_eq!(on_cranelift, on_wasmi);
         // A trap drops only the instance it happened in: the next call runs.
@@ -333,7 +340,7 @@ tilo_test_env::scenario! {
         let runtime = wat::parse_str(RUNTIME.replace("\"double\"", "\"twice\"")).unwrap();
         let refused = engine.compile_linked(&[&runtime, &app(0, 100, 1, 0)]);
         assert!(
-            matches!(&refused, Err(CallError::Link(_))),
+            matches!(&refused, Err(CallError::Wasm(Failure::Link(_)))),
             "{refused:?}"
         );
     }

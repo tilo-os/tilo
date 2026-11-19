@@ -6,14 +6,16 @@
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
 
+use tilo_wasm_host::wasmtime as shared;
+use tilo_wasm_host::{Failure, ImportPolicy};
 use wasmtime::{
-    Caller, Config, Func, FuncType, Instance, Linker, Memory, Module, ResourceLimiter, Store,
-    Strategy, Trap, ValRaw, ValType,
+    Caller, Func, FuncType, Instance, Linker, Memory, Module, ResourceLimiter, Store, ValRaw,
+    ValType,
 };
 
 use super::{
-    Backend, CallError, Cx, EngineKind, EngineLimits, GROWTH_LIMITED, HostFail, Imports,
-    OUT_OF_FUEL, Unwind, Wasm, guest_answer, guest_import, import, trap_text,
+    Backend, CallError, Cx, EngineKind, EngineLimits, HostFail, Imports, Unwind, Wasm,
+    guest_answer, guest_import, import,
 };
 use crate::abi::{self, IMPORTS};
 
@@ -23,16 +25,14 @@ pub(super) struct Wasmtime {
 
 impl Wasmtime {
     pub(super) fn new(kind: EngineKind) -> Result<Self, String> {
-        let mut cfg = Config::new();
-        cfg.strategy(match kind {
-            EngineKind::Winch => Strategy::Winch,
-            EngineKind::Tiered | EngineKind::Wasmi | EngineKind::Cranelift => Strategy::Cranelift,
-        });
-        cfg.consume_fuel(true);
-        // A trap reports what wasm says, as wasmi does, without walking the guest's stack.
-        cfg.wasm_backtrace_max_frames(None);
-        let engine = wasmtime::Engine::new(&cfg)
-            .map_err(|e| format!("cannot make the {} engine: {e}", kind.name()))?;
+        let strategy = match kind {
+            EngineKind::Winch => shared::Strategy::Winch,
+            EngineKind::Tiered | EngineKind::Wasmi | EngineKind::Cranelift => {
+                shared::Strategy::Cranelift
+            }
+        };
+        let engine = shared::engine(strategy)
+            .map_err(|error| format!("cannot make the {} engine: {error}", kind.name()))?;
         Ok(Self { engine })
     }
 
@@ -51,55 +51,17 @@ impl Wasmtime {
     }
 }
 
-/// Memory and table growth past what the instance may have traps, as wasmi's
-/// `trap_on_grow_failure` does.
-struct Limits {
-    max_memory_bytes: usize,
-}
-
-/// A growth [`Limits`] refused.
-#[derive(Debug)]
-struct GrowthLimited;
-
-impl std::fmt::Display for GrowthLimited {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(GROWTH_LIMITED)
-    }
-}
-
-impl std::error::Error for GrowthLimited {}
-
-impl ResourceLimiter for Limits {
-    fn memory_growing(
-        &mut self,
-        _current: usize,
-        desired: usize,
-        maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        if desired > self.max_memory_bytes || maximum.is_some_and(|max| desired > max) {
-            return Err(wasmtime::Error::new(GrowthLimited));
-        }
-        Ok(true)
-    }
-
-    fn table_growing(
-        &mut self,
-        _current: usize,
-        desired: usize,
-        maximum: Option<usize>,
-    ) -> wasmtime::Result<bool> {
-        if maximum.is_some_and(|max| desired > max) {
-            return Err(wasmtime::Error::new(GrowthLimited));
-        }
-        Ok(true)
-    }
-}
-
 pub(super) struct Slot {
     cx: Option<Cx>,
-    limits: Limits,
+    limits: shared::GrowthLimits,
     /// The instance's exported memory, found once when it is made.
     memory: Option<Memory>,
+}
+
+impl shared::Limited for Slot {
+    fn limits(&mut self) -> &mut dyn ResourceLimiter {
+        &mut self.limits
+    }
 }
 
 /// An export's handle and type, resolved on its first call.
@@ -236,14 +198,7 @@ fn classify(e: &wasmtime::Error) -> CallError {
     if let Some(unwind) = e.downcast_ref::<Unwind>() {
         return unwind.into();
     }
-    if e.downcast_ref::<GrowthLimited>().is_some() {
-        return CallError::MemoryLimit(GROWTH_LIMITED.into());
-    }
-    match e.downcast_ref::<Trap>() {
-        Some(Trap::OutOfFuel) => CallError::OutOfFuel(OUT_OF_FUEL.into()),
-        Some(trap) => CallError::Trap(trap_text(&trap.to_string())),
-        None => CallError::Trap(e.to_string()),
-    }
+    shared::classify(e).into()
 }
 
 impl Backend for Wasmtime {
@@ -251,8 +206,8 @@ impl Backend for Wasmtime {
     type Linker = Linker<Slot>;
     type Instance = Pooled;
 
-    fn compile(&self, bytes: &[u8]) -> Result<Module, String> {
-        Module::new(&self.engine, bytes).map_err(|e| e.to_string())
+    fn compile(&self, bytes: &[u8]) -> Result<Module, Failure> {
+        shared::compile(&self.engine, bytes, ImportPolicy::Any)
     }
 
     fn exports(module: &Module) -> Vec<String> {
@@ -310,27 +265,22 @@ impl Backend for Wasmtime {
         linker: &Linker<Slot>,
         modules: &[Module],
         limits: &EngineLimits,
-    ) -> Result<Pooled, CallError> {
-        let mut store = Store::new(
+    ) -> Result<Pooled, Failure> {
+        let mut store = shared::store(
             &self.engine,
             Slot {
                 cx: None,
-                limits: Limits {
-                    max_memory_bytes: limits.max_memory_bytes,
-                },
+                limits: shared::GrowthLimits::new(*limits),
                 memory: None,
             },
-        );
-        store.limiter(|slot| &mut slot.limits);
-        store
-            .set_fuel(limits.fuel_per_call)
-            .map_err(|e| CallError::Link(e.to_string()))?;
+            limits,
+        )?;
         let (first, rest) = modules
             .split_first()
-            .ok_or_else(|| CallError::Link("no module to instantiate".into()))?;
+            .ok_or_else(|| Failure::Link("no module to instantiate".into()))?;
         let instance = linker
             .instantiate(&mut store, first)
-            .map_err(|e| CallError::Link(e.to_string()))?;
+            .map_err(|error| shared::classify(&error))?;
         // The imports the engine links are the first module's, and answer in its memory.
         store.data_mut().memory = instance.get_memory(&mut store, "memory");
         let mut instances = vec![instance];
@@ -342,7 +292,7 @@ impl Backend for Wasmtime {
                     .rev()
                     .find_map(|instance| instance.get_export(&mut store, import.name()))
                     .ok_or_else(|| {
-                        CallError::Link(format!(
+                        Failure::Link(format!(
                             "no module before it exports {}::{}",
                             import.module(),
                             import.name()
@@ -351,7 +301,7 @@ impl Backend for Wasmtime {
                 imports.push(export);
             }
             let instance = Instance::new(&mut store, module, &imports)
-                .map_err(|e| CallError::Link(e.to_string()))?;
+                .map_err(|error| shared::classify(&error))?;
             instances.push(instance);
         }
         Ok(Pooled {
@@ -388,10 +338,7 @@ fn run(
     args: &[Wasm],
     fuel: u64,
 ) -> Result<Option<Wasm>, CallError> {
-    pooled
-        .store
-        .set_fuel(fuel)
-        .map_err(|e| CallError::Link(e.to_string()))?;
+    shared::refuel(&mut pooled.store, fuel)?;
     let found = if let Some(found) = pooled.funcs.get(export) {
         found.clone()
     } else {
@@ -400,7 +347,7 @@ fn run(
             .iter()
             .rev()
             .find_map(|instance| instance.get_func(&mut pooled.store, export))
-            .ok_or_else(|| CallError::NoExport(export.to_owned()))?;
+            .ok_or_else(|| Failure::NoExport(export.to_owned()))?;
         let ty = func.ty(&pooled.store);
         let found = Export {
             func,
@@ -414,10 +361,10 @@ fn run(
     if args.len() != found.params.len()
         || !args.iter().zip(&found.params).all(|(a, ty)| fits(a, ty))
     {
-        return Err(CallError::Trap(format!(
+        return Err(CallError::from(Failure::Trap(format!(
             "`{export}` takes {:?}, not {args:?}",
             found.params
-        )));
+        ))));
     }
     pooled.raw.clear();
     pooled.raw.extend(args.iter().copied().map(to_raw));
@@ -437,7 +384,11 @@ fn run(
         (Some(ValType::I64), Some(r)) => Some(Wasm::I64(r.get_i64())),
         (Some(ValType::F64), Some(r)) => Some(Wasm::F64(f64::from_bits(r.get_f64()))),
         (Some(ValType::I32), Some(r)) => Some(Wasm::I32(r.get_i32())),
-        (Some(_), _) => return Err(CallError::Trap("unsupported wasm value type".into())),
+        (Some(_), _) => {
+            return Err(CallError::from(Failure::Trap(
+                "unsupported wasm value type".to_owned(),
+            )));
+        }
         (None, _) => None,
     })
 }

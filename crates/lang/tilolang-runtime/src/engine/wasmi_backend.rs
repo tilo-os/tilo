@@ -2,15 +2,17 @@
 
 use std::collections::HashMap;
 
+use tilo_wasm_host::wasmi as shared;
+use tilo_wasm_host::{Failure, ImportPolicy};
 use wasmi::errors::HostError;
 use wasmi::{
-    Caller, CompilationMode, Config, Extern, Func, FuncType, Instance, Linker, Memory, Module,
-    Store, StoreLimits, StoreLimitsBuilder, TrapCode, Val, ValType,
+    Caller, Extern, Func, FuncType, Instance, Linker, Memory, Module, ResourceLimiter, Store,
+    StoreLimits, Val, ValType,
 };
 
 use super::{
-    Backend, CallError, Cx, EngineLimits, GROWTH_LIMITED, HostFail, Imports, OUT_OF_FUEL,
-    Translation, Unwind, Wasm, guest_answer, guest_import, import, trap_text,
+    Backend, CallError, Cx, EngineLimits, HostFail, Imports, Translation, Unwind, Wasm,
+    guest_answer, guest_import, import,
 };
 use crate::abi::{self, IMPORTS};
 
@@ -20,14 +22,8 @@ pub(super) struct Wasmi {
 
 impl Wasmi {
     pub(super) fn new(translation: Translation) -> Self {
-        let mut cfg = Config::default();
-        cfg.consume_fuel(true);
-        cfg.compilation_mode(match translation {
-            Translation::Lazy => CompilationMode::LazyTranslation,
-            Translation::Eager => CompilationMode::Eager,
-        });
         Self {
-            engine: wasmi::Engine::new(&cfg),
+            engine: shared::engine(translation),
         }
     }
 }
@@ -39,6 +35,12 @@ pub(super) struct Slot {
     /// linked set the calling code may be a later module's, which exports no memory of its
     /// own but shares this one.
     memory: Option<Memory>,
+}
+
+impl shared::Limited for Slot {
+    fn limits(&mut self) -> &mut dyn ResourceLimiter {
+        &mut self.limits
+    }
 }
 
 pub(super) struct Pooled {
@@ -147,12 +149,7 @@ fn classify(e: &wasmi::Error) -> CallError {
     if let Some(unwind) = e.downcast_ref::<Unwind>() {
         return unwind.into();
     }
-    match e.as_trap_code() {
-        Some(TrapCode::OutOfFuel) => CallError::OutOfFuel(OUT_OF_FUEL.into()),
-        Some(TrapCode::GrowthOperationLimited) => CallError::MemoryLimit(GROWTH_LIMITED.into()),
-        Some(code) => CallError::Trap(trap_text(code.trap_message())),
-        None => CallError::Trap(e.to_string()),
-    }
+    shared::classify(e).into()
 }
 
 impl Backend for Wasmi {
@@ -160,8 +157,8 @@ impl Backend for Wasmi {
     type Linker = Linker<Slot>;
     type Instance = Pooled;
 
-    fn compile(&self, bytes: &[u8]) -> Result<Module, String> {
-        Module::new(&self.engine, bytes).map_err(|e| e.to_string())
+    fn compile(&self, bytes: &[u8]) -> Result<Module, Failure> {
+        shared::compile(&self.engine, bytes, ImportPolicy::Any)
     }
 
     fn exports(module: &Module) -> Vec<String> {
@@ -204,29 +201,22 @@ impl Backend for Wasmi {
         linker: &Linker<Slot>,
         modules: &[Module],
         limits: &EngineLimits,
-    ) -> Result<Pooled, CallError> {
-        let store_limits = StoreLimitsBuilder::new()
-            .memory_size(limits.max_memory_bytes)
-            .trap_on_grow_failure(true)
-            .build();
-        let mut store = Store::new(
+    ) -> Result<Pooled, Failure> {
+        let mut store = shared::store(
             &self.engine,
             Slot {
                 cx: None,
-                limits: store_limits,
+                limits: shared::store_limits(limits),
                 memory: None,
             },
-        );
-        store.limiter(|slot| &mut slot.limits);
-        store
-            .set_fuel(limits.fuel_per_call)
-            .map_err(|e| CallError::Link(e.to_string()))?;
+            limits,
+        )?;
         let (first, rest) = modules
             .split_first()
-            .ok_or_else(|| CallError::Link("no module to instantiate".into()))?;
+            .ok_or_else(|| Failure::Link("no module to instantiate".into()))?;
         let first = linker
             .instantiate_and_start(&mut store, first)
-            .map_err(|e| CallError::Link(e.to_string()))?;
+            .map_err(|error| shared::classify(&error))?;
         store.data_mut().memory = first.get_memory(&store, "memory");
         let mut instances = vec![first];
         for module in rest {
@@ -238,7 +228,7 @@ impl Backend for Wasmi {
                         .rev()
                         .find_map(|instance| instance.get_export(&store, import.name()))
                         .ok_or_else(|| {
-                            CallError::Link(format!(
+                            Failure::Link(format!(
                                 "no module before it exports {}::{}",
                                 import.module(),
                                 import.name()
@@ -247,7 +237,7 @@ impl Backend for Wasmi {
                 })
                 .collect::<Result<Vec<Extern>, _>>()?;
             let instance = Instance::new(&mut store, module, &imports)
-                .map_err(|e| CallError::Link(e.to_string()))?;
+                .map_err(|error| shared::classify(&error))?;
             instances.push(instance);
         }
         Ok(Pooled {
@@ -283,10 +273,7 @@ fn run(
     args: &[Wasm],
     fuel: u64,
 ) -> Result<Option<Wasm>, CallError> {
-    pooled
-        .store
-        .set_fuel(fuel)
-        .map_err(|e| CallError::Link(e.to_string()))?;
+    shared::refuel(&mut pooled.store, fuel)?;
     let (func, results) = if let Some(found) = pooled.funcs.get(export) {
         found.clone()
     } else {
@@ -295,7 +282,7 @@ fn run(
             .iter()
             .rev()
             .find_map(|instance| instance.get_func(&pooled.store, export))
-            .ok_or_else(|| CallError::NoExport(export.to_owned()))?;
+            .ok_or_else(|| Failure::NoExport(export.to_owned()))?;
         let results = func.ty(&pooled.store).results().to_vec();
         pooled
             .funcs
@@ -310,5 +297,5 @@ fn run(
         .first()
         .map(to_wasm)
         .transpose()
-        .map_err(|e| CallError::Trap(e.to_string()))
+        .map_err(|e| CallError::from(Failure::Trap(e.to_string())))
 }

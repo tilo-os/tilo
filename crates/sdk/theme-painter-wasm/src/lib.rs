@@ -1,8 +1,13 @@
 //! Painter sets loaded from wasm: a theme's own painters, run with nothing to
 //! reach (`docs/architecture/theming.md`, "Part painters"). A module built
 //! against `tilo_theme_sdk` (`export_painter!`) exports a buffer and one call,
-//! and imports nothing; [`load`] refuses one that imports anything, so a
+//! and imports nothing; loading refuses one that imports anything, so a
 //! painter has no clock, no I/O, no files and nothing to ask.
+//!
+//! The interpreter, its fuel, its memory cap and its failures are
+//! `tilo_wasm_host`'s; this crate is the guest's side of it: the bytes it
+//! exchanges and the rule that a set whose call failed is left to the toolkit
+//! for good.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,10 +18,9 @@ use tilo_theme_sdk::wire::{self, PaintRequest};
 use tilo_theme_sdk::{
     PaintedPart, ParamSpec, Part, PartPainter, PartState, PartTokens, Refusal, States, Transition,
 };
-use wasmi::{
-    Config, Engine, Instance, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder,
-    TypedFunc,
-};
+use tilo_wasm_host::wasmi as host;
+use tilo_wasm_host::{Failure, ImportPolicy, Limits};
+use wasmi::{Instance, Linker, Memory, Store, StoreLimits, TypedFunc};
 
 /// Fuel one call may burn: well past what any part takes to draw (a dithered panel is a few hundred
 /// thousand), short enough that a looping painter is stopped within a frame.
@@ -27,6 +31,18 @@ pub const MAX_MEMORY: usize = 64 << 20;
 
 /// Largest answer the toolkit reads, bytes.
 pub const MAX_ANSWER: usize = 16 << 20;
+
+/// The limits a set executes under: one memory, one table and one instance, with
+/// `trap_on_grow_failure` set by the host layer so growing past the memory cap
+/// stops the call.
+const LIMITS: Limits = Limits {
+    fuel_per_call: FUEL_PER_CALL,
+    max_memory_bytes: MAX_MEMORY,
+    max_memories: 1,
+    max_tables: 1,
+    max_instances: 1,
+    max_table_elements: 10_000,
+};
 
 const BUFFER: &str = "tilo_theme_buffer";
 const CALL: &str = "tilo_theme_call";
@@ -40,22 +56,36 @@ struct Guest {
 }
 
 impl Guest {
-    /// Send `request` and read the answer; `None` for a trap, an exhausted budget or an answer out of
-    /// bounds.
-    fn exchange(&mut self, request: &[u8]) -> Option<Vec<u8>> {
-        let len = u32::try_from(request.len()).ok()?;
-        self.store.set_fuel(FUEL_PER_CALL).ok()?;
-        let at = usize::try_from(self.buffer.call(&mut self.store, len).ok()?).ok()?;
-        self.memory.write(&mut self.store, at, request).ok()?;
-        let answer = self.call.call(&mut self.store, len).ok()?;
-        let at = usize::try_from(answer >> 32).ok()?;
-        let len = usize::try_from(answer & u64::from(u32::MAX)).ok()?;
+    /// Send `request` and read the answer; a trap, an exhausted budget or a refused growth is the
+    /// engine's [`Failure`], and an answer that does not fit the set's memory is one too.
+    fn exchange(&mut self, request: &[u8]) -> Result<Vec<u8>, Failure> {
+        let len = u32::try_from(request.len())
+            .map_err(|_| Failure::Trap("the request is larger than a wasm address".to_owned()))?;
+        host::refuel(&mut self.store, LIMITS.fuel_per_call)?;
+        let at = self
+            .buffer
+            .call(&mut self.store, len)
+            .map_err(|error| host::classify(&error))?;
+        let at = usize::try_from(at).unwrap_or(usize::MAX);
+        self.memory
+            .write(&mut self.store, at, request)
+            .map_err(|error| Failure::Trap(error.to_string()))?;
+        let answer = self
+            .call
+            .call(&mut self.store, len)
+            .map_err(|error| host::classify(&error))?;
+        let at = usize::try_from(answer >> 32).unwrap_or(usize::MAX);
+        let len = usize::try_from(answer & u64::from(u32::MAX)).unwrap_or(usize::MAX);
         if len > MAX_ANSWER {
-            return None;
+            return Err(Failure::Trap(format!(
+                "the answer claims {len} bytes, past the {MAX_ANSWER} the toolkit reads"
+            )));
         }
         let mut bytes = vec![0; len];
-        self.memory.read(&self.store, at, &mut bytes).ok()?;
-        Some(bytes)
+        self.memory
+            .read(&self.store, at, &mut bytes)
+            .map_err(|error| Failure::Trap(error.to_string()))?;
+        Ok(bytes)
     }
 }
 
@@ -73,10 +103,10 @@ impl WasmPainter {
             return None;
         }
         let answer = self.guest.lock_recover().exchange(request);
-        if answer.is_none() {
+        if !tilo_wasm_host::reusable(&answer) {
             self.broken.store(true, Ordering::Relaxed);
         }
-        answer
+        answer.ok()
     }
 
     /// Whether a call failed and the set now leaves every part to the toolkit.
@@ -88,42 +118,28 @@ impl WasmPainter {
 
 /// Load the painter module `bytes`: validated, refused if it imports anything, started under the call
 /// budget, and asked for its parameters.
+///
+/// # Errors
+///
+/// A [`Refusal`] naming what the set is not: a wasm module, a painter that
+/// imports nothing, a set exporting what the SDK's painter does, one whose
+/// start-up failed, or one whose parameters are not the SDK's list.
 pub fn load(bytes: &[u8]) -> Result<WasmPainter, Refusal> {
-    let mut config = Config::default();
-    config.consume_fuel(true);
-    let engine = Engine::new(&config);
-    let module = Module::new(&engine, bytes).map_err(|e| Refusal::Invalid(e.to_string()))?;
-    if let Some(import) = module.imports().next() {
-        return Err(Refusal::Imports(format!(
-            "{}::{}",
-            import.module(),
-            import.name()
-        )));
-    }
-    let limits = StoreLimitsBuilder::new()
-        .memory_size(MAX_MEMORY)
-        .memories(1)
-        .instances(1)
-        .tables(1)
-        .trap_on_grow_failure(true)
-        .build();
-    let mut store = Store::new(&engine, limits);
-    store.limiter(|limits| limits);
-    store
-        .set_fuel(FUEL_PER_CALL)
-        .map_err(|e| Refusal::Start(e.to_string()))?;
+    let engine = host::engine(host::Translation::Lazy);
+    let module = host::compile(&engine, bytes, ImportPolicy::None).map_err(refusal)?;
+    let mut store = host::store(&engine, host::store_limits(&LIMITS), &LIMITS).map_err(refusal)?;
     let instance: Instance = Linker::<StoreLimits>::new(&engine)
         .instantiate_and_start(&mut store, &module)
-        .map_err(|e| Refusal::Start(e.to_string()))?;
+        .map_err(|error| refusal(host::classify(&error)))?;
     let memory = instance
         .get_memory(&store, MEMORY)
-        .ok_or_else(|| Refusal::Exports(MEMORY.to_owned()))?;
+        .ok_or_else(|| refusal(Failure::NoExport(MEMORY.to_owned())))?;
     let buffer = instance
         .get_typed_func::<u32, u32>(&store, BUFFER)
-        .map_err(|_| Refusal::Exports(format!("{BUFFER}(i32) -> i32")))?;
+        .map_err(|_| refusal(Failure::NoExport(format!("{BUFFER}(i32) -> i32"))))?;
     let call = instance
         .get_typed_func::<u32, u64>(&store, CALL)
-        .map_err(|_| Refusal::Exports(format!("{CALL}(i32) -> i64")))?;
+        .map_err(|_| refusal(Failure::NoExport(format!("{CALL}(i32) -> i64"))))?;
     let mut guest = Guest {
         store,
         memory,
@@ -132,6 +148,7 @@ pub fn load(bytes: &[u8]) -> Result<WasmPainter, Refusal> {
     };
     let params = guest
         .exchange(&wire::params_request())
+        .ok()
         .and_then(|answer| wire::params(&answer))
         .ok_or(Refusal::Params)?;
     Ok(WasmPainter {
@@ -175,6 +192,19 @@ impl PartPainter for WasmPainter {
         self.exchange(&wire::transition_request(part, from, to))
             .and_then(|answer| wire::transition(&answer))
             .unwrap_or(Transition::Inherit)
+    }
+}
+
+/// How the shared host layer's failures read as a painter refusal.
+fn refusal(failure: Failure) -> Refusal {
+    match failure {
+        Failure::Invalid(why) => Refusal::Invalid(why),
+        Failure::Imports(name) => Refusal::Imports(name),
+        Failure::NoExport(name) => Refusal::Exports(name),
+        Failure::Trap(why)
+        | Failure::OutOfFuel(why)
+        | Failure::MemoryLimit(why)
+        | Failure::Link(why) => Refusal::Start(why),
     }
 }
 

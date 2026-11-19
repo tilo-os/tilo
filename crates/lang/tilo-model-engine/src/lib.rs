@@ -51,7 +51,9 @@ pub use runtime::{RUNTIME_DIR, RUNTIME_SECTION, RUNTIME_VARIABLE, Runtime, runti
 
 use automerge::AutoCommit;
 use automerge::model_device::Documents;
-use tilolang_runtime::engine::{Engine, EngineLimits, GuestAnswer, Host, HostFail, Imports, Wasm};
+use tilolang_runtime::engine::{
+    DEFAULT_LIMITS, Engine, GuestAnswer, Host, HostFail, Imports, Wasm,
+};
 use tilolang_runtime::ids::ModuleHash;
 
 /// The functions a model module imports, as `(module, name, parameters, result)`:
@@ -226,7 +228,7 @@ impl Model {
     }
 
     fn engine() -> Result<Engine, ModelError> {
-        let engine = Engine::new(EngineLimits::default()).map_err(ModelError::Load)?;
+        let engine = Engine::new(DEFAULT_LIMITS).map_err(ModelError::Load)?;
         engine.link(ABI).map_err(ModelError::Load)?;
         Ok(engine)
     }

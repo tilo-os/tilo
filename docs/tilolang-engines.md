@@ -159,8 +159,10 @@ cargo test --locked -p tilolang-runtime -p tilolang-tilo \
 ## The boundary
 
 `crates/lang/tilolang-runtime/src/engine.rs` holds everything the runtime does with wasm,
-written once: the per-process module cache, the instance pools, the profile, import dispatch and
-the text of every error. What differs between engines is a private trait, `Backend`, with one
+written once: the per-process module cache, the instance pools, the profile and import dispatch.
+How an engine is made, the limits a store enforces, the fuel a call gets and the text of every
+failure are the shared wasm host layer's (`crates/runtime/tilo-wasm-host`), which every wasm host
+in the tree executes a guest on. What differs between engines is a private trait, `Backend`, with one
 implementation per engine (`engine/wasmi_backend.rs`, `engine/wasmtime_backend.rs`):
 
 - `compile(bytes) -> Module`, a module every runtime in the process shares;

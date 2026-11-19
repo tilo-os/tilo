@@ -80,7 +80,8 @@ pub use catalogue::{Signature, SignatureKind, catalogue};
 pub use core::{Delivery, ModelHost, NameHost, OutsideSink, ShownHost};
 pub use cost::{Costs, Reads, Unit, UnitCost, UnitKind, assert_costs};
 pub use engine::{
-    EngineConfig, EngineKind, EngineLimits, EngineProfile, Translation, configure, configured,
+    DEFAULT_LIMITS, EngineConfig, EngineKind, EngineLimits, EngineProfile, Translation, configure,
+    configured,
 };
 pub use error::RuntimeError;
 pub use exec::InvokeOutcome;

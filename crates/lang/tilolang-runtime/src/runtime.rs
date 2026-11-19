@@ -8,7 +8,7 @@ use serde_json::Value as Json;
 use crate::authority::Authority;
 use crate::catalogue::{Signature, catalogue};
 use crate::core::{Core, ModelHost, OutsideSink};
-use crate::engine::EngineLimits;
+use crate::engine::{DEFAULT_LIMITS, EngineLimits};
 use crate::error::RuntimeError;
 use crate::exec::InvokeOutcome;
 use crate::ids::{Actor, DocId, ModuleHash, PackageId, RunId};
@@ -104,7 +104,7 @@ impl Runtime {
         store: impl Store + 'static,
         authority: impl Authority + 'static,
     ) -> Result<Self, RuntimeError> {
-        Self::with_limits(store, authority, EngineLimits::default())
+        Self::with_limits(store, authority, DEFAULT_LIMITS)
     }
 
     /// As [`Runtime::new`], with explicit fuel and memory limits.

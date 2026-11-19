@@ -182,7 +182,10 @@ impl Tiering {
                     );
                 }
             }
-            self.finish(&job.hash, outcome.map(drop));
+            self.finish(
+                &job.hash,
+                outcome.map(drop).map_err(|error| error.to_string()),
+            );
         }
     }
 

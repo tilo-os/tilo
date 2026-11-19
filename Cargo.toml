@@ -493,6 +493,8 @@ members = [
     "crates/runtime/tilo-mcp",
     "crates/runtime/device-mcp",
     "crates/runtime/tilo-runtime",
+    # The wasm host layer every wasm host in the tree runs its guests on.
+    "crates/runtime/tilo-wasm-host",
     "crates/runtime/environment",
     "crates/runtime/egress",
     "crates/runtime/ush",

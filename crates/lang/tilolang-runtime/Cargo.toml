@@ -67,6 +67,9 @@ wasmtime = { version = "50.0.0", optional = true, default-features = false, feat
 ] }
 # The clock that also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# Engine construction, the call's limits, the refuel and the one text of a failure: shared with
+# every other wasm host in the tree.
+tilo-wasm-host = { version = "0.1.0", path = "../../runtime/tilo-wasm-host", default-features = false }
 # Why a module stays on wasmi or was not kept on disk.
 tracing.workspace = true
 # Compiled modules are written beside their place in the disk cache, then renamed into it.
@@ -80,7 +83,7 @@ workspace-hack = { version = "0.1" }
 [features]
 # Every shipped build runs the tiered engine; without the feature, wasmi alone.
 default = ["wasmtime"]
-wasmtime = ["dep:wasmtime"]
+wasmtime = ["dep:wasmtime", "tilo-wasm-host/wasmtime"]
 
 [dev-dependencies]
 # A scenario's cases are the phases of one test (`scenario!`).
