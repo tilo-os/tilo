@@ -1,8 +1,9 @@
 //! The app surfaces this page decides its workspaces' writes against, by the
 //! content hash each write names.
 //!
-//! A change carries the hash of the `surface.toml` of the app version that
-//! made it, and a record keeps the version it was started with. A page
+//! A change carries the hash of the surface of the app version that made it,
+//! in the form it is kept by, and a record keeps the version it was started
+//! with. A page
 //! reading a record an older version started therefore holds its changes
 //! until it has that version's surface: it asks its workspaces for it by
 //! hash, as it asks for a picture a record references ([`neighbour_wire::content`]),

@@ -129,8 +129,8 @@ pub struct AppRelease {
     pub app: String,
     /// The version its package names (`1.4.0`, `1.5.0-dev.3`).
     pub version: String,
-    /// The BLAKE3 hash of the package's `surface.toml`, hex: the surface
-    /// every change made with this version names.
+    /// The BLAKE3 hash of the version's surface in the form it is kept by,
+    /// hex: the surface every change made with this version names.
     pub surface: String,
     /// The package's `tapp:` hash (the BLAKE3 of its signed root), hex:
     /// what each member fetches and verifies before running the version.
