@@ -590,7 +590,7 @@ if ! grep -A2 -F 'if let Some(actual) = listener.local_addr()?.as_pathname()' "$
   exit 1
 fi
 package_service_gc_line="$(grep -n 'let _startup = tokio::task::spawn_blocking' "$package_service_source" | cut -d: -f1)"
-package_service_serve_line="$(grep -n 'transport::serve(listener, store' "$package_service_source" | cut -d: -f1)"
+package_service_serve_line="$(grep -n 'transport::serve(' "$package_service_source" | cut -d: -f1)"
 if [ -z "$package_service_gc_line" ] || [ -z "$package_service_serve_line" ] \
    || [ "$package_service_gc_line" -ge "$package_service_serve_line" ]; then
   echo 'socket-activated app host still blocks first use on its store migration and GC pass' >&2

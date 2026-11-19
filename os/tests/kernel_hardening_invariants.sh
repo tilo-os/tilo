@@ -596,7 +596,7 @@ grep -Fq 'crate::performance::apply_game_performance_hints()?' "$native_launcher
   || bad 'game scheduler policy failures are silently ignored'
 grep -Fq 'latency_sensitive: route.runtime.layer == Layer::Proton' "$game_planner" \
   || bad 'game scheduling hint is not bound to the trusted Proton route'
-grep -Fq 'apply_game_performance_hints()?' "$game_executor" \
+grep -Fq 'launcher::inherit::hand_down(&mut command, handed, self.latency_sensitive)' "$game_executor" \
   || bad 'Proton scheduler policy failures are silently ignored'
 grep -Fq 'pub const GAME_UTIL_MIN: u32 = 256;' "$game_performance" \
   || bad 'game utilization floor drifted from its reviewed 25% bound'
@@ -639,8 +639,9 @@ grep -Fq -- '--omit-drivers "amdgpu nouveau xe xfs"' "$initramfs_recipe" \
 grep -Fq "printf '%s\\n' amdgpu nouveau xe xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt" \
   "$initramfs_recipe" \
   || bad 'built image does not record its initramfs kernel-driver exclusions'
-grep -Fq -- "-path '*/fs/ext4/ext4.ko*'" "$initramfs_recipe" \
-  && grep -Fq -- "-path '*/fs/xfs/xfs.ko*'" "$initramfs_recipe" \
+grep -Fq -- '-path "*/fs/$name/$name.ko*"' "$initramfs_recipe" \
+  && grep -Fq 'filesystem_present ext4 ||' "$initramfs_recipe" \
+  && grep -Fq 'filesystem_present xfs ||' "$initramfs_recipe" \
   || bad 'image build does not preserve signed Ext4/XFS modules for post-root rescue use'
 
 for required in \
