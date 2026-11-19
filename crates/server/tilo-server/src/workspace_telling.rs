@@ -32,6 +32,7 @@ use crate::workspaces::person_model::Spender;
 use crate::workspaces::{Spenders, WeakWorkspaces, Workspaces};
 
 mod caused;
+mod mentions;
 mod questions;
 pub(crate) use caused::turn_ended;
 pub use questions::Feeder;
@@ -77,6 +78,7 @@ pub fn words_outside(told: &Told) -> (String, String) {
     let title = match (told.kind, name) {
         (Kind::Question, Some(name)) => format!("{name} needs you"),
         (Kind::Question, None) => "An agent needs you".to_owned(),
+        (Kind::Mention, Some(name)) => format!("{name} mentioned you"),
         (_, Some(name)) => name.to_owned(),
         (_, None) => "Tilo".to_owned(),
     };

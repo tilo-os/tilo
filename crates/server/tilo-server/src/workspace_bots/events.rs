@@ -185,7 +185,7 @@ impl PersonEvents {
                     let kind = match event.tells_as() {
                         Kind::Reminder => assistant::REMINDER,
                         Kind::Brief => assistant::BRIEF,
-                        Kind::Question | Kind::News => assistant::EVENT,
+                        Kind::Question | Kind::News | Kind::Mention => assistant::EVENT,
                     };
                     assistant::steps_starting_turns(
                         workspaces.clone(),

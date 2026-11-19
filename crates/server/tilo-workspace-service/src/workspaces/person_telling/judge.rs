@@ -78,12 +78,16 @@ pub(super) fn settled(
         Kind::Question => Some(WhyCode::Question),
         Kind::Reminder => Some(WhyCode::Reminder),
         Kind::Brief => Some(WhyCode::Brief),
+        Kind::Mention => Some(WhyCode::Mention),
         Kind::News => None,
     };
     // A reminder is its person's own, and so is a question in an answer
-    // to their own words: nobody judges those.
+    // to their own words; a mention is addressed to them by whoever named
+    // them: nobody judges those.
     let own = matter.cause.is_none_or(|cause| cause.kind == CAUSE_PERSON);
-    if matter.kind == Kind::Reminder || (matter.kind == Kind::Question && own) {
+    if matches!(matter.kind, Kind::Reminder | Kind::Mention)
+        || (matter.kind == Kind::Question && own)
+    {
         return Some(mark(Why::of(as_it_is.unwrap_or(WhyCode::Question))));
     }
     match rule.decided() {
@@ -156,6 +160,7 @@ pub(super) fn input(rule: &Importance, matter: &Matter<'_>) -> String {
         Kind::Question => "a question that waits for the person's answer",
         Kind::Reminder => "a reminder",
         Kind::Brief => "a brief",
+        Kind::Mention => "a mention of the person",
         Kind::News => "news",
     });
     if let Some(label) = matter

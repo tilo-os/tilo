@@ -9,8 +9,9 @@
 //! can say why something notified and why something else did not.
 //!
 //! What a thing is comes from what caused it and is asked once: a
-//! reminder, a brief, a question that waits, or news. A question, a
-//! reminder and a brief reach the person by what they are. News reaches
+//! reminder, a brief, a question that waits, a mention of them, or news. A
+//! question, a reminder, a brief and a mention reach the person by what
+//! they are. News reaches
 //! them only when it is important by their own rule. The rest stays in
 //! the thread and in the log, and pushes nothing.
 //!
@@ -244,6 +245,8 @@ pub enum Kind {
     /// Anything else: what came in, what was found, what was done.
     #[default]
     News,
+    /// Someone in a workspace named the person in what they wrote: it is addressed to them.
+    Mention,
 }
 
 impl Kind {
@@ -273,17 +276,20 @@ pub enum Reach {
     Brief,
     /// News their own rule calls important.
     Important,
+    /// Someone named them.
+    Mention,
 }
 
 impl Reach {
     /// Why a thing of `kind` reaches its person, if it does: a question, a
-    /// reminder and a brief by what they are, news only when `important`.
+    /// reminder, a brief and a mention by what they are, news only when `important`.
     #[must_use]
     pub const fn of(kind: Kind, important: bool) -> Option<Self> {
         match kind {
             Kind::Question => Some(Self::Question),
             Kind::Reminder => Some(Self::Reminder),
             Kind::Brief => Some(Self::Brief),
+            Kind::Mention => Some(Self::Mention),
             Kind::News if important => Some(Self::Important),
             Kind::News => None,
         }
@@ -457,6 +463,8 @@ pub enum WhyCode {
     Judged,
     /// It could not be judged, so it is not called important.
     Unjudged,
+    /// It names the person: it reaches them as that, and nobody judged it.
+    Mention,
 }
 
 /// The reason for a mark, in one line a device words for its person.

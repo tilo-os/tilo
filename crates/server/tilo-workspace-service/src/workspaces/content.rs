@@ -121,6 +121,15 @@ impl Workspaces {
         Some(name)
     }
 
+    /// The name the workspace governed here under `workspace` shows for the
+    /// member whose root is `root`; `None` for one not governed here or a
+    /// member who chose no name.
+    pub async fn name_of_member(&self, workspace: WorkspaceId, root: [u8; 32]) -> Option<String> {
+        let governed = self.held(workspace).await?;
+        let governed = governed.lock().await;
+        self.member_name_by_root(&governed, root)
+    }
+
     /// The bytes named `hash` this host keeps for the workspace of `workspace`
     /// governed here, checked against the hash: what its bots fetched and
     /// the files it keeps for members. `None` for a workspace not governed here

@@ -160,7 +160,7 @@ pub(crate) async fn turn_ended(
             words: words.clone(),
             title: cause.label.clone(),
             cause: Some(cause),
-            about: Some(at_message(workspace, part, &message)),
+            about: Some(at_message(workspace, &message)),
             ..Tell::default()
         },
         from: Some(Teller {

@@ -47,11 +47,10 @@ fn asked(question: &chat::question::Question) -> Option<[u8; 32]> {
         .ok()
 }
 
-/// What the questions in `part`, the record `record` of `workspace`'s
-/// Chat, mean for the logs of the people they ask, oldest first.
+/// What the questions in `part`, a part of `workspace`'s Chat, mean for the
+/// logs of the people they ask, oldest first.
 pub(super) fn questions(
     workspace: &str,
-    record: &str,
     part: &chat::parts::ChatMessages,
 ) -> Vec<([u8; 32], QuestionUpdate)> {
     let mut found = Vec::new();
@@ -68,12 +67,7 @@ pub(super) fn questions(
                 if message.text.trim().is_empty() {
                     continue;
                 }
-                QuestionUpdate::Waits(Box::new(telling(
-                    (workspace, record),
-                    (id, message),
-                    question,
-                    told,
-                )))
+                QuestionUpdate::Waits(Box::new(telling(workspace, (id, message), question, told)))
             }
             chat::question::QuestionState::Withdrawn(_) => QuestionUpdate::TakenBack { id: told },
             chat::question::QuestionState::Answered(answered)
@@ -93,7 +87,7 @@ pub(super) fn questions(
 /// secret has no button and its words stay on the host: a secret is typed
 /// into the protected field in Tilo.
 fn telling(
-    (workspace, record): (&str, &str),
+    workspace: &str,
     (id, message): (&Id, &chat::chat::Message),
     question: &chat::question::Question,
     told: String,
@@ -131,7 +125,7 @@ fn telling(
         kind: Kind::Question,
         tell: Tell {
             words: message.text.clone(),
-            about: Some(at_message(workspace, record, id)),
+            about: Some(at_message(workspace, id)),
             actions,
             ..Tell::default()
         },
@@ -145,22 +139,21 @@ fn telling(
     }
 }
 
-/// Where the message `id` in the part `part` of `workspace`'s conversations
-/// is, as a thing told about it says where it leads.
-pub(super) fn at_message(workspace: &str, part: &str, id: &Id) -> About {
+/// Where the message `id` of `workspace`'s conversations is, as a thing
+/// told about it says where it leads: Chat's own record of the workspace,
+/// whose parts keep its messages, at the address Chat opens the message at.
+pub(super) fn at_message(workspace: &str, id: &Id) -> About {
     About {
         workspace: workspace.to_owned(),
         app: CHAT.to_owned(),
-        record: part.to_owned(),
-        resource: tilo_resource::items::item_resource_id::<chat::parts::ChatMessages>(
-            "messages", id,
-        ),
+        record: String::new(),
+        resource: tilo_resource::items::item_resource_id::<chat::Chat>("messages", id),
     }
 }
 
-/// Whether `record` is a part of Chat's messages.
-fn is_part(record: &str) -> bool {
-    collab_types::document::DocumentId::parse(record)
+/// Whether `route` is a part of Chat's messages.
+fn is_part(route: &str) -> bool {
+    collab_types::document::DocumentId::parse(route)
         .is_some_and(|part| chat::parts::part_index(&part).is_some())
 }
 
@@ -201,8 +194,8 @@ impl Feeder {
                     due.insert((write.workspace, write.record));
                 }
             }
-            for (workspace, record) in due {
-                if let Err(error) = self.look_part(&workspace, &record).await {
+            for (workspace, route) in due {
+                if let Err(error) = self.look_part(&workspace, &route).await {
                     tracing::debug!(%workspace, %error, "a part of a chat was not read for its questions");
                 }
             }
@@ -220,43 +213,48 @@ impl Feeder {
     /// Read every part of `workspace`'s conversations for its questions.
     ///
     /// # Errors
-    /// A record could not be read.
+    /// The part could not be read.
     pub async fn look(&self, workspace: &str) -> Result<(), String> {
         let routes = self
             .workspaces
             .document_routes(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        for (app, record) in &routes {
-            if app == CHAT && is_part(record) {
-                self.look_part(workspace, record).await?;
+        for (app, route) in &routes {
+            if app == CHAT && is_part(route) {
+                self.look_part(workspace, route).await?;
             }
         }
         Ok(())
     }
 
-    /// Read the part `record` of `workspace`'s conversations: tell each
+    /// Read the part `route` of `workspace`'s conversations: tell each
     /// person the questions that wait for them there, and let go of those
     /// that were answered or taken back.
     ///
     /// # Errors
-    /// The record could not be read.
-    pub async fn look_part(&self, workspace: &str, record: &str) -> Result<(), String> {
+    /// The part could not be read.
+    pub async fn look_part(&self, workspace: &str, route: &str) -> Result<(), String> {
         let Some(bytes) = self
             .workspaces
-            .resource_document(workspace, CHAT, record)
+            .resource_document(workspace, CHAT, route)
             .await
             .map_err(|error| error.to_string())?
         else {
             return Ok(());
         };
-        // The record is read and let go of before anything is told: what
+        // The part is read and let go of before anything is told: what
         // follows waits on a person's own model and their log.
-        let found = {
+        let (found, mentions) = {
             let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
             let part = crate::workspace_bots::opened::<chat::parts::ChatMessages>(&mut doc)?;
-            questions(workspace, record, &part)
+            let now_ms = i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX);
+            (
+                questions(workspace, &part),
+                super::mentions::named(workspace, &part, now_ms),
+            )
         };
+        self.tell_mentions(workspace, mentions).await;
         // What waits in each person's log, read once a person.
         let mut waiting: BTreeMap<[u8; 32], BTreeSet<String>> = BTreeMap::new();
         for (person, update) in found {
@@ -293,6 +291,30 @@ impl Feeder {
         }
         Ok(())
     }
+
+    /// Tell each person `mentions` names that they were mentioned, under the
+    /// name the message keeps for its author, else the one the workspace
+    /// shows for them.
+    async fn tell_mentions(&self, workspace: &str, mentions: Vec<super::mentions::Named>) {
+        let id = tilo_server_protocol::WorkspaceId::parse(workspace);
+        for named in mentions {
+            let mut author = named
+                .author_name
+                .clone()
+                .filter(|name| !name.trim().is_empty());
+            if author.is_none()
+                && let (Some(id), Some(root)) = (id, super::mentions::root_of(&named.author))
+            {
+                author = self.workspaces.name_of_member(id, root).await;
+            }
+            let author = author.unwrap_or_else(|| "Someone".to_owned());
+            let person = named.person;
+            let telling = super::mentions::telling(workspace, named, &author);
+            if let Err(error) = self.workspaces.tell(&person, telling).await {
+                tracing::debug!(%workspace, %error, "a mention was not told to its person");
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -312,7 +334,6 @@ mod tests {
 
     const ADA: [u8; 32] = [8; 32];
     const WORKSPACE: &str = "6f1f0f7e-3c1d-4a54-9b6e-2d1c5a7e9f10";
-    const RECORD: &str = "part-record";
 
     fn question(kind: &str, answers: &[(&str, &str)]) -> Question {
         Question {
@@ -389,7 +410,7 @@ mod tests {
             part.messages.push(Id::from_raw(id.to_owned()), message);
         }
 
-        let found = questions(WORKSPACE, RECORD, &part);
+        let found = questions(WORKSPACE, &part);
         assert_eq!(found.len(), 4, "the plain message asks nobody");
         assert!(found.iter().all(|(person, _)| *person == ADA));
 
@@ -420,7 +441,7 @@ mod tests {
                 about.app.as_str(),
                 about.record.as_str()
             ),
-            (WORKSPACE, CHAT, RECORD)
+            (WORKSPACE, CHAT, "")
         );
         assert!(
             about.resource.ends_with("/messages/m1"),
