@@ -46,6 +46,7 @@ use accounts::{Account, AccountId, AccountStore, SecretVault};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+pub use http::IN_FLIGHT;
 pub use journal::{JournalState, ServiceJournal, valid_id};
 pub use landing::{
     Delivered, InboxLanding, IncomingAuthor, IncomingComment, IncomingGroup, IncomingIssue,

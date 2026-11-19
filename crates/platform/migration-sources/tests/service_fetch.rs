@@ -1,6 +1,6 @@
 //! What fetching from a service costs: a repository's pages and one request per issue for what
-//! the forge keeps per issue, with those requests in flight together. A slow local forge counts
-//! the requests and times them.
+//! the forge keeps per issue, with those requests in flight together. A local forge counts the
+//! requests and holds them a page at a time.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -9,16 +9,18 @@
 )]
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex};
 
-use migration_sources::service::forgejo;
+use migration_sources::service::{IN_FLIGHT, forgejo};
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 
 const PAGE: usize = 50;
 const REPOSITORY: &str = "/api/v1/repos/acme/app";
+/// How many per-issue requests a fetch asks alone: one issue's blocks and its dependencies, to
+/// learn whether the forge keeps relations at all.
+const PROBE: usize = 2;
 
 /// A local forge holding one repository.
 struct Forge {
@@ -29,14 +31,24 @@ struct Forge {
 }
 
 impl Forge {
-    /// A forge of `issues` issues, each with `comments` comments, answering after `delay`, the
-    /// first `balk` requests told to wait.
-    fn start(issues: usize, comments: usize, delay: Duration, balk: usize) -> Self {
+    /// A forge of `issues` issues, each with `comments` comments, the first `balk` requests told
+    /// to wait.
+    ///
+    /// Its per-issue requests, after the probe, are held a page at a time: each waits until
+    /// [`IN_FLIGHT`] of them are waiting, then all are answered. A fetch that asks one after
+    /// another never fills a page and gives up.
+    fn start(issues: usize, comments: usize, balk: usize) -> Self {
         let waited = Arc::new(AtomicUsize::new(0));
         let inflight = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
+        let page = Arc::new(Page::new(IN_FLIGHT));
+        // Blocks and dependencies, one request each per issue. Whole pages of those after the
+        // probe are held: a fetch may reach the last requests with less than a page to ask.
+        let held = (2 * issues).saturating_sub(PROBE) / IN_FLIGHT * IN_FLIGHT;
+        let asked = Arc::new(AtomicUsize::new(0));
         let server = Responder::serve({
             let (inflight, peak) = (Arc::clone(&inflight), Arc::clone(&peak));
+            let (page, asked) = (Arc::clone(&page), Arc::clone(&asked));
             move |peer| {
                 let mut target = peer.request().target.clone();
                 loop {
@@ -45,7 +57,11 @@ impl Forge {
                     let reply = if waited.fetch_add(1, Ordering::SeqCst) < balk {
                         Some(Reply::status(429).header("Retry-After", "0"))
                     } else {
-                        std::thread::sleep(delay);
+                        if relation(&target)
+                            && (PROBE..PROBE + held).contains(&asked.fetch_add(1, Ordering::SeqCst))
+                        {
+                            page.hold();
+                        }
                         answer(&target, issues, comments)
                     };
                     inflight.fetch_sub(1, Ordering::SeqCst);
@@ -80,6 +96,42 @@ impl Forge {
     /// Every request the forge was asked, once the fetch is done.
     fn asked(&self) -> Vec<test_http::Request> {
         self.server.drain_requests()
+    }
+}
+
+/// A page of requests held together: each waits until a whole page of them are waiting, then
+/// all of them go.
+struct Page {
+    width: usize,
+    /// How many of the page are waiting, and how many pages have gone.
+    state: Mutex<(usize, u64)>,
+    full: Condvar,
+}
+
+impl Page {
+    fn new(width: usize) -> Self {
+        Self {
+            width,
+            state: Mutex::new((0, 0)),
+            full: Condvar::new(),
+        }
+    }
+
+    /// Wait for the page to fill, however long the requests still to come take.
+    fn hold(&self) {
+        let mut state = self.state.lock().expect("the page's own lock");
+        let mine = state.1;
+        state.0 += 1;
+        if state.0 >= self.width {
+            state.0 = 0;
+            state.1 += 1;
+            self.full.notify_all();
+        } else {
+            while state.1 == mine {
+                state = self.full.wait(state).expect("the page's own lock");
+            }
+        }
+        drop(state);
     }
 }
 
@@ -195,27 +247,11 @@ fn chosen(issues: usize) -> BTreeSet<String> {
         .collect()
 }
 
-/// How long one request against a forge answering after `delay` takes here, measured as the
-/// fetch's own requests are: the unit a fetch's time is held against, so that a busy machine's
-/// slowness counts on both sides rather than only the fetch's.
-fn one_request(delay: Duration) -> Duration {
-    let forge = Forge::start(0, 0, delay, 0);
-    let scope = forge.scope();
-    // The first request builds the one client every later request shares and opens its
-    // connection; what a fetch's requests cost is this next one.
-    forgejo::check(&scope, "key").expect("the forge answers");
-    let started = Instant::now();
-    forgejo::check(&scope, "key").expect("the forge answers");
-    // A check asks who the token belongs to and for the repository: two requests.
-    started.elapsed() / 2
-}
-
 /// A fetch of `issues` issues: its request count, the requests that are neither blocks nor
-/// dependencies, which cost a page of the repository's issues or comments each, and one request's
-/// own round trip here.
-fn fetched(issues: usize, comments: usize, delay: Duration) -> (Duration, usize, usize, Duration) {
-    let forge = Forge::start(issues, comments, delay, 0);
-    let started = Instant::now();
+/// dependencies, which cost a page of the repository's issues or comments each, and the most
+/// requests the forge answered at once.
+fn fetched(issues: usize, comments: usize) -> (usize, usize, usize) {
+    let forge = Forge::start(issues, comments, 0);
     let landed = forgejo::issues(
         &forge.scope(),
         "key",
@@ -223,7 +259,6 @@ fn fetched(issues: usize, comments: usize, delay: Duration) -> (Duration, usize,
         &AtomicBool::new(false),
     )
     .expect("the forge answers");
-    let elapsed = started.elapsed();
     assert_eq!(landed.issues.len(), issues);
     assert_eq!(
         landed
@@ -242,23 +277,22 @@ fn fetched(issues: usize, comments: usize, delay: Duration) -> (Duration, usize,
         0,
         "a comment is asked for issue by issue again"
     );
-    assert!(
-        forge.peak() > 1,
-        "the forge answered the {} requests one at a time",
-        asked.len()
+    let peak = forge.peak();
+    assert_eq!(
+        peak, IN_FLIGHT,
+        "the forge answered {peak} requests at once where a fetch keeps {IN_FLIGHT} in flight"
     );
     let relations = asked
         .iter()
         .filter(|request| relation(&request.target))
         .count();
-    (elapsed, asked.len(), relations, one_request(delay))
+    (asked.len(), relations, peak)
 }
 
 #[test]
 fn a_page_of_issues_costs_its_pages_and_its_relations() {
     let issues = 100;
-    let delay = Duration::from_millis(50);
-    let (elapsed, asked, relations, single) = fetched(issues, 1, delay);
+    let (asked, relations, _) = fetched(issues, 1);
     // Blocks and dependencies are asked for every issue, and nothing else per issue is.
     assert_eq!(relations, 2 * issues);
     let pages = asked - relations;
@@ -266,37 +300,23 @@ fn a_page_of_issues_costs_its_pages_and_its_relations() {
         pages <= 12,
         "{pages} requests besides blocks and dependencies for {issues} issues"
     );
-    // One at a time these would take the count times one request; together they take its share.
-    let mut sequential = single * u32::try_from(asked).expect("a request count");
-    sequential /= 2;
-    assert!(
-        elapsed < sequential,
-        "{asked} requests took {elapsed:?}, no faster than one at a time ({sequential:?})"
-    );
 }
 
 #[test]
 fn a_large_fetch_stays_a_page_of_requests() {
     let issues = 2000;
-    let delay = Duration::from_millis(2);
-    let (elapsed, asked, relations, single) = fetched(issues, 1, delay);
+    let (asked, relations, _) = fetched(issues, 1);
     assert_eq!(relations, 2 * issues);
     let pages = asked - relations;
     assert!(
         pages <= 100,
         "{pages} requests besides blocks and dependencies for {issues} issues"
     );
-    let mut sequential = single * u32::try_from(asked).expect("a request count");
-    sequential /= 2;
-    assert!(
-        elapsed < sequential,
-        "{asked} requests took {elapsed:?}, no faster than one at a time ({sequential:?})"
-    );
 }
 
 #[test]
 fn a_service_that_asks_to_wait_is_asked_again() {
-    let forge = Forge::start(0, 0, Duration::from_millis(1), 1);
+    let forge = Forge::start(0, 0, 1);
     let title = forgejo::check(&forge.scope(), "key").expect("the retried check answers");
     assert!(title.starts_with("Forgejo:"), "{title}");
     assert!(
