@@ -215,30 +215,8 @@ fn document_keys_exclude_workspace_members_and_rotate_on_access_loss() {
         .unwrap()
         .extend([public(1), public(2)]);
     let dir = tempfile::tempdir().unwrap();
-    let mut owner = device(
-        &workspace,
-        workspace_id,
-        0,
-        1,
-        &policy,
-        &dir.path().join("owner"),
-    );
-    let mut reviewer = device(
-        &workspace,
-        workspace_id,
-        1,
-        2,
-        &policy,
-        &dir.path().join("reviewer"),
-    );
-    let mut guest = device(
-        &workspace,
-        workspace_id,
-        2,
-        3,
-        &policy,
-        &dir.path().join("guest"),
-    );
+    let [mut owner, mut reviewer, mut guest] =
+        document_key_devices(&workspace, workspace_id, &policy, dir.path());
     let mut now = Instant::now();
     owner.service.access(workspace_id, now);
     guest.service.access(workspace_id, now);
@@ -249,22 +227,15 @@ fn document_keys_exclude_workspace_members_and_rotate_on_access_loss() {
     let KeyAccess::Ready(old_keys) = reviewer.service.access_scope(scope.clone(), now) else {
         panic!("the reviewer must hold the restricted document's key");
     };
-    let KeyAccess::Ready(workspace_keys) = guest.service.access(workspace_id, now) else {
-        panic!("the guest still holds the workspace's shared key");
-    };
-    assert!(matches!(
-        guest.service.access_scope(scope.clone(), now),
-        KeyAccess::Unavailable
-    ));
     let artifact =
         collab_types::document_artifact_id("so.tilo.notes", &workspace_id.to_string(), "review");
-    let (metadata, ciphertext) = old_keys
-        .seal_content(artifact, ContentRetention::Delta, b"limited")
-        .unwrap();
-    assert!(
-        workspace_keys
-            .open_content(artifact, &metadata, &ciphertext)
-            .is_err()
+    let workspace_keys = verify_workspace_key_cannot_open_document(
+        &mut guest.service,
+        workspace_id,
+        scope.clone(),
+        now,
+        artifact,
+        &old_keys,
     );
 
     let group = scope.group();
@@ -321,7 +292,59 @@ fn document_keys_exclude_workspace_members_and_rotate_on_access_loss() {
         b"after removal"
     );
 
-    let service = SharedKeys::new(reviewer.service);
+    verify_restricted_history(
+        (workspace_id, group),
+        (owner.service, reviewer.service),
+        (&workspace_keys, &restored),
+        artifact,
+        dir.path(),
+    );
+}
+
+fn document_key_devices(
+    workspace: &Arc<Workspace>,
+    workspace_id: WorkspaceId,
+    policy: &Policy,
+    dir: &Path,
+) -> [Device; 3] {
+    [(0, 1, "owner"), (1, 2, "reviewer"), (2, 3, "guest")]
+        .map(|(id, seed, name)| device(workspace, workspace_id, id, seed, policy, &dir.join(name)))
+}
+
+fn verify_workspace_key_cannot_open_document(
+    guest: &mut WorkspaceKeys,
+    workspace_id: WorkspaceId,
+    scope: neighbour_wire::KeyScope,
+    now: Instant,
+    artifact: ArtifactId,
+    old_keys: &ContentKeys,
+) -> ContentKeys {
+    let KeyAccess::Ready(workspace_keys) = guest.access(workspace_id, now) else {
+        panic!("the guest still holds the workspace's shared key");
+    };
+    assert!(matches!(
+        guest.access_scope(scope, now),
+        KeyAccess::Unavailable
+    ));
+    let (metadata, ciphertext) = old_keys
+        .seal_content(artifact, ContentRetention::Delta, b"limited")
+        .unwrap();
+    assert!(
+        workspace_keys
+            .open_content(artifact, &metadata, &ciphertext)
+            .is_err()
+    );
+    workspace_keys
+}
+
+fn verify_restricted_history(
+    (workspace_id, group): (WorkspaceId, WorkspaceId),
+    (owner, reviewer): (WorkspaceKeys, WorkspaceKeys),
+    (workspace_keys, restored): (&ContentKeys, &ContentKeys),
+    artifact: collab_types::ArtifactId,
+    dir: &std::path::Path,
+) {
+    let service = SharedKeys::new(reviewer);
     let document = ("so.tilo.notes", "review");
     let readers = BTreeSet::from([*public(1).as_bytes(), *public(2).as_bytes()]);
     assert!(
@@ -351,8 +374,8 @@ fn document_keys_exclude_workspace_members_and_rotate_on_access_loss() {
             .is_err()
     );
 
-    let service = SharedKeys::new(owner.service);
-    let old_write = sealed_write(artifact, &workspace_keys);
+    let service = SharedKeys::new(owner);
+    let old_write = sealed_write(artifact, workspace_keys);
     let (renewed, payload) = service
         .renew_scoped_document(workspace_id, document, None, &readers, &old_write)
         .unwrap();
@@ -367,7 +390,7 @@ fn document_keys_exclude_workspace_members_and_rotate_on_access_loss() {
             .is_err()
     );
     service.forget_workspace(workspace_id).unwrap();
-    let state = KeyDir::new(dir.path().join("owner").join("groups"));
+    let state = KeyDir::new(dir.join("owner").join("groups"));
     assert!(!state.held().contains(&group));
     assert!(state.scopes().is_empty());
 }

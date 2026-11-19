@@ -1417,7 +1417,7 @@ async fn a_workspace_members_role_controls_document_replay_and_open() {
     )
     .unwrap();
     runtime.admit_device(reader.device_public_key).unwrap();
-    runtime.project_access(access(&policy), Default::default());
+    runtime.project_access(access(&policy), tilo_peer_state::GovernanceHeads::default());
     let payload = collab_types::DocumentMutation::Snapshot(vec![42])
         .encode()
         .unwrap();
@@ -1520,7 +1520,7 @@ async fn a_workspace_members_role_controls_document_replay_and_open() {
     runtime
         .lock()
         .await
-        .project_access(access(&policy), Default::default());
+        .project_access(access(&policy), tilo_peer_state::GovernanceHeads::default());
     write.write_all(&open()).await.unwrap();
     assert!(matches!(
         wire.read_next().await.unwrap(),

@@ -167,39 +167,7 @@ async fn page_role_assignments_change_the_documents_key_holders() {
         let reply = workspaces.page_workspaces(&owner, request).await;
         assert!(matches!(reply, WorkspacesReply::Workspace(_)), "{reply:?}");
     }
-    for (id, recipient, app, preset) in [
-        (9, "everyone", "", "no-access"),
-        (10, "role:reviewers", "so.tilo.notes", "view"),
-    ] {
-        let request = WorkspacesRequest::SetDocumentAccess {
-            workspace: workspace.clone(),
-            request_id: [id; 32],
-            app: String::new(),
-            document: app.into(),
-            recipient: recipient.into(),
-            access: preset.into(),
-        };
-        let reply = workspaces.page_workspaces(&owner, request).await;
-        assert!(matches!(reply, WorkspacesReply::Workspace(_)), "{reply:?}");
-    }
-    let WorkspacesReply::DocumentAccess(settings) = workspaces
-        .page_workspaces(
-            &owner,
-            WorkspacesRequest::DocumentAccess {
-                workspace: workspace.clone(),
-            },
-        )
-        .await
-    else {
-        panic!("the owner can read their saved workspace and app rules");
-    };
-    for (app, preset) in [("", "no-access"), ("so.tilo.notes", "view")] {
-        assert!(
-            settings.rules.iter().any(|rule| {
-                rule.app.is_empty() && rule.document == app && rule.access == preset
-            })
-        );
-    }
+    check_default_access_rules(workspaces, &workspace, &owner).await;
 
     let holds_keys = || async {
         let state = workspaces.state(&workspace).await.unwrap();
@@ -244,6 +212,42 @@ async fn page_role_assignments_change_the_documents_key_holders() {
                 assert_eq!(holds_keys().await, [expected, expected, true]);
             }
         }
+    }
+}
+
+async fn check_default_access_rules(workspaces: &Workspaces, workspace: &str, owner: &DeviceCert) {
+    for (id, recipient, app, preset) in [
+        (9, "everyone", "", "no-access"),
+        (10, "role:reviewers", "so.tilo.notes", "view"),
+    ] {
+        let request = WorkspacesRequest::SetDocumentAccess {
+            workspace: workspace.to_owned(),
+            request_id: [id; 32],
+            app: String::new(),
+            document: app.into(),
+            recipient: recipient.into(),
+            access: preset.into(),
+        };
+        let reply = workspaces.page_workspaces(owner, request).await;
+        assert!(matches!(reply, WorkspacesReply::Workspace(_)), "{reply:?}");
+    }
+    let WorkspacesReply::DocumentAccess(settings) = workspaces
+        .page_workspaces(
+            owner,
+            WorkspacesRequest::DocumentAccess {
+                workspace: workspace.to_owned(),
+            },
+        )
+        .await
+    else {
+        panic!("the owner can read their saved workspace and app rules");
+    };
+    for (app, preset) in [("", "no-access"), ("so.tilo.notes", "view")] {
+        assert!(
+            settings.rules.iter().any(|rule| {
+                rule.app.is_empty() && rule.document == app && rule.access == preset
+            })
+        );
     }
 }
 
