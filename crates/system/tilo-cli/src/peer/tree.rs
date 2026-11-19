@@ -18,23 +18,34 @@
 //! that holds the file. A write costs what its chunk costs, whatever the tree
 //! holds: one change of one record, kept on disk as that record alone.
 //!
+//! A document reaches the workspace before anything names it: a chunk this device starts goes out,
+//! and the workspace's server says it holds it, before any other document of the tree goes out
+//! again (the tree's own document lists the chunk, and another chunk's node may sit in a folder
+//! of it). A tree whose own document names a chunk the workspace never got reads as missing what
+//! that chunk holds, on every device; this order never makes one, whenever this process ends.
+//!
+//! Every change the mount makes is on disk before the mount answers for it
+//! ([`tilo_fs::kept_documents`]): a process killed in the middle of a burst starts again with
+//! every file it answered for, and sends what the workspace does not hold yet.
+//!
 //! Writes that come in a burst (a checkout writing thousands of files) go out
 //! together: the changes the namespace made within [`BATCH`] of the first one
 //! leave as one write per record they changed. Each file's version still
 //! names who wrote it; only how many writes carry them changes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use collab_types::DocumentMutation;
 use fs_protocol::TreeChunk;
+use tilo_fs::kept_documents::KeptDocuments;
 use tilo_fs::namespace::Namespace;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::{DocumentAnswer, WorkspaceId};
 use tilo_session_client::engine::ResourceReading;
-use tilo_session_client::{Cmd, DocumentRoute, Event, Link, Outbox as _};
+use tilo_session_client::{Cmd, DocumentRoute, Event, Link, Outbox as _, Receipt, TryRecvError};
 
 use super::content::SessionContent;
 
@@ -130,6 +141,7 @@ pub(crate) struct TreeStatus {
 /// One workspace's tree, held while this value lives.
 pub(crate) struct TreeReplica {
     pub(crate) namespace: Arc<Mutex<Namespace>>,
+    kept: Arc<KeptDocuments>,
     status: Arc<Mutex<TreeStatus>>,
     /// The files the tree names, each with the hash of its content (`None` for a text document
     /// the tree holds itself) and its size, as the last count found them: `tilo status` answers
@@ -153,27 +165,37 @@ impl Drop for TreeReplica {
     }
 }
 
-/// The records kept in `dir`, each as the number of its chunk and its document.
-fn kept_documents(dir: &Path) -> std::io::Result<Vec<(TreeChunk, Vec<u8>)>> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
+/// What the documents were read at when a namespace was opened ([`Namespace::from_documents_read`]).
+type ReadHeads = BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>;
+
+/// The namespace `kept` holds for `author`, with each document's heads as read: its documents' saves
+/// and journals, or the saves alone when a journal does not read (damaged on disk), or a new one
+/// when nothing is kept.
+fn open_namespace(
+    author: &str,
+    kept: &KeptDocuments,
+    documents: Vec<(TreeChunk, Vec<u8>)>,
+) -> std::io::Result<(Namespace, ReadHeads)> {
+    let new = || {
+        Namespace::new(author)
+            .map(|namespace| (namespace, ReadHeads::new()))
+            .map_err(std::io::Error::other)
     };
-    let mut records = Vec::new();
-    for entry in entries {
-        let path = entry?.path();
-        let Some(chunk) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_suffix(".automerge"))
-            .and_then(|number| number.parse::<TreeChunk>().ok())
-        else {
-            continue;
-        };
-        records.push((chunk, std::fs::read(&path)?));
+    if documents.is_empty() {
+        return new();
     }
-    Ok(records)
+    match Namespace::from_documents_read(author, documents) {
+        Ok(opened) => Ok(opened),
+        Err(error) => {
+            tracing::warn!(%error, "the tree's journal does not read; it starts from the documents' last saves");
+            let saved = kept.saved_only()?;
+            if saved.is_empty() {
+                return new();
+            }
+            Namespace::from_documents_read(author, saved)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        }
+    }
 }
 
 impl TreeReplica {
@@ -190,22 +212,17 @@ impl TreeReplica {
         device: [u8; 32],
         content: Arc<SessionContent>,
     ) -> std::io::Result<Self> {
-        let kept = state.join(KEPT);
-        std::fs::create_dir_all(&kept)?;
+        let kept_at = state.join(KEPT);
         let author = hex::encode(device);
-        let reading = kept.clone();
         // Reading the kept chunks and indexing every node they name walks the whole tree. On
         // a runtime worker it would hold that worker — and the holder's clients, and the agents
         // it serves, wait for one — for as long as a repository's tree takes, so it goes to a
         // thread of the blocking pool instead.
-        let namespace = tokio::task::spawn_blocking(move || {
-            let kept = kept_documents(&reading)?;
-            if kept.is_empty() {
-                Namespace::new(author).map_err(std::io::Error::other)
-            } else {
-                Namespace::from_records(author, kept)
-                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
-            }
+        let (kept, namespace) = tokio::task::spawn_blocking(move || {
+            let (kept, documents) = KeptDocuments::open(&kept_at)?;
+            let (mut namespace, read) = open_namespace(&author, &kept, documents)?;
+            kept.opened(&mut namespace, read)?;
+            Ok::<_, std::io::Error>((Arc::new(kept), namespace))
         })
         .await
         .map_err(std::io::Error::other)??;
@@ -215,7 +232,6 @@ impl TreeReplica {
         let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let wake = Arc::new(tokio::sync::Notify::new());
-        let keeping = Arc::new(Mutex::new(Keeping::new(kept)));
         let sync = Sync {
             paused: Arc::clone(&paused),
             stopping: Arc::clone(&stopping),
@@ -223,13 +239,14 @@ impl TreeReplica {
             link,
             workspace,
             namespace: Arc::clone(&namespace),
-            records: BTreeMap::new(),
+            documents: BTreeMap::new(),
             unread: BTreeSet::new(),
             unreadable: BTreeSet::new(),
             waiting: BTreeSet::new(),
             held_until: None,
             dirty_since: None,
-            keeping: Arc::clone(&keeping),
+            kept: Arc::clone(&kept),
+            ordered: BTreeSet::new(),
             pacing: Paced::new(KEEP_EVERY),
             pulling: Paced::new(LOOK_AGAIN),
             counting: Paced::new(COUNT_EVERY),
@@ -241,6 +258,7 @@ impl TreeReplica {
         let task = tokio::spawn(sync.run());
         Ok(Self {
             namespace,
+            kept,
             status,
             files,
             paused,
@@ -262,6 +280,13 @@ impl TreeReplica {
         {
             tracing::warn!("a workspace's tree did not keep in time; it is left as last kept");
         }
+    }
+
+    /// What the mount hands each change it makes to, before it answers the request that made
+    /// it: the change goes into its document's journal on disk.
+    pub(crate) fn journal(&self) -> tilo_fs::fs::ChangeJournal {
+        let kept = Arc::clone(&self.kept);
+        Arc::new(move |namespace: &mut Namespace| kept.journal(namespace))
     }
 
     /// The files the tree names as last counted: the hash of each one's content and its size.
@@ -301,6 +326,13 @@ struct Held {
     /// The host refused a write of this record: none goes out before then, and the next one
     /// carries every change since what the host holds.
     refused: Refusals,
+    /// The workspace's server holds the document: it said so when the document was opened, or every
+    /// write of this device's to it is durable there. Until then nothing else of the tree goes
+    /// out, since anything else may name it.
+    durable: bool,
+    /// Whether every write of this device's to the document is durable at the server, asked once
+    /// this device wrote it while the server did not hold it.
+    confirming: Option<Receipt<Result<(), String>>>,
 }
 
 /// How long writes of a record the host refused wait before the next goes out. A refusal says
@@ -354,7 +386,7 @@ struct Sync {
     workspace: WorkspaceId,
     namespace: Arc<Mutex<Namespace>>,
     /// Every record of the tree this device opened, by chunk: the tree's own (0) first.
-    records: BTreeMap<TreeChunk, Held>,
+    documents: BTreeMap<TreeChunk, Held>,
     /// The records a write landed on since they were read: what the next pull reads, rather
     /// than every record of the tree.
     unread: BTreeSet<TreeChunk>,
@@ -367,9 +399,10 @@ struct Sync {
     /// When the oldest change not yet handed to the session was made: what
     /// the next write waits [`BATCH`] after.
     dirty_since: Option<Instant>,
-    /// Where each chunk of the tree is kept between starts, one file per chunk, and the heads
-    /// it was last kept at.
-    keeping: Arc<Mutex<Keeping>>,
+    /// Where each document is kept on disk, with its changes since.
+    kept: Arc<KeptDocuments>,
+    /// The documents whose wait for another to reach the workspace was said, once each.
+    ordered: BTreeSet<TreeChunk>,
     /// How often the tree may be kept, since it costs what the tree costs.
     pacing: Paced,
     counting: Paced,
@@ -380,22 +413,6 @@ struct Sync {
     /// The files the tree names as last counted, for `tilo status`.
     files: Arc<Mutex<Vec<FileBytes>>>,
     content: Arc<SessionContent>,
-}
-
-/// Where one tree's chunks are kept between starts: a directory, one file per chunk, and the
-/// heads each chunk was last written at.
-struct Keeping {
-    dir: PathBuf,
-    heads: BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
-}
-
-impl Keeping {
-    fn new(dir: PathBuf) -> Self {
-        Self {
-            dir,
-            heads: BTreeMap::new(),
-        }
-    }
 }
 
 impl Sync {
@@ -436,13 +453,15 @@ impl Sync {
             if !self.paused.load(std::sync::atomic::Ordering::Relaxed) {
                 if sweep.due(Instant::now()) {
                     // Now and then every record, for a landing whose word was missed.
-                    self.unread.extend(self.records.keys().copied());
+                    self.unread.extend(self.documents.keys().copied());
                     sweep.ran(Instant::now(), Instant::now());
                 }
                 if session_moved || !self.unread.is_empty() {
                     self.pull_all().await;
                 }
+                self.confirmations();
                 self.push().await;
+                self.confirm();
                 self.content.reask(&self.link);
             }
             self.say_where_it_stands().await;
@@ -477,7 +496,7 @@ impl Sync {
 
     /// Ask the host for record `chunk` of the tree, and to take part in its channel.
     fn open(&mut self, chunk: TreeChunk) {
-        self.records.entry(chunk).or_default();
+        self.documents.entry(chunk).or_default();
         self.unread.insert(chunk);
         let route = route(self.workspace, chunk);
         let _ = self
@@ -495,7 +514,7 @@ impl Sync {
     fn take(&mut self, event: Event) {
         match event {
             Event::HostReady { ws, .. } if ws == self.workspace => {
-                let opened: Vec<TreeChunk> = self.records.keys().copied().collect();
+                let opened: Vec<TreeChunk> = self.documents.keys().copied().collect();
                 for chunk in opened {
                     self.open(chunk);
                 }
@@ -507,7 +526,7 @@ impl Sync {
                 if route.cluster_id == self.workspace.to_string() && route.app_id == FILES_APP =>
             {
                 if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.document) {
-                    let held = self.records.entry(chunk).or_default();
+                    let held = self.documents.entry(chunk).or_default();
                     held.sent = held
                         .merged
                         .iter()
@@ -524,7 +543,7 @@ impl Sync {
             {
                 if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.document) {
                     self.unread.insert(chunk);
-                    self.records.entry(chunk).or_default().refused.landed();
+                    self.documents.entry(chunk).or_default().refused.landed();
                 }
             }
             Event::DocumentContent { ws, frame, .. } if ws == self.workspace => {
@@ -540,7 +559,9 @@ impl Sync {
                 ..
             } if route.cluster_id == self.workspace.to_string() && route.app_id == FILES_APP => {
                 if let Some(chunk) = fs_protocol::tree::chunk_of_record(&route.document) {
-                    self.records.entry(chunk).or_default().answered = Some(answer);
+                    let held = self.documents.entry(chunk).or_default();
+                    held.answered = Some(answer);
+                    held.durable |= holds_some(Some(answer));
                     // A host that sent some of the tree holds one, which this device reads
                     // before it writes: a tree it founded beside that one would go out whole.
                     if chunk == 0 && holds_none(Some(answer)) {
@@ -581,7 +602,7 @@ impl Sync {
             }
             let route = route(self.workspace, chunk);
             let merged = self
-                .records
+                .documents
                 .get(&chunk)
                 .and_then(|held| held.merged.clone());
             let reading = engine.record_update(
@@ -654,7 +675,7 @@ impl Sync {
             if chunk == 0 {
                 self.status.lock_recover().opened = true;
             }
-            let held = self.records.entry(chunk).or_default();
+            let held = self.documents.entry(chunk).or_default();
             // What the record holds is not this device's to send again; what only this
             // namespace holds is. A namespace makes changes of its own before it ever merged the
             // record (the tree it starts as, a file copied in while the host had not answered):
@@ -670,7 +691,7 @@ impl Sync {
             held.founded = true;
         }
         for chunk in listed {
-            if !self.records.contains_key(&chunk) {
+            if !self.documents.contains_key(&chunk) {
                 self.open(chunk);
             }
         }
@@ -704,7 +725,9 @@ impl Sync {
         };
         let dirty: Vec<TreeChunk> = heads
             .iter()
-            .filter(|(chunk, heads)| self.records.get(chunk).map(|held| &held.sent) != Some(*heads))
+            .filter(|(chunk, heads)| {
+                self.documents.get(chunk).map(|held| &held.sent) != Some(*heads)
+            })
             .map(|(chunk, _)| *chunk)
             .collect();
         if dirty.is_empty() {
@@ -715,7 +738,7 @@ impl Sync {
         if since.elapsed() < BATCH {
             return;
         }
-        let (due, mut waiting) = self.due(dirty);
+        let (due, mut waiting) = self.due(dirty, heads.keys().copied().collect());
         if due.is_empty() {
             self.dirty_since = waiting.then_some(since);
             return;
@@ -753,7 +776,7 @@ impl Sync {
             // changing it while the write goes out, and a change made meanwhile counted as
             // sent would never reach the host, which then leaves out every later write of
             // this device.
-            if let Some(held) = self.records.get_mut(&write.chunk) {
+            if let Some(held) = self.documents.get_mut(&write.chunk) {
                 held.sent = write.heads;
             }
         }
@@ -766,6 +789,7 @@ impl Sync {
     fn due(
         &mut self,
         dirty: Vec<TreeChunk>,
+        held_now: Vec<TreeChunk>,
     ) -> (Vec<(TreeChunk, Vec<automerge::ChangeHash>)>, bool) {
         let link = self.link.clone();
         let engine = link.engine();
@@ -774,12 +798,23 @@ impl Sync {
         let now = Instant::now();
         self.held_until = None;
         let mut due = Vec::new();
+        // The chunks the workspace's server does not hold yet go out first, and alone: every
+        // other document of the tree waits until the server holds them, since it may name them.
+        let unheld = unheld_chunks(&self.documents, held_now);
         for chunk in dirty {
-            if !self.records.contains_key(&chunk) {
+            if !self.documents.contains_key(&chunk) {
                 self.open(chunk);
             }
+            if !may_go_out(chunk, &unheld) {
+                if self.ordered.insert(chunk) {
+                    tracing::info!(chunk, waits_for = ?unheld, workspace = %self.workspace, "a document of the workspace's tree waits for the chunks it may name to reach the workspace");
+                }
+                waiting = true;
+                continue;
+            }
+            self.ordered.remove(&chunk);
             if let Some(until) = self
-                .records
+                .documents
                 .get(&chunk)
                 .and_then(|held| held.refused.held_until(now))
             {
@@ -788,7 +823,7 @@ impl Sync {
                 continue;
             }
             let route = route(self.workspace, chunk);
-            let founded = self.records.get(&chunk).is_some_and(|held| held.founded);
+            let founded = self.documents.get(&chunk).is_some_and(|held| held.founded);
             if !founded {
                 // A record this device starts: the host says first whether the workspace has
                 // it. One it has is merged before this device's changes of it go out; one it
@@ -797,7 +832,7 @@ impl Sync {
                 // The session's own answer to its open, as a reader of the record hears it: a
                 // record the host holds frames of is merged before this device's changes of it
                 // go out, one it holds none of is founded here.
-                let answered = self.records.get(&chunk).and_then(|held| held.answered);
+                let answered = self.documents.get(&chunk).and_then(|held| held.answered);
                 if !holds_none(answered)
                     || engine.holds_resource(&workspace, &route.app_id, &route.document)
                 {
@@ -818,18 +853,65 @@ impl Sync {
                     waiting = true;
                     continue;
                 }
-                if let Some(held) = self.records.get_mut(&chunk) {
+                if let Some(held) = self.documents.get_mut(&chunk) {
                     held.founded = true;
                 }
             }
             let sent = self
-                .records
+                .documents
                 .get(&chunk)
                 .map(|held| held.sent.clone())
                 .unwrap_or_default();
             due.push((chunk, sent));
         }
         (due, waiting)
+    }
+
+    /// Ask whether each document this device wrote that the server did not hold is durable there
+    /// now: once it is, the documents that may name it go out.
+    fn confirm(&mut self) {
+        let asks: Vec<TreeChunk> = self
+            .documents
+            .iter()
+            .filter(|(chunk, held)| {
+                **chunk != 0
+                    && !held.durable
+                    && held.confirming.is_none()
+                    && held.founded
+                    && !held.sent.is_empty()
+            })
+            .map(|(chunk, _)| *chunk)
+            .collect();
+        for chunk in asks {
+            if let Ok(receipt) = self.link.barrier_for(&[route(self.workspace, chunk)])
+                && let Some(held) = self.documents.get_mut(&chunk)
+            {
+                held.confirming = Some(receipt);
+            }
+        }
+    }
+
+    /// Take the server's answers to [`Self::confirm`]'s asks: a document all of whose writes are
+    /// durable there is held by the workspace; one the server refused is asked again once its
+    /// next write went out.
+    fn confirmations(&mut self) {
+        for (chunk, held) in &mut self.documents {
+            let Some(receipt) = &held.confirming else {
+                continue;
+            };
+            match receipt.try_recv() {
+                Ok(Ok(())) => {
+                    held.durable = true;
+                    held.confirming = None;
+                }
+                Ok(Err(refusal)) => {
+                    tracing::warn!(%refusal, chunk, workspace = %self.workspace, "a chunk of the workspace's tree did not reach it; it goes again");
+                    held.confirming = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => held.confirming = None,
+            }
+        }
     }
 
     async fn say_where_it_stands(&mut self) {
@@ -876,11 +958,11 @@ impl Sync {
             None
         };
         let sent = records.iter().all(|(chunk, heads)| {
-            self.records
+            self.documents
                 .get(chunk)
                 .is_some_and(|held| held.sent == *heads)
         });
-        let durable = !self.records.keys().any(|chunk| self.holding(*chunk))
+        let durable = !self.documents.keys().any(|chunk| self.holding(*chunk))
             && self.link.outgoing_pending() == 0;
         let mut status = self.status.lock_recover();
         if let Some((files, bytes)) = counted {
@@ -892,16 +974,23 @@ impl Sync {
         status.durable = durable;
     }
 
-    /// Keep the records that changed on disk, each in a file of its own, so a restart starts
-    /// where this one was: what a write costs on disk is its record, not the tree. Saving a
-    /// record walks it, so it runs away from the runtime's workers like a merge does.
-    async fn keep(&self) {
+    /// Save the documents that changed on disk, each in a file of its own, so a restart reads
+    /// each document's save rather than a long journal of its changes: what a write costs on
+    /// disk is its document, not the tree. Saving a document walks it, so it is done off the
+    /// runtime's workers, as a merge is.
+    fn keep(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
         let namespace = Arc::clone(&self.namespace);
-        let keeping = Arc::clone(&self.keeping);
-        if let Err(error) =
-            tokio::task::spawn_blocking(move || keep_records(&namespace, &keeping)).await
-        {
-            tracing::warn!(%error, "keeping the workspace's tree could not be done");
+        let kept = Arc::clone(&self.kept);
+        async move {
+            match tokio::task::spawn_blocking(move || kept.keep(&namespace)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "the workspace's tree is not saved on disk; its journal keeps its changes");
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "keeping the workspace's tree could not be done");
+                }
+            }
         }
     }
 }
@@ -922,43 +1011,13 @@ fn files_of(namespace: &Namespace) -> Vec<FileBytes> {
     files
 }
 
-/// Write each chunk of `namespace` whose heads are not those it was last kept at to its own
-/// file, one per chunk, under the keeping directory.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the chunks are read and written as one: a keep beside another must not write a \
-              chunk between the two of them reading it"
-)]
-fn keep_records(namespace: &Mutex<Namespace>, keeping: &Mutex<Keeping>) {
-    let mut keeping = keeping.lock_recover();
-    let mut saved = Vec::new();
-    {
-        let mut namespace = namespace.lock_recover();
-        for (chunk, heads) in namespace.document_heads() {
-            if keeping.heads.get(&chunk) == Some(&heads) {
-                continue;
-            }
-            if let Some(bytes) = namespace.save_document(chunk) {
-                saved.push((chunk, heads, bytes));
-            }
-        }
-    }
-    for (chunk, heads, bytes) in saved {
-        let path = keeping.dir.join(format!("{chunk}.automerge"));
-        match tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600) {
-            Ok(()) => {
-                keeping.heads.insert(chunk, heads);
-            }
-            Err(error) => tracing::warn!(%error, "the workspace's tree is not kept on disk"),
-        }
-    }
-}
-
 impl Drop for Sync {
     /// The backstop for what the task cannot do itself: a tree whose task ended without
     /// keeping (or was let go of) still writes what changed on disk.
     fn drop(&mut self) {
-        keep_records(&self.namespace, &self.keeping);
+        if let Err(error) = self.kept.keep(&self.namespace) {
+            tracing::warn!(%error, "the workspace's tree is not saved on disk; its journal keeps its changes");
+        }
     }
 }
 
@@ -966,6 +1025,29 @@ impl Drop for Sync {
 /// while it owes one) says the workspace has none of it.
 fn holds_none(answer: Option<DocumentAnswer>) -> bool {
     answer == Some(DocumentAnswer::Sent { frames: 0 })
+}
+
+/// The chunks of `chunks` the workspace's server does not hold yet, as `documents` know them: the
+/// tree's own document is never one, since every device opens it first.
+fn unheld_chunks(
+    documents: &BTreeMap<TreeChunk, Held>,
+    chunks: impl IntoIterator<Item = TreeChunk>,
+) -> BTreeSet<TreeChunk> {
+    chunks
+        .into_iter()
+        .filter(|chunk| *chunk != 0 && !documents.get(chunk).is_some_and(|held| held.durable))
+        .collect()
+}
+
+/// Whether a write of document `chunk` may go out while the workspace's server does not hold the
+/// chunks `unheld`: those chunks go out first and alone, since any other document may name them.
+fn may_go_out(chunk: TreeChunk, unheld: &BTreeSet<TreeChunk>) -> bool {
+    unheld.is_empty() || unheld.contains(&chunk)
+}
+
+/// Whether the server's `answer` about a document of the tree says the workspace holds some of it.
+fn holds_some(answer: Option<DocumentAnswer>) -> bool {
+    matches!(answer, Some(DocumentAnswer::Sent { frames }) if frames > 0)
 }
 
 #[cfg(test)]
@@ -1116,51 +1198,165 @@ mod tests {
             .unwrap();
         }
         std::fs::write(dir.path().join("stray"), b"x").unwrap();
-        let read = Namespace::from_records("laptop", kept_documents(dir.path()).unwrap()).unwrap();
-        let mut read = read;
+        let (kept, documents) = KeptDocuments::open(dir.path()).unwrap();
+        let (mut read, _) = open_namespace("laptop", &kept, documents).unwrap();
         assert!(read.lookup(tilo_fs::namespace::ROOT_INO, "a.txt").is_some());
         assert_eq!(read.document_heads(), namespace.document_heads());
     }
 
-    /// Keeping writes each chunk that changed in a file of its own, and then nothing until a
+    /// What the server of the test below holds: each chunk's document.
+    type Server = BTreeMap<TreeChunk, automerge::AutoCommit>;
+
+    /// One pass of the sync as [`Sync::push`] orders it: every write that may go out does, the
+    /// server takes each in turn, and its word that it holds a chunk comes a pass later. After
+    /// each write the server takes (where a kill could end this device's process), the server's
+    /// tree lists only chunks it holds. Answers whether anything went out.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the server here takes each write's changes as they come, as a server's store does"
+    )]
+    fn pass(
+        laptop: &mut Namespace,
+        documents: &mut BTreeMap<TreeChunk, Held>,
+        server: &mut Server,
+        confirmed_next: &mut Vec<TreeChunk>,
+    ) -> bool {
+        for chunk in confirmed_next.drain(..) {
+            documents.entry(chunk).or_default().durable = true;
+        }
+        let heads = laptop.document_heads();
+        let unheld = unheld_chunks(documents, heads.keys().copied());
+        let mut going = Vec::new();
+        for (chunk, now) in &heads {
+            let held = documents.entry(*chunk).or_default();
+            if held.sent == *now || !may_go_out(*chunk, &unheld) {
+                continue;
+            }
+            let write = laptop
+                .document_write(*chunk, &held.sent, usize::MAX)
+                .unwrap();
+            held.sent = write.heads;
+            going.push((*chunk, write.changes));
+            if unheld.contains(chunk) {
+                confirmed_next.push(*chunk);
+            }
+        }
+        let went = !going.is_empty() || !confirmed_next.is_empty();
+        for (chunk, changes) in going {
+            server
+                .entry(chunk)
+                .or_default()
+                .load_incremental(&changes)
+                .unwrap();
+            let listed = server
+                .get(&0)
+                .map(fs_protocol::tree::listed_chunks)
+                .unwrap_or_default();
+            for listed in listed {
+                assert!(
+                    server
+                        .get_mut(&listed)
+                        .is_some_and(|doc| !doc.get_heads().is_empty()),
+                    "the server's tree lists chunk {listed}, which it does not hold"
+                );
+            }
+        }
+        went
+    }
+
+    /// A repository's worth of files written into the folder in bursts, each burst going out as
+    /// the sync orders it: wherever the process is killed, the server's tree lists only chunks
+    /// it holds, and once the bursts end every change reaches the server.
+    #[test]
+    fn the_tree_never_lists_a_chunk_the_workspace_does_not_hold() {
+        let mut laptop = Namespace::new("laptop").unwrap();
+        let mut documents: BTreeMap<TreeChunk, Held> = BTreeMap::new();
+        documents.entry(0).or_default().durable = true;
+        let mut server = Server::new();
+        let mut confirmed_next = Vec::new();
+        for burst in 0..45 {
+            for n in 0..70 {
+                laptop
+                    .create_file(
+                        tilo_fs::namespace::ROOT_INO,
+                        format!("object-{burst}-{n}"),
+                        None,
+                        1,
+                        1,
+                    )
+                    .unwrap();
+            }
+            pass(
+                &mut laptop,
+                &mut documents,
+                &mut server,
+                &mut confirmed_next,
+            );
+        }
+        while pass(
+            &mut laptop,
+            &mut documents,
+            &mut server,
+            &mut confirmed_next,
+        ) {}
+        let listed = fs_protocol::tree::listed_chunks(server.get(&0).unwrap());
+        assert!(
+            listed.len() > 2,
+            "the files filled several chunks: {listed:?}"
+        );
+        for (chunk, heads) in laptop.document_heads() {
+            assert_eq!(
+                server.get_mut(&chunk).map(automerge::AutoCommit::get_heads),
+                Some(heads),
+                "document {chunk} reached the server whole"
+            );
+        }
+    }
+
+    /// Keeping saves each chunk that changed in a file of its own, and then nothing until a
     /// chunk changes again: a stop pays for the chunks that changed, not for the tree.
     #[test]
     fn keeping_writes_what_changed_and_then_nothing() {
         let dir = tempfile::tempdir().unwrap();
+        let (kept, _) = KeptDocuments::open(dir.path()).unwrap();
         let mut namespace = Namespace::new("laptop").unwrap();
+        kept.opened(&mut namespace, ReadHeads::new()).unwrap();
         namespace
             .create_file(tilo_fs::namespace::ROOT_INO, "a.txt", None, 1, 1)
             .unwrap();
         let namespace = Mutex::new(namespace);
-        let keeping = Mutex::new(Keeping::new(dir.path().to_path_buf()));
-        let keep = || keep_records(&namespace, &keeping);
-        keep();
-        let kept = keeping.lock_recover().heads.clone();
-        assert!(!kept.is_empty(), "every chunk of the tree is kept");
-        for chunk in kept.keys() {
-            assert!(
-                dir.path().join(format!("{chunk}.automerge")).exists(),
-                "chunk {chunk} is on disk"
-            );
-        }
-        // Nothing changed: nothing is written again.
-        keep();
-        assert_eq!(keeping.lock_recover().heads, kept);
-        // A change: the chunk it landed in is written again.
-        namespace
+        let saved = |chunk: TreeChunk| {
+            std::fs::metadata(dir.path().join(format!("{chunk}.automerge")))
+                .and_then(|file| file.modified())
+                .ok()
+        };
+        kept.keep(&namespace).unwrap();
+        let chunks: Vec<TreeChunk> = namespace
             .lock_recover()
-            .create_file(tilo_fs::namespace::ROOT_INO, "b.txt", None, 1, 1)
-            .unwrap();
-        keep();
-        let again = keeping.lock_recover().heads.clone();
+            .document_heads()
+            .into_keys()
+            .collect();
+        let first: Vec<_> = chunks.iter().map(|chunk| saved(*chunk)).collect();
         assert!(
-            again
-                .iter()
-                .any(|(chunk, heads)| kept.get(chunk) != Some(heads)),
-            "the chunk that changed is kept at its new heads"
+            first.iter().all(Option::is_some),
+            "every chunk of the tree is saved"
+        );
+        // Nothing changed: nothing is written again.
+        std::thread::sleep(Duration::from_millis(20));
+        kept.keep(&namespace).unwrap();
+        assert_eq!(
+            chunks.iter().map(|chunk| saved(*chunk)).collect::<Vec<_>>(),
+            first
         );
     }
 
+    #[test]
+    fn a_host_that_sent_frames_of_a_record_holds_it() {
+        assert!(!super::holds_some(None));
+        assert!(!super::holds_some(Some(DocumentAnswer::Sent { frames: 0 })));
+        assert!(super::holds_some(Some(DocumentAnswer::Sent { frames: 2 })));
+        assert!(!super::holds_some(Some(DocumentAnswer::NotYours)));
+    }
     /// The files the tree names, each with the hash of its content and its size, are what
     /// `tilo status` counts: a text document the tree holds itself has no hash.
     #[test]
