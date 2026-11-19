@@ -344,7 +344,7 @@ impl PreparedIdentity {
             ));
         }
         let metadata = self.metadata()?;
-        let record = tilo_handoff::public_identity_record(
+        let record = tilo_handoff::public_member_record(
             &metadata.display_name,
             metadata.avatar_color,
             self.public_key,

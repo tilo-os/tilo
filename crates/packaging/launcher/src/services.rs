@@ -312,7 +312,7 @@ pub fn resolve_identity_bind_for_contract(
     requirement: Option<&ServiceReq>,
 ) -> Result<Option<ResolvedService>, ServiceError> {
     let presentation = requirement.is_some_and(|requirement| {
-        requirement.version == runtime_identity::wire::PRESENTATION_SERVICE_VERSION
+        requirement.version == tilo_identity_client::wire::PRESENTATION_SERVICE_VERSION
     });
     let Some(workspace_id) = workspace_id else {
         return Ok(None);
@@ -357,21 +357,21 @@ fn write_identity_handshake_negotiated(
     workspace_id: &str,
     presentation: bool,
 ) -> std::io::Result<()> {
-    let handshake = runtime_identity::wire::PresentationHandshake {
-        handshake: runtime_identity::wire::Handshake {
+    let handshake = tilo_identity_client::wire::PresentationHandshake {
+        handshake: tilo_identity_client::wire::Handshake {
             workspace_id: workspace_id.to_owned(),
             app_id: app_id.to_owned(),
             surface: None,
         },
         presentation_version: if presentation {
-            runtime_identity::wire::PRESENTATION_VERSION
+            tilo_identity_client::wire::PRESENTATION_VERSION
         } else {
             0
         },
     };
     let bytes = serde_json::to_vec(&handshake)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    runtime_identity::wire::HANDSHAKE_FRAMING
+    tilo_identity_client::wire::HANDSHAKE_FRAMING
         .write(stream, &bytes)
         .map_err(std::io::Error::from)?;
     stream.flush()
@@ -990,7 +990,7 @@ mod tests {
             let (mut writer, mut reader) = UnixStream::pair().unwrap();
             write_identity_handshake(&mut writer, "so.tilo.notes", "workspace-7").unwrap();
             drop(writer);
-            let bytes = runtime_identity::wire::HANDSHAKE_FRAMING
+            let bytes = tilo_identity_client::wire::HANDSHAKE_FRAMING
                 .read(&mut reader)
                 .unwrap()
                 .unwrap();
@@ -1001,7 +1001,7 @@ mod tests {
                     "workspace_id": "workspace-7", "app_id": "so.tilo.notes"
                 })
             );
-            let actual: runtime_identity::wire::Handshake = serde_json::from_slice(&bytes).unwrap();
+            let actual: tilo_identity_client::wire::Handshake = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(actual.workspace_id, "workspace-7");
             assert_eq!(actual.app_id, "so.tilo.notes");
         }
@@ -1013,7 +1013,7 @@ mod tests {
                 write_identity_handshake_negotiated(&mut writer, "so.tilo.notes", "workspace-7", enabled)
                     .unwrap();
                 drop(writer);
-                let bytes = runtime_identity::wire::HANDSHAKE_FRAMING
+                let bytes = tilo_identity_client::wire::HANDSHAKE_FRAMING
                     .read(&mut reader)
                     .unwrap()
                     .unwrap();
@@ -1021,13 +1021,13 @@ mod tests {
                 if enabled {
                     assert_eq!(
                         value["presentation_version"],
-                        runtime_identity::wire::PRESENTATION_VERSION
+                        tilo_identity_client::wire::PRESENTATION_VERSION
                     );
                     assert_eq!(value.as_object().unwrap().len(), 3);
                 } else {
                     assert_eq!(
                         bytes,
-                        serde_json::to_vec(&runtime_identity::wire::Handshake {
+                        serde_json::to_vec(&tilo_identity_client::wire::Handshake {
                             workspace_id: "workspace-7".into(),
                             app_id: "so.tilo.notes".into(),
                             surface: None,
@@ -1178,7 +1178,7 @@ mod tests {
                 drop(bind);
                 let handshake = handshake(
                     b"",
-                    runtime_identity::wire::HANDSHAKE_FRAMING,
+                    tilo_identity_client::wire::HANDSHAKE_FRAMING,
                     &reader.join().expect("reader"),
                 );
                 assert_eq!(handshake["app_id"], "so.tilo.notes");

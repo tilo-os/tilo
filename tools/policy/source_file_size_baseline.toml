@@ -52,7 +52,6 @@
 "crates/doc/tilo-doc-codecs/src/odt/export.rs" = 3500
 "crates/doc/tilo-doc/src/model.rs" = 5000
 "crates/packaging/launcher/src/run.rs" = 5500
-"crates/runtime/runtime-identity/src/unix.rs" = 3500
 "crates/sdk/tilo-resource/src/table.rs" = 4000
 "crates/sdk/tilo-rich-edit/src/block_editor.rs" = 13000
 "crates/sdk/ui-core/src/action_palette.rs" = 4000

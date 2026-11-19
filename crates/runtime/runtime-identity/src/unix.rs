@@ -1,11 +1,9 @@
-use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read};
-use std::os::fd::BorrowedFd;
 #[cfg(test)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -25,9 +23,6 @@ mod backup;
 mod recovery_words;
 #[path = "secure_store.rs"]
 mod secure_store;
-#[cfg(test)]
-#[path = "service_connection_tests.rs"]
-mod service_connection_tests;
 
 pub use backup::{
     PortableBackupInfo, export_portable_backup, import_portable_backup,
@@ -45,8 +40,7 @@ pub use secure_store::{
 };
 
 use crate::{
-    BrokerSigningIdentity, IDENTITY_SERVICE, IdentityMetadata, IdentitySummary, KeyProtection,
-    NotAvailable, collaboration_join_digest,
+    IdentityMetadata, IdentitySummary, KeyProtection, NotAvailable, collaboration_join_digest,
 };
 #[cfg(test)]
 use crate::{
@@ -104,9 +98,6 @@ pub fn secret_service_unavailable_error() -> io::Error {
     }
 }
 
-/// Legacy unsandboxed-development path: a record named by the environment.
-/// Packaged apps get the workspace identity service instead.
-pub const IDENTITY_ENV_VAR: &str = "TILO_USER_IDENTITY";
 /// Opaque locator stored in public identity metadata. It never contains key
 /// bytes or a host filesystem path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -977,19 +968,15 @@ pub struct SigningIdentity {
 
 #[allow(
     clippy::large_enum_variant,
-    reason = "Local carries a bare signing key while Service carries a live socket behind a \
-              Mutex; boxing the socket variants would touch every match arm across this file \
-              (11 call sites) for a few dozen bytes of stack that never round-trips through a \
-              hot path — this type is constructed once per identity, not per message"
+    reason = "Local carries a bare signing key while LocalThreshold carries a restored share \
+              behind a Mutex; boxing them would touch every match arm for a few dozen bytes of \
+              stack on a type constructed once per identity, not per message"
 )]
 enum SigningSource {
     Local(Option<SigningKey>),
     /// Restored device-local FROST share. It stays inside the host and is
     /// usable only by the trusted quorum coordinator, never exported to apps.
     LocalThreshold(Mutex<ThresholdIdentity>),
-    /// The workspace identity service, connected over the launcher's inherited
-    /// descriptor.
-    Service(Arc<BrokerSigningIdentity>),
 }
 
 #[allow(
@@ -1161,14 +1148,10 @@ impl SigningIdentity {
     /// [`NotAvailable::ConnectionFailed`] — threshold signing needs the
     /// multi-device FROST ceremony via `threshold-identity` instead.
     ///
-    /// The workspace identity service never signs caller-chosen messages, so
-    /// a service-backed identity refuses here; ask it for the specific
-    /// operation instead.
-    ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::ConnectionFailed`] in threshold mode, for a
-    /// service-backed identity, or if signing fails.
+    /// Returns [`NotAvailable::ConnectionFailed`] in threshold mode, or if
+    /// signing fails.
     pub fn sign(&self, message: &[u8]) -> Result<[u8; 64], NotAvailable> {
         match &self.source {
             SigningSource::Local(Some(sk)) => Ok(sk.sign(message).to_bytes()),
@@ -1183,10 +1166,6 @@ impl SigningIdentity {
                     "threshold signature is awaiting approval from another enrolled device",
                 )))
             }
-            SigningSource::Service(_) => Err(NotAvailable::ConnectionFailed(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "generic signing is not available to application connections",
-            ))),
         }
     }
 
@@ -1214,81 +1193,19 @@ impl SigningIdentity {
         }
     }
 
-    /// Prove that this process can ask the workspace identity service to use
-    /// the certified device key. The launcher has already bound the service
-    /// connection to exactly one workspace, and the service rejects any other
-    /// workspace id before signing the fixed collaboration-join domain.
+    /// Sign the fixed collaboration-join domain for `workspace_id` with this
+    /// identity's local root. An app with a workspace-bound connection asks
+    /// [`crate::BrokerSigningIdentity`] instead, which the service limits to
+    /// the workspace its launcher named.
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable::ConnectionFailed`] when the requested
-    /// workspace differs from the launcher's handshake, the device is no
-    /// longer enrolled, or the signing service is unavailable.
+    /// Returns [`NotAvailable::ConnectionFailed`] when this identity holds no
+    /// local key or cannot sign.
     pub fn sign_collaboration_join(&self, workspace_id: &str) -> Result<[u8; 64], NotAvailable> {
-        if let SigningSource::Service(stream) = &self.source {
-            return stream.sign_collaboration_join(workspace_id);
-        }
         let digest = collaboration_join_digest(workspace_id)
             .map_err(|error| NotAvailable::ConnectionFailed(io::Error::other(error.to_string())))?;
         self.sign(&digest)
-    }
-
-    /// Ask the workspace-bound identity broker for the content keys of one
-    /// document route; see [`crate::wire::Request::GroupKeys`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable::ConnectionFailed`] if this is not a
-    /// workspace-bound broker connection or the broker refuses the route.
-    pub fn group_keys(
-        &self,
-        workspace_id: &str,
-        app_id: &str,
-        record_id: &str,
-        known_generation: u64,
-    ) -> Result<crate::wire::ChannelKeysReply, NotAvailable> {
-        match &self.source {
-            SigningSource::Service(stream) => {
-                stream.group_keys(workspace_id, app_id, record_id, known_generation)
-            }
-            SigningSource::Local(_) | SigningSource::LocalThreshold(_) => {
-                Err(NotAvailable::ConnectionFailed(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "channel keys require the workspace identity service",
-                )))
-            }
-        }
-    }
-
-    /// Ask the workspace-bound identity broker to authorize and sign one
-    /// typed collaboration document operation. The broker parses the complete
-    /// unsigned envelope and checks that its route-derived artifact, author,
-    /// operation class, timestamp, and typed payload match this launch before
-    /// the certified device key signs it.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable::ConnectionFailed`] if this is not a
-    /// workspace-bound broker connection, the route or operation is invalid,
-    /// the current role cannot edit, or the device is untrusted/revoked.
-    pub fn sign_collaboration_op(
-        &self,
-        workspace_id: &str,
-        app_id: &str,
-        record_id: &str,
-        unsigned_op: &[u8],
-    ) -> Result<[u8; 64], NotAvailable> {
-        match &self.source {
-            SigningSource::Service(stream) => {
-                stream.sign_collaboration_op(workspace_id, app_id, record_id, unsigned_op)
-            }
-            SigningSource::Local(_) | SigningSource::LocalThreshold(_) => {
-                Err(NotAvailable::ConnectionFailed(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "certified collaboration operations require the workspace identity service",
-                )))
-            }
-        }
     }
 
     fn from_local_parts(
@@ -1337,74 +1254,6 @@ impl SigningIdentity {
             source: SigningSource::LocalThreshold(Mutex::new(identity)),
             single_device: false,
         }
-    }
-}
-
-/// Load the user's identity from the inherited workspace identity service,
-/// falling back to the legacy [`IDENTITY_ENV_VAR`] development path. Returns
-/// `Err(NotAvailable::ServiceFdMissing)` when neither is present,
-/// `Err(NotAvailable::ConnectionFailed(_))` when the file is missing,
-/// unreadable, or malformed, and `Ok(SigningIdentity)` on success.
-///
-/// # Errors
-///
-/// Returns [`NotAvailable::ServiceFdMissing`] when neither the service nor
-/// [`IDENTITY_ENV_VAR`] is present, or [`NotAvailable::ConnectionFailed`]
-/// when the identity file is missing, unreadable, or malformed.
-pub fn load() -> Result<SigningIdentity, NotAvailable> {
-    if let Some(fd) = runtime_portal::service_fd(IDENTITY_SERVICE) {
-        return load_from_service(fd);
-    }
-    let path_str = env::var(IDENTITY_ENV_VAR).map_err(|_| NotAvailable::ServiceFdMissing)?;
-    if path_str.is_empty() {
-        return Err(NotAvailable::ServiceFdMissing);
-    }
-    load_from_path(PathBuf::from(path_str))
-}
-
-/// The public fields of the person's identity: the workspace identity service
-/// ([`tilo_identity_client::load_metadata`]), else a record named by
-/// [`IDENTITY_ENV_VAR`], read without contacting its secret provider, so a
-/// caller that only shows who this is never waits on (or prompts for) the
-/// system secret store.
-///
-/// # Errors
-///
-/// As [`load`].
-pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
-    match tilo_identity_client::load_metadata() {
-        Err(NotAvailable::ServiceFdMissing) => {
-            let path = env::var(IDENTITY_ENV_VAR).map_err(|_| NotAvailable::ServiceFdMissing)?;
-            if path.is_empty() {
-                return Err(NotAvailable::ServiceFdMissing);
-            }
-            load_metadata_from_path(std::path::Path::new(&path))
-        }
-        bound => bound,
-    }
-}
-
-fn load_from_service(fd: std::os::fd::RawFd) -> Result<SigningIdentity, NotAvailable> {
-    // SAFETY: the launcher retains the validated inherited service descriptor.
-    let identity =
-        tilo_identity_client::inherited::connect_service(unsafe { BorrowedFd::borrow_raw(fd) })?;
-    Ok(from_service(identity))
-}
-
-fn from_service(identity: Arc<BrokerSigningIdentity>) -> SigningIdentity {
-    let metadata = identity.metadata();
-    SigningIdentity {
-        profile_photo: metadata.profile_photo().cloned(),
-        display_name: metadata.display_name().to_owned(),
-        avatar_color: metadata.avatar_color(),
-        group_public_key: metadata.group_public_key(),
-        signing_public_key: metadata.signing_public_key(),
-        device_certificate: metadata.device_certificate().map(<[u8]>::to_vec),
-        threshold: metadata.threshold(),
-        total_shares: metadata.total_shares(),
-        share_index: metadata.share_index(),
-        single_device: metadata.is_single_device(),
-        source: SigningSource::Service(identity),
     }
 }
 
@@ -2139,83 +1988,13 @@ mod tests {
         assert_eq!(unsigned_op, document);
     }
 
-    fn clear_env() -> tilo_test_env::ScopedEnv {
-        let mut scoped = tilo_test_env::ScopedEnv::new();
-        scoped.remove(IDENTITY_ENV_VAR);
-        scoped
-    }
-
-    /// The compositor's broker thread asked who this person is for every
-    /// presence frame an app sent. For an identity kept in a desktop's
-    /// Secret Service that loaded the signing secret over D-Bus from inside
-    /// the broker's runtime, which aborted the session.
-    #[test]
-    #[serial_test::serial(identity_env)]
-    fn who_this_is_never_reaches_for_the_signing_secret() {
-        let dir = tempfile::tempdir().unwrap();
-        let in_store = secure_store::SecretServiceProvider::with_store(
-            tilo_secrets::SecretStore::memory("so.tilo.identity"),
-        );
-        let path = import_identity_with_provider(
-            dir.path(),
-            "personal",
-            &record_bytes("Ada", 31),
-            &in_store,
-        )
-        .unwrap();
-        let record = read_record(&path).unwrap();
-        assert_eq!(
-            record
-                .secret_ref
-                .as_ref()
-                .map(|reference| reference.backend.as_str()),
-            Some("secret-service-v1"),
-            "the record names the Secret Service, as on a desktop that has one"
-        );
-
-        let mut env = clear_env();
-        env.set(IDENTITY_ENV_VAR, &path).set(
-            "DBUS_SESSION_BUS_ADDRESS",
-            format!("unix:path={}", dir.path().join("no-bus").display()),
-        );
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (metadata, full) = runtime.block_on(async { (load_metadata(), load()) });
-        let metadata = metadata.expect("the public fields answer without the store");
-        assert_eq!(metadata.display_name, "Ada");
-        assert_eq!(
-            metadata.group_public_key,
-            SigningKey::from_bytes(&[31; 32]).verifying_key().to_bytes()
-        );
-        assert!(
-            full.is_err(),
-            "the signing secret needs the (absent) store, and says so"
-        );
-        drop(env);
-    }
-
     tilo_test_env::scenario! {
         #[serial_test::serial(identity_env)]
         fn the_environment_never_relocates_or_fakes_an_identity;
 
-        phase load_without_env_returns_service_fd_missing;
+        phase load_without_a_service_descriptor_returns_service_fd_missing;
         {
-            let _env = clear_env();
-            match load() {
-                Err(NotAvailable::ServiceFdMissing) => {}
-                other => panic!("expected ServiceFdMissing, got {other:?}"),
-            }
-        }
-
-        phase load_with_empty_env_returns_service_fd_missing;
-        {
-            let mut env = clear_env();
-            env.set(IDENTITY_ENV_VAR, "");
-            let out = load();
-            drop(env);
-            match out {
+            match crate::load() {
                 Err(NotAvailable::ServiceFdMissing) => {}
                 other => panic!("expected ServiceFdMissing, got {other:?}"),
             }

@@ -2804,10 +2804,10 @@ dependencies = [
  "collab-types",
  "postcard",
  "runtime-collab",
- "runtime-identity",
  "runtime-portal",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-identity-client",
  "tokio",
  "workspace-hack",
 ]
@@ -2864,7 +2864,6 @@ dependencies = [
  "rand_core 0.10.0",
  "registry-types",
  "runtime-collab",
- "runtime-identity",
  "runtime-portal",
  "serde",
  "serde_json",
@@ -8042,7 +8041,6 @@ dependencies = [
  "tilo-rollback",
  "tilo-seal",
  "tilo-secrets",
- "tilo-settings-records",
  "tilo-test-env",
  "tilo-unlock-protocol",
  "tilo-user-identity",
@@ -9073,7 +9071,6 @@ dependencies = [
  "package-service",
  "package-store",
  "runtime-bundle",
- "runtime-identity",
  "runtime-portal",
  "rustix 1.1.6",
  "serde",
@@ -9091,6 +9088,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-documents",
  "tilo-files",
+ "tilo-identity-client",
  "tilo-lock",
  "tilo-paths",
  "tilo-process",
@@ -15980,7 +15978,6 @@ dependencies = [
  "tilo-process",
  "tilo-resource",
  "tilo-rt",
- "tilo-settings-records",
  "tilo-test-env",
  "tracing",
  "unicode-normalization",
@@ -22061,6 +22058,7 @@ dependencies = [
  "tilo-fs",
  "tilo-host-search",
  "tilo-identity",
+ "tilo-identity-client",
  "tilo-lock",
  "tilo-mcp",
  "tilo-os-search",
@@ -22918,18 +22916,6 @@ dependencies = [
  "tilo-pc-keyboard-geometry",
  "tilo-wallpapers",
  "tilo-zone-globe",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-settings-records"
-version = "0.1.0"
-dependencies = [
- "tempfile",
- "tilo-files",
- "tilo-lock",
- "tilo-paths",
- "tilo-rt",
  "workspace-hack",
 ]
 
@@ -30014,7 +30000,6 @@ dependencies = [
  "tilo-session-core",
  "tilo-session-logging",
  "tilo-session-power",
- "tilo-settings-records",
  "tilo-settings-service",
  "tilo-sheets",
  "tilo-shell-surface",

@@ -111,9 +111,9 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-e
 # The interface language a host entry is named in: the person's, as every
 # surface resolves it, not the machine's locale.
 settings-store = { path = "../../system/settings-store" }
-# Resolves the explicit active identity selector and hosts its per-app signing
-# broker. Private records are never mounted into the sandbox.
-runtime-identity = { path = "../../runtime/runtime-identity" }
+# The identity wire an app's identity client reads: the launcher writes the
+# per-app handshake in it before the sandbox can use the service.
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 # Landlock ruleset construction and the baseline seccomp filter. A leaf
 # crate, so the launcher still depends on nothing in the compositor.
 tilo-sandbox-core = { path = "../../system/sandbox-core" }

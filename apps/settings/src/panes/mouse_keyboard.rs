@@ -1055,7 +1055,7 @@ impl Dictionary {
     fn read() -> Self {
         Self {
             snapshot: ui::personal_dictionary::snapshot().ok(),
-            identity: ui::local_identity::bound().map(|identity| identity.group_public_key),
+            identity: ui::local_identity::load().map(|identity| identity.group_public_key),
         }
     }
 }

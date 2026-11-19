@@ -784,7 +784,7 @@ fn person_name(ws: &Workspace, local_user: &str, id: &MemberId) -> String {
     let known = member_named(ws, id).is_some();
     if id.person_id() == Some(local_user)
         && !known
-        && let Some(name) = ui::local_identity::bound()
+        && let Some(name) = ui::local_identity::load()
             .map(|identity| identity.display_name.trim().to_owned())
             .filter(|name| !name.is_empty())
     {

@@ -145,7 +145,6 @@ fn private_record_and_ambient_config_never_supply_a_client_identity() {
     .unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.remove("TILO_SVC_IDENTITY_FD")
-        .set("TILO_USER_IDENTITY", &record)
         .set("XDG_CONFIG_HOME", dir.path())
         .set("HOME", dir.path());
     assert!(matches!(crate::load(), Err(NotAvailable::ServiceFdMissing)));

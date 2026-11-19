@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use tilo_desktop_surface::{DesktopHandle, HostAction};
 use tilo_files::native::Watched;
-use ui::local_identity::{LocalIdentity, LocalIdentitySource, RuntimeIdentity};
+use ui::local_identity::{LocalIdentity, LocalIdentitySource};
 
 use crate::platform::notice::Notices;
 
@@ -32,9 +32,8 @@ use crate::platform::notice::Notices;
 struct Present {
     /// Their public identity.
     identity: Option<LocalIdentity>,
-    /// The public avatar bound to their root key, as [`RuntimeIdentity`] reads it: the file it
-    /// lives in is read with the identity, on the worker, and an avatar a frame paints only clones
-    /// pixels.
+    /// The public avatar bound to their root key: it is read from their identity record with the
+    /// identity, on the worker, and an avatar a frame paints only clones pixels.
     photo: Option<([u8; 32], runtime_identity::ProfilePhoto)>,
 }
 
@@ -51,18 +50,45 @@ impl LocalIdentitySource for WatchedLocalIdentity {
     }
 }
 
-/// The directories the person's identity record can live in: the identity directory, and the
-/// directory of the record the launcher bound.
+/// The directory the person's identity record lives in.
 fn identity_directories() -> Vec<PathBuf> {
     runtime_identity::identity_dir_from_env()
         .ok()
         .into_iter()
-        .chain(
-            std::env::var_os(runtime_identity::IDENTITY_ENV_VAR)
-                .map(PathBuf::from)
-                .and_then(|record| record.parent().map(std::path::Path::to_path_buf)),
-        )
         .collect()
+}
+
+/// The person's public identity and photo, read from their active record: this session hosts the
+/// identity service, so it reads the directory rather than asking that service.
+fn read_present() -> Present {
+    let Some(directory) = runtime_identity::identity_dir_from_env().ok() else {
+        return Present {
+            identity: None,
+            photo: None,
+        };
+    };
+    let Some(record) = runtime_identity::resolve_active_identity(&directory) else {
+        return Present {
+            identity: None,
+            photo: None,
+        };
+    };
+    let Ok(metadata) = runtime_identity::load_metadata_from_path(&record) else {
+        return Present {
+            identity: None,
+            photo: None,
+        };
+    };
+    Present {
+        identity: Some(LocalIdentity {
+            group_public_key: metadata.group_public_key,
+            display_name: metadata.display_name,
+            avatar_color: metadata.avatar_color,
+        }),
+        photo: metadata
+            .profile_photo
+            .map(|photo| (metadata.group_public_key, photo)),
+    }
 }
 
 /// Who this device runs as, as the one id the session acts as, and the ids they went by before.
@@ -125,10 +151,7 @@ pub fn install() {
         }
         Err(error) => tracing::warn!(%error, "the identity registry is not at hand"),
     }
-    match Watched::start("local-identity", identity_directories(), || Present {
-        identity: RuntimeIdentity.load(),
-        photo: RuntimeIdentity.public_photo(),
-    }) {
+    match Watched::start("local-identity", identity_directories(), read_present) {
         Ok(watched) => {
             ui::local_identity::install_source(Some(Arc::new(WatchedLocalIdentity(watched))));
         }

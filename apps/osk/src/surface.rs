@@ -284,7 +284,7 @@ impl Decorator for OskSurface {
         self.present_preferences();
         self.present_learned();
         let identity = (
-            ui::local_identity::bound().map(|identity| identity.group_public_key),
+            ui::local_identity::load().map(|identity| identity.group_public_key),
             ui::local_identity::generation(),
         );
         if identity != self.vocabulary_identity {

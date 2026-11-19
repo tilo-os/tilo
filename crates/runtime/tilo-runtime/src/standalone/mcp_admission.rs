@@ -164,7 +164,7 @@ impl Joined {
             }
             Ok(())
         })?;
-        let join = runtime_identity::collaboration_join_digest(workspace)
+        let join = tilo_identity_client::collaboration_join_digest(workspace)
             .map_err(|error| error.to_string())?;
         let presentation = runtime_collab::CertifiedJoinIdentity {
             workspace_id: workspace.into(),

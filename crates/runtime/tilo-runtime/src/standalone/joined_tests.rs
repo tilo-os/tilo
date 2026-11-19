@@ -704,7 +704,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     device_key
         .verifying_key()
         .verify_strict(
-            &runtime_identity::collaboration_join_digest(&workspace.to_string()).unwrap(),
+            &tilo_identity_client::collaboration_join_digest(&workspace.to_string()).unwrap(),
             &ed25519_dalek::Signature::from_slice(&presentation.proof).unwrap(),
         )
         .unwrap();

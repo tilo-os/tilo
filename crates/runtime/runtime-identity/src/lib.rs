@@ -7,8 +7,8 @@
 pub use tilo_identity_client::{
     AsyncBrokerSigningIdentity, BrokerMetadata, BrokerSigningIdentity, IDENTITY_SERVICE,
     IdentityMetadata, IdentitySummary, KeyProtection, MAX_PHOTO_BYTES, MAX_PHOTO_DIMENSION,
-    NotAvailable, ProfilePhoto, bound_profile_photo, collaboration_join_digest,
-    load_bound_metadata, wire,
+    NotAvailable, ProfilePhoto, bound_profile_photo, collaboration_join_digest, load,
+    load_bound_metadata, load_metadata, load_metadata_from_path, resolve_active_identity, wire,
 };
 
 #[cfg(test)]
@@ -21,17 +21,3 @@ pub mod connected;
 mod unix;
 #[cfg(unix)]
 pub use unix::*;
-
-/// Outside Unix (the browser) no identity service is ever handed to an app,
-/// so there is nothing to load; callers fall back as they do outside Tilo.
-///
-/// # Errors
-///
-/// Always [`NotAvailable::ServiceFdMissing`].
-#[cfg(not(unix))]
-pub fn load() -> Result<BrokerSigningIdentity, NotAvailable> {
-    Err(NotAvailable::ServiceFdMissing)
-}
-
-#[cfg(not(unix))]
-pub use tilo_identity_client::{load_metadata, load_metadata_from_path, resolve_active_identity};

@@ -338,7 +338,7 @@ fn source_authority(source_dir: &Path) -> (SourceIdentity, [u8; 32]) {
     let person = source_signer.group_public_key();
     let metadata =
         runtime_identity::load_metadata_from_path(&signer_path).expect("the source metadata loads");
-    let record = public_identity_record(
+    let record = public_member_record(
         &metadata.display_name,
         metadata.avatar_color,
         person,

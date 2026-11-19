@@ -1007,13 +1007,16 @@ mod tests {
             assert_eq!(actor_handle("610062"), None, "control bytes are rejected");
         }
 
-        phase a_missing_identity_file_is_not_an_author;
-        // With no identity anywhere, the chrome gets `None` and falls through to
-        // the handle/unknown ladder — an app run outside a Tilo session is not an
-        // error.
+        phase a_process_without_an_identity_is_not_an_author;
+        // With no identity source installed and no identity service, the chrome gets
+        // `None` and falls through to the handle/unknown ladder — an app run outside
+        // a Tilo session is not an error.
         {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let _env = IdentityEnvGuard::pointing_at(&dir.path().join("absent.json"), dir.path());
+            let _lock = tilo_test_env::lock();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.remove("TILO_SVC_IDENTITY_FD");
+            let _env = env;
+            crate::local_identity::install_source(None);
             assert!(local_identity_author().is_none());
         }
     }
@@ -1046,63 +1049,6 @@ mod tests {
             assert!((rgb_to_hue([0, 0, 255]) - 240.0).abs() < 0.5, "blue");
             // First boot writes neutral grey; it has no hue and must not blow up.
             assert_eq!(rgb_to_hue([128, 128, 128]), 0.0);
-        }
-    }
-
-    /// Seed for the minted test identities. Any fixed value works — it is
-    /// pinned only so the derived public key, and therefore the expected
-    /// short id, is the same on every run.
-    const FIXTURE_SEED: [u8; 32] = [0x5a; 32];
-
-    /// Mint an identity record through the same path as
-    /// `shell::firstboot::ensure_primary_identity`. Return the JSON bytes and
-    /// independently derive the public key with `ed25519-dalek` so the test
-    /// checks both sides of the serialization chain.
-    fn firstboot_identity_bytes(display_name: &str, avatar_color: [u8; 3]) -> (Vec<u8>, [u8; 32]) {
-        let identity =
-            threshold_identity::ThresholdIdentity::from_single_device_seed(&FIXTURE_SEED);
-        let record = tilo_identity_ceremony::IdentityRecord::from_threshold_identity(
-            &identity,
-            display_name,
-            avatar_color,
-            crate::time::SystemTime::UNIX_EPOCH
-                .checked_add(crate::time::Duration::from_secs(1_785_000_000))
-                .unwrap_or(crate::time::SystemTime::UNIX_EPOCH),
-        )
-        .expect("a single-device identity is persistable");
-        let bytes = record.to_json_bytes().expect("record encodes to JSON");
-        let derived = ed25519_dalek::SigningKey::from_bytes(&FIXTURE_SEED)
-            .verifying_key()
-            .to_bytes();
-        (bytes, derived)
-    }
-
-    fn secure_test_identity(_path: &std::path::Path) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(_path, std::fs::Permissions::from_mode(0o600))
-                .expect("secure identity permissions");
-        }
-    }
-
-    /// Bound every source `local_identity_author` consults to the test's own
-    /// temp dir, and put the environment back afterwards, panic or not.
-    ///
-    /// Both variables matter: `TILO_USER_IDENTITY` is the launcher-provided
-    /// path tried first; `XDG_CONFIG_HOME` is the fallback tried second, and
-    /// leaving it alone would let a developer's real
-    /// `~/.config/tilo/identity/primary.json` decide the result.
-    struct IdentityEnvGuard {
-        _env: tilo_test_env::ScopedEnv,
-    }
-
-    impl IdentityEnvGuard {
-        fn pointing_at(identity_path: &std::path::Path, config_home: &std::path::Path) -> Self {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_USER_IDENTITY", identity_path)
-                .set("XDG_CONFIG_HOME", config_home);
-            Self { _env: env }
         }
     }
 
@@ -1225,59 +1171,5 @@ mod tests {
         let author = AuthorDirectory::new().resolve_entry(&hex::encode([9_u8; 32]), Some(&entry));
         assert_ne!(author.name, "Tidy the intro");
         assert!(!author.name.contains("Tidy"), "{}", author.name);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn the_local_identity_is_read_from_firstboot_json_or_left_unknown() {
-        {
-            let (bytes, public_key) = firstboot_identity_bytes("Ada", [0, 255, 0]);
-
-            let id =
-                runtime_identity_host::load_from_bytes(&bytes).expect("firstboot shape parses");
-            assert_eq!(id.display_name(), "Ada");
-            assert_eq!(id.avatar_color(), [0, 255, 0]);
-            assert_eq!(
-                id.group_public_key(),
-                public_key,
-                "the record must carry the key its own secret derives"
-            );
-
-            let dir = tempfile::tempdir().expect("temp dir");
-            let path = dir.path().join("primary.json");
-            std::fs::write(&path, &bytes).expect("write identity");
-            secure_test_identity(&path);
-            let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
-
-            let author =
-                local_identity_author().expect("an identity on disk resolves to an author");
-            assert_eq!(author.name, "Ada");
-            assert!(
-                (author.avatar_hue - 120.0).abs() < 0.5,
-                "green avatar colour"
-            );
-            assert_eq!(
-                author.rgb(),
-                (0, 255, 0),
-                "the person's own colour wins, not hue_to_rgb of its hue"
-            );
-            assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
-            assert_eq!(author.identity_short.len(), SHORT_LEN);
-        }
-        {
-            let (bytes, public_key) = firstboot_identity_bytes("", [128, 128, 128]);
-
-            let dir = tempfile::tempdir().expect("temp dir");
-            let path = dir.path().join("primary.json");
-            std::fs::write(&path, &bytes).expect("write identity");
-            secure_test_identity(&path);
-            let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
-
-            let author =
-                local_identity_author().expect("a provisioned identity resolves to an author");
-            assert_eq!(author.name, UNKNOWN_AUTHOR_NAME);
-            assert_eq!(author.avatar_hue, 0.0, "neutral grey has no hue");
-            assert_eq!(author.identity_short, short_id(&hex::encode(public_key)));
-        }
     }
 }

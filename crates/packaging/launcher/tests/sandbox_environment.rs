@@ -24,15 +24,11 @@ const PACKAGE: &str = "so.tilo.envtest";
 /// walked in from the parent.
 const MARKER: &str = "TILO_ENV_LEAK_MARKER";
 
-/// Stand-ins for compositor wiring that an app must not receive: the privileged clipboard socket,
-/// collaboration broker, and user identity file.
+/// Stand-ins for compositor wiring that an app must not receive: the privileged clipboard socket
+/// and the collaboration broker.
 const SESSION_PRIVATE: &[(&str, &str)] = &[
     ("TILO_WAYLAND_PRIVILEGED", "wayland-priv-9"),
     ("QUICK_COLLAB_SOCK", "/run/user/1000/tilo-collab.sock"),
-    (
-        "TILO_USER_IDENTITY",
-        "/home/somebody/.config/tilo/identity/primary.json",
-    ),
 ];
 
 /// Variables set on *this* process for the duration of one test, put back afterwards — what the
@@ -139,7 +135,6 @@ tilo_test_env::scenario! {
                 "TILO_APP_DIR".to_string(),
                 "TILO_PERSON_DIR".to_string(),
                 "TILO_USER_HOME".to_string(),
-                "TILO_USER_IDENTITY".to_string(),
                 "TILO_WORKSPACE_ID".to_string(),
                 "TILO_WORKSPACE_ROOTS".to_string(),
                 "TILO_PARTICIPATION".to_string(),

@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 collab-types = { path = "../../collab/collab-types" }
 runtime-collab = { path = "../../runtime/runtime-collab" }
-runtime-identity = { path = "../../runtime/runtime-identity" }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 automerge.workspace = true
 tilo-automerge.workspace = true

@@ -124,7 +124,7 @@ fn drive() {
 
     // Who sits at this device, as the workspace sheet's people rows and the apps naming an author
     // ask it.
-    let _ = ui::local_identity::bound();
+    let _ = ui::local_identity::load();
     // Which identity each workspace presents, as every publish and frame asks it.
     if let Ok(store) = tilo_identity::registry::IdentityRegistryStore::from_env() {
         let _ = store.load_reconciled_cached();

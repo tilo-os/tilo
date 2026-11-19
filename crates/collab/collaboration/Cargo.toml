@@ -98,8 +98,7 @@ tilo-automerge = { workspace = true, features = ["heap-probe"] }
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 tracing-subscriber.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
-runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
-# The identity tests read the configuration directory the process names.
+# The tests read the toolkit's host inputs from the process environment.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 
 [lints]

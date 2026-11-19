@@ -1546,23 +1546,32 @@ params = []
             env.set(service_var, fd.to_string());
 
             let identity = runtime_identity::load().expect("broker metadata");
-            assert!(!identity.group_public_key().iter().all(|byte| *byte == 0));
+            assert!(
+                !identity
+                    .metadata()
+                    .group_public_key()
+                    .iter()
+                    .all(|byte| *byte == 0)
+            );
             let cert: tilo_user_identity::DeviceCert = serde_json::from_slice(
                 identity
+                    .metadata()
                     .device_certificate()
                     .expect("broker supplies identity-to-device certificate"),
             )
             .expect("certificate JSON");
             tilo_user_identity::verify_device_cert(&cert).expect("root-signed certificate");
-            assert_eq!(cert.user_public_key, identity.group_public_key());
-            assert_eq!(cert.device_public_key, identity.signing_public_key());
+            assert_eq!(
+                cert.user_public_key,
+                identity.metadata().group_public_key()
+            );
+            assert_eq!(
+                cert.device_public_key,
+                identity.metadata().signing_public_key()
+            );
             // Leave the accepted worker waiting between frames; Darwin must not treat
             // a temporarily empty nonblocking receive as the end of this session.
             std::thread::sleep(Duration::from_millis(50));
-            assert!(
-                identity.sign(b"caller-chosen payload").is_err(),
-                "an application connection never gets a caller-chosen signature"
-            );
             // Signature and Outside grants admit operation kinds for the typed
             // document operation below; no request shape turns either into a
             // signature over caller-chosen bytes.
@@ -1580,7 +1589,7 @@ params = []
             let join_proof = identity
                 .sign_collaboration_join(&workspace_id)
                 .expect("the launcher-bound workspace may request a join proof");
-            VerifyingKey::from_bytes(&identity.signing_public_key())
+            VerifyingKey::from_bytes(&identity.metadata().signing_public_key())
                 .expect("device key")
                 .verify(
                     &runtime_identity::collaboration_join_digest(&workspace_id).unwrap(),
@@ -1608,7 +1617,7 @@ params = []
                     .encode()
                     .expect("typed mutation"),
                 document_artifact_id("so.tilo.notes", &workspace_id, document_id),
-                Ed25519PublicKey::from_bytes(identity.signing_public_key()),
+                Ed25519PublicKey::from_bytes(identity.metadata().signing_public_key()),
                 document_attestation_id("so.tilo.notes", &workspace_id, document_id),
                 collab_types::OpKind::Change,
                 now,
@@ -1625,11 +1634,11 @@ params = []
             op.signature = collab_types::Signature::from_bytes(op_signature);
             collab_types::verify_op(&op).expect("identity service signature verifies");
 
-            let own_cluster = collab_types::personal_cluster(&identity.group_public_key()).to_string();
+            let own_cluster = collab_types::personal_cluster(&identity.metadata().group_public_key()).to_string();
             let own_proof = identity
                 .sign_collaboration_join(&own_cluster)
                 .expect("an app keeping a record of the person's joins their store");
-            VerifyingKey::from_bytes(&identity.signing_public_key())
+            VerifyingKey::from_bytes(&identity.metadata().signing_public_key())
                 .expect("device key")
                 .verify(
                     &runtime_identity::collaboration_join_digest(&own_cluster).unwrap(),
@@ -1642,7 +1651,7 @@ params = []
                         .encode()
                         .expect("typed mutation"),
                     document_artifact_id("so.tilo.notes", &own_cluster, record),
-                    Ed25519PublicKey::from_bytes(identity.signing_public_key()),
+                    Ed25519PublicKey::from_bytes(identity.metadata().signing_public_key()),
                     document_attestation_id("so.tilo.notes", &own_cluster, record),
                     collab_types::OpKind::Change,
                     now,

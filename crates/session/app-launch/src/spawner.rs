@@ -1571,14 +1571,14 @@ mod tests {
             let directory = tempfile::tempdir().expect("a directory");
             let written = directory.path().join("environment");
             let script = format!(
-                "printf '%s\\n' \"$WAYLAND_DISPLAY\" \"$TILO_USER_ID\" \"$LEAK\" > {}",
+                "printf '%s\\n' \"$WAYLAND_DISPLAY\" \"$TILO_APPS_DATA_DIR\" \"$LEAK\" > {}",
                 written.display()
             );
             let planned = shell(
                 &script,
                 BTreeMap::from([
                     ("WAYLAND_DISPLAY".to_owned(), "wayland-6".to_owned()),
-                    ("TILO_USER_ID".to_owned(), "person-4".to_owned()),
+                    ("TILO_APPS_DATA_DIR".to_owned(), "person-4".to_owned()),
                 ]),
             );
             let mut spawner = Spawner::default();

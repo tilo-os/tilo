@@ -9,6 +9,7 @@
 //! them against every other test in the process that does.
 
 use tilo_ui::collaboration::{local_app_id, local_user_id};
+use tilo_ui::local_identity::{FixedIdentity, LocalIdentity, install_source};
 
 /// Set and remove `vars` until the returned scope drops, which restores each
 /// prior value, so one test's environment is not the next test's premise.
@@ -16,78 +17,84 @@ fn scoped_env(vars: &[(&str, Option<&str>)]) -> tilo_test_env::ScopedEnv {
     let mut env = tilo_test_env::ScopedEnv::new();
     for (key, value) in vars {
         match value {
-            Some(value) => env.set(key, value),
-            None => env.remove(key),
-        };
+            Some(value) => {
+                env.set(key, value);
+            }
+            None => {
+                env.remove(key);
+            }
+        }
     }
     env
 }
 
+fn installed(key: [u8; 32]) -> FixedIdentity {
+    FixedIdentity(LocalIdentity {
+        group_public_key: key,
+        display_name: "Ada".into(),
+        avatar_color: [10, 20, 30],
+    })
+}
+
 #[test]
 fn local_identity_is_one_stable_person_distinct_from_apps_and_peers() {
+    let _lock = tilo_test_env::lock();
+
+    // With no identity installed and no identity service, the person is the OS
+    // account at this machine, never the application they opened.
     {
-        let _lock = tilo_test_env::lock();
+        install_source(None);
         let _env = scoped_env(&[
             ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
-            ("TILO_USER_ID", None),
-            ("TILO_USER_IDENTITY", None),
+            ("TILO_SVC_IDENTITY_FD", None),
+            ("USER", Some("ada")),
         ]);
-
         assert_ne!(
             local_user_id().id(),
             local_app_id(),
             "the person at this machine must not be named by the application they opened"
         );
+        assert_eq!(local_user_id().id(), "ada");
+        assert_eq!(
+            local_user_id(),
+            local_user_id(),
+            "the person at this machine must not change between two actions"
+        );
     }
 
-    // Two people on two machines both open the word processor. Their ids have to
-    // differ, or `undo_for_author` is matching a value that cannot tell them
-    // apart — and one person's Ctrl+Z reverts the other's work.
+    // Two accounts on two machines name two people, or `undo_for_author` is
+    // matching a value that cannot tell them apart — and one person's Ctrl+Z
+    // reverts the other's work.
     {
-        let _lock = tilo_test_env::lock();
-
+        install_source(None);
         let alice = {
-            let _env = scoped_env(&[
-                ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
-                ("TILO_USER_ID", Some("alice")),
-                ("TILO_USER_IDENTITY", None),
-            ]);
+            let _env = scoped_env(&[("TILO_SVC_IDENTITY_FD", None), ("USER", Some("alice"))]);
             local_user_id()
         };
         let bob = {
-            let _env = scoped_env(&[
-                ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
-                ("TILO_USER_ID", Some("bob")),
-                ("TILO_USER_IDENTITY", None),
-            ]);
+            let _env = scoped_env(&[("TILO_SVC_IDENTITY_FD", None), ("USER", Some("bob"))]);
             local_user_id()
         };
-
         assert_ne!(
             alice, bob,
             "two people on one application must be two authors"
         );
     }
 
-    // Stable across calls: an id that changed between two actions would strand the
-    // first one on the undo stack, unreachable by the person who performed it.
+    // An identity this process resolved wins over the account name: both
+    // surfaces asking who the person is must name the same key.
     {
-        let _lock = tilo_test_env::lock();
-        let _env = scoped_env(&[
-            ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
-            ("TILO_USER_ID", None),
-            ("TILO_USER_IDENTITY", None),
-        ]);
-
-        let first = local_user_id();
-        let second = local_user_id();
+        install_source(Some(std::sync::Arc::new(installed([7; 32]))));
+        let _env = scoped_env(&[("TILO_SVC_IDENTITY_FD", None), ("USER", Some("ada"))]);
+        assert_eq!(local_user_id().id(), hex::encode([7; 32]));
         assert_eq!(
-            first, second,
-            "the person at this machine must not change between two actions"
+            local_user_id(),
+            local_user_id(),
+            "an identity resolved once must not change between two actions"
         );
-        assert!(
-            !first.id().trim().is_empty(),
-            "an empty id would collide with every other empty id"
-        );
+        install_source(Some(std::sync::Arc::new(installed([8; 32]))));
+        assert_eq!(local_user_id().id(), hex::encode([8; 32]));
     }
+
+    install_source(None);
 }

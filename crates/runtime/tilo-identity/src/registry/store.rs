@@ -104,29 +104,22 @@ impl IdentityRegistry {
         if let Some(profile) = self.identities.get(&id) {
             return Some(profile.clone());
         }
-        for directory in record_directories() {
-            let Ok(summaries) = runtime_identity::list_identities(&directory) else {
-                continue;
-            };
-            let Some(summary) = summaries
-                .into_iter()
-                .find(|summary| summary.public_key == *user_public_key)
-            else {
-                continue;
-            };
-            let record_path = directory.join(format!("{}.json", summary.id));
-            return Some(IdentityProfile {
-                id: id.clone(),
-                display_name: if summary.display_name.trim().is_empty() {
-                    format!("Identity {}", short_fingerprint(&id))
-                } else {
-                    summary.display_name.trim().to_string()
-                },
-                record_path: absolute_path(&record_path).ok()?,
-                user_public_key: *user_public_key,
-            });
-        }
-        None
+        let directory = resolve_identity_dir().ok()?;
+        let summaries = runtime_identity::list_identities(&directory).ok()?;
+        let summary = summaries
+            .into_iter()
+            .find(|summary| summary.public_key == *user_public_key)?;
+        let record_path = directory.join(format!("{}.json", summary.id));
+        Some(IdentityProfile {
+            id: id.clone(),
+            display_name: if summary.display_name.trim().is_empty() {
+                format!("Identity {}", short_fingerprint(&id))
+            } else {
+                summary.display_name.trim().to_string()
+            },
+            record_path: absolute_path(&record_path).ok()?,
+            user_public_key: *user_public_key,
+        })
     }
 }
 
@@ -593,20 +586,6 @@ fn device_cert() -> Option<DeviceCert> {
 /// Resolve the identity directory from environment variables.
 fn resolve_identity_dir() -> io::Result<PathBuf> {
     runtime_identity::identity_dir_from_env()
-}
-
-/// The directories that hold this login's identity records: its own identity
-/// directory, and the directory of the record a launcher bound this process
-/// to, which need not live in it.
-pub(crate) fn record_directories() -> Vec<PathBuf> {
-    let mut directories: Vec<PathBuf> = resolve_identity_dir().ok().into_iter().collect();
-    if let Some(record) = std::env::var_os(runtime_identity::IDENTITY_ENV_VAR)
-        && let Some(directory) = PathBuf::from(record).parent()
-        && !directories.iter().any(|held| held == directory)
-    {
-        directories.push(directory.to_path_buf());
-    }
-    directories
 }
 
 /// Convert a relative path to absolute, or return unchanged if already absolute.

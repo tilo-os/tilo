@@ -45,7 +45,6 @@ pub struct ProcessIdentity {
     pub development_app_id: Option<String>,
     pub app_name: Option<String>,
     pub workspace_id: Option<String>,
-    pub user_id: Option<String>,
     pub account_name: Option<String>,
     pub continuity_resume: Option<ContinuationMetadata>,
     pub continuity_instance: Option<String>,
@@ -100,9 +99,6 @@ pub struct ProcessPaths {
     /// have.
     pub font_catalog: Option<PathBuf>,
     pub font_artifact_cache: Option<PathBuf>,
-    /// Explicit development-host record for public identity presentation only.
-    /// It is not signing authority or permission to resolve a secret provider.
-    pub public_identity_record: Option<PathBuf>,
 }
 
 impl ProcessPaths {

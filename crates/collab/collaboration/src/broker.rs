@@ -2209,10 +2209,6 @@ impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIden
     }
 }
 
-#[cfg(all(test, unix))]
-#[path = "broker_identity_tests.rs"]
-mod identity_host_fixture;
-
 #[cfg_attr(
     not(unix),
     allow(

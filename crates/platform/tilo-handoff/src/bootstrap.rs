@@ -462,7 +462,7 @@ fn now_ns() -> u64 {
         })
 }
 
-pub fn public_identity_record(
+pub fn public_member_record(
     display_name: &str,
     avatar_color: [u8; 3],
     identity_public_key: [u8; 32],

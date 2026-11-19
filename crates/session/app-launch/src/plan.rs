@@ -563,7 +563,10 @@ mod tests {
             wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-4")),
             x11_display: Some(":11".into()),
             session_bus: Some("unix:path=/run/user/1000/tilo/bus".into()),
-            forwarded: BTreeMap::from([("TILO_USER_ID".to_owned(), "person-3".to_owned())]),
+            forwarded: BTreeMap::from([(
+                "TILO_IDENTITY_ROOT".to_owned(),
+                "/home/you/.local/share/tilo/identity".to_owned(),
+            )]),
         }
     }
 
@@ -627,9 +630,9 @@ mod tests {
                 ]
             );
             assert_eq!(
-                planned.env.get("TILO_USER_ID").map(String::as_str),
-                Some("person-3"),
-                "the person reaches the app through its launcher"
+                planned.env.get("TILO_IDENTITY_ROOT").map(String::as_str),
+                Some("/home/you/.local/share/tilo/identity"),
+                "the person's identity root reaches the app through its launcher"
             );
             assert_eq!(
                 planned.env.get("WAYLAND_DISPLAY").map(String::as_str),
@@ -729,7 +732,7 @@ mod tests {
                 wayland_socket: Some(socket.clone()),
                 x11_display: Some(":11".into()),
                 session_bus: Some("unix:path=/run/user/1000/tilo/bus".into()),
-                forwarded: BTreeMap::from([("TILO_USER_ID".to_owned(), "person-3".to_owned())]),
+                forwarded: BTreeMap::from([("TILO_IDENTITY_ROOT".to_owned(), "/home/you/.local/share/tilo/identity".to_owned())]),
             };
             let connector = PlanContext {
                 connector: Some("imap"),
@@ -931,7 +934,7 @@ mod tests {
                 "the entry's command line and the document are the launcher's to resolve"
             );
             assert!(
-                !planned.env.contains_key("TILO_USER_ID")
+                !planned.env.contains_key("TILO_IDENTITY_ROOT")
                     && !planned.env.keys().any(|key| key.starts_with("TILO_")),
                 "a host app is not confined, so it is told nothing of Tilo's authority"
             );
