@@ -1,10 +1,11 @@
-//! What Tube shows that the document does not hold, published beneath the resource as live rows:
-//! the open watch page with its comments, the fetched catalogue (videos, creators, playlists, the
-//! completed search), the person's watch history and playback preferences, and the paired Grayjay
-//! devices.
+//! What Tube shows that the document does not hold, published beneath the resource as rows of
+//! declared types: the open watch page with its comments, the fetched catalogue (videos, creators,
+//! playlists, the completed search), the person's watch history and playback preferences, and the
+//! paired Grayjay devices. A row says what it is by its type, and offers its type's effects
+//! bound to it.
 
 use ui::framework::{EffectStatus, LiveRow};
-use ui::tilo_resource::words::RowType;
+use ui::tilo_resource;
 
 use crate::action::SettingFlag;
 use crate::actions::{TubeEffect, comment_key, next_quality, resource_label};
@@ -14,61 +15,72 @@ use crate::sync::{PeerEntry, SyncStatus, SyncView};
 const MAX_ROWS: usize = 100;
 const MAX_COMMENTS: usize = 50;
 
-/// The catalogue types Tube's rows are resources of: a channel, a video, a playlist, each declared
-/// by its kind and its name in words, so a row says what it is (search finds "youtube videos of
-/// <channel>") as a tilolang item does, with nothing the row writes.
-const CHANNEL_KIND: &str = "tube.channel";
-const VIDEO_KIND: &str = "tube.video";
-const PLAYLIST_KIND: &str = "tube.playlist";
+/// The catalogue and the watch page a row groups: videos, creators, playlists,
+/// or one search's results.
+#[derive(tilo_resource::Row)]
+#[row(kind = "tube.collection", label = "Collection")]
+pub(crate) struct Collection;
 
-macro_rules! catalogue_type {
-    ($ty:ty, $kind:expr, $label:expr) => {
-        impl RowType for $ty {
-            const KIND: &'static str = $kind;
-            const LABEL: &'static str = $label;
-        }
-    };
-}
-catalogue_type!(crate::model::Channel, CHANNEL_KIND, "Channel");
-catalogue_type!(crate::model::Video, VIDEO_KIND, "Video");
-catalogue_type!(crate::model::Playlist, PLAYLIST_KIND, "Playlist");
+/// One video the person watched, in their history.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "tube.history-entry",
+    label = "Watched video",
+    effects = TubeEffect
+)]
+pub(crate) struct HistoryEntry;
+
+/// The person's watch history.
+#[derive(tilo_resource::Row)]
+#[row(kind = "tube.history", label = "Watch history", effects = TubeEffect)]
+pub(crate) struct History;
+
+/// The playback preferences, and the settings they hold.
+#[derive(tilo_resource::Row)]
+#[row(kind = "tube.settings", label = "Playback settings")]
+pub(crate) struct PlaybackSettings;
+
+/// One playback setting the person may change.
+#[derive(tilo_resource::Row)]
+#[row(kind = "tube.setting", label = "Playback setting", effects = TubeEffect)]
+pub(crate) struct Setting;
+
+/// The Grayjay device sync, and the devices it pairs.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "tube.device-sync",
+    label = "Grayjay device sync",
+    effects = TubeEffect
+)]
+pub(crate) struct DeviceSync;
+
+/// One paired Grayjay device.
+#[derive(tilo_resource::Row)]
+#[row(kind = "tube.device", label = "Grayjay device", effects = TubeEffect)]
+pub(crate) struct Device;
 
 fn video_row(model: &TubeModel, id: String, video_id: &str) -> Option<LiveRow> {
     let video = model.video(video_id)?;
-    Some(
-        LiveRow::typed::<crate::model::Video>(id, resource_label(&video.title))
-            .effect(&TubeEffect::OpenVideo {
-                video: video_id.to_owned(),
-            })
-            .effect(&TubeEffect::Share {
-                video: video_id.to_owned(),
-            })
-            .effect(&TubeEffect::MarkWatched {
-                video: video_id.to_owned(),
-            }),
-    )
+    Some(LiveRow::typed::<crate::model::Video>(
+        id,
+        resource_label(&video.title),
+    ))
 }
 
 fn creator_row(model: &TubeModel, id: String, channel_id: &str) -> Option<LiveRow> {
     let channel = model.channel(channel_id)?;
-    Some(
-        LiveRow::typed::<crate::model::Channel>(id, resource_label(&channel.name)).effect(
-            &TubeEffect::OpenCreator {
-                creator: channel_id.to_owned(),
-            },
-        ),
-    )
+    Some(LiveRow::typed::<crate::model::Channel>(
+        id,
+        resource_label(&channel.name),
+    ))
 }
 
 fn playlist_row(model: &TubeModel, id: String, playlist_id: &str) -> Option<LiveRow> {
     let playlist = model.playlist(playlist_id)?;
-    Some(
-        LiveRow::typed::<crate::model::Playlist>(id, resource_label(&playlist.title)).effect(
-            &TubeEffect::OpenPlaylist {
-                playlist: playlist_id.to_owned(),
-            },
-        ),
-    )
+    Some(LiveRow::typed::<crate::model::Playlist>(
+        id,
+        resource_label(&playlist.title),
+    ))
 }
 
 fn comment_label(author: &str, text: &str) -> String {
@@ -88,6 +100,8 @@ fn current_watch(model: &TubeModel) -> Option<LiveRow> {
         return None;
     };
     let video = model.video(video_id)?;
+    // The video's own effects are its type's; playing it and opening its
+    // creator are this page's, which offers them while it shows the video.
     let mut row = video_row(model, format!("tube.current:{video_id}"), video_id)?
         .effect(&TubeEffect::TogglePlayback)
         .effect(&TubeEffect::OpenCreator {
@@ -103,28 +117,28 @@ fn current_watch(model: &TubeModel) -> Option<LiveRow> {
 }
 
 fn comment_row(video_id: &str, comment: &crate::model::Comment) -> LiveRow {
-    LiveRow::new(
+    LiveRow::typed::<crate::model::Comment>(
         format!("tube.comment:{}", comment_key(video_id, comment)),
-        "tube.comment",
         resource_label(&comment_label(&comment.author, &comment.text)),
     )
 }
 
 fn collection(id: &str, label: &str, rows: impl Iterator<Item = LiveRow>) -> LiveRow {
     rows.take(MAX_ROWS)
-        .fold(LiveRow::new(id, "tube.collection", label), LiveRow::row)
+        .fold(LiveRow::typed::<Collection>(id, label), LiveRow::row)
 }
 
 fn history(model: &TubeModel) -> LiveRow {
-    collection(
-        "tube.history",
-        "Watch history",
-        model
-            .history
-            .iter()
-            .map(|video_id| history_row(model, video_id)),
-    )
-    .effect(&TubeEffect::ClearHistory)
+    // The row is the history itself, so it clears it.
+    model
+        .history
+        .iter()
+        .take(MAX_ROWS)
+        .map(|video_id| history_row(model, video_id))
+        .fold(
+            LiveRow::typed::<History>("tube.history", "Watch history"),
+            LiveRow::row,
+        )
 }
 
 fn history_row(model: &TubeModel, video_id: &str) -> LiveRow {
@@ -132,17 +146,7 @@ fn history_row(model: &TubeModel, video_id: &str) -> LiveRow {
         || format!("Watched video {video_id}"),
         |video| video.title.clone(),
     );
-    LiveRow::new(
-        format!("tube.history:{video_id}"),
-        "tube.history-entry",
-        resource_label(&label),
-    )
-    .effect(&TubeEffect::OpenVideo {
-        video: video_id.to_owned(),
-    })
-    .effect(&TubeEffect::ForgetWatched {
-        video: video_id.to_owned(),
-    })
+    LiveRow::typed::<HistoryEntry>(format!("tube.history:{video_id}"), resource_label(&label))
 }
 
 fn search_results(model: &TubeModel) -> LiveRow {
@@ -153,7 +157,7 @@ fn search_results(model: &TubeModel) -> LiveRow {
         resource_label(&format!("Search results: {query}"))
     };
     if query.is_empty() {
-        return LiveRow::new("tube.search-results", "tube.collection", label);
+        return LiveRow::typed::<Collection>("tube.search-results", label);
     }
     let hit = |kind: &str, id: &str| format!("tube.search-result:{kind}:{id}");
     let videos = model
@@ -186,18 +190,18 @@ fn preferences(settings: &Settings) -> LiveRow {
         .chain([quality_row(settings)])
         .chain(segments)
         .fold(
-            LiveRow::new("tube.settings", "tube.settings", "Playback settings"),
+            LiveRow::typed::<PlaybackSettings>("tube.settings", "Playback settings"),
             LiveRow::row,
         )
 }
 
 fn switch_row(settings: &Settings, flag: SettingFlag) -> LiveRow {
     let enabled = flag.get(settings);
-    LiveRow::new(
+    LiveRow::typed::<Setting>(
         format!("tube.setting:{}", flag.id()),
-        "tube.setting",
         format!("{}: {}", flag.name(), if enabled { "on" } else { "off" }),
     )
+    // The row's press flips this switch, which it knows and the effect does not.
     .effect(&TubeEffect::SetPreference {
         preference: flag.id().to_owned(),
         enabled: !enabled,
@@ -205,9 +209,8 @@ fn switch_row(settings: &Settings, flag: SettingFlag) -> LiveRow {
 }
 
 fn quality_row(settings: &Settings) -> LiveRow {
-    LiveRow::new(
+    LiveRow::typed::<Setting>(
         "tube.setting:preferred-quality",
-        "tube.setting",
         format!("Preferred quality: {}", settings.preferred_quality),
     )
     .effect(&TubeEffect::SetPreferredQuality {
@@ -221,9 +224,8 @@ fn segment_row(settings: &Settings, category: Category) -> LiveRow {
         .get(category.api_key())
         .copied()
         .unwrap_or(SkipMode::Skip);
-    LiveRow::new(
+    LiveRow::typed::<Setting>(
         format!("tube.setting:sponsor-category:{}", category.api_key()),
-        "tube.setting",
         format!(
             "SponsorBlock {}: {}",
             crate::i18n::t(category.message()),
@@ -238,20 +240,14 @@ fn segment_row(settings: &Settings, category: Category) -> LiveRow {
 
 fn devices(view: &SyncView) -> LiveRow {
     let unavailable = matches!(view.status, SyncStatus::Unavailable);
-    let mut row = LiveRow::new(
-        "tube.device-sync",
-        "tube.device-sync",
-        if unavailable {
-            "Grayjay device sync (unavailable)"
-        } else {
-            "Grayjay device sync"
-        },
-    );
+    let label = if unavailable {
+        "Grayjay device sync (unavailable)"
+    } else {
+        "Grayjay device sync"
+    };
+    let mut row = LiveRow::typed::<DeviceSync>("tube.device-sync", label);
     if unavailable {
         return row;
-    }
-    if view.peers.iter().any(PeerEntry::is_active) {
-        row = row.effect(&TubeEffect::SyncDevices);
     }
     for peer in view.peers.iter().filter(|peer| peer.revoked_at.is_none()) {
         row = row.row(device_row(peer));
@@ -260,20 +256,33 @@ fn devices(view: &SyncView) -> LiveRow {
 }
 
 fn device_row(peer: &PeerEntry) -> LiveRow {
-    let device = LiveRow::new(
+    LiveRow::typed::<Device>(
         format!("tube.device:{}", peer.id),
-        "tube.device",
         resource_label(&peer.name),
-    );
-    if peer.pending_approval {
-        device.effect(&TubeEffect::ApproveDevice {
-            device: peer.id.clone(),
-        })
-    } else {
-        device.effect(&TubeEffect::RevokeDevice {
-            device: peer.id.clone(),
-        })
+    )
+}
+
+/// The id `value` names, as the row that published it names it
+/// (`tube.video:x` for a catalogue video, `tube.search-result:video:x` for a
+/// search hit) or as the catalogue knows it: a row's press and a control's
+/// reach the same video, creator, playlist or device.
+pub(crate) fn row_entity(value: &str) -> &str {
+    for prefix in [
+        "tube.search-result:video:",
+        "tube.search-result:channel:",
+        "tube.search-result:playlist:",
+        "tube.video:",
+        "tube.history:",
+        "tube.current:",
+        "tube.channel:",
+        "tube.playlist:",
+        "tube.device:",
+    ] {
+        if let Some(id) = value.strip_prefix(prefix) {
+            return id;
+        }
     }
+    value
 }
 
 pub(crate) fn live_rows(model: &TubeModel, view: &SyncView) -> Vec<LiveRow> {
@@ -422,6 +431,53 @@ pub(crate) fn effect_statuses(model: &TubeModel, view: &SyncView) -> Vec<EffectS
             "grayjay_sync_unavailable",
             reason,
         ));
+    }
+    statuses
+}
+
+/// What one of Tube's rows offers right now: a device waiting for approval is
+/// not revoked, a device with access is not approved again, and nothing syncs
+/// without an active device or a reachable Grayjay.
+pub(crate) fn row_status(view: &SyncView, id: &str) -> Vec<EffectStatus> {
+    let mut statuses = Vec::new();
+    if id == "tube.device-sync" {
+        let reason = if matches!(view.status, SyncStatus::Unavailable) {
+            Some(if view.summary.trim().is_empty() {
+                crate::i18n::t(crate::sync::capability().summary_key)
+            } else {
+                view.summary.clone()
+            })
+        } else if !view.peers.iter().any(PeerEntry::is_active) {
+            Some("No paired device is active".to_owned())
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            statuses.push(
+                EffectStatus::unavailable(
+                    TubeEffect::SYNC_DEVICES,
+                    "grayjay_sync_unavailable",
+                    reason,
+                )
+                .on(id),
+            );
+        }
+    } else if let Some(device) = id.strip_prefix("tube.device:") {
+        let peer = view
+            .peers
+            .iter()
+            .find(|peer| peer.id == device && peer.revoked_at.is_none());
+        if let Some(peer) = peer {
+            let (effect, reason) = if peer.pending_approval {
+                (
+                    TubeEffect::REVOKE_DEVICE,
+                    "This device is waiting for approval",
+                )
+            } else {
+                (TubeEffect::APPROVE_DEVICE, "This device already has access")
+            };
+            statuses.push(EffectStatus::unavailable(effect, "device_access", reason).on(id));
+        }
     }
     statuses
 }

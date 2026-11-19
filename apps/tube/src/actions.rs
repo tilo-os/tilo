@@ -32,19 +32,19 @@ pub enum TubeEffect {
         kind: String,
     },
     /// Open video.
-    #[effect(screen)]
+    #[effect(screen, on = crate::model::Video, on = crate::rows::HistoryEntry)]
     OpenVideo {
         #[param("The video's id")]
         video: String,
     },
     /// Open creator.
-    #[effect(screen)]
+    #[effect(screen, on = crate::model::Channel)]
     OpenCreator {
         #[param("The creator's channel id")]
         creator: String,
     },
     /// Open playlist.
-    #[effect(screen)]
+    #[effect(screen, on = crate::model::Playlist)]
     OpenPlaylist {
         #[param("The playlist's id")]
         playlist: String,
@@ -74,7 +74,7 @@ pub enum TubeEffect {
     #[effect(screen)]
     SkipSegment,
     /// Copy share link.
-    #[effect(own_device, kind = "read")]
+    #[effect(own_device, kind = "read", on = crate::model::Video)]
     Share {
         #[param("The video's id")]
         video: String,
@@ -88,19 +88,19 @@ pub enum TubeEffect {
     ///
     /// Adds the video to your own watch history, which follows you to your
     /// other devices and never reaches members.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", on = crate::model::Video)]
     MarkWatched {
         #[param("The video's id")]
         video: String,
     },
     /// Remove from history.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", on = crate::rows::HistoryEntry)]
     ForgetWatched {
         #[param("The video's id")]
         video: String,
     },
     /// Clear watch history.
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, kind = "read", on = crate::rows::History)]
     ClearHistory,
     /// Pair using invite.
     ///
@@ -112,20 +112,20 @@ pub enum TubeEffect {
         #[param(secret, "Grayjay pairing invite; redacted from logs and history")]
         invite: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::DeviceSync)]
     SyncDevices,
     /// Approve device.
     ///
     /// Lets a device that asked to pair read and write your subscriptions,
     /// history and settings.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::Device)]
     #[effect(destructive)]
     ApproveDevice {
         #[param("The device's id")]
         device: String,
     },
     /// Revoke device access.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::Device)]
     #[effect(destructive)]
     RevokeDevice {
         #[param("The device's id")]

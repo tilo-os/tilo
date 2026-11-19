@@ -173,8 +173,9 @@ impl Segment {
     }
 }
 
-/// A single comment on the watch page.
-#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// A single comment on the watch page: a row of the `tube.comment` type.
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::Row)]
+#[row(kind = "tube.comment", label = "Comment")]
 pub struct Comment {
     pub author: String,
     pub initials: String,
@@ -194,7 +195,12 @@ pub type PlaylistId = String;
 /// A playlist result / page: an ordered collection of videos with its own
 /// title, creator and thumbnail. Populated from the live backend; empty on the
 /// hermetic sample.
-#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::Row)]
+#[row(
+    kind = "tube.playlist",
+    label = "Playlist",
+    effects = crate::actions::TubeEffect
+)]
 pub struct Playlist {
     pub id: PlaylistId,
     pub title: String,
@@ -295,7 +301,12 @@ impl SearchTypeFilter {
     }
 }
 
-#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::Row)]
+#[row(
+    kind = "tube.channel",
+    label = "Channel",
+    effects = crate::actions::TubeEffect
+)]
 pub struct Channel {
     pub id: ChannelId,
     pub name: String,
@@ -322,7 +333,8 @@ pub struct Channel {
 /// A declared resource type: a video the catalogue publishes is an item
 /// resource of this type, found by "youtube videos of …" with nothing Tube
 /// writes for it ([`resource`](ui::tilo_resource::resource)).
-#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::Row)]
+#[row(kind = "tube.video", label = "Video", effects = crate::actions::TubeEffect)]
 pub struct Video {
     pub id: VideoId,
     pub title: String,
