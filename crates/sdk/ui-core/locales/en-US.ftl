@@ -1300,3 +1300,4 @@ format-lifetime-until = Until
 format-lifetime-until-at = Until { $when }
 format-lifetime-always = Always
 person-unnamed = Someone without a name yet
+person-unnamed-short = No name yet

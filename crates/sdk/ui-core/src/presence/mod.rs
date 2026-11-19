@@ -35,7 +35,10 @@ pub use interaction::{
     ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, MarkerPlace, TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
-pub use labels::{MemberLabels, name_key, shown_name, unnamed_label, unnamed_person_label};
+pub use labels::{
+    MemberLabels, is_unnamed_person, name_key, shown_name, unnamed_label, unnamed_person_label,
+    unnamed_person_short_label,
+};
 #[cfg(feature = "native")]
 pub use layer::LayerMarks;
 pub use layer::{PresenceLayer, WidgetPresence};

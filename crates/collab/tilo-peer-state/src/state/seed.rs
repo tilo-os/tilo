@@ -201,8 +201,8 @@ fn founding_rows(
         .map_err(err)?;
     for certificate in roster {
         let id = hex::encode(certificate.device_public_key);
-        doc.put(&names, &id, certificate.device_label.as_str())
-            .map_err(err)?;
+        // The person, not their device: the label stays in the certificate.
+        doc.put(&names, &id, "").map_err(err)?;
         let identity = GovernedIdentity {
             device_cert: certificate.clone(),
             revocations: vec![],

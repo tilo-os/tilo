@@ -111,13 +111,12 @@ impl Presented {
 }
 
 /// `workspace` as a page sees it, with `summary` its people as its
-/// governance keeps them, `certificates` the devices it records, `owners` the
+/// governance keeps them, `owners` the
 /// people it is kept for, `holders` the holders of it, `delegations` the work
 /// its members gave servers and `reader` the person the page's device acts
 /// for.
 fn page_workspace(
     summary: WorkspaceSummary,
-    certificates: &[DeviceCert],
     owners: &BTreeSet<String>,
     holders: Vec<WorkspaceHolder>,
     delegations: Vec<WorkspaceDelegation>,
@@ -128,19 +127,8 @@ fn page_workspace(
         .into_iter()
         .map(|mut member| {
             let root = member.root();
-            // A person the workspace has not named goes by their own device's
-            // label. A key made to act for them is no device of theirs and no
-            // name of theirs: what it is called says what it is ("API key
-            // "Visa backend""), never who its person is.
-            if member.name.is_empty()
-                && let Some(cert) = certificates.iter().find(|cert| {
-                    Some(cert.user_public_key) == root
-                        && cert.capabilities.agent.is_none()
-                        && !cert.capabilities.stand_in
-                })
-            {
-                member.name.clone_from(&cert.device_label);
-            }
+            // A person the workspace has not named stays without a name: their device's label
+            // names the device, never them.
             // The person a host keeps the workspace for is its owner: the host
             // runs the workspace for them and is nobody in it itself, so it is
             // their role the page reads and their rights it offers.
@@ -207,6 +195,15 @@ fn valid_name(name: &str) -> Result<String, CollaborationError> {
     tilo_user_identity::display_name(name)
         .map(str::to_owned)
         .map_err(|error| CollaborationError::new(error.reason()))
+}
+
+/// The name a device joins under: a blank one is none given, so its person stays without a name
+/// until they give one; any other must be a display name.
+fn joined_name(name: &str) -> Result<String, CollaborationError> {
+    if name.trim().is_empty() {
+        return Ok(String::new());
+    }
+    valid_name(name)
 }
 
 impl Workspaces {
@@ -827,7 +824,6 @@ impl Workspaces {
                 continue;
             }
             let summary = self.people(&workspace);
-            let certificates = workspace.peer().certificates();
             let owners = owners_of(&workspace);
             let holders = holders_of(&workspace.peer().governance().keeping_devices());
             let delegations = delegations_of(
@@ -838,7 +834,6 @@ impl Workspaces {
             drop(workspace);
             listed.push(page_workspace(
                 summary,
-                &certificates,
                 &owners,
                 holders,
                 delegations,
@@ -918,7 +913,6 @@ impl Workspaces {
         let workspace = self.workspace(workspace).await?;
         let workspace = workspace.lock().await;
         let summary = self.people(&workspace);
-        let certificates = workspace.peer().certificates();
         let owners = owners_of(&workspace);
         let holders = holders_of(&workspace.peer().governance().keeping_devices());
         let delegations = delegations_of(
@@ -929,7 +923,6 @@ impl Workspaces {
         drop(workspace);
         Ok(WorkspacesReply::Workspace(page_workspace(
             summary,
-            &certificates,
             &owners,
             holders,
             delegations,
@@ -1326,7 +1319,7 @@ impl Workspaces {
         let (invitation, person) = (presented.invitation.clone(), presented.cert.user_public_key);
         let cert = presented.cert.clone();
         let reply = self
-            .prove(presented, &valid_name(name)?, token, now)
+            .prove(presented, &joined_name(name)?, token, now)
             .await?;
         if let JoinReply::Admitted { workspace, .. } = &reply {
             self.accepted(workspace, &invitation, person).await;
@@ -1336,7 +1329,8 @@ impl Workspaces {
             if let Some(scope) = cert.capabilities.agent {
                 let governed = self.workspace(workspace).await?;
                 let mut governed = governed.lock().await;
-                self.list_grant(&mut governed, &cert, scope, Some(name), now)
+                let named = (!name.is_empty()).then_some(name);
+                self.list_grant(&mut governed, &cert, scope, named, now)
                     .await?;
             }
         }
@@ -1673,75 +1667,24 @@ mod tests {
     use collab_types::Person;
     use ed25519_dalek::SigningKey;
     use tilo_peer_state::Member;
-    use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
-    /// `person`'s device, labelled `label`, holding `capabilities`.
-    fn device(person: &SigningKey, label: &str, capabilities: DeviceCapabilities) -> DeviceCert {
-        let mut cert = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: SigningKey::from_bytes(&rand::random())
-                .verifying_key()
-                .to_bytes(),
-            device_label: label.into(),
-            capabilities,
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, person).unwrap();
-        cert
-    }
-
-    /// A workspace of one person the page has no name for: the row's name is
-    /// their own device's label, and never what a key of theirs is called.
+    /// A workspace of one person the page has no name for: the row stays without a name, never
+    /// what their device or a key of theirs is called.
     #[test]
-    fn a_key_of_a_person_is_no_name_for_them_on_a_page() {
+    fn a_person_without_a_name_is_named_by_no_device_or_key_on_a_page() {
         let person = SigningKey::from_bytes(&rand::random());
         let root = person.verifying_key().to_bytes();
         let member = Member::of_person(&Person::new(hex::encode(root), ""), Some(Role::Owner));
-        let summary = || WorkspaceSummary {
+        let summary = WorkspaceSummary {
             workspace: "team".to_owned(),
             workspace_id: WorkspaceId::from_u128(1),
             name: "Team".to_owned(),
             generation: 1,
-            members: vec![member.clone()],
+            members: vec![member],
             devices: std::collections::BTreeMap::new(),
         };
-        let name = |summary: WorkspaceSummary, certs: &[DeviceCert]| {
-            page_workspace(
-                summary,
-                certs,
-                &BTreeSet::new(),
-                Vec::new(),
-                Vec::new(),
-                [0; 32],
-            )
-            .members[0]
-                .name
-                .clone()
-        };
-
-        // Their key made for a backend acts as them, and is called what it
-        // is: a page reading that as their name lists a key as a person.
-        let backend = device(
-            &person,
-            "API key \u{201c}Visa backend\u{201d}",
-            DeviceCapabilities::server_key_grant(),
-        );
-        assert_eq!(
-            name(summary(), std::slice::from_ref(&backend)),
-            "",
-            "a key is nobody to list"
-        );
-        // Their own device names them, with the key of theirs listed beside
-        // it: a key is no name to fall back to.
-        let laptop = device(&person, "Quin's laptop", DeviceCapabilities::member());
-        assert_eq!(
-            name(summary(), &[backend, laptop]),
-            "Quin's laptop",
-            "a key of theirs is not their name where a device of theirs is"
-        );
+        let page = page_workspace(summary, &BTreeSet::new(), Vec::new(), Vec::new(), [0; 32]);
+        assert_eq!(page.members[0].name, "", "an unnamed person stays unnamed");
     }
 
     /// A page lists the delegations that are live now, each as the member's

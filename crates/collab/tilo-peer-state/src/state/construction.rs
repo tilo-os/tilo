@@ -183,8 +183,11 @@ impl StatePeer {
         let before = doc.get_heads();
         doc.put(&identities, &id, automerge::ScalarValue::Bytes(encoded))
             .map_err(err)?;
-        doc.put(&names, &id, identity.device_cert.device_label.as_str())
-            .map_err(err)?;
+        // The roster names the person, never their device: a device's label stays in its
+        // certificate, and a device new to the roster carries no name until its person gives one.
+        if doc.get(&names, &id).map_err(err)?.is_none() {
+            doc.put(&names, &id, "").map_err(err)?;
+        }
         self.write_governance(doc, &before, key, now)
     }
 

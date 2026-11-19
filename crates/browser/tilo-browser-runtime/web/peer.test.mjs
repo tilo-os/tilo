@@ -1371,24 +1371,24 @@ test('a person renamed since the page started says the new name with the next fr
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore()));
   await until(() => peer.live.state === 'live', 'the live layer');
-  const labels = () => runtime.peer.published.map(value => value.member?.label).filter(Boolean);
+  const labels = () => runtime.peer.published.map(value => value.member?.label).filter(label => typeof label === 'string');
   await until(() => labels().length, 'the first announcement');
-  assert.deepEqual(labels().at(-1), 'Browser on Cloud');
+  assert.deepEqual(labels().at(-1), '', 'a person who gave no name goes by none, never their device');
   peer.setDisplayName('Bea');
   peer.live.publishPresence({selection: {anchor: '03', head: '03'}});
   await until(() => labels().at(-1) === 'Bea', 'the name the person chose since');
   await peer.dispose();
 });
 
-test('a name the page draws stays the page\'s; only a name the person gives reaches their server', async () => {
+test('a name shown here stays the page\'s; only a name the person gives reaches their server', async () => {
   const runtime = fakeRuntime();
   const named = [];
   const peer = await connect(options(runtime, memoryStore()));
   runtime.peer.setDisplayName = name => named.push(['shown', name]);
   runtime.peer.nameSelf = name => named.push(['given', name]);
   await until(() => peer.live.state === 'live', 'the live layer');
-  peer.setDisplayName('Eager Lynx');
-  assert.deepEqual(named, [['shown', 'Eager Lynx']], 'a drawn name is shown here, never given to the workspace');
+  peer.setDisplayName('Ada');
+  assert.deepEqual(named, [['shown', 'Ada']], 'a name shown here is never given to the workspace');
   peer.nameSelf('  ');
   peer.nameSelf('Quinten');
   assert.deepEqual(named.at(-1), ['given', 'Quinten']);
@@ -1544,11 +1544,11 @@ test('the peer starts from the certificate text, keeping nanosecond timestamps e
   assert.equal(withStartFields(certified, {displayName: undefined}), certified);
 });
 
-test('a device shows the name the host gave it, not the one it asked for', async () => {
+test('the label the host gives a device is never its person\'s name', async () => {
   const runtime = fakeRuntime();
   runtime.certifyDevice = async () => `{"cert":${LINUX_CERT},"hostCert":{"issued_at_ns":${NANOS}},"label":"Browser on Cloud 2"}`;
   const peer = await connect(options(runtime, memoryStore()));
-  assert.equal(peer.member.label, 'Browser on Cloud 2');
+  assert.equal(peer.member.label, '', 'a person who gave no name goes by none');
   await peer.dispose();
 });
 

@@ -861,8 +861,10 @@ impl HereState {
                 id: member.publisher.clone(),
                 user: self.user_of(&member.publisher).map(str::to_owned),
                 member: member.member.clone(),
-                label: [member.label.as_str(), member.device.as_str()]
-                    .into_iter()
+                // A person goes by the name they gave, never their device's label; an agent
+                // that says no name goes by the program it works in.
+                label: std::iter::once(member.label.as_str())
+                    .chain(agent.then_some(member.device.as_str()))
                     .find_map(ui::presence::shown_name)
                     .map_or_else(unnamed_person_label, str::to_owned),
                 devices: self.devices_of(&member.publisher),

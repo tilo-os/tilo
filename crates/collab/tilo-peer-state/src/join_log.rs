@@ -965,7 +965,9 @@ impl JoinLog {
                         let mut next = candidate.clone();
                         next.governance_mut().admit_named_member(
                             redemption,
+                            // A blank name is none given: the person stays unnamed.
                             join.name
+                                .filter(|name| !name.trim().is_empty())
                                 .filter(|_| names_its_person(redemption.certificate())),
                             key,
                             system_time(now),

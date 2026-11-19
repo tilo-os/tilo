@@ -47,7 +47,7 @@ import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
   keptMembership, listedWorkspaces, publicListings,
-  membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
+  membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, rememberEntered,
   settleFailedWorkspace, unmarkOwnPairing, workspaceActions as workspaceSwitchActions, workspaceAt, workspaceChoices,
 } from './workspaces.mjs';
 
@@ -1221,7 +1221,7 @@ export async function startEntryPage({mode}) {
       return {
         site: admitting.entry.base,
         ...(user ? {person: {userPublicKey: user,
-          name: displayName ?? chosenDisplayName(user) ?? defaultDisplayName(user)}} : {}),
+          name: displayName ?? chosenDisplayName(user)}} : {}),
         held: heldWorkspaces({entered: enteredWorkspaces(), current}),
       };
     },
@@ -1257,7 +1257,7 @@ export async function startEntryPage({mode}) {
       }
       // A page that came back here by itself because the host turned it
       // away (session-refusal.mjs) joins under the name it went by.
-      displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName() ?? defaultDisplayName(identity?.userPublicKey ?? kept?.userPublicKey);
+      displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName();
       // A workspace with no capacity right now (full, or this address asking too
       // often) is waited out on the reconnect screen, as long as its entry
       // asked: the page joins as the same person once there is workspace.
@@ -1282,7 +1282,7 @@ export async function startEntryPage({mode}) {
       const identity = currentIdentity() ?? await browserIdentity({create: false}).catch(() => null);
       if (!identity || identity.userPublicKey !== kept.userPublicKey) return null;
       runtime ??= await loadRuntime();
-      const name = chosenDisplayName(identity.userPublicKey) ?? defaultDisplayName(identity.userPublicKey);
+      const name = chosenDisplayName(identity.userPublicKey);
       return joinViaHost({workspace: home, identity, displayName: name, runtime, live: false, voice: false,
         wait: () => Promise.reject(new Error('the home workspace did not let this device in'))});
     },
@@ -1339,10 +1339,9 @@ export async function startEntryPage({mode}) {
     },
     joinWorkspace: async options => {
       const identity = await browserPerson();
-      // A person joins under a name from their first moment in a workspace:
-      // the one they chose here, else the one their key draws, as the page's
-      // own entry names them. Nobody shows as a guest while the name catches up.
-      displayName = options.displayName || chosenDisplayName(identity?.userPublicKey) || defaultDisplayName(identity?.userPublicKey);
+      // A person joins under the name they chose here, else under none: they
+      // show as a person without a name until they give one.
+      displayName = options.displayName || chosenDisplayName(identity?.userPublicKey);
       const peer = await joinWorkspace({...options, identity, runtime, displayName});
       // Kept, so the next visit reconnects as the person let in.
       keepJoinedHost({origin: options.origin, workspace: peer.workspace, userPublicKey: identity.userPublicKey});
@@ -1356,7 +1355,7 @@ export async function startEntryPage({mode}) {
       if (paired?.paired) {
         const profile = identityProfile(paired, paired.origin);
         const deviceKey = await openDeviceKey({profile, storage: idbStorage(), requireExisting: true});
-        displayName = chosenDisplayName(paired.userPublicKey) ?? defaultDisplayName(paired.userPublicKey);
+        displayName = chosenDisplayName(paired.userPublicKey);
         return withDeviceKey(deviceKey, () => connectPeer({origin, workspace, userPublicKey: paired.userPublicKey,
           profile, deviceKey, displayName, runtime, requireExistingCertificate: true}));
       }
@@ -1369,7 +1368,7 @@ export async function startEntryPage({mode}) {
       // browser kept this host (signed in just now, from a link to it): the
       // host says whether they are in the workspace.
       const kept = hostToReconnect(origin, identity.userPublicKey) ?? {userPublicKey: identity.userPublicKey};
-      displayName = chosenDisplayName(identity.userPublicKey) ?? defaultDisplayName(identity.userPublicKey);
+      displayName = chosenDisplayName(identity.userPublicKey);
       if (kept.owner) {
         // On a machine of their own the owner enters any of its workspaces
         // (the host admits this device as its owner); the host refuses
@@ -1402,7 +1401,7 @@ export async function startEntryPage({mode}) {
     // An embed lists no host actions, so it has nothing to invite with:
     // the desktop offers no Invite there rather than one that does nothing.
     pairDevice: async ({origin, workspace, userPublicKey, invite, listed}) => {
-      displayName = chosenDisplayName(userPublicKey) ?? defaultDisplayName(userPublicKey);
+      displayName = chosenDisplayName(userPublicKey);
       let waiting = () => {};
       // Whose device this becomes and which server adds it, as its person
       // was told before anything was asked, and whether they stopped while
@@ -1451,12 +1450,14 @@ export async function startEntryPage({mode}) {
     // A guest ticket: a fresh device of the workspace's root, certified once the
     // web host spent the ticket on this page's pairing code. The root key is
     // read from the host's own certificate, so the link need not carry it.
+    // The visitor is a person without a name until they give one; their
+    // device goes by what it is, never as their name.
     redeemTicket: async ({origin, workspace, ticket, tickets}) => {
       viaTicket = true;
       const {connectServerPeer} = await import('./server.mjs');
       const hostCert = await hostCertificate(await loadRuntime(), origin);
       const admit = new URL(`${encodeURIComponent(workspace)}/admit`, tickets).href;
-      return connectServerPeer({origin, workspace, userPublicKey: hex(hostCert.user_public_key), label: 'Guest',
+      return connectServerPeer({origin, workspace, userPublicKey: hex(hostCert.user_public_key), label: deviceLabel(),
         onPairingCode: async pairingCode => {
           const response = await fetch(admit, {method: 'POST', headers: {'content-type': 'application/json'},
             body: JSON.stringify({ticket, pairingCode})});
@@ -1619,8 +1620,8 @@ export async function startEntryPage({mode}) {
     // On the person's own desktop no workspace names them: the page does.
     const own = page.peer ? null : pagePerson(page);
     if (own) {
-      displayName ??= chosenDisplayName(own) ?? defaultDisplayName(own);
-      page.mount?.setOwnPerson?.({user: own, label: displayName});
+      displayName ??= chosenDisplayName(own);
+      page.mount?.setOwnPerson?.({user: own, label: displayName ?? ''});
     }
     const attachIdentity = () => keepIdentity({peer: page.peer, mount: hostActions?.('identity') ?? page.mount, home: page.entry?.home,
       name: () => displayName, runtime, link: page.link, photos, naming: {
@@ -1632,7 +1633,7 @@ export async function startEntryPage({mode}) {
             // The name is the person's: their host keeps it and every workspace
             // there names them by it, as the `tilo` command's naming does.
             page.peer.nameSelf?.(displayName);
-          } else page.mount?.setOwnPerson?.({user: pagePerson(page), label: displayName});
+          } else page.mount?.setOwnPerson?.({user: pagePerson(page), label: displayName ?? ''});
           return displayName;
         },
       }});
@@ -1701,16 +1702,6 @@ export async function startEntryPage({mode}) {
       void identityActions?.perform('set-linked', {photoFrom: typeof kept.photo_from === 'string' ? kept.photo_from : null,
         linked: Array.isArray(kept.linked) ? kept.linked : [], keep: false});
     }, () => void identityActions?.perform('set-linked', {photoFrom: null, linked: [], keep: false}));
-    // A drawn name someone else here already goes by is drawn again; a
-    // name the person chose stays theirs. A page with no host to join has
-    // no peer and nobody to share a name with.
-    page.peer?.setNameDrawer?.((current, people) => {
-      const key = page.peer.userPublicKey;
-      if (chosenDisplayName(key)) return null;
-      const redrawn = redrawnDisplayName(key, current, people);
-      if (redrawn) displayName = redrawn;
-      return redrawn;
-    });
     setUp = async (details = {}) => {
       const machine = await machineCard({details, run: (values, onPhase) => setUpMachine({
         details: values, person: () => rootOfThisPage(page.peer), runtime, onProgress: event => onPhase(event.phase)})});

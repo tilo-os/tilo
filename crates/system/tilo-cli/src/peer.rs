@@ -292,7 +292,7 @@ impl Peer {
                 continue;
             }
             if entry.workspace != device.workspace_id()
-                && let Err(refusal) = device.enter_workspace(&id, device.label()).await
+                && let Err(refusal) = device.enter_workspace(&id, "").await
             {
                 self.fail(entry.workspace, &format!("not entered: {refusal}"));
                 continue;

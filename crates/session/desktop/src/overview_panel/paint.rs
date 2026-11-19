@@ -1109,14 +1109,9 @@ fn paint_face_stack(
         } else {
             ui::tokens::colors::mix8(fill, ground, 1.0 - FACE_AWAY_ALPHA)
         };
-        let initial = person
-            .name
-            .chars()
-            .next()
-            .unwrap_or('?')
-            .to_ascii_uppercase()
-            .to_string();
-        ui::widget::AvatarFace::new(&initial, "")
+        // The face the person wears everywhere: their picture or initials, the person glyph
+        // while they gave no name.
+        ui::widget::AvatarFace::new(&person.name, &person.id)
             .presence(fill)
             .ringed_on(ground)
             .paint(ctx, Rect::new(cx - r, cy - r, cx + r, cy + r));
@@ -1309,9 +1304,9 @@ fn fit_chips(
     let widths: Vec<f64> = people
         .iter()
         .map(|person| {
-            let name = ctx
-                .text
-                .elide_to_width_style(&person.name, f32_of_f64(name_width), &style);
+            let name =
+                ctx.text
+                    .elide_to_width_style(&chip_name(person), f32_of_f64(name_width), &style);
             let (w, _) = ctx.text.measure_style(&name, None, &style);
             face + gap + f64::from(w)
         })
@@ -1333,9 +1328,19 @@ fn fit_chips(
     };
     let name = ctx
         .text
-        .elide_to_width_style(&first.name, f32_of_f64(spare), &style);
+        .elide_to_width_style(&chip_name(first), f32_of_f64(spare), &style);
     let (w, _) = ctx.text.measure_style(&name, None, &style);
     (1, face + gap + f64::from(w) + reserve, spare)
+}
+
+/// The name `person`'s chip says: a person who gave no name in the short words a chip fits
+/// for ("No name yet"), every other as they go by.
+fn chip_name(person: &ShownPerson) -> std::borrow::Cow<'_, str> {
+    if person.kind == HolderKind::Person && ui::presence::is_unnamed_person(&person.name) {
+        ui::presence::unnamed_person_short_label().into()
+    } else {
+        person.name.as_str().into()
+    }
 }
 
 /// The width a line `width` wide leaves the first chip's name once its face, the gap after it and
@@ -1448,9 +1453,9 @@ fn paint_chips(
             ctx,
             Rect::new(left, mid - face / 2.0, left + face, mid + face / 2.0),
         );
-        let name = ctx
-            .text
-            .elide_to_width_style(&person.name, f32_of_f64(name_width), &style);
+        let name =
+            ctx.text
+                .elide_to_width_style(&chip_name(person), f32_of_f64(name_width), &style);
         let (name_w, name_h) = ctx.text.measure_style(&name, None, &style);
         let at = left + face + gap;
         ctx.text.draw_style(

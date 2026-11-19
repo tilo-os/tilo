@@ -290,9 +290,23 @@ impl<'a> AvatarFace<'a> {
         rounded(shape.rect().inset(-inset), inset)
     }
 
+    /// The initials on the face: none for a person nobody named yet, whose face is the person
+    /// glyph ([`Self::unnamed_person`]), never letters of the words said in place of a name.
     #[must_use]
     pub fn initials(&self) -> String {
+        if self.unnamed_person() {
+            return String::new();
+        }
         initials_for_name(self.name)
+    }
+
+    /// A person who gave no name: the neutral disc with the person glyph, the same on every
+    /// surface, their own top bar included. A picture they chose still shows instead.
+    fn unnamed_person(&self) -> bool {
+        !self.agent
+            && !self.square
+            && self.glyph.is_none()
+            && crate::presence::is_unnamed_person(self.name)
     }
 
     #[must_use]
@@ -410,7 +424,7 @@ impl<'a> AvatarFace<'a> {
     /// The mark at `rect` as `node`'s look on a page: a tinted disc (a rounded square)
     /// with the initials on it, or a picture of its paint for a photo or a glyph.
     pub fn compose(&self, theme: &Theme, rect: Rect, node: &mut crate::composition::Composed) {
-        if self.image.is_some() || self.glyph.is_some() {
+        if self.image.is_some() || self.glyph.is_some() || self.unnamed_person() {
             node.painted(0);
             return;
         }
@@ -512,10 +526,16 @@ impl<'a> AvatarFace<'a> {
             self.paint_status(ctx, rect);
             return;
         }
-        let fill = self.colour(ctx.theme);
+        let unnamed = self.unnamed_person();
+        let neutral = self.tint == Tint::Neutral || unnamed;
+        let fill = if unnamed {
+            ctx.theme.tokens.colors.surfaces.raised
+        } else {
+            self.colour(ctx.theme)
+        };
         ctx.scene
             .fill(Fill::NonZero, ctx.transform, fill, None, &shape);
-        if self.tint == Tint::Neutral {
+        if neutral {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(f64::from(ctx.theme.tokens.metrics.chrome_rule_px)),
                 ctx.transform,
@@ -524,11 +544,11 @@ impl<'a> AvatarFace<'a> {
                 &shape,
             );
         }
-        if let Some(glyph) = self.glyph {
+        if let Some(glyph) = self.glyph.or(unnamed.then_some(crate::icons::Icon::User)) {
             // The glyph takes the share of the tile an icon takes in the
             // icon set's own 24 px grid, centred.
             let side = shape.rect().width() * 0.55;
-            let ink = if self.tint == Tint::Neutral {
+            let ink = if neutral {
                 ctx.theme.text_primary
             } else {
                 initial_ink(fill, ctx.theme)
@@ -881,7 +901,7 @@ impl Avatar {
 
     #[must_use]
     pub fn initials(&self) -> String {
-        initials_for_name(&self.name)
+        self.face().initials()
     }
 
     fn face(&self) -> AvatarFace<'_> {
@@ -931,7 +951,7 @@ impl Widget for Avatar {
         }
         cx.element("span");
         let theme = cx.theme();
-        if self.image.is_some() || self.glyph.is_some() {
+        if self.image.is_some() || self.glyph.is_some() || self.face().unnamed_person() {
             cx.picture();
             return;
         }
@@ -1393,6 +1413,39 @@ mod tests {
                 tags(&glyph, DrawTag::COLOR) > tags(&blank, DrawTag::COLOR),
                 "the glyph's strokes are painted on the tile"
             );
+        }
+
+        phase a_person_without_a_name_wears_the_person_glyph_never_initials;
+        {
+            let theme = Theme::dark();
+            let person = tilo_actions::MemberId::person("aa");
+            let blank = paint_face(AvatarFace::new("", "aa").neutral(), &theme);
+            let glyph = paint_face(
+                AvatarFace::new("", "aa").glyph(crate::icons::Icon::User),
+                &theme,
+            );
+            for name in [
+                String::new(),
+                "ab".repeat(32),
+                crate::presence::unnamed_person_label(),
+                crate::presence::unnamed_person_short_label(),
+            ] {
+                let face = AvatarFace::member(&name, &person);
+                assert_eq!(face.initials(), "", "no initials from {name:?}");
+                let painted = paint_face(face, &theme);
+                assert!(
+                    tags(&painted, DrawTag::COLOR) > tags(&blank, DrawTag::COLOR),
+                    "the person glyph is drawn for {name:?}"
+                );
+                assert_eq!(
+                    tags(&painted, DrawTag::COLOR),
+                    tags(&glyph, DrawTag::COLOR),
+                    "the same glyph as everywhere for {name:?}"
+                );
+            }
+            // A named person keeps their initials; an agent keeps its mark.
+            assert_eq!(AvatarFace::new("Ada Lovelace", "aa").initials(), "AL");
+            assert!(AvatarFace::new("", "aa").agent().initials().is_empty());
         }
 
         phase a_picture_replaces_the_initials_and_is_cover_fitted;

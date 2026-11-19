@@ -84,7 +84,7 @@ pub(crate) fn serve() -> anyhow::Result<ExitCode> {
                             .await
                             .is_ok()
                     {
-                        eprintln!("Approved here, as {}.", person.name);
+                        eprintln!("Approved here, as {}.", person.who());
                     }
                 }
                 tokio::time::sleep(LOOKING).await;

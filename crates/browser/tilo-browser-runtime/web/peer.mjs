@@ -458,6 +458,8 @@ async function connect({
   workspaceName, hostInfo: answered, entering,
 }) {
   userPublicKey ??= identity?.userPublicKey;
+  // A person who gave no name goes by none: never their device's label.
+  displayName ??= '';
   // Only a peer in its profile's own namespace moves to a fresh one when the
   // host at its origin was set up again; a caller's store or namespace stays.
   const ownNamespace = device === undefined && !store;
@@ -528,15 +530,11 @@ async function connect({
   let actions;
   let voice;
   let disposed = false;
-  let drawName = null;
-  // The name the host gave this device where it said one: its answer to the
-  // pairing, which numbers a name another of the person's devices reads by.
-  let hostLabel = null;
   // When the person last changed their profile, as this page knows it: their
   // presence says it, so everyone here fetches it again when it moves.
   let profileMs = 0;
   const publishMember = () => live?.publishPresence({member: {kind: 'person',
-    label: (displayName || hostLabel || label).slice(0, 32), color: ownColor(), profile_ms: profileMs}});
+    label: displayName.slice(0, 32), color: ownColor(), profile_ms: profileMs}});
   // The person's name, as history and presence show it from now on.
   const rename = name => {
     displayName = fitDisplayName(name);
@@ -792,7 +790,6 @@ async function connect({
       ? await runtime.certifyWithRoot(post, identity, deviceKeyForWasm, label)
       : await runtime.certifyDevice(userPublicKey, label, null, deviceKeyForWasm, code => onPairingCode?.(code),
         JSON.stringify(host.address));
-    if (!identity) hostLabel = JSON.parse(issued).label ?? null;
     if (saved && reconnecting(saved, issued, JSON.stringify(certServer(issued))) === 'adopt-host') {
       await adopt(issued);
     }
@@ -838,7 +835,7 @@ async function connect({
       peer.joinWorkspace(workspace, workspaceName);
       if (liveEnabled) {
         live = createLiveLayer(peer, runtime, workspace, {ready, member: {
-          kind: 'person', label: (displayName || hostLabel || label).slice(0, 32), color: ownColor(), profile_ms: profileMs,
+          kind: 'person', label: displayName.slice(0, 32), color: ownColor(), profile_ms: profileMs,
         }});
       }
       actions?.dispose();
@@ -1244,7 +1241,7 @@ async function connect({
      * `{workspace, workspace_id, name}`; rejects with the host's refusal as it
      * typed it (`DeviceRefusal`: `code`, and `refusal` where the host gave one). */
     enterOwnWorkspace: async ({name = null, entered = () => false} = {}) => JSON.parse(
-      await peer.enterOwnWorkspace(name, fitDisplayName(displayName || label), entered)),
+      await peer.enterOwnWorkspace(name, fitDisplayName(displayName), entered)),
     /** Who is in the workspace, for its owner (`workspaces.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },
@@ -1274,7 +1271,7 @@ async function connect({
     liveNote: () => { try { return peer?.liveNote?.() ?? null; } catch { return null; } },
     /** This person as their presence names them: `{label, color}`. */
     get member() {
-      return {label: (displayName || hostLabel || label).slice(0, 32), color: ownColor()};
+      return {label: displayName.slice(0, 32), color: ownColor()};
     },
     /** The person's profile was kept (or read) as of `at` (Unix ms): their
      * presence says so, and everyone here fetches it again. */
@@ -1284,18 +1281,6 @@ async function connect({
       profileMs = stamp;
       publishMember();
     },
-    /** The people here as their live presence names them (`[{user,
-     * label}]`): someone else already going by this person's drawn name
-     * makes them take another, so the workspace and what it is bridged with
-     * tell them apart. */
-    membersSeen(people) {
-      if (!workspace || !Array.isArray(people)) return;
-      const redrawn = drawName?.(displayName, people);
-      if (redrawn && redrawn !== displayName) rename(redrawn);
-    },
-    /** Who draws this person's name again when it collides in the workspace:
-     * `(current, people) => name | null`, or `null` once they chose one. */
-    setNameDrawer(draw) { drawName = typeof draw === 'function' ? draw : null; },
     /** The host's fetch proxy for this page's apps (`fetch-proxy.mjs`):
      * `{endpoint, session}` while the host serves one over the current
      * session, else `null`. Read for each request: the session follows
@@ -1849,7 +1834,7 @@ async function join({
   // The shared entry chooses the certificate (the one this very key holds
   // from this host, else one the root makes now) and has the workspace admit
   // this device under it.
-  const accepting = JSON.stringify({held, label: fitDisplayName(label), name: fitDisplayName(displayName || label),
+  const accepting = JSON.stringify({held, label: fitDisplayName(label), name: fitDisplayName(displayName ?? ''),
     ...(admissionToken ? {admissionToken} : {})});
   const common = {
     origin, identity, person, label, displayName, signal, onProgress, runtime, deviceKey, profile, fetcher, connectOptions,
