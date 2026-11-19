@@ -50,9 +50,7 @@ fn piece(to: [u8; 32], frame: Vec<u8>) -> Envelope {
 }
 
 async fn quiet(client: &ServerClient) -> bool {
-    tokio::time::timeout(Duration::from_millis(300), client.recv())
-        .await
-        .is_err()
+    crate::common::quiet(client, Duration::from_millis(300)).await
 }
 
 #[tokio::test]
@@ -73,10 +71,15 @@ async fn a_piece_reaches_only_the_device_it_is_addressed_to() {
     a_client
         .send(piece(b.device_pubkey(), bytes.clone()))
         .unwrap();
-    match tokio::time::timeout(tilo_test_env::hang_bound(), b_client.recv())
-        .await
-        .expect("B timed out")
-        .expect("B connection closed")
+    // B's session also carries its person's workspace list.
+    match tokio::time::timeout(
+        tilo_test_env::hang_bound(),
+        crate::common::next(&b_client, |env| {
+            !matches!(env, Envelope::PersonalList { .. })
+        }),
+    )
+    .await
+    .expect("B timed out")
     {
         Envelope::DocumentContent {
             to_device_public_key,

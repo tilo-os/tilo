@@ -619,6 +619,13 @@ pub async fn next(client: &ServerClient, mut want: impl FnMut(&Envelope) -> bool
     .await
 }
 
+/// Whether `client` hears nothing for `wait` but its person's workspace list, which the server
+/// sends every session of theirs whenever the set of workspaces they have changes.
+pub async fn quiet(client: &ServerClient, wait: std::time::Duration) -> bool {
+    let heard = async { while let Some(Envelope::PersonalList { .. }) = client.recv().await {} };
+    tokio::time::timeout(wait, heard).await.is_err()
+}
+
 /// Wait until `server` has accepted `peer`'s subscription to `workspace`.
 ///
 /// From then on a delta published on `server` reaches `peer`; a test waits for
