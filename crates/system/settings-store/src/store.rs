@@ -21,10 +21,10 @@ use tilo_automerge::{ApplyIncoming as _, json};
 use tilo_lock::MutexRecover as _;
 
 use app_state::held::{Follow, Socket, Watch};
-use app_state::{FsStore, Save, SavePlan};
+use app_state::{Save, SavePlan};
 use automerge::ChangeHash;
-use durable_store::{DurableStore as _, Lease, StorageKey, WriteOp};
-use tilo_paths::{PROFILE_DIR, PROFILE_SOCKET};
+use durable_store::{DurableStore, Lease, StorageKey, WriteOp};
+use tilo_paths::{PROFILE_SOCKET, SETTINGS_DEVICE, SETTINGS_PERSON};
 
 use crate::placement::{self, Holder};
 use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, merge_section};
@@ -33,15 +33,12 @@ use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, merg
 /// undone) rather than a section.
 pub const BOOKKEEPING: &str = "tilo:";
 
-/// The two documents, as keys of the device's document store: the person's is leased first, and
-/// its lock is the profile's ([`tilo_paths::PROFILE_LOCK`]).
-const PERSON: &str = "person";
-const DEVICE: &str = "device";
-
+/// The two documents, as the device document store's reserved keys: the person's is leased first,
+/// and its lock is the profile's ([`tilo_paths::PROFILE_LOCK`]).
 fn key(holder: Holder) -> StorageKey {
     StorageKey::app(match holder {
-        Holder::Person => PERSON,
-        Holder::Device => DEVICE,
+        Holder::Person => SETTINGS_PERSON,
+        Holder::Device => SETTINGS_DEVICE,
     })
 }
 
@@ -111,13 +108,16 @@ struct Snapshot {
     document: Arc<Map<String, Value>>,
 }
 
+/// The document store the settings documents are kept in, shared with whatever else in this
+/// process keeps a document beside them.
+pub type Kept = Arc<dyn DurableStore + Send + Sync>;
+
 pub struct Store {
     me: Weak<Store>,
-    root: PathBuf,
-    /// The directory the documents live in, which the holder's socket opens in.
+    /// The directory the holder's socket opens in: the profile's own, not the store's.
     dir: PathBuf,
     /// The device's document store the documents live in.
-    kept: FsStore,
+    kept: Kept,
     /// The documents as a follower notices the holder's saves.
     follow: Follow,
     follower: std::sync::atomic::AtomicBool,
@@ -137,7 +137,7 @@ pub struct Store {
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Store")
-            .field("root", &self.root)
+            .field("dir", &self.dir)
             .field("holder", &self.lock.lock_recover().is_some())
             .finish_non_exhaustive()
     }
@@ -153,7 +153,7 @@ enum Hold {
     Unlockable,
 }
 
-fn try_hold(kept: &FsStore) -> Hold {
+fn try_hold(kept: &dyn DurableStore) -> Hold {
     let lease = |holder| kept.lease(&key(holder));
     match lease(Holder::Person) {
         Ok(person) => match lease(Holder::Device) {
@@ -166,7 +166,7 @@ fn try_hold(kept: &FsStore) -> Hold {
     }
 }
 
-fn load_doc(kept: &FsStore, holder: Holder) -> std::io::Result<AutoCommit> {
+fn load_doc(kept: &dyn DurableStore, holder: Holder) -> std::io::Result<AutoCommit> {
     let key = key(holder);
     let stored = match kept.read(&key) {
         Ok(stored) => stored,
@@ -189,7 +189,7 @@ fn load_doc(kept: &FsStore, holder: Holder) -> std::io::Result<AutoCommit> {
 }
 
 /// The documents as their files hold them.
-fn load_docs(kept: &FsStore) -> std::io::Result<Docs> {
+fn load_docs(kept: &dyn DurableStore) -> std::io::Result<Docs> {
     Ok(Docs::loaded(
         load_doc(kept, Holder::Person)?,
         load_doc(kept, Holder::Device)?,
@@ -197,25 +197,40 @@ fn load_docs(kept: &FsStore) -> std::io::Result<Docs> {
 }
 
 impl Store {
-    /// Open the profile at `root`: as its holder when no other process holds
-    /// it, else read-only, following the holder.
+    /// Open the profile at `root` with a store of its own: its documents under `<root>/documents`
+    /// and the holder's socket at `<root>/settings.sock`. For a test, a capture or a `--data-dir`
+    /// profile; this device's own settings are [`Self::open_device`]'s.
     pub fn open(root: &Path) -> std::io::Result<Arc<Self>> {
-        Self::open_as(root, true)
+        let kept: Kept = Arc::new(app_state::FsStore::new(root.join("documents")));
+        Self::open_on(kept, root.to_path_buf(), true)
     }
 
     /// Open the profile at `root` read-only, following whoever holds it, for
     /// a process that only reads settings (a service the session starts)
     /// and must never keep the session from holding them.
     pub fn follow(root: &Path) -> std::io::Result<Arc<Self>> {
-        Self::open_as(root, false)
+        let kept: Kept = Arc::new(app_state::FsStore::new(root.join("documents")));
+        Self::open_on(kept, root.to_path_buf(), false)
     }
 
-    fn open_as(root: &Path, hold: bool) -> std::io::Result<Arc<Self>> {
-        let dir = root.join(PROFILE_DIR);
-        let kept = FsStore::new(&dir);
-        let follow = Follow::of(&kept, &keys());
-        let taken = if hold { try_hold(&kept) } else { Hold::Busy };
-        let mut docs = load_docs(&kept)?;
+    /// Open this device's settings in `kept`, the device document store the session and apps
+    /// beside this process open too: one store, one writer thread.
+    pub fn open_device() -> std::io::Result<Arc<Self>> {
+        let dir = tilo_paths::profile_root()
+            .ok_or_else(|| std::io::Error::other("no configuration directory"))?;
+        Self::open_on(app_state::shared_native_store(), dir, true)
+    }
+
+    /// Open the profile kept in `kept`, its holder's socket at `dir/settings.sock`: as its holder
+    /// when no other process holds it, else read-only, following the holder.
+    fn open_on(kept: Kept, dir: PathBuf, hold: bool) -> std::io::Result<Arc<Self>> {
+        let follow = Follow::of(kept.as_ref(), &keys());
+        let taken = if hold {
+            try_hold(kept.as_ref())
+        } else {
+            Hold::Busy
+        };
+        let mut docs = load_docs(kept.as_ref())?;
         docs.seen = follow.stamp();
         let document = Arc::new(docs.projection());
         let (lock, refused) = match taken {
@@ -230,7 +245,6 @@ impl Store {
         let holds = lock.is_some();
         let store = Arc::new_cyclic(|me| Self {
             me: me.clone(),
-            root: root.to_path_buf(),
             dir,
             kept,
             follow,
@@ -280,7 +294,7 @@ impl Store {
             Err(error) if error.kind() == std::io::ErrorKind::Unsupported => None,
             Err(error) => {
                 tracing::error!(
-                    root = %self.root.display(),
+                    dir = %self.dir.display(),
                     %error,
                     "the settings socket did not open: other processes' settings writes fail"
                 );
@@ -301,10 +315,10 @@ impl Store {
         if !self.may_hold || !self.is_follower() {
             return false;
         }
-        let Hold::Held(lock) = try_hold(&self.kept) else {
+        let Hold::Held(lock) = try_hold(self.kept.as_ref()) else {
             return false;
         };
-        let Ok(loaded) = load_docs(&self.kept) else {
+        let Ok(loaded) = load_docs(self.kept.as_ref()) else {
             return false;
         };
         let mut docs = self.docs.lock_recover();
@@ -318,11 +332,6 @@ impl Store {
         self.publish(document);
         self.open_socket();
         true
-    }
-
-    #[must_use]
-    pub fn root(&self) -> &Path {
-        &self.root
     }
 
     #[must_use]
@@ -349,7 +358,7 @@ impl Store {
         if docs.seen == now {
             return;
         }
-        let Ok(loaded) = load_docs(&self.kept) else {
+        let Ok(loaded) = load_docs(self.kept.as_ref()) else {
             return;
         };
         *docs = loaded;
@@ -500,7 +509,7 @@ impl Store {
         }
         drop(docs);
         if let Err(error) = saved {
-            tracing::warn!(root = %self.root.display(), %error, "settings not saved");
+            tracing::warn!(dir = %self.dir.display(), %error, "settings not saved");
             self.docs
                 .lock_recover()
                 .unsaved
@@ -1102,7 +1111,7 @@ impl SettingsSource for Store {
         if self.lock.lock_recover().is_some()
             && let Err(error) = self.kept.flush(None)
         {
-            tracing::warn!(root = %self.root.display(), %error, "settings not made durable");
+            tracing::warn!(dir = %self.dir.display(), %error, "settings not made durable");
         }
     }
 
@@ -1115,30 +1124,56 @@ impl SettingsSource for Store {
     }
 }
 
+/// The settings kept at `root`, held or followed in this process: one store each, for a test, a
+/// capture or a `--data-dir` profile. This device's own settings are [`device`]'s.
 #[must_use]
 pub fn profile(root: &Path) -> Arc<Store> {
+    cached(root, || {
+        Store::open(root).unwrap_or_else(|error| {
+            tracing::warn!(root = %root.display(), %error, "settings unreadable; not writing them");
+            let store = empty(
+                Arc::new(app_state::FsStore::new(root.join("documents"))),
+                root.to_path_buf(),
+            );
+            store.refuse_writes(&format!("the settings could not be read: {error}"));
+            store
+        })
+    })
+}
+
+/// This device's settings, held or followed in this process: they live in the device document
+/// store that the session and the apps beside them keep their documents in, so this process
+/// writes their documents through one writer thread with everything else.
+#[must_use]
+pub fn device() -> Option<Arc<Store>> {
+    let root = tilo_paths::xdg::data_home()?;
+    Some(cached(&root, || {
+        Store::open_device().unwrap_or_else(|error| {
+            tracing::warn!(root = %root.display(), %error, "settings unreadable; not writing them");
+            let dir = tilo_paths::profile_root().unwrap_or_else(std::env::temp_dir);
+            let store = empty(app_state::shared_native_store(), dir);
+            store.refuse_writes(&format!("the settings could not be read: {error}"));
+            store
+        })
+    }))
+}
+
+/// The profile kept at `root`, opened once per process by `build`.
+fn cached(root: &Path, build: impl FnOnce() -> Arc<Store>) -> Arc<Store> {
     static PROFILES: Mutex<BTreeMap<PathBuf, Arc<Store>>> = Mutex::new(BTreeMap::new());
     let mut profiles = PROFILES.lock_recover();
     if let Some(store) = profiles.get(root) {
         return Arc::clone(store);
     }
-    let store = Store::open(root).unwrap_or_else(|error| {
-        tracing::warn!(root = %root.display(), %error, "settings unreadable; not writing them");
-        let store = empty(root);
-        store.refuse_writes(&format!("the settings could not be read: {error}"));
-        store
-    });
+    let store = build();
     profiles.insert(root.to_path_buf(), Arc::clone(&store));
     store
 }
 
-fn empty(root: &Path) -> Arc<Store> {
-    let dir = root.join(PROFILE_DIR);
-    let kept = FsStore::new(&dir);
-    let follow = Follow::of(&kept, &keys());
+fn empty(kept: Kept, dir: PathBuf) -> Arc<Store> {
+    let follow = Follow::of(kept.as_ref(), &keys());
     Arc::new_cyclic(|me| Store {
         me: me.clone(),
-        root: root.to_path_buf(),
         dir,
         kept,
         follow,
@@ -1191,7 +1226,7 @@ mod tests {
     fn deep_profile() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("a".repeat(60)).join("b".repeat(60));
-        let socket = root.join(PROFILE_DIR).join(PROFILE_SOCKET);
+        let socket = root.join(PROFILE_SOCKET);
         assert!(socket.as_os_str().len() > 108, "{}", socket.display());
         (dir, root)
     }

@@ -112,7 +112,7 @@ pub use source::{
     flush_pending_writes, install_source, installed_source, installed_version, merge_section,
     note_deferred_failure, scoped_source, take_deferred_failures,
 };
-pub use store::{BOOKKEEPING, Store, made_by, profile};
+pub use store::{BOOKKEEPING, Store, device, made_by, profile};
 
 /// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
 /// only when neither variable yields a usable path. Per the XDG spec, `XDG_CONFIG_HOME` is
@@ -129,8 +129,9 @@ pub fn config_path(relative: &Path) -> Option<PathBuf> {
 
 /// This person's settings in this process: the installed source when the
 /// host provides them (the session's own store, an app's channel to the
-/// session, a page's host document), else the profile at [`config_root`],
-/// held or followed ([`Store`]). `None` only without a config directory.
+/// session, a page's host document), else this device's settings, held or
+/// followed in the device document store ([`device`]). `None` only without a
+/// data home.
 #[must_use]
 pub fn source() -> Option<Arc<dyn SettingsSource>> {
     if let Some(source) = installed_source() {
@@ -139,17 +140,18 @@ pub fn source() -> Option<Arc<dyn SettingsSource>> {
     local().map(|store| store as Arc<dyn SettingsSource>)
 }
 
-/// The profile at [`config_root`]: the store this process holds or follows
-/// when the host installed no source. A test harness started outside the
-/// test environment never writes it ([`unisolated_test_write`]).
+/// This device's settings: the store this process holds or follows when the
+/// host installed no source, kept in the device document store the session
+/// and its apps' documents live in. A test harness started outside the test
+/// environment never writes them ([`unisolated_test_write`]).
 #[must_use]
 pub fn local() -> Option<Arc<Store>> {
-    let store = profile(&config_root()?);
+    let store = device()?;
     if let Some(reason) = executable().and_then(|exe| {
         unisolated_test_write(
             exe,
             std::env::var_os("TILO_TEST_ENVIRONMENT").is_some(),
-            std::env::var_os("XDG_CONFIG_HOME").is_some(),
+            std::env::var_os("XDG_DATA_HOME").is_some(),
         )
     }) {
         store.refuse_writes(reason);
@@ -292,24 +294,25 @@ pub fn update_section_with(
         .update_section_with(name, origin, change)
 }
 
-/// Why a write to the local profile would land in the settings of whoever started this
+/// Why a write to this device's settings would land in the settings of whoever started this
 /// test harness, or `None`.
 ///
 /// Cargo starts test binaries inside `tools/with-test-environment.sh` (a fresh HOME). A
 /// harness started by hand — `target/debug/deps/<crate>-<hash>` — keeps the caller's HOME,
 /// and a test that saves a setting would rewrite their real settings, as fixture
 /// values like a Do Not Disturb switch or a manual status once did. A test that points
-/// `XDG_CONFIG_HOME` at its own directory still writes there.
+/// `XDG_DATA_HOME` at its own directory still writes there, since the settings documents live
+/// in that document store.
 fn unisolated_test_write(
     exe: &Path,
     in_test_environment: bool,
-    config_home_set: bool,
+    data_home_set: bool,
 ) -> Option<&'static str> {
     let harness = exe
         .parent()
         .and_then(Path::file_name)
         .is_some_and(|dir| dir == "deps");
-    (harness && !in_test_environment && !config_home_set).then_some(
+    (harness && !in_test_environment && !data_home_set).then_some(
         "a test harness outside tools/with-test-environment.sh would write the caller's own \
          settings; run it through cargo or that script",
     )
@@ -410,12 +413,12 @@ mod tests {
     #[test]
     fn a_hand_started_test_harness_never_writes_the_callers_settings() {
         // This test binary is itself a harness under `deps/`: with the test environment's
-        // marker and XDG_CONFIG_HOME gone, the local profile is the fake caller's own
-        // `~/.config`, and the write must be refused before anything lands there.
+        // marker and XDG_DATA_HOME gone, the settings are the fake caller's own, and the write
+        // must be refused before anything lands there.
         let home = tmpdir();
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("HOME", &home)
-            .remove("XDG_CONFIG_HOME")
+            .remove("XDG_DATA_HOME")
             .remove("TILO_TEST_ENVIRONMENT");
         let mut values = Map::new();
         values.insert("do_not_disturb".into(), Value::Bool(true));
@@ -424,13 +427,13 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(
             !home
-                .join(".config/tilo/documents/person/state.automerge")
+                .join(".local/share/so.tilo.settings-person/state.automerge")
                 .exists()
         );
 
-        let config = home.join("own-config");
-        env.set("XDG_CONFIG_HOME", &config);
-        update_section("notifications", values).expect("an explicit config directory");
+        let data = home.join("own-data");
+        env.set("XDG_DATA_HOME", &data);
+        update_section("notifications", values).expect("an explicit data directory");
         assert_eq!(load_section("notifications")["do_not_disturb"], json!(true));
         drop(env);
         let _ = std::fs::remove_dir_all(&home);
