@@ -3,13 +3,13 @@
 # the effects it offers. The toolkit builds them once for every vocabulary now
 # (9cc5bcd40a8): the tapps together carry about 1 MB less named code, and the
 # runtime carries the one copy, 15,440 bytes. The runtime measured 161,008,424
-# bytes at rb7cf36d876 (within its budget) and 161,167,648 at r7ce0700551,
-# 14,624 over it; this copy is what took it past the headroom the budget had
-# left. The amount is that size with the ratchet's 1 % headroom, rounded up to
-# 64 KiB. The aarch64 runtime carries the same one copy; its first run prints
-# what to raise that budget to.
-reason = "the toolkit builds an effect's specs once for every vocabulary instead of once per app: about 1 MB of named code leaves the tapps together and the one copy, 15,440 bytes, enters the runtime, which is 14,624 bytes over its budget"
-run = "r7ce0700551"
+# bytes at rb7cf36d876 (within its budget) and 161,167,056 at rf2c174c720,
+# 14,032 over its 161,153,024-byte budget; this copy is what took it past the
+# headroom the budget had left. The amount is that excess rounded up to one
+# 64 KiB step, with no headroom besides it. The aarch64 runtime carries the
+# same one copy; its first run prints what to raise that budget to.
+reason = "the toolkit builds an effect's specs once for every vocabulary instead of once per app: about 1 MB of named code leaves the tapps together and the one copy, 15,440 bytes, enters the runtime, which is 14,032 bytes over its budget"
+run = "rf2c174c720"
 
 [runtime.x86_64]
-bytes = 1638400
+bytes = 65536

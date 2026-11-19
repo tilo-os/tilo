@@ -21,10 +21,6 @@ x86_64 = 196608
 [apps."so.tilo.assistant"]
 x86_64 = 65536
 
-# model 26,779 bytes; 1,246,720 bytes in all, 1,245,184 budgeted.
-[apps."so.tilo.backups"]
-x86_64 = 65536
-
 # model 106,793 bytes; 4,066,304 bytes in all, 3,932,160 budgeted.
 [apps."so.tilo.browser"]
 x86_64 = 196608
@@ -33,7 +29,7 @@ x86_64 = 196608
 [apps."so.tilo.calculator"]
 x86_64 = 65536
 
-# model 459,633 bytes; 3,256,832 bytes in all, 2,686,976 budgeted.
+# model 459,633 bytes; 3,256,832 bytes in all, 2,621,440 budgeted.
 [apps."so.tilo.calendar"]
 x86_64 = 655360
 
@@ -129,7 +125,7 @@ x86_64 = 65536
 [apps."so.tilo.video-player"]
 x86_64 = 65536
 
-# no model; 1,494,016 bytes in all, 1,441,792 budgeted.
+# no model; 1,494,016 bytes in all, 1,376,256 budgeted.
 [apps."so.tilo.windows"]
 x86_64 = 131072
 
