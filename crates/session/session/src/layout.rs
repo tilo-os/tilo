@@ -655,6 +655,35 @@ fn pending_path(state: &std::path::Path) -> std::path::PathBuf {
     state.join("tilo").join("pending-layouts.json")
 }
 
+/// What this device kept there.
+#[cfg(target_os = "linux")]
+fn read_pending(at: &std::path::Path) -> Option<Vec<u8>> {
+    match std::fs::read(at) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            tracing::warn!(path = %at.display(), %error, "what this device could not write was not read");
+            None
+        }
+    }
+}
+
+/// A page's session has no device state to keep it in: the session after it reads the layout its
+/// workspace holds.
+#[cfg(not(target_os = "linux"))]
+fn read_pending(_at: &std::path::Path) -> Option<Vec<u8>> {
+    None
+}
+
+/// Keep `bytes` there.
+#[cfg(target_os = "linux")]
+fn write_pending(at: &std::path::Path, bytes: Vec<u8>) {
+    tilo_durable_writer::keep(at.to_path_buf(), bytes);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_pending(_at: &std::path::Path, _bytes: Vec<u8>) {}
+
 impl Layouts {
     /// This session's records, writing what its windows note of themselves (`notes`), on the loop
     /// `wake` wakes, and each workspace's view kept for `person`. `state` is this device's state
@@ -682,7 +711,7 @@ impl Layouts {
         let Some(at) = &self.pending_at else {
             return;
         };
-        let Ok(bytes) = std::fs::read(at) else {
+        let Some(bytes) = read_pending(at) else {
             return;
         };
         let kept: BTreeMap<String, Vec<PendingStep<LayoutStep>>> = match serde_json::from_slice(
@@ -725,15 +754,8 @@ impl Layouts {
         if self.kept_pending.borrow().as_deref() == Some(bytes.as_slice()) {
             return;
         }
-        #[cfg(target_os = "linux")]
-        {
-            *self.kept_pending.borrow_mut() = Some(bytes.clone());
-            tilo_durable_writer::keep(at.clone(), bytes);
-        }
-        // A page's session has no device state to keep it in: the session after it reads the
-        // layout its workspace holds.
-        #[cfg(not(target_os = "linux"))]
-        let _ = at;
+        *self.kept_pending.borrow_mut() = Some(bytes.clone());
+        write_pending(at, bytes);
     }
 
     /// These records, of a session that hosts the windows that run only on this device:
