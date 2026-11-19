@@ -1,31 +1,35 @@
 //! Thunderbird on this computer as a migration source.
 //!
 //! The profile is read where it is, by the same reader the Tilo OS installer's migration uses
-//! ([`migration_sources::thunderbird`]), and never written. A review lists each account with
-//! its folders, and the profile's address books and calendars; the person chooses an account
-//! (or some of its folders), and the address books and calendars only if they choose them.
+//! ([`migration_sources::thunderbird`]), and never written: the stores it keeps in databases
+//! (its saved sign-ins' key, address books, calendars) are read from a private copy.
 //!
-//! What comes over lands through the apps' own actions as the agent's run: each message in the
-//! workspace's Mail as it was sent, its MIME bytes whole (HTML, attachments, headers; its large
-//! parts carried apart from the rest, so no message is too large to come over), in its
-//! folder with its read state and its conversation (Mail's `deliver-message`, which keeps it
-//! under the id its `Message-ID` names and knows a message it already holds), each contact and
-//! event in
-//! Contacts and Calendar under an id the source decides, so running it again names the same
-//! records and adds nothing.
+//! Each account Thunderbird reads from a server is **connected**: its incoming and outgoing
+//! servers, the names and addresses it sends as, and the password Thunderbird saved for it go to
+//! the server that keeps the person's workspace, as their own request
+//! (`person/mail-accounts#add`). That server signs in with the password first, and only once
+//! the mail server took it keeps the account and seals the password in the person's vault. Mail
+//! then syncs the account from its server, as it does any account. Nothing is copied from
+//! Thunderbird's cache for it. Connecting is the person's to say: the migration shows each account
+//! and its servers at their terminal and connects it once they say yes (or said `--yes`
+//! beforehand). The password is never printed, logged or kept anywhere on this computer.
 //!
-//! A chosen account itself joins the person's accounts: its server settings, the other names
-//! and addresses it sends as, and the password Thunderbird saved for it, through Mail's
-//! `add-account`, which their tab puts to them before it runs. The password travels once, with
-//! the account, into the store that keeps it — the person's vault on the host when the workspace
-//! runs on a host, this computer's when Mail here keeps it — and no second vault keeps a copy. It is
-//! never printed or answered. An account Thunderbird saved no password for asks the person for
-//! it when Mail first signs in.
+//! Copying the messages Thunderbird keeps on this computer is a separate choice, made per
+//! account (`cache/<address>`, or some of its folders): for an account whose server is gone,
+//! or an archive kept offline. The review checks whether each account's server answers and
+//! suggests the copy only for one that does not. Each copied message lands in the workspace's
+//! Mail as it was sent, its MIME bytes whole (its large parts carried apart from the rest, so no
+//! message is too large to come over), in its folder with its read state and its
+//! conversation (Mail's `deliver-message`, which keeps it under the id its `Message-ID` names
+//! and knows a message it already holds). Contacts and events land in Contacts and Calendar
+//! under an id the source decides, so running it again names the same messages, contacts and events and adds nothing.
 
 use std::collections::BTreeMap;
+use std::net::ToSocketAddrs as _;
 use std::path::Path;
+use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 
 use super::state::{Item, Review};
@@ -39,11 +43,32 @@ pub const SOURCE: &str = "thunderbird";
 const DELIVER: &str = "mail/mail.messages#deliver-message";
 const ADD_CONTACTS: &str = "contacts/contacts.contacts#add-contacts";
 const NEW_EVENT: &str = "calendar/calendar.calendar#new-event";
-/// Where an email account joins the person's accounts (Mail's, which the person allows).
-const ADD_ACCOUNT: &str = "mail/mail.mailbox#add-account";
+/// The person's mail accounts on the server that keeps their workspace, which only they add to.
+pub const MAIL_ACCOUNTS: &str = "person/mail-accounts";
+/// What the review names an account's cached messages by: `cache/<address>`.
+const CACHE: &str = "cache/";
+/// The kind of the item that copies an account's cache.
+pub const CACHE_KIND: &str = "cache";
 
 /// How many contacts one action carries.
 const CONTACTS_PER_ACTION: usize = 100;
+/// How long the review waits for an account's server to answer.
+const ANSWERS_WITHIN: Duration = Duration::from_secs(4);
+
+/// Whether a mail server answers at a host and port.
+pub type Answers<'a> = &'a dyn Fn(&str, u16) -> bool;
+
+/// Whether a server listens at `host`:`port` now: a connection to one of its addresses is
+/// taken within [`ANSWERS_WITHIN`].
+#[must_use]
+pub fn server_answers(host: &str, port: u16) -> bool {
+    let Ok(addresses) = (host, port).to_socket_addrs() else {
+        return false;
+    };
+    addresses
+        .take(4)
+        .any(|address| std::net::TcpStream::connect_timeout(&address, ANSWERS_WITHIN).is_ok())
+}
 
 /// The review of the Thunderbird profile at `home`: `profile` names one when there are
 /// several; the default profile otherwise. Nothing is chosen until the person says.
@@ -52,37 +77,20 @@ const CONTACTS_PER_ACTION: usize = 100;
 /// No Thunderbird profile is here, or none that is here could be read; the
 /// message names what could not be read and why.
 pub fn review(home: &Path, profile: Option<&str>) -> Result<Review> {
+    review_with(home, profile, &server_answers)
+}
+
+/// [`review`], asking `answers` whether an account's server is there.
+///
+/// # Errors
+/// As [`review`].
+pub fn review_with(home: &Path, profile: Option<&str>, answers: Answers<'_>) -> Result<Review> {
     let scan = migration_sources::thunderbird::scan(home);
     let reviewed = readable_profile(&scan, profile)?;
     let found = reviewed.profile();
     let mut items = Vec::new();
     for account in &found.accounts {
-        let key = account_key(account);
-        let messages = account
-            .folders
-            .iter()
-            .map(|folder| count(folder.messages))
-            .sum();
-        items.push(Item {
-            key: key.clone(),
-            kind: "account".into(),
-            title: format!("{} ({})", account.display_name, account.kind),
-            count: messages,
-            counts: "messages".into(),
-            within: None,
-            chosen: false,
-        });
-        for folder in &account.folders {
-            items.push(Item {
-                key: format!("{key}/{}", folder.hierarchy.join("/")),
-                kind: "folder".into(),
-                title: folder.hierarchy.join("/"),
-                count: count(folder.messages),
-                counts: "messages".into(),
-                within: Some(key.clone()),
-                chosen: false,
-            });
-        }
+        account_items(account, answers, &mut items);
     }
     for book in &found.address_books {
         items.push(Item {
@@ -93,6 +101,7 @@ pub fn review(home: &Path, profile: Option<&str>) -> Result<Review> {
             counts: "contacts".into(),
             within: None,
             chosen: false,
+            note: None,
         });
     }
     for calendar in &found.calendars {
@@ -104,6 +113,7 @@ pub fn review(home: &Path, profile: Option<&str>) -> Result<Review> {
             counts: "events".into(),
             within: None,
             chosen: false,
+            note: None,
         });
     }
     Ok(Review {
@@ -118,6 +128,86 @@ pub fn review(home: &Path, profile: Option<&str>) -> Result<Review> {
             .collect(),
         items,
     })
+}
+
+/// What `account` offers: connecting it when Mail can sync it from its server
+/// (asking `answers` whether that server is there), and copying what
+/// Thunderbird keeps of it, folder by folder.
+fn account_items(
+    account: &migration_sources::thunderbird::ThunderbirdAccount,
+    answers: Answers<'_>,
+    items: &mut Vec<Item>,
+) {
+    let key = account_key(account);
+    let messages = account
+        .folders
+        .iter()
+        .map(|folder| count(folder.messages))
+        .sum();
+    let servers = servers(account);
+    let answering = servers
+        .as_ref()
+        .map(|servers| answers(&servers.imap_host, servers.imap_port));
+    let cache = format!("{CACHE}{key}");
+    if let Some(servers) = &servers {
+        items.push(Item {
+            key,
+            kind: "account".into(),
+            title: format!(
+                "connect {} ({}:{}, sends by {}:{}); Mail syncs it from its server",
+                account.display_name,
+                servers.imap_host,
+                servers.imap_port,
+                servers.smtp_host,
+                servers.smtp_port
+            ),
+            count: 0,
+            counts: String::new(),
+            within: None,
+            chosen: false,
+            note: (answering == Some(false)).then(|| {
+                format!(
+                    "{}:{} did not answer: if the account is gone, copy what Thunderbird \
+                     keeps instead (tilo migrate choose thunderbird {cache})",
+                    servers.imap_host, servers.imap_port
+                )
+            }),
+        });
+    }
+    let note = match answering {
+        None => Some(format!(
+            "{} is no account Mail syncs from a server ({}): copying is the way to keep \
+             its mail",
+            account.display_name, account.kind
+        )),
+        Some(false) => Some("its server did not answer: copying keeps its mail".to_owned()),
+        Some(true) => None,
+    };
+    items.push(Item {
+        key: cache.clone(),
+        kind: CACHE_KIND.into(),
+        title: format!(
+            "copy the messages of {} Thunderbird keeps on this computer",
+            account.display_name
+        ),
+        count: messages,
+        counts: "messages".into(),
+        within: None,
+        chosen: false,
+        note,
+    });
+    for folder in &account.folders {
+        items.push(Item {
+            key: format!("{cache}/{}", folder.hierarchy.join("/")),
+            kind: "folder".into(),
+            title: folder.hierarchy.join("/"),
+            count: count(folder.messages),
+            counts: "messages".into(),
+            within: Some(cache.clone()),
+            chosen: false,
+            note: None,
+        });
+    }
 }
 
 /// The reviewed profile `profile` names by its id or label, or the first one
@@ -181,7 +271,7 @@ pub fn summary(review: &Review) -> String {
         .collect();
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for item in review.chosen() {
-        if item.kind != "account" {
+        if item.kind != "account" && item.kind != CACHE_KIND {
             let total = counts.entry(item.counts.as_str()).or_default();
             *total = total.saturating_add(item.count);
         }
@@ -193,7 +283,7 @@ pub fn summary(review: &Review) -> String {
         .collect();
     let mut summary = String::from("From Thunderbird");
     if !accounts.is_empty() {
-        summary.push_str(": ");
+        summary.push_str(": connect ");
         summary.push_str(&accounts.join(", "));
     }
     if !counted.is_empty() {
@@ -207,7 +297,8 @@ pub fn summary(review: &Review) -> String {
 /// Bring what `review` chose over, landing through `lander`.
 ///
 /// # Errors
-/// The profile could not be read or the workspace refused; what landed before stays landed.
+/// The profile could not be read, the person said no to connecting an account, or the server or
+/// the workspace refused; what landed before stays landed.
 pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()> {
     let profiles = migration_sources::thunderbird::discover(home).map_err(|why| anyhow!(why))?;
     let profile = profiles
@@ -231,22 +322,25 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
                     Ok(logins) => logins,
                     Err(migration_sources::thunderbird::LoginsError::NoneSaved) => Vec::new(),
                     Err(why) => {
-                        (lander.progress)(&format!(
-                            "{why}: the accounts wait for the person to sign them in, in Settings"
+                        lander.say(&format!(
+                            "{why}: each account is connected without its password, and Mail \
+                             asks for it once"
                         ));
                         Vec::new()
                     }
                 },
             );
         }
-        let logins = saved.as_deref().unwrap_or_default();
-        land_account(account, logins, lander)?;
+        connect_account(account, saved.as_deref().unwrap_or_default(), lander)?;
+    }
+    for account in &profile.accounts {
         let address = account
             .email
             .clone()
             .unwrap_or_else(|| account.display_name.clone());
+        let cache = format!("{CACHE}{}", account_key(account));
         for folder in &account.folders {
-            let folder_key = format!("{key}/{}", folder.hierarchy.join("/"));
+            let folder_key = format!("{cache}/{}", folder.hierarchy.join("/"));
             if !chosen.contains(folder_key.as_str()) {
                 continue;
             }
@@ -292,55 +386,154 @@ pub fn land(home: &Path, review: &Review, lander: &mut Lander<'_>) -> Result<()>
     Ok(())
 }
 
-/// The settings of `account` (its servers, the other names and addresses it sends as, and the
-/// password Thunderbird saved for it) into the person's accounts, where that store keeps them.
-/// An account with no server settings Mail can use (a local or POP one) keeps only its mail.
-fn land_account(
+/// Connect `account`: shown to the person, and once they say yes, its servers, the other names
+/// and addresses it sends as, and the password Thunderbird saved for it go to the server that
+/// keeps their workspace, which signs in with it before keeping anything. Whether it is
+/// connected is what that server says it keeps, never what an earlier migration noted: an account it
+/// keeps already is told as such, and one it does not is connected again.
+///
+/// # Errors
+/// The account has no server settings Mail can use, the person said no, or the server refused
+/// (its mail server did not take the password, say), in its words.
+fn connect_account(
     account: &migration_sources::thunderbird::ThunderbirdAccount,
     logins: &[migration_sources::thunderbird::SavedLogin],
     lander: &mut Lander<'_>,
 ) -> Result<()> {
-    let Some(arguments) = account_arguments(account, logins) else {
-        return Ok(());
+    let Some(adding) = account_arguments(account, logins) else {
+        bail!(
+            "{} has no server Mail can sync from (a local or POP account): copy its messages \
+             instead (tilo migrate choose thunderbird {CACHE}{})",
+            account.display_name,
+            account_key(account)
+        );
     };
-    lander.open("mail");
-    lander.once(
-        &format!("account:{}", account_key(account)),
-        "accounts",
-        |workspace, run| match workspace.act(run, ADD_ACCOUNT, arguments.clone()) {
-            Ok(answer) if answer.said("already") => Ok(Landed::Already),
-            Ok(_) => Ok(Landed::One),
-            Err(error) => Err(mail_not_open(error, text(&arguments, "email"))),
-        },
-    )
+    connect_mail(adding, lander)
 }
 
-/// Why an account could not be added, said as what to do: Mail adds it from the person's own
-/// tab, so it has to be open there.
-pub fn mail_not_open(error: anyhow::Error, email: &str) -> anyhow::Error {
-    if super::workspace::Refused::of(&error)
-        .is_some_and(|refused| refused.code() == "unknown_action")
-    {
-        return error.context(format!(
-            "{email} is added to the person's accounts by Mail in their tab, and Mail is not open there: ask them to open Mail, then start this again"
-        ));
+/// Connect the mail account `adding` describes (as `person/mail-accounts#add` takes it), once
+/// the person says yes, and only say so once the server lists it.
+///
+/// # Errors
+/// The person said no, or the server refused, in its words.
+pub fn connect_mail(adding: Value, lander: &mut Lander<'_>) -> Result<()> {
+    let address = text(&adding, "address").to_owned();
+    let key = format!("connected:{address}");
+    let kept = lander.person(MAIL_ACCOUNTS, "list", json!({}))?;
+    if keeps(&kept, &address) {
+        lander.say(&format!("{address} is connected already"));
+        return lander.noted(&key, "accounts", &Landed::Already);
     }
-    error
+    let saved = adding.get("password").is_some();
+    let question = connect_question(&adding, saved);
+    if !lander.confirm(&question)? {
+        bail!("{address} was not connected: you said no");
+    }
+    let added = lander
+        .person(MAIL_ACCOUNTS, "add", adding)
+        .map_err(|error| error.context(format!("{address} was not connected")))?;
+    // What the server answers is the account it keeps: anything else is not one.
+    if !keeps(&json!({"accounts": [added]}), &address) {
+        bail!("{address} was not connected: the server answered no account for it");
+    }
+    let then = lander.person(MAIL_ACCOUNTS, "list", json!({}))?;
+    if !keeps(&then, &address) {
+        bail!("{address} was not connected: the server does not list it");
+    }
+    lander.say(&if saved {
+        format!("{address} is connected: Mail syncs it from its server now")
+    } else {
+        format!(
+            "{address} is connected without a password, as Thunderbird saved none: Mail asks \
+             for it once, then syncs the account from its server"
+        )
+    });
+    lander.noted(&key, "accounts", &Landed::One)
 }
 
-/// What Mail's `add-account` takes for `account`, including the password Thunderbird saved
-/// for it: `None` for an account Mail cannot reach (local folders, POP) or whose settings do
-/// not check.
+/// Whether the server's `listing` of the person's mail accounts holds `address`.
+fn keeps(listing: &Value, address: &str) -> bool {
+    listing
+        .get("accounts")
+        .and_then(Value::as_array)
+        .is_some_and(|accounts| {
+            accounts.iter().any(|account| {
+                account
+                    .get("address")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kept| kept.eq_ignore_ascii_case(address))
+            })
+        })
+}
+
+/// What the person is asked before `adding` is connected: the account, its servers, the
+/// addresses it sends as, and whether its saved password goes with it. Never the password.
+fn connect_question(adding: &Value, saved: bool) -> String {
+    let mut question = format!(
+        "Connect {} to Mail: receives from {}:{}, sends by {}:{}",
+        text(adding, "address"),
+        text(adding, "incomingHost"),
+        adding["incomingPort"],
+        text(adding, "outgoingHost"),
+        adding["outgoingPort"],
+    );
+    if let Some(identities) = adding.get("identities").and_then(Value::as_array) {
+        let names: Vec<&str> = identities.iter().filter_map(Value::as_str).collect();
+        if !names.is_empty() {
+            question.push_str(", also sends as ");
+            question.push_str(&names.join(", "));
+        }
+    }
+    question.push_str(if saved {
+        ", with the password Thunderbird saved, sealed in your vault?"
+    } else {
+        "? Thunderbird saved no password: Mail asks for it once."
+    });
+    question
+}
+
+/// An account's incoming and outgoing servers, as Mail would reach them.
+struct Servers {
+    imap_host: String,
+    imap_port: u16,
+    smtp_host: String,
+    smtp_port: u16,
+}
+
+/// The servers of `account`, when it is one Mail syncs from a server (IMAP), not a local or
+/// POP one.
+fn servers(account: &migration_sources::thunderbird::ThunderbirdAccount) -> Option<Servers> {
+    let config = config(account)?;
+    Some(Servers {
+        imap_host: config.imap_host,
+        imap_port: config.imap_port,
+        smtp_host: config.smtp_host,
+        smtp_port: config.smtp_port,
+    })
+}
+
+/// The settings Mail would keep for `account`, checked: `None` for an account Mail cannot reach
+/// (local folders, POP) or whose settings do not check.
+fn config(
+    account: &migration_sources::thunderbird::ThunderbirdAccount,
+) -> Option<accounts::email::AccountConfig> {
+    use accounts::email::AuthMethod;
+    let candidate = account.settings.as_ref()?.candidate.as_ref()?;
+    candidate
+        .reviewed_config(AuthMethod::Password)
+        .or_else(|_| candidate.reviewed_config(AuthMethod::OAuth))
+        .ok()
+}
+
+/// What the person's `person/mail-accounts#add` takes for `account`, including the password
+/// Thunderbird saved for it: `None` for an account Mail cannot reach (local folders, POP) or
+/// whose settings do not check.
 fn account_arguments(
     account: &migration_sources::thunderbird::ThunderbirdAccount,
     logins: &[migration_sources::thunderbird::SavedLogin],
 ) -> Option<Value> {
     use accounts::email::AuthMethod;
-    let candidate = account.settings.as_ref()?.candidate.as_ref()?;
-    let config = candidate
-        .reviewed_config(AuthMethod::Password)
-        .or_else(|_| candidate.reviewed_config(AuthMethod::OAuth))
-        .ok()?;
+    let config = config(account)?;
     let password = (config.auth == AuthMethod::Password)
         .then(|| {
             migration_sources::thunderbird::password_for(
@@ -371,21 +564,22 @@ fn account_arguments(
         .filter(|name| !name.is_empty())
         .unwrap_or(account.display_name.as_str());
     let mut arguments = json!({
-        "display_name": name,
-        "email": config.email,
-        "username": config.username,
-        "imap_host": config.imap_host,
-        "imap_port": config.imap_port,
-        "smtp_host": config.smtp_host,
-        "smtp_port": config.smtp_port,
+        "address": config.email,
+        "displayName": name,
+        "incomingHost": config.imap_host,
+        "incomingPort": config.imap_port,
+        "outgoingHost": config.smtp_host,
+        "outgoingPort": config.smtp_port,
     });
     if let Some(fields) = arguments.as_object_mut() {
+        if !config.username.is_empty() && !config.username.eq_ignore_ascii_case(&config.email) {
+            fields.insert("username".into(), json!(config.username));
+        }
         if !identities.is_empty() {
             fields.insert("identities".into(), json!(identities));
         }
-        // The sign-in travels with the account into the store that keeps it
-        // (the person's vault on the host when it is kept there), and is never sealed
-        // into a vault of this computer's beside it.
+        // The sign-in travels once, to the server that keeps the account, which seals it in the
+        // person's vault; no store of this computer keeps it.
         if let Some(password) = password {
             fields.insert("password".into(), json!(password));
         }
@@ -643,21 +837,6 @@ mod tests {
             !already_held(&other),
             "the app's words alone decide nothing"
         );
-    }
-
-    #[test]
-    fn a_mail_that_does_not_run_says_what_to_do() {
-        let unopened: anyhow::Error = Refused::coded(
-            "unknown_action",
-            "no action addressed by (mail, add-account)",
-        )
-        .into();
-        let said = format!("{:#}", mail_not_open(unopened, "ada@example.com"));
-        assert!(said.contains("Mail is not open there"), "{said}");
-        let refused: anyhow::Error =
-            Refused::coded("refused", "the account's servers do not check").into();
-        let said = format!("{:#}", mail_not_open(refused, "ada@example.com"));
-        assert_eq!(said, "the account's servers do not check");
     }
 
     #[test]

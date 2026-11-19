@@ -28,6 +28,10 @@ pub struct Item {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub within: Option<String>,
     pub chosen: bool,
+    /// What the person should know before choosing it: an account whose server did not answer,
+    /// and what to choose instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// What a source holds, as the person reviews it.

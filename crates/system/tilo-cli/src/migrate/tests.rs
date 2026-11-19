@@ -11,11 +11,20 @@ use super::state::{Journal, Place, RunState};
 use super::workspace::{Answer, Call, Invocation, Status, Workspace};
 use super::{Lander, Stopped, thunderbird};
 
-/// A workspace that keeps every action it is asked, and every upload.
+/// A workspace that keeps every action it is asked, and every upload, and a server that keeps
+/// the person's mail accounts as the real one answers them.
 #[derive(Default)]
 struct Recorded {
     actions: Vec<(String, String, Value)>,
     puts: Vec<Vec<u8>>,
+    /// Every account the person asked the server to add, as it was asked.
+    added: Vec<Value>,
+    /// The accounts the server keeps, as it lists them: never a password.
+    kept: Vec<Value>,
+    /// The server's refusal of every account added, in its words.
+    refuses: Option<String>,
+    /// The server answers an account added and then does not list it.
+    forgets: bool,
 }
 
 impl Workspace for Recorded {
@@ -27,6 +36,31 @@ impl Workspace for Recorded {
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
         self.actions.push((String::new(), action.to_owned(), args));
         Ok(Answer::of(None))
+    }
+
+    fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
+        anyhow::ensure!(path == thunderbird::MAIL_ACCOUNTS, "asked {path}");
+        match action {
+            "list" => Ok(serde_json::json!({"accounts": self.kept})),
+            "add" => {
+                self.added.push(args.clone());
+                if let Some(why) = &self.refuses {
+                    return Err(super::workspace::Refused::coded("refused", why.clone()).into());
+                }
+                let account = serde_json::json!({
+                    "id": args["address"], "address": args["address"],
+                    "displayName": args["displayName"],
+                    "incomingHost": args["incomingHost"], "incomingPort": args["incomingPort"],
+                    "outgoingHost": args["outgoingHost"], "outgoingPort": args["outgoingPort"],
+                    "hasSecret": args.get("password").is_some(),
+                });
+                if !self.forgets {
+                    self.kept.push(account.clone());
+                }
+                Ok(account)
+            }
+            other => anyhow::bail!("no person/mail-accounts#{other}"),
+        }
     }
 
     fn put(&mut self, bytes: &[u8]) -> Result<String> {
@@ -45,7 +79,25 @@ impl Recorded {
     }
 }
 
+/// What the person was told and asked during a migration.
+#[derive(Default)]
+struct Told {
+    lines: Vec<String>,
+    asked: Vec<String>,
+}
+
 fn run_once(home: &Path, place: &Place, workspace: &mut dyn Workspace) -> Result<Journal> {
+    migrate_saying(home, place, workspace, true, &mut Told::default())
+}
+
+/// A migration in which the person answers `yes` to every question, and what they were told.
+fn migrate_saying(
+    home: &Path,
+    place: &Place,
+    workspace: &mut dyn Workspace,
+    yes: bool,
+    told: &mut Told,
+) -> Result<Journal> {
     let review = place.review(thunderbird::SOURCE)?.expect("reviewed");
     let mut journal = place.journal(thunderbird::SOURCE)?;
     journal.brought.clear();
@@ -54,7 +106,13 @@ fn run_once(home: &Path, place: &Place, workspace: &mut dyn Workspace) -> Result
         id: "run-1".into(),
         title: thunderbird::summary(&review),
     };
-    let mut progress = |_: &str| {};
+    let lines = std::cell::RefCell::new(Vec::new());
+    let asked = std::cell::RefCell::new(Vec::new());
+    let mut progress = |line: &str| lines.borrow_mut().push(line.to_owned());
+    let mut confirm = |question: &str| {
+        asked.borrow_mut().push(question.to_owned());
+        Ok(yes)
+    };
     let result = {
         let mut lander = Lander {
             workspace,
@@ -65,9 +123,12 @@ fn run_once(home: &Path, place: &Place, workspace: &mut dyn Workspace) -> Result
             place,
             source: thunderbird::SOURCE,
             progress: &mut progress,
+            confirm: &mut confirm,
         };
         thunderbird::land(home, &review, &mut lander)
     };
+    told.lines.extend(lines.into_inner());
+    told.asked.extend(asked.into_inner());
     journal.state = match &result {
         Ok(()) => RunState::Complete,
         Err(error) if error.is::<Stopped>() => RunState::Stopped,
@@ -99,43 +160,69 @@ impl Workspace for HoldsMail {
         self.0.ask(action, args)
     }
 
+    fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
+        self.0.person(path, action, args)
+    }
+
     fn put(&mut self, bytes: &[u8]) -> Result<String> {
         self.0.put(bytes)
     }
 }
 
-/// The sample profile reviewed, and its work account chosen as an agent chooses it, checking
-/// what the review lists on the way.
-fn work_account_chosen(dir: &Path) -> (std::path::PathBuf, Place) {
+/// Every server the review asks about answers.
+fn answering(_: &str, _: u16) -> bool {
+    true
+}
+
+/// The sample profile, reviewed with every server answering.
+fn sample(dir: &Path) -> (std::path::PathBuf, Place, super::state::Review) {
     let home = dir.join("home");
     migration_sources::thunderbird::fixture::write_sample_profile(&home);
     let place = Place::at(&dir.join("state"));
+    let review = thunderbird::review_with(&home, None, &answering).unwrap();
+    (home, place, review)
+}
 
-    // The review lists both accounts with their folders and counts, nothing chosen.
-    let mut review = thunderbird::review(&home, None).unwrap();
-    let accounts: Vec<&str> = review
-        .items
-        .iter()
-        .filter(|item| item.kind == "account")
-        .map(|item| item.key.as_str())
-        .collect();
+/// The sample profile reviewed, and its work account chosen as an agent chooses it, checking
+/// what the review lists on the way.
+fn work_account_chosen(dir: &Path) -> (std::path::PathBuf, Place) {
+    let (home, place, mut review) = sample(dir);
+
+    // The review lists both accounts to connect, and apart from them what Thunderbird keeps of
+    // each on this computer, nothing chosen.
+    let of_kind = |kind: &str| -> Vec<String> {
+        review
+            .items
+            .iter()
+            .filter(|item| item.kind == kind)
+            .map(|item| item.key.clone())
+            .collect()
+    };
     assert_eq!(
-        accounts,
+        of_kind("account"),
         ["ada@example.com", "ada.home@example.org"],
         "{review:#?}"
     );
+    assert_eq!(
+        of_kind(thunderbird::CACHE_KIND),
+        ["cache/ada@example.com", "cache/ada.home@example.org"]
+    );
     assert!(review.chosen().is_empty());
-    let work = review
+    let cache = review
         .items
         .iter()
-        .find(|item| item.key == "ada@example.com")
+        .find(|item| item.key == "cache/ada@example.com")
         .unwrap();
     assert_eq!(
-        work.count, 4,
-        "the work account's Inbox and Sent hold four messages"
+        cache.count, 4,
+        "the work account's cached Inbox and Sent hold four messages"
+    );
+    assert!(
+        review.items.iter().all(|item| item.note.is_none()),
+        "nothing is suggested while every server answers: {review:#?}"
     );
 
-    // The agent chooses the work account only; its folders come with it.
+    // The agent chooses the work account only: connecting it copies nothing of its cache.
     review
         .choose(&["ada@example.com".to_owned()], true, true)
         .unwrap();
@@ -144,11 +231,7 @@ fn work_account_chosen(dir: &Path) -> (std::path::PathBuf, Place) {
         .iter()
         .map(|item| item.key.as_str())
         .collect();
-    assert!(chosen.contains(&"ada@example.com"));
-    assert!(
-        chosen.iter().all(|key| key.starts_with("ada@example.com")),
-        "{chosen:?}"
-    );
+    assert_eq!(chosen, ["ada@example.com"]);
     assert!(
         review
             .choose(&["nobody@example.com".to_owned()], true, false)
@@ -158,18 +241,153 @@ fn work_account_chosen(dir: &Path) -> (std::path::PathBuf, Place) {
     place.keep_review(&review).unwrap();
     assert_eq!(
         thunderbird::summary(&review),
-        "From Thunderbird: ada@example.com (4 messages)"
+        "From Thunderbird: connect ada@example.com"
     );
 
     (home, place)
 }
 
 #[test]
-fn one_thunderbird_account_of_two_comes_over_once() {
+fn a_live_account_is_connected_and_nothing_is_copied_from_its_cache() {
     let dir = tempfile::tempdir().unwrap();
     let (home, place) = work_account_chosen(dir.path());
     let mut workspace = Recorded::default();
+    let mut told = Told::default();
+    let journal = migrate_saying(&home, &place, &mut workspace, true, &mut told).unwrap();
+
+    // The account goes to the server with its servers and the password Thunderbird saved,
+    // once, as the person's own request; nothing is copied, and no app is asked anything.
+    assert_eq!(workspace.added.len(), 1, "{:#?}", workspace.added);
+    let added = &workspace.added[0];
+    assert_eq!(added["address"], "ada@example.com");
+    assert_eq!(added["incomingHost"], "imap.example.com");
+    assert_eq!(added["incomingPort"], 993);
+    assert_eq!(added["outgoingHost"], "smtp.example.com");
+    assert_eq!(added["outgoingPort"], 465);
+    assert_eq!(
+        added["password"],
+        migration_sources::thunderbird::fixture::WORK_PASSWORD
+    );
+    assert!(
+        added.get("identities").is_none(),
+        "the work account sends as itself only"
+    );
+    assert!(workspace.actions.is_empty(), "{:?}", workspace.actions);
+    assert!(workspace.puts.is_empty(), "no message is copied");
+    assert_eq!(journal.brought.get("accounts"), Some(&1));
+    assert_eq!(journal.brought.get("messages"), None);
+
+    // The person was shown the account and its servers before it was connected, and told when
+    // it was; never its password.
+    assert_eq!(told.asked.len(), 1, "{:?}", told.asked);
+    assert!(
+        told.asked[0].contains("imap.example.com:993"),
+        "{:?}",
+        told.asked
+    );
+    assert!(
+        told.lines.iter().any(|line| line.contains("is connected")),
+        "{:?}",
+        told.lines
+    );
+    let secret = migration_sources::thunderbird::fixture::WORK_PASSWORD;
+    for said in told.asked.iter().chain(&told.lines) {
+        assert!(!said.contains(secret), "{said}");
+    }
+    // Nor does anything this computer keeps of the migration.
+    for entry in walk(&dir.path().join("state")) {
+        let kept = std::fs::read(&entry).unwrap();
+        assert!(
+            !kept
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "{} keeps the password",
+            entry.display()
+        );
+    }
+
+    // A second migration finds the account on the server and asks for nothing.
     let journal = run_once(&home, &place, &mut workspace).unwrap();
+    assert_eq!(workspace.added.len(), 1, "connected once");
+    assert_eq!(journal.already_there, 1);
+}
+
+/// Every file under `dir`.
+fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(walk(&path));
+        } else {
+            found.push(path);
+        }
+    }
+    found
+}
+
+#[test]
+fn a_connection_the_server_did_not_keep_is_not_claimed() {
+    // The server refuses: its words are the migration's failure, and nothing is counted.
+    let dir = tempfile::tempdir().unwrap();
+    let (home, place) = work_account_chosen(dir.path());
+    let mut refusing = Recorded {
+        refuses: Some("the mail server did not take the password".into()),
+        ..Recorded::default()
+    };
+    let error = run_once(&home, &place, &mut refusing).unwrap_err();
+    let said = format!("{error:#}");
+    assert!(said.contains("was not connected"), "{said}");
+    assert!(said.contains("did not take the password"), "{said}");
+    let journal = place.journal(thunderbird::SOURCE).unwrap();
+    assert_eq!(journal.state, RunState::Failed);
+    assert_eq!(journal.brought.get("accounts"), None);
+
+    // The server answers, then does not list it: still not connected.
+    let mut forgetting = Recorded {
+        forgets: true,
+        ..Recorded::default()
+    };
+    let error = run_once(&home, &place, &mut forgetting).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("does not list it"),
+        "{error:#}"
+    );
+
+    // A refused migration tried again connects it: no earlier note of the journal stands in for what
+    // the server keeps.
+    let mut working = Recorded::default();
+    let journal = run_once(&home, &place, &mut working).unwrap();
+    assert_eq!(working.added.len(), 1);
+    assert_eq!(journal.brought.get("accounts"), Some(&1));
+}
+
+#[test]
+fn an_account_the_person_says_no_to_is_not_connected() {
+    let dir = tempfile::tempdir().unwrap();
+    let (home, place) = work_account_chosen(dir.path());
+    let mut workspace = Recorded::default();
+    let error =
+        migrate_saying(&home, &place, &mut workspace, false, &mut Told::default()).unwrap_err();
+    assert!(format!("{error:#}").contains("you said no"), "{error:#}");
+    assert!(workspace.added.is_empty());
+}
+
+#[test]
+fn copying_the_cache_is_a_choice_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let (home, place, mut review) = sample(dir.path());
+    review
+        .choose(&["cache/ada@example.com".to_owned()], true, true)
+        .unwrap();
+    assert!(
+        review.chosen().iter().all(|item| item.kind != "account"),
+        "copying connects nothing"
+    );
+    place.keep_review(&review).unwrap();
+    let mut workspace = Recorded::default();
+    let journal = run_once(&home, &place, &mut workspace).unwrap();
+    assert!(workspace.added.is_empty(), "no account is connected");
     assert_eq!(journal.brought.get("messages"), Some(&4), "{journal:?}");
 
     // Its four messages, each delivered to Mail in its folder; none of the home account's.
@@ -208,45 +426,6 @@ fn one_thunderbird_account_of_two_comes_over_once() {
         "a message keeps its own Message-ID"
     );
     assert_eq!(workspace.of("mail#open").len(), 1, "Mail is started once");
-    // Contacts and calendars were not chosen.
-    assert!(
-        workspace
-            .of("contacts/contacts.contacts#add-contacts")
-            .is_empty()
-    );
-    assert!(
-        workspace
-            .of("calendar/calendar.calendar#new-event")
-            .is_empty()
-    );
-    // The account joins the person's accounts with its servers, the other address it sends
-    // as and the password Thunderbird saved; the home account does not. The password travels
-    // with the account, as a secret argument, into the store that keeps the account.
-    let added = workspace.of("mail/mail.mailbox#add-account");
-    assert_eq!(added.len(), 1, "{added:#?}");
-    assert_eq!(added[0]["email"], "ada@example.com");
-    assert_eq!(added[0]["imap_host"], "imap.example.com");
-    assert_eq!(added[0]["smtp_host"], "smtp.example.com");
-    assert_eq!(
-        added[0]["password"],
-        migration_sources::thunderbird::fixture::WORK_PASSWORD,
-        "the saved sign-in travels once, with the account"
-    );
-    assert!(
-        added[0].get("identities").is_none(),
-        "the work account sends as itself only"
-    );
-    // No vault of this computer's keeps a second copy beside it.
-    let vault = accounts::SecretVault::open_read_only_in(&place.path("vault", ""));
-    assert!(
-        vault
-            .get(&accounts::AccountId::new("ada@example.com"))
-            .is_none(),
-        "the sign-in is not sealed into a second vault"
-    );
-    assert_eq!(journal.brought.get("accounts"), Some(&1));
-    // Every action is a step of the one run.
-    assert!(workspace.actions.iter().all(|(run, _, _)| run == "run-1"));
 
     // A second run asks the workspace for nothing.
     let mut again = Recorded::default();
@@ -254,16 +433,49 @@ fn one_thunderbird_account_of_two_comes_over_once() {
     assert!(again.actions.is_empty(), "{:?}", again.actions);
     assert!(again.puts.is_empty());
     assert!(journal.brought.is_empty());
-    assert_eq!(
-        journal.already_there, 5,
-        "its four messages and the account"
+    assert_eq!(journal.already_there, 4, "its four messages");
+}
+
+#[test]
+fn copying_is_suggested_only_for_an_account_whose_server_does_not_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    migration_sources::thunderbird::fixture::write_sample_profile(&home);
+    // The work account's server answers; the home account's does not.
+    let review = thunderbird::review_with(&home, None, &|host: &str, _| {
+        host == migration_sources::thunderbird::fixture::WORK_SERVER
+    })
+    .unwrap();
+    let note = |key: &str| {
+        review
+            .items
+            .iter()
+            .find(|item| item.key == key)
+            .unwrap_or_else(|| panic!("{key} in {review:#?}"))
+            .note
+            .clone()
+    };
+    assert_eq!(note("ada@example.com"), None);
+    assert_eq!(note("cache/ada@example.com"), None);
+    let gone = note("ada.home@example.org").expect("the home account's server is named");
+    assert!(
+        gone.contains("imap.example.org:993 did not answer"),
+        "{gone}"
     );
+    assert!(gone.contains("cache/ada.home@example.org"), "{gone}");
+    assert!(note("cache/ada.home@example.org").is_some());
+    // Suggested, not chosen: the person chooses.
+    assert!(review.chosen().is_empty());
 }
 
 #[test]
 fn a_message_mail_holds_already_counts_as_there() {
     let dir = tempfile::tempdir().unwrap();
-    let (home, place) = work_account_chosen(dir.path());
+    let (home, place, mut review) = sample(dir.path());
+    review
+        .choose(&["cache/ada@example.com".to_owned()], true, true)
+        .unwrap();
+    place.keep_review(&review).unwrap();
     let mut workspace = HoldsMail(Recorded::default());
     let journal = run_once(&home, &place, &mut workspace).unwrap();
     assert_eq!(
@@ -312,9 +524,9 @@ fn a_stopped_run_resumes_where_it_stopped() {
     let home = dir.path().join("home");
     migration_sources::thunderbird::fixture::write_sample_profile(&home);
     let place = Place::at(&dir.path().join("state"));
-    let mut review = thunderbird::review(&home, None).unwrap();
+    let mut review = thunderbird::review_with(&home, None, &answering).unwrap();
     review
-        .choose(&["ada.home@example.org".to_owned()], true, true)
+        .choose(&["cache/ada.home@example.org".to_owned()], true, true)
         .unwrap();
     place.keep_review(&review).unwrap();
 
@@ -465,6 +677,13 @@ fn starting_without_a_review_reviews_the_source_and_takes_everything() {
             .any(|item| item.key == "ada@example.com"),
         "the first start reviews the source and takes its accounts: {review:#?}"
     );
+    assert!(
+        review
+            .chosen()
+            .iter()
+            .all(|item| item.kind != thunderbird::CACHE_KIND && item.kind != "folder"),
+        "nothing of the cache is copied unless the person chooses it: {review:#?}"
+    );
     // Kept: a second start works from the same review.
     assert_eq!(place.review(thunderbird::SOURCE).unwrap().unwrap(), review);
 }
@@ -483,13 +702,13 @@ fn a_review_names_what_it_could_not_read_and_still_lists_the_rest() {
     migration_sources::thunderbird::fixture::write_sample_profile(&home);
     migration_sources::thunderbird::fixture::write_stale_mail_directories(&home);
 
-    let review = thunderbird::review(&home, None).unwrap();
+    let review = thunderbird::review_with(&home, None, &answering).unwrap();
     assert!(review.unreadable.is_empty(), "{:?}", review.unreadable);
     assert!(
         review
             .items
             .iter()
-            .any(|item| item.key == "ada@example.com/INBOX")
+            .any(|item| item.key == "cache/ada@example.com/INBOX")
     );
 
     let subfolder = home.join(format!(
@@ -502,19 +721,19 @@ fn a_review_names_what_it_could_not_read_and_still_lists_the_rest() {
     )
     .unwrap();
 
-    let review = thunderbird::review(&home, None).unwrap();
+    let review = thunderbird::review_with(&home, None, &answering).unwrap();
     assert!(
         review
             .items
             .iter()
-            .any(|item| item.key == "ada@example.com/INBOX"),
+            .any(|item| item.key == "cache/ada@example.com/INBOX"),
         "the folders beside the unreadable one are still listed"
     );
     assert!(
         review
             .items
             .iter()
-            .any(|item| item.key == "ada@example.com/Sent"),
+            .any(|item| item.key == "cache/ada@example.com/Sent"),
         "the folders beside it are still listed"
     );
     let relative = format!("ImapMail/{server}/Projects.sbd");
@@ -544,15 +763,15 @@ fn a_message_larger_than_one_upload_comes_over_with_its_parts_apart() {
     let sent = append_large_message(&home);
     assert!(sent.len() > 40 * 1024 * 1024, "{} bytes", sent.len());
     let place = Place::at(&dir.path().join("state"));
-    let mut review = thunderbird::review(&home, None).unwrap();
+    let mut review = thunderbird::review_with(&home, None, &answering).unwrap();
     let work = review
         .items
         .iter()
-        .find(|item| item.key == "ada@example.com")
+        .find(|item| item.key == "cache/ada@example.com")
         .unwrap();
     assert_eq!(work.count, 5, "the review counts the large message too");
     review
-        .choose(&["ada@example.com".to_owned()], true, true)
+        .choose(&["cache/ada@example.com".to_owned()], true, true)
         .unwrap();
     place.keep_review(&review).unwrap();
 

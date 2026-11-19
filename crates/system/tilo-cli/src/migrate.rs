@@ -109,6 +109,10 @@ pub enum MigrateCmd {
     Start {
         /// A source, as `tilo migrate sources` names it (home, gdrive, thunderbird, …).
         source: String,
+        /// Connect the chosen mail accounts without asking first. Without it, each account is
+        /// shown here and connected once you say yes.
+        #[arg(long)]
+        yes: bool,
     },
     /// How each source's migration stands.
     Status {
@@ -249,7 +253,13 @@ pub fn run_into(cmd: MigrateCmd, json: bool, target: &Target) -> Result<ExitCode
             place.keep_review(&review)?;
             review_answer(&review, &place.journal(&source)?)
         }
-        MigrateCmd::Start { source } => start(&place, &home, &source_name(&source)?, json, target)?,
+        MigrateCmd::Start { source, yes } => start(
+            &place,
+            &home,
+            &source_name(&source)?,
+            Asking { json, yes },
+            target,
+        )?,
         MigrateCmd::Status { source } => status(&place, source.as_deref())?,
         MigrateCmd::Undo { run } => undo(&place, &run, target)?,
         MigrateCmd::Stop { source } => {
@@ -323,13 +333,14 @@ fn reviewed_for_start(place: &Place, home: &Path, source: &str) -> Result<Review
     }
     let mut review = review(place, home, source, None)?;
     // A review that suggests some of what it lists (home's familiar folders) brings those;
-    // otherwise everything comes.
+    // otherwise everything comes, except a copy of what a mail program keeps on this computer,
+    // which is the person's to choose: their accounts are connected instead.
     let suggested = !review.chosen().is_empty();
     if !suggested {
         let every: Vec<String> = review
             .items
             .iter()
-            .filter(|item| item.within.is_none())
+            .filter(|item| item.within.is_none() && item.kind != thunderbird::CACHE_KIND)
             .map(|item| item.key.clone())
             .collect();
         review.choose(&every, true, false)?;
@@ -479,7 +490,22 @@ fn review_answer(review: &Review, journal: &Journal) -> Value {
     })
 }
 
-fn start(place: &Place, home: &Path, source: &str, json: bool, target: &Target) -> Result<Value> {
+/// How a migration talks to the person at the terminal: whether it answers as JSON, and whether they
+/// said yes to every account it connects beforehand.
+#[derive(Clone, Copy)]
+struct Asking {
+    json: bool,
+    yes: bool,
+}
+
+fn start(
+    place: &Place,
+    home: &Path,
+    source: &str,
+    asking: Asking,
+    target: &Target,
+) -> Result<Value> {
+    let json = asking.json;
     let review = reviewed_for_start(place, home, source)?;
     if review.chosen().is_empty() {
         bail!(
@@ -534,6 +560,7 @@ fn start(place: &Place, home: &Path, source: &str, json: bool, target: &Target) 
             eprintln!("{line}");
         }
     };
+    let mut confirm = |question: &str| confirmed(question, asking);
     let result = {
         let mut lander = Lander {
             workspace: &mut *held,
@@ -544,6 +571,7 @@ fn start(place: &Place, home: &Path, source: &str, json: bool, target: &Target) 
             place,
             source,
             progress: &mut progress,
+            confirm: &mut confirm,
         };
         match (named.engine, &sink) {
             (Engine::Thunderbird, _) => thunderbird::land(home, &review, &mut lander),
@@ -815,6 +843,38 @@ fn alive(pid: Option<u32>) -> bool {
         })
 }
 
+/// Whether the person says yes to `question`, asked at this terminal: yes when they said so
+/// beforehand (`--yes`). Nobody at a terminal to ask is no answer, and the step is skipped.
+///
+/// # Errors
+/// Nobody can be asked here and nobody said yes beforehand.
+fn confirmed(question: &str, asking: Asking) -> Result<bool> {
+    use std::io::{BufRead as _, Write as _};
+    if asking.yes {
+        return Ok(true);
+    }
+    let Ok(tty) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+    else {
+        bail!(
+            "{question}\nNobody can be asked at a terminal here: start it in yours, or pass --yes \
+             to `tilo migrate start` to say yes beforehand"
+        );
+    };
+    if asking.json && !std::io::stdin().is_terminal() {
+        bail!("{question}\nPass --yes to `tilo migrate start` to say yes beforehand");
+    }
+    let mut writer = tty.try_clone()?;
+    write!(writer, "{question} [Y/n] ")?;
+    writer.flush()?;
+    let mut said = String::new();
+    std::io::BufReader::new(tty).read_line(&mut said)?;
+    let said = said.trim().to_ascii_lowercase();
+    Ok(said.is_empty() || said == "y" || said == "yes")
+}
+
 /// A run the person or their agent stopped.
 #[derive(Debug)]
 pub struct Stopped;
@@ -847,6 +907,8 @@ pub struct Lander<'a> {
     place: &'a Place,
     source: &'a str,
     progress: &'a mut dyn FnMut(&str),
+    /// Asks the person, at their terminal, whether a step that is theirs alone goes ahead.
+    confirm: &'a mut dyn FnMut(&str) -> Result<bool>,
 }
 
 impl Lander<'_> {
@@ -1006,6 +1068,38 @@ impl Lander<'_> {
         (self.progress)(line);
     }
 
+    /// Whether the person says yes to `question`.
+    ///
+    /// # Errors
+    /// Nobody could be asked.
+    pub fn confirm(&mut self, question: &str) -> Result<bool> {
+        (self.confirm)(question)
+    }
+
+    /// Ask `action` of the person's own `path` on the workspace's server, as the person
+    /// ([`Workspace::person`]).
+    ///
+    /// # Errors
+    /// The migration was stopped, or the server refused or could not be reached.
+    pub fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
+        self.stop_asked()?;
+        self.workspace.person(path, action, args)
+    }
+
+    /// Note that the workspace has `key` now (`count` more of `kind`), or had it already.
+    ///
+    /// # Errors
+    /// The journal could not be kept.
+    pub fn noted(&mut self, key: &str, kind: &str, landed: &Landed) -> Result<()> {
+        match landed {
+            Landed::One => self.landed([key.to_owned()], kind, 1),
+            Landed::Already => {
+                self.journal.already_there = self.journal.already_there.saturating_add(1);
+                self.landed([key.to_owned()], kind, 0)
+            }
+        }
+    }
+
     /// The source the run brings from.
     #[must_use]
     pub const fn source(&self) -> &str {
@@ -1048,30 +1142,7 @@ fn sentences(answer: &Value) -> String {
         return out;
     }
     if let Some(items) = answer.get("items").and_then(Value::as_array) {
-        let _ = writeln!(out, "{}", answer["title"].as_str().unwrap_or_default());
-        for item in items {
-            let indent = if item.get("within").is_some() {
-                "    "
-            } else {
-                "  "
-            };
-            let _ = writeln!(
-                out,
-                "{indent}[{}] {}  {} {}",
-                if item["chosen"] == true { "x" } else { " " },
-                item["key"].as_str().unwrap_or_default(),
-                item["count"],
-                item["counts"].as_str().unwrap_or_default(),
-            );
-        }
-        if let Some(problems) = answer.get("unreadable").and_then(Value::as_array) {
-            for problem in problems.iter().filter_map(Value::as_str) {
-                let _ = writeln!(out, "  incomplete: {problem}");
-            }
-        }
-        if let Some(next) = answer.get("next").and_then(Value::as_str) {
-            let _ = writeln!(out, "next: {next}");
-        }
+        review_sentences(answer, items, &mut out);
         return out;
     }
     let one = |status: &Value, out: &mut String| {
@@ -1119,6 +1190,45 @@ fn sentences(answer: &Value) -> String {
     out.push_str(&answer.to_string());
     out.push('\n');
     out
+}
+
+/// A review's `items`, of `answer`, as lines for a person reading the terminal.
+fn review_sentences(answer: &Value, items: &[Value], out: &mut String) {
+    let _ = writeln!(out, "{}", answer["title"].as_str().unwrap_or_default());
+    for item in items {
+        let indent = if item.get("within").is_some() {
+            "    "
+        } else {
+            "  "
+        };
+        let key = item["key"].as_str().unwrap_or_default();
+        let title = item["title"].as_str().unwrap_or_default();
+        let _ = write!(
+            out,
+            "{indent}[{}] {key}",
+            if item["chosen"] == true { "x" } else { " " },
+        );
+        // A title that says more than the key does (what choosing it does) is shown.
+        if !title.is_empty() && title != key && !key.ends_with(title) {
+            let _ = write!(out, "  {title}");
+        }
+        let counts = item["counts"].as_str().unwrap_or_default();
+        if !counts.is_empty() {
+            let _ = write!(out, "  {} {counts}", item["count"]);
+        }
+        out.push('\n');
+        if let Some(note) = item.get("note").and_then(Value::as_str) {
+            let _ = writeln!(out, "{indent}    {note}");
+        }
+    }
+    if let Some(problems) = answer.get("unreadable").and_then(Value::as_array) {
+        for problem in problems.iter().filter_map(Value::as_str) {
+            let _ = writeln!(out, "  incomplete: {problem}");
+        }
+    }
+    if let Some(next) = answer.get("next").and_then(Value::as_str) {
+        let _ = writeln!(out, "next: {next}");
+    }
 }
 
 /// A secret the person types, unseen, or reads from a file they name; never an argument.

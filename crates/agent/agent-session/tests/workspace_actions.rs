@@ -158,6 +158,9 @@ pub mod hosted_documents;
 #[path = "workspace_actions/hosted_import_open.rs"]
 mod hosted_import_open;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_mail_account_migrate.rs"]
+mod hosted_mail_account_migrate;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_mail_delivery.rs"]
 mod hosted_mail_delivery;
 #[cfg(test)]

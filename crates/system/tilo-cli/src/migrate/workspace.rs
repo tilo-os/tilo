@@ -51,6 +51,17 @@ pub trait Workspace {
     /// The workspace refused it ([`Refused`], by its code) or could not be reached.
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer>;
 
+    /// Ask `action` of the person's own `path` (`person/mail-accounts`) on the workspace's
+    /// server, as the person on their own device rather than as their agent: what only they may
+    /// do, such as keeping a mail account and its sign-in. Its answer, or why it was refused.
+    ///
+    /// # Errors
+    /// The server refused it ([`Refused`], by its code) or could not be reached.
+    fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
+        let _ = args;
+        bail!("{path}#{action}: this migration reaches no server")
+    }
+
     /// Keep `bytes` in the workspace's content; the `tilo.content:` reference actions name them
     /// by.
     ///
@@ -112,7 +123,8 @@ impl Answer {
         self.result.as_ref()
     }
 
-    /// Whether the action answered `true` under `field` (an account it found there already).
+    /// Whether the action answered `true` under `field`.
+    #[cfg(test)]
     #[must_use]
     pub fn said(&self, field: &str) -> bool {
         self.result
@@ -160,6 +172,9 @@ pub struct Held {
     lines: BufReader<UnixStream>,
     writer: UnixStream,
     next: u64,
+    /// The person's own calls, over this computer's held session as its device: opened the
+    /// first time one is asked.
+    own: Option<Hosted>,
 }
 
 impl Held {
@@ -200,6 +215,7 @@ impl Held {
             lines: BufReader::new(stream),
             writer,
             next: 0,
+            own: None,
         };
         held.request(
             "initialize",
@@ -463,6 +479,28 @@ impl Workspace for Held {
         }
     }
 
+    fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
+        // The device's own API, over the session this computer already holds: the person's
+        // calls are answered as the person there, never as the agent a migration acts as.
+        if self.own.is_none() {
+            let workspace = crate::login::load(&crate::login::device_dir()?)?
+                .map(|(_, device)| device.workspace)
+                .ok_or_else(|| anyhow!(crate::login::NOT_LOGGED_IN))?;
+            self.own = Some(Hosted::connect(
+                crate::api::Reach {
+                    api: None,
+                    key_file: None,
+                    json: false,
+                },
+                &workspace,
+            )?);
+        }
+        self.own
+            .as_mut()
+            .ok_or_else(|| anyhow!("no session of this computer's device"))?
+            .person(path, action, args)
+    }
+
     fn ask(&mut self, action: &str, args: Value) -> Result<Answer> {
         let wait = u64::try_from(ACTION_WAIT.as_millis()).unwrap_or(u64::MAX);
         let call = self.call(
@@ -686,6 +724,22 @@ impl Workspace for Hosted {
             "ok" => Ok(Self::answered(&answer)),
             "pending" => bail!("{action} did not finish in time"),
             other => bail!("{action} ended {other:?}"),
+        }
+    }
+
+    fn person(&mut self, path: &str, action: &str, args: Value) -> Result<Value> {
+        let named = format!("{path}#{action}");
+        // Asked once: a sign-in the server refused is not tried again unasked.
+        let answer = self
+            .runtime
+            .block_on(
+                self.client
+                    .act(&self.workspace, path, action, &args, &named),
+            )
+            .map_err(|error| Self::refused(error, &named))?;
+        match status(&answer) {
+            "ok" => Ok(answer.get("result").cloned().unwrap_or(Value::Null)),
+            other => bail!("{named} ended {other:?}"),
         }
     }
 

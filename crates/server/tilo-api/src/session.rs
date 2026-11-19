@@ -38,6 +38,7 @@ pub mod apps;
 pub mod hosts;
 pub mod invocations;
 pub mod keys;
+pub mod mail_accounts;
 pub mod members;
 pub mod models;
 pub mod unattended;
@@ -459,45 +460,35 @@ impl Session {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let arguments = request.pointer("/params/arguments").unwrap_or(&Value::Null);
+            let structured = request
+                .pointer("/params/_meta/so.tilo.mcp/structured")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if members::addresses(tool, arguments) {
-                let structured = request
-                    .pointer("/params/_meta/so.tilo.mcp/structured")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
                 let answered = self.members(workspace, tool, arguments, structured).await;
                 return Reply::one(result(&id, &answered));
             }
             if apps::addresses(tool, arguments) {
-                let structured = request
-                    .pointer("/params/_meta/so.tilo.mcp/structured")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
                 let answered = self.apps(workspace, tool, arguments, structured).await;
                 return Reply::one(result(&id, &answered));
             }
             if hosts::addresses(tool, arguments) {
-                let structured = request
-                    .pointer("/params/_meta/so.tilo.mcp/structured")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
                 let answered = self.hosts(workspace, tool, arguments, structured).await;
                 return Reply::one(result(&id, &answered));
             }
+            if mail_accounts::addresses(tool, arguments) {
+                let answered = self
+                    .mail_accounts(workspace, tool, arguments, structured)
+                    .await;
+                return Reply::one(result(&id, &answered));
+            }
             if unattended::addresses(tool, arguments) {
-                let structured = request
-                    .pointer("/params/_meta/so.tilo.mcp/structured")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
                 let answered = self
                     .unattended(workspace, tool, arguments, structured)
                     .await;
                 return Reply::one(result(&id, &answered));
             }
             if invocations::addresses(tool, arguments) {
-                let structured = request
-                    .pointer("/params/_meta/so.tilo.mcp/structured")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
                 let answered = self.invocations(workspace, arguments, structured).await;
                 return Reply::one(result(&id, &answered));
             }

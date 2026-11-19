@@ -34,9 +34,6 @@ pub const FORGEJO: &str = "forgejo";
 /// Mail then fetches its mail itself.
 pub const MAIL: &str = "mail";
 
-/// Where an email account joins the person's accounts (Mail's, which the person allows).
-const ADD_ACCOUNT: &str = "mail/mail.mailbox#add-account";
-
 /// Notes' pages, where a page is imported and nested.
 const PAGES: &str = "notes/notes.pages";
 const IMPORT_MARKDOWN: &str = "import-markdown";
@@ -285,6 +282,7 @@ fn of(source: &str, review: &ServiceReview) -> Review {
                 counts: counts.into(),
                 within: None,
                 chosen: group.chosen,
+                note: None,
             })
             .collect(),
     }
@@ -411,37 +409,31 @@ fn refused(report: &service::ServiceReport) -> Result<()> {
     )
 }
 
-/// The chosen mail account into the person's accounts: its settings, through Mail's
-/// `add-account`, which the person allows in their tab. Its password stays where `connect` put
-/// it, this computer's account vault, where Tilo's Mail here signs in with it. Mail fetches its
-/// mail itself from then on.
+/// The chosen mail account into the person's accounts: its settings and its password, which
+/// `connect` kept in this computer's account vault, go to the server that keeps the person's
+/// workspace, which signs in with it and keeps both. Mail syncs its mail from its server from
+/// then on.
 fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
     if !review.chosen().iter().any(|item| item.key == review.handle) {
         return Ok(());
     }
-    let (config, _password) = service::mail_account(&config_root()?, &review.handle)
+    let (config, password) = service::mail_account(&config_root()?, &review.handle)
         .map_err(|error| anyhow!("mail: {error}"))?;
-    lander.open("mail");
-    lander.once(
-        &format!("account:{}", config.email),
-        "accounts",
-        |workspace, invocation| {
-            let arguments = json!({
-                "display_name": config.label(),
-                "email": config.email,
-                "username": config.username,
-                "imap_host": config.imap_host,
-                "imap_port": config.imap_port,
-                "smtp_host": config.smtp_host,
-                "smtp_port": config.smtp_port,
-            });
-            match workspace.act(invocation, ADD_ACCOUNT, arguments) {
-                Ok(answer) if answer.said("already") => Ok(super::Landed::Already),
-                Ok(_) => Ok(super::Landed::One),
-                Err(error) => Err(super::thunderbird::mail_not_open(error, &config.email)),
-            }
-        },
-    )
+    let mut adding = json!({
+        "address": config.email,
+        "displayName": config.label(),
+        "incomingHost": config.imap_host,
+        "incomingPort": config.imap_port,
+        "outgoingHost": config.smtp_host,
+        "outgoingPort": config.smtp_port,
+    });
+    if let Some(fields) = adding.as_object_mut() {
+        if !config.username.is_empty() && !config.username.eq_ignore_ascii_case(&config.email) {
+            fields.insert("username".into(), json!(config.username));
+        }
+        fields.insert("password".into(), json!(password.as_str()));
+    }
+    super::thunderbird::connect_mail(adding, lander)
 }
 
 /// What a source's imports made in the workspace, kept beside its journal so a later import finds it:

@@ -502,6 +502,7 @@ pub fn review(place: &Place, named: &'static Source) -> Result<Review> {
             chosen: kept
                 .as_ref()
                 .is_some_and(|kept| kept.items.iter().any(|old| old.key == name && old.chosen)),
+            note: None,
         });
     }
     Ok(Review {

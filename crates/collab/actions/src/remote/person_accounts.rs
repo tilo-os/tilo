@@ -108,6 +108,9 @@ pub struct MailAccount {
     /// Whether the person's vault keeps the account's sign-in. A host
     /// never answers the secret itself.
     pub has_secret: bool,
+    /// Other names and addresses it sends as, each `Name <address>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub identities: Vec<String>,
 }
 
 /// Every mail account the person's vault keeps.
@@ -675,6 +678,7 @@ mod tests {
             outgoing_host: "smtp.example.com".into(),
             outgoing_port: 465,
             has_secret: true,
+            identities: Vec::new(),
         };
         let json = serde_json::to_value(&read).unwrap();
         assert!(json.get("password").is_none());

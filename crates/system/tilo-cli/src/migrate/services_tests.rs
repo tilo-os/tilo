@@ -298,6 +298,7 @@ fn invocation(place: &Place, tasks: &mut Tasks, issues: &[IncomingIssue], id: &s
         place,
         source: LINEAR,
         progress: &mut progress,
+        confirm: &mut |_: &str| Ok(true),
     };
     let issues = issues.to_vec();
     services_source::land_with(LINEAR, &mut lander, |journal, landing, save, cancel| {

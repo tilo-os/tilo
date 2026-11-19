@@ -111,6 +111,7 @@ pub fn review(home: &Path) -> Review {
             counts: "things".to_owned(),
             within: None,
             chosen: false,
+            note: None,
         });
         for (part, count) in parts {
             items.push(Item {
@@ -121,6 +122,7 @@ pub fn review(home: &Path) -> Review {
                 counts: part.to_owned(),
                 within: Some(key.clone()),
                 chosen: false,
+                note: None,
             });
         }
     }

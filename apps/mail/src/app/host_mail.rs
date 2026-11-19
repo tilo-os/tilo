@@ -923,7 +923,7 @@ pub(super) fn account(listed: &MailAccount) -> crate::account::Account {
         auth: crate::model::AuthMethod::Password,
         import_pending: false,
         password: String::new(),
-        identities: Vec::new(),
+        identities: listed.identities.clone(),
     });
     account.id.clone_from(&listed.id);
     account
@@ -976,6 +976,7 @@ mod tests {
             outgoing_host: "smtp.example.test".into(),
             outgoing_port: 465,
             has_secret: true,
+            identities: Vec::new(),
         }
     }
 
@@ -1303,6 +1304,7 @@ mod tests {
             outgoing_host: "smtp.example.test".into(),
             outgoing_port: 465,
             has_secret: true,
+            identities: Vec::new(),
         });
         let listed = taken_accounts(&mut mail);
         assert_eq!(

@@ -241,6 +241,7 @@ fn item(home: &Path, key: &str, title: &str, chosen: bool) -> Item {
         counts: format!("files, {}", size(bytes)),
         within: None,
         chosen,
+        note: None,
     }
 }
 

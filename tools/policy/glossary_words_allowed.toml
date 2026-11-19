@@ -281,6 +281,7 @@ paths = [
     "crates/server/tilo-server/src/entry/mail.rs",
     "crates/agent/agent-session/tests/mail_for_agents.rs",
     "crates/agent/agent-session/tests/workspace_actions/hosted_mail_delivery.rs",
+    "crates/agent/agent-session/tests/workspace_actions/hosted_mail_account_migrate.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_assistant_tests.rs",
 ]
 
@@ -1678,3 +1679,17 @@ reason = "The api-on-server harness keeps the server's own device as `OnServer::
 words = ["host"]
 identifiers = ["host"]
 paths = ["crates/agent/agent-session/tests/workspace_actions/chat_after_join.rs"]
+
+[[allow]]
+reason = "The network host names of a mail account's two servers, as Thunderbird's settings and logins, a `HOST:PORT` argument and the person's `add-mail` request (`incomingHost`, `outgoingHost`) name them, and whether a server answers at one; and the session's reach to the `tilo.accounts` actions its workspace service answers (`ask_host`)."
+words = ["host"]
+identifiers = ["host", "imap_host", "smtp_host", "incomingHost", "outgoingHost", "IMAP_HOST", "SMTP_HOST", "HOST", "ask_host"]
+paths = [
+    "crates/agent/agent-session/tests/workspace_actions/hosted_mail_account_migrate.rs",
+    "crates/platform/migration-sources/examples/sample_thunderbird_profile.rs",
+    "crates/platform/migration-sources/src/thunderbird/fixture.rs",
+    "crates/server/tilo-api/src/session/mail_accounts.rs",
+    "crates/system/tilo-cli/src/migrate/services.rs",
+    "crates/system/tilo-cli/src/migrate/tests.rs",
+    "crates/system/tilo-cli/src/migrate/thunderbird.rs",
+]

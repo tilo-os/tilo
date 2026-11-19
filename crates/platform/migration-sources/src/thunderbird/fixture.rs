@@ -267,6 +267,115 @@ pub fn append_large_message(home: &Path) -> Vec<u8> {
     message
 }
 
+/// One IMAP account of a made-up profile whose servers are wherever a test starts them: what
+/// [`write_live_profile`] writes.
+#[derive(Clone, Debug)]
+pub struct LiveAccount {
+    pub name: String,
+    pub email: String,
+    /// Another address the account sends as, `Name <address>`'s parts.
+    pub also_sends_as: Option<(String, String)>,
+    pub imap_host: String,
+    pub imap_port: u16,
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub password: String,
+}
+
+/// A profile with `account` alone, as Thunderbird keeps one that reads its mail from a server:
+/// its servers and identities in `prefs.js`, its password in `logins.json` sealed by
+/// `key4.db`, and one message of its Inbox in Thunderbird's cache. Port 993 and 465 are TLS
+/// from the first byte, any other port upgrades with `STARTTLS`, as Thunderbird says it.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture that cannot write its files panics with the path"
+)]
+pub fn write_live_profile(home: &Path, account: &LiveAccount) {
+    let root = home.join(".thunderbird");
+    let profile = root.join("l1v3l1v3.default-release");
+    std::fs::create_dir_all(&profile).expect("create profile directory");
+    std::fs::write(
+        root.join("profiles.ini"),
+        "[Profile0]\nName=Default\nIsRelative=1\nPath=l1v3l1v3.default-release\nDefault=1\n",
+    )
+    .expect("write profiles.ini");
+    // 3 is TLS from the first byte, 2 is STARTTLS.
+    let socket = |port: u16, wrapped: u16| if port == wrapped { 3 } else { 2 };
+    let mut prefs = format!(
+        r#"// Mozilla User Preferences
+
+user_pref("mail.accountmanager.accounts", "account1");
+user_pref("mail.accountmanager.defaultaccount", "account1");
+user_pref("mail.account.account1.server", "server1");
+user_pref("mail.account.account1.identities", "{identities}");
+user_pref("mail.server.server1.type", "imap");
+user_pref("mail.server.server1.hostname", "{imap_host}");
+user_pref("mail.server.server1.port", {imap_port});
+user_pref("mail.server.server1.userName", "{email}");
+user_pref("mail.server.server1.socketType", {imap_socket});
+user_pref("mail.server.server1.authMethod", 3);
+user_pref("mail.server.server1.directory-rel", "[ProfD]ImapMail/{imap_host}");
+user_pref("mail.server.server1.name", "{name}");
+user_pref("mail.identity.id1.useremail", "{email}");
+user_pref("mail.identity.id1.fullName", "{name}");
+user_pref("mail.identity.id1.smtpServer", "smtp1");
+user_pref("mail.smtpserver.smtp1.hostname", "{smtp_host}");
+user_pref("mail.smtpserver.smtp1.port", {smtp_port});
+user_pref("mail.smtpserver.smtp1.username", "{email}");
+user_pref("mail.smtpserver.smtp1.try_ssl", {smtp_socket});
+"#,
+        identities = if account.also_sends_as.is_some() {
+            "id1,id2"
+        } else {
+            "id1"
+        },
+        imap_host = account.imap_host,
+        imap_port = account.imap_port,
+        imap_socket = socket(account.imap_port, 993),
+        smtp_host = account.smtp_host,
+        smtp_port = account.smtp_port,
+        smtp_socket = socket(account.smtp_port, 465),
+        email = account.email,
+        name = account.name,
+    );
+    if let Some((name, email)) = &account.also_sends_as {
+        use std::fmt::Write as _;
+        let _ = write!(
+            prefs,
+            "user_pref(\"mail.identity.id2.useremail\", \"{email}\");\n\
+             user_pref(\"mail.identity.id2.fullName\", \"{name}\");\n\
+             user_pref(\"mail.identity.id2.smtpServer\", \"smtp1\");\n"
+        );
+    }
+    std::fs::write(profile.join("prefs.js"), prefs).expect("write prefs.js");
+    write(
+        &profile,
+        &format!("ImapMail/{}/INBOX", account.imap_host),
+        message(
+            "cached-1",
+            &account.email,
+            "Kept on this computer",
+            "0001",
+            "A message Thunderbird keeps in its cache.\r\n",
+        ),
+    );
+    write_logins(
+        &profile,
+        &[
+            (
+                format!("imap://{}", account.imap_host),
+                &account.email,
+                &account.password,
+            ),
+            (
+                format!("smtp://{}", account.smtp_host),
+                &account.email,
+                &account.password,
+            ),
+        ],
+    );
+}
+
 #[expect(
     clippy::expect_used,
     reason = "a fixture that cannot write its files panics with the path"

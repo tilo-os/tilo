@@ -67,6 +67,7 @@ fn bring(
             place,
             source,
             progress: &mut progress,
+            confirm: &mut |_: &str| Ok(true),
         };
         land(&mut lander).unwrap();
     }
@@ -106,6 +107,7 @@ fn chosen(source: &str, keys: &[&str], count: usize) -> Review {
                 counts: "files".into(),
                 within: None,
                 chosen: true,
+                note: None,
             })
             .collect(),
         unreadable: Vec::new(),

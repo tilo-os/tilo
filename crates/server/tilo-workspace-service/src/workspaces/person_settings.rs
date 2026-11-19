@@ -743,6 +743,19 @@ fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
                 has_secret: vault
                     .get_for(account)
                     .is_some_and(|secret| !secret.password.is_empty()),
+                identities: accounts::email::AccountConfig::from_value(account.config.clone())
+                    .map_or_else(
+                        |error| {
+                            tracing::warn!(
+                                account = %account.id,
+                                %error,
+                                "mail: an account's settings do not read, so it is listed with \
+                                 no other addresses it sends as"
+                            );
+                            Vec::new()
+                        },
+                        |config| config.identities,
+                    ),
             })
             .collect(),
         active: store

@@ -593,6 +593,7 @@ mod tests {
             outgoing_host: "smtp.example.test".into(),
             outgoing_port: 465,
             has_secret: true,
+            identities: Vec::new(),
         }
     }
 
