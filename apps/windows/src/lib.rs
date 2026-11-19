@@ -10,6 +10,7 @@ pub mod appliance_owner;
 pub mod model;
 pub mod provider;
 pub mod resource;
+mod rows;
 pub mod search;
 pub mod strings;
 mod support;

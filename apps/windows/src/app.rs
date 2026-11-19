@@ -767,12 +767,8 @@ impl WindowsApp {
 
     /// Show the application `app` names, as choosing its row does.
     fn read_app(&self, app: &str) -> Result<serde_json::Value, String> {
-        let app = self
-            .catalogue
-            .apps
-            .iter()
-            .find(|item| item.id == app)
-            .ok_or_else(|| "the application is no longer in the catalogue".to_owned())?;
+        let app = self.app_named(app)?;
+        let app = &app;
         Ok(serde_json::json!({
             "id": app.id,
             "name": app.name,
@@ -800,11 +796,12 @@ impl WindowsApp {
     }
 
     fn show_app(&mut self, app: &str) -> Result<(), String> {
+        let app = self.app_named(app)?;
         let index = self
             .catalogue
             .apps
             .iter()
-            .position(|item| item.id == app)
+            .position(|item| item.id == app.id)
             .ok_or_else(|| "the application is no longer in the catalogue".to_owned())?;
         self.apply_intent(Intent::SelectApp(index));
         Ok(())
@@ -846,6 +843,9 @@ impl WindowsApp {
     /// service's current report is what an invocation is resolved against, never the
     /// arguments it arrived with.
     fn app_named(&self, name: &str) -> Result<crate::model::WindowsApp, String> {
+        // A row names its application: its own id, the private data's, or
+        // the id or capsule an agent knows the app by.
+        let name = crate::rows::app_of_row(name);
         self.catalogue
             .app(name)
             .cloned()
@@ -911,17 +911,20 @@ impl WindowsApp {
         app: &str,
         path: Option<&std::path::Path>,
     ) -> Result<(), String> {
+        let app = self.app_named(app)?;
         let Some(path) = path else {
             if self.document_portal_rx.is_some() {
                 return Err("a document picker is already open".into());
             }
-            self.document_target = Some(app.to_owned());
+            self.document_target = Some(app.id);
             self.document_portal_rx = Some(windows_document_pick_request().send_open_file());
             return Ok(());
         };
         let source = File::open(path)
             .map_err(|error| format!("could not open {}: {error}", path.display()))?;
-        self.provider.borrow_mut().launch_vm_with_file(app, source)
+        self.provider
+            .borrow_mut()
+            .launch_vm_with_file(&app.id, source)
     }
 
     fn publish_launcher(&mut self, app: &str) -> Result<(), String> {
@@ -2263,7 +2266,7 @@ pub(crate) fn window(cx: &ViewCx<crate::resource::Windows>) -> Element {
         let app = Rc::clone(&app);
         cx.on_stage(move |scenario| app.borrow_mut().stage_scenario(scenario));
     }
-    let (rows, row, entries) = (Rc::clone(&app), Rc::clone(&app), app);
+    let (rows, row, entries, states) = (Rc::clone(&app), Rc::clone(&app), Rc::clone(&app), app);
     cx.publishing(
         Publishes::new()
             .live_rows(move || actions::live_rows(&rows.borrow().catalogue))
@@ -2272,6 +2275,8 @@ pub(crate) fn window(cx: &ViewCx<crate::resource::Windows>) -> Element {
                     .into_iter()
                     .find(|row| row.id() == id)
             })
+            // Each row offers the operations its installation state allows.
+            .row_status(move |id| actions::row_status(&states.borrow().catalogue, id))
             .search_entries(move || entries.borrow().search_entries()),
         Box::new(window),
     )
