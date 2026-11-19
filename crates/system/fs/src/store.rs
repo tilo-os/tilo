@@ -462,7 +462,7 @@ impl ContentStore {
 
     /// Read-only bytes of a whole blob `hash`: inline, or a complete whole-blob entry's file. Partial
     /// file-backed versions are not blobs and never answer here.
-    #[cfg(feature = "filesystem")]
+    #[cfg(all(test, feature = "filesystem"))]
     async fn blob_of_bytes(&self, hash: Hash) -> Option<Vec<u8>> {
         let files = Arc::clone(&self.files);
         let key = *hash.as_bytes();
@@ -979,7 +979,7 @@ impl ContentStore {
     /// Prove that the content `manifest_hash` names, `byte_len` bytes long, is complete in the
     /// persistent store: its manifest and every chunk it declares. Hot cache entries and partial
     /// blobs never satisfy this boundary.
-    #[cfg(feature = "filesystem")]
+    #[cfg(all(test, feature = "filesystem"))]
     pub async fn verify_durable_content(&self, manifest_hash: Hash, byte_len: u64) -> Result<()> {
         let manifest_bytes = self
             .blob_of_bytes(manifest_hash)
