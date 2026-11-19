@@ -98,7 +98,7 @@ mod tests {
         assert_eq!(page.results.len(), 1, "the one recovery point that matches");
         let anchor = hit.anchor();
         assert_eq!(anchor, "backups.snapshot:snapshot-002999");
-        let resource = crate::actions::live_row(&catalog, None, &anchor)
+        let resource = crate::actions::live_row(&catalog, &anchor)
             .expect("late search anchor resolves its live row")
             .into_resource();
         assert!(
@@ -107,8 +107,8 @@ mod tests {
         );
         assert_eq!(
             crate::resource::opened(&anchor).expect("the opener shows it"),
-            crate::actions::BackupsEffect::ShowSnapshot {
-                snapshot_id: "snapshot-002999".into(),
+            crate::actions::BackupsEffect::Open {
+                row: "backups.snapshot:snapshot-002999".into(),
             }
         );
         assert!(resource.actions.iter().any(|action| action.id == "verify"));

@@ -110,13 +110,13 @@ fn backups_run_and_follow_the_policy_at_once() {
         })
         .unwrap();
     assert_eq!(verified.value.unwrap()["files"], 1);
-    app.effect(&BackupsEffect::ShowSnapshot {
-        snapshot_id: id.clone(),
+    app.effect(&BackupsEffect::Open {
+        row: format!("backups.snapshot:{id}"),
     })
     .unwrap();
     assert!(
-        app.effect(&BackupsEffect::ShowSnapshot {
-            snapshot_id: "0".into(),
+        app.effect(&BackupsEffect::Open {
+            row: "backups.snapshot:0".into(),
         })
         .is_err()
     );
@@ -300,7 +300,7 @@ fn a_snapshot_is_restored_into_the_folder_the_person_picks() {
     app.settle();
 
     recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(chosen.clone()));
-    app.effect(&BackupsEffect::RestoreSnapshot { snapshot_id: id })
+    app.effect(&BackupsEffect::Restore { snapshot_id: id })
         .unwrap();
     let landed = chosen.join("letter.txt");
     let restoring = || {

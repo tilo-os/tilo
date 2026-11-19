@@ -46,7 +46,6 @@ hand-built-tree 1 crates/session/settings-service/src/agent_models.rs
 hand-built-tree 3 crates/session/settings-service/src/lib.rs
 hand-built-tree 4 crates/session/system-service/src/lib.rs
 hand-built-tree 3 crates/session/tray/src/service.rs
-row-operation 9 apps/backups/src/actions.rs
 row-operation 4 apps/camera/src/actions.rs
 row-operation 2 apps/chat/src/direct.rs
 row-operation 14 apps/chat/src/effects.rs
@@ -71,7 +70,6 @@ row-operation 2 apps/typst-editor/src/actions.rs
 row-operation 1 apps/typst-editor/src/outline.rs
 row-operation 1 crates/session/activities/src/surface.rs
 row-operation 1 crates/session/notification-banners/src/surface.rs
-untyped-live-row 9 apps/backups/src/actions.rs
 untyped-live-row 5 apps/camera/src/actions.rs
 untyped-live-row 1 apps/chat/src/direct.rs
 untyped-live-row 5 apps/chat/src/effects.rs
