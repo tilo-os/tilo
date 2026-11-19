@@ -1201,7 +1201,7 @@ async fn allow_on_list(
     let held = holder.device.workspace_id();
     let sealed = loop {
         match engine
-            .seal_keys(held)
+            .resource_write_keys(held, (chat, document))
             .expect("her laptop keeps the workspace's keys")
         {
             tilo_session_client::engine::SealKeys::Here(keys) => break keys,

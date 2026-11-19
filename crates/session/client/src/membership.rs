@@ -64,6 +64,7 @@ impl<'a> Membership<'a> {
                 },
             });
         }
+        changes.extend(edit.custom_roles.iter().cloned());
         for id in &edit.granted {
             if let Some(grant) = workspace.policy.grants.iter().find(|grant| &grant.id == id) {
                 changes.push(Change::Grant(grant.clone()));
@@ -233,11 +234,24 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     let joined = policy.joined.clone();
     let grants = settled(&policy.grants);
     let held = settled(&workspace.policy.grants);
-    if workspace.policy.members == members && workspace.policy.joined == joined && held == grants {
+    if workspace.policy.members == members
+        && workspace.policy.joined == joined
+        && workspace.policy.custom_roles == policy.custom_roles
+        && workspace.policy.assigned_roles == policy.assigned_roles
+        && held == grants
+    {
         return false;
     }
     workspace.policy.members = members;
     workspace.policy.joined = joined;
+    workspace
+        .policy
+        .custom_roles
+        .clone_from(&policy.custom_roles);
+    workspace
+        .policy
+        .assigned_roles
+        .clone_from(&policy.assigned_roles);
     if held != grants {
         workspace.policy.grants = grants;
     }

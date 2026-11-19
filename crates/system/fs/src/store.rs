@@ -1023,7 +1023,7 @@ impl ContentStore {
         for chunk in manifest.chunks() {
             let hash = Hash::from(chunk.hash);
             match self.blob_status(hash).await? {
-                BlobStatus::Complete { size } if size == u64::from(chunk.len) => {}
+                BlobStatus::Complete { size } if size == manifest.stored_len(chunk) => {}
                 BlobStatus::Complete { .. } => anyhow::bail!("durable chunk length mismatch"),
                 BlobStatus::Partial { .. } | BlobStatus::NotFound => {
                     anyhow::bail!("version chunk is not durably complete")

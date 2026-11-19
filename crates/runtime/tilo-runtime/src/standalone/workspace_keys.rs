@@ -89,6 +89,37 @@ struct Directory {
 }
 
 impl KeyDirectory for Directory {
+    fn requires_document_keys(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+    ) -> Option<bool> {
+        self.workspaces
+            .peer(workspace)?
+            .requires_document_keys(app, document, tilo_clock::wall())
+            .ok()
+    }
+
+    fn document_devices(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        document: &str,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let peer = self.workspaces.peer(workspace)?;
+        let at = std::time::SystemTime::UNIX_EPOCH
+            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))?;
+        Some(
+            peer.document_key_holders(app, document, at)
+                .ok()?
+                .into_iter()
+                .map(Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
+    }
+
     fn allowed_devices(
         &self,
         workspace: WorkspaceId,

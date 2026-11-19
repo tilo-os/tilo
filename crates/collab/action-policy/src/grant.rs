@@ -189,6 +189,8 @@ pub enum Grantee {
     /// An app, by its id: what it may take of other apps' actions, and of the
     /// desktop's, on its own account.
     App(String),
+    /// Members explicitly assigned this workspace-defined role.
+    CustomRole(String),
 }
 
 impl Grantee {
@@ -228,7 +230,7 @@ impl Grantee {
     pub fn as_member(&self) -> Option<&crate::MemberId> {
         match self {
             Self::Member(member) => Some(member),
-            Self::Role(_) | Self::App(_) => None,
+            Self::Role(_) | Self::App(_) | Self::CustomRole(_) => None,
         }
     }
 
@@ -260,7 +262,7 @@ impl Grantee {
     pub fn app_id(&self) -> Option<&str> {
         match self {
             Self::App(app) => Some(app),
-            Self::Member(_) | Self::Role(_) => None,
+            Self::Member(_) | Self::Role(_) | Self::CustomRole(_) => None,
         }
     }
 
@@ -268,7 +270,7 @@ impl Grantee {
     pub fn role_of(&self) -> Option<Role> {
         match self {
             Self::Role(role) => Some(*role),
-            Self::Member(_) | Self::App(_) => None,
+            Self::Member(_) | Self::App(_) | Self::CustomRole(_) => None,
         }
     }
 }
@@ -278,6 +280,7 @@ impl fmt::Display for Grantee {
         match self {
             Self::Member(member) => member.fmt(f),
             Self::Role(role) => write!(f, "every {role}"),
+            Self::CustomRole(id) => write!(f, "role {id}"),
             Self::App(app) => write!(f, "app {app}"),
         }
     }

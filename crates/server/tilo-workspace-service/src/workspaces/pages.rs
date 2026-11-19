@@ -19,8 +19,9 @@ use std::collections::BTreeSet;
 use tilo_action_policy::roles::governance;
 use tilo_peer_state::join::VerifiedRedemption;
 use tilo_server_protocol::workspaces::{
-    Inviter, JoinReply, PendingInvite, PreAdmission, Role, ServerEntry, WaitListEntry, Workspace,
-    WorkspaceDelegation, WorkspaceHolder, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
+    DocumentAccess, Inviter, JoinReply, PendingInvite, PreAdmission, Role, ServerEntry,
+    WaitListEntry, Workspace, WorkspaceDelegation, WorkspaceHolder, WorkspaceNotice,
+    WorkspacesReply, WorkspacesRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -222,6 +223,44 @@ impl Workspaces {
             .unwrap_or_else(|error| WorkspacesReply::Refused(error.to_string()))
     }
 
+    async fn page_document_access(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        now: u64,
+    ) -> Result<DocumentAccess, CollaborationError> {
+        let state = self.workspace(workspace).await?;
+        let workspace = state.lock().await;
+        let peer = workspace.peer();
+        let at = system_time(now);
+        let member = peer.permissions(device.device_public_key, at)?;
+        member
+            .policy
+            .check_action(
+                &member.authority(),
+                governance::GRANT,
+                &tilo_action_policy::Context::at_time(at),
+                false,
+            )
+            .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
+        let documents: BTreeSet<_> = peer
+            .records()
+            .into_iter()
+            .filter_map(|(app, document)| {
+                let document = collab_types::document_access_target(&app, &document)?.to_owned();
+                (peer.own_resource(&app, &document).is_none()
+                    && peer
+                        .check_document_read(device.device_public_key, &app, &document, at)
+                        .is_ok())
+                .then_some((app, document))
+            })
+            .collect();
+        let documents: Vec<_> = documents.into_iter().collect();
+        let documents = collab_types::document_access_scopes(&member.policy, &documents, []);
+        let rules = collab_types::document_access_rules(&member.policy, &documents);
+        Ok(DocumentAccess { documents, rules })
+    }
+
     async fn page_workspaces_inner(
         &self,
         device: &DeviceCert,
@@ -250,6 +289,40 @@ impl Workspaces {
             | WorkspacesRequest::Remove { .. }
             | WorkspacesRequest::Ban { .. }
             | WorkspacesRequest::Unban { .. }) => self.page_membership(device, request).await?,
+            WorkspacesRequest::EditRoles {
+                workspace,
+                request_id,
+                change,
+            } => {
+                self.edit_roles(&workspace, device, request_id, change)
+                    .await?;
+                self.page_roles(&workspace, device, now).await?
+            }
+            WorkspacesRequest::Roles { workspace } => {
+                self.page_roles(&workspace, device, now).await?
+            }
+            WorkspacesRequest::DocumentAccess { workspace } => WorkspacesReply::DocumentAccess(
+                self.page_document_access(&workspace, device, now).await?,
+            ),
+            WorkspacesRequest::SetDocumentAccess {
+                workspace,
+                request_id,
+                app,
+                document,
+                recipient,
+                access,
+            } => {
+                self.set_document_access(
+                    &workspace,
+                    device,
+                    request_id,
+                    (&recipient, &app, &document),
+                    &access,
+                    now,
+                )
+                .await?;
+                self.page_workspace(&workspace, device).await?
+            }
             WorkspacesRequest::PreAdmit {
                 request_id,
                 grant,
@@ -908,6 +981,24 @@ impl Workspaces {
         };
         self.written(workspace, false).await?;
         Ok(issued)
+    }
+
+    async fn page_roles(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        now: u64,
+    ) -> Result<WorkspacesReply, CollaborationError> {
+        use tilo_server_protocol::workspaces::WorkspaceRoles;
+        let workspace = self.workspace(workspace).await?;
+        let workspace = workspace.lock().await;
+        let member = workspace
+            .peer()
+            .permissions(device.device_public_key, system_time(now))?;
+        Ok(WorkspacesReply::Roles(WorkspaceRoles {
+            custom_roles: member.policy.custom_roles.clone(),
+            assigned_roles: member.policy.assigned_roles.clone(),
+        }))
     }
 
     async fn page_workspace(

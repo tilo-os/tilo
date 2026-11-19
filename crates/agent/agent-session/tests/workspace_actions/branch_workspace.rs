@@ -584,7 +584,7 @@ async fn only_its_owners_key_branches_and_a_failed_branch_leaves_nothing() {
     );
     let said = failed["error"]["message"].as_str().unwrap_or_default();
     assert!(
-        said.contains("wasn't made") && said.contains("the files its records name"),
+        said.contains("wasn't made") && said.contains("the files its documents name"),
         "{failed}"
     );
     assert!(

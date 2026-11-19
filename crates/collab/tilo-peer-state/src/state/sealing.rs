@@ -103,6 +103,7 @@ impl StatePeer {
         };
         let mut op = self.draft_write(
             (app, record),
+            None,
             &mutation.encode().map_err(err)?,
             None,
             *author.as_bytes(),

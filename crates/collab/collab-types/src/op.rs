@@ -227,6 +227,23 @@ pub fn document_artifact_id(app_id: &str, workspace_id: &str, document_id: &str)
     }
 }
 
+/// Accept the former artifact derivation when replaying a signed document version.
+fn matches_document_artifact(
+    artifact: ArtifactId,
+    app: &str,
+    workspace: &str,
+    document: &str,
+) -> bool {
+    artifact == document_artifact_id(app, workspace, document)
+        || artifact
+            == ArtifactId(derived_document_uuid(
+                b"tilo-document-artifact-v1\0",
+                app,
+                workspace,
+                document,
+            ))
+}
+
 static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -319,7 +336,7 @@ pub fn validate_document_payload_route(
     document_id: &str,
     op: &SignedOp,
 ) -> Result<RoutedDocumentPayload, DocumentMutationError> {
-    if op.artifact != document_artifact_id(app_id, workspace_id, document_id)
+    if !matches_document_artifact(op.artifact, app_id, workspace_id, document_id)
         || op.attestation_id != document_attestation_id(app_id, workspace_id, document_id)
     {
         return Err(DocumentMutationError::RouteMismatch);
@@ -357,7 +374,7 @@ pub fn validate_whole_document_payload_route(
     document_id: &str,
     op: &SignedOp,
 ) -> Result<WholeDocumentPayload, DocumentMutationError> {
-    if op.artifact != document_artifact_id(app_id, workspace_id, document_id)
+    if !matches_document_artifact(op.artifact, app_id, workspace_id, document_id)
         || op.attestation_id != document_attestation_id(app_id, workspace_id, document_id)
     {
         return Err(DocumentMutationError::RouteMismatch);
@@ -434,6 +451,11 @@ pub enum EncryptionScheme {
         /// Whether the op is a state baseline or an incremental change.
         retention: ContentRetention,
     },
+    /// A content-key envelope under the document's own MLS group.
+    DocumentContentKey {
+        group: crate::WorkspaceId,
+        retention: ContentRetention,
+    },
 }
 
 /// Clear storage class of a content-key ciphertext, so relays and brokers
@@ -484,12 +506,39 @@ impl EncryptionMetadata {
         }
     }
 
+    /// Metadata for content sealed under the selected workspace or document group.
+    pub fn content_group(
+        workspace: crate::WorkspaceId,
+        group: crate::WorkspaceId,
+        epoch: u64,
+        retention: ContentRetention,
+    ) -> Self {
+        if group == workspace {
+            Self::content_key(epoch, retention)
+        } else {
+            Self {
+                epoch,
+                scheme: EncryptionScheme::DocumentContentKey { group, retention },
+            }
+        }
+    }
+
     /// Storage class of a content-key ciphertext; `None` for schemes that
     /// cannot be retained (an MLS application message is single-use).
     pub const fn retention(&self) -> Option<ContentRetention> {
         match self.scheme {
             EncryptionScheme::MlsApplication => None,
-            EncryptionScheme::ContentKey { retention } => Some(retention),
+            EncryptionScheme::ContentKey { retention }
+            | EncryptionScheme::DocumentContentKey { retention, .. } => Some(retention),
+        }
+    }
+
+    /// Which group encrypted this payload. Older ciphertext belongs to the
+    /// workspace group.
+    pub const fn key_group(self, workspace: crate::WorkspaceId) -> crate::WorkspaceId {
+        match self.scheme {
+            EncryptionScheme::DocumentContentKey { group, .. } => group,
+            _ => workspace,
         }
     }
 }
@@ -1173,6 +1222,35 @@ mod tests {
             let op = SignedOp::new_unsigned_with_encryption(
                 vec![0xde, 0xad, 0xbe, 0xef],
                 document_artifact_id(app, workspace, record),
+                Ed25519PublicKey::from_bytes([7; 32]),
+                document_attestation_id(app, workspace, record),
+                OpKind::Change,
+                SystemTime::UNIX_EPOCH,
+                1,
+                EncryptionMetadata::mls_application(4),
+            );
+            assert_eq!(
+                validate_document_payload_route(app, workspace, record, &op),
+                Ok(RoutedDocumentPayload::Encrypted { epoch: 4 })
+            );
+            assert_eq!(
+                validate_document_payload_route(app, workspace, "other", &op),
+                Err(DocumentMutationError::RouteMismatch)
+            );
+        }
+
+        phase earlier_document_artifacts_keep_their_exact_route;
+        {
+            let (app, workspace, record) = ("notes", "workspace", "meeting");
+            let artifact = ArtifactId(derived_document_uuid(
+                b"tilo-document-artifact-v1\0",
+                app,
+                workspace,
+                record,
+            ));
+            let op = SignedOp::new_unsigned_with_encryption(
+                vec![0xde, 0xad, 0xbe, 0xef],
+                artifact,
                 Ed25519PublicKey::from_bytes([7; 32]),
                 document_attestation_id(app, workspace, record),
                 OpKind::Change,

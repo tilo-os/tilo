@@ -640,7 +640,7 @@ fn referenced(chunks: &TreeChunks, only: Option<&BTreeSet<TreeChunk>>) -> Vec<St
         .flat_map(|nodes| nodes.iter())
         .filter(|(_, node)| node.kind == FileNodeKind::File)
         .filter(|(_, node)| node.parent.as_deref() != Some(TRASH_ID))
-        .filter_map(|(_, node)| Some(node.hash.as_ref()?.to_ascii_lowercase()))
+        .filter_map(|(_, node)| Some(chunks.file_hash(node.hash.as_deref()?).to_ascii_lowercase()))
         .collect()
 }
 

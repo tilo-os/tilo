@@ -316,6 +316,10 @@ pub enum Effect {
     /// `Restrict { Read }` means read-only. A restriction never denies
     /// [`Access::Read`].
     Restrict,
+    /// Compiled access for a member of a governed workspace file tree.
+    WorkspaceFileAccess,
+    /// Marks a governed file tree so ordinary path capabilities cannot authorize its contents.
+    WorkspaceFileBoundary,
 }
 
 /// One sandbox capability.
@@ -388,7 +392,7 @@ impl CapOverride {
             .any(|node| match node.by.member_id() {
                 Some(member) => match &self.grantee {
                     Grantee::Member(named) => named == member,
-                    Grantee::Role(_) | Grantee::App(_) => false,
+                    Grantee::Role(_) | Grantee::App(_) | Grantee::CustomRole(_) => false,
                 },
                 None => false,
             })
@@ -436,9 +440,8 @@ pub enum CapDecision {
 /// May `acting` reach `resource` with `access`?
 ///
 /// A live matching grant whose access implies the request allows, unless a live
-/// matching restriction caps it below the request. `now` in Unix milliseconds; `None`
-/// skips expiry. Reading is refused only when no live grant covers the
-/// resource: every restriction's access implies `Read`, so none caps below it.
+/// matching restriction caps it below the request. Within a governed file tree, the
+/// workspace must allow access. `now` in Unix milliseconds; `None` skips expiry.
 pub fn decide_capability(
     acting: &Acting,
     resource: &ResourceRef,
@@ -472,18 +475,33 @@ fn decide(
     caps: &[CapOverride],
     now: Option<u64>,
 ) -> CapDecision {
+    let mut governed_files = false;
+    let mut workspace_granted = false;
     let mut granted = false;
     let mut restricted = false;
     for cap in caps {
-        if !cap.is_live_at(now) || !reaches(cap) || !cap.scope.matches_resource(resource) {
+        if !cap.scope.matches_resource(resource) {
+            continue;
+        }
+        if cap.effect == Effect::WorkspaceFileBoundary && matches!(resource, ResourceRef::FsPath(_))
+        {
+            governed_files = true;
+        }
+        if !cap.is_live_at(now) || !reaches(cap) {
             continue;
         }
         match cap.effect {
             Effect::Grant if cap.access.implies(access) => granted = true,
+            Effect::WorkspaceFileAccess if cap.access.implies(access) => workspace_granted = true,
             Effect::Restrict if !cap.access.implies(access) => restricted = true,
             _ => {}
         }
     }
+    let granted = if governed_files {
+        workspace_granted
+    } else {
+        granted
+    };
     match (granted, restricted) {
         (true, false) => CapDecision::Allow,
         (_, true) if granted => CapDecision::DeniedByRestriction,

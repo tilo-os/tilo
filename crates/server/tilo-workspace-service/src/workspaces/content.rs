@@ -167,7 +167,14 @@ impl Workspaces {
             .chain(peer.sealed_routes())
             .filter(|route| only.is_none_or(|only| only.contains(route)))
             .collect();
-        let mut read = WholeDocuments::default();
+        let mut read = WholeDocuments {
+            files_security_basis: routes
+                .iter()
+                .any(|(app, _)| app == tilo_app_id::apps::FILE_EXPLORER)
+                .then(|| files_security_basis(&peer))
+                .flatten(),
+            ..WholeDocuments::default()
+        };
         for (app, record) in routes {
             let document = super::sealed_documents::whole_document(
                 &peer,
@@ -212,11 +219,90 @@ impl Workspaces {
         Ok(read)
     }
 
+    /// Publish a replacement Files index from a snapshot, only while its
+    /// revision, access policy and encryption epoch still match the copy.
+    /// Returns false when a newer state must be scanned again.
+    ///
+    /// # Errors
+    /// The governor cannot read the key or publish the change.
+    pub async fn publish_files_migration(
+        &self,
+        workspace: &str,
+        snapshot: &WholeDocuments,
+        keys: &key_group::ContentKeys,
+        changes: Vec<u8>,
+    ) -> Result<bool, CollaborationError> {
+        if changes.len() > 64 * 1024 {
+            return Err(CollaborationError::new(
+                "Files migration exceeds publication limit",
+            ));
+        }
+        let app = tilo_app_id::apps::FILE_EXPLORER;
+        let index = collab_types::person_document_id(collab_types::FILES_TREE_KIND);
+        let Some(revision) = snapshot.revisions.get(&(app.to_owned(), index.clone())) else {
+            return Ok(false);
+        };
+        let Some(basis) = snapshot.files_security_basis.as_ref() else {
+            return Ok(false);
+        };
+        let state = self.workspace(workspace).await?;
+        let mut governed = state.lock().await;
+        let device = governed
+            .device
+            .as_ref()
+            .ok_or_else(|| CollaborationError::new("this device has no workspace keys"))?;
+        let now = tilo_clock::wall();
+        let scoped = governed.peer().requires_document_keys(app, &index, now)?;
+        let writing = super::sealed_documents::read_document_keys(
+            device,
+            workspace,
+            (app, &index),
+            scoped,
+            true,
+        )
+        .await?;
+        if !writing.same_write_key(keys) {
+            return Ok(false);
+        }
+        {
+            let shared = governed.peer.shared();
+            let mut replica = shared.lock();
+            if replica.document_revision(app, &index).as_ref() != Some(revision)
+                || files_security_basis(&replica).as_ref() != Some(basis)
+            {
+                return Ok(false);
+            }
+            replica.workspace().check_workspace_administration(
+                self.serving_certificate().device_public_key,
+                now,
+            )?;
+            let mut candidate = replica.clone();
+            let signer = &self.inner.host.key;
+            super::sealed_documents::publish_changes(
+                &mut candidate,
+                Some(&writing),
+                (app, &index),
+                changes,
+                signer,
+                now,
+            )?;
+            governed.commit_held(
+                &mut replica,
+                candidate,
+                (signer, now),
+                super::Change::Other,
+                |entry, _| Ok(entry.collaboration.clone()),
+            )?;
+        }
+        self.settle(&mut governed).await?;
+        Ok(true)
+    }
+
     /// Run `act` while `workspace` takes no write, if none of the records
     /// `read` read has changed since and none was added: `Ok(Ok(_))` with
     /// what it answered, or `Ok(Err(_))` with the records that changed or
     /// appeared, for the caller to read again. The workspace waits only as
-    /// long as `act` takes.
+    /// long as `act` takes. Retiring legacy payloads also checks Files access policy.
     ///
     /// # Errors
     ///
@@ -225,6 +311,7 @@ impl Workspaces {
         &self,
         workspace: &str,
         read: &WholeDocuments,
+        guard_files_policy: bool,
         act: impl FnOnce() -> R,
     ) -> Result<Result<R, BTreeSet<(String, String)>>, CollaborationError> {
         let state = self.workspace(workspace).await?;
@@ -232,6 +319,14 @@ impl Workspaces {
         // Members' writes are taken into the replica under its own lock: held
         // too, nothing lands while `act` runs.
         let peer = governed.peer();
+        if guard_files_policy
+            && (read.files_security_basis.is_none()
+                || files_security_basis(&peer) != read.files_security_basis)
+        {
+            return Err(CollaborationError::new(
+                "Files access changed during collection",
+            ));
+        }
         let changed: BTreeSet<(String, String)> = peer
             .plaintext_routes()
             .into_iter()
@@ -277,7 +372,7 @@ impl Workspaces {
         // The asker of a surface is this host: a piece is kept when it is
         // addressed to the host's own device, whoever among the members
         // answered with it.
-        let device = self.inner.host.cert.device_public_key;
+        let device = self.serving_certificate().device_public_key;
         let arrived = self.inner.content.surfaces.lock_recover().piece(
             &device,
             frame,
@@ -293,7 +388,7 @@ impl Workspaces {
     /// for it are decided once a member answers with it
     /// ([`crate::surfaces::arrivals`]). The number of devices it reached.
     pub async fn ask_surface(&self, workspace: &str, app: &str, hash: &str) -> usize {
-        let device = self.inner.host.cert.device_public_key;
+        let device = self.serving_certificate().device_public_key;
         let asked = self.inner.content.surfaces.lock_recover().ask(
             &device,
             (),
@@ -362,7 +457,7 @@ impl Workspaces {
         ) {
             return Vec::new();
         }
-        let host = self.inner.host.cert.device_public_key;
+        let host = self.serving_certificate().device_public_key;
         neighbour_wire::content::answer(&host, asker, body, |app_id, _, hash| {
             self.app_file(workspace, hash)
                 .or_else(|| {
@@ -392,6 +487,18 @@ pub struct WholeDocuments {
     /// not the host's to read, and no part of what it reads whole.
     pub private: Vec<(String, String)>,
     revisions: BTreeMap<(String, String), [u8; 32]>,
+    files_security_basis: Option<FilesSecurityBasis>,
+}
+
+// The governance heads include custom-role assignments. The security digest
+// also includes certified revocations received outside the governance history.
+type FilesSecurityBasis = (Vec<automerge::ChangeHash>, [u8; 32]);
+
+fn files_security_basis(peer: &tilo_peer_state::StatePeer) -> Option<FilesSecurityBasis> {
+    Some((
+        peer.admitted_workspace()?.clone().get_heads(),
+        peer.security_basis()?.ok()?,
+    ))
 }
 
 impl WholeDocuments {

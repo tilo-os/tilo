@@ -4,6 +4,110 @@
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, WorkspaceOperation};
 use tilo_server_protocol::WorkspaceId;
 
+/// The recipient's policy snapshot for ordinary document frames. Attached
+/// devices instead replicate the workspace as stores or key holders.
+pub(super) struct DocumentRead {
+    governed: bool,
+    access: Option<tilo_action_policy::MemberAccess>,
+}
+
+impl DocumentRead {
+    pub(super) fn of(
+        runtime: &crate::workspace::WorkspaceRuntime,
+        peer: &AuthenticatedPeer,
+    ) -> Self {
+        let governed = !runtime.attached(&peer.device_public_key)
+            && (runtime.admission == crate::workspace_access::AdmissionMode::Governed
+                || runtime.device_access.is_some());
+        let access = runtime
+            .device_access
+            .as_ref()
+            .and_then(|access| access.get(&peer.device_public_key))
+            .cloned();
+        Self { governed, access }
+    }
+
+    /// Governance and other non-document traffic use their own admission.
+    pub(super) fn allows(&self, store: &crate::store::WorkspaceStore, frame: &Envelope) -> bool {
+        let Some(body) = document_policy_body(store, frame) else {
+            return true;
+        };
+        if !self.governed {
+            return true;
+        }
+        let Some(access) = &self.access else {
+            return false;
+        };
+        if let Some(neighbour_wire::KeyScope::Document {
+            workspace,
+            app,
+            document,
+            readers,
+        }) = key_scope(body)
+        {
+            let now = tilo_clock::wall();
+            let node = collab_types::document_node(access.workspace(), &app, &document);
+            return workspace.to_string() == access.workspace()
+                && readers.as_deref().is_none_or(|readers| {
+                    access
+                        .person_id()
+                        .is_some_and(|person| readers.split(',').any(|reader| reader == person))
+                })
+                && access.allows(&node, tilo_action_policy::ActionKind::Read, now);
+        }
+        let Some((route, _)) = store.payloads().open_document(body) else {
+            return false;
+        };
+        if route.cluster_id != access.workspace() {
+            return false;
+        }
+        let now = tilo_clock::wall();
+        let node =
+            collab_types::document_node(&route.cluster_id, &route.app_id, &route.document_id);
+        let mut context = tilo_action_policy::Context::at_time(now);
+        let owner = route
+            .own
+            .filter(|own| own.names(&route.document_id))
+            .map(|own| own.person());
+        if let Some(owner) = &owner {
+            context = context.with_own_resource(&route.document_id, owner);
+        }
+        access.answer(&node, tilo_action_policy::ActionKind::Read, &context)
+            == tilo_action_policy::Answer::Allow
+    }
+}
+
+fn key_scope(body: &[u8]) -> Option<neighbour_wire::KeyScope> {
+    use neighbour_wire::NeighbourMsg;
+    if !NeighbourMsg::is_governance(body) && !NeighbourMsg::is_access_request(body) {
+        return None;
+    }
+    let scope = match postcard::from_bytes(body).ok()? {
+        NeighbourMsg::MlsGovernance { workspace, .. }
+        | NeighbourMsg::MlsAccessRequest { workspace, .. } => workspace,
+        _ => return None,
+    };
+    neighbour_wire::KeyScope::parse(&scope)
+}
+
+pub(super) fn document_policy_body<'a>(
+    store: &crate::store::WorkspaceStore,
+    frame: &'a Envelope,
+) -> Option<&'a [u8]> {
+    let Envelope::Delta { delta, .. } = frame else {
+        return None;
+    };
+    let body = crate::coedit::retention_view(delta).map_or(delta.as_slice(), |(_, _, body)| body);
+    let document = store.payloads().is_document(body);
+    let scoped_keys = || {
+        matches!(
+            key_scope(body),
+            Some(neighbour_wire::KeyScope::Document { .. })
+        )
+    };
+    (document || scoped_keys()).then_some(body)
+}
+
 /// Handle `OpenDocument`: under the admission a replay has, mark the record
 /// held by the device, so its live changes reach it from now on, then answer
 /// it in `answer` with everything retained of the record and, after it,
@@ -117,6 +221,26 @@ pub(super) async fn handle_open_document(
     // device whose copy has not opened yet never takes the chain as empty.
     let read = head.unwrap_or(channel);
     let frames = frames_of(store, governed, workspace_id, read).await?;
+    // Read the projection again after loading retained frames. A policy
+    // change while reading must apply to the answer about to be queued.
+    let mut runtime = crate::workspace_io::fresh_membership(&ws).await?;
+    let policy = DocumentRead::of(&runtime, peer);
+    if frames
+        .iter()
+        .any(|frame| !policy.allows(&runtime.store, frame))
+    {
+        let device = &peer.device_public_key;
+        runtime.unhold_document(device, session.outbound, &channel);
+        if let Some(head) = head {
+            runtime.unhold_document(device, session.outbound, &head);
+        }
+        return Ok(Some(Envelope::DocumentOpened {
+            workspace_id,
+            channel,
+            answer: tilo_server_protocol::DocumentAnswer::NotYours,
+        }));
+    }
+    drop(runtime);
     let sent = u32::try_from(frames.len()).unwrap_or(u32::MAX);
     crate::timing::event("document.open.total", opened, u64::from(sent));
     answer.extend(frames);

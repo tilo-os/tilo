@@ -25,6 +25,7 @@ sources = [
     "crates/collab/collab-types/src/peer.rs",
     "crates/collab/collab-types/src/history.rs",
     "crates/collab/collab-types/src/op.rs",
+    "crates/collab/collab-types/src/workspace_id.rs",
     "crates/collab/collab-types/src/identity.rs",
     "crates/collab/collab-types/src/claim.rs",
     "crates/collab/collab-types/src/crypto.rs",
@@ -241,6 +242,9 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "EncryptionScheme::ContentKey" = "#1 struct"
 "EncryptionScheme::ContentKey.retention" = "#0 ContentRetention"
 "EncryptionScheme::MlsApplication" = "#0 unit"
+"EncryptionScheme::DocumentContentKey" = "#2 struct"
+"EncryptionScheme::DocumentContentKey.group" = "#0 WorkspaceId"
+"EncryptionScheme::DocumentContentKey.retention" = "#1 ContentRetention"
 "EntryKind" = "enum external"
 "EntryKind::Directory" = "#1 unit"
 "EntryKind::File" = "#0 unit"
@@ -983,6 +987,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "WorkspaceControlRoute::Direct" = "#0 unit"
 "WorkspaceControlRoute::Relayed" = "#1 struct"
 "WorkspaceControlRoute::Relayed.via" = "#0 [u8; 32]"
+"WorkspaceId" = "tuple(Uuid) transparent"
 "WorkspaceSettingsRoute" = "enum external"
 "WorkspaceSettingsRoute::apps_files" = "#3 unit"
 "WorkspaceSettingsRoute::emoji" = "#4 unit"

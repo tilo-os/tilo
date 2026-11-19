@@ -74,9 +74,9 @@ pub fn read_nodes(
 }
 
 /// The rules the read steps of `steps` need: reading any record of each app
-/// they read, in any workspace. A rule cannot name the app's record of the
-/// workspace (its id is empty) nor the parts of a chain read joined (each a
-/// record of its own), so it names the app's records.
+/// they read, in any workspace. A read may name the app's package primary
+/// or a joined chain whose parts are separate records. The rule covers
+/// the app's records.
 fn read_rules(steps: &[Step], out: &mut Vec<Rule>) {
     for step in steps {
         match &step.kind {
