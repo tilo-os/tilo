@@ -55,13 +55,16 @@ fn founded_pair() -> (AutoCommit, AutoCommit) {
     (founded(&cert_a), founded(&cert_b))
 }
 
-/// A workspace document as its founding leaves it.
+/// A workspace document as its founding leaves it, at a fixed time: the two
+/// devices of [`founded_pair`] found one history, which only holds if the
+/// founding is stamped at the same second on both.
 fn seeded_doc() -> AutoCommit {
     let (_, _, _, _, _, cert, _) = pair();
-    let seed = crate::seed_workspace(
+    let seed = crate::seed_workspace_at(
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         &cert,
         std::slice::from_ref(&cert),
+        0,
     )
     .expect("a workspace seed");
     crate::workspace::candidate(None, &seed).expect("a founded workspace")
