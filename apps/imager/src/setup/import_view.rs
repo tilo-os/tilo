@@ -3254,6 +3254,15 @@ mod tests {
                 },
             )
             .collect();
+        let statuses = app.row_statuses();
+        let said = |id: &str| {
+            statuses
+                .iter()
+                .find(|(row, _)| row == id)
+                .map(|(_, statuses)| statuses.clone())
+                .unwrap_or_default()
+        };
+        ui::framework::apply_row_statuses(std::slice::from_mut(&mut root), &said);
         root
     }
 
