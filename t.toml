@@ -3322,6 +3322,9 @@ optional_needs = ["publish-rpms-{arch}"]
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 outputs = ["/target/publish/rpm-snapshot/{arch}/**"]
 default = false
+# Dispatched on a release tag, its optional need publishes this architecture's set (see
+# sign-rpms-{arch}); dispatched on a branch it resolves the set as main's builds do.
+on = ["dispatch"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]
 
@@ -3829,10 +3832,10 @@ image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/rpms/{arch}/payload.json", "/target/publish/rpms/{arch}/signature", "/target/publish/rpms/{arch}/dry-run.pub", "/target/publish/rpms/{arch}/bundle.json", "/target/publish/rpms/{arch}/attestation.json", "/target/publish/rpms/{arch}/attestation.bundle.json"]
 # A release tag signs and publishes this architecture's package set, so the images it publishes
-# install from a set that is published and signed. Dispatched on a release tag (`t dispatch
-# sign-rpms-x86_64 --ref tag:vX.Y.Z --publish`) it finishes a release whose own run stopped here,
-# and an arm64 node dispatched so publishes the other architecture's set; the release key's role
-# trusts v* tags only, so a dispatch anywhere else gets no signature.
+# install from a set that is published and signed. A dispatch on a release tag of what installs
+# from the set (`t dispatch rpm-snapshot-aarch64 --ref tag:vX.Y.Z --publish`) finishes a release
+# whose own run stopped here, and on an arm64 node publishes the other architecture's set; the
+# release key's role trusts v* tags only, so a dispatch anywhere else gets no signature.
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
 id_token = ["sts.amazonaws.com"]
 [check.matrix]
@@ -3852,7 +3855,11 @@ outputs = ["/target/publish/rpms/{arch}/receipt.json"]
 # optional need, so on a release tag the set is published before anything builds from it, and the
 # image of that tag installs from the published set rather than from the run's unsigned one.
 # `once:` tags never move: an architecture's set is published once per package set.
-on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
+# Only on a release tag, a dispatch there included (a tag trigger applies to any run of the tag):
+# an optional need applies wherever its `on` matches, and in a dispatch on a branch this would
+# apply without its signature (the release key signs v* tags only), so every OS build a branch
+# dispatch asked for stopped at rpm-snapshot-{arch} with nothing built.
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
 id_token = ["registry.tilo.so"]
 [check.matrix]
 arch = ["x86_64", "aarch64"]
