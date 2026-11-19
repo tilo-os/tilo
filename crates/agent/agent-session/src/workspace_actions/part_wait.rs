@@ -9,13 +9,12 @@ use tilo_actions::ActionOutput;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
 
-use super::catch_up;
 use super::{Needs, Worker};
 
 /// How long a write waits for the part it changes to arrive from the
 /// workspace before its caller is told it has not: inside the wait the API's
 /// own caller makes, so it hears either what the write made or why not.
-const PART_WAIT: Duration = Duration::from_secs(30);
+pub(super) const PART_WAIT: Duration = Duration::from_secs(30);
 /// The first pause between asking the workspace whether the part a write
 /// waits for has arrived: short at first, as a part usually arrives at once.
 const PART_LOOK: Duration = Duration::from_millis(10);
@@ -66,10 +65,7 @@ impl Worker {
                     reason: refused.to_string(),
                 }
             })?;
-            if let Some(mounted) = self.mounted.get_mut(holder) {
-                let missing = catch_up::hold_parts(holder, mounted, &state);
-                self.ask_parts(holder, missing);
-            }
+            self.hold_chains(&super::Writer::Mounted(holder.clone()), holder, &state);
             std::thread::park_timeout(look);
             look = look.saturating_mul(2).min(PART_LOOK_MAX);
         }

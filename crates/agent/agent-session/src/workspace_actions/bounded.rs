@@ -834,9 +834,14 @@ impl Worker {
         } else if let Some(behind) = behind {
             super::catch_up::catch_up(&holder, &mut held.held, state, Some(&behind));
         }
-        let missing = super::catch_up::hold_parts(&holder, &mut held.held, state);
         super::catch_up::tell_kept(&mut held.held, state, kept);
         super::catch_up::tell_kept(&mut held.held, state, wanted);
+        // The parts of its chains the workspace has still to send, waited on.
+        self.hold_chains(&super::Writer::Bounded(key.clone()), &holder, state);
+        let held = self
+            .bounded
+            .get_mut(&key)
+            .ok_or_else(|| unavailable("the document did not mount".into()))?;
         if holder != *route && !held.held.parts.contains_key(route) {
             let (part, heads) = state.document(route).map_err(unavailable)?;
             held.held
@@ -848,7 +853,6 @@ impl Worker {
                 .map_err(|error| unavailable(error.to_string()))?;
             held.held.parts.insert(route.clone(), Some(heads));
         }
-        self.ask_parts(&holder, missing);
         Ok(key)
     }
 
@@ -992,6 +996,45 @@ impl Worker {
         }
     }
 
+    /// What a bounded caller's action changes has not arrived from the workspace (a chain's
+    /// newest part, or the word that it has none): asked for and handed over, bounded, and the
+    /// action asked again, as the owner's replica does ([`Worker::invoke_on`]).
+    fn ask_again_once_arrived(
+        &mut self,
+        workspace_id: WorkspaceId,
+        key: &BoundedKey,
+        mut held: BoundedReplica,
+        mut tried: Result<tilo_actions::ActionOutput, tilo_actions::api::ApiError>,
+        asked: impl Fn(
+            &BoundedReplica,
+        ) -> Result<tilo_actions::ActionOutput, tilo_actions::api::ApiError>,
+    ) -> Result<
+        (
+            BoundedReplica,
+            Result<tilo_actions::ActionOutput, tilo_actions::api::ApiError>,
+        ),
+        ActionCallError,
+    > {
+        let until = std::time::Instant::now().checked_add(super::part_wait::PART_WAIT);
+        while matches!(&tried, Err(tilo_actions::api::ApiError::Unavailable { code, .. })
+                if code == tilo_actions::api::NOT_READY)
+            && until.is_some_and(|until| std::time::Instant::now() < until)
+        {
+            self.bounded.insert(key.clone(), held);
+            let state = self.refresh(workspace_id, super::Needs::Joined)?;
+            self.hold_chains(&super::Writer::Bounded(key.clone()), &key.0, &state);
+            held = self
+                .bounded
+                .remove(key)
+                .ok_or(ActionCallError::UnknownAction)?;
+            tried = asked(&held);
+            if tried.is_err() {
+                std::thread::park_timeout(std::time::Duration::from_millis(20));
+            }
+        }
+        Ok((held, tried))
+    }
+
     /// Run `request` on the record at `route` for `who`, in their replica:
     /// only what it offers them, confirmed only by the person's answer the
     /// host holds for it, and saved only once their access, read again,
@@ -1097,6 +1140,9 @@ impl Worker {
             super::catch_up::answer_unheld_parts(&key.0, &held.held, state);
             tried = asked(&held);
         }
+        let (mut held, tried) = self
+            .ask_again_once_arrived(workspace_id, &key, held, tried, asked)
+            .map_err(Outcome::Rejected)?;
         let output = match tried {
             Ok(output) => output,
             Err(tilo_actions::api::ApiError::ConfirmationRequired) if given.is_some() => {

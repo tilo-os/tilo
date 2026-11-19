@@ -8,6 +8,7 @@ use crate::apps::Seed;
 use crate::worker::ConfinedReplica;
 use collab_types::DocumentMutation;
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 use tilo_actions::MemberId;
 
 /// Merge into `mounted` what `state` holds of its record and its parts that
@@ -89,7 +90,7 @@ const HOLD_ROUNDS: usize = 4;
 ///
 /// The parts the document wants that the session's replica does not hold yet
 /// are answered, for the caller to ask the workspace for
-/// ([`Worker::ask_parts`]): a workspace that sends a document only once it is
+/// ([`Worker::hold_chains`]): a workspace that sends a document only once it is
 /// opened sent this service the head of each chain and nothing before it, so
 /// a service that started again held only the newest part of a chain read
 /// whole until someone asked for the others, which nobody did.
@@ -463,12 +464,15 @@ impl Worker {
         if let Some(behind) = mounted.behind.take() {
             catch_up(holder, mounted, state, Some(&behind));
         }
-        let missing = hold_parts(holder, mounted, state);
+        // The parts of its chains, those the workspace still has to send among them.
+        self.hold_chains(&Writer::Mounted(holder.clone()), holder, state);
+        let Some(mounted) = self.mounted.get_mut(holder) else {
+            return;
+        };
         tell_kept(mounted, state, kept);
         // What the view opened from the workspace, after the chains are handed over: a part
         // of one is left to [`hold_parts`].
         self.hand_wanted(holder, state);
-        self.ask_parts(holder, missing);
     }
 
     /// Hand `mounted` each document its view opens from the workspace and does not hold yet,
@@ -488,22 +492,6 @@ impl Worker {
         }
     }
 
-    /// Ask the workspace of `holder` for `parts`, parts of its chains the
-    /// document held there wants and the session's replica does not hold: each
-    /// arrives as a change, and the document is handed it the next time it is
-    /// used ([`hold_parts`]).
-    pub(super) fn ask_parts(&mut self, holder: &DocumentRoute, parts: Vec<DocumentRoute>) {
-        if parts.is_empty() {
-            return;
-        }
-        let Some(workspace_id) = WorkspaceId::parse(&holder.cluster_id) else {
-            return;
-        };
-        if let Some(workspace) = self.workspaces.get_mut(&workspace_id) {
-            workspace.ask_routes(workspace_id, parts);
-        }
-    }
-
     /// Whether the workspace holds each of `routes`, as far as it answered. One still on
     /// its way, or in a workspace this service has not joined, is left out: its holder is
     /// told of it the next time it is used.
@@ -517,6 +505,201 @@ impl Worker {
                     .map(|held| (route, held))
             })
             .collect()
+    }
+}
+
+/// How long a request waits for the parts of a chain its view reads that the workspace has
+/// still to send ([`Worker::hold_chains`]): inside the wait the API's own caller makes.
+const CHAIN_WAIT: Duration = Duration::from_secs(20);
+/// The first pause between looking whether those parts arrived: short, as a part asked for
+/// usually arrives at once.
+const CHAIN_LOOK: Duration = Duration::from_millis(5);
+/// The longest pause between those looks.
+const CHAIN_LOOK_MAX: Duration = Duration::from_millis(100);
+
+/// The documents of `mounted`'s chains its view wants and was not handed, as routes: the parts
+/// the workspace lists, which are handed at once, and those it lists none of here, which are
+/// asked of it ([`Worker::hold_chains`]): a part before the oldest it was sent, and the head
+/// of a chain the workspace lists no part of.
+/// The heads of the chains of `holder`'s app that the workspace lists a part of.
+fn chains_listed(
+    holder: &DocumentRoute,
+    state: &WorkspaceState,
+) -> HashSet<ui::resource::DocumentId> {
+    state
+        .documents
+        .iter()
+        .filter(|held| held.app_id == holder.app_id && held.cluster_id == holder.cluster_id)
+        .filter_map(|held| ui::resource::DocumentId::parse(&held.document))
+        .filter_map(|id| id.chain_part().map(|(chain, _)| chain.chain_head()))
+        .collect()
+}
+
+/// A head held while its chain had no part listed gives way to the parts once one is:
+/// [`hold_parts`] hands those, and a head kept beside them would be read again on every
+/// write to the chain.
+fn release_heads(holder: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
+    if !mounted.parts.keys().any(|route| {
+        ui::resource::DocumentId::parse(&route.document).is_some_and(|id| id.is_chain_head())
+    }) {
+        return;
+    }
+    let chains = chains_listed(holder, state);
+    mounted.parts.retain(|route, _| {
+        ui::resource::DocumentId::parse(&route.document)
+            .is_none_or(|id| !id.is_chain_head() || !chains.contains(&id))
+    });
+}
+
+fn chains_untold(
+    holder: &DocumentRoute,
+    mounted: &Mounted,
+    state: &WorkspaceState,
+) -> (Vec<DocumentRoute>, Vec<DocumentRoute>) {
+    let wanted = mounted.app.wanted_resources();
+    if wanted.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let route = |document: &ui::resource::DocumentId| DocumentRoute {
+        app_id: holder.app_id.clone(),
+        cluster_id: holder.cluster_id.clone(),
+        document: document.as_str().to_owned(),
+    };
+    let listed: HashSet<&DocumentRoute> = state.documents.iter().collect();
+    let mut chains: Option<HashSet<ui::resource::DocumentId>> = None;
+    let mut listed_untold = Vec::new();
+    let mut untold = Vec::new();
+    for wanted_id in wanted {
+        let asked = if wanted_id.is_chain_head() {
+            // A chain the workspace lists a part of is handed its newest by [`hold_parts`].
+            let chains = chains.get_or_insert_with(|| chains_listed(holder, state));
+            if chains.contains(&wanted_id) {
+                continue;
+            }
+            route(&wanted_id)
+        } else if wanted_id.chain_part().is_some() {
+            route(&wanted_id)
+        } else {
+            continue;
+        };
+        if mounted.parts.contains_key(&asked) || mounted.foreign.contains(&asked) {
+            continue;
+        }
+        if listed.contains(&asked) {
+            listed_untold.push(asked);
+        } else {
+            untold.push(asked);
+        }
+    }
+    (listed_untold, untold)
+}
+
+impl Worker {
+    /// The replica `at` holds, mutably.
+    fn held_mut(&mut self, at: &Writer) -> Option<&mut Mounted> {
+        match at {
+            Writer::Mounted(holder) => self.mounted.get_mut(holder),
+            Writer::Bounded(key) => self.bounded.get_mut(key).map(|replica| &mut replica.held),
+        }
+    }
+
+    /// Hand the replica `at`, the document at `holder`, the parts of its chains: those the
+    /// workspace lists ([`hold_parts`]), and those its view reads that the workspace has
+    /// not sent here, which it is asked for and waited on, bounded ([`CHAIN_WAIT`]). A
+    /// chain the workspace holds none of is told so, and starts its first part.
+    ///
+    /// A service that restarted holds only the parts it was sent since: without asking for
+    /// the others, a tracker of thousands of issues listed the newest part's few dozen and
+    /// said that was all, and a chain it never held waited for an answer nobody asked for.
+    pub(super) fn hold_chains(
+        &mut self,
+        at: &Writer,
+        holder: &DocumentRoute,
+        state: &WorkspaceState,
+    ) {
+        let until = Instant::now().checked_add(CHAIN_WAIT);
+        let mut look = CHAIN_LOOK;
+        let mut fresh: Option<WorkspaceState> = None;
+        loop {
+            let now = fresh.as_ref().unwrap_or(state);
+            let Some(mounted) = self.held_mut(at) else {
+                return;
+            };
+            let missing = hold_parts(holder, mounted, now);
+            release_heads(holder, mounted, now);
+            // A part that arrived since its chain last asked is handed here: [`hold_parts`]
+            // asks a chain what it wants only once what it holds moved.
+            let mut untold = Vec::new();
+            for _ in 0..HOLD_ROUNDS {
+                let (listed, asked) = chains_untold(holder, mounted, now);
+                untold = asked;
+                if listed.is_empty() {
+                    break;
+                }
+                for route in &listed {
+                    hold(route, mounted, now);
+                }
+            }
+            for route in missing {
+                if !untold.contains(&route) {
+                    untold.push(route);
+                }
+            }
+            if untold.is_empty() {
+                return;
+            }
+            let (answered, owed) = self.chains_answered(untold);
+            let Some(mounted) = self.held_mut(at) else {
+                return;
+            };
+            let told = answered.len();
+            tell_kept(mounted, now, answered);
+            // Nothing owed: what was answered is handed above, from the workspace as it
+            // stands once it was sent.
+            if !owed && (told == 0 || fresh.is_some()) {
+                return;
+            }
+            if until.is_none_or(|until| Instant::now() >= until) {
+                tracing::warn!(app = %holder.app_id, document = %holder.document,
+                    "workspace actions: parts of a chain did not arrive in time");
+                return;
+            }
+            if owed {
+                std::thread::park_timeout(look);
+                look = look.saturating_mul(2).min(CHAIN_LOOK_MAX);
+            }
+            let Some(workspace_id) = WorkspaceId::parse(&holder.cluster_id) else {
+                return;
+            };
+            let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
+                return;
+            };
+            workspace.pump(workspace_id);
+            fresh = Some(workspace.state());
+        }
+    }
+
+    /// Whether the workspace holds each of `routes`, as far as it answered, and whether an
+    /// answer is still owed for any: one owed is asked for ([`Self::held_or_owed`]).
+    fn chains_answered(
+        &mut self,
+        routes: Vec<DocumentRoute>,
+    ) -> (Vec<(DocumentRoute, bool)>, bool) {
+        let mut owed = false;
+        let mut answered = Vec::new();
+        for route in routes {
+            let Some(workspace) = WorkspaceId::parse(&route.cluster_id) else {
+                continue;
+            };
+            match self.held_or_owed(workspace, &route) {
+                Ok(held) => answered.push((route, held)),
+                Err(super::Outcome::Rejected(tilo_actions::remote::ActionCallError::NotReady)) => {
+                    owed = true;
+                }
+                Err(_) => {}
+            }
+        }
+        (answered, owed)
     }
 }
 

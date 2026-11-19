@@ -261,3 +261,61 @@ async fn listing_a_tracker_costs_each_page_its_rows_at_any_size() {
         );
     }
 }
+
+/// A tracker held in many parts is listed whole after its server restarts:
+/// the restarted server holds only what it read since, and a listing reads
+/// every part it reaches, never ending at the newest one it holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tracker_is_listed_whole_after_its_server_restarts() {
+    const SIZE: usize = 300;
+    let on_server = api_on_server(super::api::ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let browser = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let token = approved_key(&on_server, &ada, &browser, "Mover").await;
+    let base = {
+        let agent = V1 {
+            api: &on_server.api,
+            token: token.clone(),
+        };
+        let (status, workspace) = agent
+            .send(
+                hyper::Method::POST,
+                "/v1/workspaces",
+                json!({"name": "Company"}).to_string().as_bytes(),
+            )
+            .await;
+        assert_eq!(status, 201, "{workspace}");
+        let base = format!("/v1/workspaces/{}", workspace["id"].as_str().unwrap());
+        agent.act(&base, "tasks", "open", &json!({})).await;
+        fill(&agent, &base, SIZE).await;
+        let (before, _) = every_page(&agent, &base, 40).await;
+        assert_eq!(
+            before.len(),
+            SIZE,
+            "every issue is listed before the restart"
+        );
+        base
+    };
+    let on_server = on_server.restart(false).await;
+    let agent = V1 {
+        api: &on_server.api,
+        token,
+    };
+    for limit in PAGES {
+        let began = Instant::now();
+        let (rows, took) = every_page(&agent, &base, limit).await;
+        eprintln!(
+            "after the restart, {limit} a page: {} rows in {} pages, {:?}",
+            rows.len(),
+            took.len(),
+            began.elapsed()
+        );
+        let names: std::collections::HashSet<&str> =
+            rows.iter().filter_map(|row| row["name"].as_str()).collect();
+        assert_eq!(
+            (rows.len(), names.len()),
+            (SIZE, SIZE),
+            "every issue is listed once after the restart, {limit} a page"
+        );
+    }
+}
