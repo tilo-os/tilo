@@ -21,7 +21,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {stepLimit, shellMetrics, SHELL, machine} from './waits.mjs';
+import {stepLimit, shellMetrics, SHELL, machine, settle} from './waits.mjs';
 
 const [site, server, out] = process.argv.slice(2);
 if (!site || !server || !out) {
@@ -228,7 +228,9 @@ for (const type of ['mousePressed', 'mouseReleased']) {
 const open = async (name, app) => {
   const began = Date.now();
   await key('k', mac ? 4 : 2);
-  await until('!!globalThis.tiloMount?.state()?.searchOpen', `the search opening for ${name}`);
+  // The palette fetches its engine's code as it opens, and the page of a busy
+  // node spends a page-load's steps on that before the field takes a key.
+  await until('!!globalThis.tiloMount?.state()?.searchOpen', `the search opening for ${name}`, stepLimit(6));
   await type(name.toLowerCase());
   // The card the shell publishes for the query typed, once it owes no row:
   // nothing before that is its answer to this text (the rows shown right after
@@ -238,7 +240,7 @@ const open = async (name, app) => {
     const s = globalThis.tiloMount?.state?.() ?? null;
     const card = s?.searchCard ?? null;
     return card && s.searchSearching === false && card.query === ${asked} ? JSON.stringify(card) : '';
-  })()`, `the search answering ${name}`, stepLimit(3)));
+  })()`, `the search answering ${name}`, stepLimit(6)));
   if (card?.rows?.[0]?.title !== name) {
     await fail(`the search offers no ${name} first: ${JSON.stringify(card?.rows?.map(row => row.title) ?? await paletteRows())}`);
   }
@@ -290,12 +292,17 @@ await sleep(3000);
 await checkPage('showing Notes');
 mark('Notes looked at');
 
-// What the shell drew since: its own frame count, waited on as frames, not a stopwatch.
+// What the shell drew since: its own frame count, as progress only while it
+// still owes work. A shell that drew what the person did and nothing after it
+// presents no frame at all, so `by` frames or a whole step with nothing left to
+// draw is its answer.
 const frames = () => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0').catch(() => 0);
-const settled = async (by = 2) => {
-  const from = await frames();
-  await until(`(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`, `the shell drawing ${by} more frame(s)`);
-};
+const settled = async (by = 2) => settle({
+  evaluate: expression => tab.evaluate(expression),
+  by,
+  idleMs: stepLimit(1),
+  timeoutMs: stepLimit(3),
+});
 
 // 5. The GPU device is lost mid-session, as a driver reset or the browser
 // does it: the shell makes a new device and draws on, with every window it

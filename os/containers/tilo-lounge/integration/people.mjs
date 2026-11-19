@@ -391,9 +391,14 @@ const search = async (tab, command, query, row, opens = null) => {
   }
   // A wait that runs out exits the flow from inside `until`: the chord and the
   // frames after it are read into its failure line there.
+  //
+  // The first search on a page fetches the palette's engine, a module of its
+  // own, and the page of a busy node spends the fetch and its compile on the
+  // very frames this waits for: six steps are what a page's join gets, and the
+  // opening measured here was 48 s of them (load 335).
   await until(tab, `(() => { const s = globalThis.tiloMount?.state?.() ?? null;
     return !!s?.searchOpen && ['workspace', 'everywhere'].includes(s.searchCard?.scope); })()`,
-    `the shell's search for "${query}"`, stepLimit(3), async () => {
+    `the shell's search for "${query}"`, stepLimit(6), async () => {
     const trail = await tab.evaluate('JSON.stringify((globalThis.__pressTrail ?? []).slice(0, 40))').catch(() => '[]');
     const chords = await tab.evaluate('JSON.stringify((globalThis.__chordStates ?? []).slice(-6))').catch(() => '[]');
     return `the chord opened nothing after ${Date.now() - chorded} ms: the chord as it arrived and after: ${chords}; frames after it [ms, phase, open, frames, revision, scope, focus, pending]: ${trail}`;
@@ -410,7 +415,7 @@ const search = async (tab, command, query, row, opens = null) => {
     const card = s?.searchCard ?? null;
     return card && s.searchSearching === false && card.query === ${asked} ? JSON.stringify(card) : '';
   })()`;
-  const card = JSON.parse(await until(tab, answered, `the shell answering "${query}"`, stepLimit(3)));
+  const card = JSON.parse(await until(tab, answered, `the shell answering "${query}"`, stepLimit(6)));
   if (card.rows[0]?.title !== row) {
     // The settled card is the shell's answer, not a frame of one still coming:
     // a palette that offers something else first is the failure.
@@ -1421,7 +1426,9 @@ try {
       const own = before.find(name => / \(you\): your profile$/.test(name));
       if (!own) await failed(`the bar shows no avatar of the person's own: shown ${JSON.stringify(before)}`, a.tab);
       if (!await press(a.tab, own)) await failed(`the bar's avatar "${own}" has no bounds to press`, a.tab);
-      await settle(a.tab, 2);
+      // A card opens on the frame after the press and that is all it draws: what
+      // is read next is where the shell publishes it, not a count of frames.
+      await drawn(a.tab, 1);
       const after = await namesOf(a.tab);
       const seen = new Set(before);
       console.log(`report a problem: pressed "${own}"; it brought ${JSON.stringify(after.filter(name => !seen.has(name)))}`);
@@ -1430,19 +1437,21 @@ try {
     let shown = await avatar();
     if (shown.includes('Not now')) {
       await press(a.tab, 'Not now');
-      await settle(a.tab, 2);
+      await drawn(a.tab, 1);
       shown = await avatar();
     }
+    // The row is there once the page holds the Lounge's feedback channel, which
+    // arrives on its own time: it is waited for where the shell publishes it.
+    await publishedName(a.tab, `name => /^Report a problem/.test(name)`, stepLimit(3));
     const reportRow = await choose(a.tab, /^Report a problem/);
     if (!reportRow) {
-      // The row is there once the page holds the Lounge's feedback channel:
-      // why it does not is in what the page said about feedback.
+      // Why the row is absent is in what the page said about feedback.
       const said = (a.tab.log ?? []).filter(line => /feedback/i.test(line)).slice(-10);
       await failed(`the profile card offers no Report a problem: shown ${JSON.stringify(await namesOf(a.tab))}; the page said of feedback: ${JSON.stringify(said)}`, a.tab);
     }
     // Picking what to report takes every event: nothing under the pointer
     // reacts to it, and the strip the shell shows stays where it was.
-    await settle(a.tab, 2);
+    await drawn(a.tab, 1);
     const pickingPan = await panOf(a.tab);
     await sidewaysSwipe(a.tab, centre.x, centre.y, true);
     if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
@@ -1628,6 +1637,9 @@ try {
     // read where the shell publishes it, not after a count of frames: a shell
     // that drew its window in one frame owes no second.
     await search(a.tab, a.command, 'chat', 'Chat');
+    // The search slides the strip to the window: where its composer stands is read
+    // once the strip is at rest, not while it still moves.
+    await restingPan(a.tab);
     const composer = await published(a.tab, 'Message composer', 'the chat composer');
     const [cx0, cy0, cx1, cy1] = Array.isArray(composer.bounds)
       ? composer.bounds
