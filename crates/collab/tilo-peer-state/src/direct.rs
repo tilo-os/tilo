@@ -81,10 +81,11 @@ pub enum Kept {
 
 /// One frame of a direct link's control stream.
 ///
-/// A dialling device names its workspace first, then asks the other device's
-/// retained history to continue from its own cursors; the other device
-/// answers with the frames its store holds. The workspace's live messages
-/// travel on their own streams, one per direction.
+/// A dialling device names its workspace first; the other device answers that
+/// it is listening, then the dialling one asks for the retained history to
+/// continue from its own cursors, which the other device answers with the
+/// frames its store holds. The workspace's live messages travel on their own
+/// streams, one per direction.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 enum LinkFrame {
     /// The workspace the dialling device wants, named before anything else.
@@ -101,6 +102,9 @@ enum LinkFrame {
         /// Whether a further ask carries more.
         more: bool,
     },
+    /// The dialled device listens now: whatever the dialling one publishes
+    /// from this point reaches it, live.
+    Ready,
 }
 
 /// Ask the other device's store for the frames after `cursors`, round by round
@@ -897,10 +901,11 @@ impl DirectSync {
     }
 
     /// Dial `device` at `addr` from `endpoint` and answer its admission,
-    /// leaving the link ready to run ([`Dialed::run`]). `addr` is the device's
-    /// own key, or the service address of a server its signed host hint binds
-    /// to it: a server answers on a key of its own, and what its history names
-    /// no author for is still its device's.
+    /// leaving the link ready to run ([`Dialed::run`]): the other device
+    /// listens before this returns, so what this device publishes from now on
+    /// reaches it. `addr` is the device's own key, or the service address of a
+    /// server its signed host hint binds to it: a server answers on a key of
+    /// its own, and what its history names no author for is still its device's.
     ///
     /// # Errors
     ///
@@ -918,12 +923,26 @@ impl DirectSync {
             .await
             .map_err(|error| error.to_string())?;
 
-        let (mut send, recv) = connection
+        let (mut send, mut recv) = connection
             .open_bi()
             .await
             .map_err(|error| error.to_string())?;
         let workspace = self.workspace()?;
         write_link(&mut send, &LinkFrame::Workspace(workspace)).await?;
+        // The other device listens before this returns, so what the caller
+        // publishes from now on reaches it: an unsealed write it missed is in
+        // no store to catch up from.
+        match read_link(&mut recv, MAX_FRAME_BYTES).await {
+            Ok(Some(LinkFrame::Ready)) => {}
+            Ok(other) => {
+                return Err(format!(
+                    "the device answered {other:?} instead of that it listens"
+                ));
+            }
+            Err(error) => {
+                return Err(refusal(&connection).map_or(error, |refusal| refusal.to_string()));
+            }
+        }
         // Who the dialled device is, this one learns from what it sends: its
         // certificate is in the frames it opens with, and a device that has
         // not synced yet holds no roster to refuse by.
@@ -1084,11 +1103,17 @@ impl DirectSync {
     ) -> Result<(), String> {
         let dialing = dialled.is_some();
         let remote = dialled.unwrap_or_else(|| *connection.remote_id().as_bytes());
+        let mut control = control;
         // The device that accepted a dial refuses one of the workspace's
         // roster it does not know before a frame is read; the one that
         // dialled cannot judge, and takes only what its roster verifies.
         if !dialing && let Err(reason) = self.admits(remote) {
             return Err(refuse(connection, &Refusal::NotAMember(reason)));
+        }
+        if !dialing {
+            // Subscribed by the caller already: the dialling device publishes
+            // nothing before this reaches it.
+            write_link(&mut control.send, &LinkFrame::Ready).await?;
         }
         // Taken after the catch-up, which the caller subscribed before: a
         // change published in between reaches the link after the history
@@ -1139,7 +1164,6 @@ impl DirectSync {
             },
         ));
         let history = async {
-            let mut control = control;
             if !dialing {
                 // The other device asks for the history as the link starts,
                 // and again whenever it wants what it let go.
