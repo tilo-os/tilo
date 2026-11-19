@@ -74,11 +74,13 @@ impl ModelConfig {
             _ => return Err("profileId and modelId must be supplied together and nonempty".into()),
         };
         Ok(ui::models::Models::new(Rc::new(LazyModels {
-            service: EmbedderSession {
-                endpoint: self.endpoint.clone(),
-                session_token: zeroize::Zeroizing::new(self.session_token.clone()),
-            },
-            choice,
+            through: Through::Service(
+                EmbedderSession {
+                    endpoint: self.endpoint.clone(),
+                    session_token: zeroize::Zeroizing::new(self.session_token.clone()),
+                },
+                choice,
+            ),
             client: std::cell::OnceCell::new(),
         })))
     }
@@ -124,10 +126,13 @@ pub(crate) fn server_models(
     let Some(peer) = peer else {
         return ui::models::Models::default();
     };
-    ui::models::Models::new(Rc::new(ServerTurns {
-        peer,
-        workspace: workspace.to_owned(),
-        person: person.to_owned(),
+    ui::models::Models::new(Rc::new(LazyModels {
+        through: Through::Server(ServerTurns {
+            peer,
+            workspace: workspace.to_owned(),
+            person: person.to_owned(),
+        }),
+        client: std::cell::OnceCell::new(),
     }))
 }
 
@@ -136,6 +141,7 @@ const TURN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(150);
 
 /// Turns of the person's model, asked of the server over the
 /// session the page's peer holds with it.
+#[derive(Clone)]
 struct ServerTurns {
     peer: u32,
     workspace: String,
@@ -299,6 +305,7 @@ struct EmbedderSession {
 pub struct ModelClients {
     models: MakeModels,
     administration: MakeAdministration,
+    turns: fn(ServerTurns) -> Rc<dyn ModelBackend>,
 }
 
 /// Opens the model service client for a base URL, a token and an optional
@@ -333,9 +340,13 @@ pub fn builtin_model_clients() -> ModelClients {
         let transport = FetchTransport::new(endpoint, session_token)?;
         Ok(Arc::new(AdministrationClient::new(transport)))
     }
+    fn turns(turns: ServerTurns) -> Rc<dyn ModelBackend> {
+        Rc::new(turns)
+    }
     ModelClients {
         models,
         administration,
+        turns,
     }
 }
 
@@ -352,10 +363,17 @@ async fn model_clients() -> Result<ModelClients, ModelError> {
         .ok_or_else(|| ModelError::new(ErrorKind::Unavailable))
 }
 
+/// Where a mount's models are asked.
+enum Through {
+    /// The embedder's model service, with the profile and model it chose.
+    Service(EmbedderSession, Option<(String, String)>),
+    /// The person's own models, on their server.
+    Server(ServerTurns),
+}
+
 /// A mount's models, connected on the first request.
 struct LazyModels {
-    service: EmbedderSession,
-    choice: Option<(String, String)>,
+    through: Through,
     client: std::cell::OnceCell<Rc<dyn ModelBackend>>,
 }
 
@@ -365,12 +383,15 @@ impl LazyModels {
             return Ok(Rc::clone(client));
         }
         let clients = model_clients().await?;
-        let EmbedderSession {
-            endpoint,
-            session_token,
-        } = &self.service;
-        let client = (clients.models)(endpoint, session_token.to_string(), self.choice.clone())
-            .map_err(|_| ModelError::new(ErrorKind::Transport))?;
+        let client = match &self.through {
+            Through::Service(service, choice) => (clients.models)(
+                &service.endpoint,
+                service.session_token.to_string(),
+                choice.clone(),
+            )
+            .map_err(|_| ModelError::new(ErrorKind::Transport))?,
+            Through::Server(turns) => (clients.turns)(turns.clone()),
+        };
         Ok(Rc::clone(self.client.get_or_init(|| client)))
     }
 }
