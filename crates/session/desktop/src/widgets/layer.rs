@@ -15,10 +15,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_desktop_surface::notifications::{
-    CLEAR_UNDO_WINDOW, Notification, NotificationIconKind, NotificationSeverity,
-};
-use tilo_desktop_surface::{DesktopHandle, DesktopNotifications, NotificationOutcome};
+use tilo_desktop_surface::DesktopHandle;
 use ui::motion::{Ambient, Presence, Zoom};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -55,6 +52,10 @@ const SHOWN: [WidgetId; 4] = [
 /// What the shell's controls are named to assistive technology: the widget's own control, then
 /// `.pin` or `.remove` for its card's.
 const SHELL_TARGET: &str = "shell.widget:";
+
+/// The action of the Undo the shell's notice offers for a widget taken off the shell
+/// ([`DesktopHandle::take_notice_actions`]).
+const UNDO_WIDGET: &str = "shell-widget-undo";
 
 /// One of the shell's controls, as a screen reader reads it.
 fn control(target: String, name: String, bounds: Rect) -> ui::a11y::AccessNode {
@@ -150,10 +151,8 @@ pub struct WidgetLayer {
     fold: super::Fold,
     /// Whether the overview is up over the shell: a card the person opened goes with it.
     overview: Rc<Cell<bool>>,
-    /// The shell's notifications: a widget taken off the shell offers Undo there for a while.
-    notices: DesktopNotifications,
-    /// The Undo toasts on offer, by notification: each puts its widget back.
-    undo: Rc<RefCell<BTreeMap<u64, WidgetId>>>,
+    /// The widget an Undo on the shell's notice puts back, while that notice is up.
+    removed: Option<WidgetId>,
     /// The widgets an Undo asked back, taken up on the next pass.
     restores: Rc<RefCell<Vec<WidgetId>>>,
     /// What plays, as the session reads it: the music widget shows it and its controls ask for the
@@ -234,8 +233,7 @@ impl WidgetLayer {
             rect: Rect::ZERO,
             fold: super::Fold::default(),
             overview: Rc::default(),
-            notices: DesktopNotifications::default(),
-            undo: Rc::default(),
+            removed: None,
             restores: Rc::default(),
             music: Music::default(),
         }
@@ -261,28 +259,6 @@ impl WidgetLayer {
     pub fn with_music(mut self, music: Music) -> Self {
         self.music = music;
         self.dirty = true;
-        self
-    }
-
-    /// The same layer posting to `notices` , the shell's own: what it takes off the shell offers Undo
-    /// there.
-    #[must_use]
-    pub fn with_notices(mut self, notices: DesktopNotifications) -> Self {
-        let undo = Rc::clone(&self.undo);
-        let restores = Rc::clone(&self.restores);
-        // The person's answer comes from wherever the toast was shown, not from this layer: the
-        // shell takes it up on its next pass.
-        notices.on_outcome(move |outcome| match outcome {
-            NotificationOutcome::Activated { notification, .. } => {
-                if let Some(widget) = undo.borrow_mut().remove(&notification.id) {
-                    restores.borrow_mut().push(widget);
-                }
-            }
-            NotificationOutcome::Dismissed { id } => {
-                undo.borrow_mut().remove(id);
-            }
-        });
-        self.notices = notices;
         self
     }
 
@@ -822,21 +798,22 @@ impl WidgetLayer {
         self.offer_undo(id);
     }
 
-    /// Offer Undo for `id` , just taken off the shell: the toast names it, and choosing it before it
-    /// lapses puts the widget back.
-    fn offer_undo(&self, id: WidgetId) {
+    /// Offer Undo for `id` , just taken off the shell: the shell's notice names it in passing, and
+    /// choosing that before it lapses puts the widget back.
+    fn offer_undo(&mut self, id: WidgetId) {
         let name = paint::widget_title(id);
-        let mut toast = Notification::new(
-            crate::i18n::t_args("shell-widget-removed", &[("widget", name.as_str().into())]),
-            String::new(),
-        )
-        .with_severity(NotificationSeverity::Info)
-        .with_icon_kind(NotificationIconKind::Generic);
-        toast.dismiss_after = CLEAR_UNDO_WINDOW;
-        toast.actions = vec![("default".into(), crate::i18n::t("shell-widget-undo"))];
-        toast.show_on_lock_screen = false;
-        let posted = self.notices.post(toast);
-        self.undo.borrow_mut().insert(posted, id);
+        self.removed = Some(id);
+        self.handle.acknowledge_with(
+            ui::window_toolbar::ToolbarNotice::new(
+                crate::i18n::t_args("shell-widget-removed", &[("widget", name.as_str().into())]),
+                ui::widget::toast::ToastKind::Info,
+            )
+            .action(ui::window_toolbar::ToolbarAction::new(
+                UNDO_WIDGET,
+                "undo-2",
+                crate::i18n::t("shell-widget-undo"),
+            )),
+        );
     }
 
     /// Keep `id` on this session even while the person works, or stop.
@@ -870,7 +847,17 @@ impl WidgetLayer {
     /// Returns whether anything changed.
     fn tick(&mut self, now: Instant) -> bool {
         let mut changed = false;
-        // Undo puts a widget the person removed back where it was.
+        // Undo puts a widget the person removed back where it was. The person pressed it on the
+        // shell's notice, which hands the press here.
+        if self
+            .handle
+            .take_notice_actions()
+            .iter()
+            .any(|action| action == UNDO_WIDGET)
+            && let Some(id) = self.removed.take()
+        {
+            self.restores.borrow_mut().push(id);
+        }
         let restores: Vec<WidgetId> = std::mem::take(&mut *self.restores.borrow_mut());
         for id in restores {
             let mut prefs = self.prefs.get(id).clone();
@@ -1685,8 +1672,6 @@ mod tests {
         fold: super::super::Fold,
         /// Whether the overview is over the shell.
         overview: Rc<Cell<bool>>,
-        /// The shell's notifications, where a removed widget's Undo is offered.
-        notices: tilo_desktop_surface::DesktopNotifications,
         /// What plays, as the session keeps it beside its Quick Settings reading.
         music: Music,
     }
@@ -1722,12 +1707,10 @@ mod tests {
         let changes = std::sync::Arc::new(std::sync::Mutex::new(prefs.clone()));
         let fold = super::super::Fold::default();
         let overview: Rc<Cell<bool>> = Rc::default();
-        let notices = tilo_desktop_surface::DesktopNotifications::default();
         let music = Music::default();
         let mut widgets = WidgetLayer::new(handle, "me".into(), Rc::clone(&asks), changes.clone())
             .with_fold(fold.clone())
             .with_overview(Rc::clone(&overview))
-            .with_notices(notices.clone())
             .with_music(music.clone());
         widgets = widgets.with_source(source).with_prefs(prefs);
         lay_out(&mut widgets, AREA);
@@ -1737,7 +1720,6 @@ mod tests {
             changes,
             fold,
             overview,
-            notices,
             music,
         }
     }
@@ -1849,14 +1831,9 @@ mod tests {
             self.send(&cursor_moved(at.x, at.y));
         }
 
-        /// The newest toast on the shell's notifications.
-        fn toast(&self) -> tilo_desktop_surface::notifications::Notification {
-            self.notices
-                .feed()
-                .banners
-                .last()
-                .map(|banner| banner.notification.clone())
-                .expect("a toast is up")
+        /// The notice the shell says over the windows now, if one is up.
+        fn notice(&self) -> Option<ui::window_toolbar::ToolbarNotice> {
+            self.widgets.handle.notice().borrow().get().cloned()
         }
     }
 
@@ -1952,19 +1929,19 @@ mod tests {
             Form::Away,
             "taken off the shell"
         );
-        let toast = rig.toast();
-        assert_eq!(toast.title, "Calendar removed from the desktop");
+        let said = rig.notice().expect("the shell says what it took off");
+        assert_eq!(said.text, "Calendar removed from the desktop");
         assert_eq!(
-            toast.actions,
-            [("default".to_owned(), "Undo".to_owned())],
-            "the toast offers Undo"
+            said.actions
+                .iter()
+                .map(|action| (action.id.as_str(), action.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(UNDO_WIDGET, "Undo")],
+            "the notice offers Undo"
         );
 
-        // Undo, chosen on the toast, puts it back where it was.
-        rig.notices
-            .answer(tilo_desktop_surface::notifications::BannerAsk::Activate(
-                toast.id,
-            ));
+        // Undo, chosen on the notice, puts it back where it was.
+        assert!(rig.widgets.handle.press_notice(UNDO_WIDGET));
         rig.widgets.tick(Instant::now());
         assert_eq!(
             rig.form(WidgetId::Calendar),
@@ -1996,12 +1973,9 @@ mod tests {
             Form::Away,
             "thrown off the shell"
         );
-        let toast = rig.toast();
-        assert_eq!(toast.title, "Calendar removed from the desktop");
-        rig.notices
-            .answer(tilo_desktop_surface::notifications::BannerAsk::Activate(
-                toast.id,
-            ));
+        let said = rig.notice().expect("the shell says what it took off");
+        assert_eq!(said.text, "Calendar removed from the desktop");
+        assert!(rig.widgets.handle.press_notice(UNDO_WIDGET));
         rig.widgets.tick(Instant::now());
         assert_eq!(
             rig.form(WidgetId::Calendar),

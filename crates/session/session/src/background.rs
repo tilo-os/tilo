@@ -123,7 +123,7 @@ pub(crate) fn background(
         // ask the same model through the broker.
         surface.set_history_source(Box::new(activity.clone()));
         surface.serve_activity(activity.requests());
-        surface.set_notifications(notices.clone());
+        surface.set_notifications(notices);
         let layer = tilo_desktop::widgets::WidgetLayer::new(
             handle.clone(),
             options.person.clone(),
@@ -132,7 +132,6 @@ pub(crate) fn background(
         )
         .with_fold(fold)
         .with_overview(overview)
-        .with_notices(notices)
         .with_music(music);
         let beneath = vec![Box::new(layer) as Box<dyn ui::widget::Widget>];
         Box::new(
