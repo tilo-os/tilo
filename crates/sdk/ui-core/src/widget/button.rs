@@ -75,6 +75,9 @@ pub struct Button {
     /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
     role: ButtonRole,
+    /// It wears the primary face while the pointer is over it or the keyboard is on it
+    /// ([`Self::primary_when_engaged`]): one of several equal answers, the one about to be given.
+    primary_when_engaged: bool,
     toggled: Option<bool>,
     shortcut: Option<crate::platform::Shortcut>,
     /// The width `measure` settled on, pinned onto the node so a stretching
@@ -181,6 +184,7 @@ impl Button {
             count_size: vello::kurbo::Size::ZERO,
             fill_width: false,
             role: ButtonRole::Secondary,
+            primary_when_engaged: false,
             toggled: None,
             opens_menu: false,
             shows_choice: false,
@@ -486,6 +490,7 @@ impl Button {
         if fresh.icon.is_some() != self.icon.is_some()
             || (!compact && fresh.label.is_empty() != self.label.is_empty())
             || fresh.role != self.role
+            || fresh.primary_when_engaged != self.primary_when_engaged
             || fresh.control_size != self.control_size
             || fresh.faces != self.faces
             || fresh.avatar != self.avatar
@@ -710,6 +715,15 @@ impl Button {
     #[must_use]
     pub const fn role_of(&self) -> ButtonRole {
         self.role
+    }
+
+    /// Wear the primary face while the pointer is over it or the keyboard is on it, and its own
+    /// role otherwise: a row of equal answers, none suggested, shows which one a press gives.
+    #[must_use]
+    pub fn primary_when_engaged(mut self) -> Self {
+        self.primary_when_engaged = true;
+        self.dirty = true;
+        self
     }
 
     pub fn set_role(&mut self, role: ButtonRole) {
@@ -2014,9 +2028,14 @@ impl Button {
             disabled: !self.effectively_enabled(),
         };
         let on = self.is_toggled();
+        let engaged = (interact.hovered || interact.focused) && !interact.disabled;
         FacePaint {
             rect: self.rect,
-            role: self.role,
+            role: if self.primary_when_engaged && engaged {
+                ButtonRole::Primary
+            } else {
+                self.role
+            },
             field: self.shows_choice,
             confirms: false,
             on,

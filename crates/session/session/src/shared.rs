@@ -507,7 +507,7 @@ impl Shared {
             );
         }
         self.tell_agent_bindings_lost();
-        self.asker.follow();
+        self.asker.follow(&self.notifications);
         self.follow_reach();
         self.shortcut_guide.follow();
         self.app_sheets.follow(self.downloaded_apps().as_ref());

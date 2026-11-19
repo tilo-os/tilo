@@ -55,7 +55,14 @@ enum Sheet {
 enum Decision {
     Answer(Answer),
     Decline,
+    /// Not now: the question stays open, waiting among the notifications.
+    Later,
 }
+
+/// What the tag of the notice a question put off waits under starts with, followed by its handle.
+pub(crate) const LATER_TAG: &str = "agent-ask-later:";
+/// The action on that notice that asks the question again.
+const ANSWER_NOW: &str = "answer";
 
 /// What came of one of the sheet's effects.
 enum Step {
@@ -150,6 +157,10 @@ pub(crate) struct Asker {
     /// What the session publishes, to take an allowance back through the portal's own action.
     services: Rc<RefCell<Services>>,
     shown: RefCell<Option<Shown>>,
+    /// Where a question put off waits for the person, and where choosing it again comes back.
+    notices: std::cell::OnceCell<Rc<dyn crate::platform::notice::Notices>>,
+    /// The questions put off, by handle: none of them is put up until chosen from its notice.
+    later: RefCell<std::collections::BTreeSet<String>>,
 }
 
 impl Asker {
@@ -172,16 +183,89 @@ impl Asker {
             picker,
             services,
             shown: RefCell::new(None),
+            notices: std::cell::OnceCell::new(),
+            later: RefCell::new(std::collections::BTreeSet::new()),
         }
     }
 
+    /// Ask again, once the sheet is free, the questions chosen from their notices; forget the put
+    /// off questions that are no longer open.
+    fn recall(&self, questions: &Questions) {
+        let Some(notices) = self.notices.get() else {
+            return;
+        };
+        for (tag, key) in notices.take_chosen_actions() {
+            let Some(handle) = tag.strip_prefix(LATER_TAG) else {
+                continue;
+            };
+            if key == ANSWER_NOW {
+                self.later.borrow_mut().remove(handle);
+            }
+        }
+        let open: Vec<String> = questions
+            .pending()
+            .into_iter()
+            .map(|question| question.handle)
+            .collect();
+        let gone: Vec<String> = self
+            .later
+            .borrow()
+            .iter()
+            .filter(|handle| !open.contains(handle))
+            .cloned()
+            .collect();
+        for handle in gone {
+            self.later.borrow_mut().remove(&handle);
+            notices.withdraw(&format!("{LATER_TAG}{handle}"));
+        }
+    }
+
+    /// Keep the question under `handle`, put off, among the notifications.
+    fn notify_later(&self, questions: &Questions, handle: &str) {
+        let Some(notices) = self.notices.get() else {
+            return;
+        };
+        let Some(question) = questions
+            .pending()
+            .into_iter()
+            .find(|question| question.handle == handle)
+        else {
+            return;
+        };
+        let Some(Composed { dialog, .. }) = compose(&question) else {
+            return;
+        };
+        let body = if dialog.detail.is_empty() {
+            dialog.heading.clone()
+        } else {
+            dialog.detail.clone()
+        };
+        let mut notice = crate::platform::notice::Notice::new(
+            word("agent-ask-notice-app"),
+            1,
+            dialog.title,
+            body,
+        )
+        .choosing(vec![(ANSWER_NOW.to_owned(), word("agent-ask-answer"))])
+        .staying(Some(std::time::Duration::ZERO));
+        notice.tag = format!("{LATER_TAG}{handle}");
+        notices.show(&notice);
+    }
+
     /// Take what the person decided since the last pass, and put up the oldest question nothing
-    /// shows yet. The sheet draws on the display the session put it on.
-    pub(crate) fn follow(&self) {
+    /// shows yet. The sheet draws on the display the session put it on; a question the person puts
+    /// off waits among `notifications` until they choose it there.
+    pub(crate) fn follow(
+        &self,
+        notifications: &Rc<RefCell<crate::notifications::SessionNotifications>>,
+    ) {
         let Some(questions) = &self.questions else {
             return;
         };
+        self.notices
+            .get_or_init(|| crate::notifications::RoleNotices::tagged(notifications, LATER_TAG));
         self.settle(questions);
+        self.recall(questions);
         self.retire(questions);
         // The sheet saying what was granted makes way for a question that arrived meanwhile.
         if self.shown.borrow().is_some() && !questions.pending().is_empty() {
@@ -197,10 +281,15 @@ impl Asker {
         if self.shown.borrow().is_some() {
             return;
         }
-        let showing = questions.pending().into_iter().find_map(|question| {
-            let kind = question.kind.clone();
-            self.show(question).then_some(kind)
-        });
+        let later = self.later.borrow().clone();
+        let showing = questions
+            .pending()
+            .into_iter()
+            .filter(|question| !later.contains(&question.handle))
+            .find_map(|question| {
+                let kind = question.kind.clone();
+                self.show(question).then_some(kind)
+            });
         if let Some(kind) = showing {
             tracing::debug!(kind, "a question is up on its sheet");
         }
@@ -275,6 +364,11 @@ impl Asker {
         let Some(shown) = self.shown.borrow_mut().take() else {
             return;
         };
+        self.conclude(questions, &shown, decision);
+    }
+
+    /// Carry out what the person decided on the sheet `shown`, which is no longer up.
+    fn conclude(&self, questions: &Questions, shown: &Shown, decision: Decision) {
         match (&shown.plan, decision) {
             (Plan::Revoke { .. }, Decision::Answer(_)) => {
                 if let Plan::Revoke {
@@ -289,10 +383,7 @@ impl Asker {
             }
             (_, _) if shown.handle.is_none() => self.take_down(shown.sheet),
             (_, Decision::Answer(answer)) => {
-                let grant = shown
-                    .grant
-                    .clone()
-                    .filter(|_| keeps_answer(&shown, &answer));
+                let grant = shown.grant.clone().filter(|_| keeps_answer(shown, &answer));
                 if let Some(handle) = &shown.handle {
                     questions.answer(handle, answer);
                 }
@@ -304,6 +395,13 @@ impl Asker {
             (_, Decision::Decline) => {
                 if let Some(handle) = &shown.handle {
                     questions.decline(handle);
+                }
+                self.take_down(shown.sheet);
+            }
+            (_, Decision::Later) => {
+                if let Some(handle) = &shown.handle {
+                    self.later.borrow_mut().insert(handle.clone());
+                    self.notify_later(questions, handle);
                 }
                 self.take_down(shown.sheet);
             }
@@ -553,6 +651,7 @@ impl Shown {
                 _ => Step::Nothing,
             },
             PortalEffect::Cancel { .. } => Step::Decide(Decision::Decline),
+            PortalEffect::Defer { .. } => Step::Decide(Decision::Later),
         }
     }
 

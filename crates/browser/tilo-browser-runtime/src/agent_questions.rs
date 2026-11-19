@@ -5,10 +5,12 @@
 //! each question on the native question sheet over the desktop
 //! ([`tilo_sheets::portal`]), in its words. Allow once runs that one
 //! invocation, Deny refuses it; a question the agent words itself is answered
-//! with one of its choices or what the person types, and Not now leaves it
-//! unanswered. A question the server withdraws, or that expires, takes the
-//! sheet away. While the tab is out of view, a
-//! notification says an agent waits (the person did not cause it).
+//! with one of its choices or what the person types, Decline tells the agent
+//! no, and Not now leaves it open: the sheet goes, the question waits among
+//! the notifications, and choosing it there asks it again. A question the
+//! server withdraws, or that expires, takes the sheet away. While the tab is
+//! out of view, a notification says an agent waits (the person did not cause
+//! it).
 //!
 //! This is the page's code for it, reached only through
 //! [`crate::questions::QuestionsCode`] so that a page which is asked nothing
@@ -17,6 +19,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
+use std::sync::{Mutex, Once};
 
 use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
@@ -41,7 +44,16 @@ const RETRY_MAX_MS: u32 = 30_000;
 struct Waiting {
     question: PendingConfirmation,
     answer: mpsc::UnboundedSender<Answered>,
+    /// The person put it off: it waits among the notifications, not on the sheet.
+    deferred: bool,
 }
+
+/// What a notice of a question put off opens: `tilo-agent-question:<hex id>`.
+const SCHEME: &str = "tilo-agent-question";
+
+/// The questions put off that the person chose again from their notice, until
+/// the sheet takes them up.
+static RECALLED: Mutex<Vec<[u8; 32]>> = Mutex::new(Vec::new());
 
 thread_local! {
     /// The questions waiting, oldest first: the sheet shows the first.
@@ -79,6 +91,7 @@ pub(crate) fn answer_as(peer: u32, device_key: &JsValue, cert: &DeviceCert) -> R
     {
         return Ok(());
     }
+    recall_from_notices();
     wasm_bindgen_futures::spawn_local(async move {
         let mut retry = POLL_MS;
         // A session the page closed is asked nothing more.
@@ -123,6 +136,7 @@ impl QuestionSheet for PageSheet {
             waiting.push_back(Waiting {
                 question: question.clone(),
                 answer: self.answered.clone(),
+                deferred: false,
             });
         });
         crate::browser::wake_desktops();
@@ -217,6 +231,77 @@ fn notify(question: &PendingConfirmation) {
     }
 }
 
+/// Keep question `id`, which the person put off, among the notifications: in
+/// the stack and under the bell, which counts it, until they choose it there.
+fn notify_deferred(question: &PendingConfirmation) {
+    let asked = dialog(question);
+    let words = asked.words();
+    let notice = ui::notify::Notification::new(tag(&question.id), asked.title, words)
+        .with_activation(format!("{SCHEME}:{}", hex::encode(question.id)))
+        .with_action(tilo_sheets::word("agent-ask-answer"))
+        .quietly();
+    if let Err(error) = ui::process::current().notifications.show(&notice) {
+        tracing::debug!(%error, "agent questions: no notification for a question put off");
+    }
+}
+
+/// Choosing the notice of a question put off asks it again.
+fn recall_from_notices() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        ui::notify::set_activation_handler(SCHEME, |uri| {
+            let id = uri
+                .strip_prefix(SCHEME)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .and_then(|hex_id| hex::decode(hex_id).ok())
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+            if let Some(id) = id {
+                RECALLED
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(id);
+                crate::browser::wake_desktops();
+            }
+        });
+    });
+}
+
+/// Ask again, first, the questions the person chose from their notices.
+fn take_recalled() -> bool {
+    let recalled = std::mem::take(
+        &mut *RECALLED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    let mut changed = false;
+    for id in recalled {
+        let found = WAITING.with_borrow_mut(|waiting| {
+            let at = waiting.iter().position(|asked| asked.question.id == id)?;
+            let mut asked = waiting.remove(at)?;
+            asked.deferred = false;
+            waiting.push_front(asked);
+            Some(())
+        });
+        if found.is_some() {
+            unnotify(&id);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Put question `id` off: it stays open, unanswered, among the notifications.
+fn defer(id: [u8; 32]) {
+    let question = WAITING.with_borrow_mut(|waiting| {
+        let asked = waiting.iter_mut().find(|asked| asked.question.id == id)?;
+        asked.deferred = true;
+        Some(asked.question.clone())
+    });
+    if let Some(question) = question {
+        notify_deferred(&question);
+    }
+}
+
 fn unnotify(id: &[u8; 32]) {
     let _ = ui::process::current().notifications.withdraw(&tag(id));
 }
@@ -256,7 +341,8 @@ impl PageQuestions {
         }
     }
 
-    fn follow(&mut self, show: &mut dyn FnMut(Option<ui::widget::Element>), missing: bool) -> bool {
+    /// Carry out what the person pressed on the sheet: whether the sheet changed.
+    fn take_presses(&mut self) -> bool {
         let mut changed = false;
         // The state took only presses naming the question up.
         let asking = self.up.and_then(|id| {
@@ -269,6 +355,14 @@ impl PageQuestions {
         });
         for effect in self.state.take_asked() {
             let given = match (effect, &asking) {
+                (PortalEffect::Defer { .. }, Some(_)) => {
+                    if let Some(id) = self.up.take() {
+                        defer(id);
+                        self.state.presentation().close();
+                        changed = true;
+                    }
+                    continue;
+                }
                 (PortalEffect::Cancel { .. }, _) => ConfirmationAnswer::Deny,
                 (PortalEffect::Confirm { .. }, None) => ConfirmationAnswer::AllowOnce,
                 (PortalEffect::Select { index, .. }, Some(_)) => {
@@ -307,9 +401,20 @@ impl PageQuestions {
                 changed = true;
             }
         }
+        changed
+    }
+
+    fn follow(&mut self, show: &mut dyn FnMut(Option<ui::widget::Element>), missing: bool) -> bool {
+        let mut changed = take_recalled();
+        changed |= self.take_presses();
+        // The sheet asks the first question not put off, and counts every
+        // other open one, put off or not.
         let (first, more) = WAITING.with_borrow(|waiting| {
             (
-                waiting.front().map(|asked| asked.question.clone()),
+                waiting
+                    .iter()
+                    .find(|asked| !asked.deferred)
+                    .map(|asked| asked.question.clone()),
                 waiting.len().saturating_sub(1),
             )
         });
