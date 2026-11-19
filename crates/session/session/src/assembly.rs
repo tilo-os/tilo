@@ -336,6 +336,7 @@ pub(crate) struct Shared {
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// The documents of the workspaces this device's service holds, as the session's own roles
     /// read them.
+    #[cfg(target_os = "linux")]
     pub(crate) document_reads:
         std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
     /// The workspaces' shared desktops, as their records hold them: what each
