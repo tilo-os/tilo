@@ -125,7 +125,8 @@ pub(crate) fn window(cx: &ViewCx<Library>, mut music: Music) -> Element {
             *staged.borrow_mut() = scenario.map(str::to_owned);
         });
     }
-    let (rows, row, edits, entries) = (
+    let (rows, row, statuses, edits, entries) = (
+        Rc::clone(&music),
         Rc::clone(&music),
         Rc::clone(&music),
         Rc::clone(&music),
@@ -137,6 +138,10 @@ pub(crate) fn window(cx: &ViewCx<Library>, mut music: Music) -> Element {
             // keeps offline: rows beside the library, carrying their effects.
             .live_rows(move || rows.borrow().device_rows())
             .live_row(move |id| row.borrow().device_row(id))
+            // What each row says of its effects now: a transport with nothing
+            // to play, a queue item at either end, the words the transport's
+            // controls use.
+            .row_status(move |id| statuses.borrow().music_rows().row_status(id))
             // The library's field edits bound to the row they act on: saving
             // an album, following an artist, taking a song out of a playlist
             // or moving it, and the recommendations' switches and feedback.

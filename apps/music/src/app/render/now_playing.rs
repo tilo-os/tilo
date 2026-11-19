@@ -111,18 +111,14 @@ impl NowPlaying {
 struct NowPlayingLink {
     name: String,
     row: ui::framework::LiveRow,
-    open: &'static str,
     effect: MusicEffect,
 }
 
 impl NowPlayingLink {
     /// The link, invoking the item's own Open.
     fn control(&self) -> Option<Link> {
-        let row = self
-            .row
-            .clone()
-            .operation(crate::actions::bound(&self.effect, self.open));
-        let binding = ui::tilo_actions::ActionBinding::unit_for(&row, self.effect.id()).ok()?;
+        let binding =
+            ui::tilo_actions::ActionBinding::unit_for(&self.row, self.effect.id()).ok()?;
         Some(Link::action(&self.name, binding).with_text_role(TextRole::Body))
     }
 }
@@ -188,22 +184,22 @@ impl Music {
     fn now_playing_links(&self, track: &crate::model::Track) -> Vec<NowPlayingLink> {
         let artist = NowPlayingLink {
             name: self.lib.artist_name(&track.artist_id).to_owned(),
-            row: ui::framework::LiveRow::typed::<crate::row_types::Artist>(
+            row: ui::framework::LiveRow::typed_with::<crate::row_types::Artist>(
                 crate::actions::artist_resource_id(&track.artist_id),
                 self.lib.artist_name(&track.artist_id),
+                &crate::actions::open_place(Place::Artist(track.artist_id.clone())),
             ),
-            open: "Open artist",
             effect: MusicEffect::Open {
                 place: Place::Artist(track.artist_id.clone()),
             },
         };
         let album = NowPlayingLink {
             name: self.lib.album_title(&track.album_id).to_owned(),
-            row: ui::framework::LiveRow::typed::<crate::row_types::Album>(
+            row: ui::framework::LiveRow::typed_with::<crate::row_types::Album>(
                 crate::actions::album_resource_id(&track.album_id),
                 self.lib.album_title(&track.album_id),
+                &crate::actions::open_place(Place::Album(track.album_id.clone())),
             ),
-            open: "Open album",
             effect: MusicEffect::Open {
                 place: Place::Album(track.album_id.clone()),
             },

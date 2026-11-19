@@ -723,49 +723,39 @@ impl Music {
         self.catalogue_entities()
             .into_iter()
             .filter_map(|(id, (label, kind))| {
-                let (row, place, artist) = match kind {
+                let (place, address) = match kind {
                     HomeItemKind::Album => (
-                        ui::framework::LiveRow::typed::<crate::row_types::Album>(
-                            crate::actions::album_resource_id(&id),
-                            label,
-                        ),
                         crate::actions::Place::Album(id.clone()),
-                        false,
+                        crate::actions::album_resource_id(&id),
                     ),
                     HomeItemKind::Artist => (
-                        ui::framework::LiveRow::typed::<crate::row_types::Artist>(
-                            crate::actions::artist_resource_id(&id),
-                            label,
-                        ),
                         crate::actions::Place::Artist(id.clone()),
-                        true,
+                        crate::actions::artist_resource_id(&id),
                     ),
                     HomeItemKind::Playlist => (
-                        ui::framework::LiveRow::typed::<crate::row_types::Playlist>(
-                            crate::actions::playlist_resource_id(&id),
-                            label,
-                        ),
                         crate::actions::Place::Playlist(id.clone()),
-                        false,
+                        crate::actions::playlist_resource_id(&id),
                     ),
                     HomeItemKind::Track => return None,
                 };
-                let mut row = row.effect(&MusicEffect::Open { place });
+                let mut bindings = crate::actions::open_place(place);
                 if id.starts_with("spotify:") && id != "spotify:collection:liked" {
-                    row = if artist {
-                        row.operation(crate::actions::bound(
-                            &MusicEffect::SpotifySave { uri: id.clone() },
-                            &crate::i18n::t("music-spotify-follow-artist"),
-                        ))
-                        .operation(crate::actions::bound(
-                            &MusicEffect::SpotifyUnsave { uri: id },
-                            &crate::i18n::t("music-spotify-unfollow-artist"),
-                        ))
-                    } else {
-                        row.effect(&MusicEffect::SpotifySave { uri: id.clone() })
-                            .effect(&MusicEffect::SpotifyUnsave { uri: id })
-                    };
+                    bindings = bindings
+                        .bind(MusicEffect::SPOTIFY_SAVE, [("uri", id.clone().into())])
+                        .bind(MusicEffect::SPOTIFY_UNSAVE, [("uri", id.into())]);
                 }
+                let row = match kind {
+                    HomeItemKind::Album => ui::framework::LiveRow::typed_with::<
+                        crate::row_types::Album,
+                    >(address, label, &bindings),
+                    HomeItemKind::Artist => ui::framework::LiveRow::typed_with::<
+                        crate::row_types::Artist,
+                    >(address, label, &bindings),
+                    HomeItemKind::Playlist => ui::framework::LiveRow::typed_with::<
+                        crate::row_types::Playlist,
+                    >(address, label, &bindings),
+                    HomeItemKind::Track => return None,
+                };
                 Some(row)
             })
             .collect()
