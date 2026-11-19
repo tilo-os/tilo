@@ -8,8 +8,12 @@ description = "The wasm host layer every guest in Tilo executes on: per-call fue
 
 [dependencies]
 thiserror.workspace = true
-# The interpreter: every host's engine, and the browser build's only one.
-wasmi = { version = "1.1", default-features = false, features = ["std"] }
+# The interpreter: every host's engine, and the browser build's only one. SIMD is named here
+# because this crate decides the engine's feature set: without it a guest's module is refused
+# because wasmi has no SIMD at all, and the native builds' set would otherwise depend on which
+# other crates a run links (the model service turns it on). Named, the shared engine can turn
+# relaxed SIMD off on every target.
+wasmi = { version = "1.1", default-features = false, features = ["simd", "std"] }
 # The compiled tier a native runtime executes beside the interpreter. Off unless a host asks for
 # it, so the browser build stays wasmi only.
 wasmtime = { version = "50.0.0", optional = true, default-features = false, features = [
