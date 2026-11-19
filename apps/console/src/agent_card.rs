@@ -13,14 +13,7 @@ use crate::{Console, Nav, Reads, Resources, ago, faced, page, tr, trf};
 
 pub(crate) const AGENT_KIND: &str = "console.agent";
 
-/// An agent as the type its rows are items of: what a published agent says it is, so search
-/// names it by its type rather than by a tag the card writes.
-pub(crate) struct Agent;
-
-impl ui::tilo_resource::words::RowType for Agent {
-    const KIND: &'static str = AGENT_KIND;
-    const LABEL: &'static str = "Agent";
-}
+pub(crate) use console_model::Agent;
 
 /// The address of the agent of `client`.
 pub(crate) fn agent_resource_id(client: &str) -> String {
@@ -43,13 +36,14 @@ fn card_view() -> ui::tilo_actions::ResourceViewSpec {
 /// The agent of `client` as the resource its address names: its card, and the card's
 /// commands.
 pub(crate) fn live_agent(client: &str) -> LiveRow {
-    let agent = || client.to_owned();
-    LiveRow::typed::<Agent>(agent_resource_id(client), client.to_owned())
-        .effect(&ConsoleEffect::ViewAgent { agent: agent() })
-        .effect(&ConsoleEffect::StopAgent { agent: agent() })
-        .effect(&ConsoleEffect::UndoAgentSession { agent: agent() })
-        .effect(&ConsoleEffect::TakeOverAgent { agent: agent() })
-        .effect(&ConsoleEffect::RevokeAgent { agent: agent() })
+    let agent = || [("agent", serde_json::Value::from(client.to_owned()))];
+    let bindings = ui::tilo_resource::RowBindings::new()
+        .bind(ConsoleEffect::VIEW_AGENT, agent())
+        .bind(ConsoleEffect::STOP_AGENT, agent())
+        .bind(ConsoleEffect::UNDO_AGENT_SESSION, agent())
+        .bind(ConsoleEffect::TAKE_OVER_AGENT, agent())
+        .bind(ConsoleEffect::REVOKE_AGENT, agent());
+    LiveRow::typed_with::<Agent>(agent_resource_id(client), client.to_owned(), &bindings)
         .view(card_view())
 }
 

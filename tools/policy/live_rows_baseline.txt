@@ -1,8 +1,6 @@
 # Rows and trees apps still build by hand
 # (tools/policy/check_live_rows.py). Counts only shrink.
 row-operation 1 apps/code-editor/src/app/surface.rs
-row-operation 5 apps/console/src/agent_card.rs
-row-operation 1 apps/console/src/agents.rs
 row-operation 2 apps/ebook/src/search_provider.rs
 row-operation 1 apps/monitor/src/app.rs
 row-operation 1 apps/music/src/app/local_files.rs

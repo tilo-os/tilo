@@ -3,6 +3,8 @@
 
 mod console;
 mod effect;
+mod rows;
 
 pub use console::Console;
 pub use effect::ConsoleEffect;
+pub use rows::{Agent, Session};
