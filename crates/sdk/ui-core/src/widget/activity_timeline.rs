@@ -40,8 +40,6 @@ const PADDING: f64 = 8.0;
 const AVATAR_DIAM: f64 = 16.0;
 const REVERT_CHIP_W: f64 = 64.0;
 const TIME_SLOT_W: f64 = 80.0;
-/// How far a change's sentence starts past its kind mark.
-const SUMMARY_INSET: f64 = 24.0;
 /// The author cluster of a row: the author's face and the gap after it.
 /// A row is told apart by who made it at a glance, by face and colour; the
 /// name is the face's tooltip and the row's accessible name, never a
@@ -2566,7 +2564,7 @@ impl ActivityTimeline {
         }
 
         let line_top = text_top(text_renderer, text_style, cy);
-        let summary_x = glyph_x + SUMMARY_INSET;
+        let summary_x = glyph_x + f64::from(theme.tokens.spacing.s6);
         let summary_x_end = body.x1;
         let (summary_owned, is_redacted_row) = self.row_sentence(entry, now);
         // A change that acted on one thing reads as what it did, then the thing, as a link

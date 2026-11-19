@@ -3,7 +3,7 @@
 //! mark and what it did, its time at the trailing edge. A file of its own so the widget's source
 //! stays a size a person reads whole.
 
-use super::{ActivityTimeline, SUMMARY_INSET, row_time};
+use super::{ActivityTimeline, row_time};
 use crate::TextRole;
 use crate::composition::{HtmlCx, TextLook};
 use crate::kurbo::Rect;
@@ -128,7 +128,11 @@ impl ActivityTimeline {
                 theme.tokens.colors.text_primary
             };
             let look = TextLook::new(sentence, &caption, Some(ink)).with_max_lines(Some(1));
-            let part = item.part("body", "Text", line(body.x0 + SUMMARY_INSET, body.x1));
+            let part = item.part(
+                "body",
+                "Text",
+                line(body.x0 + f64::from(theme.tokens.spacing.s6), body.x1),
+            );
             part.tag = Some("p");
             part.own = Some(crate::composition::Own::Text(look));
             let look = TextLook::new(row_time(entry, now), &caption, Some(theme.text_dim))
