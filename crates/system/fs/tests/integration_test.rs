@@ -2187,7 +2187,7 @@ async fn a_write_through_the_mount_is_named_for_the_agent_that_made_it() {
             let mut ns = namespace.lock().unwrap();
             let ino = ns.resolve_path_ino("/notes.md").expect("the saved file");
             let chunk = ns.document_id_for(ino).expect("its record").chunk();
-            ns.save_record(chunk).expect("its chunk's record")
+            ns.save_document(chunk).expect("its chunk's record")
         };
         let mut doc = automerge::AutoCommit::load(&record).unwrap();
         doc.get_changes(&[])

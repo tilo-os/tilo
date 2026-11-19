@@ -24,7 +24,7 @@ impl Folder {
             .records()
             .into_iter()
             .map(|chunk| {
-                let bytes = namespace.save_record(chunk).unwrap();
+                let bytes = namespace.save_document(chunk).unwrap();
                 (chunk, AutoCommit::load(&bytes).unwrap())
             })
             .collect();

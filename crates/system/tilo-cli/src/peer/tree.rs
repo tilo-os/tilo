@@ -700,7 +700,7 @@ impl Sync {
             let Some(mut namespace) = self.namespace_now() else {
                 return;
             };
-            namespace.record_heads()
+            namespace.document_heads()
         };
         let dirty: Vec<TreeChunk> = heads
             .iter()
@@ -727,7 +727,7 @@ impl Sync {
         let writes = tokio::task::spawn_blocking(move || {
             let mut namespace = namespace.lock_recover();
             due.into_iter()
-                .filter_map(|(chunk, sent)| namespace.record_write(chunk, &sent, WRITE_BUDGET))
+                .filter_map(|(chunk, sent)| namespace.document_write(chunk, &sent, WRITE_BUDGET))
                 .collect::<Vec<_>>()
         })
         .await;
@@ -837,7 +837,7 @@ impl Sync {
             let Some(mut namespace) = self.namespace_now() else {
                 return;
             };
-            (namespace.heads(), namespace.record_heads())
+            (namespace.heads(), namespace.document_heads())
         };
         let counting =
             self.counted_heads.as_ref() != Some(&heads) && self.counting.due(Instant::now());
@@ -934,11 +934,11 @@ fn keep_records(namespace: &Mutex<Namespace>, keeping: &Mutex<Keeping>) {
     let mut saved = Vec::new();
     {
         let mut namespace = namespace.lock_recover();
-        for (chunk, heads) in namespace.record_heads() {
+        for (chunk, heads) in namespace.document_heads() {
             if keeping.heads.get(&chunk) == Some(&heads) {
                 continue;
             }
-            if let Some(bytes) = namespace.save_record(chunk) {
+            if let Some(bytes) = namespace.save_document(chunk) {
                 saved.push((chunk, heads, bytes));
             }
         }
@@ -1050,9 +1050,9 @@ mod tests {
             .create_file(tilo_fs::namespace::ROOT_INO, "handbook.md.txt", None, 1, 1)
             .unwrap();
         let founded: BTreeMap<TreeChunk, (Vec<u8>, Vec<automerge::ChangeHash>)> = desktop
-            .record_heads()
+            .document_heads()
             .into_iter()
-            .map(|(chunk, heads)| (chunk, (desktop.save_record(chunk).unwrap(), heads)))
+            .map(|(chunk, heads)| (chunk, (desktop.save_document(chunk).unwrap(), heads)))
             .collect();
 
         // This device copied a file in before the records arrived, then merged them.
@@ -1098,7 +1098,7 @@ mod tests {
                 "{name} reached the host"
             );
         }
-        assert_eq!(host.record_heads(), laptop.record_heads());
+        assert_eq!(host.document_heads(), laptop.document_heads());
     }
 
     #[test]
@@ -1111,7 +1111,7 @@ mod tests {
         for chunk in namespace.records() {
             std::fs::write(
                 dir.path().join(format!("{chunk}.automerge")),
-                namespace.save_record(chunk).unwrap(),
+                namespace.save_document(chunk).unwrap(),
             )
             .unwrap();
         }
@@ -1119,7 +1119,7 @@ mod tests {
         let read = Namespace::from_records("laptop", kept_documents(dir.path()).unwrap()).unwrap();
         let mut read = read;
         assert!(read.lookup(tilo_fs::namespace::ROOT_INO, "a.txt").is_some());
-        assert_eq!(read.record_heads(), namespace.record_heads());
+        assert_eq!(read.document_heads(), namespace.document_heads());
     }
 
     /// Keeping writes each chunk that changed in a file of its own, and then nothing until a
