@@ -273,9 +273,10 @@ of its 536,880-byte payload is its module, its surface and its locales (`apps/ca
 | assistant | 21,846 | 998,912 | 983,040 |
 | passwords | 21,837 | 1,654,784 | 1,638,400 |
 
-Seven apps over budget keep no model: Imager, Launcher, Store, Terminal, Typst Editor, Video
-Player and Windows gained 2 to 52 KB of their own code. `raises/models-in-packages.toml` carries
-each overage plus the headroom, and `tools/perf/runtime-size-budget/raises/models-in-packages.toml`
-the runtime the modules share, which grew as more of them joined the combined build. The whole
-collection is still inside the fleet's targets: p50 1,686,016 bytes, p90 3,822,592, max
-5,205,504.
+Apps that keep no model grew 2 to 52 KB of their own code: Mail, Agent, Imager, Launcher, Store,
+Terminal, Typst Editor, Video Player and Windows. `raises/models-in-packages.toml` carries each
+overage plus the headroom, and `raises/app-code-since-model-budgets.toml` the four that crossed
+their budgets later with code of their own: Mail, Agent, Contacts and Disks.
+`tools/perf/runtime-size-budget/raises/models-in-packages.toml` carries the runtime the modules
+share, which grew as more of them joined the combined build. The whole collection is still inside
+the fleet's targets: p50 1,706,496 bytes, p90 3,822,592, max 5,211,648.
