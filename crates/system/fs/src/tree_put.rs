@@ -88,7 +88,7 @@ impl Namespace {
     /// Where each document of the tree is before a change: what
     /// [`Self::document_writes`] answers the change against.
     pub fn before_change(&mut self) -> BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> {
-        self.record_heads()
+        self.document_heads()
     }
 
     /// Put the file `name`, whose content the workspace keeps under `hash`,

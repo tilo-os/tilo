@@ -38,7 +38,7 @@ pub fn contents(namespace: &Mounted) -> Vec<String> {
     {
         let mut namespace = namespace.lock_recover();
         for chunk in namespace.records() {
-            let Some(bytes) = namespace.save_record(chunk) else {
+            let Some(bytes) = namespace.save_document(chunk) else {
                 continue;
             };
             chunks

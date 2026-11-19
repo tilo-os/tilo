@@ -81,7 +81,7 @@ impl Namespace {
     }
 
     /// Record `chunk` of the tree (0 for the tree's own) saved whole, if this namespace holds it.
-    pub fn save_record(&mut self, chunk: TreeChunk) -> Option<Vec<u8>> {
+    pub fn save_document(&mut self, chunk: TreeChunk) -> Option<Vec<u8>> {
         self.note_change();
         Some(self.doc.doc_mut(chunk)?.save())
     }
@@ -263,7 +263,7 @@ impl Namespace {
     }
 
     /// Each record's heads: the tree's own (0) and every chunk's.
-    pub fn record_heads(&mut self) -> BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> {
+    pub fn document_heads(&mut self) -> BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> {
         self.note_change();
         self.doc.heads()
     }
@@ -345,7 +345,7 @@ impl Namespace {
     /// more, or this namespace holds nothing of the record. A record that changed more than
     /// one write carries goes out over several, each building on the last. Reading changes
     /// walks the record's document, so a caller asks only for a record it can send now.
-    pub fn record_write(
+    pub fn document_write(
         &mut self,
         chunk: TreeChunk,
         held: &[automerge::ChangeHash],

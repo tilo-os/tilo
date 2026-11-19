@@ -992,7 +992,7 @@ fn a_write_is_one_change_of_the_chunk_that_holds_the_file() {
     );
 
     // Renaming the first file writes its chunk alone.
-    let known = laptop.record_heads();
+    let known = laptop.document_heads();
     let first = first.unwrap();
     let chunk = laptop.document_id_for(first).unwrap().chunk();
     assert!(laptop.rename(ROOT_INO, "f0.txt", ROOT_INO, "renamed.txt", 2));
@@ -1014,7 +1014,7 @@ fn a_write_is_one_change_of_the_chunk_that_holds_the_file() {
     assert!(desktop.lookup(ROOT_INO, "f0.txt").is_none());
 
     // What the desktop holds now is what the laptop does, record by record.
-    assert_eq!(desktop.record_heads(), laptop.record_heads());
+    assert_eq!(desktop.document_heads(), laptop.document_heads());
     // And a namespace kept on disk reads back the same.
     let kept = Namespace::from_bytes("laptop", &laptop.save()).unwrap();
     assert_eq!(
@@ -1034,14 +1034,14 @@ fn a_record_changed_past_one_write_goes_out_over_several() {
             .create_file(ROOT_INO, format!("file-{n}.rs"), Some(&h(1)), 4, 1)
             .unwrap();
         // Each file is its own change, as each push of the folder commits what it made.
-        laptop.record_heads();
+        laptop.document_heads();
     }
-    let whole = laptop.record_write(1, &[], usize::MAX).unwrap();
+    let whole = laptop.document_write(1, &[], usize::MAX).unwrap();
     let budget = whole.changes.len() / 5;
     let mut record = Vec::new();
     let mut sent = Vec::new();
     let mut writes = 0;
-    while let Some(write) = laptop.record_write(1, &sent, budget) {
+    while let Some(write) = laptop.document_write(1, &sent, budget) {
         assert!(
             !write.changes.is_empty(),
             "a write carries something until the heads are reached"
