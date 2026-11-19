@@ -1510,3 +1510,137 @@ fn pieces_are_begun_so_many_at_once_and_their_issue_goes_on_when_they_are_throug
         "3 pieces: 1 ready for review, 0 done, 1 stopped, 1 cancelled"
     );
 }
+
+/// How many `#[model(demanded)]` fields (an issue's description and thread) `scopes` read.
+fn demanded_reads(scopes: &[ui::tilo_resource::profiling::Sample]) -> usize {
+    scopes
+        .iter()
+        .filter(|scope| scope.phase == "resource.read_demanded")
+        .map(|scope| scope.calls)
+        .sum()
+}
+
+/// A part of `count` issues, each with a description and a comment, and its issues' ids in the
+/// order they were made.
+fn commented_part(count: usize) -> (Replica<IssueList>, Vec<Id>) {
+    let mut part = Replica::<IssueList>::new().as_author("ada");
+    for at in 0..count {
+        part.apply(IssueList::CREATE.with(NewIssue {
+            body: Some(format!("Issue {at}: what it is about, a paragraph of it.")),
+            rank: Some(format!("{at:08}")),
+            ..NewIssue::titled(nb(&format!("Issue {at}")))
+        }))
+        .unwrap();
+    }
+    let state = part.state().unwrap();
+    let mut ids: Vec<(String, Id)> = state
+        .issues
+        .iter()
+        .map(|(id, issue)| (issue.rank.clone(), id.clone()))
+        .collect();
+    ids.sort();
+    let ids: Vec<Id> = ids.into_iter().map(|(_, id)| id).collect();
+    for id in &ids {
+        part.apply(IssueList::COMMENT.with(issue_list::Comment {
+            issue: id.clone(),
+            text: nb("Looked at it"),
+            origin: None,
+        }))
+        .unwrap();
+    }
+    (part, ids)
+}
+
+/// What a window's reader reads of a part: none of its issues' descriptions or threads, at 20
+/// issues as at 400, and the one issue a view demands whole, however many there are.
+#[test]
+fn a_windows_reading_of_its_issues_reads_no_description_or_thread_until_one_is_demanded() {
+    fn read(count: usize) -> (usize, usize) {
+        let (part, ids) = commented_part(count);
+        let (reader, scopes) = ui::tilo_resource::profiling::observe(|| {
+            ui::tilo_resource::Reader::<IssueList>::read(part.doc()).unwrap()
+        });
+        let opened = demanded_reads(&scopes);
+        let state = Rc::clone(reader.state());
+        assert_eq!(state.issues.len(), count);
+        assert!(
+            state
+                .issues
+                .iter()
+                .all(|(_, issue)| issue.body.text().is_empty() && issue.comments.is_empty()),
+            "a list's reading holds no description or thread"
+        );
+        drop(state);
+        let mut reader = reader;
+        let shown = &ids[count / 2];
+        let ((), scopes) = ui::tilo_resource::profiling::observe(|| {
+            assert!(
+                reader
+                    .demand(
+                        part.doc(),
+                        ui::tilo_resource::Demand::none().with_keys([shown.as_str()]),
+                    )
+                    .unwrap()
+            );
+        });
+        let issue = reader.state().issues.get(shown).unwrap();
+        assert!(
+            issue.body.text().contains("what it is about"),
+            "{:?}",
+            issue.body.text()
+        );
+        assert_eq!(issue.comments.len(), 1);
+        (opened, demanded_reads(&scopes))
+    }
+    // The description and the thread of one issue: two fields read, at any size.
+    assert_eq!(read(20), (0, 2));
+    assert_eq!(read(400), (0, 2));
+}
+
+/// The issue a view demanded stays read as it changes, and a change to another issue reads what
+/// it touched of that one alone; the reading of every field still sees them all.
+#[test]
+fn a_demanded_issue_follows_its_changes_and_the_others_stay_unread() {
+    let (mut part, ids) = commented_part(30);
+    let mut reader = ui::tilo_resource::Reader::<IssueList>::read(part.doc()).unwrap();
+    let shown = ids[3].clone();
+    reader
+        .demand(
+            part.doc(),
+            ui::tilo_resource::Demand::none().with_keys([shown.as_str()]),
+        )
+        .unwrap();
+    for issue in [&shown, &ids[7]] {
+        part.apply(IssueList::COMMENT.with(issue_list::Comment {
+            issue: issue.clone(),
+            text: nb("And again"),
+            origin: None,
+        }))
+        .unwrap();
+    }
+    let ((), scopes) = ui::tilo_resource::profiling::observe(|| {
+        reader.sync(part.doc()).unwrap();
+    });
+    assert!(demanded_reads(&scopes) <= 2, "{scopes:?}");
+    let state = reader.state();
+    assert_eq!(state.issues.get(&shown).unwrap().comments.len(), 2);
+    assert!(
+        state
+            .issues
+            .get(&ids[3])
+            .unwrap()
+            .body
+            .text()
+            .contains("Issue 3"),
+        "the demanded issue keeps its description"
+    );
+    assert!(state.issues.get(&ids[10]).unwrap().comments.is_empty());
+    let every = ui::tilo_resource::Reader::<IssueList>::read_all(part.doc()).unwrap();
+    assert!(
+        every
+            .state()
+            .issues
+            .iter()
+            .all(|(_, issue)| !issue.comments.is_empty() && !issue.body.text().is_empty())
+    );
+}

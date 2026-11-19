@@ -77,6 +77,7 @@ use super::history::PartEdit;
 use super::resources::ResourceApi;
 
 mod api;
+mod demanding;
 mod dispatching;
 mod follow;
 mod listing;
@@ -525,6 +526,8 @@ pub(crate) struct ChainCore {
     /// The items of the parts before the newest, as last gathered ([`EarlierItems`]).
     earlier: RefCell<Option<EarlierItems>>,
     part_search: RefCell<PartsSearched>,
+    /// Readers of every field for search, where the window reads fewer ([`PartType::search_all`]).
+    search_readers: RefCell<HashMap<u64, Option<Box<dyn Any>>>>,
     /// The store's [`ResourceStore::kept_revision`] when the window last
     /// looked for a newer head and at the parts it waits for.
     looked: Cell<Option<u64>>,
@@ -1090,6 +1093,7 @@ impl ChainCore {
             part_published: RefCell::default(),
             earlier: RefCell::new(None),
             part_search: RefCell::default(),
+            search_readers: RefCell::default(),
             looked: Cell::new(None),
             followed_at: Cell::new(None),
             earlier_at: Cell::new(None),
@@ -2225,9 +2229,9 @@ impl ChainState {
         self.core.forget_unheld(&held);
         let typed = (part.typed)(&parts);
         let mut entries = (part.search_over)(&*(self.base)(), &*typed);
+        self.forget_search_readers(&held);
         for (index, state) in &parts {
-            let found = self.core.part_searched(*index, &|| (part.search)(&**state));
-            entries.extend(found.iter().cloned());
+            entries.extend(self.searched_part(*index, &**state).iter().cloned());
         }
         let hidden = (part.hidden)(&*typed);
         if !hidden.is_empty() {

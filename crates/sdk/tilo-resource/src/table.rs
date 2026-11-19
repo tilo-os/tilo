@@ -233,6 +233,9 @@ pub struct FieldDesc {
     pub readonly: bool,
     /// Read all of it whenever it is read (`#[model(whole)]`).
     pub whole: bool,
+    /// Left unread by a view's reader until a view demands its item
+    /// (`#[model(demanded)]`, [`for_view`]).
+    pub demanded: bool,
     /// Its items, for a collection whose items are published.
     pub items: Option<&'static ItemOps>,
 }
@@ -1164,8 +1167,15 @@ impl FieldSource for DocSource<'_> {
     fn next(&mut self, out: &mut dyn Any) -> Result<(), ModelError> {
         let field = self.record.fields.get(self.index).ok_or_else(mismatch)?;
         match crate::model::take_slot(&mut self.slots, self.index) {
-            Some((value, id)) => (field.table.ops.load)(field.table, self.doc, &value, &id, out),
-            None => (field.table.ops.missing)(field.table, out),
+            Some((value, id)) if !skipped(field) => {
+                // What reading a demanded field costs is what a view asked for: counted, so a
+                // test holds a list of thousands to reading none of them.
+                let _phase = field
+                    .demanded
+                    .then(|| crate::profiling::Phase::start("resource.read_demanded"));
+                (field.table.ops.load)(field.table, self.doc, &value, &id, out)
+            }
+            _ => (field.table.ops.missing)(field.table, out),
         }
         .located(field.key)
     }
@@ -1173,11 +1183,62 @@ impl FieldSource for DocSource<'_> {
     fn read(&mut self, value: &mut dyn Any) -> Result<(), ModelError> {
         let field = self.record.fields.get(self.index).ok_or_else(mismatch)?;
         self.index = self.index.saturating_add(1);
-        if field.whole {
+        if field.whole && !skipped(field) {
             (field.table.ops.read_whole)(field.table, value, self.doc).located(field.key)?;
         }
         Ok(())
     }
+}
+
+thread_local! {
+    /// Whether what is read now is read for a view ([`for_view`]).
+    static FOR_VIEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Call `read` as a view's reader reads: every `#[model(demanded)]` field it
+/// meets reads as its missing value, unread, until a view demands the item
+/// holding it and the resource's [`load`](crate::Resource::load) reads that
+/// item whole. A read outside it reads every field as stored.
+pub fn for_view<T>(read: impl FnOnce() -> T) -> T {
+    let before = FOR_VIEW.with(|flag| flag.replace(true));
+    let read = read();
+    FOR_VIEW.with(|flag| flag.set(before));
+    read
+}
+
+/// Call `read` reading every field as stored, inside a read for a view too:
+/// what a resource's `load` reads of the items a view demands.
+pub fn whole<T>(read: impl FnOnce() -> T) -> T {
+    let before = FOR_VIEW.with(|flag| flag.replace(false));
+    let read = read();
+    FOR_VIEW.with(|flag| flag.set(before));
+    read
+}
+
+/// Whether `field` is left unread here: a demanded one, read for a view.
+fn skipped(field: &FieldDesc) -> bool {
+    field.demanded && FOR_VIEW.with(std::cell::Cell::get)
+}
+
+/// Whether a value of `table` holds a `#[model(demanded)]` field anywhere
+/// (in its fields, their collections' items, and theirs): whether what a
+/// view's reader holds of it may be less than the document holds.
+#[must_use]
+pub fn reads_on_demand(table: &ModelTable) -> bool {
+    fn walk(table: &ModelTable, depth: usize) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        if let Some(desc) = table.collection() {
+            return walk(desc.item(), depth.saturating_add(1));
+        }
+        described(table).is_ok_and(|desc| {
+            desc.fields
+                .iter()
+                .any(|field| field.demanded || walk(field.table, depth.saturating_add(1)))
+        })
+    }
+    walk(table, 0)
 }
 
 /// [`Model::from_json`] of a record, put into `out`.

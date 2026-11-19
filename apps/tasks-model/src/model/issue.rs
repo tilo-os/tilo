@@ -346,9 +346,12 @@ pub struct Issue {
     /// Description
     ///
     /// Markdown, edited in the block editor. Read whole: search, references
-    /// and an agent's instruction read every word of it.
+    /// and an agent's instruction read every word of it. A window's list
+    /// shows none of it, so its reader leaves it unread until the issue's page
+    /// demands the issue; its editor reads it from the document itself.
     #[model(whole)]
     #[model(resource)]
+    #[model(demanded)]
     pub body: RichText,
     /// Status
     pub status: Status,
@@ -413,7 +416,10 @@ pub struct Issue {
     /// Named `comments`, so whoever may comment in the workspace may write
     /// in it, and nothing else of the issue. Only its verbs add to it, so
     /// nobody edits or removes someone else's message by a field edit.
+    /// Read in a window only where a view demands the issue (its page, the
+    /// thread view): a list of thousands of issues reads none of it.
     #[model(readonly)]
+    #[model(demanded)]
     pub comments: Collection<Message>,
     /// Author
     #[model(readonly)]

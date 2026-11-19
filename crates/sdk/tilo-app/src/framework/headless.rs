@@ -2154,7 +2154,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 let state = self
                     .records
                     .read(&chain.part(index), |doc| {
-                        tilo_resource::Reader::<P>::read(doc)
+                        tilo_resource::Reader::<P>::read_all(doc)
                     })?
                     .ok()?;
                 Some((index, std::rc::Rc::clone(state.state())))

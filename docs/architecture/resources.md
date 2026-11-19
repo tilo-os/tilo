@@ -86,6 +86,12 @@ text it wrote itself.
 - `#[model(whole)]` reads all of a value that is otherwise read as views ask
   for it (a `RichText`'s paragraphs), so verbs, search and `read_content` see
   every word: for short texts such as a note's body or a slide's text box.
+- `#[model(demanded)]` leaves the field unread in what a view's reader holds
+  (`Reader`), as its type's missing value, until a view demands the item that
+  holds it (`Demand::keys`, read by the resource's `load`): a list of
+  thousands of issues reads none of their descriptions or threads, and the
+  issue a page shows is read whole. Verbs, search, `read_content` and every
+  other read of the document see the field as stored.
 - `#[model(default = expr)]` is what the field reads as when the document holds
   none: a required field with a sensible derivation (`#[model(default =
   Id::from_raw("home"))]`), so an item written without it still reads. The

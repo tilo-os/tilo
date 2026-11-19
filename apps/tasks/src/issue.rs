@@ -57,6 +57,14 @@ pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav, window: &Window) -> 
     };
     let nav = nav.clone();
     cx.switch(&held, move |cx, held| {
+        // The window's reading of the issues leaves each one's thread and
+        // description unread until a view shows the issue: this page does.
+        if let (Some(index), Some(chain)) = (held, page.window.chain.as_ref()) {
+            chain.demand(
+                *index,
+                ui::tilo_resource::Demand::none().with_keys([id.as_str()]),
+            );
+        }
         let part = held.and_then(|index| page.window.chain.as_ref()?.part_record(index));
         let shown = part.and_then(|part| {
             let (id, nav, page) = (id.clone(), nav.clone(), page.clone());

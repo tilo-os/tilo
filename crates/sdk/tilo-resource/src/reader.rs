@@ -105,6 +105,9 @@ struct Following {
     /// The committed heads the state was last read whole at: a whole read
     /// again at the same heads would read the same state, and is not done.
     read_at: Option<Vec<ChangeHash>>,
+    /// Whether it reads every field, the `#[model(demanded)]` ones too:
+    /// a reader for something other than a view ([`Reader::read_all`]).
+    every_field: bool,
 }
 
 impl Following {
@@ -142,6 +145,17 @@ impl Following {
             last: Delta::everything(),
             unreadable: None,
             read_at: None,
+            every_field: false,
+        }
+    }
+
+    /// Read the state whole as this reader reads: for a view, leaving the
+    /// `#[model(demanded)]` fields of what no view demanded unread.
+    fn read(&self, ops: &StateOps, doc: &Doc) -> Result<Box<dyn Any>, ModelError> {
+        if self.every_field {
+            (ops.read)(doc)
+        } else {
+            crate::table::for_view(|| (ops.read)(doc))
         }
     }
 }
@@ -210,8 +224,13 @@ impl<R: Resource> StateSlot for Held<'_, R> {
 
 impl<R: Resource> Reader<R> {
     /// Read the resource from `doc` and start following its changes.
+    ///
+    /// A reader reads for views: a `#[model(demanded)]` field is read only
+    /// in the items a view demands ([`Self::demand`]), and a change to an
+    /// item reads what it touched in it. [`Self::read_all`] reads every
+    /// field.
     pub fn open(doc: &mut Doc) -> Result<Self, ModelError> {
-        let mut state = R::read(doc)?;
+        let mut state = crate::table::for_view(|| R::read(doc))?;
         R::load(&mut state, doc, &Demand::none())?;
         Ok(Self {
             core: Following::started(doc),
@@ -222,9 +241,20 @@ impl<R: Resource> Reader<R> {
     /// Read the resource from a document that may only be read, and follow
     /// its changes from the next [`sync`](Self::sync) on.
     pub fn read(doc: &Doc) -> Result<Self, ModelError> {
-        let mut state = R::read(doc)?;
+        let mut state = crate::table::for_view(|| R::read(doc))?;
         R::load(&mut state, doc, &Demand::none())?;
         Ok(Self::with_state(state, heads_of(doc)))
+    }
+
+    /// [`Self::read`], reading every field as stored, the
+    /// `#[model(demanded)]` ones too, now and at every sync: what search
+    /// derives from a resource whose views read less of it.
+    pub fn read_all(doc: &Doc) -> Result<Self, ModelError> {
+        let mut state = R::read(doc)?;
+        R::load(&mut state, doc, &Demand::none())?;
+        let mut reader = Self::with_state(state, heads_of(doc));
+        reader.core.every_field = true;
+        Ok(reader)
     }
 
     /// Follow a document from a state already read from it at `heads`
@@ -445,7 +475,7 @@ impl Following {
         let replaced = match state.get_mut() {
             Some(held) if !delta.is_everything() => {
                 if (ops.refresh)(held, doc, delta).is_err() {
-                    let mut read = (ops.read)(doc)?;
+                    let mut read = self.read(ops, doc)?;
                     (ops.load)(read.as_mut(), doc, &self.demand)?;
                     applied = Delta::everything();
                     Some(read)
@@ -465,12 +495,12 @@ impl Following {
                 let mut fresh = match copied {
                     Some(mut copy) => {
                         if (ops.refresh)(copy.as_mut(), doc, delta).is_err() {
-                            copy = (ops.read)(doc)?;
+                            copy = self.read(ops, doc)?;
                             applied = Delta::everything();
                         }
                         copy
                     }
-                    None => (ops.read)(doc)?,
+                    None => self.read(ops, doc)?,
                 };
                 (ops.load)(fresh.as_mut(), doc, &self.demand)?;
                 Some(fresh)

@@ -1373,6 +1373,47 @@ fn longest_increasing(keys: &[Option<&str>]) -> Vec<usize> {
     chain
 }
 
+impl<T: Model> Collection<T> {
+    /// Read item `id` again from `map`, the collection's map in `doc`, with
+    /// every field as stored: what a view's reader left unread of it
+    /// (`#[model(demanded)]`) too. A resource's [`load`](crate::Resource::load)
+    /// reads so the items a view demands. Whether the collection holds `id`
+    /// and its entry read.
+    ///
+    /// # Errors
+    /// Why the stored item does not read.
+    pub fn read_whole(&mut self, doc: &Doc, map: &ObjId, id: &Id) -> Result<bool, ModelError> {
+        read_item_whole(self, T::TABLE, doc, map, id)
+    }
+}
+
+/// [`Collection::read_whole`], compiled once for every item type.
+#[inline(never)]
+fn read_item_whole(
+    entries: &mut dyn Entries,
+    item: &'static ModelTable,
+    doc: &Doc,
+    map: &ObjId,
+    id: &Id,
+) -> Result<bool, ModelError> {
+    let Some(at) = entries.find(id) else {
+        return Ok(false);
+    };
+    let Some(stored) = stored_entry(doc, map, id.as_str()) else {
+        return Ok(false);
+    };
+    let held = stored.value;
+    crate::table::whole(|| {
+        entries.replace_filled(at, Some(stored.key), &mut |into| {
+            let held = held.as_ref().map(|(value, obj)| (value, obj));
+            fill_item(item, doc, (map, id.as_str()), held, into)
+                .map(drop)
+                .located(VALUE)
+        })
+    })?;
+    Ok(true)
+}
+
 impl<T> Collection<T> {
     /// Sort the items as stored: by order key, ties by id.
     fn reorder_by_keys(&mut self) {
@@ -1849,6 +1890,13 @@ pub struct CollectionDesc {
     replace: fn(&mut dyn Any, &mut dyn Any) -> Result<(), ModelError>,
     /// An empty `Option` of an item and the item in a filled one.
     item_staged: (fn() -> Box<dyn Any>, crate::table::Unstage),
+}
+
+impl CollectionDesc {
+    /// Its item type's table.
+    pub(crate) const fn item(&self) -> &'static ModelTable {
+        self.item
+    }
 }
 
 pub struct CollectionOf<T>(std::marker::PhantomData<T>);

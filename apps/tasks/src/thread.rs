@@ -72,12 +72,22 @@ pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav, window: &Window) -> Element 
     let people = cx.people();
     let nav = nav.clone();
     let tasks = window.tasks.clone();
+    let chain = window.chain.clone();
     let list = cx.switch(&chosen, move |cx, chosen| {
         let filter = chosen.as_deref().and_then(Filter::of).unwrap_or_default();
         let nav = nav.clone();
         let me = me.clone();
         let people = people.clone();
+        let chain = chain.clone();
         cx.switch(&tasks, move |_, tasks| {
+            // Every thread is shown here, which the window's reading of the
+            // issues leaves unread until a view asks for it.
+            if let Some(chain) = &chain {
+                for (index, part) in tasks.parts.iter() {
+                    let ids = part.issues.iter().map(|(id, _)| id.as_str().to_owned());
+                    chain.demand(*index, ui::tilo_resource::Demand::none().with_keys(ids));
+                }
+            }
             list_of(&tasks.issues(), &nav, &filter, me.as_ref(), &people)
         })
     });

@@ -143,7 +143,10 @@ impl syn::parse::Parse for WordInput {
 /// wins, as `Atom` is: a colour or a list of points two people set at once
 /// is one of theirs, never a mix),
 /// `#[model(whole)]` (read every part of a value that loads on demand,
-/// rich text's paragraphs), `#[model(resource)]` on a field whose type is a
+/// rich text's paragraphs), `#[model(demanded)]` (a view's reader leaves it
+/// unread, as its type's missing value, until a view demands the item
+/// holding it: an issue's description and thread, which a list of thousands
+/// of issues never shows), `#[model(resource)]` on a field whose type is a
 /// resource with its own operations (rich text: published beneath the
 /// record's resource, an item's or the record's own, at `<record>/<key>`,
 /// its actions applied as field edits; see `tilo_resource::child`), `#[model(remove = "quiet")]` on a collection whose items are cheap to
@@ -307,6 +310,9 @@ struct FieldOptions {
     atom: bool,
     quiet_remove: bool,
     whole: bool,
+    /// `demanded`: a view's reader leaves it unread until a view demands
+    /// the item holding it.
+    demanded: bool,
     resource: bool,
     /// `default = expr`: what an absent field reads as.
     default: Option<Expr>,
@@ -448,6 +454,8 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
                 options.atom = true;
             } else if meta.path.is_ident("whole") {
                 options.whole = true;
+            } else if meta.path.is_ident("demanded") {
+                options.demanded = true;
             } else if meta.path.is_ident("resource") {
                 options.resource = true;
             } else if meta.path.is_ident("default") {
@@ -477,7 +485,7 @@ fn field_options(attrs: &[Attribute]) -> syn::Result<FieldOptions> {
             } else {
                 return Err(meta.error(
                     "expected `skip`, `rename = \"...\"`, `title = \"...\"`, `label`, `readonly`, `unit`, `atom`, \
-                     `whole`, `resource`, `default = ..`, `trust = \"..\"`, `weaker = ..`, \
+                     `whole`, `demanded`, `resource`, `default = ..`, `trust = \"..\"`, `weaker = ..`, \
                      `weakest = N`, `range = low..=high`, `choices = ..` or \
                      `remove = \"quiet\"`",
                 ));
@@ -1119,13 +1127,14 @@ fn derive_named(input: &DeriveInput, fields: &syn::FieldsNamed) -> syn::Result<T
         } else {
             quote!(::core::option::Option::None)
         };
-        let whole = options.whole;
+        let (whole, demanded) = (options.whole, options.demanded);
         descs.push(quote!(#table::FieldDesc {
             key: #key,
             name: #field_name,
             table: #field_table,
             readonly: #readonly,
             whole: #whole,
+            demanded: #demanded,
             items: #items,
         }));
         builds.push(if let Some(default) = &options.default {

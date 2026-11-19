@@ -140,11 +140,20 @@ pub(super) struct PartType {
     pub(super) places: fn(&dyn Any, &dyn Any) -> Vec<tilo_actions::ResourceSpec>,
     pub(super) tree: PartsTree,
     pub(super) search: fn(&dyn Any) -> Vec<tilo_resource::SearchEntry>,
+    /// What search finds in a part read with every field
+    /// ([`tilo_resource::Reader::read_all`]), its reader kept in the first and
+    /// brought up to the document: a part whose window reads fewer fields
+    /// (`#[model(demanded)]`) is still found by every word it holds.
+    pub(super) search_all: SearchAll,
     pub(super) search_over: fn(&dyn Any, &dyn Any) -> Vec<tilo_resource::SearchEntry>,
     pub(super) prepare_read: fn(&mut Filter, &dyn Any, &dyn Any) -> Result<(), String>,
     /// [`Chained::read_over`], from the app's resource and the parts.
     pub(super) read_over: fn(&dyn Any, &dyn Any, &str) -> ReadOver,
 }
+
+/// [`PartType::search_all`].
+pub(super) type SearchAll =
+    fn(&mut Option<Box<dyn Any>>, &AutoCommit) -> Vec<tilo_resource::SearchEntry>;
 
 /// What [`Chained::read_over`] answers: the item's content, or why not;
 /// `None` for an item a part keeps.
@@ -229,6 +238,7 @@ impl<P: Chained> Of<P> {
         places: places::<P>,
         tree: tree::<P>,
         search: search::<P>,
+        search_all: search_all::<P>,
         search_over: search_over::<P>,
         prepare_read: prepare_read::<P>,
         read_over: read_over::<P>,
@@ -468,6 +478,12 @@ fn content<P: Chained>(
     item: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     let state = state.downcast_ref().ok_or_else(mismatch::<P>)?;
+    // The window's reader leaves what no view demanded unread
+    // (`#[model(demanded)]`): a read answers what the part holds.
+    if P::RESOURCE_TABLE.is_some_and(tilo_resource::table::reads_on_demand) {
+        let whole = P::read(doc).map_err(|error| error.to_string())?;
+        return tilo_resource::read::content::<P>(&whole, doc, item);
+    }
     tilo_resource::read::content::<P>(state, doc, item)
 }
 
@@ -591,6 +607,30 @@ fn tree<P: Chained>(parts: &dyn Any) -> Vec<(tilo_resource::Id, Option<tilo_reso
 
 fn search<P: Chained>(state: &dyn Any) -> Vec<tilo_resource::SearchEntry> {
     state.downcast_ref().map(P::search).unwrap_or_default()
+}
+
+fn search_all<P: Chained>(
+    reader: &mut Option<Box<dyn Any>>,
+    doc: &AutoCommit,
+) -> Vec<tilo_resource::SearchEntry> {
+    let held = reader
+        .as_mut()
+        .and_then(|reader| reader.downcast_mut::<tilo_resource::Reader<P>>());
+    let synced = match held {
+        Some(held) => held.sync(doc).map(drop),
+        None => tilo_resource::Reader::<P>::read_all(doc)
+            .map(|read| *reader = Some(Box::new(read) as Box<dyn Any>)),
+    };
+    if let Err(error) = synced {
+        tracing::warn!(kind = P::KIND, %error, "chain part unreadable for search");
+        *reader = None;
+        return Vec::new();
+    }
+    reader
+        .as_ref()
+        .and_then(|reader| reader.downcast_ref::<tilo_resource::Reader<P>>())
+        .map(|reader| P::search(reader.state()))
+        .unwrap_or_default()
 }
 
 fn search_over<P: Chained>(base: &dyn Any, parts: &dyn Any) -> Vec<tilo_resource::SearchEntry> {

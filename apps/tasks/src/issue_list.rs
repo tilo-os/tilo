@@ -49,6 +49,11 @@ pub struct IssueList {
     /// after a merge is past every issue either side made here.
     #[model(readonly)]
     pub numbers: Counter,
+    /// The issues read whole since this was read: what views demanded of a
+    /// window's reading, which leaves every issue's description and thread
+    /// unread until then ([`Self::load_demanded`]).
+    #[model(skip)]
+    pub read_whole: BTreeSet<Id>,
 }
 
 impl IssueList {
@@ -127,6 +132,37 @@ impl IssueList {
         };
         let id = cx.id();
         Ok(self.issues.push(id, issue))
+    }
+
+    /// Read whole the issues `demand` names that are read without their
+    /// description and thread: what a window's reader left unread of them
+    /// (`#[model(demanded)]`), for the views showing them.
+    ///
+    /// # Errors
+    /// Why a demanded issue does not read.
+    pub fn load_demanded(
+        &mut self,
+        doc: &ui::tilo_resource::Doc,
+        demand: &ui::tilo_resource::Demand,
+    ) -> Result<(), ui::tilo_resource::ModelError> {
+        let unread: Vec<Id> = demand
+            .keys
+            .iter()
+            .map(|key| Id::from_raw(key.as_str()))
+            .filter(|id| self.issues.contains(id) && !self.read_whole.contains(id))
+            .collect();
+        if unread.is_empty() {
+            return Ok(());
+        }
+        let Some(map) = Self::paths().issues.object(doc) else {
+            return Ok(());
+        };
+        for id in unread {
+            if self.issues.read_whole(doc, &map, &id)? {
+                self.read_whole.insert(id);
+            }
+        }
+        Ok(())
     }
 
     /// What system search finds of the part: each issue, by its number,
@@ -246,7 +282,8 @@ fn message_text(text: NonBlank) -> Result<String, Refusal> {
     params = issue_list,
     search = IssueList::search,
     effects = crate::model::TasksEffect,
-    read_content = IssueList::read_document
+    read_content = IssueList::read_document,
+    load = IssueList::load_demanded
 )]
 impl IssueList {
     /// Create an issue.
