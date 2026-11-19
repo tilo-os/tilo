@@ -195,6 +195,9 @@ mod schema;
 /// worker; `tag` (repeatable) adds a contract tag, a `&'static str` constant;
 /// `outside_with = "path"` makes a `kind = "read"` effect reach outside only
 /// when that parameter is given (an export writing the file it names).
+/// `item = field` offers it on each item of a collection, its first parameter
+/// bound to the item's id; `on = RowType` offers it on each row of a
+/// `#[derive(Row)]` type, bound to the row's id.
 /// Who may run an effect is decided by what it declares, like any action.
 /// Every effect states its kind: `kind = "read"`, `"undoable"` or `"outside"`
 /// (a change checked against the caller's grants). `view` implies `read`,
@@ -221,7 +224,29 @@ pub fn derive_effect(input: TokenStream) -> TokenStream {
 }
 
 mod effect;
+mod row;
 mod words;
+
+/// Derive `Row`: a plain struct as the type of the entities a surface
+/// publishes that live outside any document — processes, devices,
+/// containers, journal entries, a fetched catalogue's rows. See
+/// `tilo_resource::words`.
+///
+/// `#[row(kind = "app.thing", label = "Thing")]` names what a row of it is to
+/// search, exactly as a `#[resource]` type's items say theirs; `label`
+/// defaults to the type's name in words. `effects = Type` names the
+/// vocabulary offered on every row of the type (`#[effect(on = Thing)]`),
+/// each bound to the row's id; `LiveRow::typed` publishes them, so a press on
+/// the row is one of the type's effects or `open`. Generates
+/// `impl tilo_resource::words::RowType`.
+#[proc_macro_derive(Row, attributes(row))]
+pub fn derive_row(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match row::derive(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
 
 #[derive(Default)]
 #[allow(

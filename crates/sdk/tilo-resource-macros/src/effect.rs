@@ -208,9 +208,10 @@ struct VariantOptions {
     edit: bool,
     member: bool,
     kind: Option<String>,
-    /// The collection field whose items the effect is offered on, its first
-    /// field bound to the item's id.
-    item: Option<String>,
+    /// The entity whose id the effect's first field is bound to: a
+    /// collection's items (`item = field`) or a declared row type's rows
+    /// (`on = RowType`).
+    target: Option<Target>,
     /// `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
     /// output_mb = N, gpu)`: a content transform the system may run on the
     /// invoker's best-placed device as the package's catalogue entrypoint.
@@ -224,6 +225,14 @@ struct VariantOptions {
     /// `outside_with = "param"`: a read that reaches outside the record only
     /// when that parameter is given.
     outside_with: Option<String>,
+}
+
+/// What an effect is offered on, as the variant declares it.
+enum Target {
+    /// The collection field whose items offer it.
+    Field(String),
+    /// The [`RowType`](tilo_resource::words::RowType) whose rows offer it.
+    Row(syn::Path),
 }
 
 /// An effect's `offload(...)` option, as written.
@@ -349,7 +358,11 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
             } else if meta.path.is_ident("member") {
                 options.member = true;
             } else if meta.path.is_ident("item") {
-                options.item = Some(meta.value()?.parse::<syn::Ident>()?.to_string());
+                options.target = Some(Target::Field(
+                    meta.value()?.parse::<syn::Ident>()?.to_string(),
+                ));
+            } else if meta.path.is_ident("on") {
+                options.target = Some(Target::Row(meta.value()?.parse::<syn::Path>()?));
             } else if meta.path.is_ident("offload") {
                 options.offload = Some(offload_option(&meta)?);
             } else if meta.path.is_ident("host_render") {
@@ -363,7 +376,7 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                     "expected `label`, `keywords`, `icon`, `view`, `row`, `job`, `cancellable`, `returns` (`returns = Type` for the value's type), `content`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, \
                      `own_device`, `attended`, `screen`, `risk`, `phrase`, `audience`, `untrusted`, `opens_path`, `presence`, `edit`, `member`, \
-                     `item = field`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
+                     `item = field`, `on = RowType`, `offload(...)`, `host_render`, `tag = ...`, `outside_with` or `kind`",
                 ));
             }
             Ok(())
@@ -658,16 +671,24 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         let presence = options.presence;
         let edits = options.edit;
         let member = options.member;
-        if options.item.is_some() && fields.is_empty() {
+        if options.target.is_some() && fields.is_empty() {
             return Err(syn::Error::new(
                 variant.span(),
-                "an effect offered on items binds its first field to the item: give it one",
+                "an effect offered on items or rows binds its first field to the entity: \
+                 give it one",
             ));
         }
-        let item = options.item.as_ref().map_or_else(
-            || quote!(::core::option::Option::None),
-            |field| quote!(::core::option::Option::Some(#field)),
-        );
+        let item = match &options.target {
+            None => quote!(::core::option::Option::None),
+            Some(Target::Field(field)) => {
+                quote!(::core::option::Option::Some(#krate::effect::EffectTarget::Field(#field)))
+            }
+            Some(Target::Row(path)) => quote! {
+                ::core::option::Option::Some(#krate::effect::EffectTarget::Row(
+                    <#path as #krate::words::RowType>::KIND,
+                ))
+            },
+        };
         let reads = match options.kind.as_deref() {
             Some(kind) => kind == "read",
             None => options.view && !options.edit,

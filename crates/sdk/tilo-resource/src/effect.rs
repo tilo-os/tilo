@@ -115,7 +115,11 @@
 //! `outside_with = "path"` (an effect of `kind = "read"` that reaches outside
 //! the record only when that parameter is given: an export that writes the
 //! file it names, else keeps what it made as content; each invocation is
-//! admitted as what it does)
+//! admitted as what it does),
+//! `item = field` (offered on each item of the collection, its first
+//! parameter bound to the item's id, beside the item's own verbs) or
+//! `on = RowType` (offered on each row of a `#[derive(Row)]` type, its first
+//! parameter bound to the row's id; `LiveRow::typed` publishes them)
 //! and
 //! `kind = "read"` (an effect that only reads, which whoever may read may
 //! invoke), `kind = "undoable"` (an undoable change) or `kind = "outside"`
@@ -313,13 +317,28 @@ pub trait Effect: Sized + 'static {
     /// (`#[effect(item = field)]`), each with its first parameter bound to
     /// the item and the rest still asked.
     fn item_specs(field: &str, item: &crate::Id) -> Vec<ActionSpec> {
-        item_specs(
+        target_specs(
             check::<Self>,
             std::any::TypeId::of::<Self>(),
             Self::OPERATION,
             Self::declarations,
-            field,
+            |target| target.is_field(field),
             item,
+        )
+    }
+
+    /// The effects offered on the row `row` of the
+    /// [`RowType`](crate::words::RowType) `kind` (`#[effect(on = Row)]`),
+    /// each with its first parameter bound to the row and the rest still
+    /// asked. [`RowType::effects`](crate::words::RowType::effects) calls it.
+    fn row_specs(kind: &'static str, row: &crate::Id) -> Vec<ActionSpec> {
+        target_specs(
+            check::<Self>,
+            std::any::TypeId::of::<Self>(),
+            Self::OPERATION,
+            Self::declarations,
+            |target| target.is_row(kind),
+            row,
         )
     }
 
@@ -576,29 +595,32 @@ fn params_from(params: &[ActionParam]) -> Vec<ActionParam> {
     params.to_vec()
 }
 
-/// [`Effect::item_specs`] of the vocabulary `key`, whose declarations
-/// `declarations` are: each type is kept per field, bound here to `item`.
-fn item_specs(
+/// [`Effect::item_specs`] and [`Effect::row_specs`] of the vocabulary `key`,
+/// whose declarations `declarations` are: every effect `matches` offers on an
+/// entity, its first parameter bound here to `entity`. Each type is kept per
+/// target, so offering the same effect on many items costs one type.
+fn target_specs(
     check: Check,
     key: std::any::TypeId,
     operation: &'static str,
     declarations: fn() -> Vec<EffectDecl>,
-    field: &str,
-    item: &crate::Id,
+    matches: impl Fn(&EffectTarget) -> bool,
+    entity: &crate::Id,
 ) -> Vec<ActionSpec> {
     declarations()
         .into_iter()
-        .filter(|decl| decl.item == Some(field))
+        .filter(|decl| decl.item.as_ref().is_some_and(&matches))
         .filter_map(|decl| {
+            let target = decl.item?;
             let first = decl.params.first()?.name.to_string();
-            let ty = kept_type((key, decl.id, Some(decl.item?)), || {
+            let ty = kept_type((key, decl.id, Some(target.key())), || {
                 let rest = params_from(decl.params.get(1..).unwrap_or_default());
                 let build = encoder(check, operation, decl.id, Bound::OverCaller);
                 Arc::clone(decl.spec_with(operation, rest, build).action_type())
             });
             let bound = BoundArguments::from_iter([(
                 first,
-                serde_json::Value::String(item.as_str().to_owned()),
+                serde_json::Value::String(entity.as_str().to_owned()),
             )]);
             let fixed = bound.clone().into_iter().collect();
             Some(ty.bind(Target::new(bound)).with_bound(fixed))
@@ -607,7 +629,7 @@ fn item_specs(
 }
 
 /// Where a kept effect type is offered: the vocabulary, the effect, and for
-/// an item effect the collection field whose items offer it.
+/// an offered effect the field or row kind whose entities offer it.
 type TypeKey = (std::any::TypeId, &'static str, Option<&'static str>);
 
 /// The action type `key` names, kept once per thread and generation of app
@@ -619,6 +641,40 @@ fn kept_type(key: TypeKey, build: impl FnOnce() -> Arc<ActionType>) -> Arc<Actio
             std::cell::RefCell::default();
     }
     crate::kept::kept_type(&KEPT, key, build)
+}
+
+/// What an effect is offered on, bound to it: a collection's items, or a
+/// declared row type's rows. The two are one thing — an effect offered on an
+/// entity of a declared type, with the entity's id bound — declared either
+/// beside the document that holds the items, or on the type of rows that live
+/// outside any document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectTarget {
+    /// The collection field whose items the effect is offered on
+    /// (`#[effect(item = connections)]`).
+    Field(&'static str),
+    /// The kind of the [`RowType`](crate::words::RowType) whose rows the
+    /// effect is offered on (`#[effect(on = Process)]`).
+    Row(&'static str),
+}
+
+impl EffectTarget {
+    /// The key the offered type is kept under: the field or the row kind.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Field(field) | Self::Row(field) => field,
+        }
+    }
+
+    /// Whether this is the collection `field`.
+    fn is_field(self, field: &str) -> bool {
+        matches!(self, Self::Field(named) if named == field)
+    }
+
+    /// Whether this is the row type of kind `kind`.
+    fn is_row(self, kind: &str) -> bool {
+        matches!(self, Self::Row(named) if named == kind)
+    }
 }
 
 /// One effect of a derived vocabulary, as a constant: its declaration but for
@@ -662,7 +718,7 @@ pub struct EffectRow {
     pub presence: bool,
     pub edits: bool,
     pub member: bool,
-    pub item: Option<&'static str>,
+    pub item: Option<EffectTarget>,
     pub offload: Option<EffectOffload>,
     pub tags: &'static [&'static str],
     pub outside_with: Option<&'static str>,
@@ -803,10 +859,12 @@ pub struct EffectDecl {
     /// themselves on the workspace's record (`#[effect(member)]`,
     /// [`tilo_actions::MEMBER_OWN_TAG`]): it runs there as that member.
     pub member: bool,
-    /// The collection field whose items the effect is offered on
-    /// (`#[effect(item = connections)]`), its first parameter bound to the
-    /// item's id: published on each item resource, as an item verb is.
-    pub item: Option<&'static str>,
+    /// What the effect is offered on, its first parameter bound to it: the
+    /// collection field whose items offer it (`#[effect(item = connections)]`,
+    /// published on each item resource as an item verb is), or the kind of a
+    /// [`RowType`](crate::words::RowType) whose rows offer it
+    /// (`#[effect(on = Process)]`, published on each of the type's rows).
+    pub item: Option<EffectTarget>,
     /// A content transform the system may run on the invoker's best-placed
     /// device (`#[effect(offload(...))]`); the handler is its local run.
     pub offload: Option<EffectOffload>,

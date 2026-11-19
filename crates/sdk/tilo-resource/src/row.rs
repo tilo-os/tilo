@@ -1,0 +1,204 @@
+//! A live row: one entity a surface publishes beneath its resource that lives
+//! outside the resource's document — a process, a device, a container, a
+//! journal entry, a fetched catalogue row, a running job — for the palette,
+//! agents and scripts.
+//!
+//! A row is not document state: it has no history, no undo and nothing to
+//! sync, so it can never carry a document mutation. A change to the document
+//! is the resource's `Action`, bound to a row through the framework's
+//! `Publishes::row_edits` or the resource's `children`.
+
+use tilo_actions::{
+    ActionSpec, Exports, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
+};
+
+use crate::Effect;
+
+/// One live external entity a surface publishes beneath its resource, with
+/// the view and effect operations it offers (inspect a process, stop a
+/// container).
+///
+/// Rows are merged by id into the resource's published children: a row with
+/// the id of a document child adds its operations to that child instead of
+/// publishing a second resource under the same id.
+///
+/// A row is shared, not copied: a surface that keeps the rows it made while
+/// what they show holds hands the same rows to every publication, and the
+/// publication reuses what it built from each one instead of building it
+/// again.
+///
+/// [`LiveRow::typed`] is the one way to publish a row: it is an item of a
+/// declared [`RowType`](crate::words::RowType), saying what it is to search
+/// and offering the type's effects, so a press on it is one of the type's
+/// actions or `open`.
+#[derive(Clone)]
+pub struct LiveRow {
+    resource: std::rc::Rc<ResourceSpec>,
+}
+
+impl LiveRow {
+    /// A row with a stable `id` (unique within the resource, and naming the
+    /// same entity for as long as it lives: a process id with its start
+    /// time, a container id), a `kind` tag and a human `label`. It names no
+    /// declared type, so search cannot name what it is and a press on it can
+    /// only offer the operations the app adds; a production app publishes
+    /// [`Self::typed`] instead, and the repository's live-row check refuses
+    /// this one in an app or a session surface.
+    pub fn new(id: impl Into<String>, kind: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            resource: std::rc::Rc::new(ResourceSpec::new(id, kind, label)),
+        }
+    }
+
+    /// A row of the declared type `R` (a resource type of `R`'s kind), whose
+    /// noun its type publishes, of the app the type is declared in: its
+    /// `id`, its `label`, the [`ResourceType`](tilo_actions::ResourceType)
+    /// search matches "videos of …" against, and the effects the type offers
+    /// on it ([`RowType::effects`](crate::words::RowType::effects), each
+    /// bound to `id`). A row an app declares as an item of a `#[resource]`
+    /// type publishes (`Video`, `Channel`) is one of these, so what it is is
+    /// the type's and the search's, nothing the app writes.
+    pub fn typed<R: crate::words::RowType>(
+        id: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        let id = id.into();
+        let mut row = Self {
+            resource: std::rc::Rc::new(
+                ResourceSpec::new(id.clone(), R::KIND, label).with_type(R::words()),
+            ),
+        };
+        let row_id = crate::Id::from_raw(id);
+        for operation in R::effects(&row_id) {
+            row = row.operation(operation);
+        }
+        row
+    }
+
+    /// This row's type, saying what it is as people name it ([`Self::typed`]);
+    /// a row made with [`Self::new`] says nothing.
+    #[must_use]
+    pub fn with_type(mut self, words: tilo_actions::ResourceType) -> Self {
+        std::rc::Rc::make_mut(&mut self.resource).resource_type = Some(words);
+        self
+    }
+
+    /// Attach the stable source-domain identity used to find this row across
+    /// live dispatch aliases. It is descriptive metadata only and grants no
+    /// permission or authority. Invalid identities are omitted at this
+    /// publication boundary.
+    #[must_use]
+    pub fn semantic_identity(mut self, identity: ResourceSemanticIdentity) -> Self {
+        std::rc::Rc::make_mut(&mut self.resource).semantic_identity =
+            identity.is_valid().then_some(identity);
+        self
+    }
+
+    /// `resource`, an entity the surface already describes as a resource
+    /// (a search hit, a catalogue entry), as a row: its presentation,
+    /// views, operations and children. Its document actions are dropped at
+    /// any depth: the resource's own publication carries them.
+    pub fn from_resource(resource: ResourceSpec) -> Self {
+        Self {
+            resource: std::rc::Rc::new(crate::share::resolved_outside_document(resource)),
+        }
+    }
+
+    /// Offer a view or effect operation on the row.
+    ///
+    /// # Panics
+    /// In a debug build, when `operation` is a document mutation; a release
+    /// build drops it.
+    #[must_use]
+    pub fn operation(mut self, operation: ActionSpec) -> Self {
+        if crate::share::admits_outside_document(&operation, self.id()) {
+            std::rc::Rc::make_mut(&mut self.resource)
+                .actions
+                .push(operation);
+        }
+        self
+    }
+
+    /// How the entity stands right now (a process's CPU use, what a timer
+    /// has left), shown beside its label. A row merged into a document child
+    /// that has no presentation of its own lends it this one.
+    #[must_use]
+    pub fn presentation(mut self, presentation: ResourcePresentation) -> Self {
+        std::rc::Rc::make_mut(&mut self.resource).presentation = Some(presentation);
+        self
+    }
+
+    /// Offer `effect`, bound to this row's entity (stop *this* process):
+    /// invoked here, it reaches the surface's or view's handler of `E` as
+    /// that value, under the effect's declared contract.
+    #[must_use]
+    pub fn effect<E: Effect>(self, effect: &E) -> Self {
+        self.operation(effect.bound())
+    }
+
+    /// Offer `view` of the row's entity: a way to show it (a message in
+    /// its conversation, a range of its text) that a link or an agent
+    /// navigates to, opened by one of the row's own operations.
+    #[must_use]
+    pub fn view(mut self, view: tilo_actions::ResourceViewSpec) -> Self {
+        std::rc::Rc::make_mut(&mut self.resource).views.push(view);
+        self
+    }
+
+    /// Nest `row` beneath this one (a container's logs).
+    #[must_use]
+    pub fn row(mut self, row: LiveRow) -> Self {
+        std::rc::Rc::make_mut(&mut self.resource)
+            .children
+            .push(std::rc::Rc::unwrap_or_clone(row.resource));
+        self
+    }
+
+    pub fn id(&self) -> &str {
+        self.resource.id.as_str()
+    }
+
+    /// The row `id` names, this one or one nested beneath it, as a row of its own: what a
+    /// control showing that entity binds to.
+    #[must_use]
+    pub fn find(&self, id: &str) -> Option<Self> {
+        fn walk<'a>(resource: &'a ResourceSpec, id: &str) -> Option<&'a ResourceSpec> {
+            if resource.id.0 == id {
+                return Some(resource);
+            }
+            resource.children.iter().find_map(|child| walk(child, id))
+        }
+        if self.resource.id.0 == id {
+            return Some(self.clone());
+        }
+        walk(&self.resource, id).map(|found| Self {
+            resource: std::rc::Rc::new(found.clone()),
+        })
+    }
+
+    /// The operations the row offers, as it publishes them.
+    #[must_use]
+    pub fn operations(&self) -> &[ActionSpec] {
+        &self.resource.actions
+    }
+
+    /// The row as the published tree carries it.
+    pub fn into_resource(self) -> ResourceSpec {
+        let mut resource = std::rc::Rc::unwrap_or_clone(self.resource);
+        crate::share::offer_tree(&mut resource);
+        resource
+    }
+
+    /// Whether `self` and `other` are the same row, handed out again: a
+    /// clone of one row, not two rows that read alike.
+    pub fn same_row(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.resource, &other.resource)
+    }
+}
+
+/// A control binds to the row it shows: `ActionBinding::unit_for(&row, effect.id())`.
+impl Exports for LiveRow {
+    fn exported(&self) -> &ResourceSpec {
+        &self.resource
+    }
+}

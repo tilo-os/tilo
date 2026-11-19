@@ -151,6 +151,7 @@ mod recents;
 pub mod recording;
 pub mod replica;
 pub mod resource;
+pub mod row;
 pub mod schema;
 pub mod schema_check;
 pub mod search_default;
@@ -185,7 +186,9 @@ pub use collection::{
 };
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use derived::{Bound, Derived};
-pub use effect::{Answers, Effect, EffectDecl, EffectDecodeError, EffectOffload, NoEffect, offer};
+pub use effect::{
+    Answers, Effect, EffectDecl, EffectDecodeError, EffectOffload, EffectTarget, NoEffect, offer,
+};
 pub use evolution::Unreadable;
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
@@ -217,6 +220,7 @@ pub use resource::{
     origin_now_ms, publish, publish_head, publish_head_of, reset_type_schemas, scope_contains,
     spec_kind, state_from_reading, with_origin_clock,
 };
+pub use row::LiveRow;
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text};
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
@@ -226,7 +230,7 @@ pub use tilo_action_policy::edits::Weaker;
 pub use tilo_action_policy::{DIRECT_CONVERSATION_PREFIX, MemberId, PersonId};
 pub use tilo_actions::surface::{FieldType, TypeSet};
 pub use tilo_actions::{Acting, Availability};
-pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, resource};
+pub use tilo_resource_macros::{Effect, JsonSchema, Model, Row, committed_surface, resource};
 pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
 
