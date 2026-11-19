@@ -165,6 +165,8 @@ mod network_unlock;
 mod network_unlock_enrolment;
 #[path = "no_locale_leaks.rs"]
 mod no_locale_leaks;
+#[path = "offline_start.rs"]
+mod offline_start;
 #[path = "origin_connector.rs"]
 mod origin_connector;
 #[path = "overlays.rs"]
