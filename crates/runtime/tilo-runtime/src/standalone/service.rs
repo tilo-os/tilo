@@ -654,15 +654,15 @@ async fn test_endpoint(key: &ed25519_dalek::SigningKey) -> iroh::Endpoint {
 /// Run `future` on the app runtime, from a thread that is not one of its
 /// tasks: what the synchronous calls into the service use.
 ///
-/// On the runtime's own thread a second `block_on` would panic, so the future
-/// is driven from a thread of its own there.
+/// On a thread already driving a runtime a second `block_on` would panic, so
+/// the future is driven from a thread of its own there.
 pub(super) fn block_on_owned<F>(future: F) -> F::Output
 where
     F: std::future::Future + Send + 'static,
     F::Output: Send + 'static,
 {
     let runtime = tilo_rt::app();
-    if !runtime.is_runtime_thread() {
+    if tokio::runtime::Handle::try_current().is_err() {
         return runtime.handle().block_on(future);
     }
     std::thread::scope(
