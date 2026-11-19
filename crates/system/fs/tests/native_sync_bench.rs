@@ -68,6 +68,24 @@ fn selected(scenario: &str) -> bool {
         .map_or(true, |only| only.split(',').any(|s| s.trim() == scenario))
 }
 
+/// Which local backend the daemons serve: the native Btrfs tree (needs root,
+/// dedicated store volumes and the kernel's fanotify support) or the portable
+/// FUSE backend, which runs anywhere a user can write and need not mount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Backend {
+    Native,
+    Fuse,
+}
+
+fn backend() -> Backend {
+    match std::env::var("TILO_FS_BENCH_BACKEND").as_deref() {
+        Ok("fuse") | Ok("portable") => Backend::Fuse,
+        _ => Backend::Native,
+    }
+}
+
+/// The two store volumes, native only: the portable backend keeps its content
+/// in each daemon's cache directory.
 fn stores(scenario: &str) -> Option<(PathBuf, PathBuf)> {
     let skip = |why: &str| {
         eprintln!("skipping {scenario}: {why}");
@@ -78,6 +96,9 @@ fn stores(scenario: &str) -> Option<(PathBuf, PathBuf)> {
     }
     if !selected(scenario) {
         return skip("not selected by TILO_FS_BENCH_ONLY");
+    }
+    if backend() == Backend::Fuse {
+        return skip("the portable backend needs no store volumes");
     }
     let spec = std::env::var("TILO_FS_NATIVE_STORES")
         .expect("TILO_FS_SYNC_BENCH=1 needs TILO_FS_NATIVE_STORES=/store/a:/store/b");
@@ -93,6 +114,20 @@ fn stores(scenario: &str) -> Option<(PathBuf, PathBuf)> {
             .unwrap_or_else(|e| panic!("{store} is not a dedicated store volume: {e}"));
     }
     Some((PathBuf::from(a), PathBuf::from(b)))
+}
+
+/// [`stores`] for the ladder, which the portable backend runs too: its two
+/// "volumes" are the daemons' cache roots, made by the pair.
+fn ladder_selected(scenario: &str) -> bool {
+    if std::env::var("TILO_FS_SYNC_BENCH").map_or(true, |v| v != "1") {
+        eprintln!("skipping {scenario}: set TILO_FS_SYNC_BENCH=1 to run the sync benchmarks");
+        return false;
+    }
+    if !selected(scenario) {
+        eprintln!("skipping {scenario}: not selected by TILO_FS_BENCH_ONLY");
+        return false;
+    }
+    true
 }
 
 fn bench_clock() -> Instant {
@@ -263,13 +298,14 @@ struct Daemon {
     logs: Arc<Mutex<Vec<String>>>,
     mount: PathBuf,
     live: Option<PathBuf>,
+    pid: u32,
 }
 
 impl Daemon {
     fn spawn(
         name: &'static str,
         dir: &Path,
-        store: &Path,
+        store: Option<&Path>,
         mode: &[&str],
         mount: &Path,
         netns: Option<&str>,
@@ -303,12 +339,14 @@ impl Daemon {
             .arg("--cache-dir")
             .arg(&cache)
             .arg("--acl")
-            .arg(dir.join("acl.json"))
-            .args(["--backend", "native", "--store"])
-            .arg(store)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .arg(dir.join("acl.json"));
+        match store {
+            Some(store) => command.args(["--backend", "native", "--store"]).arg(store),
+            None => command.args(["--backend", "fuse"]),
+        };
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = command.spawn_locked().unwrap();
+        let pid = child.id();
         let (tx, lines) = mpsc::channel();
         let logs = Arc::new(Mutex::new(Vec::new()));
         let verbose = std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some();
@@ -341,6 +379,7 @@ impl Daemon {
             logs,
             mount: mount.to_path_buf(),
             live: None,
+            pid,
         }
     }
 
@@ -377,6 +416,11 @@ impl Daemon {
     }
 
     fn wait_serving(&mut self) {
+        if backend() == Backend::Fuse {
+            // The portable backend's daemon has served its workspace once FUSE answers.
+            self.wait_line("Mounting QuickFS at ");
+            return;
+        }
         let line = self.wait_line("Serving workspace natively from ");
         let rest = line
             .split("Serving workspace natively from ")
@@ -397,6 +441,48 @@ impl Daemon {
     fn signal(&self, sig: libc::c_int) {
         let pid = libc::pid_t::try_from(self.child.id()).unwrap();
         unsafe { libc::kill(pid, sig) };
+    }
+
+    /// The daemon's resident bytes, as its kernel accounting sees them.
+    fn rss_bytes(&self) -> u64 {
+        let status =
+            std::fs::read_to_string(format!("/proc/{}/status", self.pid)).unwrap_or_default();
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmRSS:"))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .map_or(0, |kb| kb.saturating_mul(1024))
+    }
+
+    /// The daemon's plain (clean+anon) resident pages, which leave out its
+    /// page-cache-shared file mappings better than VmRSS does.
+    fn pss_bytes(&self) -> u64 {
+        let rollup =
+            std::fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid)).unwrap_or_default();
+        rollup
+            .lines()
+            .find_map(|line| line.strip_prefix("Pss:"))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .map_or(0, |kb| kb.saturating_mul(1024))
+    }
+
+    /// Stop the daemon as a service manager would and wait for it to exit.
+    fn stop(&mut self, timeout: Duration) -> Duration {
+        let started = Instant::now();
+        self.signal(libc::SIGTERM);
+        let deadline = Instant::now() + timeout;
+        while self.child.try_wait().ok().flatten().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "{} did not stop within {timeout:?}; logs:\n{}",
+                self.name,
+                self.dump()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        started.elapsed()
     }
 }
 
@@ -447,13 +533,116 @@ impl Drop for LiveWorkspaces {
 
 struct Pair {
     host: Daemon,
-    peer: Daemon,
+    peer: Option<Daemon>,
     _workspaces: LiveWorkspaces,
     link: Option<Link>,
+    dir: PathBuf,
+    store_a: Option<PathBuf>,
+    store_b: Option<PathBuf>,
+    ticket: String,
     _dir: tempfile::TempDir,
 }
 
-fn start_pair(store_a: &Path, store_b: &Path, seed: u8) -> Pair {
+impl Pair {
+    /// Stop the host as a service manager would; returns how long it took to exit.
+    fn stop_host(&mut self) -> Duration {
+        self.host.stop(Duration::from_secs(120))
+    }
+
+    /// Start the host again over the state it left, as a restart after an
+    /// update or a machine reboot does; returns how long until it serves.
+    fn restart_host(&mut self) -> Duration {
+        let started = Instant::now();
+        self.host = Daemon::spawn(
+            "host",
+            &self.dir,
+            self.store_a.as_deref(),
+            &["serve"],
+            &self.dir.join("host-mount"),
+            None,
+        );
+        self.host.wait_line("Joined workspace");
+        self.host.wait_serving();
+        started.elapsed()
+    }
+
+    fn peer_mount(&self) -> PathBuf {
+        self.peer
+            .as_ref()
+            .expect("the pair's peer is serving")
+            .mount
+            .clone()
+    }
+
+    fn stop_peer(&mut self) -> Duration {
+        self.peer
+            .as_mut()
+            .expect("the pair's peer is serving")
+            .stop(Duration::from_secs(120))
+    }
+
+    fn restart_peer(&mut self) -> Duration {
+        let started = Instant::now();
+        let peer = Daemon::spawn(
+            "peer",
+            &self.dir,
+            self.store_b.as_deref(),
+            &["mount", "--ticket", &self.ticket],
+            &self.dir.join("peer-mount"),
+            None,
+        );
+        self.peer = Some(peer);
+        let peer = self.peer.as_mut().expect("the peer was just started");
+        peer.wait_line("Joined workspace");
+        peer.wait_serving();
+        started.elapsed()
+    }
+
+    /// Start the second device now, over everything the host has published;
+    /// answers how long until it serves and how long until the whole tree is
+    /// listed through its mount.
+    fn join_peer(&mut self) -> (Duration, Duration) {
+        let started = Instant::now();
+        // A device joins by being given the tree's records, which the workspace's session
+        // carries between devices. The build container runs no session, so the portable backend
+        // hands the joiner the same documents the host keeps, exactly as the records would.
+        if backend() == Backend::Fuse {
+            let from = self.dir.join("host-cache").join("namespace");
+            let to = self.dir.join("peer-cache").join("namespace");
+            let _ = std::fs::remove_dir_all(&to);
+            copy_tree(&from, &to).expect("the joiner is given the host's kept tree");
+        }
+        let mut peer = Daemon::spawn(
+            "peer",
+            &self.dir,
+            self.store_b.as_deref(),
+            &["mount", "--ticket", &self.ticket],
+            &self.dir.join("peer-mount"),
+            None,
+        );
+        peer.wait_line("Joined workspace");
+        peer.wait_serving();
+        let serving = started.elapsed();
+        self.peer = Some(peer);
+        let mount = self.peer_mount();
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            self.host.alive();
+            self.peer.as_mut().expect("the peer is serving").alive();
+            if std::fs::read_dir(&mount).is_ok_and(|entries| entries.count() >= 3) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the joining peer never listed the workspace's tree"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        (serving, started.elapsed())
+    }
+}
+
+fn start_pair(store_a: Option<&Path>, store_b: Option<&Path>, seed: u8) -> Pair {
     start_pair_with(store_a, store_b, seed, false)
 }
 
@@ -461,9 +650,20 @@ fn peer_rx(pair: &Pair) -> Option<u64> {
     pair.link.as_ref().map(|link| link.rx_bytes(1))
 }
 
-fn start_pair_with(store_a: &Path, store_b: &Path, seed: u8, netns: bool) -> Pair {
+fn start_pair_with(store_a: Option<&Path>, store_b: Option<&Path>, seed: u8, netns: bool) -> Pair {
+    start_pair_joining(store_a, store_b, seed, netns, true)
+}
+
+fn start_pair_joining(
+    store_a: Option<&Path>,
+    store_b: Option<&Path>,
+    seed: u8,
+    netns: bool,
+    join_at_start: bool,
+) -> Pair {
     let base =
         std::env::var_os("TILO_FS_BENCH_DIR").map_or_else(|| "/var/tmp".into(), PathBuf::from);
+    std::fs::create_dir_all(&base).unwrap();
     let temp = tempfile::tempdir_in(base).unwrap();
     let dir = temp.path().to_path_buf();
     let salt = u8::try_from(std::process::id() % 83).unwrap_or(0);
@@ -501,22 +701,33 @@ fn start_pair_with(store_a: &Path, store_b: &Path, seed: u8, netns: bool) -> Pai
     );
     let ticket = host.wait_ticket();
     host.wait_serving();
-    let mut peer = Daemon::spawn(
-        "peer",
-        &dir,
-        store_b,
-        &["mount", "--ticket", &ticket],
-        &dir.join("peer-mount"),
-        link.as_ref().map(|l| l.netns(1)),
-    );
-    peer.wait_line("Joined workspace");
-    peer.wait_serving();
-    let workspaces = LiveWorkspaces(vec![host.live.clone().unwrap(), peer.live.clone().unwrap()]);
+    let peer = join_at_start.then(|| {
+        let mut peer = Daemon::spawn(
+            "peer",
+            &dir,
+            store_b,
+            &["mount", "--ticket", &ticket],
+            &dir.join("peer-mount"),
+            link.as_ref().map(|l| l.netns(1)),
+        );
+        peer.wait_line("Joined workspace");
+        peer.wait_serving();
+        peer
+    });
+    let workspaces = host
+        .live
+        .clone()
+        .map(|live| LiveWorkspaces(vec![live]))
+        .unwrap_or_else(|| LiveWorkspaces(Vec::new()));
     Pair {
         host,
         peer,
         _workspaces: workspaces,
         link,
+        dir,
+        store_a: store_a.map(Path::to_path_buf),
+        store_b: store_b.map(Path::to_path_buf),
+        ticket,
         _dir: temp,
     }
 }
@@ -528,7 +739,9 @@ fn wait_for<T>(pair: &mut Pair, what: &str, mut probe: impl FnMut() -> Option<T>
             return v;
         }
         pair.host.alive();
-        pair.peer.alive();
+        if let Some(peer) = &mut pair.peer {
+            peer.alive();
+        }
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -563,8 +776,8 @@ fn many_small_files() {
     };
     let files = env_u64("TILO_FS_BENCH_FILES", 1000);
     let bytes = env_u64("TILO_FS_BENCH_FILE_BYTES", 4096) as usize;
-    let mut pair = start_pair(&a, &b, 0x71);
-    let (m1, m2) = (pair.host.mount.clone(), pair.peer.mount.clone());
+    let mut pair = start_pair(Some(&a), Some(&b), 0x71);
+    let (m1, m2) = (pair.host.mount.clone(), pair.peer_mount());
     let t0 = Instant::now();
     let mut buf = vec![0u8; bytes];
     for i in 0..files {
@@ -681,8 +894,8 @@ fn one_large_file() {
     };
     let mib = env_u64("TILO_FS_BENCH_BIG_MIB", 1024);
     let size = mib * 1024 * 1024;
-    let mut pair = start_pair(&a, &b, 0x72);
-    let (m1, m2) = (pair.host.mount.clone(), pair.peer.mount.clone());
+    let mut pair = start_pair(Some(&a), Some(&b), 0x72);
+    let (m1, m2) = (pair.host.mount.clone(), pair.peer_mount());
     let rx0 = peer_rx(&pair);
     let t0 = Instant::now();
     write_big(&m1.join("big.bin"), 7, size);
@@ -725,8 +938,8 @@ fn incremental_edit() {
     };
     let size = env_u64("TILO_FS_BENCH_EDIT_MIB", 1024) * 1024 * 1024;
     let change = env_u64("TILO_FS_BENCH_EDIT_BYTES", 1024 * 1024).min(size);
-    let mut pair = start_pair_with(&a, &b, 0x74, true);
-    let (m1, m2) = (pair.host.mount.clone(), pair.peer.mount.clone());
+    let mut pair = start_pair_with(Some(&a), Some(&b), 0x74, true);
+    let (m1, m2) = (pair.host.mount.clone(), pair.peer_mount());
     let (host_file, target) = (m1.join("big.bin"), m2.join("big.bin"));
     write_big(&host_file, 9, size);
     wait_for(&mut pair, "the first version on the peer", || {
@@ -815,9 +1028,9 @@ fn git_repository() {
         return;
     };
     let per_commit = env_u64("TILO_FS_BENCH_GIT_FILES", 200);
-    let mut pair = start_pair(&a, &b, 0x73);
+    let mut pair = start_pair(Some(&a), Some(&b), 0x73);
     let repo1 = pair.host.mount.join("repo");
-    let repo2 = pair.peer.mount.join("repo");
+    let repo2 = pair.peer_mount().join("repo");
     std::fs::create_dir_all(&repo1).unwrap();
     let t0 = Instant::now();
     git(&repo1, &["init", "-q", "-b", "main"]).unwrap();
@@ -857,4 +1070,356 @@ fn git_repository() {
         clean.saturating_sub(committed).as_secs_f64(),
         "s",
     );
+}
+
+/// Copy every file under `from` to the same relative path under `to`.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Bytes of the files under `root`, without following links and without
+/// reading file content.
+fn disk_bytes(root: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut total = 0_u64;
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            total = total.saturating_add(disk_bytes(&entry.path()));
+        } else if kind.is_file() {
+            total = total.saturating_add(entry.metadata().map_or(0, |m| m.len()));
+        }
+    }
+    total
+}
+
+fn list_directory(path: &Path) -> usize {
+    std::fs::read_dir(path).map_or(0, |entries| entries.count())
+}
+
+fn read_range(path: &Path, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+    use std::os::unix::fs::FileExt as _;
+    let file = std::fs::File::open(path)?;
+    let mut bytes = vec![0_u8; len];
+    file.read_exact_at(&mut bytes, offset)?;
+    Ok(bytes)
+}
+
+fn mib(bytes: u64) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+/// A workspace holding a ladder's worth of files: many small ones and a few
+/// huge ones. Everything here grows with the workspace's total size, so a
+/// cost that grows with it instead of with what a request touches shows up as
+/// the rungs' numbers diverging.
+///
+/// Tunables (environment):
+///
+/// - `TILO_FS_LADDER_TOTAL_MIB` (default 10240): the workspace's total bytes;
+/// - `TILO_FS_LADDER_SMALL_FILES` (default four per MiB of the rung) and
+///   `TILO_FS_LADDER_SMALL_BYTES` (default 4096): the many-small-files part;
+/// - `TILO_FS_LADDER_HUGE_FILES` (default 4): the huge files the rest is
+///   split across;
+/// - `TILO_FS_LADDER_DIR_ENTRIES` (default 1000): the big folder's entries;
+/// - `TILO_FS_BENCH_BACKEND=fuse` runs it on the portable backend, without
+///   root or store volumes.
+#[test]
+fn a_workspace_of_files_on_a_size_ladder() {
+    let scenario = "ladder";
+    if !ladder_selected(scenario) {
+        return;
+    }
+    let total_mib = env_u64("TILO_FS_LADDER_TOTAL_MIB", 10 * 1024);
+    let small_files = env_u64("TILO_FS_LADDER_SMALL_FILES", total_mib.saturating_mul(4));
+    let small_bytes = env_u64("TILO_FS_LADDER_SMALL_BYTES", 4096);
+    let huge_files = env_u64("TILO_FS_LADDER_HUGE_FILES", 4).max(1);
+    let dir_entries = env_u64("TILO_FS_LADDER_DIR_ENTRIES", 1_000);
+    let total = total_mib.saturating_mul(1024 * 1024);
+    let small_total = (small_files.saturating_mul(small_bytes)).min(total);
+    let huge_total = total.saturating_sub(small_total);
+    let huge_size = (huge_total / huge_files).max(1024 * 1024);
+    let flat_entries = dir_entries.min(small_files.max(1));
+    let rung = format!("ladder/{total_mib}mib");
+    let (store_a, store_b) = match backend() {
+        Backend::Native => {
+            let (a, b) = stores(scenario).expect("the native ladder needs two store volumes");
+            (Some(a), Some(b))
+        }
+        Backend::Fuse => (None, None),
+    };
+    let mut pair = start_pair_joining(store_a.as_deref(), store_b.as_deref(), 0x75, false, false);
+    let m1 = pair.host.mount.clone();
+    let host_rss_after_fill;
+    let host_pss_after_fill;
+    let host_disk_after_fill;
+
+    // Many small files, one flat folder of `dir_entries` among them, then the
+    // huge ones: the same shapes at every rung, more of them.
+    let small_started = Instant::now();
+    let mut buf = vec![0_u8; usize::try_from(small_bytes).unwrap_or(4096)];
+    let mut small_written = 0_u64;
+    for i in 0..small_files {
+        let dir = if i < flat_entries {
+            m1.join("flat")
+        } else {
+            m1.join(format!("small/d{:03}", i / 1000))
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        fill(i, 0, &mut buf);
+        std::fs::write(dir.join(format!("f{i:07}")), &buf).unwrap();
+        small_written = small_written.saturating_add(small_bytes);
+        if small_written >= small_total {
+            break;
+        }
+    }
+    let small_s = small_started.elapsed();
+    mark("every small file is written on the host");
+    let huge_started = Instant::now();
+    let mut huge_written = 0_u64;
+    for i in 0..huge_files {
+        if huge_written >= huge_total {
+            break;
+        }
+        let size = huge_size.min(huge_total.saturating_sub(huge_written));
+        write_big(&m1.join(format!("huge{i:02}.bin")), 100 + i, size);
+        huge_written = huge_written.saturating_add(size);
+        mark("a huge file is written on the host");
+    }
+    let huge_s = huge_started.elapsed();
+    let expected = (small_written.saturating_add(huge_written)) as f64;
+    report(rung.as_str(), "total_bytes", expected, "B");
+    report(rung.as_str(), "put_small_s", small_s.as_secs_f64(), "s");
+    report(
+        rung.as_str(),
+        "put_small_mib_s",
+        mib(small_written) / small_s.as_secs_f64(),
+        "MiB/s",
+    );
+    report(
+        rung.as_str(),
+        "put_small_files_s",
+        (small_written / small_bytes.max(1)) as f64 / small_s.as_secs_f64(),
+        "files/s",
+    );
+    report(rung.as_str(), "put_huge_s", huge_s.as_secs_f64(), "s");
+    report(
+        rung.as_str(),
+        "put_huge_mib_s",
+        mib(huge_written) / huge_s.as_secs_f64(),
+        "MiB/s",
+    );
+    host_rss_after_fill = pair.host.rss_bytes();
+    host_pss_after_fill = pair.host.pss_bytes();
+    host_disk_after_fill = disk_bytes(&pair.dir.join("host-cache"));
+
+    // The second device joins over a filled workspace and is given its tree.
+    let (serving, tree) = pair.join_peer();
+    report(
+        rung.as_str(),
+        "peer_join_serving_s",
+        serving.as_secs_f64(),
+        "s",
+    );
+    report(rung.as_str(), "peer_join_tree_s", tree.as_secs_f64(), "s");
+    let m2 = pair.peer_mount();
+
+    // Listing a big folder and the root, on the device holding no content.
+    let flat = m2.join("flat");
+    let started = Instant::now();
+    let cold_entries = list_directory(&flat);
+    let cold_list = started.elapsed();
+    let started = Instant::now();
+    for _ in 0..8 {
+        assert_eq!(list_directory(&flat), cold_entries);
+    }
+    let warm_list = started.elapsed().div_f64(8.0);
+    let root_entries = list_directory(&m2);
+    report(
+        rung.as_str(),
+        "list_flat_entries",
+        cold_entries as f64,
+        "entries",
+    );
+    report(
+        rung.as_str(),
+        "list_root_entries",
+        root_entries as f64,
+        "entries",
+    );
+    report(
+        rung.as_str(),
+        "peer_list_cold_s",
+        cold_list.as_secs_f64(),
+        "s",
+    );
+    report(
+        rung.as_str(),
+        "peer_list_warm_s",
+        warm_list.as_secs_f64(),
+        "s",
+    );
+    report(
+        rung.as_str(),
+        "peer_list_us_per_entry",
+        cold_list.as_secs_f64() * 1e6 / cold_entries.max(1) as f64,
+        "us",
+    );
+
+    // Opening one small file the device has never fetched, and one huge file:
+    // the manifest and the first range, not the content.
+    let peer_disk_before_reads = disk_bytes(&pair.dir.join("peer-cache"));
+    let small_target = m2.join("flat").join("f0000000");
+    let started = Instant::now();
+    let small = read_range(&small_target, 0, 4096).unwrap();
+    let open_small = started.elapsed();
+    assert_eq!(small.len(), 4096);
+    let huge_target = m2.join("huge01.bin");
+    let started = Instant::now();
+    let first = read_range(&huge_target, 0, 65_536).unwrap();
+    let open_huge = started.elapsed();
+    assert_eq!(first.len(), 65_536);
+    let after_first_read = disk_bytes(&pair.dir.join("peer-cache"));
+    mark("one small file and one huge file's head are read on the peer");
+    // A range the device has not touched at all, in a third of the file.
+    let middle = huge_size / 2;
+    let started = Instant::now();
+    let mid = read_range(&huge_target, middle, 1024 * 1024).unwrap();
+    let read_middle = started.elapsed();
+    assert_eq!(mid.len(), 1024 * 1024);
+    let after_middle = disk_bytes(&pair.dir.join("peer-cache"));
+    report(
+        rung.as_str(),
+        "peer_open_small_s",
+        open_small.as_secs_f64(),
+        "s",
+    );
+    report(
+        rung.as_str(),
+        "peer_open_huge_s",
+        open_huge.as_secs_f64(),
+        "s",
+    );
+    report(
+        rung.as_str(),
+        "peer_read_unfetched_mib_s",
+        1.0 / read_middle.as_secs_f64(),
+        "MiB/s",
+    );
+    report(
+        rung.as_str(),
+        "peer_read_unfetched_s",
+        read_middle.as_secs_f64(),
+        "s",
+    );
+    report(
+        rung.as_str(),
+        "peer_fetched_bytes",
+        after_middle.saturating_sub(peer_disk_before_reads) as f64,
+        "B",
+    );
+    report(
+        rung.as_str(),
+        "peer_fetched_after_small_and_head",
+        after_first_read.saturating_sub(peer_disk_before_reads) as f64,
+        "B",
+    );
+
+    // What each end holds while the workspace is that big.
+    let host_rss = pair.host.rss_bytes();
+    let host_pss = pair.host.pss_bytes();
+    let peer_rss = pair.peer.as_ref().expect("the peer is serving").rss_bytes();
+    let peer_pss = pair.peer.as_ref().expect("the peer is serving").pss_bytes();
+    report(rung.as_str(), "host_rss_mib", mib(host_rss), "MiB");
+    report(rung.as_str(), "host_pss_mib", mib(host_pss), "MiB");
+    report(rung.as_str(), "peer_rss_mib", mib(peer_rss), "MiB");
+    report(rung.as_str(), "peer_pss_mib", mib(peer_pss), "MiB");
+    report(
+        rung.as_str(),
+        "host_rss_after_fill_mib",
+        mib(host_rss_after_fill),
+        "MiB",
+    );
+    report(
+        rung.as_str(),
+        "host_pss_after_fill_mib",
+        mib(host_pss_after_fill),
+        "MiB",
+    );
+    report(
+        rung.as_str(),
+        "host_disk_after_fill_mib",
+        mib(host_disk_after_fill),
+        "MiB",
+    );
+    let side_bytes = |cache: &str, store: Option<&PathBuf>| {
+        disk_bytes(&pair.dir.join(cache)).saturating_add(store.map_or(0, |store| disk_bytes(store)))
+    };
+    report(
+        rung.as_str(),
+        "host_disk_mib",
+        mib(side_bytes("host-cache", pair.store_a.as_ref())),
+        "MiB",
+    );
+    report(
+        rung.as_str(),
+        "peer_disk_mib",
+        mib(side_bytes("peer-cache", pair.store_b.as_ref())),
+        "MiB",
+    );
+
+    // Restarting both ends over the state they left.
+    let stopped = pair.stop_host();
+    let restarted = pair.restart_host();
+    let started = Instant::now();
+    let after_restart = list_directory(&pair.host.mount.join("flat"));
+    let host_first_list = started.elapsed();
+    assert_eq!(after_restart, cold_entries);
+    report(rung.as_str(), "host_stop_s", stopped.as_secs_f64(), "s");
+    report(
+        rung.as_str(),
+        "host_restart_s",
+        restarted.as_secs_f64(),
+        "s",
+    );
+    report(
+        rung.as_str(),
+        "host_restart_first_list_s",
+        host_first_list.as_secs_f64(),
+        "s",
+    );
+    let stopped = pair.stop_peer();
+    let restarted = pair.restart_peer();
+    let started = Instant::now();
+    let _ = read_range(&pair.peer_mount().join("flat").join("f0000000"), 0, 4096).unwrap();
+    let peer_first_read = started.elapsed();
+    report(rung.as_str(), "peer_stop_s", stopped.as_secs_f64(), "s");
+    report(
+        rung.as_str(),
+        "peer_restart_s",
+        restarted.as_secs_f64(),
+        "s",
+    );
+    report(
+        rung.as_str(),
+        "peer_restart_first_read_s",
+        peer_first_read.as_secs_f64(),
+        "s",
+    );
+    mark("the ladder rung is measured");
+    drop(pair);
 }

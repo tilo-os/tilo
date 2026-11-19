@@ -1737,3 +1737,8 @@ paths = ["crates/session/session/src/layout/tests.rs"]
 reason = "The field an older image's capability list named its grantee with; the test reads such a list as it was written."
 words = ["subject", "principal"]
 paths = ["crates/system/fs/src/caps_file.rs"]
+
+[[allow]]
+reason = "The size ladder's measurement harnesses: one run of a measured scenario, the workspace's tree chunks as the fs crates' own records, and a joining device's host daemon."
+words = ["run", "record", "host"]
+paths = ["crates/system/fs/tests/workspace_ladder.rs", "crates/system/fs/tests/native_sync_bench.rs", "tools/ci/fs-workspace-scale.sh"]
