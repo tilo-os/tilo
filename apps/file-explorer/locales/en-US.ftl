@@ -627,7 +627,13 @@ files-folder-remove-current-bookmark = Remove this folder from Favorites
 # mount of this device shows.
 files-workspace-window = Files window
 files-tree-up = Enclosing folder
-files-tree-empty = This workspace has no files yet
+files-tree-root = Workspace
+files-tree-create = Create
+files-tree-cancel = Cancel
+files-tree-upload-title = Upload files
+files-tree-upload-accept = Upload
+files-tree-upload-failed = Couldn’t upload { $name }
+files-tree-not-here = The workspace’s files haven’t arrived yet. Try again in a moment.
 files-tree-open = Open
 files-tree-open-detail = Open the file in the app that reads it
 files-tree-download = Download

@@ -1433,3 +1433,9 @@ reason = "A test of a service's resource reads builds its service with the fixtu
 words = ["host", "record"]
 identifiers = ["test_host", "test_host_taking_part", "host", "record"]
 paths = ["crates/server/tilo-workspace-service/src/apps/service_reads/tests.rs"]
+
+[[allow]]
+reason = "The app framework's own API names the page's Files window calls: `WorkspaceResource::record` (the stored document under a resource) and `ViewCx::window_host_effects` (effects whose completions reach the window)."
+words = ["record", "host"]
+identifiers = ["record", "window_host_effects"]
+paths = ["apps/file-explorer/src/tree.rs"]
