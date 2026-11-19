@@ -263,16 +263,17 @@ impl FileAction {
     /// What it does, as a change names it: its verb, on its node.
     #[must_use]
     pub fn described(&self) -> tilo_actions::Described {
-        tilo_actions::Described::new(tilo_actions::Did::verb(
-            tilo_actions::ActionKey::new(
-                crate::tree::FILES_APP,
-                crate::tree::TREE_KIND,
-                self.verb(),
-            ),
-            [],
-        ))
-        .on(self.node(), self.node())
+        tilo_actions::Described::new(did(self.verb())).on(self.node(), self.node())
     }
+}
+
+/// The tree's verb `verb`, as a change names what it did.
+#[must_use]
+pub fn did(verb: &'static str) -> tilo_actions::Did {
+    tilo_actions::Did::verb(
+        tilo_actions::ActionKey::new(crate::tree::FILES_APP, crate::tree::TREE_KIND, verb),
+        [],
+    )
 }
 
 /// The entry a change of the tree's document `document` is written with: what its file

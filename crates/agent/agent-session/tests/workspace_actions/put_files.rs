@@ -65,6 +65,13 @@ pub(super) async fn tree_kept(
 /// its changes, each to its own record. The chunks go first, because the
 /// tree's own record names them.
 async fn publish(laptop: &Browser, folder: &mut tilo_fs::Namespace) {
+    write_tree(laptop, folder).unwrap();
+    laptop.durable().await;
+}
+
+/// [`publish`] without waiting for the server to keep it: the first write the laptop's own
+/// replica refuses, if one is.
+fn write_tree(laptop: &Browser, folder: &mut tilo_fs::Namespace) -> Result<(), String> {
     let mut writes = folder.document_writes(&BTreeMap::new());
     writes.sort_by_key(|write| std::cmp::Reverse(write.chunk));
     for write in writes {
@@ -79,13 +86,13 @@ async fn publish(laptop: &Browser, folder: &mut tilo_fs::Namespace) {
                 route.clone(),
                 &DocumentMutation::Snapshot(automerge::AutoCommit::new().save()),
             )
-            .unwrap();
+            .map_err(|error| format!("{error:?}"))?;
         laptop
             .peer
             .write(route, &DocumentMutation::Incremental(write.changes))
-            .unwrap();
+            .map_err(|error| format!("{error:?}"))?;
     }
-    laptop.durable().await;
+    Ok(())
 }
 
 /// The host's tree once it reads as `ready` says, or as it stands after ten seconds. An
@@ -605,6 +612,96 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
     assert!(
         file_at(&tree, "", "contract.txt").is_some(),
         "the laptop's file is still there"
+    );
+}
+
+/// A member who edits a public workspace founds its file tree from their computer's mounted
+/// folder, as Files' own new-file and new-folder are theirs to take: the file they put there
+/// lands. A viewer's computer founds nothing and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
+    let serving = enrol(&owner, "lounge-server", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
+        &owner,
+        &serving,
+        state.path(),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+    )
+    .await;
+    let workspaces = hosted.server.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .publish(
+            &lounge.workspace,
+            &serving.cert,
+            tilo_server_protocol::directory::Listing {
+                description: "Everyone".into(),
+                default_role: tilo_peer_state::join::Role::Viewer,
+            },
+        )
+        .await
+        .unwrap();
+    let workspace = lounge.workspace.clone();
+    let (editor, _) = tilo_user_identity::UserIdentity::generate("Editor", 1);
+    let (viewer, _) = tilo_user_identity::UserIdentity::generate("Viewer", 1);
+    let editing = enrol(&editor, "editor laptop", DeviceCapabilities::member());
+    let viewing = enrol(&viewer, "viewer laptop", DeviceCapabilities::member());
+    for (device, role) in [
+        (&editing, tilo_peer_state::join::Role::Editor),
+        (&viewing, tilo_peer_state::join::Role::Viewer),
+    ] {
+        super::resource_support::admit_person(&hosted, &serving, &workspace, device, role).await;
+    }
+    let kept = || async {
+        workspaces
+            .resource_document(&workspace, FILES_APP, &tree_document())
+            .await
+            .unwrap()
+    };
+
+    // The viewer's computer mounts the workspace first: what it founds stays its own.
+    let viewer_laptop =
+        super::resource_support::open_admitted_peer(&hosted, &viewing, &serving, &workspace).await;
+    let mut theirs = tilo_fs::Namespace::new(hex::encode(viewing.cert.device_public_key)).unwrap();
+    theirs
+        .create_file(tilo_fs::ROOT_INO, "notes.txt", None, 0, 1)
+        .unwrap();
+    let refused = write_tree(&viewer_laptop, &mut theirs);
+    let settled = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < settled {
+        assert!(
+            kept().await.is_none(),
+            "a viewer founded the tree ({refused:?})"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // The editor's computer founds it with a file in it, and the file lands.
+    let editor_laptop =
+        super::resource_support::open_admitted_peer(&hosted, &editing, &serving, &workspace).await;
+    let mut folder = tilo_fs::Namespace::new(hex::encode(editing.cert.device_public_key)).unwrap();
+    folder
+        .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
+        .unwrap();
+    publish(&editor_laptop, &mut folder).await;
+    let deadline = tilo_test_env::hang_deadline();
+    while kept().await.is_none() {
+        assert!(Instant::now() < deadline, "the editor's tree never lands");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let tree = tree_when(&hosted, &workspace, |tree| {
+        file_at(tree, "", "contract.txt").is_some()
+    })
+    .await;
+    assert!(
+        file_at(&tree, "", "contract.txt").is_some(),
+        "the editor's file lands"
+    );
+    assert!(
+        file_at(&tree, "", "notes.txt").is_none(),
+        "the viewer's file stays out"
     );
 }
 

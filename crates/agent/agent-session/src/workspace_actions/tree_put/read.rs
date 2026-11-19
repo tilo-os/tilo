@@ -78,8 +78,10 @@ fn history(tree: &mut Namespace, arguments: &Map<String, Value>) -> Result<Value
     let words = &ui::history_source::sentence::ThreadWords;
     // A change a mounted folder wrote says no time: it is placed at the time of the change
     // before it in its document, so each document's changes keep the order they were made in.
+    // The tree's own document (chunk 0) holds no file: what changed it, its founding and the
+    // chunks it lists, was part of making a folder or a file, which the chunk lists.
     let mut listed: Vec<(i64, Value)> = Vec::new();
-    for (chunk, doc) in &documents {
+    for (chunk, doc) in documents.iter().filter(|(chunk, _)| *chunk != 0) {
         let mut before = 0;
         for mut entry in ui::history_source::verbs::entries_after(doc, &[], words) {
             let Some(fields) = entry.as_object_mut() else {

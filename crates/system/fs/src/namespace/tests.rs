@@ -1139,6 +1139,53 @@ fn a_write_through_the_mount_names_its_file_actions_and_the_agent_that_wrote() {
     assert_eq!(ns.hash_for(ino), Some(h(2)));
 }
 
+/// The tree's own document changes only as part of making a folder or a file: its founding
+/// is the root folder's making, and listing the chunk a new file is made in is that file's
+/// making, by whoever made it. A member is granted them as those verbs, never as an edit of
+/// the whole document.
+#[test]
+fn the_trees_own_document_names_its_changes_as_the_making_they_are_part_of() {
+    let agent = tilo_actions::ActionInvoker::admitted(
+        &tilo_actions::Acting::agent("claude").in_session("s1"),
+    )
+    .named(Some("Tidy the notes".into()));
+    let mut ns = Namespace::new("ada").unwrap();
+    {
+        let _acting = acting_as(Some(
+            tilo_actions::ActionContext::default().with_invoker(agent),
+        ));
+        ns.create_file(ROOT_INO, "plan.md", None, 0, 1).unwrap();
+    }
+    let index = ns.doc.doc_mut(0).unwrap().save();
+    let mut doc = AutoCommit::load(&index).unwrap();
+    let named = doc
+        .get_changes(&[])
+        .iter()
+        .filter(|change| !change.is_empty())
+        .all(|change| {
+            change.message().is_some_and(|message| {
+                tilo_actions::ActionContext::from_change_message(message).is_some()
+                    || tilo_actions::FrameworkChange::from_change_message(message)
+                        == Some(tilo_actions::FrameworkChange::Structure)
+            })
+        });
+    assert!(
+        named,
+        "every change of the tree's own document names a file action or the map every device derives"
+    );
+    assert_eq!(
+        entries_of(&index),
+        vec![
+            (vec!["new-folder".to_owned()], None),
+            (
+                vec!["new-file".to_owned()],
+                Some("Tidy the notes".to_owned())
+            ),
+        ],
+        "the founding, then the listing of the file's chunk"
+    );
+}
+
 /// Each chunk's heads, the tree's own document first.
 fn chunk_heads(ns: &mut Namespace) -> BTreeMap<fs_protocol::TreeChunk, Vec<automerge::ChangeHash>> {
     ns.note_change();

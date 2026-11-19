@@ -129,25 +129,47 @@ impl ChangeTrackedDoc {
             self.commit_named();
         }
         action.write(self)?;
+        self.name(document, action.described().what, action.node(), ambient);
+        Ok(())
+    }
+
+    /// Name what this document changed, and no file action wrote, as the tree's verb `verb`
+    /// on `node`, done in `ambient`: the tree's own document founded as its root folder's
+    /// making, or listing the chunk a new node is made in as that node's making. A member is
+    /// granted these as the creating verbs they are part of, never as an edit of the whole
+    /// document, which only owners may make of a document with an outbox.
+    pub(super) fn name_as(
+        &mut self,
+        document: &str,
+        verb: Did,
+        node: &str,
+        ambient: Option<&ActionContext>,
+    ) {
+        if self
+            .naming
+            .as_ref()
+            .is_some_and(|naming| naming.ambient.as_ref() != ambient)
+        {
+            self.commit_named();
+        }
+        self.name(document, verb, node, ambient);
+    }
+
+    fn name(&mut self, document: &str, verb: Did, node: &str, ambient: Option<&ActionContext>) {
         let naming = self.naming.get_or_insert_with(|| Naming {
             document: document.to_owned(),
             ambient: ambient.cloned(),
             one_node: true,
             ..Naming::default()
         });
-        let verb = action.described().what;
-        naming.one_node &= naming
-            .first
-            .first()
-            .is_none_or(|(_, node)| node == action.node());
+        naming.one_node &= naming.first.first().is_none_or(|(_, first)| first == node);
         if naming.first.len() < tilo_actions::entry::MAX_GROUP_MEMBERS {
-            naming.first.push((verb.clone(), action.node().to_owned()));
+            naming.first.push((verb.clone(), node.to_owned()));
         }
         naming.count = naming.count.saturating_add(1);
         if !naming.distinct.contains(&verb) {
             naming.distinct.push(verb);
         }
-        Ok(())
     }
 
     /// Tell subscribers the namespace may have changed: for state beside
