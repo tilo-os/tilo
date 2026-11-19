@@ -104,6 +104,69 @@ enum Digests {
     Taken,
 }
 
+/// Each document of `documents` decoded, in their order: a few at a time, as a start with
+/// many documents spends its time here and one decoded at a time made it wait for every part
+/// in turn.
+fn decode_documents(documents: &[DurableDocument]) -> Vec<Result<CachedDocument, String>> {
+    /// Documents decoded at once: enough to keep the cores and the disks busy without
+    /// holding a workspace's worth of decoders.
+    #[cfg(not(target_arch = "wasm32"))]
+    const AT_ONCE: usize = 4;
+    // A wasm build has no threads to decode on: it decodes in this one.
+    #[cfg(target_arch = "wasm32")]
+    let workers = 1;
+    #[cfg(not(target_arch = "wasm32"))]
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .clamp(1, AT_ONCE)
+        .min(documents.len().max(1));
+    if workers == 1 {
+        return documents.iter().map(decode_document).collect();
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        documents.iter().map(decode_document).collect()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let ready: std::sync::Mutex<Vec<Option<Result<CachedDocument, String>>>> =
+            std::sync::Mutex::new(documents.iter().map(|_| None).collect());
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(document) = documents.get(at) else {
+                            break;
+                        };
+                        let decoded = decode_document(document);
+                        let mut ready = ready
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if let Some(held) = ready.get_mut(at) {
+                            *held = Some(decoded);
+                        }
+                    }
+                });
+            }
+        });
+        let ready = ready
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ready
+            .into_iter()
+            .map(|held| held.unwrap_or_else(|| Err("a document was not decoded".to_owned())))
+            .collect()
+    }
+}
+
+fn decode_document(document: &DurableDocument) -> Result<CachedDocument, String> {
+    tilo_automerge_isolate::load(&document.bytes)
+        .map(CachedDocument::from)
+        .map_err(err)
+}
+
 impl StatePeer {
     /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
     pub fn durable_coverage(
@@ -615,7 +678,11 @@ impl StatePeer {
         peer.core.receipts = durable.receipts.into();
         peer.core.workspace_doc =
             restored_governance(durable.workspace_bytes.as_deref(), workspace, owner)?;
-        for document in durable.documents {
+        // The workspace's documents are decoded side by side: a workspace keeps a chain of
+        // documents, each with its history, and one decoded at a time made a start wait for
+        // every part in turn.
+        let decoded = decode_documents(&durable.documents);
+        for (document, decoded) in durable.documents.into_iter().zip(decoded) {
             check_governed_snapshot(
                 peer.core.workspace_doc.as_deref(),
                 &document.route,
@@ -637,10 +704,7 @@ impl StatePeer {
             peer.core.documents.insert(
                 document.route,
                 Document {
-                    doc: tilo_automerge_isolate::load(&document.bytes)
-                        .map(CachedDocument::from)
-                        .map_err(err)?
-                        .stored_as(&document.bytes)?,
+                    doc: decoded?.stored_as(&document.bytes)?,
                     channel,
                     encryption_required: document.encryption_required,
                     covered: document.covered,

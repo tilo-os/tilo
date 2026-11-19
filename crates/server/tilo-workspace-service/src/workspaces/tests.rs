@@ -20,6 +20,7 @@ mod host_address;
 pub(crate) mod large_document;
 #[cfg(feature = "agents")]
 mod lookup;
+mod restart_parts;
 
 #[tokio::test]
 async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {

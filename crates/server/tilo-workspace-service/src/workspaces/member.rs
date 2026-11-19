@@ -945,7 +945,9 @@ impl Workspaces {
         String,
     > {
         let device = self.device_keys();
-        let mut workspaces = std::collections::BTreeMap::new();
+        // A workspace is opened from its own files, with no other's: a start with many
+        // opens a few side by side, so it does not wait for each one's history in turn.
+        let mut paths = Vec::new();
         let entries = std::fs::read_dir(dir).map_err(|error| error.to_string())?;
         for entry in entries {
             let path = entry.map_err(|error| error.to_string())?.path();
@@ -955,8 +957,11 @@ impl Workspaces {
             {
                 continue;
             }
-            let workspace = GovernedWorkspace::open(path.clone(), device.as_ref())
-                .map_err(|error| super::document_format::unopened(&path, dir, &error))?;
+            paths.push(path);
+        }
+        let opened = open_side_by_side(paths, device.as_ref(), dir).await?;
+        let mut workspaces = std::collections::BTreeMap::new();
+        for workspace in opened {
             let name = workspace.workspace().to_owned();
             let state = if let Some(member) = workspace.member.clone() {
                 if let Ok(mut materials) = self.inner.member.materials.lock() {
@@ -1264,3 +1269,58 @@ impl Workspaces {
 #[cfg(test)]
 #[path = "member_tests.rs"]
 mod tests;
+
+/// The workspaces at `paths` opened, a few at a time: each reads its own files, and one at
+/// a time made a start wait for every workspace's history in turn.
+///
+/// # Errors
+///
+/// A workspace could not be opened.
+#[cfg(not(target_arch = "wasm32"))]
+async fn open_side_by_side(
+    paths: Vec<PathBuf>,
+    device: Option<&super::DeviceKeys>,
+    dir: &Path,
+) -> Result<Vec<GovernedWorkspace>, String> {
+    /// Workspaces opened at once.
+    const AT_ONCE: usize = 4;
+    let mut opening = tokio::task::JoinSet::new();
+    let mut opened = Vec::with_capacity(paths.len());
+    let mut paths = paths.into_iter();
+    loop {
+        while opening.len() < AT_ONCE {
+            let Some(path) = paths.next() else { break };
+            let device = device.cloned();
+            let dir = dir.to_owned();
+            opening.spawn_blocking(move || {
+                GovernedWorkspace::open(path.clone(), device.as_ref())
+                    .map_err(|error| super::document_format::unopened(&path, &dir, &error))
+            });
+        }
+        let Some(joined) = opening.join_next().await else {
+            break;
+        };
+        opened.push(joined.map_err(|error| error.to_string())??);
+    }
+    Ok(opened)
+}
+
+/// [`open_side_by_side`] in one thread, as a wasm build has no blocking threads to open on.
+///
+/// # Errors
+///
+/// A workspace could not be opened.
+#[cfg(target_arch = "wasm32")]
+async fn open_side_by_side(
+    paths: Vec<PathBuf>,
+    device: Option<&super::DeviceKeys>,
+    dir: &Path,
+) -> Result<Vec<GovernedWorkspace>, String> {
+    paths
+        .into_iter()
+        .map(|path| {
+            GovernedWorkspace::open(path.clone(), device)
+                .map_err(|error| super::document_format::unopened(&path, dir, &error))
+        })
+        .collect()
+}

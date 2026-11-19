@@ -89,16 +89,26 @@ impl Resources {
         }));
         let mut used = BTreeMap::new();
         let mut unsnapshotted = BTreeSet::new();
+        // What the store kept of each document is read side by side, and each document is
+        // indexed from its snapshot: a workspace keeps a chain of parts, each with the
+        // documents of its resources, and one read after another made a start wait for all
+        // of them.
+        let mut files = Vec::new();
         for entry in fs::read_dir(&docs).into_iter().flatten().flatten() {
-            let Some(doc) = doc_of(&entry.file_name()) else {
-                continue;
-            };
-            let restored = read_snapshot(&root, &doc)
-                .is_some_and(|(heads, snapshot)| store.restore(&doc, &snapshot, &heads));
+            if let Some(doc) = doc_of(&entry.file_name()) {
+                files.push((doc, entry.path()));
+            }
+        }
+        let kept = read_snapshots(&root, &files);
+        for ((doc, path), snapshot) in files.into_iter().zip(kept) {
+            let restored =
+                snapshot.is_some_and(|(heads, snapshot)| store.restore(&doc, &snapshot, &heads));
             if restored {
                 continue;
             }
-            let loaded = fs::read(entry.path())
+            // A document whose snapshot a killed write never left: it is read whole, and
+            // kept with a snapshot for the next start.
+            let loaded = fs::read(&path)
                 .map_err(|error| error.to_string())
                 .and_then(|bytes| store.load(&doc, &bytes).map_err(|error| error.to_string()));
             match loaded {
@@ -171,8 +181,9 @@ impl Resources {
             .unwrap_or_default()
     }
 
-    /// Keeps what `doc` took since `before`: its changes appended to its file, its snapshot
-    /// dropped first, as it no longer says where the document is.
+    /// Keeps what `doc` took since `before`: its changes appended to its file, then the
+    /// index's snapshot of it, so a start reads that instead of the document — and a start
+    /// after a stop that never ran (a killed process) reads the same.
     fn kept(&mut self, doc: &str, before: &[ChangeHash]) -> Result<(), String> {
         let root = self.root.clone();
         let Some(document) = self.store_mut().document(doc) else {
@@ -185,6 +196,8 @@ impl Resources {
         fs::create_dir_all(&docs).map_err(|error| error.to_string())?;
         let path = docs.join(file_name(doc));
         let snapshot = root.join(INDEX).join(file_name(doc));
+        // The snapshot goes before the change it no longer holds: a write killed between
+        // them leaves the document whole for the next start to read.
         match fs::remove_file(&snapshot) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -199,8 +212,14 @@ impl Resources {
                 .and_then(|mut file| file.write_all(&document.save_after(before)))
         }
         .map_err(|error| error.to_string())?;
-        self.unsnapshotted.insert(doc.to_owned());
         self.used.insert(doc.to_owned(), tilo_clock::now());
+        match self.write_snapshot(doc) {
+            Ok(()) => {}
+            Err(error) => {
+                tracing::warn!(%doc, %error, "a resource document's snapshot was not kept");
+                self.unsnapshotted.insert(doc.to_owned());
+            }
+        }
         self.evict_idle();
         Ok(())
     }
@@ -234,16 +253,23 @@ impl Resources {
     /// Writes `doc` whole as `bytes`, then the index's snapshot of it.
     fn keep_whole(&mut self, doc: &str, bytes: &[u8]) -> std::io::Result<()> {
         let docs = self.root.join(DOCS);
-        let index = self.root.join(INDEX);
         fs::create_dir_all(&docs)?;
-        fs::create_dir_all(&index)?;
         write_whole(&docs.join(file_name(doc)), bytes)?;
-        if let Some(snapshot) = self.store_mut().snapshot(doc) {
-            let heads: Vec<[u8; 32]> = self.heads(doc).iter().map(|head| head.0).collect();
-            let kept = postcard::to_stdvec(&(heads, snapshot))
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-            write_whole(&index.join(file_name(doc)), &kept)?;
-        }
+        self.write_snapshot(doc)
+    }
+
+    /// Writes the index's snapshot of `doc` beside it, at the heads it stands at: what a
+    /// start reads instead of the document.
+    fn write_snapshot(&mut self, doc: &str) -> std::io::Result<()> {
+        let index = self.root.join(INDEX);
+        fs::create_dir_all(&index)?;
+        let Some(snapshot) = self.store_mut().snapshot(doc) else {
+            return Ok(());
+        };
+        let heads: Vec<[u8; 32]> = self.heads(doc).iter().map(|head| head.0).collect();
+        let kept = postcard::to_stdvec(&(heads, snapshot))
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        write_whole(&index.join(file_name(doc)), &kept)?;
         self.unsnapshotted.remove(doc);
         Ok(())
     }
@@ -266,11 +292,65 @@ impl Drop for Resources {
     }
 }
 
-/// The snapshot kept of `doc` and the heads it was taken at.
-fn read_snapshot(root: &Path, doc: &str) -> Option<(Vec<ChangeHash>, Vec<u8>)> {
+/// A document's snapshot: the heads it was taken at, and the index's bytes of it.
+type Snapshot = (Vec<ChangeHash>, Vec<u8>);
+
+fn read_snapshot(root: &Path, doc: &str) -> Option<Snapshot> {
     let bytes = fs::read(root.join(INDEX).join(file_name(doc))).ok()?;
     let (heads, snapshot): (Vec<[u8; 32]>, Vec<u8>) = postcard::from_bytes(&bytes).ok()?;
     Some((heads.into_iter().map(ChangeHash).collect(), snapshot))
+}
+
+/// The snapshot kept of each of `docs`, in their order, read a few at a time: a start reads a
+/// file per document of a workspace's chain of parts, and one after another made it wait for
+/// each in turn.
+fn read_snapshots(root: &Path, docs: &[(String, PathBuf)]) -> Vec<Option<Snapshot>> {
+    let serial = || {
+        docs.iter()
+            .map(|(doc, _)| read_snapshot(root, doc))
+            .collect::<Vec<_>>()
+    };
+    #[cfg(target_arch = "wasm32")]
+    {
+        serial()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        /// Snapshots read at once.
+        const AT_ONCE: usize = 4;
+        let workers = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .clamp(1, AT_ONCE)
+            .min(docs.len().max(1));
+        if workers == 1 {
+            return serial();
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let snapshots: std::sync::Mutex<Vec<Option<Snapshot>>> =
+            std::sync::Mutex::new(vec![None; docs.len()]);
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    loop {
+                        let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((doc, _)) = docs.get(at) else {
+                            break;
+                        };
+                        let read = read_snapshot(root, doc);
+                        let mut snapshots = snapshots
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if let Some(held) = snapshots.get_mut(at) {
+                            *held = read;
+                        }
+                    }
+                });
+            }
+        });
+        snapshots
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// The changes a member's write of a store document carries, and the reader set the document
