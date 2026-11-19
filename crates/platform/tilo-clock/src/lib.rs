@@ -719,8 +719,18 @@ pub fn local_zone_name() -> Option<String> {
 mod page {
     use wasm_bindgen::JsValue;
 
+    thread_local! {
+        /// The name the browser gave first: asking builds a formatter, and the zone's name
+        /// changes only when the person changes it in the system's settings, as a device's does.
+        static ZONE_NAME: std::cell::OnceCell<Option<String>> = const { std::cell::OnceCell::new() };
+    }
+
     /// The browser's IANA name for the person's zone (`Europe/Vienna`).
     pub(crate) fn zone_name() -> Option<String> {
+        ZONE_NAME.with(|name| name.get_or_init(read_zone_name).clone())
+    }
+
+    fn read_zone_name() -> Option<String> {
         let format = js_sys::Intl::DateTimeFormat::default();
         let resolved = js_sys::Intl::DateTimeFormat::resolved_options(&format);
         js_sys::Reflect::get(&resolved, &JsValue::from_str("timeZone"))
