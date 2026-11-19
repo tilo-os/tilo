@@ -827,15 +827,22 @@ impl Desktop {
     /// opened, on a desktop shared through a workspace. Whether that changed
     /// anything.
     fn refresh_holders(&self, in_workspace: bool) -> bool {
-        // Whom each agent's window was opened for, by the name presence knows them by: a person
-        // not known here yet is named by no one rather than as a guest.
+        // Whom each agent's window was opened for: by the name presence knows them by, else the
+        // one the workspace's governance keeps for them, so a person who is not here (or a page
+        // that cannot reach presence) still names them. Someone nobody named is named by no one
+        // rather than as a guest.
         let opened_for = if in_workspace {
             let here = self.here.borrow();
             let people = self.people.borrow();
-            self.shared.opened_for(&mut |user: &str| {
-                here.person(user)
-                    .or_else(|| people.get(user).cloned())
-                    .map(|(name, _)| name)
+            let shown = tilo_desktop_model::WorkspaceId::parse(&self.workspace);
+            self.handle.read(|tree| {
+                let workspace = tree.workspaces.iter().find(|held| Some(held.id()) == shown);
+                self.shared.opened_for(&mut |user: &str| {
+                    here.person(user)
+                        .or_else(|| people.get(user).cloned())
+                        .map(|(name, _)| name)
+                        .or_else(|| workspace?.person_name(user).map(str::to_owned))
+                })
             })
         } else {
             std::collections::BTreeMap::new()
