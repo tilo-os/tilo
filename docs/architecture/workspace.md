@@ -40,7 +40,9 @@ already held.
 App data shared in a workspace resolves to the same records for every member.
 Roles and document grants decide access to those records. Mail uses a workspace
 mailbox and Passwords uses a workspace vault. Mail accounts still use credentials
-from the account owner's profile.
+from the account owner's profile. Native Mail and Passwords provide actions to
+recover the current member's earlier data into these shared resources. The
+earlier TiloLang Mail mailboxes remain private archives.
 
 Signature profiles, saved TiloLang views, and facts from private agent turns
 live in the person's store outside workspaces. Views retain their workspace

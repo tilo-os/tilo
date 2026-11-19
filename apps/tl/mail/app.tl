@@ -12,8 +12,7 @@ type Account (origin: imap.account) {
     /// When the account's mail was last taken in from its server, as the clock the person read
     /// it at: 1970 when it never was.
     fetched: Time = Time("1970-01-01T00:00:00Z")
-    /// What the account's messages end with: the person's own, per account, as every mail
-    /// client signs a message. Empty for none.
+    /// What the account's messages end with. Empty for none.
     signature: Text
     mailboxes: Collection<Mailbox>
     threads: Collection<Thread>
@@ -41,7 +40,7 @@ type Thread (origin: imap.thread) {
     flagged: Bool
     boxes: Set<Text>
     messages: Collection<Message>
-    /// The labels people gave it (Gmail's and Fastmail's): the person's own, never the server's.
+    /// The labels members assigned to this conversation in the workspace.
     labels: Set<Text>
     /// Snoozed until this moment: out of the inbox until then, and back once it has come, with
     /// no window open. The epoch when it is not snoozed.
@@ -70,8 +69,7 @@ type Thread (origin: imap.thread) {
     }
 }
 
-/// A label the person gave their conversations: their own, never the server's, as Gmail's and
-/// Fastmail's are. A conversation holds its labels by name, so giving one twice makes it once.
+/// A workspace label for conversations. A conversation holds each label by name.
 type Label {
     name: Text
 
@@ -125,14 +123,12 @@ type Draft (title: subject, untitled: "New message") {
     }
 }
 
-/// The person's mail: the accounts the workspace's settings hold, what they are writing, and
-/// the labels they gave their conversations.
+/// The workspace mailbox holds its accounts, drafts, and conversation labels.
 type Mail {
     accounts: Collection<Account>
     drafts: Collection<Draft>
     labels: Collection<Label>
-    /// How many seconds a sent message waits before it goes, so it can be taken back: the
-    /// person's setting, ten by default, and no wait at all when it is zero.
+    /// How many seconds members have to undo a send. The default is ten seconds.
     hold: Int = 10
 }
 
@@ -155,7 +151,7 @@ row view thread_row for Thread
 row view draft_row for Draft
 
 /// The signature the account `key` signs its messages with: its own, and empty when it has
-/// none or the account is not one of the person's.
+/// none or the workspace has no account with that key.
 fn signature_of(m: Mail, key: Text) -> Text {
     m.accounts.find(a -> a.key == key)?.signature ?? ""
 }
@@ -168,7 +164,7 @@ fn signed(m: Mail, key: Text, body: Text) -> Text {
     if signature == "" { body } else { "{signature}{body}" }
 }
 
-/// Sets what the account signs its messages with, or clears it: the person's own, per account.
+/// Sets or clears the workspace account's signature.
 action set_signature(a: Account, signature: Text) (icon: .pen_tool, label: "Signature") {
     a.signature = signature
 }
@@ -431,7 +427,7 @@ action unsnooze(t: Thread) (icon: .inbox, label: "Bring back") {
 }
 
 /// Gives the conversation a label, or takes one away: `on` says which. The label joins the
-/// person's labels the first time it is given, so it has a filter of its own from then on.
+/// workspace's labels the first time it is given, so it has a filter of its own from then on.
 action label(t: Thread, name: Text, on: Bool = not t.labels.any(l -> l == name)) (icon: .tag) {
     require name != "" "A label needs a name"
     let m = root Mail
@@ -439,7 +435,7 @@ action label(t: Thread, name: Text, on: Bool = not t.labels.any(l -> l == name))
     if on and not m.labels.any(l -> l.name == name) { m.labels.insert(Label(name: name)) }
 }
 
-/// Renames one of the person's labels, all the conversations that carry it with it.
+/// Renames one of the workspace's labels, all the conversations that carry it with it.
 action rename_label(m: Mail, l: Label, name: Text) {
     require name != "" "A label needs a name"
     require not m.labels.any(x -> x.name == name) "You have a label {name}"
@@ -454,7 +450,7 @@ action rename_label(m: Mail, l: Label, name: Text) {
     l.name = name
 }
 
-/// Deletes one of the person's labels, and takes it off every conversation that carries it.
+/// Deletes one of the workspace's labels, and takes it off every conversation that carries it.
 destructive action delete_label(m: Mail, l: Label) (icon: .trash) {
     for a in m.accounts {
         for t in a.threads {
@@ -537,7 +533,7 @@ action mark_read(t: Thread, unread: Bool = not t.unread) (
     }
 }
 
-/// Sends the message from another of the person's accounts.
+/// Sends the message from another workspace account.
 action send_from(d: Draft, a: Account) (icon: .user) {
     require not d.sent or d.recalled "This message went already"
     d.from = a.key
@@ -724,7 +720,7 @@ view unified(m: Mail) {
     }
 }
 
-/// The person's mail on its own, as a place shows it: every account's inbox in one
+/// The workspace's mail, with every account's inbox in one
 /// list of conversations, newest first, with none of the window's sidebar or bar around it. The
 /// mail window shows the same list under its places (`unified`).
 view all_inboxes(m: Mail) {
