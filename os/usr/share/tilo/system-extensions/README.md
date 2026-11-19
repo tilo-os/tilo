@@ -284,10 +284,29 @@ after the others are out, rather than holding them back. On the device
 the helper verifies the signature, downloads and hashes the file, and activation
 (every boot, offline) re-hashes it and links it into `/var/lib/extensions` as
 `<part>.raw` (copying when `/var/lib/extensions` and the state directory are
-different mounts). Nothing about the image's contents is trusted beyond that
-hash: systemd-sysext still refuses it on another OS release or architecture
-through the image's own `extension-release`. Remove deletes the image and its
-record; capsules and VM disks are untouched.
+different mounts). The hash proves who built the image, not that it is safe to
+merge: for a directory both have, the overlay shows the image's owner, mode and
+SELinux label in place of `/usr`'s, and an image whose `usr` is owned by a build
+user or unlabelled (the kernel reports `unlabeled_t`) keeps every login out and
+stops the next boot in `systemd-tmpfiles-setup`. So before linking it,
+activation mounts the image read-only in a private mount namespace and refuses
+it unless every entry is owned by root, writable by its owner alone, without
+set-id bits and labelled (on a system with SELinux), and every directory the
+base has keeps the base's type, mode and label (`crates/system/extension-helper/src/image.rs`).
+The build makes every entry root's, labels each from the base's file contexts
+and refuses an image breaking the same rules (`os/dev/sysext-image.py`).
+systemd-sysext still refuses it on another OS release or architecture through
+the image's own `extension-release`. Remove deletes the image and what was kept about it;
+capsules and VM disks are untouched.
+
+An extension that breaks the start anyway is turned off by the next one: an
+activation that turns an extension on or changes it marks it on trial
+(`/var/lib/tilo/extensions/<id>/trial`); `tilo-extension-trial.service` starts
+before systemd-sysext merges anything and moves the mark to `booting`, and
+`tilo-extension-booted.service` clears it once the start reaches the graphical
+target. A start that finds the mark still at `booting` takes the extension's
+parts out of the search path, removes its downloads and reports it failed
+("Turned off: this computer did not finish starting with it").
 
 The default path works without it. The compatibility planner refuses a launch
 with `WindowsSupportNotInstalled`, which tells the person to turn on

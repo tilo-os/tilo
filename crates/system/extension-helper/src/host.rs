@@ -303,6 +303,12 @@ pub trait Host {
         .map(drop)
     }
 
+    /// What merging the sysext image at `image` would put over /usr, and what
+    /// the base has at the image's directories ([`crate::image`]).
+    fn inspect_image(&self, image: &Path) -> Result<crate::image::Inspection> {
+        crate::image::inspect(image)
+    }
+
     fn relabel(&self, tree: &Path) -> Result<()> {
         let contexts = Path::new("/etc/selinux/targeted/contexts/files/file_contexts");
         if !Path::new("/sys/fs/selinux/enforce").exists()

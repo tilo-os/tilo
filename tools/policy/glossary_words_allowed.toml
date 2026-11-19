@@ -1646,3 +1646,9 @@ paths = ["crates/sdk/ui-core/src/workspace_sync.rs"]
 reason = "The WebAssembly function table's own slots, which a split module fills with its entries and with the shared functions whose code it carries."
 words = ["slot", "slots"]
 paths = ["tools/web/wasm-split/src/*"]
+
+[[allow]]
+reason = "The extension helper's interface to the operating system it changes (its `Host` trait, which runs systemd-sysext, rpm and mount, and the tests' fake of it) and its tests' helpers that start the helper with a command line."
+words = ["host", "run"]
+identifiers = ["host", "Host", "run", "run_on"]
+paths = ["crates/system/extension-helper/src/machine.rs", "crates/system/extension-helper/tests/extension.rs"]

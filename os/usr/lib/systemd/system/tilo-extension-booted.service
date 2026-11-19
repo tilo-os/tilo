@@ -1,0 +1,14 @@
+[Unit]
+Description=Keep the Tilo extensions this start finished with
+Documentation=file:///usr/share/tilo/system-extensions/README.md
+# Ends the trial tilo-extension-trial.service began at this start: the
+# extensions merged now got the computer to the graphical target.
+After=graphical.target
+ConditionPathExistsGlob=/var/lib/tilo/extensions/*/trial
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-extension boot:done
+
+[Install]
+WantedBy=graphical.target

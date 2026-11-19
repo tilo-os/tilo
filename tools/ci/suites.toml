@@ -106,6 +106,7 @@ inputs = [
 ]
 suites = [
   "os/dev/test-assemble-app-runtime.py",
+  "os/dev/test-sysext-image.py",
   "os/dev/test-runtime-font-payload.py",
   "os/dev/test-export-sdk-compiler.py",
   "os/dev/test-install-copy-scratch-cleanup.sh",
@@ -1036,6 +1037,8 @@ inputs = [
   "os/etc/polkit-1/rules.d/49-tilo-extension.rules",
   "os/usr/lib/systemd/system/tilo-extension@.service",
   "os/usr/lib/systemd/system/tilo-extension-activate.service",
+  "os/usr/lib/systemd/system/tilo-extension-trial.service",
+  "os/usr/lib/systemd/system/tilo-extension-booted.service",
   "os/usr/lib/systemd/system/tilo-extension-refresh.timer",
   "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf",
   "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/50-tilo-live-update.conf",

@@ -81,6 +81,13 @@ impl Layout {
         self.state(ident).join("objects")
     }
 
+    /// Present while the extension's last change has not yet been through a
+    /// start that reached the graphical target: `new` until a start begins with
+    /// it, `booting` from then until that start finishes.
+    pub fn trial(&self, ident: &str) -> PathBuf {
+        self.state(ident).join("trial")
+    }
+
     pub fn seed(&self, ident: &str) -> PathBuf {
         self.at("/etc/tilo/extensions/opt-in").join(ident)
     }
@@ -773,8 +780,9 @@ fn remove_if_present(path: &Path) -> Result<()> {
 }
 
 /// Install a prebuilt, manifest-pinned sysext image as `<part>.raw`; the bytes
-/// were pinned by the signed manifest.
-fn build_raw_part(layout: &Layout, assembly: &Assembly<'_>) -> Result<()> {
+/// were pinned by the signed manifest, and what merging them would do to /usr
+/// is read from the image first ([`crate::image`]).
+fn build_raw_part(host: &dyn Host, layout: &Layout, assembly: &Assembly<'_>) -> Result<()> {
     let (manifest, part) = (assembly.manifest, assembly.part);
     let [(artifact, path)] = assembly.files.as_slice() else {
         return Err(Error::Value(format!(
@@ -782,6 +790,11 @@ fn build_raw_part(layout: &Layout, assembly: &Assembly<'_>) -> Result<()> {
             assembly.files.len()
         )));
     };
+    if let Some(why) = crate::image::refusal(&host.inspect_image(path)?) {
+        return Err(Error::Pack(format!(
+            "not turned on, it would damage the system: {why}"
+        )));
+    }
     let extensions = layout.extensions();
     fs::create_dir_all(&extensions).at(&extensions)?;
     let live = raw_path(layout, &part.name);
@@ -832,7 +845,7 @@ fn build_part(
 ) -> Result<()> {
     let part = assembly.part;
     if part.is_raw() {
-        return build_raw_part(layout, assembly);
+        return build_raw_part(host, layout, assembly);
     }
     if !codec_runtime_complete(part, base) {
         return Err(Error::pack(OPENH264_WAITING_MESSAGE));
@@ -1423,6 +1436,16 @@ pub fn activate(host: &dyn Host, layout: &Layout) -> Result<i32> {
             return Ok(1);
         }
         host.sysext_refresh(layout)?;
+        for (catalogue, result) in catalogues.iter().zip(&outcome) {
+            let enabled = result
+                .states
+                .values()
+                .any(|v| v.as_str() == Some("enabled"));
+            let trial = layout.trial(&catalogue.id);
+            if result.changed && enabled && !trial.exists() {
+                write_text(&trial, "new\n", 0o644)?;
+            }
+        }
         if live_linked {
             write_text_creating(&live_marker, "merged\n", 0o644)?;
         } else {
@@ -1692,6 +1715,46 @@ fn remove(layout: &Layout, ident: &str) -> Result<()> {
     ]))
 }
 
+const TRIAL_FAILED: &str =
+    "Turned off: this computer did not finish starting with it. Install it again to try once more.";
+
+/// The safeguard for an extension that breaks the start: `start` comes before
+/// systemd-sysext merges anything, `done` once a start reached the graphical
+/// target. A change still on trial from a start that never finished is taken
+/// out of the search path and turned off, so a bad extension costs one failed
+/// start.
+fn boot(layout: &Layout, phase: &str) -> Result<()> {
+    for ident in catalogue_ids(layout)? {
+        let trial = layout.trial(&ident);
+        let Ok(state) = fs::read_to_string(&trial) else {
+            continue;
+        };
+        let _lock = locked(layout, &ident)?;
+        match (phase, state.trim()) {
+            ("start", "booting") => {
+                let catalogue = load_catalogue(layout, &ident)?;
+                for name in &catalogue.parts {
+                    live_remove(layout, name)?;
+                }
+                remove(layout, &ident)?;
+                Status::new(layout, &ident).write(changes([
+                    ("state", json!("failed")),
+                    ("parts", off(&catalogue)),
+                    ("last_error", json!(TRIAL_FAILED)),
+                ]))?;
+                remove_if_present(&trial)?;
+                eprintln!(
+                    "tilo-extension: {ident}: the last start did not finish with it; turned off"
+                );
+            }
+            ("start", _) => write_text(&trial, "booting\n", 0o644)?,
+            ("done", "booting") => remove_if_present(&trial)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub fn main(host: &dyn Host, layout: &Layout, argv: &[String]) -> i32 {
     let (verb, ident) = match model::parse_command(argv) {
         Ok(command) => command,
@@ -1728,6 +1791,15 @@ pub fn main(host: &dyn Host, layout: &Layout, argv: &[String]) -> i32 {
         return 2;
     }
     rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o022));
+    if verb == "boot" {
+        return match boot(layout, &ident) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("tilo-extension: boot {ident}: {error}");
+                1
+            }
+        };
+    }
     if verb == "live" {
         let lock = match locked(layout, crate::live::LIVE_NAME) {
             Ok(lock) => lock,

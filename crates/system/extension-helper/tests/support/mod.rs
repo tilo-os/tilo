@@ -22,6 +22,7 @@ use std::io::{self, Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
+use tilo_extension::image::{Inspection, Meta};
 use tilo_extension::{Error, Header, Host, HttpError, Layout, Response, Result, System};
 
 pub const BASE_PACKAGES: [&str; 5] = [
@@ -108,6 +109,35 @@ pub struct Fake {
     pub cross_device: Cell<bool>,
     pub real_tools: Option<PathBuf>,
     pub rpm_queries: Cell<u32>,
+    /// What a sysext image holds as merging reads it; a sound image when unset.
+    pub image: RefCell<Option<Inspection>>,
+}
+
+pub const USR_LABEL: &str = "system_u:object_r:usr_t:s0";
+
+fn root_entry(mode: u32) -> Meta {
+    Meta {
+        mode,
+        uid: 0,
+        gid: 0,
+        label: Some(USR_LABEL.to_owned()),
+    }
+}
+
+/// A root-owned, labelled image whose /usr is the base's.
+pub fn sound_image() -> Inspection {
+    Inspection {
+        image: BTreeMap::from([
+            ("/".to_owned(), root_entry(0o40755)),
+            ("/usr".to_owned(), root_entry(0o40755)),
+            ("/usr/lib".to_owned(), root_entry(0o40755)),
+            ("/usr/lib/tilo".to_owned(), root_entry(0o40755)),
+        ]),
+        base: BTreeMap::from([
+            ("/usr".to_owned(), root_entry(0o40755)),
+            ("/usr/lib".to_owned(), root_entry(0o40755)),
+        ]),
+    }
 }
 
 impl Host for Fake {
@@ -206,6 +236,10 @@ impl Host for Fake {
 
     fn relabel(&self, _tree: &Path) -> Result<()> {
         Ok(())
+    }
+
+    fn inspect_image(&self, _image: &Path) -> Result<Inspection> {
+        Ok(self.image.borrow().clone().unwrap_or_else(sound_image))
     }
 
     fn machine(&self) -> String {
