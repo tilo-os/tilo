@@ -74,12 +74,17 @@ impl Directory {
         else {
             return None;
         };
-        if KeyScope::document(*workspace, app, document, readers.as_deref()).is_none() {
-            return None;
-        }
+        KeyScope::document(*workspace, app, document, readers.as_deref())?;
         let group = scope.group();
-        let held = self.documents.entry(group).or_insert_with(|| scope.clone());
-        (held == &scope).then_some(group)
+        match self.documents.entry(group) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(scope);
+                Some(group)
+            }
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                (entry.get() == &scope).then_some(group)
+            }
+        }
     }
 
     pub(super) fn scope_devices(

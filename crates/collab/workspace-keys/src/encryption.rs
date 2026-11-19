@@ -231,7 +231,7 @@ impl InboundGovernance {
                 neighbour_wire::KeyScope::Workspace(workspace) => {
                     Some(Self::Frame { workspace, frame })
                 }
-                scope => Some(Self::DocumentFrame { scope, frame }),
+                scope @ KeyScope::Document { .. } => Some(Self::DocumentFrame { scope, frame }),
             },
             NeighbourMsg::MlsAccessRequest {
                 workspace, request, ..
@@ -239,7 +239,9 @@ impl InboundGovernance {
                 neighbour_wire::KeyScope::Workspace(workspace) => {
                     Some(Self::AccessRequest { workspace, request })
                 }
-                scope => Some(Self::DocumentAccessRequest { scope, request }),
+                scope @ KeyScope::Document { .. } => {
+                    Some(Self::DocumentAccessRequest { scope, request })
+                }
             },
             _ => None,
         }
@@ -1671,7 +1673,7 @@ impl WorkspaceKeys {
                 Ok(true) => self.bump(workspace),
                 Ok(false) => {}
                 Err(error) => {
-                    tracing::warn!(%error, group = %workspace, "could not save the key state after losing access")
+                    tracing::warn!(%error, group = %workspace, "could not save the key state after losing access");
                 }
             }
             return;
@@ -2085,10 +2087,9 @@ impl SharedKeys {
                 return Err("the key group is updating its readers".into());
             }
         }
-        entry
-            .peer
-            .content_keys()
-            .ok_or_else(|| "this device holds no history keys".into())
+        let keys = entry.peer.content_keys();
+        drop(service);
+        keys.ok_or_else(|| "this device holds no history keys".into())
     }
 
     /// See [`WorkspaceKeys::ask_on_entry`]; the ownership's signature is awaited without
@@ -2576,7 +2577,7 @@ impl tilo_identity::sources::GroupKeySource for KeyProvider {
     ) -> Option<Result<tilo_identity::sources::GroupKeys, String>> {
         let groups = self.get()?;
         let (access, generation) = groups.access(workspace);
-        wire_keys(access, generation, known_generation)
+        Some(wire_keys(access, generation, known_generation))
     }
 
     fn document_access(
@@ -2593,11 +2594,19 @@ impl tilo_identity::sources::GroupKeySource for KeyProvider {
                 .requires_document_keys(workspace, app, document)
         })?
         else {
-            return wire_keys(KeyAccess::Waiting, groups.generation(), known_generation);
+            return Some(wire_keys(
+                KeyAccess::Waiting,
+                groups.generation(),
+                known_generation,
+            ));
         };
         let named = if KeyScope::has_named_readers(document) {
             let Some(readers) = groups.named_readers(workspace, document) else {
-                return wire_keys(KeyAccess::Waiting, groups.generation(), known_generation);
+                return Some(wire_keys(
+                    KeyAccess::Waiting,
+                    groups.generation(),
+                    known_generation,
+                ));
             };
             Some(readers)
         } else {
@@ -2621,7 +2630,7 @@ impl tilo_identity::sources::GroupKeySource for KeyProvider {
         // A policy edit can select a different group without moving either
         // group yet. Distinguish that transition from an unchanged answer.
         let generation = groups.with_service(|service| service.generation())? | (1 << 63);
-        wire_keys(access, generation, known_generation)
+        Some(wire_keys(access, generation, known_generation))
     }
 }
 
@@ -2629,14 +2638,14 @@ fn wire_keys(
     access: KeyAccess,
     generation: u64,
     known_generation: u64,
-) -> Option<Result<tilo_identity::sources::GroupKeys, String>> {
+) -> Result<tilo_identity::sources::GroupKeys, String> {
     use tilo_identity_client::wire::KeyAccess as Wire;
     // A caller holding no keys asks with generation 0, which is also
     // the generation of a service that has changed nothing since it
     // started (a group it restored from disk, after a restart): it is
     // sent the keys, never told they are unchanged.
     let held = known_generation != 0 && generation == known_generation;
-    Some(match access {
+    match access {
         KeyAccess::Ready(keys) if !held => keys
             .to_bytes()
             .map(|bytes| (Wire::Ready, generation, bytes.to_vec()))
@@ -2646,7 +2655,7 @@ fn wire_keys(
         KeyAccess::Removed => Ok((Wire::Removed, generation, Vec::new())),
         KeyAccess::Unavailable => Ok((Wire::Unavailable, generation, Vec::new())),
         KeyAccess::NoSecretStore => Ok((Wire::NoSecretStore, generation, Vec::new())),
-    })
+    }
 }
 
 mod entry;
