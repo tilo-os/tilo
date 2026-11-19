@@ -134,6 +134,9 @@ mod hosted_consent_notification;
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
 #[cfg(test)]
+#[path = "workspace_actions/hosted_import_open.rs"]
+mod hosted_import_open;
+#[cfg(test)]
 #[path = "workspace_actions/hosted_mail_turn.rs"]
 mod hosted_mail_turn;
 #[cfg(test)]
