@@ -278,6 +278,21 @@ pub(crate) fn role_refusal(
     {
         return None;
     }
+    if let neighbour_wire::NeighbourMsg::AppDocument {
+        app_id,
+        document_id,
+        ..
+    } = &message
+    {
+        let node = collab_types::document_node(access.workspace(), app_id, document_id);
+        if access.allows(
+            &node,
+            tilo_action_policy::ActionKind::Undoable,
+            tilo_clock::wall(),
+        ) {
+            return None;
+        }
+    }
     Some(tilo_server_protocol::refusal::Refusal::NotGranted(
         collab_types::ReceiptRefusal::NotGranted {
             node: tilo_action_policy::TreePath::workspace(&access.policy.workspace).to_string(),
@@ -355,9 +370,12 @@ pub(crate) fn refusal(
         .as_ref()
         .filter(|own| own.names(&route.document_id))
         .map(collab_types::OwnResource::person);
-    let mut cx = tilo_action_policy::Context::at(tilo_clock::unix_now());
+    let mut cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     if let Some(person) = &person {
         cx = cx.with_own_resource(&route.document_id, person);
+    }
+    if let Some(refusal) = document_group_refusal(&route, &envelope, device_access, &cx) {
+        return Some(refusal);
     }
     let allows = |invoker: Option<&tilo_action_policy::Acting>,
                   node: &tilo_action_policy::TreePath,
@@ -387,6 +405,50 @@ pub(crate) fn refusal(
     })
 }
 
+fn document_group_refusal(
+    route: &crate::payloads::Route,
+    envelope: &collab_types::SignedOp,
+    devices: Option<&crate::workspace::DeviceAccess>,
+    context: &tilo_action_policy::Context<'_>,
+) -> Option<tilo_server_protocol::refusal::Refusal> {
+    use collab_types::{EncryptionMetadata, EncryptionScheme};
+    use tilo_action_policy::{ActionKind, Answer};
+    use tilo_server_protocol::refusal::Refusal;
+
+    if let Some(EncryptionMetadata {
+        scheme: EncryptionScheme::DocumentContentKey { group, .. },
+        ..
+    }) = envelope.encryption
+    {
+        let names_group =
+            collab_types::WorkspaceId::parse(&route.cluster_id).is_some_and(|workspace| {
+                let scope = neighbour_wire::KeyScope::Document {
+                    workspace,
+                    app: route.app_id.clone(),
+                    document: route.document_id.clone(),
+                };
+                scope.group() == group
+            });
+        return (!names_group).then(|| {
+            Refusal::NotAllowed("the encryption group belongs to another document".into())
+        });
+    }
+    if collab_types::validator::requires_independent_document_keys(
+        &route.app_id,
+        &route.document_id,
+    ) {
+        return Some(Refusal::NotAllowed(
+            "this document requires its own encryption group".into(),
+        ));
+    }
+    let devices = devices?;
+    let node = collab_types::document_node(&route.cluster_id, &route.app_id, &route.document_id);
+    devices
+        .values()
+        .any(|device| device.answer(&node, ActionKind::Read, context) != Answer::Allow)
+        .then(|| Refusal::NotAllowed("this document requires its own encryption group".into()))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -396,6 +458,52 @@ mod tests {
     )]
 
     use super::publish_from;
+
+    #[test]
+    fn a_workspace_key_cannot_admit_a_vault_or_workspace_mailbox_write() {
+        use collab_types::{
+            ContentRetention, Ed25519PublicKey, EncryptionMetadata, OpKind, SignedOp,
+        };
+        let workspace = collab_types::WorkspaceId::from_u128(1);
+        let context = tilo_action_policy::Context::at(0);
+        for (app, document) in [
+            ("so.tilo.passwords", String::new()),
+            ("so.tilo.mail", String::new()),
+            ("so.tilo.mail", neighbour_wire::document_part("", 0)),
+        ] {
+            let route = crate::payloads::Route {
+                app_id: app.into(),
+                cluster_id: workspace.to_string(),
+                document_id: document.clone(),
+                own: None,
+            };
+            let mut write = SignedOp::new_unsigned(
+                vec![0],
+                collab_types::document_artifact_id(app, &route.cluster_id, &document),
+                Ed25519PublicKey::from_bytes([1; 32]),
+                collab_types::document_attestation_id(app, &route.cluster_id, &document),
+                OpKind::Change,
+                tilo_clock::wall(),
+                1,
+            );
+            assert!(super::document_group_refusal(&route, &write, None, &context).is_some());
+            write.encryption = Some(EncryptionMetadata::content_key(1, ContentRetention::Delta));
+            assert!(super::document_group_refusal(&route, &write, None, &context).is_some());
+            let group = neighbour_wire::KeyScope::Document {
+                workspace,
+                app: app.into(),
+                document,
+            }
+            .group();
+            write.encryption = Some(EncryptionMetadata::content_group(
+                workspace,
+                group,
+                1,
+                ContentRetention::Delta,
+            ));
+            assert!(super::document_group_refusal(&route, &write, None, &context).is_none());
+        }
+    }
 
     /// What the image's build laid out: one file per version of the apps'
     /// `surface.toml`, named for the app and the commit, and the same version

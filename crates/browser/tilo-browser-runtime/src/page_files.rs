@@ -64,6 +64,8 @@ pub(crate) struct WorkspaceFiles {
     stores: crate::workspace_resources::PageStores,
     records: std::cell::OnceCell<WorkspaceResources>,
     content: tilo_content::ContentStore,
+    peer: u32,
+    workspace: String,
     read: RefCell<Read>,
 }
 
@@ -75,12 +77,16 @@ impl WorkspaceFiles {
         named: &str,
         stores: crate::workspace_resources::PageStores,
         content: tilo_content::ContentStore,
+        peer: u32,
+        workspace: String,
     ) -> Self {
         Self {
             source: Arc::new(TreeFiles::new(named)),
             stores,
             records: std::cell::OnceCell::new(),
             content,
+            peer,
+            workspace,
             read: RefCell::new(Read {
                 heads: Vec::new(),
                 words: Vec::new(),
@@ -111,6 +117,36 @@ impl WorkspaceFiles {
         &self.content
     }
 
+    pub(crate) fn file_sealing(
+        &self,
+    ) -> Result<
+        (
+            collab_types::ArtifactId,
+            tilo_session_client::engine::SealKeys,
+        ),
+        String,
+    > {
+        let handle =
+            crate::peer_sync::handle_of(self.peer).ok_or("the workspace session is closed")?;
+        let route = crate::content_open::files_route(&self.workspace);
+        let workspace = route.workspace_id().map_err(|error| error.to_string())?;
+        if !handle.engine().document_read_policy(workspace)(&route.app_id, &route.document) {
+            return Err("you cannot read files in this workspace".into());
+        }
+        let address = collab_types::file_content_artifact(workspace);
+        Ok((address, handle.engine().document_seal_keys(&route)?))
+    }
+
+    fn can_read(&self) -> bool {
+        let Some(handle) = crate::peer_sync::handle_of(self.peer) else {
+            return false;
+        };
+        let route = crate::content_open::files_route(&self.workspace);
+        route.workspace_id().is_ok_and(|workspace| {
+            handle.engine().document_read_policy(workspace)(&route.app_id, &route.document)
+        })
+    }
+
     /// The workspace's tree record, opened: on its way while the workspace's hosts have not
     /// sent it or said they hold none ([`ui::resource::ResourceOpenError::Arriving`]).
     pub(crate) fn tree_document(&self) -> Result<StoredResource, ui::resource::ResourceOpenError> {
@@ -130,6 +166,9 @@ impl WorkspaceFiles {
     /// a tree whose own document lists a chunk the workspace does not hold still shows every
     /// file the chunks it holds name.
     fn opened(&self, read: &mut Read, whole: bool) -> Option<(StoredResource, Chunks, Heads)> {
+        if !self.can_read() {
+            return None;
+        }
         let index = self.tree_document().ok()?;
         let listed = index.read(listed_chunks)?;
         let mut chunks = BTreeMap::new();
@@ -191,6 +230,16 @@ impl WorkspaceFiles {
         let Ok(mut read) = self.read.try_borrow_mut() else {
             return;
         };
+        if !self.can_read() {
+            if !read.heads.is_empty() {
+                read.heads.clear();
+                read.files.clear();
+                read.words.clear();
+                read.chunks.clear();
+                self.source.set_files(Vec::new());
+            }
+            return;
+        }
         let Some((index, chunks, heads)) = self.opened(&mut read, false) else {
             return;
         };
@@ -217,9 +266,12 @@ impl WorkspaceFiles {
             }
             let content = &self.content;
             let Some(bytes) = content.read(&hash).and_then(|bytes| {
-                fs_content::whole(bytes, MAX_READ_BYTES, |chunk| {
-                    content.read(&hex::encode(chunk))
-                })
+                crate::content_open::file_bytes(
+                    bytes,
+                    content,
+                    MAX_READ_BYTES,
+                    Some((self.peer, self.workspace.as_str())),
+                )
             }) else {
                 // Reading content the page lacks asks the workspace for it;
                 // its words are read when it is here.

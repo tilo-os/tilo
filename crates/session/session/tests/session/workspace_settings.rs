@@ -212,6 +212,83 @@ fn workspace_settings_sets_each_members_role() {
     }
 }
 
+#[test]
+fn workspace_settings_assigns_a_custom_role_and_uses_it_for_document_access() {
+    use tilo_action_policy::{ActionKind, Answer, Context};
+
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &["ada", "bo"]);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+
+    app.effect(&WorkspaceSettingsEffect::SaveCustomRole {
+        role: String::new(),
+        name: "Reviewers".into(),
+    })
+    .unwrap();
+    settle(&mut session, &mut app);
+    let role = session.handle().read(|tree| {
+        let workspace = tree.active_workspace().unwrap();
+        workspace
+            .policy
+            .custom_roles
+            .iter()
+            .find_map(|(id, name)| (name == "Reviewers").then(|| id.clone()))
+            .expect("the People action created a role")
+    });
+    for effect in [
+        WorkspaceSettingsEffect::SetCustomRole {
+            member: "ada".into(),
+            role: role.clone(),
+            assigned: true,
+        },
+        WorkspaceSettingsEffect::SetDocumentAccess {
+            who: format!("role:{role}"),
+            app: "so.tilo.notes".into(),
+            document: "review".into(),
+            access: "edit".into(),
+        },
+    ] {
+        app.effect(&effect).unwrap();
+        settle(&mut session, &mut app);
+    }
+
+    session.handle().read(|tree| {
+        let workspace = tree.active_workspace().unwrap();
+        let id = workspace.id().to_string();
+        let document = collab_types::document_node(&id, "so.tilo.notes", "review");
+        let action = tilo_action_policy::TreePath::workspace(&id)
+            .app("so.tilo.notes")
+            .kind("notes.note")
+            .resource("review")
+            .action("field-edit");
+        let context = Context::at_time(tilo_clock::wall());
+        for node in [document, action] {
+            for (person, expected) in [("ada", Answer::Allow), ("bo", Answer::Deny)] {
+                assert_eq!(
+                    workspace
+                        .policy
+                        .party(person)
+                        .decide(&node, ActionKind::Undoable, &context)
+                        .answer,
+                    expected,
+                    "{person} at {node}",
+                );
+            }
+        }
+        let rules = collab_types::document_access_rules(
+            &workspace.policy,
+            &[("so.tilo.notes".into(), "review".into())],
+        );
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].recipient, format!("role:{role}"));
+        assert_eq!(rules[0].access, "edit");
+    });
+}
+
 /// The People tab says what the owner's role is instead of offering it: who owns the workspace is a
 /// fact of it, so their row has no role control and no one chooses a new owner here.
 #[test]

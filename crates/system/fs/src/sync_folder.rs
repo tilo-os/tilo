@@ -168,6 +168,10 @@ impl SyncFolder {
     /// be persisted. A path that cannot be carried across is left for the
     /// next pass and does not fail this one.
     pub fn reconcile(&mut self) -> io::Result<Pass> {
+        // A revoked or unavailable view must never be reconciled as an empty tree.
+        if !self.fs.may_read_workspace() {
+            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        }
         let mut pass = Pass::default();
         let mut local = local::scan(&self.root)?;
         let mut remote = self.remote_view();

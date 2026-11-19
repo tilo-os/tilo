@@ -1554,3 +1554,9 @@ reason = "YouTube's channels, which tube's model names as the product's API does
 words = ["channel"]
 identifiers = ["Channel", "channel_id"]
 paths = ["apps/tube/src/rows.rs", "apps/tube/src/actions.rs"]
+
+[[allow]]
+reason = "The JSON field and variant in older filesystem capability lists, read in place so upgrading preserves the device's existing permissions."
+words = ["principal", "subject"]
+identifiers = ["Principal", "subject"]
+paths = ["crates/system/fs/src/caps_file.rs", "crates/system/fs/src/caps_file/legacy.rs"]
