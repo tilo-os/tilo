@@ -5258,7 +5258,7 @@ fn ush_service_backend(
         USH_SERVICE.with_control(|stream| {
             let socket = stream
                 .try_clone()
-                .map(|stream| tilo_process::local_socket::ServiceSocket::from(stream))
+                .map(tilo_process::local_socket::ServiceSocket::from)
                 .map_err(|error| OpenError::Failed(error.to_string()))?;
             ush_backend_on(
                 &socket,
