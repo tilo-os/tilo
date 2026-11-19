@@ -1736,6 +1736,10 @@ suite = "os/containers/tilo-sh/test-vm-host.sh"
 reason = "needs root, KVM, loop devices and the built VM host and hosted guest images; the tilo-sh-vm-host check runs it in a VM of its own on dispatch"
 
 [[unrequired]]
+suite = "os/containers/tilo-sh/test-peer-kill-midwrite.sh"
+reason = "needs a whole tilo.sh stack and a FUSE mount, and minutes for the bulk write and its convergence; the peer-kill-midwrite check brings one up when named"
+
+[[unrequired]]
 suite = "os/containers/tilo-lounge/test-wait-list.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the wait-list check runs it in its image"
 
