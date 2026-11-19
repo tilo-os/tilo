@@ -23,6 +23,8 @@ pub(crate) struct FakePlatform {
     pub mutations: usize,
     pub faults: Faults,
     pub log: Vec<String>,
+    /// Files the helper placed inside the staging root, by partition and path.
+    pub files: HashMap<(String, String), Vec<u8>>,
 }
 
 impl FakePlatform {
@@ -42,6 +44,7 @@ impl FakePlatform {
             mutations: 0,
             faults: Faults::default(),
             log: Vec::new(),
+            files: HashMap::new(),
         }
     }
 
@@ -228,6 +231,42 @@ impl Platform for FakePlatform {
         let at = self.span(disk, partition_guid, offset, buf.len())?;
         self.read_abs(at, buf);
         Ok(())
+    }
+
+    fn write_staging_file(
+        &mut self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+        contents: &[u8],
+        _mode: u32,
+    ) -> IoResult<()> {
+        if disk.guid != self.disk.guid {
+            return Err("wrong disk".into());
+        }
+        self.partition(partition_guid)?;
+        self.before(format!("file {partition_guid}:{path}"))?;
+        self.files.insert(
+            (partition_guid.to_ascii_lowercase(), path.to_owned()),
+            contents.to_vec(),
+        );
+        self.after();
+        Ok(())
+    }
+
+    fn read_staging_file(
+        &self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+    ) -> IoResult<Option<Vec<u8>>> {
+        if disk.guid != self.disk.guid {
+            return Err("wrong disk".into());
+        }
+        Ok(self
+            .files
+            .get(&(partition_guid.to_ascii_lowercase(), path.to_owned()))
+            .cloned())
     }
 
     fn sync_disk(&mut self, _disk: &Disk) -> IoResult<()> {
@@ -456,6 +495,8 @@ mod tests {
             profile,
             migration: None,
             prepared_setup: None,
+            install_plan: None,
+            token_file: None,
         };
         World {
             store: RecordStore::at(dir.path()),
@@ -595,6 +636,118 @@ mod tests {
             },
         });
         bytes
+    }
+
+    fn server_plan(
+        rule: install_profile_model::plan::DiskRule,
+    ) -> install_profile_model::plan::Plan {
+        let mut plan: install_profile_model::plan::Plan =
+            serde_json::from_value(serde_json::json!({
+                "schema": 1,
+                "plan": "0123456789abcdef0123456789abcdef",
+                "revision": 1,
+                "destination": "tilo-server",
+                "name": "cupboard",
+                "network": {"addressing": "dhcp", "addresses": "", "gateway": "", "dns": ""},
+                "disk": {"kind": "serial", "identity": "16Q0A07GTM7J"},
+                "unlock": "owner-device",
+                "updates": "stable",
+                "hosting": [],
+                "open": [],
+                "token": {"nonce": "00112233445566778899aabbccddeeff",
+                          "expires_at_ns": 1_700_000_000_000_000_000_u64}
+            }))
+            .unwrap();
+        plan.disk = rule;
+        plan
+    }
+
+    #[test]
+    fn a_staged_plan_and_its_token_are_given_together_and_name_their_disk() {
+        let platform = linux_platform();
+        let mut world = world(&platform);
+        let rule = |kind: &str, identity: &str| install_profile_model::plan::DiskRule {
+            kind: kind.to_owned(),
+            identity: identity.to_owned(),
+        };
+        let token = world._dir.path().join("machine.token");
+        std::fs::write(&token, b"token").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let token = token.to_string_lossy().into_owned();
+
+        let refusal =
+            |world: &mut World| helper::validate_request(&world.request).unwrap_err().code;
+
+        world.request.install_plan = Some(server_plan(rule("serial", "16Q0A07GTM7J")));
+        assert_eq!(
+            refusal(&mut world),
+            codes::REQUEST_INVALID,
+            "a plan needs its token"
+        );
+
+        world.request.install_plan = None;
+        world.request.token_file = Some(token);
+        assert_eq!(
+            refusal(&mut world),
+            codes::REQUEST_INVALID,
+            "a token needs its plan"
+        );
+
+        let mut desktop = server_plan(rule("serial", "16Q0A07GTM7J"));
+        desktop.destination = "tilo-os".to_owned();
+        world.request.install_plan = Some(desktop);
+        assert_eq!(
+            refusal(&mut world),
+            codes::REQUEST_INVALID,
+            "only a server installs without a person"
+        );
+
+        let mut open = server_plan(rule("serial", "16Q0A07GTM7J"));
+        open.name.clear();
+        open.open = vec!["name".to_owned()];
+        world.request.install_plan = Some(open);
+        assert_eq!(
+            refusal(&mut world),
+            codes::REQUEST_INVALID,
+            "an open choice is not unattended"
+        );
+
+        world.request.install_plan = Some(server_plan(rule("largest", "")));
+        assert_eq!(
+            refusal(&mut world),
+            codes::REQUEST_INVALID,
+            "a staged plan names its disk, so the staging names the same one"
+        );
+    }
+
+    #[test]
+    fn a_plan_names_its_disk_by_a_serial_or_an_eui_and_never_another() {
+        use install_profile_model::plan::DiskRule;
+        let rule = |kind: &str, identity: &str| DiskRule {
+            kind: kind.to_owned(),
+            identity: identity.to_owned(),
+        };
+        let nvme = vec![
+            "nvme-KIOXIA_KCD8XRUG1T92_16Q0A07GTM7J".to_owned(),
+            "nvme-eui.01000000000000008ce38ee30e25a616".to_owned(),
+            "wwn-0x01000000000000008ce38ee30e25a616".to_owned(),
+        ];
+        assert!(helper::rule_names(&rule("serial", "16Q0A07GTM7J"), &nvme));
+        assert!(helper::rule_names(&rule("serial", "16q0a07gtm7j"), &nvme));
+        assert!(helper::rule_names(
+            &rule("wwid", "eui.01000000000000008ce38ee30e25a616"),
+            &nvme
+        ));
+        assert!(helper::rule_names(
+            &rule("wwid", "0x01000000000000008ce38ee30e25a616"),
+            &nvme
+        ));
+        assert!(!helper::rule_names(&rule("serial", "16Q0A07GTM7X"), &nvme));
+        assert!(
+            !helper::rule_names(&rule("largest", ""), &nvme),
+            "a rule that names no drive never matches a staging disk"
+        );
     }
 
     tilo_test_env::scenario! {

@@ -17,6 +17,8 @@ struct Args {
     target_bytes: Option<u64>,
     profile: Option<String>,
     record: Option<String>,
+    plan: Option<String>,
+    token_file: Option<String>,
     out: Option<String>,
 }
 
@@ -68,6 +70,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--profile-json" => once(&mut out.profile, value()?)?,
             "--record" => once(&mut out.record, value()?)?,
+            "--plan" => once(&mut out.plan, value()?)?,
+            "--token-file" => once(&mut out.token_file, value()?)?,
             "--out" => once(&mut out.out, value()?)?,
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -152,6 +156,8 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
             profile: serde_json::Map::new(),
             migration: None,
             prepared_setup: None,
+            install_plan: None,
+            token_file: None,
         };
         let summary = json!({"ok": true, "action": action, "operation_id": id});
         return Ok((request, summary));
@@ -189,6 +195,19 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
                 }
             })
         })?;
+    let install_plan = match &args.plan {
+        Some(path) => {
+            let bytes = std::fs::read(path).map_err(|e| other(format!("{path}: {e}")))?;
+            let plan: install_profile_model::plan::Plan = serde_json::from_slice(&bytes)
+                .map_err(|e| other(format!("{path}: not an install plan: {e}")))?;
+            Some(plan)
+        }
+        None => None,
+    };
+    let token_file = match &args.token_file {
+        Some(path) => Some(absolute(path).map_err(other)?),
+        None => None,
+    };
     let request = Request {
         schema: helper::REQUEST_SCHEMA,
         operation_id: super::random_guid(),
@@ -205,6 +224,8 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         profile,
         migration: None,
         prepared_setup: None,
+        install_plan,
+        token_file,
     };
     helper::validate_request(&request).map_err(|r| other(r.to_string()))?;
     let summary = json!({
@@ -217,6 +238,11 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         "staging_esp": request.plan.staging_esp,
         "staging_root": request.plan.staging_root,
         "disk": {"guid": request.plan.basis.disk.guid, "id": request.plan.basis.disk.id},
+        "install_plan": request.install_plan.as_ref().map(|plan| json!({
+            "id": plan.plan,
+            "destination": plan.destination,
+            "nonce": plan.token.nonce,
+        })),
     });
     Ok((request, summary))
 }

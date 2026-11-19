@@ -8,7 +8,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tilo_clock::time::Duration;
@@ -357,6 +357,90 @@ impl Aligned {
     }
 }
 
+/// The path a staged root's file is placed at: a bounded, relative one, so a
+/// request can never write outside the mounted filesystem.
+fn staging_file_path(path: &str) -> IoResult<PathBuf> {
+    let relative = path.trim_start_matches('/');
+    if relative.is_empty()
+        || path.len() > 256
+        || relative
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || path.bytes().any(|b| b.is_ascii_control())
+    {
+        return Err(format!("{path:?} is not a place inside a staged root"));
+    }
+    Ok(PathBuf::from(relative))
+}
+
+impl LinuxPlatform {
+    /// Mount the staged partition `guid` (read-only when asked) long enough to
+    /// place or read a file inside it, in the adapter's own private directory,
+    /// which its `Drop` removes.
+    fn with_staging_mount<T>(
+        &self,
+        disk: &Disk,
+        guid: &str,
+        read_only: bool,
+        body: impl FnOnce(&Path) -> IoResult<T>,
+    ) -> IoResult<T> {
+        let partition = disk
+            .partitions
+            .iter()
+            .find(|p| super::same_guid(&p.guid, guid))
+            .cloned()
+            .ok_or_else(|| format!("no partition {guid}"))?;
+        let node = self.partition_node(guid, partition.number)?;
+        std::fs::create_dir_all(&self.private_nodes).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&self.private_nodes, PermissionsExt::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+        let dir = self
+            .private_nodes
+            .join(format!("mount-{}", guid.to_ascii_lowercase()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let options = if read_only {
+            "ro,nosuid,nodev,noexec"
+        } else {
+            "rw,nosuid,nodev"
+        };
+        let mounted = Command::new("mount")
+            .args(["-o", options])
+            .arg(&node)
+            .arg(&dir)
+            .output();
+        let mounted = match mounted {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+            Err(error) => Err(error.to_string()),
+        };
+        if let Err(error) = mounted {
+            let _ = std::fs::remove_dir(&dir);
+            return Err(format!(
+                "the staged root cannot be mounted to place its enrollment token: {error}"
+            ));
+        }
+        let outcome = body(&dir);
+        let unmounted = Command::new("umount")
+            .arg(&dir)
+            .output()
+            .map_err(|e| e.to_string())
+            .and_then(|output| {
+                output
+                    .status
+                    .success()
+                    .then_some(())
+                    .ok_or_else(|| String::from_utf8_lossy(&output.stderr).trim().to_owned())
+            });
+        let _ = std::fs::remove_dir(&dir);
+        match (outcome, unmounted) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(format!("the staged root did not unmount: {error}")),
+            (Ok(value), Ok(_)) => Ok(value),
+        }
+    }
+}
+
 impl Platform for LinuxPlatform {
     fn system_disk(&self) -> IoResult<Disk> {
         let size = self.size_bytes()?;
@@ -517,6 +601,56 @@ impl Platform for LinuxPlatform {
         file.write_all_at(buf.bytes()?, offset)
             .map_err(|e| format!("write {partition_guid}: {e}"))?;
         file.sync_data().map_err(|e| e.to_string())
+    }
+
+    fn write_staging_file(
+        &mut self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+        contents: &[u8],
+        mode: u32,
+    ) -> IoResult<()> {
+        let relative = staging_file_path(path)?;
+        self.with_staging_mount(disk, partition_guid, false, |dir| {
+            let file_path = dir.join(&relative);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let mut options = OpenOptions::new();
+            options.write(true).create(true).truncate(true).mode(mode);
+            let mut file = options
+                .open(&file_path)
+                .map_err(|e| format!("{}: {e}", file_path.display()))?;
+            file.write_all(contents).map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            std::fs::set_permissions(&file_path, PermissionsExt::from_mode(mode))
+                .map_err(|e| e.to_string())?;
+            if let Some(parent) = file_path.parent() {
+                File::open(parent)
+                    .and_then(|dir| dir.sync_all())
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
+    }
+
+    fn read_staging_file(
+        &self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+    ) -> IoResult<Option<Vec<u8>>> {
+        let relative = staging_file_path(path)?;
+        self.with_staging_mount(disk, partition_guid, true, |dir| {
+            let file_path = dir.join(&relative);
+            match std::fs::read(&file_path) {
+                Ok(bytes) if bytes.len() <= 64 * 1024 => Ok(Some(bytes)),
+                Ok(_) => Err("the staged root's enrollment token is unexpectedly large".into()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(format!("{}: {error}", file_path.display())),
+            }
+        })
     }
 
     fn read_partition(

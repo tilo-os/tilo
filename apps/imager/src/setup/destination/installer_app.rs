@@ -500,6 +500,11 @@ pub struct InstallerApp {
     wifi_password: Arc<Mutex<String>>,
     hostname: ui::LocalState<String>,
     purpose: String,
+    /// The plan's unlock choice (`owner-device`, `tpm` or `passphrase`);
+    /// empty when no plan decided it, which leaves the image's default.
+    unlock: String,
+    /// A complete plan stands in for the person's confirmation.
+    install_plan: bool,
     device_label: String,
     prepared_setup: Option<install_profile_model::PreparedSetupExpectation>,
     tpm_handoff: Option<String>,
@@ -679,6 +684,8 @@ impl InstallerApp {
             locale: ui::LocalState::new("en_US.UTF-8".to_string()),
             timezone: ui::LocalState::new(DEFAULT_TIMEZONE.to_string()),
             purpose: install_profile_model::default_purpose(),
+            unlock: String::new(),
+            install_plan: false,
             device_label: String::new(),
             prepared_setup: None,
             tpm_handoff: None,
@@ -716,6 +723,68 @@ impl InstallerApp {
 
     pub fn step(&self) -> Step {
         self.step
+    }
+
+    /// Make this staged installation the one `plan` decides: the server
+    /// destination, the machine's name, how it unlocks, and no person needed
+    /// to confirm what the plan already answered. The disk is the one the
+    /// staged handoff bound; a plan that names another disk is refused.
+    pub(crate) fn apply_install_plan(
+        &mut self,
+        plan: &install_profile_model::plan::Plan,
+    ) -> Result<(), String> {
+        if plan.destination != SERVER_PURPOSE {
+            return Err("Only a Tilo Server installs from a plan with nobody at its screen".into());
+        }
+        if !plan.complete() {
+            return Err(format!(
+                "The plan still leaves {} open for one of your devices to answer",
+                plan.open_choices().join(", ")
+            ));
+        }
+        if plan.unlock == "passphrase" {
+            return Err(
+                "A plan installs with nobody at the screen, so it cannot unlock by a \
+                 passphrase only its owner knows; plan it with another of your devices, or \
+                 with the machine's hardware protection"
+                    .into(),
+            );
+        }
+        let disk = self
+            .selected_disk_ref()
+            .filter(|disk| self.internal_handoff.is_some() && disk.internal_plan.is_some())
+            .ok_or(
+                "The installer is not running from a staged installation this machine still \
+                 matches; restart into your existing system and stage it again",
+            )?;
+        // A serial or WWN is spelled by whatever read it: strip the prefixes
+        // the kernel's identity links add before comparing.
+        let same = |have: &str, want: &str| {
+            let plain = |value: &str| {
+                let value = value.trim().to_ascii_lowercase();
+                let value = value.strip_prefix("0x").unwrap_or(&value);
+                let value = value.strip_prefix("eui.").unwrap_or(value);
+                value.strip_prefix("wwn-").unwrap_or(value).to_owned()
+            };
+            plain(have) == plain(want)
+        };
+        let named = match plan.disk.kind.as_str() {
+            "serial" => same(&disk.serial, &plan.disk.identity),
+            "wwid" => same(&disk.wwn, &plan.disk.identity),
+            _ => false,
+        };
+        if !named {
+            return Err(format!(
+                "The plan names {} but the staged installation is on {}",
+                plan.disk.encode(),
+                disk.name
+            ));
+        }
+        SERVER_PURPOSE.clone_into(&mut self.purpose);
+        self.hostname = ui::LocalState::new(plan.name.clone());
+        self.unlock.clone_from(&plan.unlock);
+        self.install_plan = true;
+        Ok(())
     }
 
     pub(crate) fn for_unattended() -> Self {
@@ -1218,8 +1287,8 @@ impl InstallerApp {
             disk_major_minor: disk.map_or_else(String::new, |disk| disk.major_minor.clone()),
             disk_wwn: disk.map_or_else(String::new, |disk| disk.wwn.clone()),
             disk_serial: disk.map_or_else(String::new, |disk| disk.serial.clone()),
-            // The interactive install leaves disk unlock to the image's own default.
-            unlock: String::new(),
+            unlock: self.unlock.clone(),
+            install_plan: self.install_plan,
             alongside_root: root.map_or_else(String::new, |partition| partition.name.clone()),
             alongside_root_partuuid: root
                 .map_or_else(String::new, |partition| partition.part_uuid.clone()),

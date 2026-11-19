@@ -544,6 +544,8 @@ fn stage_request(
         profile: intent.profile,
         prepared_setup: intent.prepared_setup,
         migration,
+        install_plan: None,
+        token_file: None,
     })
 }
 
@@ -1123,6 +1125,8 @@ impl InternalInstall {
             profile: serde_json::Map::new(),
             prepared_setup: None,
             migration: None,
+            install_plan: None,
+            token_file: None,
         };
         self.link.set_state(RunState::Running {
             action,

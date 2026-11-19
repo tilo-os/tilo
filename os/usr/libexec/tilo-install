@@ -38,6 +38,15 @@
 #                                     boot TPM2 policy. An explicit unattended
 #                                     choice must not silently become a TPM
 #                                     keyslot instead.
+#     --install-plan                  a complete install plan stands in for the
+#                                     person's confirmation: the machine installs
+#                                     with nobody at its screen. Requires
+#                                     --purpose server and --internal-handoff;
+#                                     the staged single-use enrollment token is
+#                                     carried into the installed system, where
+#                                     its first boot spends it. The plan's disk
+#                                     rule was checked when the installer was
+#                                     staged, and again before this runs.
 #     --unlock <choice>               how the machine is planned to unlock after
 #                                     a boot: owner-device, tpm or passphrase
 #                                     (empty = the image's own default). A
@@ -379,6 +388,7 @@ WANT_PIN=0           # --pin is mandatory; secret arrives on stdin line 2.
 PASSWORD_IS_HASH=0   # --password-hash: stdin line 1 is already a SHA-512 crypt hash.
 FORCE_PASSPHRASE=0   # --startup-passphrase-only: never enrol the TPM2 PIN policy.
 UNLOCK_MODE=""       # --unlock: the plan's owner-device | tpm | passphrase, empty for the image's default.
+INSTALL_PLAN=0       # --install-plan: a complete server plan installs with no person at the screen.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 EXTENSIONS=""        # --extension ID → seed that extension's opt-in for first boot
 ALONGSIDE=0
@@ -440,6 +450,7 @@ while [ $# -gt 0 ]; do
     --password-hash) PASSWORD_IS_HASH=1; shift ;;
     --startup-passphrase-only) FORCE_PASSPHRASE=1; shift ;;
     --unlock) UNLOCK_MODE="${2:-}"; shift 2 ;;
+    --install-plan) INSTALL_PLAN=1; shift ;;
     --fido2) WANT_FIDO2=1; shift ;;
     --extension)
       case "${2:-}" in
@@ -510,6 +521,13 @@ case "$UNLOCK_MODE" in
   ''|owner-device|tpm|passphrase) ;;
   *) die "--unlock must be owner-device, tpm or passphrase, not '$UNLOCK_MODE'" ;;
 esac
+
+if [ "$INSTALL_PLAN" -eq 1 ]; then
+  [ "$PURPOSE_VAL" = server ] \
+    || die "--install-plan installs a Tilo Server, not '$PURPOSE_VAL'"
+  [ -n "$INTERNAL_HANDOFF" ] \
+    || die "--install-plan requires --internal-handoff: the plan is staged with the installer it installs"
+fi
 
 [ -n "$DISK" ] || die "missing --disk <device>"
 case "$EXPECT_DISK_SIZE_BYTES" in
@@ -875,6 +893,8 @@ if [ "$TARGET_MAJ_MIN" = "$LIVE_MAJ_MIN" ]; then
 elif [ -n "$INTERNAL_HANDOFF" ]; then
   die "--internal-handoff requires the disk that holds the staged installer"
 fi
+[ "$INSTALL_PLAN" -eq 0 ] || [ "$INTERNAL_MODE" -eq 1 ] \
+  || die "--install-plan requires the staged installation its plan was made for"
 
 validate_alongside() {
   local root_parent boot_parent efi_parent root_type boot_type efi_type efi_fs mountpoints signature_types tool
@@ -2328,6 +2348,22 @@ if [ -f "$PREPARED_SETUP_RUN/other-device.json" ] && [ ! -L "$PREPARED_SETUP_RUN
   rm -rf "$other_ownership"
 fi
 
+# A plan's machine installs with nobody at its screen and enrolls on its first
+# start; the single-use token travels inside the encrypted root, owner-only,
+# and never into this live medium's logs or arguments.
+if [ "$INSTALL_PLAN" -eq 1 ]; then
+  [ -f /etc/tilo/enrollment-token.txt ] \
+    || die "the staged plan carried no enrollment token"
+  [ -n "$DEPLOY_ETC" ] && [ -d "$DEPLOY_ETC/tilo" ] \
+    || die "the installed system's /etc was not found for the enrollment token"
+  install -m 0600 /etc/tilo/enrollment-token.txt \
+    "$DEPLOY_ETC/tilo/enrollment-token.txt" \
+    || die "could not carry the enrollment token into the installed system"
+  label_installed_tilo_path "$DEPLOY_ETC/tilo/enrollment-token.txt" \
+    /etc/tilo/enrollment-token.txt
+  rm -f /etc/tilo/enrollment-token.txt
+  log "  the machine enrolls with the plan's token when it first starts"
+fi
 sync
 if [ "$ENCRYPT" -eq 1 ]; then
   # Drops the throwaway install key slot (only once another factor exists),

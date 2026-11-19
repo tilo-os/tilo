@@ -41,7 +41,23 @@ pub struct Request {
     pub migration: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_setup: Option<super::prepared_setup::PreparedArtifact>,
+    /// The install plan a machine with every choice made installs without a
+    /// person at its screen. Secret-free, like every plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_plan: Option<install_profile_model::plan::Plan>,
+    /// Where the caller keeps the single-use enrollment token the plan spends.
+    /// A path, never the token: the helper copies it, owner-only, onto the
+    /// staging root and never into the ESP, the handoff, the staging journal or
+    /// a log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_file: Option<String>,
 }
+
+/// Where a staged plan's machine finds its single-use enrollment token in the
+/// live installer's own filesystem, owner-only.
+pub const STAGED_TOKEN_PATH: &str = "/etc/tilo/enrollment-token.txt";
+/// A token longer than this is not one the enrollment issues.
+const MAX_TOKEN_BYTES: u64 = 16 * 1024;
 
 pub use imager_backend::staging::protocol::{Outcome, Progress, Refusal, codes};
 
@@ -216,9 +232,93 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
             }
         }
     }
+    match (&request.install_plan, &request.token_file) {
+        (None, None) => {}
+        (Some(plan), Some(token_file)) => {
+            if !plan.complete() {
+                return bad("a staged plan must answer every choice to install unattended");
+            }
+            if plan.destination != "tilo-server" {
+                return bad("only a Tilo Server installs from a staged plan without a person");
+            }
+            if !token_file.starts_with('/') || token_file.len() > 4096 {
+                return bad("the enrollment token is given as an absolute file path");
+            }
+            if !install_profile_model::plan::IDENTIFIED_RULES.contains(&plan.disk.kind.as_str()) {
+                return bad("a staged plan names its disk by its serial or its WWN");
+            }
+            let staging_disk = &request.plan.basis.disk;
+            if !rule_names_disk(&plan.disk, staging_disk).map_err(|m| {
+                Refusal::new(codes::REQUEST_INVALID, format!("the plan's disk: {m}"))
+            })? {
+                return Err(Refusal::new(
+                    codes::PLAN_DISK_MISMATCH,
+                    format!(
+                        "the plan names {} but the staging disk is {}",
+                        plan.disk.encode(),
+                        staging_disk.id
+                    ),
+                ));
+            }
+        }
+        _ => return bad("a staged plan and its enrollment token are given together"),
+    }
     handoff::validate_profile(&request.profile)
         .map_err(|m| Refusal::new(codes::REQUEST_INVALID, m))?;
     Ok(())
+}
+
+/// Whether `rule` names a disk that carries one of `identities`, which are
+/// the hardware identities the kernel keeps for it (`/dev/disk/by-id` names).
+/// A rule that names no drive never matches: the machine installs onto the
+/// drive its plan named, not one this staging happened to pick.
+pub(crate) fn rule_names(
+    rule: &install_profile_model::plan::DiskRule,
+    identities: &[String],
+) -> bool {
+    if !install_profile_model::plan::IDENTIFIED_RULES.contains(&rule.kind.as_str()) {
+        return false;
+    }
+    let identity = rule.identity.to_ascii_lowercase();
+    let identity = identity.strip_prefix("0x").unwrap_or(&identity).to_owned();
+    identities.iter().any(|identity_in_disk| {
+        let name = identity_in_disk.to_ascii_lowercase();
+        let name = name
+            .strip_prefix("wwn-0x")
+            .map_or_else(|| name.as_str(), |stripped| stripped);
+        name == identity
+            || name.ends_with(&format!("-{identity}"))
+            || name.ends_with(&format!("_{identity}"))
+    })
+}
+
+/// The hardware identities the kernel keeps for `disk`.
+///
+/// # Errors
+///
+/// The disk node or the kernel's identity links cannot be read.
+fn disk_identities(disk: &Disk) -> Result<Vec<String>, String> {
+    let target = std::fs::canonicalize(&disk.id).map_err(|e| format!("{}: {e}", disk.id))?;
+    let entries =
+        std::fs::read_dir("/dev/disk/by-id").map_err(|e| format!("/dev/disk/by-id: {e}"))?;
+    Ok(entries
+        .filter_map(Result::ok)
+        .filter(|entry| std::fs::canonicalize(entry.path()).is_ok_and(|path| path == target))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect())
+}
+
+/// Whether `rule` names the disk `disk`, by the identities the kernel keeps
+/// for it.
+///
+/// # Errors
+///
+/// The disk's hardware identities cannot be read.
+fn rule_names_disk(
+    rule: &install_profile_model::plan::DiskRule,
+    disk: &Disk,
+) -> Result<bool, String> {
+    Ok(rule_names(rule, &disk_identities(disk)?))
 }
 
 pub use imager_backend::firmware::read_firmware;
@@ -273,6 +373,14 @@ pub fn execute(
     progress: &mut dyn FnMut(&Progress),
 ) -> Result<(), Refusal> {
     validate_request(request)?;
+    if request.action == Action::Stage && request.token_file.is_some() {
+        // Refuse a token nobody could place before any disk is touched.
+        imager_backend::staging::request_io::read_secret_input(
+            Path::new(request.token_file.as_deref().expect("checked above")),
+            MAX_TOKEN_BYTES,
+        )
+        .map_err(|m| Refusal::new(codes::REQUEST_INVALID, m))?;
+    }
     let mut engine = Engine {
         platform,
         store,
@@ -1719,6 +1827,7 @@ impl Engine<'_> {
             &root.guid,
             &efi::format_boot_number(number),
             self.record().original_firmware.boot_order.clone(),
+            self.request.install_plan.clone(),
             self.record().profile.clone(),
         );
         handoff.migration = self
@@ -1856,6 +1965,7 @@ impl Engine<'_> {
             "00000000-0000-4000-8000-000000000002",
             "FFFF",
             self.record().original_firmware.boot_order.clone(),
+            None,
             self.record().profile.clone(),
         );
         handoff.migration = self
@@ -1902,6 +2012,20 @@ impl Engine<'_> {
         Ok(out)
     }
 
+    /// The single-use token the plan's machine spends, read from the file the
+    /// request names: never from the handoff, and never into a log.
+    fn staged_token(&self) -> Result<Option<zeroize::Zeroizing<Vec<u8>>>, Refusal> {
+        let Some(path) = &self.request.token_file else {
+            return Ok(None);
+        };
+        let bytes = imager_backend::staging::request_io::read_secret_input(
+            Path::new(path),
+            MAX_TOKEN_BYTES,
+        )
+        .map_err(|m| Refusal::new(codes::REQUEST_INVALID, m))?;
+        Ok(Some(zeroize::Zeroizing::new(bytes)))
+    }
+
     fn check_handoff(&mut self) -> Result<Actual, Refusal> {
         let Some(number) = self
             .record()
@@ -1919,16 +2043,25 @@ impl Engine<'_> {
         }
         let ranges = self.placeholders(&disk, &esp.guid)?.handoff;
         let expected = self.handoff_bytes(number, fat::ranges_len(&ranges))?;
-        Ok(
-            if self.read_ranges(&disk, &esp.guid, &ranges)? == expected {
-                Actual::Done(detail(&[(
-                    "boot_number",
-                    efi::format_boot_number(number).into(),
-                )]))
-            } else {
-                Actual::Absent
-            },
-        )
+        if self.read_ranges(&disk, &esp.guid, &ranges)? != expected {
+            return Ok(Actual::Absent);
+        }
+        if let Some(token) = self.staged_token()? {
+            // A resumed staging whose token is missing installs everything
+            // but never enrolls: the handoff is complete only with it.
+            let (_, root) = self.require_staged(Which::Root)?;
+            let placed = self
+                .platform
+                .read_staging_file(&disk, &root.guid, STAGED_TOKEN_PATH)
+                .map_err(io_refusal)?;
+            if placed.as_deref() != Some(&token[..]) {
+                return Ok(Actual::Absent);
+            }
+        }
+        Ok(Actual::Done(detail(&[(
+            "boot_number",
+            efi::format_boot_number(number).into(),
+        )])))
     }
 
     fn apply_handoff(&mut self) -> Result<(), Refusal> {
@@ -1941,6 +2074,12 @@ impl Engine<'_> {
         let bytes = self.handoff_bytes(number, fat::ranges_len(&ranges))?;
         self.write_ranges(&disk, &esp.guid, &ranges, &bytes)?;
         self.write_record_copy()?;
+        if let Some(token) = self.staged_token()? {
+            let (disk, root) = self.require_staged(Which::Root)?;
+            self.platform
+                .write_staging_file(&disk, &root.guid, STAGED_TOKEN_PATH, &token, 0o600)
+                .map_err(io_refusal)?;
+        }
         self.platform.sync_disk(&disk).map_err(io_refusal)
     }
 

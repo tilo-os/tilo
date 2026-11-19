@@ -161,6 +161,10 @@ pub struct InstallOptions {
     pub fido2: bool,
     /// Staged (USB-free) installs only: the validated handoff copy names the installer's disk.
     pub internal_handoff: String,
+    /// A complete install plan stands in for the person's confirmation: the
+    /// machine installs with nobody at its screen, and the staged enrollment
+    /// token is carried into the installed system for its first boot.
+    pub install_plan: bool,
     /// Install the media codecs extension, which downloads the formats from their publishers.
     pub codecs: bool,
     /// Never serialized into a prepared profile.
@@ -223,6 +227,7 @@ impl Default for InstallOptions {
             pin: Zeroizing::new(String::new()),
             fido2: false,
             internal_handoff: String::new(),
+            install_plan: false,
             codecs: false,
             online_accounts: None,
             account_operation: String::new(),
@@ -329,6 +334,9 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     }
     if !opts.unlock.is_empty() {
         cmd.arg("--unlock").arg(&opts.unlock);
+    }
+    if opts.install_plan {
+        cmd.arg("--install-plan");
     }
     if !opts.locale.trim().is_empty() {
         cmd.arg("--locale").arg(opts.locale.trim());

@@ -16,6 +16,7 @@ use crate::setup::destination::{InstallState, Step};
 use imager_backend::destination::disks::Disk;
 use imager_backend::destination::private_io;
 use imager_backend::destination::probes::{ProtectionReport, SystemProtection};
+use install_profile_model::plan::Plan;
 
 pub const SCHEMA: u32 = 1;
 
@@ -161,6 +162,175 @@ impl Invocation {
             }
         }
     }
+}
+
+/// Where a plan-driven install writes the one-time recovery key: root-only,
+/// beside the handoff it installs from, until the owner has it.
+pub fn plan_recovery_key_path() -> std::path::PathBuf {
+    std::path::Path::new(imager_backend::destination::internal_handoff::HANDOFF_PATH)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("recovery-key")
+}
+
+/// The staged install a carried plan decides: the same wizard, driven by the
+/// plan the Imager staged, with no person and no recipe file.
+pub struct PlannedInvocation {
+    plan: Plan,
+}
+
+impl PlannedInvocation {
+    /// The complete plan the live installer's own staging handoff carries, if
+    /// it carries one. A manual installation carries none and shows the
+    /// wizard, which reports a handoff that does not read.
+    pub fn find() -> Option<Self> {
+        imager_backend::destination::internal_handoff::load()
+            .ok()
+            .flatten()
+            .and_then(|handoff| handoff.plan)
+            .map(|plan| Self { plan })
+    }
+
+    /// Install `plan` without asking: the plan stands in for the person's
+    /// confirmation.
+    ///
+    /// # Errors
+    ///
+    /// The console cannot be served, or an install step refused; the wizard
+    /// then stays available on its console so a person can finish it.
+    pub fn install(self) -> Result<(), Box<dyn std::error::Error>> {
+        let console = start_console(
+            crate::setup::destination::effects::PROVIDER,
+            imager_backend::destination::console::Endpoint::discover(
+                crate::setup::destination::effects::PROVIDER,
+            ),
+            private_io::stderr_is_terminal(),
+            None,
+        )
+        .map_err(io::Error::other)?;
+        let mut app = InstallerApp::new().with_console(console.server.clone());
+        app.enable_unattended_mode();
+        if let Err(error) = app.apply_install_plan(&self.plan) {
+            return stay_with_error(&mut app, &console, &error);
+        }
+        let mut sink = match RecoveryDestination::File(plan_recovery_key_path()).open() {
+            Ok(sink) => sink,
+            Err(error) => return stay_with_error(&mut app, &console, &error),
+        };
+        match execute_plan(&mut app, &self.plan, &mut sink) {
+            Ok(()) => {
+                eprintln!(
+                    "Unattended installation finished. The recovery key is beside the handoff."
+                );
+                Ok(())
+            }
+            Err(error) => stay_with_error(&mut app, &console, &error),
+        }
+    }
+}
+
+/// The install, with every step the plan already answered.
+fn execute_plan(
+    app: &mut InstallerApp,
+    plan: &Plan,
+    sink: &mut RecoverySink,
+) -> Result<(), String> {
+    drive_plan(app, plan)?;
+    if app.install_state() != InstallState::Done {
+        let tail = app
+            .console_state()
+            .pointer("/install/log_tail")
+            .and_then(Value::as_array)
+            .and_then(|lines| lines.last())
+            .and_then(Value::as_str)
+            .unwrap_or("the privileged helper did not report success")
+            .to_owned();
+        return Err(format!("The installation failed: {tail}"));
+    }
+    let key = app
+        .recovery_key()
+        .ok_or("The installed system reported success without a recovery key")?
+        .to_owned();
+    sink.write(&key)?;
+    drop(Zeroizing::new(key));
+    invoke(
+        app,
+        "confirm-recovery-saved@installer",
+        serde_json::json!({"saved": true}),
+    )?;
+    invoke(app, "reboot@installer", serde_json::json!({}))?;
+    Ok(())
+}
+
+fn drive_plan(app: &mut InstallerApp, plan: &Plan) -> Result<(), String> {
+    for _ in 0..32 {
+        let step = app.step();
+        match step {
+            // The plan decides these; the machine's own connection is what
+            // the install and its first start use.
+            Step::Keyboard | Step::Network | Step::Disk | Step::Media => advance(app, step)?,
+            Step::Accounts => {
+                invoke(app, "continue-offline@installer", serde_json::json!({}))?;
+                if app.step() == step {
+                    return Err(step_error(app, step));
+                }
+            }
+            Step::Account => {
+                // A server's one secret opens its disk; it is generated here
+                // and never kept once the volume holds it. The ways in that
+                // outlive this meeting are the owner's devices and the
+                // recovery key.
+                let secret = plan_startup_secret();
+                invoke(
+                    app,
+                    "set-disk-passphrase@installer",
+                    serde_json::json!({
+                        "passphrase": secret,
+                        "confirmation": secret,
+                        "mode": "passphrase",
+                    }),
+                )?;
+                advance(app, step)?;
+            }
+            Step::Options => {
+                invoke(
+                    app,
+                    "set-hostname@installer",
+                    serde_json::json!({"hostname": plan.name}),
+                )?;
+                advance(app, step)?;
+            }
+            Step::Review => {
+                invoke(
+                    app,
+                    "set-recovery-promise@installer",
+                    serde_json::json!({"acknowledged": true}),
+                )?;
+                let target = app
+                    .console_state()
+                    .pointer("/storage/confirmation_target")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .ok_or_else(|| "The installer names no reviewed target".to_string())?;
+                invoke(
+                    app,
+                    "begin@installer.review",
+                    serde_json::json!({"confirmation_phrase": target}),
+                )?;
+                return Ok(());
+            }
+            Step::Install => {
+                return Err("The installer reached Install before Review could be approved".into());
+            }
+        }
+    }
+    Err("The installer did not reach Review after 32 reviewed actions".into())
+}
+
+/// A strong startup secret nobody needs to remember: the volume's ways in that
+/// outlive this boot are the owner's devices and the recovery key.
+fn plan_startup_secret() -> String {
+    format!("{}-{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
 }
 
 fn next_value(words: &[OsString], index: &mut usize, flag: &str) -> Result<OsString, String> {

@@ -636,6 +636,20 @@ else
   bad "a durable-identity service has an incorrect live-installer check"
 fi
 
+# A complete plan installs with nobody at its screen, only as a staged server,
+# and carries its single-use token into the installed system rather than a log.
+if grep -Fq -- '--install-plan) INSTALL_PLAN=1' "$backend" \
+   && grep -Fq 'the staged plan carried no enrollment token' "$backend" \
+   && grep -Fq 'label_installed_tilo_path "$DEPLOY_ETC/tilo/enrollment-token.txt"' "$backend" \
+   && grep -Fq 'only a Tilo Server installs from a staged plan without a person' \
+      "$repo_root/apps/imager/src/setup/staging/helper.rs" \
+   && grep -Fq 'pub install_plan: bool' \
+      "$repo_root/crates/platform/imager-backend/src/destination/install.rs"; then
+  ok "a staged plan installs a server unattended and keeps its token private"
+else
+  bad "a staged plan can install with a person, without one, or with its token exposed"
+fi
+
 # The server destination installs the server image with no login account: the
 # image decides, and neither the credential seed nor the one-boot session
 # handoff can be written for it. First boot refuses a seed on a server image.

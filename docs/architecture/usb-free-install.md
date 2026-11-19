@@ -206,6 +206,31 @@ Partition GUIDs are generated at plan time, so identities are known before
 creation. They are recorded before the mutation, and creation is idempotent
 under resume.
 
+### A complete plan: no person at the screen
+
+The request may carry `install_plan` (the machine's plan document, the same one
+the person's devices hold) and `token_file` (where the caller keeps the
+single-use enrollment token). Both are given together or neither is. The plan
+must be complete and a `tilo-server` destination, and its disk rule must name
+the staging disk (by serial or WWN); a rule that names no drive is refused,
+because the staged install writes the disk the plan names and the staging was
+made on, and nothing else. The staging request and the installer each check
+this for themselves.
+
+The handoff carries the plan, which is secret-free like every plan. The token
+is not in it: the elevated helper copies the token to
+`/etc/tilo/enrollment-token.txt` on the staging root, mode 0600, as part of the
+handoff step (a resumed staging verifies it), and the live installer carries
+it into the installed system's `/etc/tilo` for the machine's first start. It
+never appears in the handoff, the staging journal, a progress line or a command
+argument.
+
+With a complete plan the live installer installs unattended: the plan answers
+the account and confirmation steps, names the machine and its unlock choice,
+and the startup secret it needs is generated and never stored. A passphrase
+plan is refused: a machine with nobody at its screen cannot unlock by a
+passphrase only its owner knows.
+
 ### Host transaction record
 
 - Windows: `%ProgramData%\Tilo\staging\<operation_id>.json`, with the ACL
