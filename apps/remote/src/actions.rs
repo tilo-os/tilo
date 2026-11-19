@@ -3,13 +3,29 @@
 //! input stream and credential auth touch no document, and a credential lives in this
 //! device's secret store. What screen shows, the selection and the draft are per-peer.
 
-use tilo_actions::ActionSpec;
-use ui::framework::LiveRow;
-use ui::tilo_resource::{self, AbsolutePath, Effect};
+use ui::framework::{EffectStatus, LiveRow};
+use ui::tilo_resource::{self, AbsolutePath, Effect, RowBindings};
 
 use crate::model::{Connection, ConnectionId, ConnectionKind};
 use crate::resource::CATALOG;
 use ui::i18n::ArgValue;
+
+/// A saved connection, as Remote publishes it: a row of the `remote.connection`
+/// type, its effects bound to the connection's id.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "remote.connection",
+    label = "Connection",
+    effects = RemoteEffect
+)]
+pub struct ConnectionRow;
+
+/// The open session, as Remote publishes it: a row of the `remote.session`
+/// type, its effects bound to the connection and, on a first contact, to the
+/// host key it observed.
+#[derive(tilo_resource::Row)]
+#[row(kind = "remote.session", label = "Session", effects = RemoteEffect)]
+pub struct SessionRow;
 
 /// What Remote does beyond editing the saved connections: showing them, opening and closing
 /// sessions, typing into one, and this device's SSH host-key decisions.
@@ -20,18 +36,27 @@ pub enum RemoteEffect {
     ShowConnections,
     #[effect(view, label = "remote-new-connection")]
     New,
-    #[effect(view, row)]
+    #[effect(view, row, on = ConnectionRow)]
     EditConnection {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
-    #[effect(row, job, privileged, kind = "read", label = "remote-connect-confirm")]
+    #[effect(
+        row,
+        job,
+        privileged,
+        kind = "read",
+        label = "remote-connect-confirm",
+        on = ConnectionRow,
+        tag = "network",
+        tag = "session"
+    )]
     Connect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
     #[effect(kind = "outside")]
-    #[effect(row, idempotent, label = "remote-disconnect")]
+    #[effect(row, idempotent, label = "remote-disconnect", on = SessionRow, tag = "network", tag = "session")]
     Disconnect {
         #[param("The saved connection's id")]
         connection: ConnectionId,
@@ -45,7 +70,15 @@ pub enum RemoteEffect {
         text: String,
     },
     #[effect(kind = "outside")]
-    #[effect(row, job, privileged)]
+    #[effect(
+        row,
+        job,
+        privileged,
+        on = SessionRow,
+        tag = "network",
+        tag = "session",
+        tag = "files"
+    )]
     PutFile {
         #[param("The saved connection whose SSH session receives it")]
         connection: ConnectionId,
@@ -55,7 +88,15 @@ pub enum RemoteEffect {
         remote_path: String,
     },
     #[effect(kind = "outside")]
-    #[effect(row, job, privileged)]
+    #[effect(
+        row,
+        job,
+        privileged,
+        on = SessionRow,
+        tag = "network",
+        tag = "session",
+        tag = "files"
+    )]
     FetchFile {
         #[param("The saved connection whose SSH session reads it")]
         connection: ConnectionId,
@@ -66,7 +107,15 @@ pub enum RemoteEffect {
     },
     /// Trust SSH host key.
     #[effect(kind = "outside")]
-    #[effect(row, job, privileged)]
+    #[effect(
+        row,
+        job,
+        privileged,
+        on = SessionRow,
+        tag = "ssh",
+        tag = "host-key",
+        tag = "device-private"
+    )]
     TrustHostKey {
         #[param("The saved connection's id")]
         connection: ConnectionId,
@@ -75,140 +124,176 @@ pub enum RemoteEffect {
     },
     /// Forget SSH host key.
     #[effect(kind = "outside")]
-    #[effect(row, job, destructive)]
+    #[effect(
+        row,
+        job,
+        destructive,
+        on = SessionRow,
+        tag = "ssh",
+        tag = "host-key",
+        tag = "device-private"
+    )]
     ForgetHostKey {
         #[param("The saved connection's id")]
         connection: ConnectionId,
     },
 }
 
-pub(crate) fn open_spec(id: ConnectionId) -> ActionSpec {
-    RemoteEffect::EditConnection { connection: id }.bound()
-}
-
-pub(crate) fn connect_spec(connection: &Connection) -> ActionSpec {
+/// What a saved connection's `connect` says of itself on the row `id`: what
+/// opening it would do, and why it cannot be opened when this device's
+/// profile or transport says so.
+pub(crate) fn connect_status(connection: &Connection, id: &str) -> EffectStatus {
     let readiness = crate::session::connection_readiness(connection);
-    let mut spec = RemoteEffect::Connect {
-        connection: connection.id,
-    }
-    .bound()
-    .with_description(CATALOG.t_args(
+    let description = CATALOG.t_args(
         "remote-action-open-session",
         &[(
             "detail",
             ArgValue::Text(CATALOG.t(readiness.detail_message(connection.kind))),
         )],
-    ));
-    spec.type_mut().contract.tags = vec!["network".into(), "session".into()];
+    );
     if readiness.can_connect() {
-        spec
-    } else {
-        spec.unavailable(
-            readiness.code(),
-            if readiness == crate::session::TransportReadiness::InvalidProfile {
-                CATALOG.t(connection
-                    .profile_issue()
-                    .unwrap_or_else(|| readiness.detail_message(connection.kind)))
-            } else {
-                CATALOG.t(readiness.detail_message(connection.kind))
-            },
-        )
+        return EffectStatus::described(RemoteEffect::CONNECT, description).on(id);
     }
+    EffectStatus::unavailable(
+        RemoteEffect::CONNECT,
+        readiness.code(),
+        if readiness == crate::session::TransportReadiness::InvalidProfile {
+            CATALOG.t(connection
+                .profile_issue()
+                .unwrap_or_else(|| readiness.detail_message(connection.kind)))
+        } else {
+            CATALOG.t(readiness.detail_message(connection.kind))
+        },
+    )
+    .on(id)
+    .with_description(description)
 }
 
-/// A host-key decision stays on this device.
-const HOST_KEY_TAGS: &[&str] = &["ssh", "host-key", "device-private"];
-
-fn tagged(mut spec: ActionSpec, tags: &[&str]) -> ActionSpec {
-    spec.type_mut().contract.tags = tags.iter().map(|tag| (*tag).to_string()).collect();
-    spec
+/// What the session row `id`'s effects say of themselves right now: files
+/// move over an SSH shell only, and a host-key decision says what it decides
+/// on while the key it decides on is the one this session observed.
+pub(crate) fn session_status(
+    connection: &Connection,
+    host_key_issue: Option<&crate::ssh::HostKeyIssue>,
+    id: &str,
+) -> Vec<EffectStatus> {
+    let mut statuses = Vec::new();
+    if connection.kind == ConnectionKind::Ssh {
+        statuses.push(
+            EffectStatus::described(
+                RemoteEffect::PUT_FILE,
+                CATALOG.t("remote-describe-put-file"),
+            )
+            .on(id),
+        );
+        statuses.push(
+            EffectStatus::described(
+                RemoteEffect::FETCH_FILE,
+                CATALOG.t("remote-describe-fetch-file"),
+            )
+            .on(id),
+        );
+    }
+    match host_key_issue {
+        Some(crate::ssh::HostKeyIssue::FirstContact { observed }) => statuses.push(
+            EffectStatus::described(
+                RemoteEffect::TRUST_HOST_KEY,
+                CATALOG.t_args(
+                    "remote-action-trust-host-key",
+                    &[
+                        ("algorithm", ArgValue::Text(observed.algorithm.clone())),
+                        ("fingerprint", ArgValue::Text(observed.fingerprint.clone())),
+                    ],
+                ),
+            )
+            .on(id),
+        ),
+        Some(crate::ssh::HostKeyIssue::Changed { .. }) => statuses.push(
+            EffectStatus::described(
+                RemoteEffect::FORGET_HOST_KEY,
+                CATALOG.t("remote-describe-forget-host-key"),
+            )
+            .on(id),
+        ),
+        _ => {}
+    }
+    statuses
 }
 
-/// The open session: disconnect it, and the host-key decision a first contact or a changed
-/// key asks for. Text is sent with the `send-text` effect, naming the connection.
+/// The open session: disconnect it, move a file over an SSH shell, and the
+/// host-key decision a first contact or a changed key asks for.
 pub fn session_row(
     connection: &Connection,
     host_key_issue: Option<&crate::ssh::HostKeyIssue>,
 ) -> LiveRow {
-    let id = connection.id;
-    let row = LiveRow::new(
-        format!("remote.session:{id}"),
-        "remote.session",
-        format!("{} session", connection.name),
-    )
-    .operation(tagged(
-        RemoteEffect::Disconnect { connection: id }.bound(),
-        &["network", "session"],
-    ));
-    // The local path is asked of the caller; the root stands in until then.
-    let asked = AbsolutePath::new("/");
-    let row = if connection.kind == ConnectionKind::Ssh
-        && let Ok(asked) = asked
-    {
-        row.operation(tagged(
-            RemoteEffect::PutFile {
-                connection: id,
-                local_path: asked.clone(),
-                remote_path: String::new(),
-            }
-            .bound_asking(&["local_path", "remote_path"])
-            .with_description(crate::resource::CATALOG.t("remote-describe-put-file")),
-            &["network", "session", "files"],
-        ))
-        .operation(tagged(
-            RemoteEffect::FetchFile {
-                connection: id,
-                remote_path: String::new(),
-                local_path: asked,
-            }
-            .bound_asking(&["remote_path", "local_path"])
-            .with_description(crate::resource::CATALOG.t("remote-describe-fetch-file")),
-            &["network", "session", "files"],
-        ))
-    } else {
-        row
-    };
-    match host_key_issue {
-        Some(crate::ssh::HostKeyIssue::FirstContact { observed }) => row.operation(tagged(
-            RemoteEffect::TrustHostKey {
-                connection: id,
-                observed: observed.clone(),
-            }
-            .bound()
-            .with_description(CATALOG.t_args(
-                "remote-action-trust-host-key",
-                &[
-                    ("algorithm", ArgValue::Text(observed.algorithm.clone())),
-                    ("fingerprint", ArgValue::Text(observed.fingerprint.clone())),
-                ],
-            )),
-            HOST_KEY_TAGS,
-        )),
-        Some(crate::ssh::HostKeyIssue::Changed { .. }) => row.operation(tagged(
-            RemoteEffect::ForgetHostKey { connection: id }
-                .bound()
-                .with_description(crate::resource::CATALOG.t("remote-describe-forget-host-key")),
-            HOST_KEY_TAGS,
-        )),
-        _ => row,
+    let connection_id = serde_json::Value::String(connection.id.to_string());
+    let mut bindings = RowBindings::new().bind(
+        RemoteEffect::DISCONNECT,
+        [("connection", connection_id.clone())],
+    );
+    if connection.kind == ConnectionKind::Ssh {
+        bindings = bindings
+            .bind(
+                RemoteEffect::PUT_FILE,
+                [("connection", connection_id.clone())],
+            )
+            .bind(RemoteEffect::FETCH_FILE, [("connection", connection_id)]);
     }
+    match host_key_issue {
+        Some(crate::ssh::HostKeyIssue::FirstContact { observed }) => {
+            bindings = bindings.bind(
+                RemoteEffect::TRUST_HOST_KEY,
+                [
+                    (
+                        "connection",
+                        serde_json::Value::String(connection.id.to_string()),
+                    ),
+                    (
+                        "observed",
+                        serde_json::to_value(observed).unwrap_or(serde_json::Value::Null),
+                    ),
+                ],
+            );
+        }
+        Some(crate::ssh::HostKeyIssue::Changed { .. }) => {
+            bindings = bindings.bind(
+                RemoteEffect::FORGET_HOST_KEY,
+                [(
+                    "connection",
+                    serde_json::Value::String(connection.id.to_string()),
+                )],
+            );
+        }
+        _ => {}
+    }
+    LiveRow::typed_with::<SessionRow>(
+        format!("remote.session:{}", connection.id),
+        format!("{} session", connection.name),
+        &bindings,
+    )
 }
 
 /// The effects a saved connection offers beside its verbs: its settings and its connect.
 pub fn connection_row(connection: &Connection) -> LiveRow {
-    LiveRow::new(
+    let connection_id = serde_json::Value::String(connection.id.to_string());
+    let bindings = RowBindings::new()
+        .bind(
+            RemoteEffect::EDIT_CONNECTION,
+            [("connection", connection_id.clone())],
+        )
+        .bind(RemoteEffect::CONNECT, [("connection", connection_id)]);
+    LiveRow::typed_with::<ConnectionRow>(
         crate::resource::connection_resource_id(connection.id),
-        "remote.connection",
         connection.name.clone(),
+        &bindings,
     )
-    .operation(open_spec(connection.id))
-    .operation(connect_spec(connection))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{AuthMethod, ConnectionKind};
+    use tilo_actions::ActionSpec;
     use tilo_actions::{
         ActionKind, ConfirmationPolicy, ParamType, ResultSpec, RetryPolicy, RiskLevel,
     };
@@ -241,12 +326,12 @@ mod tests {
                 connection.kind = ConnectionKind::Tilo;
                 connection.auth = AuthMethod::DeviceIdentity;
                 connection.host = Atom(iroh_base::SecretKey::generate().public().to_string());
+                let status = connect_status(&connection, "remote/connections/tilo");
                 assert!(
-                    connect_spec(&connection)
-                        .contract
-                        .availability
-                        .is_available()
+                    status.availability().is_none(),
+                    "a Tilo endpoint this device can reach says nothing against connecting"
                 );
+                assert!(status.description().is_some(), "and says what it would do");
             }
 
             eprintln!("phase malformed_tilo_profile_is_not_offered_as_connectable");
@@ -255,10 +340,10 @@ mod tests {
                 connection.kind = ConnectionKind::Tilo;
                 connection.auth = AuthMethod::DeviceIdentity;
                 connection.host = Atom("friendly-name".into());
-                let spec = connect_spec(&connection);
+                let status = connect_status(&connection, "remote/connections/tilo");
                 assert!(matches!(
-                    &spec.contract.availability,
-                    tilo_actions::Availability::Unavailable { code, reason }
+                    status.availability(),
+                    Some(tilo_actions::Availability::Unavailable { code, reason })
                         if code == "invalid_connection_profile"
                             && reason.contains("exact endpoint id")
                 ));
@@ -275,16 +360,24 @@ mod tests {
                     .iter()
                     .find(|action| action.id == "connect")
                     .expect("RDP profile stays manageable");
+                assert!(
+                    connect
+                        .contract
+                        .tags
+                        .iter()
+                        .any(|tag| tag == "session"),
+                    "a connection row's connect is a session"
+                );
+                let status = connect_status(&connection, row.id.as_str());
                 assert!(matches!(
-                    &connect.contract.availability,
-                    tilo_actions::Availability::Unavailable { code, reason }
+                    status.availability(),
+                    Some(tilo_actions::Availability::Unavailable { code, reason })
                         if code == "transport_backend_unavailable"
                             && reason.contains("but not RDP")
                 ));
                 assert!(
-                    connect
-                        .description
-                        .as_deref()
+                    status
+                        .description()
                         .is_some_and(|description| description.contains("but not RDP")),
                     "search and agents receive the actionable reason"
                 );
@@ -293,7 +386,7 @@ mod tests {
 
         phase ssh_sessions_offer_file_transfer_in_both_directions;
         {
-            let (_, actions) = session_actions(&sample(Uuid::new_v4(), "Build Box"), None);
+            let (_row, actions) = session_actions(&sample(Uuid::new_v4(), "Build Box"), None);
             for id in ["put-file", "fetch-file"] {
                 let action = actions
                     .iter()
@@ -311,6 +404,13 @@ mod tests {
                     );
                 }
             }
+            assert!(
+                session_statuses(&sample(Uuid::new_v4(), "Build Box"), None)
+                    .iter()
+                    .filter(|status| matches!(status.id(), "put-file" | "fetch-file"))
+                    .all(|status| status.availability().is_none()),
+                "an SSH session moves files both ways"
+            );
             // A relative local path is refused: it would land wherever Remote runs.
             let arguments = serde_json::Map::from_iter([
                 ("connection".to_owned(), serde_json::json!(Uuid::new_v4())),
@@ -328,9 +428,9 @@ mod tests {
             );
             let mut desktop = sample(Uuid::new_v4(), "Desktop");
             desktop.kind = ConnectionKind::Vnc;
-            let (_, actions) = session_actions(&desktop, None);
+            let row = session_row(&desktop, None).into_resource();
             assert!(
-                !actions.iter().any(|action| action.id == "put-file"),
+                !row.actions.iter().any(|action| action.id == "put-file"),
                 "a framebuffer session has no shell to move a file through"
             );
         }
@@ -343,7 +443,12 @@ mod tests {
                 connection.kind = ConnectionKind::Tilo;
                 connection.auth = AuthMethod::DeviceIdentity;
                 connection.host = Atom(iroh_base::SecretKey::generate().public().to_string());
-                let connect = connect_spec(&connection);
+                let row = connection_row(&connection).into_resource();
+                let connect = row
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "connect")
+                    .expect("a connection offers connecting");
                 assert_eq!(connect.contract.kind, ActionKind::Read);
                 assert_eq!(connect.contract.risk, RiskLevel::Privileged);
                 assert_eq!(connect.contract.confirmation, ConfirmationPolicy::Confirm);
@@ -388,7 +493,8 @@ mod tests {
                         fingerprint: "SHA256:example".into(),
                     },
                 };
-                let trust = session_actions(&sample(Uuid::new_v4(), "Build Box"), Some(&issue))
+                let connection = sample(Uuid::new_v4(), "Build Box");
+                let trust = session_actions(&connection, Some(&issue))
                     .1
                     .into_iter()
                     .find(|action| action.id == "trust-host-key")
@@ -403,9 +509,16 @@ mod tests {
                         .any(|tag| tag == "device-private")
                 );
                 assert!(
-                    trust
-                        .description
-                        .as_deref()
+                    trust.params().is_empty(),
+                    "the key this first contact observed is the row's own value"
+                );
+                let status = session_statuses(&connection, Some(&issue))
+                    .into_iter()
+                    .find(|status| status.id() == "trust-host-key")
+                    .expect("the trust action says what it trusts");
+                assert!(
+                    status
+                        .description()
                         .is_some_and(|description| description.contains("SHA256:example"))
                 );
             }
@@ -418,5 +531,16 @@ mod tests {
     ) -> (String, Vec<ActionSpec>) {
         let row = session_row(connection, issue).into_resource();
         (row.id.as_str().to_owned(), row.actions)
+    }
+
+    fn session_statuses(
+        connection: &Connection,
+        issue: Option<&crate::ssh::HostKeyIssue>,
+    ) -> Vec<EffectStatus> {
+        session_status(
+            connection,
+            issue,
+            &format!("remote.session:{}", connection.id),
+        )
     }
 }
