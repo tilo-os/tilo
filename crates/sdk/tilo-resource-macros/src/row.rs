@@ -66,15 +66,27 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         )
     })?;
     let label = options.label.unwrap_or_else(|| humanize(&name.to_string()));
-    let effects = if let Some(effects) = &options.effects {
-        quote! {
-            <#effects as #krate::Effect>::row_specs(
-                <Self as #krate::words::RowType>::KIND,
-                id,
-            )
-        }
+    let (effects, effects_with) = if let Some(effects) = &options.effects {
+        (
+            quote! {
+                <#effects as #krate::Effect>::row_specs(
+                    <Self as #krate::words::RowType>::KIND,
+                    id,
+                )
+            },
+            quote! {
+                <#effects as #krate::Effect>::row_specs_with(
+                    <Self as #krate::words::RowType>::KIND,
+                    id,
+                    bindings,
+                )
+            },
+        )
     } else {
-        quote!(::std::vec::Vec::new())
+        (
+            quote!(::std::vec::Vec::new()),
+            quote!(::std::vec::Vec::new()),
+        )
     };
     Ok(quote! {
         impl #krate::words::RowType for #name {
@@ -83,6 +95,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
 
             fn effects(id: &#krate::Id) -> ::std::vec::Vec<#krate::__private::ActionSpec> {
                 #effects
+            }
+
+            fn effects_with(
+                id: &#krate::Id,
+                bindings: &#krate::row::RowBindings,
+            ) -> ::std::vec::Vec<#krate::__private::ActionSpec> {
+                #effects_with
             }
         }
     })

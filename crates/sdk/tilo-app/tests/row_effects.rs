@@ -165,6 +165,85 @@ fn a_row_effect_may_be_offered_on_several_types_and_take_nothing() {
     );
 }
 
+#[derive(tilo_resource::Row)]
+#[row(kind = "test.transfers", label = "Transfer", effects = TransferEffect)]
+struct Transfer;
+
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "test.transfers.effect", catalogue = "tests/locales")]
+pub enum TransferEffect {
+    /// Pause this transfer.
+    #[effect(on = Transfer, kind = "read")]
+    Pause {
+        #[param("The transfer")]
+        transfer: String,
+        #[param("The minute it may continue at")]
+        until: String,
+    },
+    /// Cancel this transfer.
+    #[effect(on = Transfer, kind = "read")]
+    Cancel {
+        #[param("The transfer")]
+        transfer: String,
+    },
+}
+
+#[test]
+fn a_row_binds_its_own_state_into_the_effects_it_offers() {
+    let bindings = tilo_resource::RowBindings::new().bind(
+        TransferEffect::PAUSE,
+        [("transfer", "t:1".into()), ("until", "6".into())],
+    );
+    let row = LiveRow::typed_with::<Transfer>("t:1", "Backup", &bindings).into_resource();
+    assert_eq!(
+        row.actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect::<Vec<_>>(),
+        ["pause"],
+        "only the effect the row's state offers is published, with all its arguments bound"
+    );
+    let pause = &row.actions[0];
+    assert!(pause.params().is_empty());
+    let encoded = pause.build_json(&serde_json::Map::new()).unwrap();
+    assert_eq!(
+        TransferEffect::from_payload(&encoded.payload).unwrap(),
+        TransferEffect::Pause {
+            transfer: "t:1".into(),
+            until: "6".into(),
+        }
+    );
+}
+
+#[test]
+fn a_row_offering_an_effect_asks_what_its_state_does_not_know() {
+    let bindings = tilo_resource::RowBindings::new().offer(TransferEffect::PAUSE);
+    let row = LiveRow::typed_with::<Transfer>("t:2", "Index", &bindings).into_resource();
+    let pause = &row.actions[0];
+    assert_eq!(
+        pause
+            .params()
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect::<Vec<_>>(),
+        ["transfer", "until"],
+        "the row offers the effect and its caller names what it acts on"
+    );
+    let encoded = pause
+        .build_json(&serde_json::Map::from_iter([
+            ("transfer".to_owned(), "t:2".into()),
+            ("until".to_owned(), "9".into()),
+        ]))
+        .unwrap();
+    assert_eq!(
+        TransferEffect::from_payload(&encoded.payload).unwrap(),
+        TransferEffect::Pause {
+            transfer: "t:2".into(),
+            until: "9".into(),
+        }
+    );
+}
+
 struct RowPublishingApp;
 
 thread_local! {

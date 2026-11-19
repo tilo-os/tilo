@@ -8,11 +8,87 @@
 //! is the resource's `Action`, bound to a row through the framework's
 //! `Publishes::row_edits` or the resource's `children`.
 
+use std::collections::BTreeMap;
+
 use tilo_actions::{
     ActionSpec, Exports, ResourcePresentation, ResourceSemanticIdentity, ResourceSpec,
 };
 
 use crate::Effect;
+
+/// The arguments a row sets for the effects it offers, by effect id.
+///
+/// A row of a declared type offers the effects its type declares on rows
+/// (`#[effect(on = Row)]`), and knows from its own state what those effects
+/// act on: a saved network knows the profile it keeps and whether forging it
+/// once more means going through its proxy. Each effect the row names is
+/// offered on it with exactly the arguments it gives bound; an effect it
+/// does not name is not offered (`RowBindings::new()` offers none, and
+/// [`LiveRow::typed`] offers every declared one with just the id bound).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RowBindings {
+    arguments: BTreeMap<&'static str, serde_json::Map<String, serde_json::Value>>,
+}
+
+impl RowBindings {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Offer the effect `effect` on the row, with `arguments` bound: the
+    /// effect's declaration's parameters, each by the name it declares.
+    /// Names the effect does not take are dropped.
+    #[must_use]
+    pub fn bind<R, A, I, K>(mut self, effect: crate::ActionRef<R, A>, arguments: I) -> Self
+    where
+        I: IntoIterator<Item = (K, serde_json::Value)>,
+        K: Into<String>,
+    {
+        self.arguments.insert(
+            effect.id,
+            arguments
+                .into_iter()
+                .map(|(name, value)| (name.into(), value))
+                .collect(),
+        );
+        self
+    }
+
+    /// Offer `effect` on the row with nothing bound: every argument of it is
+    /// asked from whoever invokes it.
+    #[must_use]
+    pub fn offer<R, A>(mut self, effect: crate::ActionRef<R, A>) -> Self {
+        self.arguments.entry(effect.id).or_default();
+        self
+    }
+
+    /// The arguments the row gives the effect `effect`, when it offers it.
+    #[must_use]
+    pub fn arguments(&self, effect: &str) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.arguments.get(effect)
+    }
+
+    /// Whether the row offers no effect of its type's.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.arguments.is_empty()
+    }
+}
+
+/// The resource `id` of the declared type `R`, published where no document
+/// holds it: a session service's reading (Wi-Fi's networks, the power
+/// policy), a question a service asks, a report a crash left. Its words are
+/// the type's, so search and the palette name it by what it is; the service
+/// publishes the type's vocabulary on it itself
+/// ([`offer`](crate::effect::offer)).
+#[must_use]
+pub fn typed_resource<R: crate::words::RowType>(
+    id: impl Into<String>,
+    label: impl Into<String>,
+) -> ResourceSpec {
+    ResourceSpec::new(id, R::KIND, label).with_type(R::words())
+}
 
 /// One live external entity a surface publishes beneath its resource, with
 /// the view and effect operations it offers (inspect a process, stop a
@@ -70,6 +146,31 @@ impl LiveRow {
         };
         let row_id = crate::Id::from_raw(id);
         for operation in R::effects(&row_id) {
+            row = row.operation(operation);
+        }
+        row
+    }
+
+    /// A row of the declared type `R`, offering the effects `bindings`
+    /// names among the type's ([`RowType::effects_with`](crate::words::RowType::effects_with)),
+    /// each bound to what the row's own state knows: unlike [`Self::typed`],
+    /// which offers every effect the type declares on its rows with only the
+    /// id bound, this one leaves out the effects that do not apply (a network
+    /// with no proxy) and sets the arguments the row holds (the profile, the
+    /// direction of a toggle).
+    pub fn typed_with<R: crate::words::RowType>(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        bindings: &RowBindings,
+    ) -> Self {
+        let id = id.into();
+        let mut row = Self {
+            resource: std::rc::Rc::new(
+                ResourceSpec::new(id.clone(), R::KIND, label).with_type(R::words()),
+            ),
+        };
+        let row_id = crate::Id::from_raw(id);
+        for operation in R::effects_with(&row_id, bindings) {
             row = row.operation(operation);
         }
         row

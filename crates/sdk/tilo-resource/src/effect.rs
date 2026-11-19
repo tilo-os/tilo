@@ -344,6 +344,25 @@ pub trait Effect: Sized + 'static {
         )
     }
 
+    /// The effects offered on the row `row` of the
+    /// [`RowType`](crate::words::RowType) `kind`, those `bindings` names
+    /// among them, each with exactly the arguments they give bound and the
+    /// rest still asked. [`RowType::effects_with`](crate::words::RowType::effects_with)
+    /// calls it.
+    fn row_specs_with(
+        kind: &'static str,
+        _row: &crate::Id,
+        bindings: &crate::row::RowBindings,
+    ) -> Vec<ActionSpec> {
+        target_specs_with(
+            check::<Self>,
+            Self::OPERATION,
+            Self::declarations,
+            |target| target.is_row(kind),
+            bindings,
+        )
+    }
+
     /// This effect as the published resource `resource` offers it (the
     /// record, or a child or live row it is bound on, by its published id):
     /// what a search hit invokes or a caller addresses through the host's
@@ -629,6 +648,52 @@ fn target_specs(
             });
             let fixed = bound.clone().into_iter().collect();
             Some(ty.bind(Target::new(bound)).with_bound(fixed))
+        })
+        .collect()
+}
+
+/// [`Effect::row_specs_with`] of the vocabulary `key`, whose declarations
+/// `declarations` are: every effect `matches` offers on an entity that
+/// `bindings` names among them, with exactly the arguments it gives bound and
+/// the rest asked.
+fn target_specs_with(
+    check: Check,
+    operation: &'static str,
+    declarations: fn() -> Vec<EffectDecl>,
+    matches: impl Fn(&EffectTarget) -> bool,
+    bindings: &crate::row::RowBindings,
+) -> Vec<ActionSpec> {
+    declarations()
+        .into_iter()
+        .filter(|decl| decl.items.iter().any(&matches))
+        .filter_map(|decl| {
+            let given = bindings.arguments(decl.id)?;
+            let mut bound = BoundArguments::new();
+            for (name, value) in given {
+                if decl
+                    .params
+                    .iter()
+                    .any(|param| param.name.as_ref() == name.as_str())
+                {
+                    bound.insert(name.clone(), value.clone());
+                }
+            }
+            let asked = params_from(
+                &decl
+                    .params
+                    .iter()
+                    .filter(|param| !bound.contains_key(param.name.as_ref()))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            let build = encoder(check, operation, decl.id, Bound::OverCaller);
+            let fixed = bound.clone().into_iter().collect();
+            let spec = decl.spec_with(operation, asked, build);
+            Some(
+                spec.action_type()
+                    .bind(Target::new(bound))
+                    .with_bound(fixed),
+            )
         })
         .collect()
 }

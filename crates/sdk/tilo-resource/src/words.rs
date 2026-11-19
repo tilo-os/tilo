@@ -134,6 +134,19 @@ pub trait RowType {
     fn effects(_id: &crate::Id) -> Vec<tilo_actions::ActionSpec> {
         Vec::new()
     }
+
+    /// The effects the type offers on the row `id`, those `bindings` names
+    /// among them ([`RowBindings`](crate::row::RowBindings)): each with
+    /// exactly the arguments the row's state gives bound and the rest still
+    /// asked. This is [`Self::effects`] for a row whose entity is named by
+    /// more than its id (a saved network and whether it joins by itself),
+    /// offered only for the effects that apply to it now.
+    fn effects_with(
+        _id: &crate::Id,
+        _bindings: &crate::row::RowBindings,
+    ) -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
 }
 
 /// A `#[derive(Model)]` record's declaration is its type's: it publishes the
