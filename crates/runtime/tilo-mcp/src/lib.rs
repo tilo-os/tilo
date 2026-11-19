@@ -1116,6 +1116,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Why `target` is not offered, in terms the caller can act on: the
     /// actions its resource has, or the resources there are. Only what the
     /// caller's own directory lists is named.
+    /// The workspace's answer that it offers nothing by `target`'s address, told as
+    /// [`Self::not_offered`] tells it and kept typed as the workspace gave it.
+    async fn unknown_action(&self, target: &RemoteActionTarget) -> Result<Failure, String> {
+        let mut unknown = Failure::from(tilo_actions::remote::ActionCallError::UnknownAction);
+        unknown.message = self.not_offered(target).await?;
+        Ok(unknown)
+    }
     async fn not_offered(&self, target: &RemoteActionTarget) -> Result<String, String> {
         let address = &target.address;
         let listed = self
@@ -2019,7 +2026,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     self.addressed(Some(peer), None, false).await?;
                 }
                 let Some(named) = self.named_resource(&target).await? else {
-                    return Err(self.not_offered(&target).await?.into());
+                    return Err(self.unknown_action(&target).await?);
                 };
                 target.address.resource = named;
                 match self
@@ -2036,7 +2043,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     Err(BridgeError::Host(
                         tilo_actions::remote::ActionCallError::UnknownAction,
                     )) => {
-                        return Err(self.not_offered(&target).await?.into());
+                        return Err(self.unknown_action(&target).await?);
                     }
                     ran => ran?,
                 }
