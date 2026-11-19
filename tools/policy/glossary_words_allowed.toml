@@ -1664,3 +1664,13 @@ reason = "`join_ledger` is the field name version 6 of a device's owner entry wa
 words = ["ledger"]
 identifiers = ["join_ledger"]
 paths = ["crates/collab/tilo-peer-state/src/owner/stored/format.rs"]
+
+[[allow]]
+reason = "Tokio's oneshot and mpsc constructors: the hand-off between a commit's answer and the workspace's governor taking the write in."
+words = ["channel"]
+identifiers = ["channel"]
+paths = [
+    "crates/server/tilo-workspace-service/src/peer/commit.rs",
+    "crates/server/tilo-workspace-service/src/peer/state.rs",
+    "crates/server/tilo-workspace-service/src/peer/state_tests/connections.rs",
+]

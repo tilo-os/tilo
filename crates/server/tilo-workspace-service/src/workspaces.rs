@@ -1853,7 +1853,7 @@ impl Workspaces {
     fn follow(
         &self,
         workspace: String,
-        mut notices: tokio::sync::mpsc::Receiver<([u8; 32], Vec<u8>)>,
+        mut notices: tokio::sync::mpsc::Receiver<crate::workspace::GovernorNotice>,
     ) {
         let workspaces = Arc::downgrade(&self.inner);
         let mut arrivals = crate::surfaces::arrivals();
@@ -1862,11 +1862,12 @@ impl Workspaces {
             loop {
                 tokio::select! {
                     notice = notices.recv() => {
-                        let Some((author, body)) = notice else { break };
+                        let Some(crate::workspace::GovernorNotice { author, body, taken }) = notice else { break };
                         let Some(inner) = workspaces.upgrade() else { break };
                         if let Err(error) = (Self { inner }).absorb_kept(&workspace, author, &body).await {
                             tracing::warn!(%workspace, author = %hex::encode(author), %error, "governed workspace did not follow a record write");
                         }
+                        let _ = taken.send(());
                     }
                     Ok(()) = arrivals.changed() => {
                         let Some(inner) = workspaces.upgrade() else { break };

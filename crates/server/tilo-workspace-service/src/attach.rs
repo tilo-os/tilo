@@ -548,7 +548,7 @@ impl Session<'_> {
                 .map_err(|error| error.to_string())?;
                 let _kept = tokio::time::timeout(ADMIT_WAIT, kept.kept()).await;
                 if let Some((tap, author, body)) = notice {
-                    crate::peer::tell_governor(&workspace, &tap, author, body).await;
+                    drop(crate::peer::tell_governor(&workspace, &tap, author, body).await);
                 }
             }
             Envelope::Presence {

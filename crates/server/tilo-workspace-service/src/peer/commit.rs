@@ -81,6 +81,10 @@ pub(super) struct AdmittedCommit {
     /// reconnect) waits for this one, then is answered from the log.
     claim: crate::workspace::CommitClaim,
     committing: Option<std::time::Instant>,
+    /// Answered once the commit admitted here before this one was told to the governor.
+    before: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// Dropped once this commit was told to the governor, or will never be.
+    told: tokio::sync::oneshot::Sender<()>,
 }
 
 /// Why `delta` is not `peer`'s to commit ([`commit_refusal`]), or, a write of a member's own
@@ -199,6 +203,8 @@ pub(super) async fn admit_commit(
         false,
     ))
     .await?;
+    let (told, turn) = tokio::sync::oneshot::channel();
+    let before = ws.lock().await.governor_turn.replace(turn);
     Ok(CommitAdmission::Admitted(Box::new(AdmittedCommit {
         ws,
         workspace_id,
@@ -211,6 +217,8 @@ pub(super) async fn admit_commit(
         admitting,
         claim,
         committing,
+        before,
+        told,
     })))
 }
 
@@ -244,12 +252,24 @@ impl AdmittedCommit {
             admitting,
             claim,
             committing,
+            before,
+            told,
         } = *self;
         // What an author is told is committed never depends on work that can
         // still fail: wait for the change to be durable and published.
         crate::persistence::receipt(admitted.completion).await?;
         crate::timing::event("commit.durable", committing, 0);
+        // Commits become durable together and finish in any order, but the
+        // governor's copy takes an author's writes only in the order they were
+        // written: one told after a later one would be passed over for good.
+        // And the copy decides the author's next writes, a compaction of these
+        // included, so the author is told this one is committed only once the
+        // copy holds it.
+        if let Some(before) = before {
+            let _ = before.await;
+        }
         tell_governor(&ws, &authored).await;
+        drop(told);
         let durable = admitted.sequence.load(std::sync::atomic::Ordering::SeqCst);
         if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
             compactor.note(&ws, workspace_id, observed);
@@ -325,9 +345,9 @@ async fn commit_refusal(
 }
 
 /// Hand `delta`, a member's change `ws` kept, to the workspace's governor, if a
-/// governor follows the workspace. It follows every change the server keeps, a
-/// committed one as one sent alone (`handle_delta`): a page writes its
-/// records as commits.
+/// governor follows the workspace, and wait until its copy took the change in. It
+/// follows every change the server keeps, a committed one as one sent alone
+/// (`handle_delta`): a page writes its records as commits.
 async fn tell_governor(ws: &SharedWorkspace, delta: &Envelope) {
     let Envelope::Delta {
         author_device_public_key,
@@ -338,7 +358,8 @@ async fn tell_governor(ws: &SharedWorkspace, delta: &Envelope) {
     };
     let tap = ws.lock().await.governor_tap.clone();
     if let Some((tap, body)) = tap.zip(governor_notice(delta)) {
-        super::state::tell_governor(ws, &tap, *author_device_public_key, body).await;
+        let taken = super::state::tell_governor(ws, &tap, *author_device_public_key, body).await;
+        let _ = taken.await;
     }
 }
 
