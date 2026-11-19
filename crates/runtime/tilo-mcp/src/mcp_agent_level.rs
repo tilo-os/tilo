@@ -194,10 +194,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         children: usize,
     ) -> Result<Level, String> {
         while level.children.len() <= children && level.unread() {
+            let had = level.children.len();
             level = self
                 .read_level(provider, parent, Some(level), children.saturating_add(1))
                 .await?
                 .ok_or("the app's directory kept changing while it was read; try again")?;
+            // A directory that moved on between every two pages gave its
+            // first pages again: what they hold is what can be listed now.
+            if level.children.len() <= had {
+                break;
+            }
         }
         Ok(level)
     }
@@ -344,6 +350,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         });
         let mut read_at = from.revision;
         let mut rest = None;
+        let held = rows.len();
         for page in 0..LEVEL_PAGES {
             if !cursor.is_empty() {
                 marks.push(PageMark {
@@ -368,6 +375,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 })
                 .await?;
             if asked.stale_cursor {
+                // A read bounded to what a listing shows keeps the pages it
+                // holds, all of one revision, and leaves the rest to whoever
+                // pages past them: while an import writes between every two
+                // pages, starting again never read past the first, and the
+                // listing failed after its whole wait.
+                if reach != usize::MAX
+                    && rows.len() > held
+                    && marks.last().is_some_and(|mark| mark.row == rows.len())
+                {
+                    rest = marks.pop();
+                    break;
+                }
                 return Ok(Err(Unread::MovedOn));
             }
             // What the caller named could not be listed: said in place of a
@@ -422,6 +441,28 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         provider: &str,
         levels: &mut Levels,
     ) -> Result<Level, String> {
+        self.app_children_reading(provider, levels, false).await
+    }
+
+    /// [`Self::app_children`] for a listing: what each container and chain holds is read as
+    /// far as a listing shows ([`Self::level_near`]), not the whole of it. A
+    /// tracker of thousands of issues read whole took several pages, each waiting behind
+    /// whatever the workspace was writing, and while an import wrote between every two of
+    /// them the read never held one revision and the listing failed.
+    pub(super) async fn app_children_listed(
+        &self,
+        provider: &str,
+        levels: &mut Levels,
+    ) -> Result<Level, String> {
+        self.app_children_reading(provider, levels, true).await
+    }
+
+    async fn app_children_reading(
+        &self,
+        provider: &str,
+        levels: &mut Levels,
+        listed: bool,
+    ) -> Result<Level, String> {
         let mut root = self.level(provider, "", levels).await?;
         let containers: Vec<Node> = root
             .children
@@ -431,7 +472,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .cloned()
             .collect();
         for node in containers {
-            let inside = self.level(provider, &node.id, levels).await?;
+            let inside = if listed {
+                self.level_near(provider, &node.id, levels).await?
+            } else {
+                self.level(provider, &node.id, levels).await?
+            };
             for child in inside.whole_children() {
                 if !root.children.iter().any(|seen| seen.id == child.id) {
                     root.children.push(child.clone());
@@ -461,7 +506,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 }
             }
             if chain.container {
-                let inside = self.level(provider, &chain.id, levels).await?;
+                let inside = if listed {
+                    self.level_near(provider, &chain.id, levels).await?
+                } else {
+                    self.level(provider, &chain.id, levels).await?
+                };
                 for child in inside.whole_children() {
                     if !root.children.iter().any(|seen| seen.id == child.id) {
                         root.children.push(child.clone());
