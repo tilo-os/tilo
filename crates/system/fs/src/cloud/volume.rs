@@ -1661,30 +1661,33 @@ impl CloudVolume {
     }
 
     fn finish_upload(&self, id: &ItemId, uploaded: &Item, staged: &Path, generation: u64) {
-        let adopt = {
-            let mut inner = self.inner();
-            Self::remap(&mut inner, id, uploaded.clone());
-            let unchanged = inner
-                .local
-                .get(&uploaded.id)
-                .is_some_and(|l| l.generation == generation && l.writers == 0);
-            if unchanged {
-                inner.local.remove(&uploaded.id);
-            } else if let Some(local) = inner.local.get_mut(&uploaded.id) {
-                // Written again while uploading: the next upload starts from what was just sent.
-                local.base.clone_from(&uploaded.revision);
-                if local.writers == 0 {
-                    inner.queue(Op::Upload(uploaded.id.clone()));
-                }
-            }
-            unchanged
-        };
-        if adopt {
+        // Read the bytes before taking the lock, so a big upload does not hold the mount while it
+        // hashes. A writer appending meanwhile bumps the generation, and the content is not adopted.
+        let digest = hash_file(staged).ok();
+        let mut inner = self.inner();
+        let unchanged = inner
+            .local
+            .get(id)
+            .is_some_and(|l| l.generation == generation && l.writers == 0);
+        if unchanged && let Some(digest) = digest {
+            // Store the bytes before the new revision becomes visible: until they are in the
+            // content area, a reader of that revision would fetch a version nothing names yet.
             let key = rev_key(&uploaded.id, uploaded.revision.as_ref());
             if let Some(content) = self.content() {
-                let _ = content.adopt_file(&key, staged, Retention::Cached);
+                let _ = content.adopt_hashed_file(&key, staged, digest, Retention::Cached);
             }
         }
+        Self::remap(&mut inner, id, uploaded.clone());
+        if unchanged {
+            inner.local.remove(&uploaded.id);
+        } else if let Some(local) = inner.local.get_mut(&uploaded.id) {
+            // Written again while uploading: the next upload starts from what was just sent.
+            local.base.clone_from(&uploaded.revision);
+            if local.writers == 0 {
+                inner.queue(Op::Upload(uploaded.id.clone()));
+            }
+        }
+        drop(inner);
         self.report(MountHealth::Healthy);
     }
 

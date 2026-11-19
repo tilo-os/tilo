@@ -1120,6 +1120,19 @@ impl FileArea {
         retention: Retention,
     ) -> io::Result<[u8; 32]> {
         let digest = hash_file(path)?;
+        self.adopt_hashed_file(key, path, digest, retention)?;
+        Ok(digest)
+    }
+
+    /// [`Self::adopt_file`] for a caller that already read the bytes' BLAKE3, so the file does not
+    /// have to be read twice.
+    pub fn adopt_hashed_file(
+        &self,
+        key: &AreaKey,
+        path: &Path,
+        digest: [u8; 32],
+        retention: Retention,
+    ) -> io::Result<()> {
         let staging = self.staging_path(key);
         if std::fs::rename(path, &staging).is_err() {
             std::fs::copy(path, &staging)?;
@@ -1140,8 +1153,7 @@ impl FileArea {
                 digest: Some(digest),
                 chunks: &[],
             },
-        )?;
-        Ok(digest)
+        )
     }
 
     /// Makes `key` a complete whole-blob entry holding `bytes`, with `outboard` its BAO outboard.
