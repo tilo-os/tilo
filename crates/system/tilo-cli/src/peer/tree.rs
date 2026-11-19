@@ -65,6 +65,10 @@ const PACE: u32 = 20;
 /// Where the namespace's records are kept between runs, one file per record.
 const KEPT: &str = "tree";
 
+/// A file the tree names: the hash of its content (`None` for a text document the tree holds
+/// itself) and its size.
+pub(crate) type FileBytes = (Option<iroh_blobs::Hash>, u64);
+
 /// When a step whose cost grows with the tree may run again.
 #[derive(Debug)]
 struct Paced {
@@ -127,14 +131,25 @@ pub(crate) struct TreeStatus {
 pub(crate) struct TreeReplica {
     pub(crate) namespace: Arc<Mutex<Namespace>>,
     status: Arc<Mutex<TreeStatus>>,
+    /// The files the tree names, each with the hash of its content (`None` for a text document
+    /// the tree holds itself) and its size, as the last count found them: `tilo status` answers
+    /// from here, never from the namespace, which a step over the whole tree holds for as long
+    /// as it lasts.
+    files: Arc<Mutex<Vec<FileBytes>>>,
     paused: Arc<std::sync::atomic::AtomicBool>,
+    /// Set when the holder stops: the task keeps what changed and ends instead of syncing on
+    /// into a session that is going.
+    stopping: Arc<std::sync::atomic::AtomicBool>,
     wake: Arc<tokio::sync::Notify>,
-    task: tokio::task::JoinHandle<()>,
+    /// The task syncing this tree, until a stop waits for it.
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for TreeReplica {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }
 
@@ -164,11 +179,11 @@ fn kept_documents(dir: &Path) -> std::io::Result<Vec<(TreeChunk, Vec<u8>)>> {
 impl TreeReplica {
     /// Hold `workspace`'s tree over `link`, kept in `state` between runs, as
     /// the device whose key is `device`; its file bytes come and go through
-    /// `content`. Must be called on a tokio runtime.
+    /// `content`.
     ///
     /// # Errors
     /// The kept namespace cannot be read.
-    pub(crate) fn start(
+    pub(crate) async fn start(
         link: Link,
         workspace: WorkspaceId,
         state: &Path,
@@ -178,19 +193,32 @@ impl TreeReplica {
         let kept = state.join(KEPT);
         std::fs::create_dir_all(&kept)?;
         let author = hex::encode(device);
-        let records = kept_documents(&kept)?;
-        let namespace = if records.is_empty() {
-            Namespace::new(author).map_err(std::io::Error::other)?
-        } else {
-            Namespace::from_records(author, records)
-                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
-        };
+        let reading = kept.clone();
+        // Reading the kept chunks and indexing every node they name walks the whole tree. On
+        // a runtime worker it would hold that worker — and the holder's clients, and the agents
+        // it serves, wait for one — for as long as a repository's tree takes, so it goes to a
+        // thread of the blocking pool instead.
+        let namespace = tokio::task::spawn_blocking(move || {
+            let kept = kept_documents(&reading)?;
+            if kept.is_empty() {
+                Namespace::new(author).map_err(std::io::Error::other)
+            } else {
+                Namespace::from_records(author, kept)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            }
+        })
+        .await
+        .map_err(std::io::Error::other)??;
         let namespace = Arc::new(Mutex::new(namespace));
         let status = Arc::new(Mutex::new(TreeStatus::default()));
+        let files = Arc::new(Mutex::new(Vec::new()));
         let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let wake = Arc::new(tokio::sync::Notify::new());
+        let keeping = Arc::new(Mutex::new(Keeping::new(kept)));
         let sync = Sync {
             paused: Arc::clone(&paused),
+            stopping: Arc::clone(&stopping),
             wake: Arc::clone(&wake),
             link,
             workspace,
@@ -201,23 +229,44 @@ impl TreeReplica {
             waiting: BTreeSet::new(),
             held_until: None,
             dirty_since: None,
-            kept,
-            kept_heads: BTreeMap::new(),
-            keeping: Paced::new(KEEP_EVERY),
+            keeping: Arc::clone(&keeping),
+            pacing: Paced::new(KEEP_EVERY),
             pulling: Paced::new(LOOK_AGAIN),
             counting: Paced::new(COUNT_EVERY),
             counted_heads: None,
             status: Arc::clone(&status),
+            files: Arc::clone(&files),
             content,
         };
         let task = tokio::spawn(sync.run());
         Ok(Self {
             namespace,
             status,
+            files,
             paused,
+            stopping,
             wake,
-            task,
+            task: Some(task),
         })
+    }
+
+    /// Stop syncing and keep the tree on disk, waiting at most `within` for it: a step still
+    /// walking the tree cannot be interrupted, and a holder stopping must end inside the
+    /// service's timeout whether or not one is.
+    pub(crate) async fn stop(mut self, within: Duration) {
+        self.stopping
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.wake.notify_one();
+        if let Some(task) = self.task.take()
+            && tokio::time::timeout(within, task).await.is_err()
+        {
+            tracing::warn!("a workspace's tree did not keep in time; it is left as last kept");
+        }
+    }
+
+    /// The files the tree names as last counted: the hash of each one's content and its size.
+    pub(crate) fn files(&self) -> Vec<FileBytes> {
+        self.files.lock_recover().clone()
     }
 
     pub(crate) fn status(&self) -> TreeStatus {
@@ -229,6 +278,8 @@ impl TreeReplica {
     pub(crate) fn set_paused(&self, paused: bool) {
         self.paused
             .store(paused, std::sync::atomic::Ordering::Relaxed);
+        // Said at once rather than at the next pass: the pass may wait for a step over the tree.
+        self.status.lock_recover().paused = paused;
         self.wake.notify_one();
     }
 }
@@ -297,6 +348,7 @@ impl Refusals {
 /// The task that keeps one namespace and its records converged.
 struct Sync {
     paused: Arc<std::sync::atomic::AtomicBool>,
+    stopping: Arc<std::sync::atomic::AtomicBool>,
     wake: Arc<tokio::sync::Notify>,
     link: Link,
     workspace: WorkspaceId,
@@ -315,16 +367,35 @@ struct Sync {
     /// When the oldest change not yet handed to the session was made: what
     /// the next write waits [`BATCH`] after.
     dirty_since: Option<Instant>,
-    /// The directory each record is kept in, one file per record.
-    kept: PathBuf,
-    kept_heads: BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
-    keeping: Paced,
+    /// Where each chunk of the tree is kept between starts, one file per chunk, and the heads
+    /// it was last kept at.
+    keeping: Arc<Mutex<Keeping>>,
+    /// How often the tree may be kept, since it costs what the tree costs.
+    pacing: Paced,
     counting: Paced,
     pulling: Paced,
     /// The heads the files and bytes in `status` were counted at.
     counted_heads: Option<Vec<automerge::ChangeHash>>,
     status: Arc<Mutex<TreeStatus>>,
+    /// The files the tree names as last counted, for `tilo status`.
+    files: Arc<Mutex<Vec<FileBytes>>>,
     content: Arc<SessionContent>,
+}
+
+/// Where one tree's chunks are kept between starts: a directory, one file per chunk, and the
+/// heads each chunk was last written at.
+struct Keeping {
+    dir: PathBuf,
+    heads: BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
+}
+
+impl Keeping {
+    fn new(dir: PathBuf) -> Self {
+        Self {
+            dir,
+            heads: BTreeMap::new(),
+        }
+    }
 }
 
 impl Sync {
@@ -357,6 +428,11 @@ impl Sync {
             for event in events.drain() {
                 self.take(event);
             }
+            if self.stopping.load(std::sync::atomic::Ordering::Relaxed) {
+                // The holder is stopping: keep what this tree changed and end, rather than
+                // carrying on into a session that is going.
+                break;
+            }
             if !self.paused.load(std::sync::atomic::Ordering::Relaxed) {
                 if sweep.due(Instant::now()) {
                     // Now and then every record, for a landing whose word was missed.
@@ -366,10 +442,10 @@ impl Sync {
                 if session_moved || !self.unread.is_empty() {
                     self.pull_all().await;
                 }
-                self.push();
+                self.push().await;
                 self.content.reask(&self.link);
             }
-            self.say_where_it_stands();
+            self.say_where_it_stands().await;
             // A change of this namespace's own goes out once its batch is due; the session's
             // news, and a look now and then, read what the records hold.
             // A record the host refused waits its turn without the task looking every moment.
@@ -385,15 +461,18 @@ impl Sync {
             session_moved = false;
             tokio::select! {
                 () = wake.notified() => session_moved = true,
-                moved = changes.changed() => if moved.is_err() { return },
-                _ = keep.tick() => if self.keeping.due(Instant::now()) {
+                moved = changes.changed() => if moved.is_err() { break },
+                _ = keep.tick() => if self.pacing.due(Instant::now()) {
                     let started = Instant::now();
                     self.keep().await;
-                    self.keeping.ran(started, Instant::now());
+                    self.pacing.ran(started, Instant::now());
                 },
                 () = tokio::time::sleep(wait) => session_moved = self.dirty_since.is_none(),
             }
         }
+        // What changed here is on disk before this task ends: the holder is going, and the
+        // module that made it goes with the process.
+        self.keep().await;
     }
 
     /// Ask the host for record `chunk` of the tree, and to take part in its channel.
@@ -597,15 +676,32 @@ impl Sync {
         }
     }
 
+    /// The namespace, only when it can be had now. A worker that waited on a step over the
+    /// whole tree (a merge, a count, a keep) would answer no client meanwhile, and a step says
+    /// when it is done through the change watch this task follows, so a pass that cannot read
+    /// the tree now leaves it to the next one.
+    fn namespace_now(&self) -> Option<std::sync::MutexGuard<'_, Namespace>> {
+        match self.namespace.try_lock() {
+            Ok(namespace) => Some(namespace),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+
     /// Hand the session what the namespace changed since it last did, once the batch the
     /// first of those changes started is due: one write per record that changed.
-    fn push(&mut self) {
+    async fn push(&mut self) {
         if !self.status.lock_recover().opened {
             // The host has not said what it holds: a tree written now could found a second
             // one beside it.
             return;
         }
-        let heads = self.namespace.lock_recover().record_heads();
+        let heads = {
+            let Some(mut namespace) = self.namespace_now() else {
+                return;
+            };
+            namespace.record_heads()
+        };
         let dirty: Vec<TreeChunk> = heads
             .iter()
             .filter(|(chunk, heads)| self.records.get(chunk).map(|held| &held.sent) != Some(*heads))
@@ -619,12 +715,65 @@ impl Sync {
         if since.elapsed() < BATCH {
             return;
         }
+        let (due, mut waiting) = self.due(dirty);
+        if due.is_empty() {
+            self.dirty_since = waiting.then_some(since);
+            return;
+        }
+        // Reading the changes a chunk holds beyond what the session has walks that chunk's
+        // document, and a folder written into in bulk has many chunks to walk: it goes to the
+        // blocking pool, so the workers answering the holder's clients and the agents stay free.
+        let namespace = Arc::clone(&self.namespace);
+        let writes = tokio::task::spawn_blocking(move || {
+            let mut namespace = namespace.lock_recover();
+            due.into_iter()
+                .filter_map(|(chunk, sent)| namespace.record_write(chunk, &sent, WRITE_BUDGET))
+                .collect::<Vec<_>>()
+        })
+        .await;
+        let writes = match writes {
+            Ok(writes) => writes,
+            Err(error) => {
+                tracing::warn!(%error, "the workspace's tree cannot be read out");
+                return;
+            }
+        };
+        for write in writes {
+            let route = route(self.workspace, write.chunk);
+            if !write.changes.is_empty()
+                && self
+                    .link
+                    .write(route, &DocumentMutation::Incremental(write.changes))
+                    .is_err()
+            {
+                waiting = true;
+                continue;
+            }
+            // What the write carries, not what the namespace holds now: the mount keeps
+            // changing it while the write goes out, and a change made meanwhile counted as
+            // sent would never reach the host, which then leaves out every later write of
+            // this device.
+            if let Some(held) = self.records.get_mut(&write.chunk) {
+                held.sent = write.heads;
+            }
+        }
+        self.dirty_since = waiting.then_some(since);
+    }
+
+    /// The chunks of `dirty` that can go out now, with the heads each was last handed to the
+    /// session at, and whether any waits instead: whether it is founded here or waits for the
+    /// workspace's answer.
+    fn due(
+        &mut self,
+        dirty: Vec<TreeChunk>,
+    ) -> (Vec<(TreeChunk, Vec<automerge::ChangeHash>)>, bool) {
         let link = self.link.clone();
         let engine = link.engine();
         let workspace = self.workspace.to_string();
         let mut waiting = false;
         let now = Instant::now();
         self.held_until = None;
+        let mut due = Vec::new();
         for chunk in dirty {
             if !self.records.contains_key(&chunk) {
                 self.open(chunk);
@@ -678,48 +827,54 @@ impl Sync {
                 .get(&chunk)
                 .map(|held| held.sent.clone())
                 .unwrap_or_default();
-            let Some(write) =
-                self.namespace
-                    .lock_recover()
-                    .record_write(chunk, &sent, WRITE_BUDGET)
-            else {
-                continue;
-            };
-            if !write.changes.is_empty()
-                && self
-                    .link
-                    .write(route, &DocumentMutation::Incremental(write.changes))
-                    .is_err()
-            {
-                waiting = true;
-                continue;
-            }
-            // What the write carries, not what the namespace holds now: the mount keeps
-            // changing it while the write goes out, and a change made meanwhile counted as
-            // sent would never reach the host, which then leaves out every later write of
-            // this device.
-            if let Some(held) = self.records.get_mut(&chunk) {
-                held.sent = write.heads;
-            }
+            due.push((chunk, sent));
         }
-        self.dirty_since = waiting.then_some(since);
+        (due, waiting)
     }
 
-    fn say_where_it_stands(&mut self) {
+    async fn say_where_it_stands(&mut self) {
         let (heads, records) = {
-            let mut namespace = self.namespace.lock_recover();
+            let Some(mut namespace) = self.namespace_now() else {
+                return;
+            };
             (namespace.heads(), namespace.record_heads())
         };
-        let counted =
-            if self.counted_heads.as_ref() != Some(&heads) && self.counting.due(Instant::now()) {
-                let started = Instant::now();
-                let counted = self.count();
-                self.counting.ran(started, Instant::now());
-                self.counted_heads = Some(heads);
-                Some(counted)
-            } else {
-                None
-            };
+        let counting =
+            self.counted_heads.as_ref() != Some(&heads) && self.counting.due(Instant::now());
+        let counted = if counting {
+            // Counting the files walks every node of the tree: off the runtime's workers, like
+            // a merge and a keep, so a client's status is answered meanwhile.
+            let namespace = Arc::clone(&self.namespace);
+            let files = Arc::clone(&self.files);
+            let started = Instant::now();
+            match tokio::task::spawn_blocking(move || {
+                let namespace = namespace.lock_recover();
+                let named = files_of(&namespace);
+                drop(namespace);
+                let counts = (
+                    named.len(),
+                    named
+                        .iter()
+                        .fold(0_u64, |bytes, (_, size)| bytes.saturating_add(*size)),
+                );
+                *files.lock_recover() = named;
+                counts
+            })
+            .await
+            {
+                Ok(counted) => {
+                    self.counting.ran(started, Instant::now());
+                    self.counted_heads = Some(heads);
+                    Some(counted)
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "counting the workspace's files could not be done");
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let sent = records.iter().all(|(chunk, heads)| {
             self.records
                 .get(chunk)
@@ -737,58 +892,50 @@ impl Sync {
         status.durable = durable;
     }
 
-    /// The files the tree names and their bytes: a walk of every node.
-    fn count(&self) -> (usize, u64) {
-        let namespace = self.namespace.lock_recover();
-        let mut files = 0_usize;
-        let mut bytes = 0_u64;
-        for id in namespace.live_node_ids() {
-            // A text document (a `.md`, an `.odt`) is a file whose content
-            // the tree holds itself, by no hash: a file all the same.
-            if let Some(entry) = namespace.entry_for_node(&id)
-                && entry.kind == tilo_fs::namespace::NodeKind::File
-            {
-                files = files.saturating_add(1);
-                bytes = bytes.saturating_add(entry.size);
-            }
-        }
-        (files, bytes)
-    }
-
     /// Keep the records that changed on disk, each in a file of its own, so a restart starts
     /// where this one was: what a write costs on disk is its record, not the tree. Saving a
     /// record walks it, so it runs away from the runtime's workers like a merge does.
-    async fn keep(&mut self) {
+    async fn keep(&self) {
         let namespace = Arc::clone(&self.namespace);
-        let kept = self.kept.clone();
-        let kept_heads = self.kept_heads.clone();
-        match tokio::task::spawn_blocking(move || keep_records(&namespace, &kept, &kept_heads))
-            .await
+        let keeping = Arc::clone(&self.keeping);
+        if let Err(error) =
+            tokio::task::spawn_blocking(move || keep_records(&namespace, &keeping)).await
         {
-            Ok(written) => self.kept_heads.extend(written),
-            Err(error) => tracing::warn!(%error, "keeping the workspace's tree could not run"),
+            tracing::warn!(%error, "keeping the workspace's tree could not be done");
         }
-    }
-
-    /// [`Self::keep`], on this thread: where the sync stops there is no runtime to run it on.
-    fn keep_now(&mut self) {
-        let written = keep_records(&self.namespace, &self.kept, &self.kept_heads);
-        self.kept_heads.extend(written);
     }
 }
 
-/// Write each record of `namespace` whose heads are not those `kept_heads` has for it to its own
-/// file under `kept`; answers the records written, with the heads they were written at.
-fn keep_records(
-    namespace: &Mutex<Namespace>,
-    kept: &std::path::Path,
-    kept_heads: &BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>,
-) -> Vec<(TreeChunk, Vec<automerge::ChangeHash>)> {
+/// The files `namespace` names, each with the hash of its content (`None` for a text document
+/// whose content the tree holds itself) and its size: a walk of every node.
+fn files_of(namespace: &Namespace) -> Vec<FileBytes> {
+    let mut files = Vec::new();
+    for id in namespace.live_node_ids() {
+        // A text document (a `.md`, an `.odt`) is a file whose content the tree holds itself,
+        // by no hash: a file all the same.
+        if let Some(entry) = namespace.entry_for_node(&id)
+            && entry.kind == tilo_fs::namespace::NodeKind::File
+        {
+            files.push((entry.hash, entry.size));
+        }
+    }
+    files
+}
+
+/// Write each chunk of `namespace` whose heads are not those it was last kept at to its own
+/// file, one per chunk, under the keeping directory.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the chunks are read and written as one: a keep beside another must not write a \
+              chunk between the two of them reading it"
+)]
+fn keep_records(namespace: &Mutex<Namespace>, keeping: &Mutex<Keeping>) {
+    let mut keeping = keeping.lock_recover();
     let mut saved = Vec::new();
     {
         let mut namespace = namespace.lock_recover();
         for (chunk, heads) in namespace.record_heads() {
-            if kept_heads.get(&chunk) == Some(&heads) {
+            if keeping.heads.get(&chunk) == Some(&heads) {
                 continue;
             }
             if let Some(bytes) = namespace.save_record(chunk) {
@@ -796,20 +943,22 @@ fn keep_records(
             }
         }
     }
-    let mut written = Vec::new();
     for (chunk, heads, bytes) in saved {
-        let path = kept.join(format!("{chunk}.automerge"));
+        let path = keeping.dir.join(format!("{chunk}.automerge"));
         match tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600) {
-            Ok(()) => written.push((chunk, heads)),
+            Ok(()) => {
+                keeping.heads.insert(chunk, heads);
+            }
             Err(error) => tracing::warn!(%error, "the workspace's tree is not kept on disk"),
         }
     }
-    written
 }
 
 impl Drop for Sync {
+    /// The backstop for what the task cannot do itself: a tree whose task ended without
+    /// keeping (or was let go of) still writes what changed on disk.
     fn drop(&mut self) {
-        self.keep_now();
+        keep_records(&self.namespace, &self.keeping);
     }
 }
 
@@ -971,5 +1120,58 @@ mod tests {
         let mut read = read;
         assert!(read.lookup(tilo_fs::namespace::ROOT_INO, "a.txt").is_some());
         assert_eq!(read.record_heads(), namespace.record_heads());
+    }
+
+    /// Keeping writes each chunk that changed in a file of its own, and then nothing until a
+    /// chunk changes again: a stop pays for the chunks that changed, not for the tree.
+    #[test]
+    fn keeping_writes_what_changed_and_then_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut namespace = Namespace::new("laptop").unwrap();
+        namespace
+            .create_file(tilo_fs::namespace::ROOT_INO, "a.txt", None, 1, 1)
+            .unwrap();
+        let namespace = Mutex::new(namespace);
+        let keeping = Mutex::new(Keeping::new(dir.path().to_path_buf()));
+        let keep = || keep_records(&namespace, &keeping);
+        keep();
+        let kept = keeping.lock_recover().heads.clone();
+        assert!(!kept.is_empty(), "every chunk of the tree is kept");
+        for chunk in kept.keys() {
+            assert!(
+                dir.path().join(format!("{chunk}.automerge")).exists(),
+                "chunk {chunk} is on disk"
+            );
+        }
+        // Nothing changed: nothing is written again.
+        keep();
+        assert_eq!(keeping.lock_recover().heads, kept);
+        // A change: the chunk it landed in is written again.
+        namespace
+            .lock_recover()
+            .create_file(tilo_fs::namespace::ROOT_INO, "b.txt", None, 1, 1)
+            .unwrap();
+        keep();
+        let again = keeping.lock_recover().heads.clone();
+        assert!(
+            again
+                .iter()
+                .any(|(chunk, heads)| kept.get(chunk) != Some(heads)),
+            "the chunk that changed is kept at its new heads"
+        );
+    }
+
+    /// The files the tree names, each with the hash of its content and its size, are what
+    /// `tilo status` counts: a text document the tree holds itself has no hash.
+    #[test]
+    fn the_files_the_tree_names_are_counted_with_their_sizes() {
+        let mut namespace = Namespace::new("laptop").unwrap();
+        namespace
+            .create_file(tilo_fs::namespace::ROOT_INO, "a.txt", None, 7, 1)
+            .unwrap();
+        namespace
+            .create_dir(tilo_fs::namespace::ROOT_INO, "folder", 1)
+            .unwrap();
+        assert_eq!(files_of(&namespace), vec![(None, 7)]);
     }
 }
