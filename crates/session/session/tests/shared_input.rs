@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::common::people::{
-    Device, show, two_devices_of_one_person, two_devices_of_one_person_with_chat, wait_shown,
+    Device, show, show_the_shell, two_devices_of_one_person, two_devices_of_one_person_with_chat,
+    wait_shown,
 };
 
 /// What `device` says of the person's one keyboard and pointer.
@@ -460,6 +461,8 @@ const CHAT: &str = "so.tilo.chat";
 
 #[test]
 fn a_window_lifted_by_its_bar_crosses_with_the_pointer_and_lands_on_the_phone() {
+    // The bar a window is lifted by is the shell's frame: the test shows the shell's own.
+    show_the_shell();
     let (site, _ada, laptop, phone) = two_devices_of_one_person_with_chat();
     let beside = Beside::arranged(&laptop, &phone);
     show(&laptop, &site);

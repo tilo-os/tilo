@@ -912,6 +912,43 @@ mod tests {
         );
     }
 
+    /// The zone a device is set to is resolved by name, not read as whatever
+    /// `/etc/localtime` points at: the person's day is their region's, so a
+    /// machine set to UTC does not move an evening in Los Angeles to tomorrow.
+    #[test]
+    #[cfg(feature = "local")]
+    fn a_named_zone_is_read_as_itself_whatever_the_machines_own() {
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "a_named_zone_is_read_as_itself_whatever_the_machines_own",
+            || {
+                let mut zone = tilo_test_env::ScopedEnv::new();
+                zone.set("TZ", "America/Los_Angeles");
+                // 11 November, nine in the evening in Los Angeles: the 12th in UTC.
+                let _held = testing::hold_wall_everywhere(
+                    testing::OwnProcess::of_a_test_in_its_own_process(),
+                    UNIX_EPOCH + Duration::from_secs(1_794_459_600),
+                );
+                let now = local::now();
+                assert_eq!(
+                    now.time_zone().iana_name(),
+                    Some("America/Los_Angeles"),
+                    "the named zone is the one the clock stands in"
+                );
+                assert_eq!(
+                    local::today().to_string(),
+                    "2026-11-11",
+                    "their day, not UTC's"
+                );
+                assert_eq!(
+                    local::instant_of(jiff::civil::date(2026, 11, 11).at(21, 0, 0, 0)),
+                    jiff::Timestamp::from_second(1_794_459_600).ok(),
+                    "and the evening they read is the instant it names"
+                );
+            },
+        );
+    }
+
     tilo_test_env::scenario! {
         #[allow(
             clippy::arithmetic_side_effects,

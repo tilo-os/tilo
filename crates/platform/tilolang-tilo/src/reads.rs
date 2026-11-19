@@ -465,8 +465,20 @@ pub fn changed_by(
     doc: &Doc,
     index: &BTreeMap<DocId, (AppId, TypeId)>,
 ) -> Changed {
+    changed_by_with(changes, &mut Places::of(doc), index)
+}
+
+/// [`changed_by`], reading the places of the objects it writes in `places`: a caller that
+/// reads more than what the changes wrote on one document — where they placed items, the
+/// versions they made — hands the same places to each, so the objects a step wrote are walked
+/// up to their place once, not once a reader.
+#[must_use]
+pub fn changed_by_with(
+    changes: &[Change],
+    places: &mut Places<'_>,
+    index: &BTreeMap<DocId, (AppId, TypeId)>,
+) -> Changed {
     let mut out = Changed::default();
-    let mut places = Places::of(doc);
     for change in changes {
         out.take_in(places.written(change, index));
     }
@@ -485,6 +497,37 @@ pub fn naming<'c>(changes: &'c [Change], doc: &Doc) -> Vec<&'c Change> {
         .collect()
 }
 
+std::thread_local! {
+    /// The changes decoded on this thread since a test last took the count: work that does not
+    /// depend on the machine or its load, which tests hold to how it grows with the document
+    /// ([`decoded`]).
+    static DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The changes decoded on this thread since this last took the count, the count reset as it is
+/// taken: what reading a change off its operations costs, counted around the work a test holds
+/// it to.
+///
+/// A sync that takes a paste back reads each change it arrived with for what it wrote, for the
+/// versions it made and for where it stands, all off the same walk: a change decodes once there,
+/// however many questions are asked of what it wrote. A test takes the count before the work to
+/// start from zero, and takes it again after to read what the work cost.
+#[must_use]
+pub fn decoded() -> usize {
+    DECODES.take()
+}
+
+/// How many changes' operations [`Places`] keeps decoded: those of the changes one read of a
+/// sync asks about, which are its newest.
+const DECODED_KEPT: usize = 4;
+
+/// The operations of `change`, expanded from its stored form: the work each reader of what a
+/// change wrote pays, once per read.
+fn decode(change: &Change) -> automerge::ExpandedChange {
+    DECODES.set(DECODES.get().saturating_add(1));
+    change.decode()
+}
+
 /// Where the objects of a document stand, walked once: a step of a build reads a hundred
 /// thousand changes on one document, and they write few of its objects — every item of a
 /// collection writes the tail of its run in the manifest ([`Changed::wrote`]) — so each object
@@ -498,6 +541,10 @@ pub struct Places<'d> {
     /// The place from the document's root of each object walked, by the id Automerge prints for
     /// it; `None` for one the document does not hold.
     at: HashMap<String, Option<Rc<[Prop]>>>,
+    /// The operations of the changes decoded last, newest last: a change written once is read
+    /// for what it wrote by each reader of the same places, and a step that takes a paste back
+    /// has as many operations as the paste had ([`Self::expand`]).
+    decoded: std::collections::VecDeque<(automerge::ChangeHash, Rc<automerge::ExpandedChange>)>,
 }
 
 impl<'d> Places<'d> {
@@ -507,7 +554,27 @@ impl<'d> Places<'d> {
         Self {
             doc,
             at: HashMap::new(),
+            decoded: std::collections::VecDeque::new(),
         }
+    }
+
+    /// The operations of `change`, decoded once per reader of these places: a sync reads each
+    /// change it takes in for what it wrote, the versions it made and where it stands, and the
+    /// same change decoded again for each of them costs what its operations cost to expand.
+    ///
+    /// The last few are kept, not every one: a build reads a hundred thousand changes off one
+    /// document, and their operations are not what a build holds.
+    fn expand(&mut self, change: &Change) -> Rc<automerge::ExpandedChange> {
+        if let Some((_, expanded)) = self.decoded.iter().find(|(hash, _)| *hash == change.hash()) {
+            return Rc::clone(expanded);
+        }
+        let expanded = Rc::new(decode(change));
+        self.decoded
+            .push_back((change.hash(), Rc::clone(&expanded)));
+        while self.decoded.len() > DECODED_KEPT {
+            self.decoded.pop_front();
+        }
+        expanded
     }
 
     /// What `change` wrote of the document, and whether it wrote more than where the document
@@ -523,7 +590,7 @@ impl<'d> Places<'d> {
         index: &BTreeMap<DocId, (AppId, TypeId)>,
     ) -> Changed {
         let doc = self.doc;
-        let expanded = change.decode();
+        let expanded = self.expand(change);
         let mut out = ChangedBuilder::default();
         // The objects the change wrote, each where it stands in the document and the keys written
         // of it: a change on a workspace of a hundred thousand items writes one key of one
@@ -593,7 +660,7 @@ impl<'d> Places<'d> {
     /// it wrote there is not read. A change that adds ten thousand items is answered by its
     /// first op, not walked to each item's place.
     pub fn wrote(&mut self, change: &Change) -> bool {
-        let expanded = change.decode();
+        let expanded = self.expand(change);
         let mut seen: HashSet<&automerge::legacy::ObjectId> = HashSet::new();
         for op in &expanded.operations {
             if !seen.insert(&op.obj) {

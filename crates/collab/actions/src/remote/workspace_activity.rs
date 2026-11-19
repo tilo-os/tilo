@@ -275,6 +275,10 @@ pub struct Entry {
     /// When, in milliseconds since the Unix epoch.
     pub at_ms: i64,
     pub summary: String,
+    /// What it did, as its action recorded it (the app, the resource, the item and the step):
+    /// a reader that has the app's own words says it in them rather than in [`Self::summary`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<crate::ActionContext>,
     /// The workspace it belongs to, under [`Scope::AllWorkspaces`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,

@@ -963,7 +963,11 @@ clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = "4.6.9"
 strsim = "0.11"
 uuid = { version = "1.23.1", features = ["serde", "v4", "v5"] }
-jiff = { version = "0.2.37", default-features = false, features = ["std", "serde", "tz-system"] }
+# Local time in the zone the device is set to: `tz-system` reads `TZ` and the
+# `/etc/localtime` link, and `tzdb-zoneinfo` resolves the zone name they give against
+# the machine's IANA database (the OS installs one and refuses a name it does not hold),
+# so a named zone is read as itself rather than as its `/etc/localtime` neighbour.
+jiff = { version = "0.2.37", default-features = false, features = ["std", "serde", "tz-system", "tzdb-zoneinfo"] }
 # The IANA time-zone database, built in so every device resolves a named zone
 # the same way whatever zoneinfo its host has.
 jiff-tzdb = "0.1"

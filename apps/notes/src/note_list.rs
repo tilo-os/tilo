@@ -992,8 +992,9 @@ impl NoteList {
                 "resource": crate::actions::page_resource_id(page),
             })
         };
-        // Appending names its note by title: answer the note it found.
-        if action == "append-to-note" {
+        // Appending names its note by title, and rewriting it names it by id:
+        // either way, answer the note it changed.
+        if matches!(action, "append-to-note" | "write-note") {
             return changes.iter().find_map(|patch| {
                 patch.path.iter().find_map(|(_, prop)| {
                     let automerge::Prop::Map(key) = prop else {

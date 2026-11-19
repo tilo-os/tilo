@@ -350,6 +350,8 @@ type Tasks {
     items: Collection<Task>
 }
 
+default view summary for Tasks
+
 row view task_row for Task
 
 default view summary for Tasks
