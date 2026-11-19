@@ -1,8 +1,0 @@
-reason = "The shared runtime used to export the P-384 code the SSH client links against: its tilo-crypto default features built the release-root verifier, which no runtime code called. 22b2e7133d took those features off, so each app links the code it uses: 117,190 bytes of named code in Remote and in Git Client (p384 +60,415, primeorder +34,818 and crypto_bigint +21,957, of which p384's precomputed basepoint table is 56,456). t's app-sizes-x86_64 (run rb5c377973c) measured Remote 84,992 and Git Client 17,408 bytes over their budgets. Each amount is one 64 KiB step, the ratchet's quantum. The aarch64 budgets are the same code; that architecture's first run prints what to raise them to."
-run = "rb5c377973c"
-
-[apps."so.tilo.git-client"]
-x86_64 = 65536
-
-[apps."so.tilo.remote"]
-x86_64 = 65536

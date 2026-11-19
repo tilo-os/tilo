@@ -16,6 +16,7 @@ pub use desktop_entry;
 pub use desktop_policy;
 pub use media;
 pub use os_actions;
+pub use p384;
 pub use registry_types;
 pub use roxmltree;
 pub use runtime_fs;

@@ -14815,6 +14815,7 @@ dependencies = [
  "collab-types",
  "desktop-policy",
  "os-actions",
+ "p384 0.14.0",
  "registry-types",
  "roxmltree 0.21.1",
  "settings-store",
