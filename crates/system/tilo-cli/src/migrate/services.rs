@@ -610,7 +610,7 @@ fn settle(
             outcomes.extend(members.iter().map(|_| None));
             Ok(())
         }
-        Err(error) if super::workspace::Refused::of(&error).is_none() => Err(error),
+        Err(error) if !refused_for_good(&error) => Err(error),
         Err(error) if members.len() == 1 => {
             outcomes.push(Some(error));
             Ok(())
@@ -636,6 +636,14 @@ fn made_ids(answer: &super::workspace::Answer) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether the workspace refused what it was asked, rather than not answering it: one that was
+/// still not ready after the call asked again stops the import, which the next one resumes, and
+/// is never taken as a refusal of the items asked (a list halved down to single issues, each
+/// made without its parent).
+fn refused_for_good(error: &anyhow::Error) -> bool {
+    super::workspace::Refused::of(error).is_some_and(|refused| !refused.asks_again())
 }
 
 fn refusal(key: &str, name: &str, error: &anyhow::Error) -> RefusedItem {
@@ -793,7 +801,7 @@ impl Landing<'_, '_> {
                 // it finds every issue it made, and makes none twice.
                 self.keep()
             }
-            Err(error) if super::workspace::Refused::of(&error).is_none() => Err(error),
+            Err(error) if !refused_for_good(&error) => Err(error),
             Err(error) if issues.len() == 1 => {
                 let Some((issue, listed)) = issues.first() else {
                     return Ok(());

@@ -49,6 +49,9 @@ struct Tasks {
     refused_title: Option<String>,
     /// How many calls are answered before the session drops.
     drops_after: Option<usize>,
+    /// Whether it answers a list naming an issue made before as not ready yet, as a workspace
+    /// does whose earlier issues are still on their way to it.
+    earlier_on_their_way: bool,
 }
 
 fn refused(why: impl Into<String>) -> anyhow::Error {
@@ -99,6 +102,12 @@ impl Tasks {
 
     fn create_many(&mut self, args: &Value) -> Result<Answer> {
         let list = args["issues"].as_array().cloned().unwrap_or_default();
+        if self.earlier_on_their_way && list.iter().any(|issue| issue.get("parent").is_some()) {
+            bail!(Refused::coded(
+                "not_ready",
+                "the workspace is not ready for this call yet"
+            ));
+        }
         assert!(!list.is_empty() && list.len() <= 200, "{}", list.len());
         if let Some(title) = &self.refused_title
             && let Some(at) = list.iter().position(|issue| issue["title"] == *title)
@@ -505,5 +514,42 @@ fn an_issue_whose_parent_was_deleted_since_comes_over_at_the_top() {
         made(56).1.parent.as_deref(),
         Some(made(55).0.as_str()),
         "its own sub-issue under it"
+    );
+}
+
+/// A workspace whose earlier issues are still on their way answers not ready, and keeps doing so
+/// after the call asked again: the import stops there, refusing nothing and making no issue
+/// without its parent, and the next one brings the rest where they belong.
+#[test]
+fn a_workspace_not_ready_stops_the_import_without_refusing_or_unnesting() {
+    let dir = tempfile::tempdir().unwrap();
+    let place = Place::at(dir.path());
+    reviewed(&place);
+    let mut tasks = Tasks::default();
+    invocation(&place, &mut tasks, &tracker(50), "invocation-1").unwrap();
+
+    let mut issues = tracker(60);
+    issues[52].parent = Some(page(10));
+    tasks.earlier_on_their_way = true;
+    let stopped = invocation(&place, &mut tasks, &issues, "invocation-2").unwrap_err();
+    let said = format!("{stopped:#}");
+    assert!(!said.contains("refused"), "{said}");
+    assert_eq!(tasks.issues.len(), 50, "nothing made while not ready");
+
+    tasks.earlier_on_their_way = false;
+    invocation(&place, &mut tasks, &issues, "invocation-3").unwrap();
+    assert_eq!(landed(&place), 60);
+    let id_of = |at: usize| {
+        tasks
+            .issues
+            .iter()
+            .find(|(_, issue)| issue.url == page(at))
+            .map(|(id, _)| id.clone())
+    };
+    let fifty_two = id_of(52).unwrap();
+    assert_eq!(
+        tasks.issues[&fifty_two].parent,
+        id_of(10),
+        "under its parent"
     );
 }
