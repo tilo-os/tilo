@@ -963,9 +963,9 @@ tilo_test_env::scenario! {
 
     phase the_instance_publishes_and_answers_the_history_verbs_every_app_does;
     {
-        let (mut host, mut window, sent, inbox, _route) = running("ada");
-        settle(&mut host, &mut window);
-        let hosted = host.instances().next().unwrap();
+        let (mut process, mut window, sent, inbox, _route) = running("ada");
+        settle(&mut process, &mut window);
+        let hosted = process.instances().next().unwrap();
         let find = |label: &str| {
             hosted
                 .published()
@@ -997,11 +997,11 @@ tilo_test_env::scenario! {
 
         // Grace increments through the broker, then undoes through the broker: her own step.
         deliver(&inbox, 1, &increment, "grace");
-        settle(&mut host, &mut window);
-        assert_eq!(value_of(host.instances().next().unwrap()), 1);
+        settle(&mut process, &mut window);
+        assert_eq!(value_of(process.instances().next().unwrap()), 1);
         deliver(&inbox, 2, &undo, "grace");
-        settle(&mut host, &mut window);
-        let hosted = host.instances().next().unwrap();
+        settle(&mut process, &mut window);
+        let hosted = process.instances().next().unwrap();
         assert_eq!(value_of(hosted), 0, "grace's undo took her step back");
         match answered(&sent, 2) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
@@ -1012,10 +1012,10 @@ tilo_test_env::scenario! {
         }
         assert_eq!(hosted.record().can_undo_as(&tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person("grace"))), (false, true));
 
-        // Ada's one step is the counter she created, which Grace has since counted in: her Undo
-        // takes that step back without taking Grace's work with it, so the counter stays.
+        // Ada's one step is the counter she created. Grace counted in it, but took that back, so
+        // nothing of anyone's holds the counter any more: Ada's Undo takes it away whole.
         deliver(&inbox, 3, &undo, "ada");
-        settle(&mut host, &mut window);
+        settle(&mut process, &mut window);
         match answered(&sent, 3) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
                 let value = output.value.expect("undo says what it took back");
@@ -1023,9 +1023,12 @@ tilo_test_env::scenario! {
             }
             other => panic!("ada's undo is never refused: {other:?}"),
         }
-        assert_eq!(value_of(host.instances().next().unwrap()), 0);
+        // Read what the workspace holds: asking the instance for the root would make a new one in
+        // its place.
+        let counters = |sent: &Sent| tilolang_tilo::reads::held_ids(&workspace_copy(sent));
+        assert!(counters(&sent).is_empty(), "ada's undo took the counter away");
         assert!(
-            !host
+            !process
                 .instances()
                 .next()
                 .unwrap()
@@ -1034,16 +1037,33 @@ tilo_test_env::scenario! {
                 .0
         );
 
-        // Grace's redo brings it back, and History lists all three steps as hers.
+        // Grace's redo brings her count back, and with it the counter it was counted in: one
+        // step of hers, which brings back Ada's making too. History lists all three steps as
+        // hers.
         deliver(&inbox, 4, &redo, "grace");
-        settle(&mut host, &mut window);
+        settle(&mut process, &mut window);
+        assert!(!counters(&sent).is_empty(), "the counter is back");
         assert_eq!(
-            value_of(host.instances().next().unwrap()),
+            value_of(process.instances().next().unwrap()),
             1,
             "redo brought it back"
         );
+        match answered(&sent, 4) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+                let value = output.value.expect("redo says what it brought back");
+                let sentences: Vec<&str> = value["redone"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|step| step["sentence"].as_str())
+                    .collect();
+                assert_eq!(sentences.len(), 2, "her count and ada's making: {value}");
+                assert!(sentences.contains(&"Created Counter"), "{value}");
+            }
+            other => panic!("grace's redo was answered {other:?}"),
+        }
         deliver(&inbox, 5, &history, "grace");
-        settle(&mut host, &mut window);
+        settle(&mut process, &mut window);
         match answered(&sent, 5) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
                 let value = output.value.expect("history lists the versions");
