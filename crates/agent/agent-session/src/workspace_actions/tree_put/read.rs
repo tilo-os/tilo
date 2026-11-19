@@ -39,6 +39,72 @@ fn place(arguments: &Map<String, Value>, name: &str) -> Result<Option<usize>, St
     }
 }
 
+/// Each document of `tree`, by its chunk, as a copy whose changes and their entries are read.
+pub(super) fn chunk_documents(
+    tree: &mut Namespace,
+) -> Vec<(fs_protocol::files::TreeChunk, automerge::AutoCommit)> {
+    tree.document_writes(&std::collections::BTreeMap::new())
+        .into_iter()
+        .filter_map(|write| {
+            let mut doc = automerge::AutoCommit::new();
+            tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &write.changes).ok()?;
+            Some((write.chunk, doc))
+        })
+        .collect()
+}
+
+/// How many of the folder's changes [`history`] lists when it is not told.
+const HISTORY_LAST: usize = 50;
+
+/// The folder's changes, the newest `last` of them, oldest first: each as a document's History
+/// lists a change of it ([`ui::history_source::verbs::entries_after`]), what it did, to which
+/// `item`, by whom (`actor`, with the agent's `name` and the person it acted `for`) and when,
+/// with the path in the workspace of the file it acted on. Its `change` is the `step` that
+/// `undo` takes it back by. A change is kept in the document of one chunk of the tree, and the chunks' changes
+/// are listed together, by their time.
+fn history(tree: &mut Namespace, arguments: &Map<String, Value>) -> Result<Value, String> {
+    let last = place(arguments, "last")?
+        .unwrap_or(HISTORY_LAST)
+        .clamp(1, ui::history_source::folder::LIMIT);
+    let documents = chunk_documents(tree);
+    let mut chunks = fs_protocol::tree::TreeChunks::default();
+    for (chunk, doc) in &documents {
+        if *chunk == 0 {
+            chunks.read_index(doc);
+        }
+        chunks.read_chunk(*chunk, doc);
+    }
+    let named = chunks.tree();
+    let words = &ui::history_source::sentence::ThreadWords;
+    let mut listed: Vec<Value> = Vec::new();
+    for (chunk, doc) in &documents {
+        for mut entry in ui::history_source::verbs::entries_after(doc, &[], words) {
+            let Some(fields) = entry.as_object_mut() else {
+                continue;
+            };
+            let path = fields
+                .get("item")
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str)
+                .filter(|id| named.node(id).is_some())
+                .map(|id| fs_protocol::tree::path_of(&named, id));
+            if let Some(path) = path {
+                fields.insert("path".to_owned(), path.into());
+            }
+            fields.insert("chunk".to_owned(), (*chunk).into());
+            listed.push(entry);
+        }
+    }
+    listed.sort_by_key(|entry| entry.get("time_ms").and_then(Value::as_i64).unwrap_or(0));
+    let total = listed.len();
+    let shown = listed.split_off(total.saturating_sub(last));
+    Ok(json!({
+        "versions": shown,
+        "total": total,
+        "undo": "`undo` with `step` set to a version's `change` takes that change back",
+    }))
+}
+
 /// How an answer names what an entry is.
 const fn kind(folder: bool) -> &'static str {
     if folder { "folder" } else { "file" }
@@ -306,8 +372,11 @@ impl Worker {
             ));
         }
         let (mut tree, _) = self.tree_in_workspace(workspace_id, named)?;
-        let value = if request.target.address.action == fs_protocol::tree::LIST {
+        let action = request.target.address.action.as_str();
+        let value = if action == fs_protocol::tree::LIST {
             listing(&mut tree, &arguments)
+        } else if action == fs_protocol::tree::HISTORY {
+            history(&mut tree, &arguments)
         } else {
             self.text_at(workspace_id, &mut tree, &arguments)
         }
