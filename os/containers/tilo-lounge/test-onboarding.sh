@@ -10,10 +10,11 @@
 #
 # The stranger's walk: the wait list and its confirmation mail; the invitation
 # the person who runs the host sends from the workspace's own wait list, and
-# the mail that carries it; the workspace of their own the link lands them in,
-# with the agent setup that puts their agent there; the passkey that brings
-# them back to it; a second workspace they make; and a visitor with no
-# invitation, who still cannot get in.
+# the mail that carries it; the workspace the link lands them in, with the
+# agent setup that connects their agent there; the passkey that brings them
+# back on a browser that forgot the site, into a workspace of their own; a
+# second workspace they make; and a visitor with no invitation, who still
+# cannot get in.
 #
 # usage: test-onboarding.sh BUNDLE WORK
 # BUNDLE is the web desktop bundle the stack's site serves

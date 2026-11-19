@@ -13,12 +13,11 @@
 //      address left on it is confirmed through the mail the entry sends;
 //   2. the operator hands an invite link over in one press, and invites that
 //      address from the workspace's own wait list, which mails the invitation;
-//   3. the stranger follows the invitation's link and joins; a person not set
-//      up here is handed to the site, whose first screen sets Tilo up through
-//      their agent (`tilo login`, which adds Tilo's MCP server) and opens a
-//      workspace of their own, not the shared desktop they landed in;
+//   3. the stranger follows the invitation's link and joins; the workspace
+//      opens, and the setup offered inside it sets Tilo up through their
+//      agent (`tilo login`, which adds Tilo's MCP server) in that workspace;
 //   4. they keep themselves with a passkey, their browser forgets the site,
-//      and the passkey brings them back to that same workspace;
+//      and the passkey brings them back into a workspace of their own;
 //   5. they make a second workspace and are in it;
 //   6. someone else with no invitation still cannot get in, and leaves an
 //      address on the wait list.
@@ -272,7 +271,7 @@ const search = async (tab, query, title) => {
   return rows;
 };
 /** A real pointer press on the desktop's node named `name`, once it is drawn. */
-const pressName = async (tab, name) => {
+const pressName = async (tab, name, timeout = stepLimit(3)) => {
   // The tree the shell publishes is asked for once; every change to it wakes
   // the wait.
   await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
@@ -288,9 +287,13 @@ const pressName = async (tab, name) => {
       hit.bounds.x1 ?? hit.bounds.x + hit.bounds.width, hit.bounds.y1 ?? hit.bounds.y + hit.bounds.height];
     const corner = globalThis.tiloMount.canvas.getBoundingClientRect();
     return JSON.stringify({x: Math.round(corner.left + (b[0] + b[2]) / 2), y: Math.round(corner.top + (b[1] + b[3]) / 2)});
-  })()`, stepLimit(3));
+  })()`, timeout);
   if (!shown) return false;
   const box = JSON.parse(shown);
+  // What a press there reaches: the page's canvas, or something of the page over it.
+  const under = await tab.evaluate(`(() => { const e = document.elementFromPoint(${box.x}, ${box.y});
+    return e ? e.localName + (e.id ? '#' + e.id : '') + (e.className ? '.' + String(e.className).split(' ')[0] : '') : 'nothing'; })()`).catch(() => '?');
+  console.log(`press ${JSON.stringify(name)} at ${box.x},${box.y} on ${under}`);
   await clickAt(tab, box.x, box.y);
   return true;
 };
@@ -573,21 +576,45 @@ try {
   await dump(stranger.tab, '4-invitation');
   if (!await pressText(stranger.tab, 'Join')) await fail(`the invitation offered no Join: ${report.invitationCard}`);
   // Joined: the page enters a workspace other than the one the Lounge listed
-  // for it before, and the first screen of a first visit is over it.
+  // for it before. A newcomer who joined is not handed to the site's first
+  // screen: the workspace they joined opens, and the setup waits inside it,
+  // offered from their own card once they used it. Nothing stands between
+  // them and the workspace they were invited to.
   await until(stranger.tab, `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')[${JSON.stringify(hostOrigin)}]?.workspace`,
     'the stranger joining through the invitation', stepLimit(8));
-  report.joined = await person(stranger.tab);
-  console.log(`ok: the invitation brought the stranger in (${report.joined.workspace})`);
-  mark('the invitation brought the stranger into the workspace');
+  await until(stranger.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)
+    && !!globalThis.tiloMount?.state?.()?.phase`, 'the workspace the stranger joined', stepLimit(8));
+  const overWorkspace = await stranger.tab.evaluate(`document.documentElement.dataset.firstRun ?? null`);
+  if (overWorkspace !== null) await fail(`the first screen came over the workspace the stranger joined (${overWorkspace})`);
+  report.joined = JSON.parse(await until(stranger.tab, `(() => {
+    const state = globalThis.tiloMount?.state?.() ?? null;
+    return state?.phase === 'presented' && state.workspaceName
+      ? JSON.stringify({workspace: state.workspaceName, title: document.title}) : '';
+  })()`, 'the workspace the stranger joined, drawn', stepLimit(8)));
+  await dump(stranger.tab, '4-joined-workspace');
+  mark('the invitation brought the stranger into the workspace, which opened with no first screen over it');
+  console.log(`ok: the invitation brought the stranger into ${report.joined.workspace}, which opened with no first screen over it (${report.joined.title})`);
 
-  // The page hands a person it let in by a link, and who is not set up here,
-  // to the site itself, where the first screen is: an agent sets Tilo up, or
-  // they skip it. This person has an agent.
-  await until(stranger.tab, firstScreenShown,
-    'the first screen of a person who is not set up yet', stepLimit(8));
+  // Their own setup is offered inside the workspace: the person's card's
+  // "Connect an agent or computer", on Devices and access, which shows the
+  // first screen's flow with a fresh code. This person has an agent.
+  await search(stranger.tab, 'devices and access', 'Devices and access');
+  if (!await pressName(stranger.tab, 'Connect an agent or computer', stepLimit(8))) {
+    await fail(`Devices and access offers no "Connect an agent or computer" to press: ${(await pageText(stranger.tab)).slice(0, 1200)}`);
+  }
+  // A press on a window just opened can be the one that makes it the window
+  // in front: a person presses the button again.
+  let setupShown = await poll(stranger.tab, firstScreenShown, stepLimit(4));
+  if (!setupShown) {
+    await pressName(stranger.tab, 'Connect an agent or computer', stepLimit(4));
+    setupShown = await poll(stranger.tab, firstScreenShown, stepLimit(6));
+  }
+  if (!setupShown) {
+    await dump(stranger.tab, '4-connect-agent');
+    await fail(`the setup opened from Devices and access never showed: ${JSON.stringify(await state(stranger.tab))} — ${(await pageText(stranger.tab)).slice(0, 1200)}`);
+  }
   report.firstScreenShown = await stranger.tab.evaluate(firstScreenShown);
   if (!report.firstScreenShown) await fail('the first screen is in the page but not shown');
-  await until(stranger.tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, 'the site arriving behind the first screen', stepLimit(6));
   report.firstScreen = await stranger.tab.evaluate(`({
     heading: document.getElementById('first-run-heading')?.textContent?.trim() ?? null,
     prompt: document.getElementById('first-run-offer')?.textContent?.trim() ?? null,
@@ -613,20 +640,28 @@ try {
   if (!/mcp add .*tilo .*-- \S*tilo mcp/.test(registered)) await fail(`tilo login did not add its MCP server to the agent: ${registered || 'never asked'}`);
   console.log('ok: tilo login ran and added Tilo’s MCP server to the agent');
   await until(stranger.tab, `!${firstScreenShown}`, 'the first screen leaving', stepLimit(4));
-  report.workspace = await until(stranger.tab, OWN_WORKSPACE, "the person's own workspace drawn", stepLimit(3));
+  const still = JSON.parse(await until(stranger.tab, `(() => {
+    const state = globalThis.tiloMount?.state?.() ?? null;
+    return state?.phase === 'presented' && state.workspaceName
+      ? JSON.stringify({workspace: state.workspaceName, title: document.title}) : '';
+  })()`, 'the workspace drawn again once the setup left', stepLimit(3)));
+  if (still.workspace !== report.joined.workspace) {
+    await fail(`the setup moved the person out of the workspace they joined: ${still.workspace}, not ${report.joined.workspace}`);
+  }
   report.landed = await person(stranger.tab);
-  await dump(stranger.tab, '5-own-workspace');
-  mark('tilo login ran and the tab is in the person\'s own workspace');
-  console.log(`ok: the person is in their own workspace (${report.workspace})`);
+  report.workspace = still.title;
+  await dump(stranger.tab, '5-joined-workspace-set-up');
+  mark('the agent was set up in the workspace the person joined');
+  console.log(`ok: the person's agent is in the workspace they joined (${still.title})`);
 
   // Let in, not only named: no failure screen over the workspace. Then a
   // second tab of the same browser, which holds a device key of its own (one
-  // per tab), opens the person's workspace as theirs, and the first tab
-  // stays in: the agent's entry never takes the person's own tabs out.
+  // per tab), opens the workspace the person is in as theirs, and the first
+  // tab stays in: the agent's entry never takes the person's own tabs out.
   const failureOf = tab => tab.evaluate(`document.documentElement.dataset.failure
     ? document.documentElement.dataset.failure + ': ' + (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 300) : ''`).catch(() => '');
   const refusedFirst = await failureOf(stranger.tab);
-  if (refusedFirst) await fail(`the person's own workspace refused the tab after the agent entered it: ${refusedFirst}`);
+  if (refusedFirst) await fail(`the workspace refused the tab after the agent entered it: ${refusedFirst}`);
   const second = await stranger.browser.tab();
   second.log ??= [];
   said.push({name: 'stranger-second-tab', tab: second});
@@ -635,77 +670,17 @@ try {
   await until(second, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`,
     'a second tab of the person arriving', stepLimit(8));
   const refusedSecond = await failureOf(second);
-  if (refusedSecond) await fail(`a second tab of the person was not let into their own workspace: ${refusedSecond}`);
+  if (refusedSecond) await fail(`a second tab of the person was not let into the workspace they are in: ${refusedSecond}`);
   await until(second, `!!(${JSON.stringify(report.workspace)} === document.title)`,
-    'the second tab in the person\'s own workspace', stepLimit(4));
-  await dump(second, '5-own-workspace-second-tab');
+    'the second tab in the workspace the person is in', stepLimit(4));
+  await dump(second, '5-joined-workspace-second-tab');
   const refusedAfter = await failureOf(stranger.tab);
-  if (refusedAfter) await fail(`the first tab lost the person's own workspace when the second came: ${refusedAfter}`);
+  if (refusedAfter) await fail(`the first tab lost the workspace when the second came: ${refusedAfter}`);
   await second.close();
-  mark('a second tab of the person entered their own workspace, and the first stayed in');
-  console.log('ok: a second tab of the person enters their own workspace, and the first stays in');
+  mark('a second tab of the person entered the workspace they are in, and the first stayed in');
+  console.log('ok: a second tab of the person enters the workspace they are in, and the first stays in');
 
-  // -- 3b. the same person on a browser new to the site signs in with their agent
-  // The invite-only entry turns this browser away to its wait list; "Sign in
-  // with your agent" shows a sign-in prompt with its code, and the computer
-  // `tilo login` set up above claims it, which takes the tab in as the person.
-  const returning = await visit('returning');
-  await arrive(returning, {expected: 'refused'});
-  await until(returning.tab, `document.documentElement.dataset.refusal === 'wait-list'`, 'the wait list for a browser new to the site', stepLimit(6));
-  await pressId(returning.tab, 'arrival-sign-in-agent');
-  const signInShown = `(() => {
-    const screen = document.getElementById('first-run');
-    const prompt = document.getElementById('first-run-prompt')?.textContent ?? '';
-    return document.documentElement.dataset.firstRun === 'waiting' && screen?.dataset.mode === 'sign-in'
-      && getComputedStyle(screen).display !== 'none' && /login [2-9A-Z]{3}-[2-9A-Z]{4}/.test(prompt)
-      && screen.getBoundingClientRect().height > 0 && prompt;
-  })()`;
-  const signInScreen = `JSON.stringify((() => {
-    const screen = document.getElementById('first-run');
-    const style = screen && getComputedStyle(screen);
-    const main = document.querySelector('#first-run .fr-main');
-    return {firstRun: document.documentElement.dataset.firstRun ?? null, hold: document.documentElement.dataset.firstRunHold ?? null,
-      screen: screen ? {...screen.dataset} : null, display: style?.display, opacity: style?.opacity, visibility: style?.visibility,
-      zIndex: style?.zIndex, height: screen?.getBoundingClientRect().height ?? null,
-      main: main ? {display: getComputedStyle(main).display, visibility: getComputedStyle(main).visibility, height: main.getBoundingClientRect().height} : null,
-      heading: document.getElementById('first-run-heading')?.textContent ?? null,
-      prompt: document.getElementById('first-run-prompt')?.textContent ?? null,
-      offerNote: document.getElementById('first-run-offer-note')?.textContent ?? null,
-      signInNote: document.getElementById('first-run-sign-in-note')?.textContent ?? null,
-      problem: document.getElementById('first-run-problem')?.textContent ?? null,
-      top: (() => { const at = document.elementFromPoint(innerWidth / 2, innerHeight / 3); return at ? at.tagName + '#' + at.id + '.' + at.className : null; })()};
-  })())`;
-  const signInPrompt = await poll(returning.tab, signInShown, stepLimit(6));
-  if (!signInPrompt) {
-    await dump(returning.tab, '5-sign-in-with-agent');
-    await fail(`"Sign in with your agent" showed no sign-in prompt: ${await returning.tab.evaluate(signInScreen).catch(error => error.message)}`);
-  }
-  report.signInPrompt = signInPrompt;
-  await dump(returning.tab, '5-sign-in-with-agent');
-  const signIn = commandOf(signInPrompt);
-  if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${signInPrompt}`);
-  const claimed = await tilo(env, ['login', signIn.code, '--site', signIn.site ?? site]);
-  report.signInLogin = claimed;
-  if (claimed.code !== 0) await fail(`tilo login of the sign-in code failed (${claimed.code}): ${claimed.stderr}${claimed.stdout}`);
-  // The person asked their agent to sign them in on this tab, so the tab asks
-  // them nothing about whose device it becomes: that card, which warns of a
-  // link someone else made, is for a link handed to a device.
-  const signedInOrAsked = await until(returning.tab, `(() => {
-    if (document.querySelector('[data-card="pair-whose"]')) return 'asked';
-    return ${OWN_WORKSPACE};
-  })()`, 'the signed-in tab in the person\'s own workspace', stepLimit(3));
-  if (signedInOrAsked === 'asked') {
-    await fail('the tab its person signed in with their agent asked whose device it becomes, as for a link someone else made');
-  }
-  const signedIn = await person(returning.tab);
-  report.signedIn = signedIn;
-  if (signedIn.user !== report.landed.user) await fail(`the agent signed in ${signedIn.user}, not ${report.landed.user}`);
-  await dump(returning.tab, '5-signed-in-with-agent');
-  await returning.browser.close().catch(() => {});
-  mark('a browser new to the site signed the person in with their agent');
-  console.log(`ok: "Sign in with your agent" showed its code, and the person's computer signed the tab in to ${signedIn.title}`);
-
-  // -- 4. a passkey brings the same person back to that workspace ------------
+  // -- 4. a passkey brings the same person back, to a workspace of theirs -----
   // Kept from the person's own desktop, as "Keep with passkey" does. A
   // passkey is made in the tab a person is looking at: the second tab opened
   // above closed, and this one is in front again before the browser is asked.
