@@ -598,8 +598,7 @@ impl CameraApp {
         let row = ui::framework::LiveRow::typed::<crate::row_types::Capture>(
             "camera.capture",
             crate::CATALOG.t("camera-resource-capture"),
-        )
-        .operation(crate::actions::open_photos_action());
+        );
         ActionBinding::unit_for(&row, "open-photos")
             .ok()
             .map(ActionEmitter::new)
