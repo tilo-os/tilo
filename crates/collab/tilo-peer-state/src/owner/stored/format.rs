@@ -10,7 +10,7 @@ use super::WORKSPACE_VERSION;
 pub(crate) const FORMAT: Format = Format {
     name: "owner workspace document",
     version: WORKSPACE_VERSION,
-    oldest: 6,
+    oldest: 7,
     steps: &[],
 };
 

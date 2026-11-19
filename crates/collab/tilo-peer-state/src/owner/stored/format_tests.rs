@@ -11,7 +11,7 @@ use tilo_desktop_model::WorkspaceId;
 use tilo_files::native::migration::assert_golden_bytes;
 
 /// An entry as this build writes it.
-const CURRENT: &str = include_str!("../../../golden/owner-workspace-document/v6.hex");
+const CURRENT: &str = include_str!("../../../golden/owner-workspace-document/v7.hex");
 const FOUNDERS: &str = "40267648-f762-4c8d-89ad-c5ab27aa13b8";
 
 fn bytes(hex: &str) -> Vec<u8> {
