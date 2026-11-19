@@ -77,7 +77,9 @@ pub(super) fn deadline(wait_ms: u32) -> Instant {
 
 /// The state of `invocation`, as [`ActionProvider::observe`] reports it to
 /// `caller`, once it has moved past `seen` — or, with no `seen`, once it
-/// settles — or at `until`, whichever comes first.
+/// settles or at `until`, whichever comes first. A caller following what it
+/// has seen is answered only when the state moves: a provider that can say
+/// when it changes needs no clock, and a clock's answer says nothing new.
 ///
 /// It answers at once when the invocation is already there, when `caller`
 /// may not see it (`None`), when the provider cannot signal changes, or when
@@ -100,6 +102,7 @@ pub fn settle_with<H: ActionProvider + Clone + Send + 'static>(
         seen,
         until,
         answer,
+        first: true,
     });
     settled
 }
@@ -142,6 +145,9 @@ struct Wait<H> {
     seen: Option<UpdateMark>,
     until: Instant,
     answer: Completer<Option<InvocationState>>,
+    /// This is the first look: a wait that is already due answers at once
+    /// rather than parking on a change that may never come.
+    first: bool,
 }
 
 impl<H: ActionProvider> Wait<H> {
@@ -155,9 +161,13 @@ impl<H: ActionProvider> Wait<H> {
         })
     }
 
-    /// Whether to stop waiting whatever the state says.
+    /// Whether to stop waiting whatever the state says: a wait for an outcome
+    /// (`seen` is `None`) answers at `until`, a wait that is already due at its
+    /// first look answers at once, and any wait answers once its caller's
+    /// execution has ended. A caller following what it has seen hears only a
+    /// move: its provider says when it changes, so a clock says nothing new.
     fn over(&self) -> bool {
-        tilo_clock::now() >= self.until
+        ((self.seen.is_none() || self.first) && tilo_clock::now() >= self.until)
             || self
                 .caller
                 .execution_lease()
@@ -165,7 +175,7 @@ impl<H: ActionProvider> Wait<H> {
     }
 }
 
-fn look<H: ActionProvider + Send + 'static>(wait: Wait<H>) {
+fn look<H: ActionProvider + Send + 'static>(mut wait: Wait<H>) {
     let mut wakes = 0_u32;
     loop {
         if wait.answer.is_abandoned() {
@@ -183,6 +193,7 @@ fn look<H: ActionProvider + Send + 'static>(wait: Wait<H>) {
         };
         if matches!(change.poll_ready(), PendingPoll::Waiting) {
             // Whether it fires or its producer goes away, look again.
+            wait.first = false;
             change.then(move |_| look(wait));
             return;
         }
