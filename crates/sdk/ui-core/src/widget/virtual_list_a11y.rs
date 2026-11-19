@@ -165,7 +165,7 @@ impl VirtualRows {
                 item.description = Some(message.clone());
             }
         }
-        if let Some(row_box) = self.row_box(row.index) {
+        if let Some(row_box) = self.row_reach(row.index) {
             item = item.with_bounds(row_box);
         }
         if let Some(encode) = &self.semantic_key {
@@ -439,7 +439,7 @@ impl VirtualRows {
             stamp: row.stamp,
             index: row.index,
             count,
-            bounds: self.row_box(row.index),
+            bounds: self.row_reach(row.index),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
             menu: self.menus.row_offers(&*self.model, &row.key),

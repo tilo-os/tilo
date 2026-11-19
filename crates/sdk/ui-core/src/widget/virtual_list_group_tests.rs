@@ -727,7 +727,7 @@ tilo_test_env::scenario! {
         let rect = list.rect;
         let gutter = crate::chrome::disclosure_gutter(&Theme::dark());
         assert!(
-            (list.lead - list.bleed.max(gutter)).abs() < 0.5,
+            (list.lead - gutter).abs() < 0.5,
             "a list whose headings fold keeps the chevron gutter before its column: {}",
             list.lead
         );
@@ -757,7 +757,7 @@ tilo_test_env::scenario! {
         let mut list = grouped(vec![None, None]);
         let _ = settle(&mut list);
         assert!(
-            (list.lead - list.bleed).abs() < 0.5,
+            list.lead.abs() < 0.5,
             "no heading or parent to fold reserves no gutter: {}",
             list.lead
         );

@@ -335,6 +335,18 @@ impl VirtualRows {
         Some(self.lift_rect(top + band, (height - band).max(0.0)))
     }
 
+    /// Where a reader finds the row `index`: its box within the list's own columns. A list
+    /// inside a page hangs its rows' lift past its edge; that lift is drawn, not part of the row.
+    pub(super) fn row_reach(&self, index: usize) -> Option<Rect> {
+        let row = self.row_box(index)?;
+        Some(Rect::new(
+            row.x0.max(self.rect.x0),
+            row.y0,
+            row.x1.min(self.rect.x1),
+            row.y1,
+        ))
+    }
+
     pub(super) fn place_band(&mut self, index: usize, top: f64) {
         let Some(group) = self.row_group(index) else {
             return;

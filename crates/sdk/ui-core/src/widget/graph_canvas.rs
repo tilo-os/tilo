@@ -167,9 +167,11 @@ impl Widget for GraphCanvas {
     crate::described!();
 
     /// Its nodes and the lines between them.
+    /// Its nodes as its children, over a picture of the lines between them.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("div");
         cx.children();
+        cx.picture();
     }
 
     retained_parts!("GraphCanvas");
@@ -202,6 +204,8 @@ impl Widget for GraphCanvas {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // The lines are the canvas's own paint; its nodes draw as widgets of their own.
+        crate::scene_parts::picture();
         for (from, to) in self.connection_rects() {
             let start = from.center();
             let end = to.center();

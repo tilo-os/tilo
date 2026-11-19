@@ -64,7 +64,7 @@ impl VirtualRows {
             vello::peniko::BlendMode::default(),
             opacity,
             transform,
-            &self.rect,
+            &self.drawn(),
         );
         let accent = theme.tokens.colors.intent.accent_ink;
         let frame_transform = transform;

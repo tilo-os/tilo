@@ -562,12 +562,18 @@ impl<F: Fn(f64) -> String> ValueAxis<F> {
                 );
             }
             let label = (self.label)(value);
-            let (width, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
+            // Each label ends a step before the plot, its line centred on its rule.
+            let (width, height) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
+            let step = f64::from(theme.tokens.spacing.s2);
             tr.draw_style(
                 scene,
                 &label,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((plot.x0 - f64::from(width) - 9.0, y - 6.0)),
+                transform
+                    * Affine::translate((
+                        plot.x0 - f64::from(width) - step,
+                        y - f64::from(height) / 2.0,
+                    )),
                 None,
                 &theme.text(TextRole::Caption),
             );

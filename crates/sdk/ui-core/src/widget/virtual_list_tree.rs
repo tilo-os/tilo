@@ -534,11 +534,11 @@ impl VirtualRows {
         // stands on the pane's content edge — so the row's lift keeps the column's gutter — and
         // the chevron column stands inside that box, as the first thing at the edge, where on a
         // phone it would otherwise reach the glass. A list inside a page has its own edge as the
-        // gutter: the page already stands in from the window, so the chevron column stands in
-        // front of the rows' box there.
+        // gutter: the page already stands in from the window, so the rows' box starts on the
+        // list's edge (the lift hangs past it) with the chevron column, if any, in front of it.
         let (lead, chevron_column) = match self.stance {
             RowStance::Column => (self.bleed, gutter),
-            RowStance::Bleed | RowStance::Flush => (self.bleed.max(gutter), 0.0),
+            RowStance::Bleed | RowStance::Flush => (gutter, 0.0),
         };
         let stepped = (self.chevron_column - chevron_column).abs() > 0.5;
         self.chevron_column = chevron_column;

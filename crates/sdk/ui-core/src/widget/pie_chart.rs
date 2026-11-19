@@ -255,8 +255,8 @@ impl PieMarks {
         }
     }
 
-    /// Lay the donut and the legend out inside `rect` as one centred unit
-    /// and return the rect for the wedges, with each legend entry's rect
+    /// Lay the donut and the legend out inside `rect`, the donut on its leading edge with the
+    /// legend beside it (or centred under it where it is too narrow), and return the rect for the wedges, with each legend entry's rect
     /// (swatch, label and share, then its detail column).
     fn legend_layout(
         &self,
@@ -288,8 +288,8 @@ impl PieMarks {
         let side_width = rect.width() - rect.height().min(rect.width() * 0.6);
         if widest + gap <= side_width {
             let diameter = (rect.width() - widest - gap).min(rect.height()).max(0.0);
-            let unit = diameter + gap + widest;
-            let x0 = (rect.center().x - unit / 2.0).max(rect.x0);
+            // The donut starts on the chart's edge, where its title and the words around it do.
+            let x0 = rect.x0;
             let legend_x = x0 + diameter + gap;
             let block = crate::num::f64_of_usize(entries.len()) * row;
             let mut y = (rect.center().y - block / 2.0).max(rect.y0);
@@ -338,35 +338,40 @@ impl PieMarks {
     /// The height the chart wants at `width`: a donut as wide as it may
     /// be, with its legend beside or under it.
     fn natural_height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
+        let title = crate::widget::chart_navigation::title_band(theme, &self.frame.title);
         let line = f64::from(theme.text(TextRole::Body).line_height_px());
         let diameter = (line * 14.0).min(width).max(line * 6.0);
         if !self.legend || self.slices.is_empty() {
-            return diameter;
+            return title + diameter;
         }
         let probe = Rect::new(0.0, 0.0, width, diameter);
         let (_, items) = self.legend_layout(text, theme, probe);
-        let beside = items.first().is_some_and(|(_, r)| r.x0 > probe.center().x);
+        // Beside the donut, the legend starts on its top band; under it, past its foot.
+        let beside = items.first().is_some_and(|(_, r)| r.y0 < diameter);
         if beside {
             let block = items.iter().map(|(_, r)| r.y1).fold(0.0, f64::max)
                 - items
                     .iter()
                     .map(|(_, r)| r.y0)
                     .fold(f64::INFINITY, f64::min);
-            diameter.max(block)
+            title + diameter.max(block)
         } else {
             let rows = items.iter().map(|(_, r)| r.y1).fold(0.0, f64::max)
                 - items
                     .iter()
                     .map(|(_, r)| r.y0)
                     .fold(f64::INFINITY, f64::min);
-            diameter + f64::from(theme.tokens.spacing.rhythm.section) + rows.max(0.0)
+            title + diameter + f64::from(theme.tokens.spacing.rhythm.section) + rows.max(0.0)
         }
     }
 
-    /// Lay the donut and the legend out inside the frame's rect as one centred unit, measured
-    /// in the theme's own type.
+    /// Lay the donut and the legend out inside the frame's rect, under its title, measured in
+    /// the theme's own type.
     fn place(&mut self, text: &mut TextRenderer, theme: &Theme) {
-        let (chart_rect, legend) = self.legend_layout(text, theme, self.frame.rect);
+        let mut area = self.frame.rect;
+        area.y0 = (area.y0 + crate::widget::chart_navigation::title_band(theme, &self.frame.title))
+            .min(area.y1);
+        let (chart_rect, legend) = self.legend_layout(text, theme, area);
         self.chart_rect = chart_rect;
         self.legend_detail_w = self.legend_detail_width(text, theme);
         self.legend_entries = legend;
@@ -708,6 +713,14 @@ impl PlotMarks for PieMarks {
         theme: &Theme,
     ) {
         self.reduce_motion = theme.reduce_motion;
+        crate::widget::chart_navigation::draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
         let now = crate::time::now();
         let (base_center, outer, inner) = self.geometry();
         let sectors = self.sectors_at(now);
@@ -1011,13 +1024,9 @@ mod tests {
             chart.marks.place(&mut text, &theme);
             let legend = chart.marks.legend_entries.clone();
             let area = chart.marks.chart_rect;
-            // Beside: donut and legend centred as one unit.
-            let left_gap = area.x0 - rect.x0;
-            let right_gap = rect.x1 - legend.iter().map(|(_, r)| r.x1).fold(0.0, f64::max);
-            assert!(
-                (left_gap - right_gap).abs() < 2.0,
-                "{left_gap} vs {right_gap}"
-            );
+            // Beside: the donut starts on the chart's edge, its legend after it.
+            assert!((area.x0 - rect.x0).abs() < 0.5, "{area:?} starts on {rect:?}");
+            assert!(legend.iter().all(|(_, r)| r.x0 > area.x1), "{legend:?} after {area:?}");
             let widths: Vec<f64> = legend.iter().map(|(_, r)| r.width()).collect();
             assert!(
                 (widths[0] - widths[1]).abs() < 0.5,
