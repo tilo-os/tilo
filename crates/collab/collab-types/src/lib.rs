@@ -67,6 +67,7 @@ pub mod own_resource;
 pub mod peer;
 pub mod personal;
 pub mod presence;
+pub mod readers;
 pub mod realtime;
 pub mod receipt;
 pub mod redaction;
@@ -139,6 +140,7 @@ pub use personal::{
     is_personal_cluster, person_document_id, person_resource_type, personal_cluster,
     personal_cluster_of,
 };
+pub use readers::{EVERY_MEMBER, Readers, app_document_id, content_artifact_id, reader_group};
 pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,
     WrittenDocument, check_appearances, check_claims, check_claims_by_kind, check_continuations,
