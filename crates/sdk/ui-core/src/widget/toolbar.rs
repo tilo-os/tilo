@@ -1482,40 +1482,55 @@ impl Widget for Toolbar {
             height: known.height.unwrap_or(self.intrinsic.height),
         }
     }
-    fn adjust_layout_style(
+    /// Its buttons' sizes follow from their labels: a toolbar of buttons alone is sized before the
+    /// solve.
+    fn size_before_solve(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
+    ) {
         self.measured_scale = Some(self.theme.text_scale);
-        let mut changed = self.update_measurements(text);
-        if !self.has_elements() {
-            if changed {
-                let _ = tree.mark_dirty(node);
-            }
-            // The row gives way along its own axis (into the More menu), never
-            // across it: in a column a toolbar keeps its full height.
-            let Ok(mut style) = tree.style(node).cloned() else {
-                return changed;
-            };
-            if style.position == taffy::Position::Absolute {
-                return changed;
-            }
-            let cross = match self.orientation {
-                Orientation::Horizontal => &mut style.min_size.height,
-                Orientation::Vertical => &mut style.min_size.width,
-            };
-            let want = Dimension::length(match self.orientation {
-                Orientation::Horizontal => self.intrinsic.height.ceil(),
-                Orientation::Vertical => self.intrinsic.width.ceil(),
-            });
-            if *cross == want {
-                return changed;
-            }
-            *cross = want;
-            return tree.set_style(node, style).is_ok() || changed;
+        let changed = self.update_measurements(text);
+        if self.has_elements() {
+            return;
         }
+        if changed {
+            let _ = tree.mark_dirty(node);
+        }
+        // The row gives way along its own axis (into the More menu), never
+        // across it: in a column a toolbar keeps its full height.
+        let Ok(mut style) = tree.style(node).cloned() else {
+            return;
+        };
+        if style.position == taffy::Position::Absolute {
+            return;
+        }
+        let cross = match self.orientation {
+            Orientation::Horizontal => &mut style.min_size.height,
+            Orientation::Vertical => &mut style.min_size.width,
+        };
+        let want = Dimension::length(match self.orientation {
+            Orientation::Horizontal => self.intrinsic.height.ceil(),
+            Orientation::Vertical => self.intrinsic.width.ceil(),
+        });
+        if *cross != want {
+            *cross = want;
+            let _ = tree.set_style(node, style);
+        }
+    }
+
+    /// A toolbar that holds elements is as long as they were laid out.
+    fn adjust_layout_style(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
+        if !self.has_elements() {
+            return false;
+        }
+        let mut changed = false;
         for (index, child) in self.element_nodes(tree, node) {
             let size = tree.layout(child).map(|l| l.size).unwrap_or(Size::ZERO);
             if let Some(slot) = self.extents.get_mut(index)
@@ -2813,7 +2828,7 @@ mod tests {
                 let mut text = TextRenderer::new();
                 let mut tree = TaffyTree::new();
                 let node = tb.build_layout(&mut tree, &theme, &mut HashMap::new());
-                tb.adjust_layout_style(&mut tree, node, &mut text);
+                tb.size_before_solve(&mut tree, node, &mut text);
                 tree.set_style(
                     node,
                     Style {

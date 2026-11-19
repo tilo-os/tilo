@@ -2223,18 +2223,18 @@ impl Widget for ToggleGroup {
         }
     }
 
-    fn adjust_layout_style(
+    fn size_before_solve(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
+    ) {
         if self.orientation == Orientation::Vertical {
-            return false;
+            return;
         }
         self.measure_naturals(text);
         if self.fill || self.chosen.is_some() {
-            return false;
+            return;
         }
         if self.measured_width.is_none() {
             self.measured_width = Some(f32_of_f64(self.metrics.intrinsic_width(
@@ -2244,7 +2244,7 @@ impl Widget for ToggleGroup {
                 text,
             )));
         }
-        self.pin_measured_width(taffy, node)
+        self.pin_measured_width(taffy, node);
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

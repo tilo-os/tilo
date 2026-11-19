@@ -115,6 +115,10 @@ struct NodeData {
     /// The cached results of the layout computation
     pub(crate) cache: Cache,
 
+    /// Whether the node's own layout styles follow the width it is solved at (see
+    /// [`TaffyTree::set_restyled_for_width`])
+    pub(crate) restyled_for_width: bool,
+
     /// The computation result from layout algorithm
     #[cfg(feature = "detailed_layout_info")]
     pub(crate) detailed_layout_info: DetailedLayoutInfo,
@@ -130,6 +134,7 @@ impl NodeData {
             unrounded_layout: Layout::new(),
             final_layout: Layout::new(),
             has_context: false,
+            restyled_for_width: false,
             #[cfg(feature = "detailed_layout_info")]
             detailed_layout_info: DetailedLayoutInfo::None,
         }
@@ -279,6 +284,89 @@ where
     /// For each node being solved, whether anything its result came from is tainted (see
     /// `Cache::get_tainted`)
     pub(crate) taints: Vec<bool>,
+    /// What styles a node marked [`TaffyTree::set_restyled_for_width`] for the width it is solved
+    /// at, before it is solved
+    pub(crate) restyle: Option<&'t mut RestyleFunction<'t>>,
+}
+
+/// Styles a node for the width a solve gives it, before its algorithm reads its style
+/// ([`Solving::Before`]), and once it is laid out ([`Solving::Laid`]), when it may answer that its
+/// layout is solved again with the styles it set. See [`TaffyTree::set_restyled_for_width`].
+pub type RestyleFunction<'a> = dyn FnMut(NodeId, Solving<'_>, &mut Restyle<'_>) -> bool + 'a;
+
+/// Where a [`RestyleFunction`] is called in a node's solve.
+#[derive(Clone, Copy, Debug)]
+pub enum Solving<'a> {
+    /// Before the node is solved: its border-box width when the parent decided it, else the space
+    /// it may take.
+    Before(AvailableSpace),
+    /// The node was laid out (not only measured) to this result, its children placed; answering
+    /// true lays it out again, at most twice.
+    Laid(&'a LayoutOutput),
+}
+
+/// The styles a [`RestyleFunction`] may set while a node is solved: the node's own, and its
+/// children's.
+pub struct Restyle<'a> {
+    nodes: &'a mut SlotMap<DefaultKey, NodeData>,
+    children: &'a SlotMap<DefaultKey, ChildrenVec<NodeId>>,
+    parents: &'a SlotMap<DefaultKey, Option<NodeId>>,
+    node: NodeId,
+}
+
+impl Restyle<'_> {
+    /// The node being solved.
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+
+    /// The style of `node`: the node being solved or one of its children.
+    pub fn style(&self, node: NodeId) -> &Style {
+        &self.nodes[node.into()].style
+    }
+
+    /// The children of `node`.
+    pub fn children(&self, node: NodeId) -> &[NodeId] {
+        &self.children[node.into()]
+    }
+
+    /// The parent of `node`, if it has one.
+    pub fn parent(&self, node: NodeId) -> Option<NodeId> {
+        self.parents[node.into()]
+    }
+
+    /// Where the last solve placed `node`: the node being solved or one of its children.
+    pub fn last_layout(&self, node: NodeId) -> &Layout {
+        &self.nodes[node.into()].final_layout
+    }
+
+    /// Where this solve placed `node`, a child of the node [`Solving::Laid`] out, before rounding.
+    pub fn laid(&self, node: NodeId) -> &Layout {
+        &self.nodes[node.into()].unrounded_layout
+    }
+
+    /// Forget what was solved of `node`, a child whose size follows from something this width
+    /// changed (what it measures itself at), so it is solved again.
+    pub fn mark_dirty(&mut self, node: NodeId) {
+        if node != self.node {
+            self.nodes[node.into()].cache.clear();
+        }
+    }
+
+    /// Give `node` its style for this width. The node being solved may change only what its own
+    /// algorithm reads (its tracks, gaps, alignment of its items, direction and wrapping): its
+    /// parent has read the rest already. A child may change any of its style; what was solved of it
+    /// is forgotten when it does, and it is solved again.
+    pub fn set_style(&mut self, node: NodeId, style: Style) {
+        let data = &mut self.nodes[node.into()];
+        if data.style == style {
+            return;
+        }
+        data.style = style;
+        if node != self.node {
+            data.cache.clear();
+        }
+    }
 }
 
 impl<NodeContext, MeasureFunction> TaffyView<'_, NodeContext, MeasureFunction>
@@ -293,7 +381,7 @@ where
         &mut self,
         node_id: NodeId,
         inputs: LayoutInput,
-        #[cfg(feature = "block_layout")] block_ctx: Option<&mut BlockContext<'_>>,
+        #[cfg(feature = "block_layout")] mut block_ctx: Option<&mut BlockContext<'_>>,
     ) -> LayoutOutput {
         // If RunMode is PerformHiddenLayout then this indicates that an ancestor node is `Display::None`
         // and thus that we should lay out this node using hidden layout regardless of it's own display style.
@@ -312,12 +400,58 @@ where
             return output;
         }
         self.taints.push(false);
-        let display_mode = self.taffy.nodes[node_key].style.display;
+        let restyled = self.taffy.nodes[node_key].restyled_for_width && self.restyle.is_some();
+        if restyled {
+            let width = inputs.known_dimensions.width.map_or(inputs.available_space.width, AvailableSpace::Definite);
+            self.restyle_node(node_id, Solving::Before(width));
+        }
+        let mut again = 0;
+        let (output, own_width_taint) = loop {
+            let solved = self.dispatch(node_id, inputs, #[cfg(feature = "block_layout")] block_ctx.as_deref_mut());
+            if restyled && again < 2 && inputs.run_mode == RunMode::PerformLayout && self.restyle_node(node_id, Solving::Laid(&solved.0)) {
+                again += 1;
+                continue;
+            }
+            break solved;
+        };
+        let has_children = self.child_count(node_id) > 0;
+        let width_open = inputs.known_dimensions.width.is_none();
+        let below = self.taints.pop().unwrap_or(true);
+        let tainted = Taint {
+            width: width_open && (below || own_width_taint || (has_children && self.held_at_min_width(node_id, inputs, output))),
+            height: inputs.known_dimensions.height.is_none()
+                && has_children
+                && self.height_not_from_content(node_id, inputs, output),
+        };
+        self.taffy.nodes[node_key].cache.store_tainted(&inputs, output, tainted);
+        self.taint_parent(tainted.width);
+        output
+    }
+
+    /// Call the solve's [`RestyleFunction`] for `node` at `solving`.
+    fn restyle_node(&mut self, node: NodeId, solving: Solving<'_>) -> bool {
+        let Some(restyle) = self.restyle.as_mut() else {
+            return false;
+        };
+        let mut styles =
+            Restyle { nodes: &mut self.taffy.nodes, children: &self.taffy.children, parents: &self.taffy.parents, node };
+        restyle(node, solving, &mut styles)
+    }
+
+    /// Solve `node_id` with the layout algorithm its display style and whether it has children
+    /// choose; whether the result is wider than its own content's wrapping.
+    fn dispatch(
+        &mut self,
+        node_id: NodeId,
+        inputs: LayoutInput,
+        #[cfg(feature = "block_layout")] block_ctx: Option<&mut BlockContext<'_>>,
+    ) -> (LayoutOutput, bool) {
+        let display_mode = self.taffy.nodes[node_id.into()].style.display;
         let has_children = self.child_count(node_id) > 0;
         let width_open = inputs.known_dimensions.width.is_none();
 
         // Dispatch to a layout algorithm based on the node's display style and whether the node has children or not.
-        let (output, own_width_taint) = match (display_mode, has_children) {
+        match (display_mode, has_children) {
             (Display::None, _) => (compute_hidden_layout(self, node_id), false),
             #[cfg(feature = "block_layout")]
             (Display::Block, true) => (compute_block_layout(self, node_id, inputs, block_ctx), false),
@@ -331,17 +465,7 @@ where
             }
             #[allow(unreachable_patterns)]
             _ => (compute_hidden_layout(self, node_id), true),
-        };
-        let below = self.taints.pop().unwrap_or(true);
-        let tainted = Taint {
-            width: width_open && (below || own_width_taint || (has_children && self.held_at_min_width(node_id, inputs, output))),
-            height: inputs.known_dimensions.height.is_none()
-                && has_children
-                && self.height_not_from_content(node_id, inputs, output),
-        };
-        self.taffy.nodes[node_key].cache.store_tainted(&inputs, output, tainted);
-        self.taint_parent(tainted.width);
-        output
+        }
     }
 
     /// Mark the node being solved around this one as tainted in width when this one is.
@@ -1027,10 +1151,46 @@ impl<NodeContext> TaffyTree<NodeContext> {
     {
         let use_rounding = self.config.use_rounding;
         let rounding_scale = self.config.rounding_scale;
-        let mut taffy_view = TaffyView { taffy: self, measure_function, taints: Vec::new() };
+        let mut taffy_view = TaffyView { taffy: self, measure_function, taints: Vec::new(), restyle: None };
         compute_root_layout(&mut taffy_view, node_id, available_space);
         if use_rounding {
             round_layout_to_grid(&mut taffy_view, node_id, rounding_scale);
+        }
+        Ok(())
+    }
+
+    /// [`Self::compute_layout_with_measure`], styling each node marked
+    /// [`Self::set_restyled_for_width`] with `restyle` for the width it is solved at, before it is.
+    pub fn compute_layout_with_measure_and_restyle<MeasureFunction>(
+        &mut self,
+        node_id: NodeId,
+        available_space: Size<AvailableSpace>,
+        measure_function: MeasureFunction,
+        restyle: &mut RestyleFunction<'_>,
+    ) -> Result<(), TaffyError>
+    where
+        MeasureFunction:
+            FnMut(Size<Option<f32>>, Size<AvailableSpace>, NodeId, Option<&mut NodeContext>, &Style) -> Size<f32>,
+    {
+        let use_rounding = self.config.use_rounding;
+        let rounding_scale = self.config.rounding_scale;
+        let mut taffy_view = TaffyView { taffy: self, measure_function, taints: Vec::new(), restyle: Some(restyle) };
+        compute_root_layout(&mut taffy_view, node_id, available_space);
+        if use_rounding {
+            round_layout_to_grid(&mut taffy_view, node_id, rounding_scale);
+        }
+        Ok(())
+    }
+
+    /// Whether `node` styles its insides for the width it is solved at: a solve with a
+    /// [`RestyleFunction`] hands it each width before solving it there, so a layout that changes
+    /// with its width (a label beside its control or above it, a grid's column count) is decided
+    /// within the solve rather than by solving again.
+    pub fn set_restyled_for_width(&mut self, node: NodeId, restyled: bool) -> TaffyResult<()> {
+        let data = &mut self.nodes[node.into()];
+        if data.restyled_for_width != restyled {
+            data.restyled_for_width = restyled;
+            self.mark_dirty(node)?;
         }
         Ok(())
     }
@@ -1049,7 +1209,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
     /// Returns an instance of LayoutTree representing the TaffyTree
     #[cfg(test)]
     pub(crate) fn as_layout_tree(&mut self) -> impl LayoutPartialTree + CacheTree + '_ {
-        TaffyView { taffy: self, measure_function: |_, _, _, _, _| Size::ZERO, taints: Vec::new() }
+        TaffyView { taffy: self, measure_function: |_, _, _, _, _| Size::ZERO, taints: Vec::new(), restyle: None }
     }
 }
 

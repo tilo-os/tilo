@@ -101,6 +101,8 @@ pub struct Dropdown {
     caption_style: TextStyle,
     theme_caption_height: f64,
     measured: f64,
+    /// Its node in the tree it was last built into.
+    node: Option<NodeId>,
     column: Option<ChooserColumn>,
     chooser_cap: f64,
     interaction: crate::interaction::InteractionEnvironment,
@@ -146,6 +148,30 @@ impl ChooserColumn {
             self.join(child);
         }
     }
+
+    /// Give each chooser [`Self::join`] enrolled in `widget` the width the column came to, once
+    /// every one has offered its own (in [`Widget::size_before_solve`], which a container is asked
+    /// after what it holds).
+    pub(crate) fn fit(&self, widget: &mut dyn Widget, tree: &mut TaffyTree<()>) {
+        if let Some(any) = widget.as_any_mut() {
+            if any.is::<crate::widget::Section>() || any.is::<crate::widget::FormSection>() {
+                return;
+            }
+            if let Some(dropdown) = any.downcast_ref::<Dropdown>() {
+                if dropdown
+                    .column
+                    .as_ref()
+                    .is_some_and(|column| Rc::ptr_eq(&column.0, &self.0))
+                {
+                    dropdown.fit_column(tree);
+                }
+                return;
+            }
+        }
+        for child in widget.children_mut() {
+            self.fit(child, tree);
+        }
+    }
 }
 
 impl Dropdown {
@@ -154,6 +180,21 @@ impl Dropdown {
     fn join_column(&mut self, column: &ChooserColumn) {
         self.column =
             (!self.fill && self.menu.is_none() && self.caption.is_none()).then(|| column.clone());
+    }
+
+    /// Take the width its column came to.
+    fn fit_column(&self, tree: &mut TaffyTree<()>) {
+        let (Some(node), true) = (self.node, self.column.is_some() && self.measured > 0.0) else {
+            return;
+        };
+        let Ok(current) = tree.style(node) else {
+            return;
+        };
+        let mut style = current.clone();
+        style.size.width = Dimension::length(f32_of_f64(self.field_width(self.measured)));
+        if style != *current {
+            let _ = tree.set_style(node, style);
+        }
     }
 
     fn field_width(&self, own: f64) -> f64 {
@@ -221,6 +262,7 @@ impl Dropdown {
             caption_style: crate::tokens::typography::stock().style(TextRole::Caption),
             theme_caption_height: 0.0,
             measured: 0.0,
+            node: None,
             column: None,
             chooser_cap: f64::from(crate::tokens::Metrics::BASE.chooser_width),
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -1229,7 +1271,9 @@ impl Widget for Dropdown {
             flex_shrink: 1.0,
             ..Default::default()
         };
-        taffy.widget_leaf(style, node_map, self)
+        let node = taffy.widget_leaf(style, node_map, self);
+        self.node = Some(node);
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -1264,25 +1308,25 @@ impl Widget for Dropdown {
         }
     }
 
-    fn adjust_layout_style(
+    fn size_before_solve(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
+    ) {
         if self.fill || self.menu.is_some() {
-            return false;
+            return;
         }
         self.measured = self.measured_width(text);
         let Ok(current) = tree.style(node) else {
-            return false;
+            return;
         };
         let mut style = current.clone();
         style.size.width = Dimension::length(f32_of_f64(self.field_width(self.measured)));
         if style == *current {
-            return false;
+            return;
         }
-        tree.set_style(node, style).is_ok()
+        let _ = tree.set_style(node, style);
     }
 
     /// The width follows the options, the placeholder, the caption, the

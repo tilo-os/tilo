@@ -9,8 +9,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{Column, Text, Widget};
 
-/// Lay `scroll` out `height` tall and let it follow its overflow, as a
-/// host's pass does before the layout is applied: whether it changed.
+/// Lay `scroll` out `height` tall, as a window solves it: whether it holds a gutter for its bar.
 fn pass(
     scroll: &mut Scrollable,
     taffy: &mut TaffyTree<()>,
@@ -25,18 +24,17 @@ fn pass(
         height: Dimension::length(height),
     };
     taffy.set_style(node, style).unwrap();
-    taffy
-        .compute_layout_with_measure(
-            node,
-            Size::max_content(),
-            |known, available, node_id, _, _| match nodes.get(&node_id) {
-                // SAFETY: the map holds the live widgets of this tree.
-                Some(&widget) => unsafe { (*widget).measure(known, available, &mut text) },
-                None => Size::ZERO,
-            },
-        )
-        .unwrap();
-    scroll.adjust_layout_style(taffy, node, &mut text)
+    crate::widget::layout::solve_built(
+        scroll,
+        taffy,
+        (node, node),
+        nodes,
+        Size::max_content(),
+        &mut text,
+    )
+    .unwrap();
+    scroll.apply_layout(taffy, node, vello::kurbo::Point::ZERO);
+    taffy.style(node).unwrap().padding.right != taffy::LengthPercentage::length(0.0)
 }
 
 /// A parent sizing itself to its content lays the view out in a box other than the one it gets.
@@ -51,16 +49,12 @@ fn a_gutter_needed_only_in_a_box_measured_on_the_way_is_given_back() {
     let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = scroll.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
 
-    assert!(pass(&mut scroll, &mut taffy, node, &nodes, 20.0));
-    let gutter = |taffy: &TaffyTree<()>| {
-        taffy.style(node).unwrap().padding.right != taffy::LengthPercentage::length(0.0)
-    };
-    assert!(gutter(&taffy), "the short box overflows: a gutter");
-
-    let settled = (0..4).any(|_| !pass(&mut scroll, &mut taffy, node, &nodes, 300.0));
-    assert!(settled, "the real box settles");
     assert!(
-        !gutter(&taffy),
+        pass(&mut scroll, &mut taffy, node, &nodes, 20.0),
+        "the short box overflows: a gutter"
+    );
+    assert!(
+        !pass(&mut scroll, &mut taffy, node, &nodes, 300.0),
         "the content fits the box it gets, so its bar's gutter is given back"
     );
 }

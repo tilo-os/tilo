@@ -16,9 +16,10 @@ use ui::text_render::TextRenderer;
 use ui::tilo_resource::profiling::{Sample, observe};
 use ui::winit::event::{ElementState, MouseButton};
 
-/// Where the sidebar's rows stand in a 1280×800 window, from the top: Basics, Controls,
-/// Feedback, Backlog, Release board, Data, Media, Places.
-const ROWS: [f64; 8] = [104.0, 136.0, 168.0, 260.0, 292.0, 308.0, 384.0, 400.0];
+/// The middle of the sidebar's rows of the pages a switch shows in place in a 1280×800 window, from
+/// the top: Basics, Controls, Feedback, Release board, Data, Media, Places. Backlog (at 244) is not
+/// among them: showing it builds the window's structure again.
+const ROWS: [f64; 7] = [100.0, 132.0, 164.0, 276.0, 308.0, 380.0, 412.0];
 /// Just past the sidebar's edge, where the grip that resizes it stands.
 const EDGE: f64 = 282.0;
 
@@ -116,7 +117,7 @@ fn switching_pages_resizing_the_sidebar_and_scrolling_do_only_what_changed() {
 }
 
 #[test]
-fn the_gallery_s_first_frame_reads_only_the_interface_font() {
+fn the_gallery_reads_only_the_faces_its_text_is_set_in() {
     // Every catalog face is listed and mapped before the first frame; a file is read only when text
     // needs one of its faces, and the gallery's first page is set in the interface face alone.
     crate::support::installed("gallery");
@@ -128,6 +129,14 @@ fn the_gallery_s_first_frame_reads_only_the_interface_font() {
             .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
             .collect();
         assert_eq!(read, ["TiloSans[wdth,wght].ttf"]);
+        // The media page sets its code in the bundled monospace face, which has every character
+        // it shows: no other face is read for them.
+        let _ = click(tile, &mut text, (120.0, ROWS[5]));
+        let read: Vec<String> = ui::font_catalog::font_files_read()
+            .iter()
+            .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+            .collect();
+        assert_eq!(read, ["TiloSans[wdth,wght].ttf", "NotoSansMono[wght].ttf"]);
     })
     .expect("the gallery opens in a window");
 }
@@ -159,7 +168,15 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
         let _ = ui::profiling::layout_counts::take();
         let mut callbacks = 0_usize;
         for y in ROWS {
+            let _ = ui::profiling::layout_counts::take_restyled();
             let (frames, scopes) = observe(|| click(tile, text, (120.0, y)));
+            // What a control's layout follows from (its width, what it holds, where its rows
+            // stand) is decided within the solve: nothing is styled again after it.
+            let restyled = ui::profiling::layout_counts::take_restyled();
+            assert!(
+                restyled.is_empty(),
+                "a page switch (the row at {y}) styles nothing again after its solve: {restyled:?}"
+            );
             // A page shown in the content takes the place of the one before under the content's
             // own node: the rest of the window keeps its layout tree.
             assert_eq!(
@@ -170,11 +187,11 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
             );
             // Pressing a row changes no size: the press is drawn, not laid out, and the page the
             // release shows is laid out once. The frames after it solve nothing, and no control is
-            // left asking for layout, which would lay the window out again on every input.
-            // A list that measures its rows for the first time mounts the ones that fit in the
-            // same frame, and solves again for them there.
+            // left asking for layout, which would lay the window out again on every input. A list
+            // that measures its rows for the first time mounts enough of them and places them in
+            // that one solve.
             assert!(
-                frames <= 1 && calls(&scopes, "ui.solve") <= 2,
+                frames <= 1 && calls(&scopes, "ui.solve") <= 1,
                 "a page switch (the row at {y}) lays the window out in one frame: {frames} \
                  frames, {}",
                 said(&scopes)

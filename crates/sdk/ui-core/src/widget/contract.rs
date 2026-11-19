@@ -218,6 +218,36 @@ pub trait Widget {
     ) {
     }
 
+    /// Style this node's insides for `width`, the width a solve lays it out at (its own width when
+    /// its parent decided it, else the width it may take), before the solve lays it out there: a
+    /// layout that follows its width (a label beside its control or above it, a grid's column
+    /// count) is decided within the one solve. Only a node whose widget marked it
+    /// (`TaffyTree::set_restyled_for_width`) is asked, once for each width it is solved at.
+    ///
+    /// It may set what the node's own layout reads (its tracks, gaps and the alignment of what it
+    /// holds) and any style of its children's nodes, and nothing that depends on the width last
+    /// asked: the solve asks for several widths, the last of which need not be the one it keeps.
+    fn style_for_width(
+        &mut self,
+        _styles: &mut taffy::Restyle<'_>,
+        _width: taffy::AvailableSpace,
+        _text: &mut TextRenderer,
+    ) {
+    }
+
+    /// Style this node again once the solve laid it out to `laid` (not only measured it), its
+    /// children placed: whether it set a style its layout is solved again with, at the size its
+    /// parent gave it. A scroll view reserves a gutter for its bar once what it holds turns out
+    /// to overflow it. Asked of a node marked as for [`Self::style_for_width`], under the same
+    /// rules.
+    fn style_laid_out(
+        &mut self,
+        _styles: &mut taffy::Restyle<'_>,
+        _laid: &taffy::LayoutOutput,
+    ) -> bool {
+        false
+    }
+
     /// Adjust this node's style using its allocated size, before final geometry is applied.
     ///
     /// Decide from the `taffy` it is handed what to set there, never from

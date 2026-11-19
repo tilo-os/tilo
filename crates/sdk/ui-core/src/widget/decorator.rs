@@ -605,6 +605,12 @@ decorator_trait! {
             text_renderer: &mut TextRenderer,
         ) -> taffy::Size<f32>;
         fn size_before_solve(taffy: &mut TaffyTree<()>, node: NodeId, text: &mut TextRenderer);
+        fn style_for_width(
+            styles: &mut taffy::Restyle<'_>,
+            width: taffy::AvailableSpace,
+            text: &mut TextRenderer,
+        );
+        fn style_laid_out(styles: &mut taffy::Restyle<'_>, laid: &taffy::LayoutOutput) -> bool;
         fn adjust_layout_style(
             taffy: &mut TaffyTree<()>,
             node: NodeId,

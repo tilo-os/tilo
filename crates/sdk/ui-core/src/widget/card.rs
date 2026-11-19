@@ -1087,34 +1087,34 @@ impl Widget for CardGrid {
             .map(|card| card.build_layout(taffy, theme, node_map))
             .collect();
         let node = taffy.parent_node(self.grid_style(), &self.child_nodes);
+        let _ = taffy.set_restyled_for_width(node, true);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn adjust_layout_style(
+    /// The tracks of the width it is laid out at, before its rows are measured, so each row is
+    /// measured at its final column width.
+    fn style_for_width(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        styles: &mut taffy::Restyle<'_>,
+        width: taffy::AvailableSpace,
         _text: &mut crate::text_render::TextRenderer,
-    ) -> bool {
-        let Ok(layout) = taffy.layout(node) else {
-            return false;
+    ) {
+        let tracks = match width {
+            taffy::AvailableSpace::Definite(width) => {
+                let width = f64::from(width);
+                let columns = self.columns_for_width(width);
+                let column = crate::num::f32_of_f64(card_column_width(width, columns, self.gap));
+                vec![length(column); columns]
+            }
+            // A question of how wide it could be keeps the tracks of the width it was last laid
+            // out at: the rows they make are the height its parent places the next part under.
+            _ => return,
         };
-        // Resolve the tracks at the allocated width before measuring row
-        // minima, so each row is measured at its final column width.
-        let width = f64::from(layout.size.width);
-        let columns = self.columns_for_width(width);
-        let column_width = crate::num::f32_of_f64(card_column_width(width, columns, self.gap));
-        let tracks = vec![length(column_width); columns];
-        let Ok(current) = taffy.style(node) else {
-            return false;
-        };
-        if current.grid_template_columns == tracks {
-            return false;
-        }
-        let mut style = current.clone();
+        let node = styles.node();
+        let mut style = styles.style(node).clone();
         style.grid_template_columns = tracks;
-        taffy.set_style(node, style).is_ok()
+        styles.set_style(node, style);
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

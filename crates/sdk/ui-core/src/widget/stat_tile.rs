@@ -924,30 +924,29 @@ impl Widget for StatGroup {
             ..Default::default()
         };
         let node = taffy.parent_node(style, &self.nodes);
+        let _ = taffy.set_restyled_for_width(node, true);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn adjust_layout_style(
+    /// As many columns as the width holds tiles of, each as wide as the width shares out.
+    fn style_for_width(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        styles: &mut taffy::Restyle<'_>,
+        width: taffy::AvailableSpace,
         _text: &mut crate::text_render::TextRenderer,
-    ) -> bool {
-        let Ok(layout) = taffy.layout(node) else {
-            return false;
+    ) {
+        let tracks = match width {
+            taffy::AvailableSpace::Definite(width) => {
+                let (columns, column) = self.tracks_at(f64::from(width));
+                vec![length(column); columns]
+            }
+            _ => vec![taffy::style_helpers::fr(1.0_f32)],
         };
-        let (columns, column) = self.tracks_at(f64::from(layout.size.width));
-        let tracks = vec![length(column); columns];
-        let Ok(current) = taffy.style(node) else {
-            return false;
-        };
-        if current.grid_template_columns == tracks {
-            return false;
-        }
-        let mut style = current.clone();
+        let node = styles.node();
+        let mut style = styles.style(node).clone();
         style.grid_template_columns = tracks;
-        taffy.set_style(node, style).is_ok()
+        styles.set_style(node, style);
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

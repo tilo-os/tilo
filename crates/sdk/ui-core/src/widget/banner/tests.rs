@@ -647,7 +647,7 @@ fn the_layout_places_the_controls_without_a_paint() {
     let mut nodes = HashMap::new();
     let node = banner.build_layout(&mut tree, &Theme::dark(), &mut nodes);
     let mut text = crate::font_catalog::fixture_renderer();
-    Widget::adjust_layout_style(banner.as_mut(), &mut tree, node, &mut text);
+    Widget::size_before_solve(banner.as_mut(), &mut tree, node, &mut text);
     let slot = Rect::new(24.0, 80.0, 464.0, 80.0);
     banner.place_disclosing(slot);
     let placed = retry(banner.as_mut());

@@ -462,12 +462,19 @@ impl Widget for DropZone {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.metrics = Some(ZoneMetrics::new(theme));
+        let metrics = ZoneMetrics::new(theme);
+        let pad = crate::num::f32_of_f64(metrics.pad);
+        self.metrics = Some(metrics);
         self.action_node = self
             .action
             .as_mut()
             .map(|button| button.build_layout(taffy, theme, node_map));
+        // Its icon and text stand above an action, which is centred under them: the action's top
+        // margin is the height they take at the zone's width, set as the solve lays the zone out.
         let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            align_items: Some(taffy::AlignItems::Center),
             size: Size {
                 width: percent(1.0_f32),
                 height: auto(),
@@ -476,23 +483,20 @@ impl Widget for DropZone {
                 width: length(0.0_f32),
                 height: auto(),
             },
+            padding: taffy::Rect {
+                left: length(0.0_f32),
+                right: length(0.0_f32),
+                top: length(0.0_f32),
+                bottom: length(pad),
+            },
             flex_shrink: 0.0,
             ..Default::default()
         };
         let node = match self.action_node {
             Some(child) => {
-                if let Ok(current) = taffy.style(child) {
-                    let mut child_style = current.clone();
-                    child_style.position = taffy::Position::Absolute;
-                    // Centred horizontally by auto margins (`adjust_layout_style` sets the
-                    // top), never by a left inset computed from its solved width.
-                    child_style.inset.left = auto();
-                    child_style.inset.right = auto();
-                    child_style.margin.left = auto();
-                    child_style.margin.right = auto();
-                    let _ = taffy.set_style(child, child_style);
-                }
-                taffy.parent_node(style, &[child])
+                let node = taffy.parent_node(style, &[child]);
+                let _ = taffy.set_restyled_for_width(node, true);
+                node
             }
             None => taffy.leaf_node(style),
         };
@@ -500,59 +504,52 @@ impl Widget for DropZone {
         node
     }
 
-    fn adjust_layout_style(
+    /// A zone without an action is as tall as its icon and text at its width.
+    fn measure(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
         text: &mut TextRenderer,
-    ) -> bool {
-        let (Some(m), Ok(layout)) = (self.metrics.clone(), taffy.layout(node).copied()) else {
-            return false;
+    ) -> Size<f32> {
+        let Some(m) = self.metrics.clone() else {
+            return Size::ZERO;
         };
-        let width = f64::from(layout.size.width);
-        let action_h = self
-            .action_node
-            .and_then(|n| taffy.layout(n).ok())
-            .map_or(0.0, |l| f64::from(l.size.height));
-        let mut changed = false;
         let face = self.face();
+        let width = known
+            .width
+            .map(f64::from)
+            .unwrap_or_else(|| match available.width {
+                taffy::AvailableSpace::Definite(width) => f64::from(width),
+                _ => f64::from(text.measure_style(face.title, None, &m.title).0) + 2.0 * m.pad,
+            });
         let inner = width - 2.0 * m.pad;
-        let mut h =
+        let height =
             2.0 * m.pad + m.icon + m.gap + m.text_height(text, inner, face.title, face.message);
-        if action_h > 0.0 {
-            h += m.gap + action_h;
+        Size {
+            width: crate::num::f32_of_f64(width),
+            height: crate::num::f32_of_f64(height.ceil()),
         }
-        let h = crate::num::f32_of_f64(h.ceil());
-        if let Ok(current) = taffy.style(node)
-            && current.size.height != length(h)
-        {
-            let mut style = current.clone();
-            style.size.height = length(h);
-            changed |= taffy.set_style(node, style).is_ok();
-        }
-        if let Some(child) = self.action_node
-            && let Ok(current) = taffy.style(child)
-        {
-            // Sits under the text, centred by its own auto margins: the horizontal placement
-            // never depends on the button's solved (device-rounded) width, which computing a
-            // left inset from made oscillate by a subpixel every pass so the layout never
-            // settled.
-            let top = length(crate::num::f32_of_f64(f64::from(h) - m.pad - action_h));
-            if current.inset.top != top
-                || current.inset.left != auto()
-                || current.margin.left != auto()
-            {
-                let mut style = current.clone();
-                style.inset.left = auto();
-                style.inset.right = auto();
-                style.margin.left = auto();
-                style.margin.right = auto();
-                style.inset.top = top;
-                style.inset.bottom = auto();
-                changed |= taffy.set_style(child, style).is_ok();
-            }
-        }
-        changed
+    }
+
+    /// An action stands under the icon and text, as tall as they are at the zone's width.
+    fn style_for_width(
+        &mut self,
+        styles: &mut taffy::Restyle<'_>,
+        width: taffy::AvailableSpace,
+        text: &mut TextRenderer,
+    ) {
+        let (Some(m), Some(child)) = (self.metrics.clone(), self.action_node) else {
+            return;
+        };
+        let face = self.face();
+        let inner = match width {
+            taffy::AvailableSpace::Definite(width) => f64::from(width) - 2.0 * m.pad,
+            _ => f64::from(text.measure_style(face.title, None, &m.title).0),
+        };
+        let above = m.pad + m.icon + m.gap + m.text_height(text, inner, face.title, face.message);
+        let mut style = styles.style(child).clone();
+        style.margin.top = length(crate::num::f32_of_f64((above + m.gap).ceil()));
+        styles.set_style(child, style);
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

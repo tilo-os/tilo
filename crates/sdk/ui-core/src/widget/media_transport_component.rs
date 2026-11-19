@@ -266,6 +266,15 @@ impl crate::widget::Widget for DeclaredTransport {
         self.band.is_layout_dirty()
     }
 
+    fn size_before_solve(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        text: &mut crate::text_render::TextRenderer,
+    ) {
+        self.band.size_before_solve(taffy, node, text);
+    }
+
     fn adjust_layout_style(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

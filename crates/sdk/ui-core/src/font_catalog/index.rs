@@ -100,19 +100,32 @@ struct Index {
     faces: Vec<Face>,
 }
 
-/// Add the system's fonts to `db`: the ones recorded at `path` when that
-/// record still holds, else found now and recorded there for the next launch.
+/// Add the system's fonts listed at `path` to `db`, when that list still holds; whether it did.
 #[cfg(not(test))]
-pub(crate) fn add_system_fonts(path: Option<&Path>, db: &mut fontdb::Database) {
-    let found = path.and_then(|path| tilo_startup_metrics::span("font-index-read", || load(path)));
-    let system = found.unwrap_or_else(|| {
-        let mut system = fontdb::Database::new();
-        system.load_system_fonts();
-        if let Some(path) = path {
-            store(path, &system);
-        }
-        system
-    });
+pub(crate) fn add_recorded_fonts(path: Option<&Path>, db: &mut fontdb::Database) -> bool {
+    let Some(system) =
+        path.and_then(|path| tilo_startup_metrics::span("font-index-read", || load(path)))
+    else {
+        return false;
+    };
+    add_faces(&system, db);
+    true
+}
+
+/// Find the system's fonts now, and save them at `path` for the next launch.
+#[cfg(not(test))]
+pub(crate) fn find_system_fonts(path: Option<&Path>) -> fontdb::Database {
+    let mut system = fontdb::Database::new();
+    system.load_system_fonts();
+    if let Some(path) = path {
+        store(path, &system);
+    }
+    system
+}
+
+/// Add every face of `system` to `db`.
+#[cfg(not(test))]
+pub(crate) fn add_faces(system: &fontdb::Database, db: &mut fontdb::Database) {
     for face in system.faces() {
         db.push_face_info(face.clone());
     }

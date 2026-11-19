@@ -528,10 +528,30 @@ pub(crate) trait AppCore {
     /// again).
     fn composition_dirty(&mut self) -> bool;
 
+    /// Whether a widget asked to change its children in place since the last remount began.
+    fn remount_requested(&self) -> bool;
+
     /// Carry out the change the root's widgets make in place
     /// ([`crate::widget::StructureChange::Children`]) in the retained tree: mount what they added,
     /// unmount what they let go of, keep the rest.
+    ///
+    /// The sync after a remount hands what it mounted its content (a list its rows), which may
+    /// change its children again: that change is carried out here too, so the solve after the
+    /// remount lays out the whole of it.
     fn remount_in_place(&mut self) -> bool {
+        for _ in 0..REMOUNT_PASSES {
+            if !self.remount_once() {
+                return false;
+            }
+            if !self.remount_requested() {
+                break;
+            }
+        }
+        true
+    }
+
+    /// One remount and the sync after it ([`Self::remount_in_place`]).
+    fn remount_once(&mut self) -> bool {
         // History lays out its own chrome around the app; while it is live,
         // the app's widgets change only what is theirs.
         if !self.begin_remount()

@@ -435,27 +435,17 @@ impl Board {
         }
     }
 
-    fn size_lists(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        theme: &Theme,
-        width: f64,
-    ) -> bool {
-        let width = Self::lists_width(theme, width, Widget::children(&self.row).len());
-        if self.sized.is_some_and(|sized| (sized - width).abs() < 0.05) {
-            return false;
-        }
-        self.sized = Some(width);
-        self.set_list_widths(width);
-        for &list in &taffy.children(node).unwrap_or_default() {
-            let Ok(mut style) = taffy.style(list).cloned() else {
-                continue;
-            };
-            style.size.width = taffy::Dimension::length(width);
-            let _ = taffy.set_style(list, style);
-        }
-        true
+    /// How wide each list is on a board `width` wide: a comfortable measure where the width is
+    /// not yet known.
+    fn list_width_at(&self, width: taffy::AvailableSpace) -> Option<f32> {
+        let theme = self.theme.as_ref()?;
+        #[allow(clippy::cast_possible_truncation, reason = "a list width fits f32")]
+        Some(match width {
+            taffy::AvailableSpace::Definite(width) => {
+                Self::lists_width(theme, f64::from(width), Widget::children(&self.row).len())
+            }
+            _ => Self::comfortable_list(theme) as f32,
+        })
     }
 
     fn line_rect(&self, (list, before): &(usize, Option<String>), theme: &Theme) -> Option<Rect> {
@@ -619,30 +609,56 @@ impl crate::widget::Decorator for Board {
         #[allow(clippy::cast_possible_truncation, reason = "a list width fits f32")]
         let width = self.sized.unwrap_or(Self::comfortable_list(theme) as f32);
         self.set_list_widths(width);
-        Widget::build_layout(&mut self.row, taffy, theme, node_map)
+        let node = Widget::build_layout(&mut self.row, taffy, theme, node_map);
+        let _ = taffy.set_restyled_for_width(node, true);
+        node
     }
 
-    fn adjust_layout_style(
+    /// The board is as wide as the pane it is in, so the solve hands it the pane's width; lists
+    /// it cannot fit side by side stand past its edge, where the pane scrolls to them.
+    fn size_before_solve(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         _text: &mut crate::text_render::TextRenderer,
-    ) -> bool {
-        let Some(theme) = self.theme.clone() else {
-            return false;
-        };
-        let Ok(layout) = taffy.layout(node) else {
-            return false;
-        };
-        let mut width = f64::from(layout.size.width);
-        if let Some(parent) = taffy.parent(node)
-            && let Ok(pane) = taffy.layout(parent)
-            && pane.size.width > 0.0
+    ) {
+        if let Ok(current) = taffy.style(node)
+            && current.size.width != taffy::Dimension::percent(1.0)
         {
-            width = width.min(f64::from(pane.size.width));
+            let mut style = current.clone();
+            style.size.width = taffy::Dimension::percent(1.0);
+            let _ = taffy.set_style(node, style);
         }
-        self.pane = Some(width);
-        self.size_lists(taffy, node, &theme, width)
+    }
+
+    /// Each list as wide as [`Self::lists_width`] says for the pane's width.
+    fn style_for_width(
+        &mut self,
+        styles: &mut taffy::Restyle<'_>,
+        width: taffy::AvailableSpace,
+        _text: &mut crate::text_render::TextRenderer,
+    ) {
+        let Some(list) = self.list_width_at(width) else {
+            return;
+        };
+        let node = styles.node();
+        for list_node in styles.children(node).to_vec() {
+            let mut style = styles.style(list_node).clone();
+            style.size.width = taffy::Dimension::length(list);
+            // Lists past the board's edge keep their width: the pane scrolls to them.
+            style.flex_shrink = 0.0;
+            styles.set_style(list_node, style);
+        }
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let width = taffy.layout(node).map_or(0.0, |layout| layout.size.width);
+        self.pane = Some(f64::from(width));
+        if let Some(list) = self.list_width_at(taffy::AvailableSpace::Definite(width)) {
+            self.sized = Some(list);
+            self.set_list_widths(list);
+        }
+        Widget::apply_layout(&mut self.row, taffy, node, origin);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

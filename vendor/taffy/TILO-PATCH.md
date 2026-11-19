@@ -78,3 +78,40 @@ came to would give it back (`Taint`), and an untainted entry answers as upstream
   taint it works out and passes width taints up.
 
 Remove this part once upstream compares the available space there too.
+
+## A node styled for the width it is solved at
+
+Some layouts change with the width they get: a form's label stands beside its
+control or above it, a grid has as many columns as fit, a board's lists share
+the row. Upstream can only learn that width from a finished solve, so such a
+node was styled after the solve and the tree solved again, up to once per
+decision in the window.
+
+A node marked with `TaffyTree::set_restyled_for_width` is handed to a
+`RestyleFunction` each time it is solved and its cache does not answer, before
+its algorithm reads its style: with its border-box width when its parent
+decided it, else the space it may take. The function gets a `Restyle`, which
+reads the node's and its children's styles and where the last solve put them,
+and sets them. The node may change only what its own algorithm reads (its
+tracks, gaps, alignment), since its parent has read the rest; a child may
+change any of its style, and its cache is cleared when it does.
+
+The function is called a second time once the node's algorithm laid it out
+(`Solving::Laid`), with what that layout answered and where each child landed:
+a view that learns only from its laid content whether it overflows sets its
+gutter there, and a list places the rows it just measured. When the function
+answers true the node is laid out again, at most twice. Its parent recorded
+the node's padding and border before this, so a node that changes them reads
+them back from its style.
+
+- `src/tree/taffy_tree.rs`: `NodeData::restyled_for_width`,
+  `TaffyTree::set_restyled_for_width`,
+  `TaffyTree::compute_layout_with_measure_and_restyle`, `Restyle` (with
+  `parent` and `laid`), `Solving`, `RestyleFunction`;
+  `TaffyView::compute_child_layout` calls the function on a cache miss, before
+  and after the node's algorithm.
+- `src/tree/mod.rs`, `src/lib.rs`: export `Restyle`, `RestyleFunction` and
+  `Solving`.
+
+Remove this part once upstream lets a node choose its style from the size it
+is offered within a solve.

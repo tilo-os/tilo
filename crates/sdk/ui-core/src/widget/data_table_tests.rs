@@ -144,7 +144,7 @@ tilo_test_env::scenario! {
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = table.build_layout(&mut tree, &theme, &mut map);
         table.set_viewport(200.0, 32.0);
-        assert!(table.adjust_layout_style(&mut tree, node, &mut text));
+        table.size_before_solve(&mut tree, node, &mut text);
         let measured = f64::from(table.auto_widths["name"]);
         let cell = f64::from(
             text.measure_style(
@@ -155,10 +155,9 @@ tilo_test_env::scenario! {
             .0,
         );
         assert!(measured >= cell, "{measured} fits {cell}");
-        assert!(
-            !table.adjust_layout_style(&mut tree, node, &mut text),
-            "settles"
-        );
+        let widths = table.auto_widths.clone();
+        table.size_before_solve(&mut tree, node, &mut text);
+        assert_eq!(table.auto_widths, widths, "settles");
 
         // Numeric cells end at the trailing padding; an absent value says so.
         let column = ColumnDef::<File>::new("size", "Size", ColumnWidth::Flex(1.0))

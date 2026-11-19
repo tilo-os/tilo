@@ -3,9 +3,9 @@
 //!
 //! Each child sits in a *wrapper* node whose style carries the child's [`Fit`] (fill weight,
 //! bounds, aspect, span, place). The container style and the wrappers' styles come from the
-//! layout, and are chosen again during layout from the width the container was given
-//! ([`Widget::adjust_layout_style`]): constraints flow down, the container decides its
-//! layout from what it was offered, and a child never reads its own final size.
+//! layout, and are chosen within the solve from the width the container is given
+//! ([`Widget::style_for_width`]): constraints flow down, the container decides its layout from
+//! what it was offered, and a child never reads its own final size.
 
 use std::collections::HashMap;
 
@@ -21,6 +21,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::DrawChild;
+use crate::widget::layout::Styles;
 use crate::widget::{AppModel, Element, ModelPath, StructureChange, TaffyTreeExt, Widget};
 
 /// What a layout reads of the theme: the `rem`, the rhythm gaps and a control's least side,
@@ -101,11 +102,6 @@ pub struct Part {
     /// Where a layer sits; `None` fills the cell.
     pub at: Option<At>,
     wrapper: Option<NodeId>,
-    /// The block size the fit's `aspect` gives at the width the part was solved at. A flex or
-    /// grid box derives its cross size from a ratio only when its inline size is definite in
-    /// its style, so a part whose width the container decides takes the height the ratio gives
-    /// once the width is solved ([`Arranged::derive_aspects`]).
-    height: Option<f32>,
 }
 
 impl Part {
@@ -130,7 +126,6 @@ impl Part {
             span: 1,
             at: None,
             wrapper: None,
-            height: None,
         }
     }
 }
@@ -432,11 +427,6 @@ impl<L: Layout> Arranged<L> {
         if part.fit == fit && part.span == span && part.at == at {
             return;
         }
-        // The block size derived from a ratio belongs to the fit that asked for it: a new fit
-        // derives its own on the next solve.
-        if part.fit.aspect != fit.aspect {
-            part.height = None;
-        }
         part.fit = fit;
         part.span = span;
         part.at = at;
@@ -491,6 +481,7 @@ impl<L: Layout> Arranged<L> {
         let wrapper = tree.parent_node(style, &[inner]);
         if let Some(part) = self.parts.get_mut(index) {
             part.wrapper = Some(wrapper);
+            let _ = tree.set_restyled_for_width(wrapper, part.fit.aspect.is_some());
         }
         wrapper
     }
@@ -517,77 +508,111 @@ impl<L: Layout> Arranged<L> {
         self.layout.container(&self.resolved, lead)
     }
 
-    /// Part `index`'s wrapper style: what the layout arranges it with, and the block size the
-    /// fit's `aspect` derived from the width it was solved at.
+    /// Part `index`'s wrapper style: what the layout arranges it with.
     ///
-    /// A wrapper that holds a derived height keeps no ratio of its own: with one, taffy would
-    /// derive the width back out of the height it was given, and a part whose width its
-    /// container decides would shrink to a fraction of the room every other solve.
+    /// A part whose fit asks for an `aspect` is as tall as its child, which the width its wrapper
+    /// is solved at gives the height the ratio asks for ([`Self::hold_aspect`]): a layer that
+    /// fills the cell or a share of the column gives way to it, since the ratio is the size the
+    /// view asked for. Taffy derives one size from a ratio only where the other is definite in the
+    /// style, and a part takes the width its container decides.
     fn part_style(&self, index: usize, part: &Part) -> Style {
         let mut style = self.layout.part(index, part, &self.resolved);
-        if part.fit.aspect.is_some()
-            && let Some(height) = part.height
-        {
-            // A ratio decides the block size; a layer that fills the cell or a share of the
-            // column gives way to it, since the ratio is the size the view asked for.
-            style.size.height = taffy::style_helpers::length(height);
+        if part.fit.aspect.is_some() {
+            style.size.height = taffy::Dimension::auto();
             style.aspect_ratio = None;
         }
         style
     }
 
-    /// Give every part whose fit asks for an `aspect` the block size the ratio gives at the
-    /// inline size it was solved at in `tree`.
-    ///
-    /// Taffy derives one size from the other only where the known one is definite in the
-    /// style. A part takes the width its container decides: stretched across a column, a share
-    /// of a row, a layer's cell, a grid's column. What is solved is where the ratio applies, so
-    /// the derivation reads the solved width and holds the part at the height that follows;
-    /// [`Self::restyle`] gives `tree` the wrapper style that holds it, where it does not yet.
-    fn derive_aspects(&mut self, tree: &TaffyTree<()>) {
-        let rem = self.resolved.rem;
-        for part in &mut self.parts {
-            let Some(ratio) = part.fit.aspect else {
-                continue;
-            };
-            let Some(wrapper) = part.wrapper else {
-                continue;
-            };
-            let Ok(laid) = tree.layout(wrapper) else {
-                continue;
-            };
-            let width = laid.size.width;
-            if !(width.is_finite() && width > 0.0 && ratio.is_finite() && ratio > 0.0) {
-                continue;
-            }
-            let bounds = |sizing: super::units::Sizing| {
-                (
-                    sizing.min.map(|min| min.resolve(rem)),
-                    sizing.max.map(|max| max.resolve(rem)),
-                )
-            };
-            let (min, max) = bounds(part.fit.height);
-            let mut height = width / ratio;
-            if let Some(min) = min {
-                height = height.max(min);
-            }
-            if let Some(max) = max {
-                height = height.min(max);
-            }
-            if part.height.is_some_and(|held| (held - height).abs() < 0.5) {
-                continue;
-            }
-            part.height = Some(height);
+    /// Hold the child of `wrapper`, a part whose fit asks for an `aspect`, at the block size the
+    /// ratio gives at `width`, within the fit's bounds.
+    fn hold_aspect(&self, styles: &mut taffy::Restyle<'_>, wrapper: NodeId, width: f32) {
+        let Some(height) = self
+            .parts
+            .iter()
+            .find(|part| part.wrapper == Some(wrapper))
+            .and_then(|part| self.aspect_height(part, width))
+        else {
+            return;
+        };
+        let Some(&inner) = styles.children(wrapper).first() else {
+            return;
+        };
+        // The child is as tall as the ratio gives, whatever share or fill its own style asks for.
+        let held = taffy::style_helpers::length(height);
+        let mut style = styles.style(inner).clone();
+        style.size.height = held;
+        style.min_size.height = held;
+        style.max_size.height = held;
+        style.flex_basis = taffy::Dimension::auto();
+        if *styles.style(inner) != style {
+            styles.set_style(inner, style);
         }
     }
 
-    /// Whether this container's styles follow from the room a solve gave it: a layout
-    /// its layout settles from the width (a grid's columns, a split's panes), a lead kept only
-    /// where the column has room for it, or a part whose height a ratio derives from its width.
-    fn styled_by_room(&self) -> bool {
-        self.layout.settles()
-            || self.lead > 0
-            || self.parts.iter().any(|part| part.fit.aspect.is_some())
+    /// The block size part `part`'s ratio gives at `width`, within its fit's bounds; none for a
+    /// part that asks for no ratio.
+    fn aspect_height(&self, part: &Part, width: f32) -> Option<f32> {
+        let ratio = part.fit.aspect?;
+        if !(width.is_finite() && width > 0.0 && ratio.is_finite() && ratio > 0.0) {
+            return None;
+        }
+        let rem = self.resolved.rem;
+        let mut height = width / ratio;
+        if let Some(min) = part.fit.height.min {
+            height = height.max(min.resolve(rem));
+        }
+        if let Some(max) = part.fit.height.max {
+            height = height.min(max.resolve(rem));
+        }
+        Some(height)
+    }
+
+    /// Give each part that asks for a ratio and spans the container's content (a layer that
+    /// fills the cell) the height the ratio gives at that width: its wrapper's height, which the
+    /// container's own layout reads.
+    fn hold_spanning_aspects(&self, styles: &mut taffy::Restyle<'_>, width: f32) {
+        let node = styles.node();
+        let padding = styles.style(node).padding;
+        let border = styles.style(node).border;
+        let side = |value: taffy::LengthPercentage| {
+            let raw = value.into_raw();
+            if raw.tag() == taffy::CompactLength::LENGTH_TAG {
+                raw.value()
+            } else {
+                0.0
+            }
+        };
+        let content = width
+            - side(padding.left)
+            - side(padding.right)
+            - side(border.left)
+            - side(border.right);
+        let full = taffy::style_helpers::percent(1.0_f32);
+        for part in &self.parts {
+            let Some(wrapper) = part.wrapper else {
+                continue;
+            };
+            if styles.style(wrapper).size.width != full {
+                continue;
+            }
+            let Some(height) = self.aspect_height(part, content) else {
+                continue;
+            };
+            let held = taffy::style_helpers::length(height);
+            if styles.style(wrapper).size.height != held {
+                let mut style = styles.style(wrapper).clone();
+                style.size.height = held;
+                styles.set_style(wrapper, style);
+            }
+        }
+    }
+
+    /// Whether this container's style follows from the width a solve gives it: a layout its
+    /// layout settles from the width (a grid's columns, a split's panes), or a lead kept only
+    /// where the column is wide enough for it.
+    fn styled_by_width(&self) -> bool {
+        self.layout.settles() || self.lead > 0
     }
 
     /// Style the container and its parts in `tree` for what the layout settled on, wherever
@@ -601,13 +626,13 @@ impl<L: Layout> Arranged<L> {
     /// virtual list positions its rows) or grows it into its part changed those after the
     /// layout styled it, and settling changes how the container arranges its children, not
     /// where it is or how its parent sizes it.
-    fn restyle(&self, tree: &mut TaffyTree<()>) -> bool {
+    fn restyle(&self, tree: &mut impl Styles) -> bool {
         let Some(node) = self.node else {
             return false;
         };
         let mut style = self.container_style();
         let mut changed = false;
-        if let Ok(placed) = tree.style(node) {
+        if let Some(placed) = tree.style_of(node) {
             style.position = placed.position;
             style.inset = placed.inset;
             style.margin = placed.margin;
@@ -625,7 +650,7 @@ impl<L: Layout> Arranged<L> {
                 style.max_size = placed.max_size;
             }
             if *placed != style {
-                changed |= tree.set_style(node, style).is_ok();
+                changed |= tree.set_style_of(node, style);
             }
         }
         self.rewrap(tree) || changed
@@ -634,23 +659,26 @@ impl<L: Layout> Arranged<L> {
     /// Give each part's wrapper in `tree` the style its child there asks for, where it does not
     /// hold it: a child that left the flow (a banner on its way in, laid out nowhere while it
     /// moves) takes its part with it, and one that came back to rest brings its part back. The
-    /// child decides that in its own layout hook, after this container was built: a wrapper
-    /// kept at what the child was when the container was built would hold a banner that came to
-    /// rest at no size, and the row it says never stands. Returns whether any changed.
-    fn rewrap(&self, tree: &mut TaffyTree<()>) -> bool {
+    /// child decides that before its layout is solved ([`Widget::size_before_solve`], which a
+    /// window asks of a container's children before the container), after this container was
+    /// built: a wrapper kept at what the child was when the container was built would hold a
+    /// banner that came to rest at no size, and the row it says never stands. Returns whether any
+    /// changed.
+    fn rewrap(&self, tree: &mut impl Styles) -> bool {
         let mut changed = false;
         for (index, part) in self.parts.iter().enumerate() {
             let Some(wrapper) = part.wrapper else {
                 continue;
             };
-            let Some(style) = Self::inner_node(tree, wrapper)
-                .and_then(|inner| tree.style(inner).ok())
+            let Some(style) = tree
+                .first_child_of(wrapper)
+                .and_then(|inner| tree.style_of(inner))
                 .map(|child| wrapped(self.part_style(index, part), child))
             else {
                 continue;
             };
-            if tree.style(wrapper).is_ok_and(|held| *held != style) {
-                changed |= tree.set_style(wrapper, style).is_ok();
+            if tree.style_of(wrapper).is_some_and(|held| *held != style) {
+                changed |= tree.set_style_of(wrapper, style);
             }
         }
         changed
@@ -718,49 +746,67 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             wrappers.push(self.wrap_part(index, tree, inner));
         }
         let node = tree.parent_node(self.container_style(), &wrappers);
+        let _ = tree.set_restyled_for_width(
+            node,
+            self.styled_by_width() || self.parts.iter().any(|part| part.fit.aspect.is_some()),
+        );
         self.node = Some(node);
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn adjust_layout_style(
+    /// The forms of what it holds line their labels up in one column, from what they show, and
+    /// each part's wrapper follows its child in or out of the flow.
+    fn size_before_solve(
         &mut self,
         tree: &mut TaffyTree<()>,
-        node: NodeId,
+        _node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
-        let shared = self.layout.shares_label_column() && {
+    ) {
+        if self.layout.shares_label_column() {
             let mut parts: Vec<&mut (dyn Widget + '_)> = self
                 .parts
                 .iter_mut()
                 .map(|part| part.element.as_mut() as &mut (dyn Widget + '_))
                 .collect();
-            crate::widget::FormSection::share_label_column(&mut parts, tree, text)
-        };
-        let Ok(laid) = tree.layout(node) else {
-            return shared;
-        };
-        if !self.styled_by_room() {
-            return self.rewrap(tree) | shared;
+            crate::widget::FormSection::share_label_column(&mut parts, tree, text);
         }
-        let allocated = laid.size;
-        self.derive_aspects(tree);
-        // The column this pass gave the container decides whether what it holds keeps the lead.
-        // A change of class is a change of style, solved again on the next pass.
+        let _ = self.rewrap(tree);
+    }
+
+    /// The layout settled from the width the container is solved at, and the lead kept where the
+    /// column is wide enough for it; or, for one of its parts' wrappers, the height a ratio gives.
+    fn style_for_width(
+        &mut self,
+        styles: &mut taffy::Restyle<'_>,
+        width: taffy::AvailableSpace,
+        _text: &mut TextRenderer,
+    ) {
+        let taffy::AvailableSpace::Definite(width) = width else {
+            return;
+        };
+        let node = styles.node();
+        if Some(node) != self.node {
+            self.hold_aspect(styles, node, width);
+            return;
+        }
+        if !self.styled_by_width() {
+            self.hold_spanning_aspects(styles, width);
+            return;
+        }
         if self.lead > 0 {
             // What the column has left once the lead is reserved decides whether it is kept: the
             // box less one lead, which does not change with the answer.
-            let room = (allocated.width - lead_width(self.lead, &self.resolved)).max(0.0);
+            let left = (width - lead_width(self.lead, &self.resolved)).max(0.0);
             self.column = Some(WidthClass::with_history(
-                room / self.resolved.rem,
+                left / self.resolved.rem,
                 self.column,
             ));
         }
-        // The layout is settled from what this tree allocated, and this tree is styled for
-        // it wherever it is not yet. Whether the layout's decision changed since it last settled
-        // says nothing about this tree: another tree's solve may have settled it.
-        self.layout.settle(allocated, &self.resolved);
-        self.restyle(tree) | shared
+        let height = styles.last_layout(node).size.height;
+        self.layout.settle(Size { width, height }, &self.resolved);
+        let _ = self.restyle(styles);
+        self.hold_spanning_aspects(styles, width);
     }
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {

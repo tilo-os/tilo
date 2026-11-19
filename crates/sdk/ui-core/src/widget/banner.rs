@@ -1396,13 +1396,13 @@ impl Widget for Banner {
         node
     }
 
-    fn adjust_layout_style(
+    fn size_before_solve(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
-        let mut changed = self.style_visibility(taffy, node);
+    ) {
+        self.style_visibility(taffy, node);
         // The body's height depends on the buttons' sizes: measure them. On touch they are a
         // finger's target tall, and the banner grows to fit that.
         let secondary = self.secondary.as_mut().map(|b| button_size(b, text));
@@ -1420,9 +1420,7 @@ impl Widget for Banner {
             if let Some(&body) = self.nodes.first() {
                 let _ = taffy.mark_dirty(body);
             }
-            changed = true;
         }
-        changed
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

@@ -985,9 +985,27 @@ impl VirtualRows {
             self.viewport
                 .range_between(top - overscan, bottom + overscan)
         } else {
-            self.viewport.visible_range()
+            self.first_rows(self.viewport.visible_range())
         };
         near.start.min(count)..near.end.min(count)
+    }
+
+    /// `near`, before any row was measured, stretched to as many rows as fit at the least height
+    /// a row has: the rows mounted first cover the view however short they turn out, so measuring
+    /// them mounts none after them.
+    fn first_rows(&self, near: std::ops::Range<usize>) -> std::ops::Range<usize> {
+        let least = self.viewport.minimum_height();
+        if self.viewport.resident_measurements() > 0 || least <= 1.0 {
+            return near;
+        }
+        let reach = self.viewport.viewport() + 2.0 * self.viewport.overscan();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a count of rows a view holds, finite and non-negative"
+        )]
+        let fit = (reach / least).ceil().max(0.0) as usize;
+        near.start..near.end.max(near.start.saturating_add(fit))
     }
 
     pub fn set_scroll_offset(&mut self, offset: f64) {
@@ -1667,12 +1685,59 @@ impl Widget for VirtualRows {
             },
             &child_nodes,
         );
+        let _ = taffy.set_restyled_for_width(node, !self.fit_rows);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.structure_dirty = false;
         self.remount = false;
         self.letting_go.clear();
         self.layout_node = Some(node);
         node
+    }
+
+    /// Rows laid out for the first time are measured as the list is solved, and every row is
+    /// placed where the measured rows above it put it, in the same solve. A list as tall as its
+    /// rows is not: its own height follows from them, which its parent has read already.
+    fn style_laid_out(
+        &mut self,
+        styles: &mut taffy::Restyle<'_>,
+        _laid: &taffy::LayoutOutput,
+    ) -> bool {
+        let mut moved = false;
+        for at in 0..self.mounted.len() {
+            let Some(row) = self.mounted.get(at) else {
+                continue;
+            };
+            let Some(child) = row.node else {
+                continue;
+            };
+            if self.viewport.is_measured(&row.key) {
+                continue;
+            }
+            let (index, key) = (row.index, row.key.clone());
+            let laid = crate::widget::layout::snap_to_device_pixels(f64::from(
+                styles.laid(child).size.height,
+            ));
+            let height = self.grouped_height(index, laid);
+            let before = (
+                self.viewport.item_height(index).map(f64::to_bits),
+                self.viewport.content_extent().to_bits(),
+            );
+            let shown = self.grown_height(index, &key, height.max(1.0), true);
+            self.viewport.measure(index, key, shown);
+            moved |= before
+                != (
+                    self.viewport.item_height(index).map(f64::to_bits),
+                    self.viewport.content_extent().to_bits(),
+                );
+        }
+        if !moved {
+            return false;
+        }
+        self.place_rows(styles);
+        if let Some(natural) = self.natural {
+            styles.set_style(natural, self.natural_style());
+        }
+        true
     }
 
     fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {

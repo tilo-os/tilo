@@ -5,11 +5,12 @@
 use std::ops::Range;
 
 use taffy::style_helpers::length;
-use taffy::{Dimension, NodeId, TaffyTree};
+use taffy::{Dimension, NodeId};
 
 use super::px;
 use super::{ListKey, VirtualRows};
 use crate::widget::Remount;
+use crate::widget::layout::Styles;
 
 /// How far the view may scroll from where the rows' layout was placed
 /// before they are placed again from where it stands: taffy lays out in
@@ -125,7 +126,7 @@ impl VirtualRows {
 }
 
 impl VirtualRows {
-    pub(super) fn place_rows(&mut self, taffy: &mut TaffyTree<()>) {
+    pub(super) fn place_rows(&mut self, taffy: &mut impl Styles) {
         self.rows_beside_bar = self.overlay_bar.is_none() && self.scroll_metrics().overflows();
         let left = length(px(self.lead));
         let right = length(px(self.trailing_inset()));
@@ -144,7 +145,7 @@ impl VirtualRows {
                 continue;
             };
             let top = top + self.band_gap(index);
-            let Ok(current) = taffy.style(child) else {
+            let Some(current) = taffy.style_of(child) else {
                 continue;
             };
             let mut style = current.clone();
@@ -154,7 +155,7 @@ impl VirtualRows {
             style.inset.top = length(px(top));
             style.size.width = Dimension::auto();
             if style != *current {
-                let _ = taffy.set_style(child, style);
+                let _ = taffy.set_style_of(child, style);
             }
         }
     }

@@ -31,44 +31,37 @@ fn name_col() -> ColumnDef<Item> {
     ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0)).with_text(|r: &Item| r.name.clone())
 }
 
-/// Lay `table` out at `width` × `height` through the measuring pass the
-/// host runs, so `Auto` columns and wrapping rows settle.
+/// Lay `table` out at `width` × `height` through the solve a window makes, which sizes `Auto`
+/// columns and wrapping rows.
 fn settle(table: &mut DataTable<Item>, width: f32, height: f32) -> (TaffyTree<()>, NodeId) {
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
-    let mut node = None;
     let mut tree = TaffyTree::<()>::new();
-    for _ in 0..4 {
-        tree = TaffyTree::<()>::new();
-        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let tnode = table.build_layout(&mut tree, &theme, &mut map);
-        let root = tree.parent_node(
-            Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                size: Size::from_lengths(width, height),
-                ..Default::default()
-            },
-            &[tnode],
-        );
-        tree.compute_layout(
-            root,
-            Size {
-                width: taffy::AvailableSpace::Definite(width),
-                height: taffy::AvailableSpace::Definite(height),
-            },
-        )
-        .unwrap();
-        let rect = tree.layout(tnode).copied().unwrap_or_default();
-        let _ = rect;
-        table.apply_layout(&tree, tnode, Point::new(24.0, 0.0));
-        let changed = table.adjust_layout_style(&mut tree, tnode, &mut text);
-        node = Some(tnode);
-        if !changed {
-            break;
-        }
-    }
-    (tree, node.unwrap())
+    let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = table.build_layout(&mut tree, &theme, &mut map);
+    let root = tree.parent_node(
+        Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size::from_lengths(width, height),
+            ..Default::default()
+        },
+        &[node],
+    );
+    crate::widget::layout::solve_built(
+        table,
+        &mut tree,
+        (root, node),
+        &map,
+        Size {
+            width: taffy::AvailableSpace::Definite(width),
+            height: taffy::AvailableSpace::Definite(height),
+        },
+        &mut text,
+    )
+    .unwrap();
+    table.apply_layout(&tree, node, Point::new(24.0, 0.0));
+    (tree, node)
 }
 
 fn send(

@@ -8670,6 +8670,10 @@ impl crate::app_core::AppCore for FrameHarness {
         self.layout_built
     }
 
+    fn remount_requested(&self) -> bool {
+        self.remount
+    }
+
     fn remounted(&mut self, built: usize) {
         self.layout_nodes_built = self
             .layout_nodes_built

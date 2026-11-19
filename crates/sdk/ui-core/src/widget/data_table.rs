@@ -3842,13 +3842,10 @@ impl DataTableCore {
     }
 
     /// Each mounted cell's node as wide as its column (at most as wide, for a cell its column does
-    /// not fill) where the solve stood the table at `node`: a cell is sized in the solve that lays
-    /// the table out, never by building the table again once it is placed. Whether one changed.
-    fn size_cells(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        let Ok(&layout) = taffy.layout(node) else {
-            return false;
-        };
-        let width = f64::from(layout.size.width);
+    /// not fill) on a table `width` wide: a cell is sized in the solve that lays the table out,
+    /// never by building the table again once it is placed.
+    fn size_cells(&mut self, styles: &mut taffy::Restyle<'_>, width: f32) {
+        let width = f64::from(width);
         let x1 = if self.internal_scroll() {
             width - self.gutter
         } else {
@@ -3869,31 +3866,23 @@ impl DataTableCore {
             &hidden,
         );
         self.cell_widths = columns.iter().map(Rect::width).collect();
-        let mut changed = false;
         for cell in &self.mounted_cells {
             let (Some(child), Some(column)) = (cell.node, columns.get(cell.column_index)) else {
-                continue;
-            };
-            let Ok(current) = taffy.style(child) else {
                 continue;
             };
             let fills = self
                 .columns
                 .get(cell.column_index)
                 .is_none_or(|column| column.alignment() == CellAlign::Leading);
-            let mut style = current.clone();
+            let mut style = styles.style(child).clone();
             let width = Dimension::length(f32_of_f64(column.width()));
             if fills {
                 style.size.width = width;
             } else {
                 style.max_size.width = width;
             }
-            if style != *current {
-                let _ = taffy.set_style(child, style);
-                changed = true;
-            }
+            styles.set_style(child, style);
         }
-        changed
     }
 }
 
@@ -4329,27 +4318,48 @@ impl Widget for DataTableCore {
         // shows, which `filling` leaves as written.
         let style = crate::widget::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
         let node = taffy.parent_node(style, &child_nodes);
+        let _ = taffy.set_restyled_for_width(node, true);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.structure_dirty = false;
         self.remount = false;
         node
     }
 
-    /// Size the [`ColumnWidth::Auto`] columns and the rows whose cells wrap, and each mounted cell to
-    /// its column at the size the solve gave the table.
+    /// Size the [`ColumnWidth::Auto`] columns from what their cells show.
+    fn size_before_solve(
+        &mut self,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
+        text: &mut TextRenderer,
+    ) {
+        if let Some(theme) = self.measure_theme.clone() {
+            self.size_auto_columns(&theme, text);
+        }
+    }
+
+    /// Size each mounted cell to its column at the width the solve gives the table.
+    fn style_for_width(
+        &mut self,
+        styles: &mut taffy::Restyle<'_>,
+        width: taffy::AvailableSpace,
+        _text: &mut TextRenderer,
+    ) {
+        if let taffy::AvailableSpace::Definite(width) = width {
+            self.size_cells(styles, width);
+        }
+    }
+
+    /// Size the rows whose cells wrap to their columns as the solve laid them out.
     fn adjust_layout_style(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        _taffy: &mut TaffyTree<()>,
+        _node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
         let Some(theme) = self.measure_theme.clone() else {
             return false;
         };
-        let widths = self.size_auto_columns(&theme, text);
-        let cells = self.size_cells(taffy, node);
-        let rows = self.size_wrapped_rows(&theme, text);
-        widths || cells || rows
+        self.size_wrapped_rows(&theme, text)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -5104,6 +5114,24 @@ impl<Row: 'static> Widget for DataTable<Row> {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         Widget::build_layout(&mut self.core, taffy, theme, node_map)
+    }
+
+    fn size_before_solve(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) {
+        Widget::size_before_solve(&mut self.core, taffy, node, text);
+    }
+
+    fn style_for_width(
+        &mut self,
+        styles: &mut taffy::Restyle<'_>,
+        width: taffy::AvailableSpace,
+        text: &mut TextRenderer,
+    ) {
+        Widget::style_for_width(&mut self.core, styles, width, text);
     }
 
     fn adjust_layout_style(

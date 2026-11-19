@@ -1,12 +1,12 @@
-//! A field label aligned to its first control, independent of supporting rows.
+//! A field label aligned to its first control, independent of supporting rows: its field sets the
+//! inset that centres it on the control's first line.
 use super::{
     Affine, HashMap, NodeId, Parts, Point, PresenceCtx, Rect, Scene, Size, Style, TaffyTree,
-    TextRenderer, Theme, Widget, column_style, length, measure_owned, retained_parts,
+    TextRenderer, Theme, Widget, column_style, measure_owned, retained_parts,
 };
 
 pub(super) struct FieldLabel {
     pub(super) parts: Parts,
-    pub(super) top_inset: f32,
 }
 impl Widget for FieldLabel {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
@@ -41,22 +41,6 @@ impl Widget for FieldLabel {
         self.parts.children.first_mut().map_or(Size::ZERO, |label| {
             measure_owned(label.as_mut(), available.width, text)
         })
-    }
-    fn adjust_layout_style(
-        &mut self,
-        tree: &mut TaffyTree<()>,
-        node: NodeId,
-        _text: &mut crate::text_render::TextRenderer,
-    ) -> bool {
-        let Ok(current) = tree.style(node) else {
-            return false;
-        };
-        let mut style = current.clone();
-        style.padding.top = length(self.top_inset);
-        if *current == style {
-            return false;
-        }
-        tree.set_style(node, style).is_ok()
     }
     fn draw(
         &mut self,

@@ -1917,13 +1917,14 @@ impl crate::widget::decorator::concrete::Decorator for MediaTransport {
         Widget::build_layout(&mut self.content, taffy, theme, node_map)
     }
 
-    fn adjust_layout_style(
+    /// The time labels are as wide as the longest time the track can show.
+    fn size_before_solve(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
-        let mut changed = Widget::adjust_layout_style(&mut self.content, taffy, node, text);
+    ) {
+        Widget::size_before_solve(&mut self.content, taffy, node, text);
         if let Some(theme) = &self.theme {
             let style = theme.text(TextRole::Caption).numeric();
             let widest = if self.shared.state.borrow().duration_ms >= HOUR_MS {
@@ -1936,10 +1937,17 @@ impl crate::widget::decorator::concrete::Decorator for MediaTransport {
             if (metrics.time - time).abs() > f64::EPSILON {
                 self.shared.metrics.set(Metrics { time, ..metrics });
                 self.content.invalidation().invalidate();
-                changed = true;
             }
         }
-        changed
+    }
+
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        Widget::adjust_layout_style(&mut self.content, taffy, node, text)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

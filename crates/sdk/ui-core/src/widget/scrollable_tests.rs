@@ -389,22 +389,20 @@ tilo_test_env::scenario! {
                 },
                 &[node],
             );
-            taffy
-                .compute_layout_with_measure(
-                    parent,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(400.0),
-                        height: taffy::AvailableSpace::Definite(300.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = node_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, &mut tr) }
-                        } else {
-                            Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
+            // The solve reserves the gutter once the content overflows, and lays the content
+            // out beside it, in the same solve.
+            crate::widget::layout::solve_built(
+                &mut scroll,
+                &mut taffy,
+                (parent, node),
+                &node_map,
+                Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+                &mut tr,
+            )
+            .unwrap();
             scroll.apply_layout(&taffy, node, Point::ZERO);
             scroll.scroll_by(0.0, 40.0);
             assert!(
@@ -638,45 +636,20 @@ tilo_test_env::scenario! {
                 },
                 &[node],
             );
-            taffy
-                .compute_layout_with_measure(
-                    parent,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(400.0),
-                        height: taffy::AvailableSpace::Definite(300.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = node_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, &mut tr) }
-                        } else {
-                            Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-            // The host's adjust pass reserves the gutter once the content
-            // overflows; solve again as the host does.
-            assert!(scroll.adjust_layout_style(&mut taffy, node, &mut tr));
-            taffy
-                .compute_layout_with_measure(
-                    parent,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(400.0),
-                        height: taffy::AvailableSpace::Definite(300.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = node_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, &mut tr) }
-                        } else {
-                            Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-            assert!(
-                !scroll.adjust_layout_style(&mut taffy, node, &mut tr),
-                "the gutter settles in one step"
-            );
+            // The solve reserves the gutter once the content overflows, and lays the content
+            // out beside it, in the same solve.
+            crate::widget::layout::solve_built(
+                &mut scroll,
+                &mut taffy,
+                (parent, node),
+                &node_map,
+                Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+                &mut tr,
+            )
+            .unwrap();
             scroll.apply_layout(&taffy, node, Point::ZERO);
 
             let child = &scroll.children()[0];

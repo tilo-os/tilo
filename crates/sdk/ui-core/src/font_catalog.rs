@@ -69,27 +69,55 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
     // pinned catalog, built and mapped once per process as the product's is.
     let fixtures = cfg!(feature = "test-support");
     static DATABASE: OnceLock<Option<fontdb::Database>> = OnceLock::new();
+    // The catalog's faces and the system's, once a launch with no saved list of the system's fonts
+    // has found them.
+    static FOUND: OnceLock<fontdb::Database> = OnceLock::new();
     let database = DATABASE.get_or_init(|| {
         let font_system = if fixtures {
             fixture_font_system()
         } else {
             let recorded = index::location();
+            let held = std::cell::Cell::new(false);
             let discover = |db: &mut fontdb::Database| {
-                index::add_system_fonts(recorded.as_deref(), db);
+                held.set(index::add_recorded_fonts(recorded.as_deref(), db));
             };
-            match load_first_catalog(&catalog_roots(), &locale, discover) {
+            let font_system = match load_first_catalog(&catalog_roots(), &locale, discover) {
                 Ok(font_system) => font_system,
                 Err(errors) => {
                     no_catalog(&errors);
                     return None;
                 }
+            };
+            if !held.get() {
+                // Finding the system's fonts parses every face it has: text is set in the
+                // catalog's faces meanwhile, and the font systems made once they are found have
+                // both.
+                let locale = locale.clone();
+                let find = move || {
+                    let system = index::find_system_fonts(recorded.as_deref());
+                    let discover = |db: &mut fontdb::Database| index::add_faces(&system, db);
+                    if let Ok(font_system) = load_first_catalog(&catalog_roots(), &locale, discover)
+                    {
+                        let _ = FOUND.set(mapped(font_system.db()));
+                    }
+                };
+                if crate::background::Background::current()
+                    .spawn("font-find", find)
+                    .is_err()
+                {
+                    tracing::warn!("the system's fonts are not found this launch");
+                }
             }
+            font_system
         };
         Some(tilo_startup_metrics::span("font-files-map", || {
             mapped(font_system.db())
         }))
     });
-    database.as_ref().map(|db| system_over(locale, db.clone()))
+    FOUND
+        .get()
+        .or(database.as_ref())
+        .map(|db| system_over(locale, db.clone()))
 }
 
 #[cfg_attr(

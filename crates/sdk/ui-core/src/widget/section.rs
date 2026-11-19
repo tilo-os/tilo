@@ -1327,6 +1327,18 @@ impl Widget for Section {
         }
     }
 
+    /// Its choosers take the width they share, once each has offered its own.
+    fn size_before_solve(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        _node: NodeId,
+        _text: &mut TextRenderer,
+    ) {
+        for child in &mut self.parts.children {
+            self.choosers.fit(child.as_mut(), tree);
+        }
+    }
+
     fn mark_drawn(&mut self) {
         for child in &mut self.parts.children {
             child.mark_drawn();

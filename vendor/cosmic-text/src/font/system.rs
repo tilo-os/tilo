@@ -370,6 +370,9 @@ impl FontSystem {
     ) -> Option<usize> {
         self.get_font(id, weight).map(|font| {
             let code_points = font.unicode_codepoints();
+            if code_points.is_empty() {
+                return font.chars_in(word);
+            }
             let cache = self
                 .font_codepoint_support_info_cache
                 .entry(id)

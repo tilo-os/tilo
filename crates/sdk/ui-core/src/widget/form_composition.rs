@@ -263,12 +263,12 @@ impl FormSection {
 
     /// Share one label column among the plain (not grouped) forms `widget` holds within a few
     /// levels (a page's sections and the forms in them): each is told the widest label and
-    /// control of them all. Whether any was told something new.
+    /// control of them all.
     pub(super) fn share_label_column(
         widgets: &mut [&mut (dyn Widget + '_)],
         tree: &TaffyTree<()>,
         text: &mut TextRenderer,
-    ) -> bool {
+    ) {
         /// How deep forms are looked for: a page's part, a section, its pane, the form.
         const DEPTH: usize = 6;
         fn each(widget: &mut dyn Widget, depth: usize, f: &mut dyn FnMut(&mut FormSection)) {
@@ -314,14 +314,50 @@ impl FormSection {
             });
         }
         let shared = (count > 1).then_some(needs);
-        let mut changed = false;
         for widget in widgets.iter_mut() {
             each(&mut **widget, DEPTH, &mut |section| {
-                changed |= section.page_needs != shared;
                 section.page_needs = shared;
+                section.share_needs();
             });
         }
-        changed
+    }
+
+    /// The widest label and control of its fields, its form's and its page's, from what each
+    /// field measured before the solve.
+    fn needs(&mut self) -> (f32, f32) {
+        let mut needs = (0.0_f32, 0.0_f32);
+        for field in self.fields_mut() {
+            if field.shares_label_column() {
+                needs = (
+                    needs.0.max(field.own_needs.0),
+                    needs.1.max(field.own_needs.1),
+                );
+            }
+        }
+        [self.form_needs, self.page_needs]
+            .into_iter()
+            .flatten()
+            .fold(needs, |needs, shared| {
+                (needs.0.max(shared.0), needs.1.max(shared.1))
+            })
+    }
+
+    /// Tell its fields the widest label and control of the section, its form and its page.
+    fn share_needs(&mut self) {
+        let needs = self.needs();
+        for field in self.fields_mut() {
+            field.group_needs = Some(needs);
+        }
+    }
+
+    /// Whether a settings list `width` wide sets its labels beside their controls.
+    fn beside_at(&mut self, width: AvailableSpace, needs: (f32, f32)) -> bool {
+        let pair = self.fields_mut().next().map_or(0.0, |field| field.pair_gap);
+        match self.effective.map(|e| e.label_placement.value) {
+            Some(LabelPlacement::Above) => false,
+            Some(LabelPlacement::Beside) => true,
+            _ => fits(width, needs.0 + pair + needs.1),
+        }
     }
 
     fn own_needs(&mut self, tree: &TaffyTree<()>, text: &mut TextRenderer) -> (f32, f32) {
@@ -366,6 +402,12 @@ pub struct Field {
     inherited: Option<SectionLayout>,
     effective: Option<FieldLayout>,
     group_needs: Option<(f32, f32)>,
+    /// The widest its label and control are, measured before the solve.
+    own_needs: (f32, f32),
+    /// How tall its label and its control are on one line, measured before the solve: a beside
+    /// label is centred on the control's first line.
+    label_height: f32,
+    control_height: f32,
     pair_gap: f32,
     stacked_gap: f32,
     help_gap: f32,
@@ -455,7 +497,6 @@ impl Field {
             parts: Parts::new(vec![
                 Box::new(FieldLabel {
                     parts: Parts::new(vec![label]),
-                    top_inset: 0.0,
                 }),
                 Box::new(FieldBody {
                     parts: Parts::new(vec![content]),
@@ -473,6 +514,9 @@ impl Field {
             inherited: None,
             effective: None,
             group_needs: None,
+            own_needs: (0.0, 0.0),
+            label_height: 0.0,
+            control_height: 0.0,
             pair_gap: 0.0,
             stacked_gap: 0.0,
             help_gap: 0.0,
@@ -603,6 +647,16 @@ impl Field {
                 minimum
             },
         )
+    }
+}
+
+/// Whether `required` fits in `width`: a definite width as it is, the widest a node may be
+/// (max-content) always, the narrowest (min-content) never.
+fn fits(width: AvailableSpace, required: f32) -> bool {
+    match width {
+        AvailableSpace::Definite(width) => width >= required,
+        AvailableSpace::MaxContent => true,
+        AvailableSpace::MinContent => false,
     }
 }
 
@@ -754,12 +808,14 @@ impl Widget for Form {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn adjust_layout_style(
+    /// The form's sections share the widest label and control of them all: what they hold says
+    /// how wide those are, before any solve.
+    fn size_before_solve(
         &mut self,
         tree: &mut TaffyTree<()>,
         _node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
+    ) {
         let mut needs = (0.0_f32, 0.0_f32);
         for child in &mut self.parts.children {
             if let Some(section) = child
@@ -771,17 +827,15 @@ impl Widget for Form {
                 needs.1 = needs.1.max(own.1);
             }
         }
-        let mut changed = false;
         for child in &mut self.parts.children {
             if let Some(section) = child
                 .as_any_mut()
                 .and_then(|any| any.downcast_mut::<FormSection>())
             {
-                changed |= section.form_needs != Some(needs);
                 section.form_needs = Some(needs);
+                section.share_needs();
             }
         }
-        changed
     }
     fn draw(
         &mut self,
@@ -807,7 +861,7 @@ impl Widget for FormSection {
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.effective_layout().map(LayoutInfo::Section)
     }
-    retained_parts!("FormSection");
+    retained_parts!("FormSection", custom_apply_layout);
     fn is_layout_dirty(&self) -> bool {
         // A collapsed section can contain no rows. It is still a layout
         // container, whose intrinsic size changes only with its children.
@@ -879,6 +933,7 @@ impl Widget for FormSection {
         };
         self.beside = true;
         self.choosers.reset();
+        let grouped_list = self.grouped && self.field_spacing.is_none();
         for child in &mut self.parts.children {
             self.choosers.join(child.as_mut());
         }
@@ -911,45 +966,46 @@ impl Widget for FormSection {
                 }
             }
         }
+        let _ = tree.set_restyled_for_width(node, grouped_list);
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn adjust_layout_style(
+    /// Its fields are told the widest label and control of the section, from what they measured
+    /// (its form and its page, which are asked after it, tell them theirs), and its choosers
+    /// take the width they share.
+    fn size_before_solve(
         &mut self,
         tree: &mut TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
-        let own = self.own_needs(tree, text);
-        let needs = [self.form_needs, self.page_needs]
-            .into_iter()
-            .flatten()
-            .fold(own, |needs, shared| {
-                (needs.0.max(shared.0), needs.1.max(shared.1))
-            });
-        let mut changed = false;
-        for field in self.fields_mut() {
-            changed |= field.group_needs != Some(needs);
-            field.group_needs = Some(needs);
+        _node: NodeId,
+        _text: &mut TextRenderer,
+    ) {
+        self.share_needs();
+        for child in &mut self.parts.children {
+            self.choosers.fit(child.as_mut(), tree);
         }
+    }
+    /// A settings list keeps no gap between its rows while their labels stand beside their
+    /// controls.
+    fn style_for_width(
+        &mut self,
+        styles: &mut taffy::Restyle<'_>,
+        width: AvailableSpace,
+        _text: &mut TextRenderer,
+    ) {
+        let needs = self.needs();
         if self.grouped && self.field_spacing.is_none() {
-            let width = tree.layout(node).map_or(0.0, |layout| layout.size.width);
-            let pair = self.fields_mut().next().map_or(0.0, |field| field.pair_gap);
-            let beside = match self.effective.map(|e| e.label_placement.value) {
-                Some(LabelPlacement::Above) => false,
-                Some(LabelPlacement::Beside) => true,
-                _ => width >= needs.0 + pair + needs.1,
-            };
-            if beside != self.beside {
-                self.beside = beside;
-                if let Ok(current) = tree.style(node) {
-                    let mut style = current.clone();
-                    style.gap.height = length(if beside { 0.0 } else { self.stacked_gap });
-                    changed |= tree.set_style(node, style).is_ok();
-                }
-            }
+            let beside = self.beside_at(width, needs);
+            let node = styles.node();
+            let mut style = styles.style(node).clone();
+            style.gap.height = length(if beside { 0.0 } else { self.stacked_gap });
+            styles.set_style(node, style);
         }
-        changed
+    }
+    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let width = tree.layout(node).map_or(0.0, |layout| layout.size.width);
+        let needs = self.needs();
+        self.beside = self.beside_at(AvailableSpace::Definite(width), needs);
+        self.parts.apply_layout(tree, node, origin);
     }
     fn draw(
         &mut self,
@@ -1005,7 +1061,7 @@ impl Widget for Field {
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.effective_layout().map(LayoutInfo::Field)
     }
-    retained_parts!("Field");
+    retained_parts!("Field", custom_apply_layout);
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -1048,55 +1104,67 @@ impl Widget for Field {
         let node = self
             .parts
             .build(column_style(self.stacked_gap), tree, theme, map);
+        let _ = tree.set_restyled_for_width(node, true);
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn adjust_layout_style(
+    /// What its label and control need, measured from what they show.
+    fn size_before_solve(
         &mut self,
         tree: &mut TaffyTree<()>,
-        node: NodeId,
+        _node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
-        let Ok(layout) = tree.layout(node) else {
-            return false;
-        };
-        let width = layout.size.width;
-        let (label, control) = self.group_needs.unwrap_or_else(|| self.needs(tree, text));
-        let required = label + self.pair_gap + control;
-        let Some(effective) = self.effective else {
-            return false;
-        };
-        let beside = self.kind != FieldKind::Row
-            && match effective.label_placement.value {
-                LabelPlacement::Automatic => width >= required,
-                LabelPlacement::Above => false,
-                LabelPlacement::Beside => true,
-            };
-        let mut changed = self.place_parts(tree, node, beside, label, control);
-        let control_height = self
+    ) {
+        self.own_needs = self.needs(tree, text);
+        self.label_height = self.parts.children.first_mut().map_or(0.0, |label| {
+            measure_owned(label.as_mut(), AvailableSpace::MaxContent, text).height
+        });
+        let control_node = self
             .parts
             .nodes
             .get(1)
             .and_then(|&body| tree.children(body).ok())
-            .and_then(|children| children.first().copied())
-            .and_then(|control| tree.layout(control).ok())
-            .map_or(0.0, |layout| layout.size.height);
-        let first_line = control_height.min(self.first_line.max(1.0));
-        if let Some(label) = self.parts.children.first_mut() {
-            let height = measure_owned(label.as_mut(), AvailableSpace::MaxContent, text).height;
-            let top = if beside && !(self.trailing_control && self.has_help) {
-                ((first_line - height) / 2.0).max(0.0)
-            } else {
-                0.0
-            };
-            if let Some(label) = label
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<FieldLabel>())
-            {
-                changed |= (label.top_inset - top).abs() > f32::EPSILON;
-                label.top_inset = top;
-            }
+            .and_then(|children| children.first().copied());
+        let declared = control_node
+            .and_then(|control| tree.style(control).ok())
+            .and_then(|style| style.size.height.into_option());
+        self.control_height = declared.unwrap_or_else(|| {
+            self.parts
+                .children
+                .get_mut(1)
+                .and_then(|body| body.children_mut().into_iter().next())
+                .map_or(0.0, |control| {
+                    measure_owned(control, AvailableSpace::MaxContent, text).height
+                })
+        });
+    }
+    /// Its label beside its control when the width holds both, else above it.
+    fn style_for_width(
+        &mut self,
+        styles: &mut taffy::Restyle<'_>,
+        width: AvailableSpace,
+        _text: &mut TextRenderer,
+    ) {
+        let (label, control) = self.group_needs.unwrap_or(self.own_needs);
+        let beside = self.beside_at(width, label + self.pair_gap + control);
+        self.place_parts(styles, beside, label, control);
+        let first_line = self.control_height.min(self.first_line.max(1.0));
+        let top = if beside && !(self.trailing_control && self.has_help) {
+            ((first_line - self.label_height) / 2.0).max(0.0)
+        } else {
+            0.0
+        };
+        if let Some(&label) = self.parts.nodes.first() {
+            let mut style = styles.style(label).clone();
+            style.padding.top = length(top);
+            styles.set_style(label, style);
         }
+    }
+    fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let width = tree.layout(node).map_or(0.0, |layout| layout.size.width);
+        let (label, _) = self.group_needs.unwrap_or(self.own_needs);
+        let required = label + self.pair_gap + self.group_needs.unwrap_or(self.own_needs).1;
+        let beside = self.beside_at(AvailableSpace::Definite(width), required);
         if let Some(effective) = self.effective.as_mut() {
             effective.resolved_placement = if beside {
                 LabelPlacement::Beside
@@ -1107,7 +1175,7 @@ impl Widget for Field {
             effective.beside_required_width = required;
             effective.label_width = label;
         }
-        changed
+        self.parts.apply_layout(tree, node, origin);
     }
     fn draw(
         &mut self,
@@ -1121,31 +1189,35 @@ impl Widget for Field {
     }
 }
 impl Field {
-    fn place_parts(
-        &self,
-        tree: &mut TaffyTree<()>,
-        node: NodeId,
-        beside: bool,
-        label: f32,
-        control: f32,
-    ) -> bool {
-        fn restyle(tree: &mut TaffyTree<()>, part: NodeId, edit: impl FnOnce(&mut Style)) -> bool {
-            let Ok(current) = tree.style(part) else {
-                return false;
-            };
-            let mut style = current.clone();
+    /// Whether a field `width` wide sets its label beside its control, which together need
+    /// `required`.
+    fn beside_at(&self, width: AvailableSpace, required: f32) -> bool {
+        self.kind != FieldKind::Row
+            && self
+                .effective
+                .is_some_and(|effective| match effective.label_placement.value {
+                    LabelPlacement::Automatic => fits(width, required),
+                    LabelPlacement::Above => false,
+                    LabelPlacement::Beside => true,
+                })
+    }
+
+    fn place_parts(&self, styles: &mut taffy::Restyle<'_>, beside: bool, label: f32, control: f32) {
+        fn restyle(styles: &mut taffy::Restyle<'_>, part: NodeId, edit: impl FnOnce(&mut Style)) {
+            let mut style = styles.style(part).clone();
             edit(&mut style);
-            *current != style && tree.set_style(part, style).is_ok()
+            styles.set_style(part, style);
         }
+        let node = styles.node();
         let help = self.has_help;
-        let mut changed = false;
+
         if let Some(&part) = self.parts.nodes.first() {
             let display = if self.kind == FieldKind::Row {
                 taffy::Display::None
             } else {
                 taffy::Display::Grid
             };
-            changed |= restyle(tree, part, |style| {
+            restyle(styles, part, |style| {
                 (style.grid_row, style.grid_column) = place(1, 1, 1);
                 style.display = display;
             });
@@ -1158,7 +1230,7 @@ impl Field {
                 taffy::AlignItems::Start
             };
             let stacked_row = if self.kind == FieldKind::Row { 1 } else { 2 };
-            changed |= restyle(tree, part, |style| {
+            restyle(styles, part, |style| {
                 (style.grid_row, style.grid_column) = if beside {
                     place(1, if help { 2 } else { 1 }, 2)
                 } else {
@@ -1178,7 +1250,7 @@ impl Field {
             });
         }
         if let Some(&part) = self.parts.nodes.get(2) {
-            changed |= restyle(tree, part, |style| {
+            restyle(styles, part, |style| {
                 (style.grid_row, style.grid_column) = place(if beside { 2 } else { 3 }, 1, 1);
             });
         }
@@ -1203,7 +1275,7 @@ impl Field {
             (false, _) if always_above => (self.stacked_gap, self.stacked_gap),
             (false, _) => (0.0, 0.0),
         };
-        changed |= restyle(tree, node, |style| {
+        restyle(styles, node, |style| {
             style.grid_template_columns = if beside {
                 vec![length(label), minmax(length(0.0_f32), fr(1.0_f32))]
             } else {
@@ -1214,7 +1286,6 @@ impl Field {
             style.padding.top = length(top);
             style.padding.bottom = length(bottom);
         });
-        changed
     }
 }
 impl Widget for FieldBody {

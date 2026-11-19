@@ -603,15 +603,15 @@ impl Widget for Badge {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn adjust_layout_style(
+    fn size_before_solve(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
+    ) {
         let (Some(label), Some(metrics)) = (label_of(self.drawn_content()), self.metrics.as_ref())
         else {
-            return false;
+            return;
         };
         #[allow(
             clippy::cast_possible_truncation,
@@ -619,14 +619,14 @@ impl Widget for Badge {
         )]
         let width = Dimension::length(metrics.width(&label, text) as f32);
         let Ok(style) = taffy.style(node) else {
-            return false;
+            return;
         };
         if style.size.width == width {
-            return false;
+            return;
         }
         let mut style = style.clone();
         style.size.width = width;
-        taffy.set_style(node, style).is_ok()
+        let _ = taffy.set_style(node, style);
     }
 
     fn measure(

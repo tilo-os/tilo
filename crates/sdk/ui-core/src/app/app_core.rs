@@ -113,6 +113,10 @@ impl crate::app_core::AppCore for App {
             && self.close_admission.dialog.is_none()
     }
 
+    fn remount_requested(&self) -> bool {
+        self.layout.remount
+    }
+
     fn remounted(&mut self, _built: usize) {
         self.layout.remounts = self.layout.remounts.wrapping_add(1);
         self.layout.layout_dirty = true;

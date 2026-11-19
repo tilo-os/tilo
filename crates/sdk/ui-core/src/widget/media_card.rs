@@ -1616,6 +1616,9 @@ pub struct MediaGrid {
     /// grid's top. Only cards within a viewport's height of it have their
     /// titles measured; the others are as tall as their text can be.
     window: (f64, f64),
+    /// A justified grid's cards stand where its rows put them, out of its flow; this empty node
+    /// in the flow is as tall as the rows, so the grid is too.
+    rows_height: Option<NodeId>,
 
     dirty: bool,
 }
@@ -1642,6 +1645,7 @@ impl MediaGrid {
             row_gap: 0.0,
             rect: Rect::ZERO,
             window: FIRST_WINDOW,
+            rows_height: None,
         }
     }
 
@@ -1750,6 +1754,125 @@ impl MediaGrid {
     }
 }
 
+impl MediaGrid {
+    /// Its columns, and the text height each row of cards shares.
+    fn size_columns(
+        &mut self,
+        styles: &mut taffy::Restyle<'_>,
+        width: f64,
+        text: &mut TextRenderer,
+    ) {
+        let node = styles.node();
+        let columns = self.columns_for_width(width);
+        let column = card_column_width(width, columns, self.column_gap).floor();
+        // A bare fraction retains an automatic intrinsic minimum.
+        // MediaCard measures its artwork from the available width,
+        // which during intrinsic sizing may be the whole parent.
+        // Zero-minimum tracks let the chosen columns share that
+        // width instead of each claiming the whole viewport.
+        let mut style = styles.style(node).clone();
+        style.grid_template_columns =
+            vec![
+                taffy::style_helpers::minmax(length(0.0_f32), taffy::style_helpers::fr(1.0_f32));
+                columns
+            ];
+        styles.set_style(node, style);
+        // Every card of a row shares the row's tallest text block.
+        // Cards far from the viewport keep the height they were
+        // measured at, or are as tall as their text can be, so laying
+        // out a long grid shapes only the titles near what is shown.
+        // Where a row stands follows from the rows above it: their artwork at this width and the
+        // text they share.
+        let window = self.window;
+        let row_gap = self.row_gap;
+        let mut changed = false;
+        let mut shared = Vec::with_capacity(self.cards.len());
+        let mut top = 0.0_f64;
+        for row in self.cards.chunks_mut(columns.max(1)) {
+            let held = |card: &mut MediaCard, text: &mut TextRenderer| {
+                column / card.aspect.ratio()
+                    + if card.text_estimated {
+                        card.own_text_height(text, None)
+                    } else {
+                        card.shared_text_height.unwrap_or_default()
+                    }
+            };
+            let bottom = top
+                + row
+                    .iter_mut()
+                    .filter_map(|card| card.as_any_mut()?.downcast_mut::<MediaCard>())
+                    .map(|card| held(card, text))
+                    .fold(0.0, f64::max);
+            let measure = near(window, top, bottom);
+            let mut tallest = 0.0_f64;
+            let mut art = 0.0_f64;
+            for card in row
+                .iter_mut()
+                .filter_map(|card| card.as_any_mut()?.downcast_mut::<MediaCard>())
+            {
+                art = art.max(column / card.aspect.ratio());
+                let height = if measure {
+                    changed |= card.text_estimated;
+                    card.text_estimated = false;
+                    card.wants_measure = false;
+                    card.own_text_height(text, Some(column))
+                } else if card.text_estimated {
+                    card.own_text_height(text, None)
+                } else {
+                    card.shared_text_height.unwrap_or_default()
+                };
+                tallest = tallest.max(height);
+            }
+            top += art + tallest + row_gap;
+            shared.extend(std::iter::repeat_n(tallest, row.len()));
+        }
+        for (card, height) in self.cards_mut().zip(shared) {
+            if card.shared_text_height != Some(height) {
+                card.shared_text_height = Some(height);
+                changed = true;
+            }
+        }
+        if changed {
+            for &child in &self.nodes {
+                styles.mark_dirty(child);
+            }
+        }
+    }
+
+    /// Its cards in rows as tall as fills the width, and itself as tall as the rows.
+    fn justify(&mut self, styles: &mut taffy::Restyle<'_>, width: f64) {
+        let aspects: Vec<f64> = self.cards_mut().map(|card| card.aspect.ratio()).collect();
+        let rects = justified_rows(&aspects, width, self.extent, self.column_gap);
+        let height = rects.iter().map(|r| r.y1).fold(0.0, f64::max);
+        for (&child, rect) in self.nodes.iter().zip(&rects) {
+            let current = styles.style(child);
+            let mut style = current.clone();
+            style.position = taffy::Position::Absolute;
+            style.inset = taffy::Rect {
+                left: length(crate::num::f32_of_f64(rect.x0)),
+                top: length(crate::num::f32_of_f64(rect.y0)),
+                right: auto(),
+                bottom: auto(),
+            };
+            style.size = taffy::Size {
+                width: length(crate::num::f32_of_f64(rect.width())),
+                height: length(crate::num::f32_of_f64(rect.height())),
+            };
+            if *current != style {
+                styles.set_style(child, style);
+            }
+        }
+        let target = length(crate::num::f32_of_f64(height));
+        if let Some(rows) = self.rows_height
+            && styles.style(rows).size.height != target
+        {
+            let mut style = styles.style(rows).clone();
+            style.size.height = target;
+            styles.set_style(rows, style);
+        }
+    }
+}
+
 impl Widget for MediaGrid {
     /// Its cards in a grid.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
@@ -1816,135 +1939,44 @@ impl Widget for MediaGrid {
                 display: taffy::Display::Block,
                 size: taffy::Size {
                     width: percent(1.0_f32),
-                    height: length(0.0_f32),
+                    height: auto(),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
             },
         };
-        let node = taffy.parent_node(style, &self.nodes);
+        self.rows_height = matches!(self.mode, GridMode::Justified).then(|| {
+            taffy.leaf_node(Style {
+                size: taffy::Size {
+                    width: length(0.0_f32),
+                    height: length(0.0_f32),
+                },
+                ..Default::default()
+            })
+        });
+        let children: Vec<NodeId> = self.nodes.iter().copied().chain(self.rows_height).collect();
+        let node = taffy.parent_node(style, &children);
+        let _ = taffy.set_restyled_for_width(node, true);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn adjust_layout_style(
+    /// Its columns, and the text height each row of cards shares, or its justified rows, for the
+    /// width it is laid out at.
+    fn style_for_width(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
+        styles: &mut taffy::Restyle<'_>,
+        width: taffy::AvailableSpace,
         text: &mut TextRenderer,
-    ) -> bool {
-        let Ok(layout) = taffy.layout(node) else {
-            return false;
+    ) {
+        let taffy::AvailableSpace::Definite(width) = width else {
+            return;
         };
-        let width = f64::from(layout.size.width);
-        let mut changed = false;
+        let width = f64::from(width);
         match self.mode {
-            GridMode::Columns => {
-                let columns = self.columns_for_width(width);
-                let column = card_column_width(width, columns, self.column_gap).floor();
-                // A bare fraction retains an automatic intrinsic minimum.
-                // MediaCard measures its artwork from the available width,
-                // which during intrinsic sizing may be the whole parent.
-                // Zero-minimum tracks let the chosen columns share that
-                // width instead of each claiming the whole viewport.
-                let tracks = vec![
-                    taffy::style_helpers::minmax(
-                        length(0.0_f32),
-                        taffy::style_helpers::fr(1.0_f32),
-                    );
-                    columns
-                ];
-                if let Ok(current) = taffy.style(node)
-                    && current.grid_template_columns != tracks
-                {
-                    let mut style = current.clone();
-                    style.grid_template_columns = tracks;
-                    changed |= taffy.set_style(node, style).is_ok();
-                }
-                // Every card of a row shares the row's tallest text block.
-                // Cards far from the viewport keep the height they were
-                // measured at, or are as tall as their text can be, so laying
-                // out a long grid shapes only the titles near what is shown.
-                let window = self.window;
-                let mut shared = Vec::with_capacity(self.cards.len());
-                for (row, nodes) in self
-                    .cards
-                    .chunks_mut(columns.max(1))
-                    .zip(self.nodes.chunks(columns.max(1)))
-                {
-                    let (top, bottom) = nodes.iter().filter_map(|&n| taffy.layout(n).ok()).fold(
-                        (f64::INFINITY, f64::NEG_INFINITY),
-                        |(top, bottom), l| {
-                            let y = f64::from(l.location.y);
-                            (top.min(y), bottom.max(y + f64::from(l.size.height)))
-                        },
-                    );
-                    let measure = top > bottom || near(window, top, bottom);
-                    let mut tallest = 0.0_f64;
-                    for card in row
-                        .iter_mut()
-                        .filter_map(|card| card.as_any_mut()?.downcast_mut::<MediaCard>())
-                    {
-                        let height = if measure {
-                            changed |= card.text_estimated;
-                            card.text_estimated = false;
-                            card.wants_measure = false;
-                            card.own_text_height(text, Some(column))
-                        } else if card.text_estimated {
-                            card.own_text_height(text, None)
-                        } else {
-                            card.shared_text_height.unwrap_or_default()
-                        };
-                        tallest = tallest.max(height);
-                    }
-                    shared.extend(std::iter::repeat_n(tallest, row.len()));
-                }
-                for (card, height) in self.cards_mut().zip(shared) {
-                    if card.shared_text_height != Some(height) {
-                        card.shared_text_height = Some(height);
-                        changed = true;
-                    }
-                }
-                if changed {
-                    for &child in &self.nodes {
-                        let _ = taffy.mark_dirty(child);
-                    }
-                }
-            }
-            GridMode::Justified => {
-                let aspects: Vec<f64> = self.cards_mut().map(|card| card.aspect.ratio()).collect();
-                let rects = justified_rows(&aspects, width, self.extent, self.column_gap);
-                let height = rects.iter().map(|r| r.y1).fold(0.0, f64::max);
-                for (&child, rect) in self.nodes.iter().zip(&rects) {
-                    if let Ok(current) = taffy.style(child) {
-                        let mut style = current.clone();
-                        style.position = taffy::Position::Absolute;
-                        style.inset = taffy::Rect {
-                            left: length(crate::num::f32_of_f64(rect.x0)),
-                            top: length(crate::num::f32_of_f64(rect.y0)),
-                            right: auto(),
-                            bottom: auto(),
-                        };
-                        style.size = taffy::Size {
-                            width: length(crate::num::f32_of_f64(rect.width())),
-                            height: length(crate::num::f32_of_f64(rect.height())),
-                        };
-                        if *current != style {
-                            changed |= taffy.set_style(child, style).is_ok();
-                        }
-                    }
-                }
-                if let Ok(current) = taffy.style(node) {
-                    let target = length(crate::num::f32_of_f64(height));
-                    if current.size.height != target {
-                        let mut style = current.clone();
-                        style.size.height = target;
-                        changed |= taffy.set_style(node, style).is_ok();
-                    }
-                }
-            }
+            GridMode::Columns => self.size_columns(styles, width, text),
+            GridMode::Justified => self.justify(styles, width),
         }
-        changed
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

@@ -574,24 +574,24 @@ impl Widget for InputHint {
         }
     }
 
-    fn adjust_layout_style(
+    fn size_before_solve(
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
+    ) {
         let width =
             Self::measure_width(&self.binding, self.conventions(), text, &self.layout_theme).ceil();
         let Ok(current) = tree.style(node) else {
-            return false;
+            return;
         };
         let wanted = Dimension::length(crate::num::f32_of_f64(width));
         if current.size.width == wanted {
-            return false;
+            return;
         }
         let mut style = current.clone();
         style.size.width = wanted;
-        tree.set_style(node, style).is_ok()
+        let _ = tree.set_style(node, style);
     }
 
     crate::rect_geometry!(measured);

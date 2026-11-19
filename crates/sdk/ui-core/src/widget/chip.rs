@@ -1142,12 +1142,12 @@ impl Widget for Chip {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn adjust_layout_style(
+    fn size_before_solve(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         text_renderer: &mut TextRenderer,
-    ) -> bool {
+    ) {
         let footprint = if let Some(footprint) = self.footprint {
             footprint
         } else {
@@ -1156,18 +1156,18 @@ impl Widget for Chip {
             footprint
         };
         let Ok(current) = taffy.style(node) else {
-            return false;
+            return;
         };
         let size = taffy::Size {
             width: length(footprint.width),
             height: length(footprint.height),
         };
         if current.size == size {
-            return false;
+            return;
         }
         let mut style = current.clone();
         style.size = size;
-        taffy.set_style(node, style).is_ok()
+        let _ = taffy.set_style(node, style);
     }
 
     /// Not reached while both axes are pinned (see `build_layout`); kept so a

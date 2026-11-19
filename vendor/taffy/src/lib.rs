@@ -118,7 +118,7 @@ pub use crate::style::Style;
 pub use crate::tree::traits::*;
 #[cfg(feature = "taffy_tree")]
 #[doc(inline)]
-pub use crate::tree::TaffyTree;
+pub use crate::tree::{Restyle, RestyleFunction, Solving, TaffyTree};
 #[cfg(feature = "std")]
 #[doc(inline)]
 pub use crate::util::print_tree;

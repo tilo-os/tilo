@@ -116,19 +116,19 @@ impl Widget for PageBody {
         node
     }
     /// The forms of the page's sections line their labels up in one column.
-    fn adjust_layout_style(
+    fn size_before_solve(
         &mut self,
         tree: &mut TaffyTree<()>,
         _node: NodeId,
         text: &mut TextRenderer,
-    ) -> bool {
+    ) {
         let mut parts: Vec<&mut (dyn Widget + '_)> = self
             .parts
             .children
             .iter_mut()
             .map(|child| &mut **child as &mut dyn Widget)
             .collect();
-        FormSection::share_label_column(&mut parts, tree, text)
+        FormSection::share_label_column(&mut parts, tree, text);
     }
     fn draw(
         &mut self,

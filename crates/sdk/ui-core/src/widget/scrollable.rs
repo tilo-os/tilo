@@ -1024,44 +1024,25 @@ impl Scrollable {
         let max_x = (self.content_w - self.viewport_w).max(0.0);
         (ox.clamp(0.0, max_x), oy.clamp(0.0, self.max_offset_y()))
     }
-    /// Reserve the bar's gutter on the edge it scrolls along while the solved
-    /// content overflows the viewport, and give it back once it fits.
-    /// Narrower content is usually taller, not always: a grid whose cells
-    /// scale with the width can overflow at full width and fit beside the
-    /// gutter. A gutter the content needed then stays for the rest of the layout,
-    /// so this settles within two steps.
+    /// The gutters for the bar the view needs, laid out at `size` holding `reserved` (vertical,
+    /// horizontal) with its content laid out to `content`: the bar's gutter on the edge it
+    /// scrolls along while the content overflows the viewport, none once it fits.
     ///
-    /// Everything this reads and writes is the tree's being solved: the gutters
-    /// reserved now are the view's padding in `taffy`, and what the content
-    /// needed is remembered per tree. A region measuring the view at its
-    /// natural height solves a copy of the tree with this same widget, in a
-    /// box of another size; a gutter decided there is not the real tree's. Held
-    /// on the widget, each solve undid the other's gutter and reported a change
-    /// on every pass, and the window settled on no frame (a hugging answer on
-    /// a canvas, taller than its cap). Whether it changed is whether the
-    /// tree's style changed.
-    fn follow_overflow(
+    /// Narrower content is usually taller, not always: a grid whose cells scale with the width
+    /// can overflow at full width and fit beside the gutter. A gutter the content needed in a box
+    /// of this size then stays until the layout is applied, so this settles within two steps.
+    /// What was needed is remembered per box size: a region measuring the view at its natural
+    /// height solves a copy of the tree with this same widget, in a box of another size, and a
+    /// gutter decided there is not the window's.
+    fn gutters(
         &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        layout: &taffy::Layout,
-    ) -> bool {
-        let Some(child) = self.child_node else {
-            return false;
-        };
-        let Ok(content) = taffy.layout(child).copied() else {
-            return false;
-        };
-        let Ok(current) = taffy.style(node) else {
-            return false;
-        };
-        let none = taffy::LengthPercentage::length(0.0);
-        let reserved = (
-            current.padding.right != none,
-            current.padding.bottom != none,
-        );
-        let viewport_w = layout.size.width - layout.padding.right;
-        let viewport_h = layout.size.height - layout.padding.bottom;
+        size: (f32, f32),
+        reserved: (bool, bool),
+        content: &taffy::Layout,
+    ) -> (bool, bool) {
+        let pad = |held: bool| if held { self.content_gutter } else { 0.0 };
+        let viewport_w = size.0 - pad(reserved.0);
+        let viewport_h = size.1 - pad(reserved.1);
         let content_w = content.size.width.max(content.content_size.width);
         let content_h = content.size.height.max(content.content_size.height);
         let vertical = self.axis_has_vertical()
@@ -1073,21 +1054,14 @@ impl Scrollable {
             && self.show_scrollbar
             && viewport_w > 0.0
             && content_w > viewport_w + FIT_EPS;
-        // A gutter the content overflowed without stays: content that fits
-        // only because the gutter narrowed it would overflow again without it.
-        // Only in a box of the same size: one the view was measured at on
-        // the way to its own size needed nothing of the box it gets.
-        let tree = super::layout::TreeId::of(taffy);
-        let size = (layout.size.width, layout.size.height);
         let fresh = NeededGutters {
-            tree,
             size,
             gutters: (false, false),
         };
         let index = if let Some(index) = self
             .gutters_needed
             .iter()
-            .position(|held| held.tree == tree)
+            .position(|held| held.size == size)
         {
             index
         } else {
@@ -1095,9 +1069,6 @@ impl Scrollable {
             self.gutters_needed.len() - 1
         };
         let needed = &mut self.gutters_needed[index];
-        if needed.size != size {
-            *needed = fresh;
-        }
         if vertical && !reserved.0 {
             needed.gutters.0 = true;
         }
@@ -1109,18 +1080,7 @@ impl Scrollable {
         if let Some(probe) = &self.gutter_probe {
             probe.set(if vertical { self.content_gutter } else { 0.0 });
         }
-        if (vertical, horizontal) == reserved {
-            return false;
-        }
-        let mut style = current.clone();
-        style.padding.right =
-            taffy::LengthPercentage::length(if vertical { self.content_gutter } else { 0.0 });
-        style.padding.bottom =
-            taffy::LengthPercentage::length(if horizontal { self.content_gutter } else { 0.0 });
-        if style == *current {
-            return false;
-        }
-        taffy.set_style(node, style).is_ok()
+        (vertical, horizontal)
     }
 
     fn clamp(&mut self) {
@@ -1142,11 +1102,10 @@ impl Scrollable {
     }
 }
 
-/// The gutters one tree's solve found a scroll view's content overflowing
-/// without, in the box it had there ([`Scrollable::follow_overflow`]).
+/// The gutters a solve found a scroll view's content overflowing without, in a box of `size`
+/// ([`Scrollable::gutters`]).
 #[derive(Clone, Copy, Debug)]
 struct NeededGutters {
-    tree: super::layout::TreeId,
     size: (f32, f32),
     /// Vertical, horizontal.
     gutters: (bool, bool),
@@ -1344,7 +1303,7 @@ impl Widget for Scrollable {
         // A scroll view keeps `metrics.scrollbar_gutter` free on its trailing
         // edge (and its bottom edge for a horizontal bar) while its content
         // overflows, so its bar never covers content; content that fits
-        // keeps the full width. `adjust_layout_style` follows the overflow.
+        // keeps the full width. `style_laid_out` follows the overflow.
         let gutter = if self.show_scrollbar {
             metrics.scrollbar_gutter
         } else {
@@ -1417,49 +1376,72 @@ impl Widget for Scrollable {
             Some(c) => taffy.parent_node(style, &[c]),
             None => taffy.leaf_node(style),
         };
+        let _ = taffy.set_restyled_for_width(node, self.child_node.is_some());
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn adjust_layout_style(
+    /// A height limit changed since the view was built is set in every tree the view is laid
+    /// out in (a region measures it in a copy first): the flag is spent once a layout applied it.
+    fn size_before_solve(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         _text: &mut TextRenderer,
-    ) -> bool {
-        // A limit changed since the view was built is set in every tree the view is laid out in
-        // (a region measures it in a copy first): the flag is spent once a layout applied it, and
-        // each tree is told it only where its own style does not hold it yet.
-        let mut changed = false;
-        if self.height_limit_dirty {
-            let Ok(mut style) = taffy.style(node).cloned() else {
-                return false;
-            };
-            let max = self.max_height.map_or(Dimension::auto(), Dimension::length);
-            let size = match self.fixed_height {
-                Some(px) => Dimension::length(px),
-                None if self.fill_parent_height => Dimension::length(0.0),
-                None => Dimension::auto(),
-            };
-            if style.max_size.height != max || style.size.height != size {
-                style.max_size.height = max;
-                style.size.height = size;
-                if taffy.set_style(node, style).is_err() {
-                    return false;
-                }
-                changed = true;
-            }
+    ) {
+        if !self.height_limit_dirty {
+            return;
         }
-        let Ok(layout) = taffy.layout(node).copied() else {
-            return changed;
+        let Ok(mut style) = taffy.style(node).cloned() else {
+            return;
         };
-        changed |= self.follow_overflow(taffy, node, &layout);
-        changed
+        let max = self.max_height.map_or(Dimension::auto(), Dimension::length);
+        let size = match self.fixed_height {
+            Some(px) => Dimension::length(px),
+            None if self.fill_parent_height => Dimension::length(0.0),
+            None => Dimension::auto(),
+        };
+        if style.max_size.height != max || style.size.height != size {
+            style.max_size.height = max;
+            style.size.height = size;
+            let _ = taffy.set_style(node, style);
+        }
+    }
+
+    /// Its bar's gutter, once what it holds turns out to overflow it or to fit.
+    fn style_laid_out(
+        &mut self,
+        styles: &mut taffy::Restyle<'_>,
+        laid: &taffy::LayoutOutput,
+    ) -> bool {
+        let Some(child) = self.child_node else {
+            return false;
+        };
+        let node = styles.node();
+        let none = taffy::LengthPercentage::length(0.0);
+        let current = styles.style(node);
+        let reserved = (
+            current.padding.right != none,
+            current.padding.bottom != none,
+        );
+        let content = *styles.laid(child);
+        let (vertical, horizontal) =
+            self.gutters((laid.size.width, laid.size.height), reserved, &content);
+        if (vertical, horizontal) == reserved {
+            return false;
+        }
+        let mut style = styles.style(node).clone();
+        style.padding.right =
+            taffy::LengthPercentage::length(if vertical { self.content_gutter } else { 0.0 });
+        style.padding.bottom =
+            taffy::LengthPercentage::length(if horizontal { self.content_gutter } else { 0.0 });
+        styles.set_style(node, style);
+        true
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.scroll_unplaced = false;
-        // The window's own tree holds the limit now ([`Self::adjust_layout_style`]).
+        // The window's own tree holds the limit now ([`Self::size_before_solve`]).
         self.height_limit_dirty = false;
         // Geometry may have moved beneath a stationary pointer. The next
         // same-position event must therefore be routed once again.
@@ -1468,9 +1450,15 @@ impl Widget for Scrollable {
         // content that now fits at full width gives its bar back.
         self.gutters_needed.clear();
         let l = taffy.layout(node).copied().unwrap_or_default();
-        // The gutters this layout settled on are the ones its tree holds.
-        self.reserve_vertical = self.axis_has_vertical() && l.padding.right > 0.0;
-        self.reserve_horizontal = self.axis_has_horizontal() && l.padding.bottom > 0.0;
+        // The gutters this layout settled on are the ones its style holds: the parent reads a
+        // child's padding before the solve reaches the child, so the layout's own padding misses
+        // a gutter set once the content was laid ([`Self::style_laid_out`]).
+        let none = taffy::LengthPercentage::length(0.0);
+        let (right, bottom) = taffy.style(node).map_or((false, false), |style| {
+            (style.padding.right != none, style.padding.bottom != none)
+        });
+        self.reserve_vertical = self.axis_has_vertical() && right;
+        self.reserve_horizontal = self.axis_has_horizontal() && bottom;
         self.rect = crate::widget::placed(&l, origin);
         // An offset carried from a display of another scale lands whole here
         // before anything places or measures against it.

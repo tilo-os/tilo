@@ -234,7 +234,7 @@ impl Fit {
     ///
     /// An `aspect` decides the block size from the inline one. Taffy derives one size from the
     /// other only where the known one is definite in the style, so the ratio itself is applied
-    /// out of the solved sizes ([`Arranged::derive_aspects`](super::Arranged)); here a weight on
+    /// as the part's width is solved ([`Arranged`](super::Arranged)); here a weight on
     /// the block axis is left out, since a share of the main axis is not the size the ratio asked
     /// for.
     pub fn apply(&self, style: &mut taffy::Style, main: Axis, rem: f32) {

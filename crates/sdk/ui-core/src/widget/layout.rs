@@ -302,6 +302,44 @@ thread_local! {
     static PLACING_AGAIN: std::cell::Cell<Option<*const ()>> = const { std::cell::Cell::new(None) };
 }
 
+/// The styles a widget reads and sets of its own node and its children's: in a tree before or after
+/// a solve, or within one as the node is solved ([`taffy::Restyle`]).
+pub(crate) trait Styles {
+    fn style_of(&self, node: NodeId) -> Option<&taffy::Style>;
+    /// Give `node` `style`; whether it took.
+    fn set_style_of(&mut self, node: NodeId, style: taffy::Style) -> bool;
+    fn first_child_of(&self, node: NodeId) -> Option<NodeId>;
+}
+
+impl Styles for TaffyTree<()> {
+    fn style_of(&self, node: NodeId) -> Option<&taffy::Style> {
+        self.style(node).ok()
+    }
+
+    fn set_style_of(&mut self, node: NodeId, style: taffy::Style) -> bool {
+        self.set_style(node, style).is_ok()
+    }
+
+    fn first_child_of(&self, node: NodeId) -> Option<NodeId> {
+        self.child_at_index(node, 0).ok()
+    }
+}
+
+impl Styles for taffy::Restyle<'_> {
+    fn style_of(&self, node: NodeId) -> Option<&taffy::Style> {
+        Some(self.style(node))
+    }
+
+    fn set_style_of(&mut self, node: NodeId, style: taffy::Style) -> bool {
+        self.set_style(node, style);
+        true
+    }
+
+    fn first_child_of(&self, node: NodeId) -> Option<NodeId> {
+        self.children(node).first().copied()
+    }
+}
+
 /// A layout tree by address, to name it to [`placing_again_in`] while the tree's owner is
 /// borrowed to place its widgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -514,6 +552,64 @@ pub(crate) fn solve_layout(
     })
 }
 
+/// Solve `taffy` from `root` as the widgets it lays out ask: each leaf measured by its widget, and
+/// each node whose widget styles it for its width ([`Widget::style_for_width`]) styled for every
+/// width the solve gives it, before it is solved there.
+///
+/// # Safety
+/// The same live-tree contract as [`compute_widget_layout`]: each callback is exclusive, and bound
+/// dispatch checks admission and lifetime.
+unsafe fn solve_widgets(
+    taffy: &mut TaffyTree<()>,
+    root: NodeId,
+    available: Size<AvailableSpace>,
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    bindings: &BoundNodeMap,
+    text: &mut TextRenderer,
+) -> taffy::TaffyResult<()> {
+    taffy.set_rounding_scale(device_scale());
+    // Taffy measures a leaf and styles a node one at a time, never inside each other.
+    let text = std::cell::RefCell::new(text);
+    // A node no widget is bound to (a container's wrapper around one of its parts) is styled by
+    // the widget whose node holds it.
+    let mut restyle =
+        |node: NodeId, solving: taffy::Solving<'_>, styles: &mut taffy::Restyle<'_>| {
+            let owner = if nodes.contains_key(&node) {
+                node
+            } else if let Some(parent) = styles.parent(node) {
+                parent
+            } else {
+                return false;
+            };
+            // SAFETY: the caller's exact live-tree ownership contract.
+            unsafe {
+                layout_bound_node(bindings, nodes, owner, |widget| match solving {
+                    taffy::Solving::Before(width) => {
+                        widget.style_for_width(styles, width, &mut text.borrow_mut());
+                        false
+                    }
+                    taffy::Solving::Laid(laid) => widget.style_laid_out(styles, laid),
+                })
+            }
+            .unwrap_or(false)
+        };
+    taffy.compute_layout_with_measure_and_restyle(
+        root,
+        available,
+        |known, available, node, _, _| {
+            // SAFETY: the caller's exact live-tree ownership contract.
+            unsafe {
+                layout_bound_node(bindings, nodes, node, |widget| {
+                    crate::profiling::layout_counts::measure();
+                    widget.measure(known, available, &mut text.borrow_mut())
+                })
+            }
+            .unwrap_or(Size::ZERO)
+        },
+        &mut restyle,
+    )
+}
+
 pub(super) unsafe fn compute_widget_layout_depth(
     taffy: &mut TaffyTree<()>,
     root: NodeId,
@@ -551,8 +647,12 @@ unsafe fn solve_widget_layout(
     }
     let mut policies = Vec::new();
     let mut pending = vec![root];
+    let mut sized = Vec::with_capacity(nodes.len());
     let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
     while let Some(node) = pending.pop() {
+        if nodes.contains_key(&node) {
+            sized.push(node);
+        }
         // SAFETY: the caller's exact live-tree ownership contract.
         let found = unsafe {
             sweep.inspect(node, |widget| {
@@ -582,7 +682,13 @@ unsafe fn solve_widget_layout(
     // What each widget knows of its own size goes into the first solve, so a solve does not have
     // to be solved again for it: in the window's tree, and in a probe's, whose parts a region styles
     // as it built them.
-    for &node in nodes.keys() {
+    // Children are asked before the containers that hold them, so a container reads what its
+    // children decided (whether one is in the flow) and styles its parts for it.
+    let mut asked_sizes = std::collections::HashSet::with_capacity(nodes.len());
+    for node in sized.into_iter().rev().chain(nodes.keys().copied()) {
+        if !asked_sizes.insert(node) {
+            continue;
+        }
         // SAFETY: the same admission/lifetime checks as measurement below.
         let _ = unsafe { sweep.layout(node, |widget| widget.size_before_solve(taffy, node, text)) };
     }
@@ -623,17 +729,8 @@ unsafe fn solve_widget_layout(
         }
         still_changing.clear();
         crate::profiling::layout_counts::pass();
-        solve_layout(taffy, root, available, &mut |known, available, node| {
-            // SAFETY: caller owns the stable matching tree, each callback is
-            // exclusive, and bound dispatch checks admission and lifetime.
-            unsafe {
-                layout_bound_node(bindings, nodes, node, |widget| {
-                    crate::profiling::layout_counts::measure();
-                    widget.measure(known, available, text)
-                })
-            }
-            .unwrap_or(Size::ZERO)
-        })?;
+        // SAFETY: the caller's exact live-tree ownership contract.
+        unsafe { solve_widgets(taffy, root, available, nodes, bindings, text) }?;
         let mut changed = false;
         for (index, (node, policy, _)) in policies.iter().enumerate() {
             if reusable[index] && policy.settled_at(taffy.unrounded_layout(*node).size) {
@@ -747,16 +844,8 @@ unsafe fn solve_widget_layout(
     // drawn. A part that kept changing shows as it last stood rather than
     // stopping every frame of the window it is in; it is reported once
     // ([`take_unsettled_layout`]).
-    solve_layout(taffy, root, available, &mut |known, available, node| {
-        // SAFETY: as in the passes above.
-        unsafe {
-            layout_bound_node(bindings, nodes, node, |widget| {
-                crate::profiling::layout_counts::measure();
-                widget.measure(known, available, text)
-            })
-        }
-        .unwrap_or(Size::ZERO)
-    })?;
+    // SAFETY: as in the passes above.
+    unsafe { solve_widgets(taffy, root, available, nodes, bindings, text) }?;
     let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
     for node in asked {
         // SAFETY: the caller's exact live-tree ownership contract.
@@ -2522,6 +2611,26 @@ pub(crate) fn lay_out_detached(
     }
     widget.apply_layout(&taffy, child, rect.origin());
     Ok(())
+}
+
+/// Solve `taffy` from `root` as a window does, for `widget` built into it at `node` with `nodes`:
+/// what a test that builds its own tree lays out.
+#[cfg(test)]
+pub(crate) fn solve_built(
+    widget: &mut dyn Widget,
+    taffy: &mut TaffyTree<()>,
+    (root, node): (NodeId, NodeId),
+    nodes: &HashMap<NodeId, *mut dyn Widget>,
+    available: Size<AvailableSpace>,
+    text: &mut TextRenderer,
+) -> Result<(), WidgetLayoutError> {
+    let mut bindings = BoundNodeMap::new();
+    // SAFETY: the caller built `widget` into `taffy` with `nodes` and holds it exclusively while
+    // the solve lasts.
+    unsafe {
+        bindings.rebuild(widget, taffy, node, nodes);
+        compute_widget_layout(taffy, root, available, nodes, &bindings, text)
+    }
 }
 
 #[cfg(test)]

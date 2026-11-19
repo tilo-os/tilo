@@ -86,6 +86,15 @@ impl Font {
             .map_or(&[], |x| &x.unicode_codepoints)
     }
 
+    /// How many of `word`'s characters the face has a glyph for, read from its character map:
+    /// what [`Self::unicode_codepoints`] says when the face keeps no list of them.
+    pub fn chars_in(&self, word: &str) -> usize {
+        FontRef::from_index(self.data(), self.data.index).map_or(0, |face| {
+            let charmap = face.charmap();
+            word.chars().filter(|&ch| charmap.map(ch).is_some()).count()
+        })
+    }
+
     pub fn data(&self) -> &[u8] {
         self.data.data.data()
     }
@@ -172,22 +181,14 @@ impl Font {
                     None?;
                 }
 
-                let scripts = font_ref
-                    .gpos()
-                    .ok()?
-                    .script_list()
-                    .ok()?
-                    .script_records()
+                // A face without positioning or substitution lookups names no scripts in them,
+                // and still says which characters it has.
+                let gpos = font_ref.gpos().ok().and_then(|table| table.script_list().ok());
+                let gsub = font_ref.gsub().ok().and_then(|table| table.script_list().ok());
+                let scripts = gpos
                     .iter()
-                    .chain(
-                        font_ref
-                            .gsub()
-                            .ok()?
-                            .script_list()
-                            .ok()?
-                            .script_records()
-                            .iter(),
-                    )
+                    .flat_map(|list| list.script_records().iter())
+                    .chain(gsub.iter().flat_map(|list| list.script_records().iter()))
                     .map(|script| script.script_tag().into_bytes())
                     .collect();
 

@@ -613,17 +613,32 @@ tilo_test_env::scenario! {
                 &[node],
             )
             .expect("parent");
-        let space = taffy::Size {
+        let available = taffy::Size {
             width: taffy::AvailableSpace::MaxContent,
             height: taffy::AvailableSpace::MaxContent,
         };
-        tree.compute_layout(parent, space).expect("laid out");
         let mut text = crate::font_catalog::fixture_renderer();
-        assert!(
-            page.adjust_layout_style(&mut tree, node, &mut text),
-            "the grid settles its columns"
+        let columns = tree.style(node).expect("styled").grid_template_columns.clone();
+        let mut restyle = |solved, solving: taffy::Solving<'_>, styles: &mut taffy::Restyle<'_>| {
+            if solved == node
+                && let taffy::Solving::Before(width) = solving
+            {
+                page.style_for_width(styles, width, &mut text);
+            }
+            false
+        };
+        tree.compute_layout_with_measure_and_restyle(
+            parent,
+            available,
+            |_, _, _, _, _| taffy::Size::ZERO,
+            &mut restyle,
+        )
+        .expect("laid out");
+        assert_ne!(
+            tree.style(node).expect("styled").grid_template_columns,
+            columns,
+            "the grid settles its columns as it is solved"
         );
-        tree.compute_layout(parent, space).expect("laid out again");
         let laid = tree.layout(node).expect("laid");
         assert!((laid.location.y - 100.0).abs() < 0.5, "{laid:?}");
         assert!((laid.location.x - 10.0).abs() < 0.5, "{laid:?}");

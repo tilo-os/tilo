@@ -57,3 +57,21 @@ the fallback iterator (`src/font/fallback/mod.rs`) has a face of the family it
 wants, and keeps it per face. Which face a run gets is unchanged.
 
 Drop this once upstream reads a face's axes only for a face it may use.
+
+## A face's characters without its lookup tables
+
+`Font::new_stretched` (`src/font/mod.rs`) gave up the face's monospace
+fallback record, its character list included, when the face had no `GPOS` or
+no `GSUB` table. The fallback iterator then found none of a word's characters
+in the default monospace face and read every monospace face the system has
+to look for them. The record now names the scripts of whichever tables the
+face has, and always lists its characters.
+
+Without the `monospace_fallback` feature, which Tilo leaves off, no face
+keeps that list, and the same search read every system monospace face for
+words the default monospace face holds whole.
+`FontSystem::get_font_supported_codepoints_in_word` (`src/font/system.rs`)
+now asks the face's character map (`Font::chars_in`) when it keeps no list.
+
+Drop this once upstream builds the record without both tables and answers a
+face's characters without the feature.
