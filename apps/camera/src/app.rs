@@ -404,9 +404,9 @@ pub struct CameraApp {
     store: store::Shared,
     bar: window_bar::Bar,
     clock: Option<i64>,
-    photos_handoff: Option<ActionEmitter<String>>,
+    photos_handoff: Option<ActionEmitter<(String, String)>>,
     photos_browse: Option<ActionEmitter<()>>,
-    video_handoff: Option<ActionEmitter<String>>,
+    video_handoff: Option<ActionEmitter<(String, String)>>,
 }
 
 impl Default for CameraApp {
@@ -426,6 +426,9 @@ impl CameraApp {
     /// which carries them on the camera resource's route.
     #[must_use]
     pub fn with_content(mut self, content: tilo_content::ContentStore) -> Self {
+        // The worker keeps what it saves in the store it was made with: it keeps the lent one,
+        // where the window reads its captures back to show and hand them on.
+        self.worker = crate::worker::CameraWorker::new(content.clone());
         self.content = content;
         self
     }
@@ -543,18 +546,16 @@ impl CameraApp {
             dispatcher: Self::unattached_dispatcher(),
             bar: window_bar::Bar::new(Self::unattached_dispatcher().as_ref()),
             clock: None,
-            photos_handoff: Self::media_handoff_emitter("so.tilo.photos", "camera-app-photos"),
+            photos_handoff: Self::media_handoff(PHOTOS_APP).file_emitter("open"),
             photos_browse: Self::photos_browse_emitter(),
-            video_handoff: Self::media_handoff_emitter(
-                "so.tilo.video-player",
-                "camera-app-video-player",
-            ),
+            video_handoff: Self::media_handoff(VIDEO_PLAYER_APP).file_emitter("open"),
         }
     }
 
-    /// An emitter handing a capture to `app_id`, whose name `name` is a
-    /// catalogue key.
-    fn media_handoff_emitter(app_id: &str, name: &str) -> Option<ActionEmitter<String>> {
+    /// The handoff of a capture to `(app_id, name)`, whose name is a catalogue key: what the
+    /// recent tile emits, a capture's content hash with its file name, and the app's row it
+    /// names, which this window publishes so the launch resolves where it is dispatched.
+    fn media_handoff((app_id, name): (&str, &str)) -> ui::framework::ContentHandoff {
         let label = crate::CATALOG.t(name);
         ui::framework::ContentHandoff::new(
             app_id,
@@ -567,7 +568,6 @@ impl CameraApp {
                 &[("app", ui::i18n::ArgValue::Text(label))],
             ),
         )
-        .emitter("open")
     }
 
     fn photos_browse_emitter() -> Option<ActionEmitter<()>> {
@@ -1665,11 +1665,26 @@ impl CameraApp {
                 .show("Latest capture has an invalid portable media identity");
             return;
         };
-        if crate::media::read(&self.content, &media_id).is_none() {
+        let Some(bytes) = crate::media::read(&self.content, &media_id) else {
             self.toast
                 .show("Latest capture bytes are unavailable on this device");
             return;
-        }
+        };
+        // A launch hands content over by the address of its bytes, as Files hands a file: a
+        // capture sealed for the resource's readers is handed over as the bytes it is, for the app
+        // it opens in to read.
+        let hash = if tilo_content::valid_hash(hash) {
+            hash.to_owned()
+        } else {
+            match self.content.put_public(&bytes) {
+                Ok(hash) => hash,
+                Err(error) => {
+                    self.toast
+                        .fail(format!("Couldn't hand the capture over: {error}"));
+                    return;
+                }
+            }
+        };
         let (_, destination) = crate::actions::capture_destination(capture.is_video());
         let handoff = if capture.is_video() {
             &mut self.video_handoff
@@ -1682,7 +1697,13 @@ impl CameraApp {
             ));
             return;
         };
-        match handoff.emit(hash.to_owned()) {
+        // The capture's file name says what its bytes are called where it opens.
+        let name = if ui::tilo_actions::remote::valid_file_name(&capture.id) {
+            capture.id.clone()
+        } else {
+            String::new()
+        };
+        match handoff.emit((hash, name)) {
             Ok(()) => self
                 .toast
                 .show(format!("Opening latest capture in {destination}…")),
@@ -2618,7 +2639,10 @@ impl Widget for CameraApp {
         cx.picture();
     }
 
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -3246,6 +3270,28 @@ impl ui::widget::controls::ActionControls for CameraApp {
     }
 }
 
+/// The app a photo capture is handed to, and its name's catalogue key.
+const PHOTOS_APP: (&str, &str) = ("so.tilo.photos", "camera-app-photos");
+/// The app a video capture is handed to, and its name's catalogue key.
+const VIDEO_PLAYER_APP: (&str, &str) = ("so.tilo.video-player", "camera-app-video-player");
+
+/// The apps the recent tile hands a capture to are the rows its launches name: answered when
+/// asked for, so a launch dispatched from the window resolves to the app it opens, and never
+/// listed among Camera's own resources.
+impl ui::resources::PublishesResources for CameraApp {
+    fn resource(
+        &self,
+        _doc: &ui::automerge::AutoCommit,
+        id: &str,
+    ) -> Option<ui::tilo_actions::ResourceSpec> {
+        let app = id.strip_suffix(".app")?;
+        [PHOTOS_APP, VIDEO_PLAYER_APP]
+            .into_iter()
+            .find(|(handed, _)| *handed == app)
+            .map(|handed| Self::media_handoff(handed).destination("open"))
+    }
+}
+
 // ====================================================================
 // Shared chrome + control helpers
 // ====================================================================
@@ -3260,6 +3306,84 @@ mod tests {
     use crate::model::classify;
     use ui::framework::testing::TEST_WORKSPACE;
     use ui::headless::{Framed, viewport};
+
+    #[test]
+    fn a_sealed_capture_is_handed_over_by_the_address_of_its_bytes() {
+        let (mut app, _, _) = sample_app();
+        let lent = tilo_content::ContentStore::memory().sealing();
+        app.content = lent.clone();
+        let picture = b"\x89PNG\r\n\x1a\n-a-capture".to_vec();
+        let media_id = crate::media::store(&lent, &picture).expect("the capture is kept");
+        assert!(tilo_content::is_sealed(
+            media_id.strip_prefix(crate::media::MEDIA_PREFIX).unwrap()
+        ));
+        let capture = app.captures.first_mut().expect("a sample capture");
+        capture.kind = CaptureKind::Photo;
+        capture.media_id = Some(media_id);
+        app.open_recent_capture();
+        let invocation = ui::widget::controls::ActionControls::take_control_invocation(&mut app)
+            .expect("the tile's press is one launch");
+        assert_eq!(invocation.address.resource.as_str(), "so.tilo.photos.app");
+        let hash = invocation.arguments[ui::tilo_actions::remote::CONTENT_HASH_ARGUMENT]
+            .as_str()
+            .expect("a content hash")
+            .to_owned();
+        assert!(tilo_content::valid_hash(&hash), "{hash}");
+        assert_eq!(lent.read(&hash), Some(picture));
+    }
+
+    #[test]
+    fn a_photo_is_kept_in_the_store_the_window_is_lent() {
+        let lent = tilo_content::ContentStore::memory();
+        let app = CameraApp::sample().with_content(lent.clone());
+        app.worker
+            .submit(crate::worker::PhotoJob {
+                invocation: None,
+                generation: 1,
+                dir: None,
+                frame: frame::viewfinder(1, 64, 48),
+                format: Settings::default().photo_format,
+                facing: Facing::Back,
+            })
+            .expect("the photo is being saved");
+        let mut saved = None;
+        tilo_test_env::wait_until("the photo to be saved", || {
+            saved = app.worker.try_recv();
+            saved.is_some()
+        });
+        let saved = saved.unwrap().result.expect("the photo is saved");
+        assert!(
+            crate::media::read(&lent, &saved.media_id).is_some(),
+            "the window reads back what it captured"
+        );
+    }
+
+    #[test]
+    fn a_capture_is_handed_to_the_app_row_the_window_answers_for() {
+        let (app, doc, _) = sample_app();
+        for ((handed, _), name) in [(PHOTOS_APP, "c1.jpg"), (VIDEO_PLAYER_APP, "c2.webm")] {
+            let handoff = CameraApp::media_handoff((handed, "camera-app-photos"));
+            let hash = "ab".repeat(32);
+            let invocation = handoff
+                .file_emitter("open")
+                .expect("the handoff binds")
+                .binding()
+                .invoke((hash.clone(), name.to_owned()))
+                .expect("the tile's click is one invocation");
+            let row = format!("{handed}.app");
+            assert_eq!(invocation.address.resource.as_str(), row);
+            assert_eq!(invocation.address.action.as_str(), "open");
+            let arguments = serde_json::Value::Object(invocation.arguments);
+            assert_eq!(arguments["content_hash"].as_str(), Some(hash.as_str()));
+            assert_eq!(arguments["name"].as_str(), Some(name));
+            let published = ui::resources::PublishesResources::resource(&app, &doc, &row)
+                .expect("the window answers for the app it hands to");
+            assert!(published.actions.iter().any(|action| action.id == "open"));
+        }
+        assert!(
+            ui::resources::PublishesResources::resource(&app, &doc, "so.tilo.notes.app").is_none()
+        );
+    }
 
     #[test]
     fn switch_camera_is_an_accessible_symbol_beside_the_shutter() {
