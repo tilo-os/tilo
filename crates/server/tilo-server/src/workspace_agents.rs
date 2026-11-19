@@ -1623,12 +1623,19 @@ impl HostAgents {
             .map(|keeper| {
                 // Every call is counted on the agent's day as it is answered, so turns of
                 // one agent going at once cannot each spend the day's whole limit.
+                let named_model = turn.agent.model.as_deref().or_else(|| {
+                    turn.agent.sub.as_ref().and_then(|sub| {
+                        crate::workspaces::person_model::Interaction::from_id(&sub.kind)
+                            .is_none()
+                            .then_some(sub.kind.as_str())
+                    })
+                });
                 let theirs = self
                     .workspaces
                     .person_model(keeper, sub_agents::kind_of(&turn.agent))
                     // The model the agent itself names answers where its keeper linked it on
                     // this server: a sub-agent's is its skill's, or the one its starter named.
-                    .naming(turn.agent.model.as_deref())
+                    .naming(named_model)
                     .working_in(workspace_id)
                     .spending_as(Spender {
                         workspace: workspace.to_owned(),
