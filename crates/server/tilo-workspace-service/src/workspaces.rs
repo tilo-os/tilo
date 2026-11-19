@@ -744,7 +744,6 @@ impl GovernedWorkspace {
                     } => changed_documents.contains(&(app_id.clone(), document_id.clone())),
                     _ => true,
                 })
-                .filter(|message| for_members(message))
                 .map(|message| publication(message, true))
                 .collect::<Result<_, _>>()?;
             record.published = 0;
@@ -752,7 +751,7 @@ impl GovernedWorkspace {
             let diffing = crate::timing::start();
             record.outgoing.extend(self.published_since(replica)?);
             let messages = durable_messages(&mut candidate, replica, (key, now), generation)?;
-            for message in messages.iter().filter(|message| for_members(message)) {
+            for message in &messages {
                 if change == Change::Other && withdraws(message) {
                     since_base = SinceBase::Withdrew;
                 }
@@ -831,9 +830,7 @@ impl GovernedWorkspace {
     }
 }
 
-use commit::{
-    durable_messages, for_members, prepare_governance, publication, select_exact_admission,
-};
+use commit::{durable_messages, prepare_governance, publication, select_exact_admission};
 
 /// The extension of the marker beside a workspace file this host released.
 const RELEASED: &str = "released";
@@ -2533,7 +2530,7 @@ impl Workspaces {
         (app, record): (String, String),
     ) {
         let following = crate::timing::start();
-        let followed = workspace.follow_kept(author, message.clone()).await;
+        let followed = workspace.follow(author, message.clone());
         if followed.changed {
             self.landed(workspace, &message);
             self.keep_soon(workspace);

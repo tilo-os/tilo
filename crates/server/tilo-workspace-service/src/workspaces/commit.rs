@@ -52,20 +52,6 @@ pub(super) fn durable_messages(
         .durable_mutation_messages(peer, key, now, generation)
 }
 
-/// Whether the workspace publishes `message` of a commit to its members. The
-/// governor's compaction of a record's sealed history bounds its own copy:
-/// every member already holds each write it covers, and the server retains
-/// those writes for whoever joins later, so sending it on would push the
-/// whole record to every member each time the history fills, for nothing.
-/// It stays in the governor's durable copy alone.
-pub(super) fn for_members(message: &neighbour_wire::NeighbourMsg) -> bool {
-    !matches!(
-        message,
-        neighbour_wire::NeighbourMsg::AppDocument { envelope, .. }
-            if envelope.kind == collab_types::OpKind::Compaction
-    )
-}
-
 pub(super) fn publication(
     message: &neighbour_wire::NeighbourMsg,
     checkpoint: bool,

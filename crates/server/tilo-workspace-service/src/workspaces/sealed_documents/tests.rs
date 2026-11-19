@@ -219,6 +219,8 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
 /// A public workspace's chat takes thousands of writes within hours. Past three
 /// quarters of a sealed history's bound the node compacts it into one sealed
 /// checkpoint, so its copy goes on following the record, and reads it whole.
+/// It publishes the compaction as a member does: every member's history then
+/// matches the copy, and their next compaction folds what the copy holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_node_compacts_a_sealed_history_before_it_fills() {
     let Lounge {
@@ -240,8 +242,6 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
     let state = workspaces.workspace(&workspace).await.unwrap();
     let due = state.lock().await.peer().publication().sealed_to_compact();
     assert!(due.is_empty(), "the history was compacted: {due:?}");
-    // Members hold every write it covers: the compaction stays with the
-    // governor's copy and is never pushed to them.
     let published = state
         .lock()
         .await
@@ -254,7 +254,7 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
                 if envelope.kind == collab_types::OpKind::Compaction)
         })
         .count();
-    assert_eq!(published, 0, "a compaction is not published to members");
+    assert!(published > 0, "the compaction is published to members");
     drop((state, workspaces));
     server.shutdown().await;
 }
@@ -268,7 +268,7 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
 /// holds a write as soon as the node is handed it, before the store does: a
 /// read made beside the owner, the moment the node follows a write, can come
 /// before the store holds that write.
-async fn retained_writes(
+pub(super) async fn retained_writes(
     server: &crate::workspaces::fixtures::TestHost,
     workspace_id: WorkspaceId,
     record: &str,
