@@ -56,6 +56,30 @@ pub(crate) enum PictureSource {
 }
 
 impl PictureSource {
+    /// The pictures `fresh` names (each its hash and the reference it is read by), as MCP image
+    /// blocks: those that can be read, are no larger than an image this server shows, and are
+    /// a kind of image a client draws.
+    pub(crate) async fn images(self, fresh: Vec<(String, String)>) -> Vec<Value> {
+        tokio::task::spawn_blocking(move || {
+            fresh
+                .iter()
+                .filter_map(|(hash, reference)| self.read(hash, reference))
+                .filter(|bytes| bytes.len() <= MAX_IMAGE_BYTES)
+                .filter_map(|bytes| {
+                    use base64::Engine as _;
+                    let mime = image_mime(&bytes)?;
+                    Some(serde_json::json!({
+                        "type": "image",
+                        "mimeType": mime,
+                        "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    }))
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     /// The bytes of the picture `hash` (`reference` as the answer named it), when they can be
     /// read and are no larger than an image this server shows.
     pub(crate) fn read(&self, hash: &str, reference: &str) -> Option<Vec<u8>> {
@@ -82,4 +106,22 @@ impl PictureSource {
             }
         }
     }
+}
+
+/// The pictures a succeeded answer names, at most [`MAX_IMAGES`]: each by its hash (what tells
+/// one already shown) and the reference the workspace reads it by, which a sealed piece of
+/// content needs whole.
+pub(crate) fn named_pictures(value: &Value) -> Vec<(String, String)> {
+    value
+        .pointer("/update/output/resources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|reference| {
+            tilo_actions::content_hash(reference)
+                .map(|hash| (hash.to_owned(), reference.to_owned()))
+        })
+        .take(MAX_IMAGES)
+        .collect()
 }

@@ -13,7 +13,7 @@ pub mod test_hosts;
 mod turn;
 
 pub use images::MediaReader;
-use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, PictureSource, image_mime};
+use images::{IMAGES, PictureSource};
 
 #[path = "mcp_agent.rs"]
 mod agent;
@@ -856,20 +856,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
             return;
         }
-        // Each picture by its hash (what tells one already shown) and the reference the
-        // workspace reads it by, which a sealed piece of content needs whole.
-        let pictures: Vec<(String, String)> = value
-            .pointer("/update/output/resources")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .filter_map(|reference| {
-                tilo_actions::content_hash(reference)
-                    .map(|hash| (hash.to_owned(), reference.to_owned()))
-            })
-            .take(MAX_IMAGES)
-            .collect();
+        let pictures = images::named_pictures(value);
         if pictures.is_empty() {
             return;
         }
@@ -917,20 +904,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if fresh.is_empty() {
             return;
         }
-        let read = tokio::task::spawn_blocking(move || {
-            fresh
-                .iter()
-                .filter_map(|(hash, reference)| source.read(hash, reference))
-                .filter(|bytes| bytes.len() <= MAX_IMAGE_BYTES)
-                .filter_map(|bytes| {
-                    use base64::Engine as _;
-                    let mime = image_mime(&bytes)?;
-                    Some(json!({"type":"image","mimeType":mime,"data":base64::engine::general_purpose::STANDARD.encode(&bytes)}))
-                })
-                .collect::<Vec<_>>()
-        })
-        .await
-        .unwrap_or_default();
+        let read = source.images(fresh).await;
         if !read.is_empty()
             && let Some(fields) = value.as_object_mut()
         {
