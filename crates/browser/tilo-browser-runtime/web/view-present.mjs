@@ -749,11 +749,15 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     write(item, '@aria-selected', role === 'radio' ? null : String(Boolean(option.selected)));
     if (role === 'radio' || role === 'option') write(item, '@aria-checked', role === 'radio' ? String(Boolean(option.selected)) : null);
     write(item, '@aria-disabled', option.disabled ? 'true' : null);
-    // A tool on a toolbar is its icon; its name is what a reader hears and a tooltip says.
+    // A tool on a toolbar is its icon, and a swatch its colour; the name is what a reader hears
+    // and a tooltip says, as the canvas draws a swatch without its code beside it.
     const iconOnly = role === 'button' && Boolean(option.icon);
-    write(item, '@aria-label', iconOnly ? option.label : null);
-    write(item, '@title', iconOnly ? option.label : null);
-    write(item, 'css', (iconOnly
+    const swatch = role === 'radio' && Boolean(option.colour);
+    write(item, '@aria-label', iconOnly || swatch ? option.label : null);
+    write(item, '@title', iconOnly || swatch ? option.label : null);
+    write(item, 'css', (swatch
+      ? 'all:unset;box-sizing:border-box;display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border-radius:8px;cursor:pointer;' + (option.selected ? 'box-shadow:inset 0 0 0 2px var(--tilo-text,currentColor);' : '')
+      : iconOnly
       ? 'display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border-radius:6px;cursor:pointer;' + (option.selected ? 'background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 14%,transparent);' : '')
       : 'display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' + (option.selected ? 'background:var(--tilo-raised,rgba(127,127,127,.16));' : ''))
       + (option.dot ? 'position:relative;' : '') + at);
@@ -761,11 +765,13 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     const shown = [];
     if (option.colour) {
       const dot = elementFor(`${path}:colour`, 'span', next);
-      write(dot, 'css', `flex:none;width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.35));background:${rgba(option.colour)};`);
+      write(dot, 'css', swatch
+        ? `flex:none;width:24px;height:24px;border-radius:6px;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.35));background:${rgba(option.colour)};`
+        : `flex:none;width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.35));background:${rgba(option.colour)};`);
       shown.push(dot);
     }
     if (option.icon) shown.push(glyph(`${path}:icon`, option.icon, next));
-    if (!iconOnly) {
+    if (!iconOnly && !swatch) {
       const label = elementFor(`${path}:label`, 'span', next);
       write(label, 'css', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;');
       write(label, 'text', option.label);
