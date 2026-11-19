@@ -480,6 +480,10 @@ impl Spawner {
             .map(|(started, _)| started)
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one ordered launch: the command, its hold, its keeper and what it writes, each set before the process starts"
+    )]
     fn start_launch(
         &mut self,
         planned: &Planned,
@@ -520,6 +524,15 @@ impl Spawner {
         };
         let (kept, handed_down) =
             self.kept_launch(planned, workspace, asked, &mut command, handed)?;
+        // A kept launch's keeper writes the same bytes it passes on here: what this desktop reads is
+        // kept beside them, and the desktop that follows reads on rather than logging it again.
+        #[cfg(target_os = "linux")]
+        if let Some(kept) = &kept {
+            output.keep_position_in(&kept.dir);
+            // What the launcher said on its stderr for a launch it did not keep: a kept launch's
+            // streams carry its app's output alone, so the log is told here instead.
+            tracing::info!(app = %planned.app, "a machine app is unconfined, kept across a desktop restart");
+        }
         let spawned = command.spawn();
         drop((command, handed_down));
         let mut child = match spawned {
@@ -1123,7 +1136,7 @@ impl Spawner {
             .as_ref()
             .map_or_else(crate::output::OutputTail::default, |launch| {
                 let output = Arc::new(AppOutput::new(launch.app.clone(), None));
-                output.follow(dir);
+                output.follow_whole(dir);
                 output.finish();
                 output.tail()
             });

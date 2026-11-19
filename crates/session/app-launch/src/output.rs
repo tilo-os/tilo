@@ -78,6 +78,11 @@ pub struct AppOutput {
     stderr_tail: Mutex<VecDeque<String>>,
     /// The threads reading the app's streams, joined by [`Self::finish`].
     readers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// The keeper's directory, for a launch kept across a restart: what this desktop reads from
+    /// the launcher is the same bytes its keeper writes to its files, so what was read is kept
+    /// there, and the desktop that follows reads on from it rather than logging any of it twice.
+    #[cfg(target_os = "linux")]
+    kept: Mutex<Option<std::path::PathBuf>>,
     /// Set when the app ended: a reader following a stream that has not closed yet stops.
     stopping: Arc<AtomicBool>,
     relayed: AtomicU64,
@@ -94,6 +99,8 @@ impl AppOutput {
             file: file.map(Mutex::new),
             stderr_tail: Mutex::new(VecDeque::with_capacity(TAIL_LINES)),
             readers: Mutex::new(Vec::new()),
+            #[cfg(target_os = "linux")]
+            kept: Mutex::new(None),
             stopping: Arc::new(AtomicBool::new(false)),
             relayed: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -119,15 +126,65 @@ impl AppOutput {
     }
 
     /// Keep what the app wrote before this desktop took it over, and from now on: its keeper
-    /// kept both streams in `dir` while no session read them.
+    /// kept both streams in `dir` while no session read them, and this desktop reads on from
+    /// where the one before it stopped.
     #[cfg(target_os = "linux")]
     pub fn follow(self: &Arc<Self>, dir: &std::path::Path) {
+        self.seed_tail(dir);
+        self.keep_followed(dir, false);
+    }
+
+    /// Keep what this desktop reads in `dir`, its keeper's directory: the desktop that follows
+    /// reads on from it.
+    #[cfg(target_os = "linux")]
+    pub fn keep_position_in(&self, dir: &std::path::Path) {
+        *self.kept.lock_recover() = Some(dir.to_path_buf());
+    }
+
+    /// Keep the last lines its keeper holds as this launch's end report names them, without
+    /// relaying them again: the desktop before this one read them, and only new lines go to the
+    /// log, while a crash report still says what the app wrote before it.
+    #[cfg(target_os = "linux")]
+    fn seed_tail(&self, dir: &std::path::Path) {
+        let path = tilo_app_keeper::output::path(dir, "stderr");
+        let stopping = Arc::new(AtomicBool::new(true));
+        let Ok(mut whole) = tilo_app_keeper::output::Follow::whole(&path, stopping) else {
+            return;
+        };
+        let mut kept = Vec::new();
+        if std::io::Read::read_to_end(&mut whole, &mut kept).is_err() {
+            return;
+        }
+        let text = String::from_utf8_lossy(&kept);
+        let lines = text.lines();
+        let skip = lines.clone().count().saturating_sub(TAIL_LINES);
+        let mut tail = self.stderr_tail.lock_recover();
+        for line in lines.skip(skip) {
+            if tail.len() == TAIL_LINES {
+                tail.pop_front();
+            }
+            tail.push_back(line.to_owned());
+        }
+    }
+
+    /// Keep all the app wrote that its keeper still holds in `dir`, as [`Self::follow`] does but
+    /// from the oldest line kept: what an end report is made of, whose tail names the last lines
+    /// whether or not a desktop's log read them.
+    #[cfg(target_os = "linux")]
+    pub fn follow_whole(self: &Arc<Self>, dir: &std::path::Path) {
+        self.keep_followed(dir, true);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn keep_followed(self: &Arc<Self>, dir: &std::path::Path, whole: bool) {
         for stream in ["stdout", "stderr"] {
             let path = tilo_app_keeper::output::path(dir, stream);
-            let follow = match tilo_app_keeper::output::Follow::open(
-                &path,
-                Arc::clone(&self.stopping),
-            ) {
+            let stopping = Arc::clone(&self.stopping);
+            let follow = match if whole {
+                tilo_app_keeper::output::Follow::whole(&path, stopping)
+            } else {
+                tilo_app_keeper::output::Follow::open(&path, stopping)
+            } {
                 Ok(follow) => follow,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => {
@@ -141,6 +198,19 @@ impl AppOutput {
             }
         }
     }
+
+    /// Keep `received` bytes of `stream` as what this desktop read, for the desktop that follows.
+    #[cfg(target_os = "linux")]
+    fn keep_position(&self, stream: &str, received: usize) {
+        let Some(dir) = self.kept.lock_recover().clone() else {
+            return;
+        };
+        let path = tilo_app_keeper::output::cursor(&tilo_app_keeper::output::path(&dir, stream));
+        let _ = std::fs::write(path, received.to_string());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn keep_position(&self, _: &str, _: usize) {}
 
     /// Wait until both streams are read to their end: the app's pipes close
     /// with it, and the tail is what it said only once they are drained.
@@ -183,6 +253,7 @@ impl AppOutput {
         let mut chunk = [0_u8; 4096];
         let mut partial = Vec::with_capacity(LINE_BYTES.min(chunk.len()));
         let mut truncated = false;
+        let mut received = 0_usize;
         loop {
             let read = match reader.read(&mut chunk) {
                 Ok(0) => break,
@@ -200,6 +271,8 @@ impl AppOutput {
                     truncated = true;
                 }
             }
+            received = received.saturating_add(read);
+            self.keep_position(stream, received);
         }
         if !partial.is_empty() || truncated {
             self.keep(stream, &mut partial, &mut truncated, file, &mut bucket);
