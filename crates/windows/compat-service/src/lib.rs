@@ -73,7 +73,7 @@ pub use store::{
     CAPSULE_SCHEMA_VERSION, CapsuleError, CapsuleProgram, CapsuleState, CapsuleStore,
     InstallationRecord, InstallationStatus, InstallerKind, ProgramKind, RegisteredProgram,
 };
-pub use translated::run_translated_command;
+pub use translated::{run_translated_command, wine_is_translated};
 pub use vm_adapter::{
     AudioIsolatedRailLauncher, AudioIsolatedSpiceLauncher, CanonicalRailPortalAuthority,
     LiveVmDelegate, PortalRailPortalAuthority, RAIL_PRESENTER, SharedSessionCapabilityBroker,

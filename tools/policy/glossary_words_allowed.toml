@@ -1494,3 +1494,9 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces.rs",
     "crates/server/tilo-workspace-service/src/workspaces/member.rs",
 ]
+
+[[allow]]
+reason = "The compatibility service's entry point for executing one translated command inside a capsule, `run_translated_command`, which its callers name."
+words = ["run"]
+identifiers = ["run_translated_command"]
+paths = ["crates/windows/compat-service/src/lib.rs", "crates/windows/compat-service/src/translated.rs"]

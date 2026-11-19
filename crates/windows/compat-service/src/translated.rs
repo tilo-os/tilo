@@ -17,6 +17,13 @@ pub(crate) const ROOTFS: &str = "/opt/tilo/x86";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Whether Wine executes through FEX on this device: an ARM machine translates the x86 prefix,
+/// so every Wine program needs the Windows support payload that carries the translator.
+#[must_use]
+pub const fn wine_is_translated() -> bool {
+    cfg!(target_arch = "aarch64")
+}
+
 pub fn run_translated_command(arguments: &[OsString]) -> io::Result<i32> {
     let Some((mode, arguments)) = arguments.split_first() else {
         return Err(io::Error::new(

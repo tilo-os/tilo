@@ -217,7 +217,10 @@ severity = "warn"
 # registered on every target.
 # `tilo-agent-web-tools` is the agent's two web tools as an app reads them: their
 # definitions, arguments and answer, portable to every target.
-allowed-packages = ["tilo-app", "runtime-dylib", "provider-settings-ui", "tilo-rich-text", "tilo-page-raster", "tilo-recurrence", "wire-frame", "tilo-dav", "tilo-view-macros", "tilo-agent-web-tools"]
+# `tilo-webview` is the SDK's embedded web engine client: the helper transport,
+# the page protocol and the commands and events a viewer exchanges with an
+# engine, portable to every target and linking no toolkit.
+allowed-packages = ["tilo-app", "runtime-dylib", "provider-settings-ui", "tilo-rich-text", "tilo-page-raster", "tilo-recurrence", "wire-frame", "tilo-dav", "tilo-view-macros", "tilo-agent-web-tools", "tilo-webview"]
 # `vendor/*` holds forks of third-party crates (winit, vello, …), which stand
 # in for the upstream crate an app would otherwise depend on.
 # `crates/runtime/engines/*` are engine libraries beside the runtime,

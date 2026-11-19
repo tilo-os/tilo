@@ -13,11 +13,12 @@ use ui::widget::{Banner, Button, ButtonRole, Element};
 type Answer = Arc<Mutex<Option<Result<(), String>>>>;
 
 /// Whether a program opened this way needs the downloaded payload: Proton's runners always,
-/// and on ARM every Wine prefix, which goes through FEX. The Windows appliance does not.
+/// and every Wine prefix on a device whose Wine executes through FEX. The Windows appliance
+/// does not.
 pub(crate) const fn route_needs_support(route: Route) -> bool {
     match route {
         Route::Proton => true,
-        Route::Wine => cfg!(target_arch = "aarch64"),
+        Route::Wine => compat_service::wine_is_translated(),
         Route::Vm => false,
     }
 }
