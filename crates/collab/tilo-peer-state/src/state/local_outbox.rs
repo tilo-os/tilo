@@ -274,7 +274,9 @@ impl PeerOutboxMut<'_> {
     /// Admit `renewal`, the renewal of `original` drafted by
     /// [`PeerOutbox::draft_sealed_renewals`] and signed by its author, as a
     /// new local sealed write, and answer it as the message to publish in
-    /// the original's place. On an error nothing changes.
+    /// the original's place. The document holds the renewal where it held the
+    /// original: the write it renews never reached its server, and no
+    /// replica holds it. On an error nothing changes.
     pub fn admit_sealed_renewal(
         self,
         original: &NeighbourMsg,
@@ -290,6 +292,9 @@ impl PeerOutboxMut<'_> {
             renewal.clone(),
             now,
         )?;
+        if let NeighbourMsg::AppDocument { envelope, .. } = original {
+            candidate.replace_local_sealed(&local.route.app, &local.route.record, envelope);
+        }
         let own = candidate
             .core
             .own_write(&local.route.app, &local.route.record, &selected);

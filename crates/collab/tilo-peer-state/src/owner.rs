@@ -10,6 +10,7 @@
 //! workspace's file, and one file per workspace ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the server co-edit session with that host.
+mod answers;
 mod behind;
 mod certified;
 mod document_read;

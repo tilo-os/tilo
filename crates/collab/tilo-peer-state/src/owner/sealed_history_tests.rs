@@ -9,7 +9,7 @@ use collab_types::{ContentRetention, DocumentMutation, EncryptionMetadata, OpKin
 use key_group::ContentKeys;
 use std::collections::BTreeSet;
 
-/// The chat record's channel keys, as a member holding them compacts with.
+/// The chat document's keys, as a member holding them compacts with.
 pub(super) struct Held(pub(super) ContentKeys);
 
 impl SealedHistoryKeys for Held {
@@ -1387,5 +1387,75 @@ async fn a_refused_write_after_a_peers_fold_leaves_the_next_write_free() {
         host.relayed.len(),
         relayed + 2,
         "the host took the write after a restart"
+    );
+}
+
+/// A write the device renewed before its server took it is not one the server holds: it leaves
+/// the document the renewal takes its place in, so a compaction covers exactly what the server
+/// has.
+#[tokio::test]
+async fn a_compaction_covers_no_write_the_server_has_not_taken() {
+    let (fixture, served, _) = governed_fixture_at(tilo_clock::wall());
+    let mut served = Host::new(served);
+    let joined = enrolled_with(fixture);
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let (_, keys) = rotated_channel();
+    owner.keep_sealed_histories(Arc::new(Held(keys.clone())));
+    let mut typist = Typist::over(&base(owner, workspace), 1);
+    let mut order = 0;
+    let changes = typist.change("k0");
+    assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    let refused = delivered(
+        owner,
+        workspace,
+        &mut served,
+        (now, &mut order, false),
+        |_| false,
+    )
+    .await;
+    assert!(refused.is_empty(), "the server refused {}", refused.len());
+    // Two writes the device renews before its server takes them: their epoch closes first.
+    for key in ["k1", "k2"] {
+        let changes = typist.change(key);
+        assert_eq!(write(owner, workspace, &keys, changes, now).await, Ok(1));
+    }
+    let later = now
+        .checked_add(std::time::Duration::from_secs(301))
+        .unwrap();
+    assert_eq!(
+        owner
+            .renew_outgoing(workspace, &member_key(), later)
+            .await
+            .unwrap(),
+        2,
+        "both writes closed before their server took them"
+    );
+    let peers = owner.replica(workspace).unwrap();
+    let held: Vec<u64> = history(&peers.lock(), &keys)
+        .into_iter()
+        .map(|(seq, _)| seq)
+        .collect();
+    drop(peers);
+    assert_eq!(held, vec![1, 4, 5], "the document holds no renewed write");
+    let compacted = owner
+        .compact_document(workspace, (APP, ""), &member_key(), later)
+        .await
+        .unwrap();
+    assert_eq!(compacted, 1, "the document is compacted");
+    let refused = delivered(
+        owner,
+        workspace,
+        &mut served,
+        (later, &mut order, false),
+        |_| false,
+    )
+    .await;
+    assert!(refused.is_empty(), "the server refused {}", refused.len());
+    holds_every_write(
+        owner,
+        workspace,
+        &keys,
+        &keys_typed('k', 3).collect(),
+        "after a renewal",
     );
 }
