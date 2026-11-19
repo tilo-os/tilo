@@ -16,6 +16,8 @@ use ui::framework::{
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_actions::MemberId;
+use ui::tilo_resource::Place;
 use ui::widget::{AppModel, Element, FloatingSurfaceProvider, ModelPath, Widget};
 
 use super::MapsApp;
@@ -26,9 +28,11 @@ use crate::workspace::Workspace;
 use ui::widget::DrawChild;
 
 pub(crate) struct MapWindow {
-    app: Rc<RefCell<MapsApp>>,
-    live: Live<Workspace>,
+    pub(super) app: Rc<RefCell<MapsApp>>,
+    pub(super) live: Live<Workspace>,
     presented: Option<(u64, u64)>,
+    /// The member whose view this person follows, and the place it last showed them.
+    following: Option<(MemberId, Option<Place>)>,
 }
 
 impl MapWindow {
@@ -39,6 +43,38 @@ impl MapWindow {
     fn follow_document(&mut self) {
         if let Some(workspace) = self.live.changed_since(&mut self.presented) {
             self.app().adopt_resource_state(&workspace);
+        }
+        self.follow_view();
+    }
+
+    /// Show where the followed member's view went, once each time it moves.
+    fn follow_view(&mut self) {
+        let Some((member, shown)) = &mut self.following else {
+            return;
+        };
+        let Some(landing) = self
+            .live
+            .landings()
+            .into_iter()
+            .find(|landing| landing.member.as_ref() == Some(&*member))
+        else {
+            return;
+        };
+        if shown.as_ref() == Some(&landing.place) {
+            return;
+        }
+        *shown = Some(landing.place.clone());
+        if let Place::Item(row) = &landing.place {
+            self.app.borrow_mut().show_followed(row);
+        }
+    }
+}
+
+impl ui::widget::Collaborative for MapWindow {
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        if let ui::collaboration::CollabEvent::FollowChanged { peer_id } = event {
+            self.following = peer_id.clone().map(|member| (member, None));
+            self.follow_view();
         }
     }
 }
@@ -76,6 +112,7 @@ pub(crate) fn window(cx: &ViewCx<Workspace>, mut app: MapsApp) -> Element {
         app,
         live: cx.live().clone(),
         presented,
+        following: None,
     };
     cx.publishing(
         Publishes::new()
@@ -93,7 +130,7 @@ const ROWS_PER_KIND: usize = 12;
 /// The id `value` names, as the row that published it names it
 /// (`maps.place:x` for a place, `maps.search-history:x` for a past search) or
 /// as the map knows it, so a row's press and a control's reach the same place.
-fn entity_id(value: &str) -> &str {
+pub(super) fn entity_id(value: &str) -> &str {
     for prefix in [
         "maps.place:",
         "maps.search-result:",
@@ -349,7 +386,8 @@ impl Widget for MapWindow {
     ui::provides!(
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::WindowHeader,
-        dyn ui::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::widget::Collaborative
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -381,8 +419,16 @@ impl Widget for MapWindow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.app()
-            .draw_child(scene, transform, text_renderer, theme, presence);
+        let mut app = self.app.borrow_mut();
+        app.draw_child(scene, transform, text_renderer, theme, presence);
+        let following = self.following.as_ref().map(|(member, _)| member);
+        app.draw_presences(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            (presence, &self.live.landings(), following),
+        );
     }
 
     fn draw_overlay(

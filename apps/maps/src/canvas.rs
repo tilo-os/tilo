@@ -1002,6 +1002,24 @@ pub(crate) fn pin_size(selected: bool, scale: f64) -> (f64, f64) {
     (radius * scale, height * scale)
 }
 
+/// The middle of the head of a pin at `anchor`.
+pub(crate) fn pin_head(anchor: Point, selected: bool, scale: f64) -> Point {
+    let (_, height) = pin_size(selected, scale);
+    Point::new(anchor.x, anchor.y - height)
+}
+
+/// Where the face of someone at the place a pin at `anchor` marks docks: above and right of
+/// the pin's head, its tag over the head's edge by a little, so the pin shows whole.
+pub(crate) fn pin_dock(anchor: Point, selected: bool, scale: f64) -> Point {
+    let (radius, _) = pin_size(selected, scale);
+    let reach = (radius + DOCK_REACH * scale) * std::f64::consts::FRAC_1_SQRT_2;
+    pin_head(anchor, selected, scale) + vello::kurbo::Vec2::new(reach, -reach)
+}
+
+/// How far past a pin's head a docked face's centre stands, at 1x: the tag round a face of 18
+/// reaches 14 from its centre, so it overlaps the head's edge by 3.
+const DOCK_REACH: f64 = 11.0;
+
 fn scaled_at(t: Affine, anchor: Point, scale: f64) -> Affine {
     t * Affine::translate(anchor.to_vec2())
         * Affine::scale(scale)

@@ -652,9 +652,17 @@ impl ResourceRoot {
         self.run
             .members()
             .iter()
-            .map(|(name, at)| {
-                let (key, payload) = at.presence_of(self.resource.kind, self.dispatch.app_id());
-                (name.clone(), key, payload)
+            .filter_map(|shown| match shown {
+                super::scenario::Shown::Member(name, at) => {
+                    let (key, payload) = at.presence_of(self.resource.kind, self.dispatch.app_id());
+                    Some((name.clone(), key, payload))
+                }
+                // An agent stands in its own view of the window, not in a
+                // presence frame its window would send.
+                super::scenario::Shown::Agent(landing) => {
+                    self.typed.stage_landing(landing.clone());
+                    None
+                }
             })
             .collect()
     }

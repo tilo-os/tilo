@@ -110,6 +110,15 @@ impl ResourceApp for MapsShell {
         crate::scenario::actions(name)
     }
 
+    #[cfg(feature = "samples")]
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui::headless::FrameHarness,
+    ) -> Result<(), String> {
+        crate::scenario::input(name, input);
+        Ok(())
+    }
+
     /// A `geo:` link shows its search (`geo:0,0?q=cafe`), else its point
     /// (`geo:52.52,13.40`).
     fn open_link(link: &str) -> Option<Vec<ui::tilo_resource::Invoke<Workspace>>> {

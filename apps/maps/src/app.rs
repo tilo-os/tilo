@@ -64,6 +64,7 @@ mod nav_surface;
 mod offline;
 mod places;
 mod places_panel;
+mod presences;
 mod results;
 mod route;
 mod sheets;
