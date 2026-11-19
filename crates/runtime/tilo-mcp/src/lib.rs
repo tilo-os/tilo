@@ -1253,8 +1253,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         tools
     }
     /// Attribute every invocation of this connection to one agent session, so
-    /// history, undo and activity tell concurrent agents apart. Provenance
-    /// only: authority stays the profile actor's.
+    /// history, undo and activity tell concurrent agents apart. The session is
+    /// labelled as its caller is, and a client that names its session in
+    /// `initialize` ([`SURFACE_SESSION_NAME`]) settles the label then.
+    /// Provenance only: authority stays the profile actor's.
     #[must_use]
     pub fn with_agent_session(mut self, id: impl Into<String>) -> Self {
         *self
@@ -1482,6 +1484,28 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if session.is_none() || continued.is_some() {
                 let id = continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4()));
                 *session = Some(Session::Named(id));
+            }
+        }
+        // The session the client says it is ("Office Hours"), as its own harness names it: what
+        // the workspace shows the agent by, in place of its product's name. A name, never
+        // authority.
+        let named: Option<String> = params
+            .pointer(SURFACE_SESSION_NAME)
+            .and_then(Value::as_str)
+            .map(|name| {
+                name.trim()
+                    .chars()
+                    .filter(|character| !character.is_control())
+                    .take(MAX_SESSION_NAME)
+                    .collect::<String>()
+            })
+            .filter(|name| !name.is_empty());
+        if let Some(named) = named {
+            let mut held = self.agent_session.lock_recover();
+            let group = held.as_ref().map(|session| session.group(&self.caller));
+            if let Some(mut group) = group {
+                group.label = Some(named);
+                *held = Some(Session::Given(group));
             }
         }
         let session = self.session_id();
@@ -2825,6 +2849,12 @@ const SURFACE_DETAIL: &str = "/capabilities/experimental/so.tilo.mcp/detail";
 /// Provenance only: it names whose steps `undo` takes back, never what the
 /// connection may do.
 const SURFACE_SESSION: &str = "/capabilities/experimental/so.tilo.mcp/session";
+/// The session the client says it is: `{"so.tilo": {"session-name": "Office Hours"}}`, as
+/// `tilo mcp` writes what its agent's harness names the session. Display only: what the workspace
+/// shows the agent by, never what the connection may do.
+const SURFACE_SESSION_NAME: &str = "/capabilities/experimental/so.tilo/session-name";
+/// The most characters of a session name a client may say.
+const MAX_SESSION_NAME: usize = 64;
 /// The longest session id a client may name.
 const MAX_SESSION_ID: usize = 96;
 

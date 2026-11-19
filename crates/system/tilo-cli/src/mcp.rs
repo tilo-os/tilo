@@ -22,9 +22,10 @@
 //! every `tilo mcp` is a connection to it ([`held`]), as the API server
 //! holds one session per key for all of that key's runs.
 //!
-//! Every connection is one agent run, named for the agent ("Claude Code"),
-//! which History groups its actions under; the workspace shows the agent
-//! present with what it does while it runs.
+//! Every connection is one agent's work of its own, shown by the session the agent's harness
+//! names (`session_name`: "Office Hours"), else by the agent's product ("Claude Code"), which
+//! History groups its actions under; the workspace shows the agent present with what it does
+//! while it is here.
 
 pub(crate) mod held;
 
@@ -411,7 +412,7 @@ fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, St
 pub fn serve(hold: bool) -> Result<ExitCode> {
     let device = match tilo_mcp::session_api::desktop_server() {
         Ok(Some(server)) => {
-            tilo_mcp::session_api::bridge(&server)?;
+            tilo_mcp::session_api::bridge(&server, tilo_mcp::session_api::session_name())?;
             return Ok(ExitCode::SUCCESS);
         }
         Ok(None) => crate::login::load(&crate::login::device_dir()?)?

@@ -260,7 +260,16 @@ pub(crate) fn alone<E: Enter>(shared: &Arc<Shared<E>>) -> Result<ExitCode> {
         tokio::spawn(async move {
             let _ = entering.session(false, super::Ask::Sync).await;
         });
-        converse(Arc::clone(shared), tokio::io::stdin(), tokio::io::stdout()).await;
+        // This process is the agent's own: what its harness calls the session, it says in the
+        // initialize it passes on.
+        let session_name = tilo_mcp::session_api::session_name();
+        converse(
+            Arc::clone(shared),
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+            session_name.as_deref(),
+        )
+        .await;
         // The connection ended (its input closed): the agent leaves the
         // workspace now, while its session can still say so.
         shared.leaving().await;
@@ -272,10 +281,15 @@ pub(crate) fn alone<E: Enter>(shared: &Arc<Shared<E>>) -> Result<ExitCode> {
 
 /// One agent's connection, served as its own run until its input ends: each
 /// request answered as it comes, so a long call holds up no other.
+///
+/// `session_name` is what the agent's harness calls this session, when the process serving it
+/// knows: the initialize the client sends then says it ([`tilo_mcp::session_api::SESSION_NAME`]),
+/// and the workspace shows the agent by that name rather than by its product's name.
 async fn converse<E: Enter>(
     shared: Arc<Shared<E>>,
     read: impl AsyncRead + Unpin,
     write: impl AsyncWrite + Unpin + Send + 'static,
+    session_name: Option<&str>,
 ) {
     let connection = Arc::new(Connection::new(shared));
     let write = Arc::new(tokio::sync::Mutex::new(write));
@@ -285,6 +299,7 @@ async fn converse<E: Enter>(
         if line.trim().is_empty() {
             continue;
         }
+        let line = naming(line, session_name);
         let (connection, write) = (Arc::clone(&connection), Arc::clone(&write));
         answering.spawn(async move {
             if let Some(answer) = answer(&connection, &line).await {
@@ -583,7 +598,9 @@ async fn serve_held<E: Enter>(
                 let (shared, count) = (Arc::clone(&shared), Arc::clone(&count));
                 tokio::spawn(async move {
                     let (read, write) = stream.into_split();
-                    converse(shared, read, write).await;
+                    // This process is no agent's: the name comes in each connection's own
+                    // initialize, which the connection that reached it wrote.
+                    converse(shared, read, write, None).await;
                     count.send_modify(|live| *live = live.saturating_sub(1));
                 });
             }
@@ -856,6 +873,9 @@ pub(crate) fn relay(stream: UnixStream, place: &Place) -> Result<ExitCode> {
 
 async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
     let (lines_in, mut input) = tokio::sync::mpsc::channel::<String>(64);
+    // What the agent's harness calls this session: this process is the agent's own child, so it
+    // is the one that knows, and each holder reached says it in the initialize it passes on.
+    let session_name = tilo_mcp::session_api::session_name();
     tokio::spawn(async move {
         let mut stdin = BufReader::new(tokio::io::stdin()).lines();
         while let Ok(Some(line)) = stdin.next_line().await {
@@ -911,6 +931,7 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
         let ended = loop {
             tokio::select! {
                 line = input.recv(), if input_open => if let Some(line) = line {
+                    let line = naming(line, session_name.as_deref());
                     if write.write_all(format!("{line}\n").as_bytes()).await.is_err() {
                         break true;
                     }
@@ -962,6 +983,23 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
 struct Unanswered {
     id: Value,
     line: String,
+}
+
+/// `line` with the session this connection is written in, when it is the client's `initialize`
+/// and the agent's harness named the session: what the workspace shows the agent by, in place of
+/// the product's name. Any other line, and a session with no name, go as they are.
+fn naming(line: String, session_name: Option<&str>) -> String {
+    let Some(name) = session_name else {
+        return line;
+    };
+    let asking = tilo_mcp::session_api::Asking {
+        session_name: Some(name.to_owned()),
+        ..Default::default()
+    };
+    asking
+        .written_into(line.as_bytes())
+        .and_then(|rewritten| String::from_utf8(rewritten).ok())
+        .unwrap_or(line)
 }
 
 /// Whether a request only reads: asking it again runs nothing twice.

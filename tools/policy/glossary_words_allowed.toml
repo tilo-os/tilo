@@ -611,7 +611,7 @@ paths = ["crates/runtime/device-mcp/src/lib.rs"]
 [[allow]]
 reason = "The helper that drives a test phase's async body on a current-thread runtime."
 words = ["run"]
-paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs", "crates/runtime/tilo-mcp/src/mcp_agent_tests.rs"]
 
 [[allow]]
 reason = "tokio's mpsc constructor, the queue a test's stand-in page answers through."
