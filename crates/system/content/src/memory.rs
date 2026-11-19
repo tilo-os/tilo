@@ -73,6 +73,22 @@ impl ContentBackend for MemoryBackend {
         }))
     }
 
+    fn open_at(&self, hash: &str, offset: u64) -> Result<Option<ContentReader>, ContentError> {
+        use std::io::Seek as _;
+        let state = self
+            .inner
+            .read()
+            .map_err(|_| ContentError::Io("memory store lock poisoned".into()))?;
+        let key = hash.to_ascii_lowercase();
+        let Some(bytes) = state.entries.get(&key).map(std::sync::Arc::clone) else {
+            return Ok(None);
+        };
+        drop(state);
+        let mut reader = std::io::Cursor::new(bytes);
+        reader.seek(std::io::SeekFrom::Start(offset))?;
+        Ok(Some(Box::new(reader)))
+    }
+
     fn has(&self, hash: &str) -> bool {
         self.inner
             .read()

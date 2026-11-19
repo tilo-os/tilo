@@ -735,6 +735,23 @@ impl ContentBackend for DirBackend {
         Ok(Some(Box::new(Verifying::new(file.take(cap), hash))))
     }
 
+    fn open_at(&self, hash: &str, offset: u64) -> Result<Option<ContentReader>, ContentError> {
+        use std::io::{Seek as _, SeekFrom};
+        if !valid_hash(hash) {
+            return Err(ContentError::InvalidHash(hash.to_string()));
+        }
+        let Some(path) = self.existing(hash) else {
+            return Ok(None);
+        };
+        let mut file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        file.seek(SeekFrom::Start(offset))?;
+        Ok(Some(Box::new(file)))
+    }
+
     fn has(&self, hash: &str) -> bool {
         self.existing(hash)
             .is_some_and(|path| self.intact(&path, hash, self.limits.max_item_bytes))

@@ -752,3 +752,80 @@ fn the_same_bytes_stored_twice_by_members_are_one_sealed_item() {
         store.read(content_address(&reference).unwrap().as_str())
     );
 }
+
+/// Bytes that differ at every position a part could begin.
+fn varied(len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|n| u8::try_from(n.wrapping_mul(7).wrapping_add(n / 251) % 256).unwrap_or(0))
+        .collect()
+}
+
+#[test]
+fn content_larger_than_a_part_is_kept_in_parts_and_reads_whole() {
+    let big = limits(64 << 20, 1 << 30, 64);
+    for store in [
+        ContentStore::new(MemoryBackend::new(big)),
+        ContentStore::new(MemoryBackend::new(big)).sealing(),
+    ] {
+        let bytes = varied(2 * PART_BYTES + 12_345);
+        let stored = store.put_parts(&mut bytes.as_slice()).unwrap();
+        assert_eq!(stored.len, bytes.len() as u64);
+        assert_eq!(store.size(&stored.hash), Some(bytes.len() as u64));
+        assert!(store.read(&stored.hash).unwrap() == bytes, "read whole");
+        // A piece across two parts reads only what it asks for.
+        let from = PART_BYTES as u64 - 10;
+        let (size, piece) = store.read_range(&stored.hash, from, 30).unwrap();
+        assert_eq!(size, bytes.len() as u64);
+        assert_eq!(piece, bytes[PART_BYTES - 10..PART_BYTES + 20]);
+        let (_, tail) = store
+            .read_range(&stored.hash, bytes.len() as u64 - 5, 100)
+            .unwrap();
+        assert_eq!(tail, bytes[bytes.len() - 5..]);
+        // Content of one part or less is that one item.
+        let small = store.put_parts(&mut &bytes[..1000]).unwrap();
+        assert_eq!(store.read(&small.hash).unwrap(), bytes[..1000]);
+        let exact = store.put_parts(&mut &bytes[..PART_BYTES]).unwrap();
+        assert!(
+            store.read(&exact.hash).unwrap() == bytes[..PART_BYTES],
+            "one whole part"
+        );
+        let empty = store.put_parts(&mut &[][..]).unwrap();
+        assert_eq!(store.read(&empty.hash).unwrap(), Vec::<u8>::new());
+    }
+}
+
+#[test]
+fn sealed_content_reads_a_piece_from_where_it_is() {
+    let store = ContentStore::new(MemoryBackend::new(limits(64 << 20, 1 << 30, 64))).sealing();
+    let bytes = varied(3 * tilo_seal::content::CHUNK + 77);
+    let reference = store.put(&bytes).unwrap();
+    assert_eq!(store.size(&reference), Some(bytes.len() as u64));
+    for (from, len) in [(0, 10), (65_530, 20), (3 * 65_536, 200), (5, 0)] {
+        let (size, piece) = store.read_range(&reference, from, len).unwrap();
+        assert_eq!(size, bytes.len() as u64);
+        let from = usize::try_from(from).unwrap();
+        let to = (from + usize::try_from(len).unwrap()).min(bytes.len());
+        assert_eq!(piece, bytes[from..to], "{from}+{len}");
+    }
+}
+
+#[test]
+fn content_in_parts_is_not_here_until_every_part_is() {
+    let whole = ContentStore::new(MemoryBackend::new(limits(64 << 20, 1 << 30, 64)));
+    let bytes = varied(PART_BYTES + 3);
+    let stored = whole.put_parts(&mut bytes.as_slice()).unwrap();
+    let other = ContentStore::new(MemoryBackend::new(limits(64 << 20, 1 << 30, 64)));
+    other.put(&whole.read_item_whole(&stored.hash)).unwrap();
+    assert!(other.read(&stored.hash).is_none(), "a part is missing");
+}
+
+#[test]
+fn a_file_that_begins_like_a_list_reads_as_itself() {
+    let store = ContentStore::new(MemoryBackend::new(limits(1 << 20, 1 << 22, 64)));
+    let mut bytes = b"TCL\x01".to_vec();
+    bytes.extend_from_slice(&[2, 0, 0, 0]);
+    bytes.extend_from_slice(&varied(500));
+    let reference = store.put(&bytes).unwrap();
+    assert_eq!(store.read(&reference).unwrap(), bytes);
+    assert_eq!(store.size(&reference), Some(bytes.len() as u64));
+}

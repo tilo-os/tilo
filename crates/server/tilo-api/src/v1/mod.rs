@@ -1148,21 +1148,27 @@ impl<'a> Caller<'a> {
         // The first piece is asked for now: content the workspace no longer
         // holds is refused as every other route refuses it, never answered
         // as a file of no bytes.
-        let (size, first) = self.first_piece(&content, from).await?;
+        let (size, mut first) = self.first_piece(&content, from).await?;
+        let until = asked.and_then(|(_, until)| until);
+        if let Some(end) = until {
+            let wanted = end.saturating_add(1).saturating_sub(from);
+            first.truncate(usize::try_from(wanted).unwrap_or(usize::MAX));
+        }
         let sent = first.len() as u64;
         let (sender, pieces) = tokio::sync::mpsc::channel::<Bytes>(4);
         if !first.is_empty() {
             let _ = sender.try_send(Bytes::from(first));
         }
-        if from.saturating_add(sent) < size {
+        let next = from.saturating_add(sent);
+        if next < size && until.is_none_or(|end| next <= end) {
             let session = Arc::clone(&self.session);
             let workspace = self.workspace();
             tokio::spawn(stream_content(
                 session,
                 workspace,
                 content.clone(),
-                from.saturating_add(sent),
-                asked.and_then(|(_, until)| until),
+                next,
+                until,
                 sender,
             ));
         }
@@ -1626,11 +1632,16 @@ async fn stream_content(
                 return;
             }
         };
-        let decoded = piece
+        let mut decoded = piece
             .get("bytes")
             .and_then(Value::as_str)
             .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
             .unwrap_or_default();
+        // A range ends where it was asked to, never with the rest of a piece.
+        if let Some(end) = until {
+            let wanted = end.saturating_add(1).saturating_sub(offset);
+            decoded.truncate(usize::try_from(wanted).unwrap_or(usize::MAX));
+        }
         let size = piece.get("size").and_then(Value::as_u64).unwrap_or(0);
         if decoded.is_empty() {
             if offset < size {
@@ -1643,7 +1654,7 @@ async fn stream_content(
             // The caller stopped reading.
             return;
         }
-        if offset >= size || until.is_some_and(|end| offset >= end) {
+        if offset >= size || until.is_some_and(|end| offset > end) {
             return;
         }
     }

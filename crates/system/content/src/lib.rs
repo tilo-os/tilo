@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod dir;
 #[cfg(feature = "dir")]
 mod files;
+mod list;
 mod memory;
 mod reference;
 #[cfg(feature = "dir")]
@@ -26,6 +27,7 @@ mod workspaces;
 pub use dir::DirBackend;
 #[cfg(feature = "dir")]
 pub use files::FilesBackend;
+pub use list::PART_BYTES;
 pub use memory::MemoryBackend;
 pub use reference::{ContentRef, content_address, is_sealed, valid_reference};
 pub use tilo_content_types::{
@@ -169,6 +171,15 @@ impl Drop for Spill {
     }
 }
 
+/// A reader whose first read fails as reading the content did.
+struct Failed(Option<std::io::Error>);
+
+impl Read for Failed {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        self.0.take().map_or(Ok(0), Err)
+    }
+}
+
 /// True when `bytes` really are the content named by `hash`.
 pub fn verify(hash: &str, bytes: &[u8]) -> bool {
     hash_bytes(bytes) == hash
@@ -288,6 +299,21 @@ pub trait ContentBackend: Send + Sync {
 
     fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError>;
 
+    /// The content at `hash` read from `offset` on: a backend that keeps it in a file seeks
+    /// there, so serving one piece of a large item reads only that piece. Bytes read so are not
+    /// checked against the address (that takes the whole item); sealed content is still
+    /// checked chunk by chunk as it opens.
+    ///
+    /// # Errors
+    /// What [`Self::open`] answers.
+    fn open_at(&self, hash: &str, offset: u64) -> Result<Option<ContentReader>, ContentError> {
+        let Some(mut reader) = self.open(hash)? else {
+            return Ok(None);
+        };
+        std::io::copy(&mut reader.by_ref().take(offset), &mut std::io::sink())?;
+        Ok(Some(reader))
+    }
+
     fn has(&self, hash: &str) -> bool;
 
     /// The length of the content at `hash`, when the store knows it without
@@ -391,8 +417,16 @@ impl ContentBackend for OneWorkspace {
         self.0.open(hash)
     }
 
+    fn open_at(&self, hash: &str, offset: u64) -> Result<Option<ContentReader>, ContentError> {
+        self.0.open_at(hash, offset)
+    }
+
     fn has(&self, hash: &str) -> bool {
         self.0.has(hash)
+    }
+
+    fn size(&self, hash: &str) -> Option<u64> {
+        self.0.size(hash)
     }
 
     fn state(&self, hash: &str) -> ContentState {
@@ -758,8 +792,42 @@ impl ContentStore {
     }
 
     /// A streaming, verifying read of the content `reference` names, opened as it streams when
-    /// sealed; see [`ContentReader`].
+    /// sealed; see [`ContentReader`]. Content kept in parts ([`Self::put_parts`]) reads as the
+    /// content its parts make, and is `None` until every part is here: each part not here is
+    /// asked for at once.
     pub fn open(&self, reference: &str) -> Option<ContentReader> {
+        let mut item = self.open_item(reference)?;
+        match list::List::read(&mut item) {
+            Ok(Ok(list)) => {
+                // Every missing part is asked for, not only the first.
+                let mut missing = false;
+                for (_, part) in &list.parts {
+                    if !self.has(part) {
+                        // Opening what is not here asks for it.
+                        let _ = self.backend.open(&address_of(part));
+                        missing = true;
+                    }
+                }
+                if missing {
+                    return None;
+                }
+                let mut left: Vec<String> = list.parts.into_iter().map(|(_, part)| part).collect();
+                left.reverse();
+                Some(Box::new(list::Parts {
+                    store: self.clone(),
+                    left,
+                    current: None,
+                }))
+            }
+            Ok(Err(read)) => Some(Box::new(std::io::Cursor::new(read).chain(item))),
+            // What failed reading the item's start (a check that does not
+            // hold on a short item) fails the reader, as it would have read on.
+            Err(error) => Some(Box::new(Failed(Some(error)))),
+        }
+    }
+
+    /// The one item `reference` names, opened when sealed: a list of parts as the list.
+    fn open_item(&self, reference: &str) -> Option<ContentReader> {
         let parsed = ContentRef::parse(reference);
         let address = parsed.as_ref().map_or(reference, ContentRef::address);
         let reader = self.backend.open(address).ok().flatten()?;
@@ -771,22 +839,86 @@ impl ContentStore {
         }
     }
 
+    /// The one item `reference` names, read whole: a list of parts as the list.
+    #[cfg(test)]
+    fn read_item_whole(&self, reference: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        if let Some(mut item) = self.open_item(reference) {
+            let _ = item.read_to_end(&mut bytes);
+        }
+        bytes
+    }
+
+    /// The parts `reference` is kept in, when it is a list of them.
+    fn list(&self, reference: &str) -> Option<list::List> {
+        let mut item = self.open_item(reference)?;
+        list::List::read(&mut item).ok()?.ok()
+    }
+
+    /// Store everything `reader` yields a part at a time ([`list::PART_BYTES`]), never holding
+    /// more than one part: content of any size, kept as items no larger than a part. Content
+    /// that fits in one part is that one item; larger content is its parts and a list naming
+    /// them, whose reference reads as the whole ([`Self::open`]). Each is sealed when this store
+    /// seals.
+    ///
+    /// # Errors
+    /// What storing a part or the list refused, or reading `reader` failed with.
+    pub fn put_parts(&self, reader: &mut dyn Read) -> Result<Stored, ContentError> {
+        let mut parts = Vec::new();
+        let mut part = Vec::with_capacity(list::PART_BYTES);
+        loop {
+            part.clear();
+            (&mut *reader)
+                .take(list::PART_BYTES as u64)
+                .read_to_end(&mut part)?;
+            if part.is_empty() && !parts.is_empty() {
+                break;
+            }
+            let len = part.len() as u64;
+            parts.push((len, self.put(&part)?));
+            if part.len() < list::PART_BYTES {
+                break;
+            }
+        }
+        if let [(len, only)] = parts.as_slice() {
+            return Ok(Stored {
+                hash: only.clone(),
+                len: *len,
+            });
+        }
+        let list = list::List { parts };
+        let len = list.total();
+        Ok(Stored {
+            hash: self.put(&list.encode())?,
+            len,
+        })
+    }
+
     /// The length of the content `reference` names, when the store knows it
-    /// without reading it. `None` for sealed content, whose file holds the
-    /// ciphertext and not the bytes the reference names.
+    /// without reading it: for sealed content, the plaintext its sealed
+    /// bytes hold; for content kept in parts, what its parts make.
     pub fn size(&self, reference: &str) -> Option<u64> {
+        if let Some(list) = self.list(reference) {
+            return Some(list.total());
+        }
+        self.item_size(reference)
+    }
+
+    fn item_size(&self, reference: &str) -> Option<u64> {
         let parsed = ContentRef::parse(reference);
-        parsed
-            .as_ref()
-            .and_then(ContentRef::key)
-            .is_none()
-            .then(|| self.backend.size(&address_of(reference)))
-            .flatten()
+        let address = parsed.as_ref().map_or(reference, ContentRef::address);
+        let stored = self.backend.size(address)?;
+        match parsed.as_ref().and_then(ContentRef::key) {
+            None => Some(stored),
+            Some(_) => tilo_seal::content::plain_len(stored),
+        }
     }
 
     /// `length` bytes of the content `reference` names, from `offset`: the
     /// bytes read, and the content's length. Reads only what it answers, so
-    /// serving one piece of a large file does not read the file.
+    /// serving one piece of a large file does not read the file: sealed
+    /// content opens from the chunk the piece begins in, and content kept in
+    /// parts reads only the parts the piece is in.
     ///
     /// # Errors
     /// The content is not here, or cannot be read.
@@ -796,21 +928,72 @@ impl ContentStore {
         offset: u64,
         length: u64,
     ) -> Result<(u64, Vec<u8>), ContentError> {
-        let missing = || ContentError::InvalidHash(reference.to_owned());
-        let size = self.size(reference).ok_or_else(missing)?;
-        let mut reader = self.open(reference).ok_or_else(missing)?;
-        let unreadable = |error: std::io::Error| ContentError::Io(error.to_string());
-        // Skipping is a seek where the reader has one.
-        std::io::copy(
-            &mut reader.by_ref().take(offset.min(size)),
-            &mut std::io::sink(),
-        )
-        .map_err(unreadable)?;
+        let Some(list) = self.list(reference) else {
+            return self.read_item_range(reference, offset, length);
+        };
+        let size = list.total();
+        let end = offset.saturating_add(length).min(size);
         let mut bytes = Vec::new();
+        let mut start = 0_u64;
+        for (len, part) in &list.parts {
+            let stop = start.saturating_add(*len);
+            if stop > offset && start < end {
+                let from = offset.max(start).saturating_sub(start);
+                let to = end.min(stop).saturating_sub(start);
+                let (_, piece) = self.read_item_range(part, from, to.saturating_sub(from))?;
+                bytes.extend_from_slice(&piece);
+            }
+            start = stop;
+        }
+        Ok((size, bytes))
+    }
+
+    fn read_item_range(
+        &self,
+        reference: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<(u64, Vec<u8>), ContentError> {
+        let missing = || ContentError::InvalidHash(reference.to_owned());
+        let size = self.item_size(reference).ok_or_else(missing)?;
+        let offset = offset.min(size);
+        let length = length.min(size.saturating_sub(offset));
+        let parsed = ContentRef::parse(reference);
+        let address = parsed.as_ref().map_or(reference, ContentRef::address);
+        let (mut reader, skip): (ContentReader, u64) =
+            match parsed.as_ref().and_then(ContentRef::key) {
+                None => (
+                    self.backend.open_at(address, offset)?.ok_or_else(missing)?,
+                    0,
+                ),
+                Some(key) => {
+                    let chunk = tilo_seal::content::CHUNK as u64;
+                    let index = offset.checked_div(chunk).unwrap_or(0);
+                    let sealed = self
+                        .backend
+                        .open_at(address, tilo_seal::content::sealed_offset(index))?
+                        .ok_or_else(missing)?;
+                    let opened = tilo_seal::content::OpenReader::at_chunk(key, sealed, index)
+                        .map_err(|error| ContentError::Io(error.to_string()))?;
+                    (
+                        Box::new(opened),
+                        offset.saturating_sub(index.saturating_mul(chunk)),
+                    )
+                }
+            };
+        let unreadable = |error: std::io::Error| ContentError::Io(error.to_string());
+        std::io::copy(&mut reader.by_ref().take(skip), &mut std::io::sink()).map_err(unreadable)?;
+        let mut bytes = Vec::with_capacity(usize::try_from(length).unwrap_or(0));
         reader
-            .take(length.min(size.saturating_sub(offset)))
+            .take(length)
             .read_to_end(&mut bytes)
             .map_err(unreadable)?;
+        if (bytes.len() as u64) < length {
+            return Err(ContentError::Io(format!(
+                "{reference} ended {} bytes short of the piece asked for",
+                length.saturating_sub(bytes.len() as u64)
+            )));
+        }
         Ok((size, bytes))
     }
 

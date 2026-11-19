@@ -200,6 +200,48 @@ impl<R: Read> OpenReader<R> {
             chunks: Chunks::new(inner, SEALED_CHUNK),
         })
     }
+
+    /// Open `inner`, sealed under `key`, from its chunk `index` on: `inner`
+    /// reads from where that chunk is sealed ([`sealed_offset`]), so a read
+    /// of one part of a large item opens only the chunks it needs.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidKey`] if the primitive refuses the key.
+    pub fn at_chunk(key: &SymmetricKey, inner: R, index: u64) -> Result<Self> {
+        let mut chunks = Chunks::new(inner, SEALED_CHUNK);
+        chunks.started = true;
+        chunks.index = index;
+        Ok(Self {
+            cipher: cipher(key)?,
+            chunks,
+        })
+    }
+}
+
+/// Where chunk `index` of a sealed item begins in its sealed bytes: what a
+/// reader seeks to before [`OpenReader::at_chunk`].
+#[must_use]
+pub const fn sealed_offset(index: u64) -> u64 {
+    (HEADER.len() as u64).saturating_add(index.saturating_mul(SEALED_CHUNK as u64))
+}
+
+/// The length of the plaintext an item of `sealed` bytes holds; `None` for
+/// a length no sealed item has.
+#[must_use]
+pub const fn plain_len(sealed: u64) -> Option<u64> {
+    let Some(body) = sealed.checked_sub(HEADER.len() as u64) else {
+        return None;
+    };
+    let whole = SEALED_CHUNK as u64;
+    // Every chunk but the last is whole; the last holds at least its tag,
+    // and an item that is a multiple of the chunk ends on a whole one.
+    let chunks = body.div_ceil(whole);
+    let last = body.saturating_sub(chunks.saturating_sub(1).saturating_mul(whole));
+    if chunks == 0 || last < TAG as u64 {
+        return None;
+    }
+    Some(body.saturating_sub(chunks.saturating_mul(TAG as u64)))
 }
 
 impl<R: Read> Read for OpenReader<R> {
@@ -309,6 +351,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn content_opens_from_any_chunk_and_says_its_length() {
+        let key = SymmetricKey::generate().unwrap();
+        for len in [0, 1, CHUNK - 1, CHUNK, CHUNK + 1, 3 * CHUNK, 3 * CHUNK + 17] {
+            let plain: Vec<u8> = (0..len).map(|i| u8::try_from(i % 251).unwrap()).collect();
+            let sealed = seal(&key, &plain).unwrap();
+            assert_eq!(plain_len(sealed.len() as u64), Some(len as u64), "{len}");
+            for index in 0..len.div_ceil(CHUNK) as u64 {
+                let from = usize::try_from(sealed_offset(index)).unwrap();
+                let mut opened = Vec::new();
+                OpenReader::at_chunk(&key, &sealed[from..], index)
+                    .unwrap()
+                    .read_to_end(&mut opened)
+                    .unwrap();
+                let start = usize::try_from(index).unwrap() * CHUNK;
+                assert_eq!(opened, plain[start..], "{len} from chunk {index}");
+            }
+        }
+        assert_eq!(plain_len(3), None);
+        assert_eq!(plain_len(HEADER.len() as u64 + 3), None);
+        let mut changed = seal(&key, &vec![7_u8; 2 * CHUNK]).unwrap();
+        changed[usize::try_from(sealed_offset(1)).unwrap() + 2] ^= 1;
+        let from = usize::try_from(sealed_offset(1)).unwrap();
+        assert!(
+            OpenReader::at_chunk(&key, &changed[from..], 1)
+                .unwrap()
+                .read_to_end(&mut Vec::new())
+                .is_err(),
+            "a changed chunk does not open from where it is either"
+        );
+        let from = usize::try_from(sealed_offset(0)).unwrap();
+        assert!(
+            OpenReader::at_chunk(&key, &changed[from..], 1)
+                .unwrap()
+                .read_to_end(&mut Vec::new())
+                .is_err(),
+            "nor a chunk read as another"
+        );
     }
 
     #[test]

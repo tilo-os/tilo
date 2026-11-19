@@ -235,8 +235,16 @@ impl ContentBackend for RoomChecked {
         self.inner.open(hash)
     }
 
+    fn open_at(&self, hash: &str, offset: u64) -> Result<Option<ContentReader>, ContentError> {
+        self.inner.open_at(hash, offset)
+    }
+
     fn has(&self, hash: &str) -> bool {
         self.inner.has(hash)
+    }
+
+    fn size(&self, hash: &str) -> Option<u64> {
+        self.inner.size(hash)
     }
 
     fn state(&self, hash: &str) -> ContentState {

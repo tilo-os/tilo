@@ -75,24 +75,16 @@ fn piece(
         tilo_actions::content_hash(content).ok_or_else(|| ActionCallError::InvalidRequest {
             reason: format!("{content} is not a tilo.content:<hash> reference"),
         })?;
-    // Only the piece is read: a caller downloading a file of hundreds of
-    // megabytes asks for it a piece at a time, and reading the whole file
-    // for each piece would read it hundreds of times.
-    let (size, bytes) = if let Ok((size, bytes)) = store.read_range(hash, offset, length) {
-        (size, bytes)
-    } else {
-        // Sealed content keeps its length only in the seal, so it is read
-        // whole and sliced here.
-        let bytes = store
-            .read(hash)
-            .ok_or_else(|| ActionCallError::InvalidRequest {
+    // Only the piece is read, sealed content opened from the chunk it
+    // begins in: a caller downloading a file of hundreds of megabytes asks
+    // for it a piece at a time, and reading the whole file for each piece
+    // would read it hundreds of times.
+    let (size, bytes) =
+        store
+            .read_range(hash, offset, length)
+            .map_err(|_| ActionCallError::InvalidRequest {
                 reason: format!("this workspace's store holds no {content}"),
             })?;
-        let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        let from = usize::try_from(offset).unwrap_or(usize::MAX);
-        let to = usize::try_from(offset.saturating_add(length).min(size)).unwrap_or(usize::MAX);
-        (size, bytes.get(from..to).unwrap_or_default().to_vec())
-    };
     if offset > size {
         return Err(ActionCallError::InvalidRequest {
             reason: format!("the content is {size} bytes: an offset of {offset} is past its end"),
