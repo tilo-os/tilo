@@ -1448,6 +1448,7 @@ fn open_workspaces(profile: &Path, opened: OpenWorkspaces<'_>) -> io::Result<Ope
             .handle()
             .block_on(service.hold_own_workspace(&workspace_id_string, &workspace.name(), &cert))
             .map_err(io::Error::other)?;
+        admit_own_device(&service, &workspace_id_string, &cert)?;
     }
     let keys = workspace_keys::open(
         profile,
@@ -1462,6 +1463,21 @@ fn open_workspaces(profile: &Path, opened: OpenWorkspaces<'_>) -> io::Result<Ope
         keys,
         key_sessions,
     })
+}
+
+/// Admit this device to `workspace`, which this device's service placed under a
+/// key of the service's: the apps here seal with the keys this device's key
+/// service holds, so the workspace names this device beside the service.
+fn admit_own_device(
+    service: &tilo_workspace_service::service::WorkspaceService,
+    workspace: &str,
+    cert: &tilo_user_identity::DeviceCert,
+) -> io::Result<()> {
+    tilo_rt::app()
+        .handle()
+        .block_on(service.workspaces().enter(workspace, cert))
+        .map(drop)
+        .map_err(io::Error::other)
 }
 
 /// Open a workspace service of `profile` alone, holding the member copies it

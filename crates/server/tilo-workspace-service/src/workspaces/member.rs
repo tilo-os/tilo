@@ -586,11 +586,28 @@ impl Workspaces {
     }
 
     /// Send `message` on `workspace`'s member link, while it is up: whether
-    /// it was sent.
+    /// it was sent. A message handed to a link whose connection is not up
+    /// reaches no store of its own — group governance is kept nowhere — so
+    /// the caller is told it was not sent, and keeps it for a later pass.
     #[must_use]
     pub fn send_member(&self, workspace: WorkspaceId, message: NeighbourMsg) -> bool {
+        if !self.member_up_now(workspace) {
+            return false;
+        }
         self.member_link(workspace)
             .is_some_and(|link| link.send(message).is_ok())
+    }
+
+    /// Whether `workspace`'s member copy is linked to the device serving it
+    /// now.
+    fn member_up_now(&self, workspace: WorkspaceId) -> bool {
+        self.inner
+            .member
+            .up
+            .lock()
+            .ok()
+            .and_then(|ups| ups.get(&workspace).map(|up| *up.borrow()))
+            .unwrap_or(false)
     }
 
     /// The person the device this member copy acts as acts for in
@@ -1217,8 +1234,13 @@ impl Workspaces {
                 let Ok(body) = postcard::to_allocvec(&frame.message) else {
                     continue;
                 };
-                if frame.fresh
-                    && frame.report.is_ok()
+                // A group is settled between the workspace's key holders,
+                // never in its state: a group frame is no workspace write,
+                // keeps no admission report, and is taken in every time it
+                // comes, so a member copy hears the group it was let into as
+                // it is founded and after.
+                let governance = frame.message.governance_workspace().is_some();
+                if (governance || (frame.fresh && frame.report.is_ok()))
                     && let Err(error) = workspaces
                         .keep_member_write(&name, frame.author, &frame.message, &body)
                         .await
