@@ -454,7 +454,12 @@ pub fn write(entry: &Server, paths: &Paths) -> Result<Option<String>, String> {
     if std::fs::read(&paths.request).ok().as_deref() == Some(document.as_bytes()) {
         return Ok(None);
     }
-    write_atomic(&paths.request, document.as_bytes())?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &paths.request,
+        document.as_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(Some(revision))
 }
 
@@ -508,7 +513,13 @@ pub async fn confirm(paths: Paths, endpoint: iroh::Endpoint, revision: String) {
         return;
     }
     let confirmation = format!("revision\t{revision}\n");
-    if let Err(error) = write_atomic(&paths.confirmed, confirmation.as_bytes()) {
+    if let Err(error) = tilo_files::native::atomic::write_creating_parent_with_mode(
+        &paths.confirmed,
+        confirmation.as_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())
+    {
         tracing::warn!(%error, %revision, "the device configuration was not confirmed");
     }
 }
@@ -517,14 +528,6 @@ pub async fn confirm(paths: Paths, endpoint: iroh::Endpoint, revision: String) {
 fn names(path: &Path, revision: &str) -> bool {
     std::fs::read_to_string(path).ok().as_deref()
         == Some(format!("revision\t{revision}\n").as_str())
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-    }
-    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
-        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -732,7 +735,12 @@ mod tests {
     fn a_confirmation_names_the_revision() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let paths = Paths::under(dir.path());
-        write_atomic(&paths.applied_at, b"revision\tone\n").map_err(std::io::Error::other)?;
+        tilo_files::native::atomic::write_creating_parent_with_mode(
+            &paths.applied_at,
+            b"revision\tone\n",
+            0o600,
+        )
+        .map_err(std::io::Error::other)?;
         assert!(names(&paths.applied_at, "one"));
         assert!(!names(&paths.applied_at, "two"));
         Ok(())

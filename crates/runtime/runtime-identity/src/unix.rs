@@ -16,6 +16,7 @@ use threshold_identity::{
     ThresholdIdentity,
     signing::{SigningRound1, SigningRound1Commitment, SigningRound2Partial, SigningSessionNonces},
 };
+use tilo_files::native::atomic::{Privacy, replace};
 use zeroize::Zeroizing;
 
 #[path = "backup.rs"]
@@ -117,14 +118,6 @@ pub struct SecretReference {
 const ACTIVE_FILE: &str = "active";
 const LOCK_FILE: &str = ".identity.lock";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
-
-/// Publish privately through the framework's retained parent and preserve its
-/// failure phase. Lifecycle callers admit the identity namespace and hold its
-/// lock; provisioning that parent durably is a separate responsibility.
-fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    tilo_files::native::atomic::replace(path, bytes, tilo_files::native::atomic::Privacy::OwnerOnly)
-        .map_err(tilo_files::native::atomic::PublicationError::into_io_error)
-}
 
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     if let Some(config) = tilo_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
@@ -403,7 +396,7 @@ fn import_identity_unlocked(
     // under the same lock. A crash leaves a valid v1 record that sign-in or
     // Settings secures (a launch refuses it); it never leaves half a v2
     // record.
-    write_private_atomic(&path, bytes)?;
+    replace(&path, bytes, Privacy::OwnerOnly)?;
     let secured = match provider {
         Some(provider) => secure_record_with_provider_unlocked(dir, &path, provider),
         None => secure_record_unlocked(dir, &path),
@@ -558,7 +551,8 @@ fn secure_record_with_provider_unlocked(
     });
     let metadata = serde_json::to_vec_pretty(&record)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    if let Err(error) = write_private_atomic(path, &metadata) {
+    if let Err(error) = replace(path, &metadata, Privacy::OwnerOnly) {
+        let error = error.into_io_error();
         if tilo_files::native::atomic::publication_state(&error)
             == Some(tilo_files::native::atomic::PublicationState::NotPublished)
             && let Some(reference) = record.secret_ref.as_ref()
@@ -590,7 +584,12 @@ pub fn set_active_identity(dir: &std::path::Path, id: &str) -> io::Result<()> {
             format!("identity record rejected: {e}"),
         )
     })?;
-    write_private_atomic(&dir.join(ACTIVE_FILE), format!("{id}\n").as_bytes())
+    replace(
+        &dir.join(ACTIVE_FILE),
+        format!("{id}\n").as_bytes(),
+        Privacy::OwnerOnly,
+    )?;
+    Ok(())
 }
 
 /// Change an owned identity's public profile without replacing its signing key
@@ -636,7 +635,7 @@ pub fn update_identity_profile(
             "identity profile exceeds the metadata size bound",
         ));
     }
-    write_private_atomic(&path, &bytes)?;
+    replace(&path, &bytes, Privacy::OwnerOnly)?;
     load_metadata_from_path(&path)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
 }
@@ -681,7 +680,7 @@ pub fn update_identity_presentation(
             "identity profile exceeds the metadata size bound",
         ));
     }
-    write_private_atomic(&path, &bytes)?;
+    replace(&path, &bytes, Privacy::OwnerOnly)?;
     load_metadata_from_path(&path)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
 }
@@ -712,7 +711,7 @@ pub fn update_identity_photo(
             "identity metadata exceeds its bound",
         ));
     }
-    write_private_atomic(&path, &bytes)?;
+    replace(&path, &bytes, Privacy::OwnerOnly)?;
     load_metadata_from_path(&path).map_err(|error| io::Error::other(error.to_string()))
 }
 
@@ -2645,7 +2644,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 let path = dir.path().join("personal.json");
                 let provider = BrokerFileProvider::new(dir.path());
-                write_private_atomic(&path, &record_bytes("Ada", 71)).unwrap();
+                replace(&path, &record_bytes("Ada", 71), Privacy::OwnerOnly).unwrap();
                 let error = with_failure(checkpoint, || {
                     secure_identity_with_provider(dir.path(), "personal", &provider)
                 })
@@ -2667,7 +2666,7 @@ mod tests {
             let path = dir.path().join("personal.json");
             let provider = BrokerFileProvider::new(dir.path());
             let original = record_bytes("Ada", 72);
-            write_private_atomic(&path, &original).unwrap();
+            replace(&path, &original, Privacy::OwnerOnly).unwrap();
             let error = with_failure(Checkpoint::BeforePublish, || {
                 secure_identity_with_provider(dir.path(), "personal", &provider)
             })
@@ -2936,7 +2935,7 @@ mod tests {
             .unwrap();
             record.schema_version = 2;
             let path = dir.path().join("member.json");
-            write_private_atomic(&path, &serde_json::to_vec(&record).unwrap()).unwrap();
+            replace(&path, &serde_json::to_vec(&record).unwrap(), Privacy::OwnerOnly).unwrap();
 
             let identity = load_from_path(path).unwrap();
             assert_eq!(identity.group_public_key(), [9; 32]);
@@ -2949,7 +2948,7 @@ mod tests {
             ensure_private_dir(dir.path()).unwrap();
             let bytes = public_member_record("Member", [1, 2, 3], [9; 32]).unwrap();
             let path = dir.path().join("identity-joined.json");
-            write_private_atomic(&path, &bytes).unwrap();
+            replace(&path, &bytes, Privacy::OwnerOnly).unwrap();
 
             for _ in 0..2 {
                 assert_eq!(
@@ -2978,7 +2977,7 @@ mod tests {
             single.schema_version = 2;
             single.threshold_identity.single_device = true;
             let single_path = dir.path().join("single.json");
-            write_private_atomic(&single_path, &serde_json::to_vec(&single).unwrap()).unwrap();
+            replace(&single_path, &serde_json::to_vec(&single).unwrap(), Privacy::OwnerOnly).unwrap();
             assert!(load_from_path(single_path).is_err());
 
             let mut malformed: ondisk::IdentityRecord = serde_json::from_slice(&template).unwrap();
@@ -2986,7 +2985,7 @@ mod tests {
             malformed.threshold_identity.threshold = 2;
             malformed.threshold_identity.total_shares = 2;
             let malformed_path = dir.path().join("malformed.json");
-            write_private_atomic(&malformed_path, &serde_json::to_vec(&malformed).unwrap())
+            replace(&malformed_path, &serde_json::to_vec(&malformed).unwrap(), Privacy::OwnerOnly)
                 .unwrap();
             assert!(load_from_path(malformed_path).is_err());
         }
@@ -2996,8 +2995,8 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             ensure_private_dir(dir.path()).unwrap();
             let bytes = record_bytes("Ada", 28);
-            write_private_atomic(&dir.path().join("personal.json"), &bytes).unwrap();
-            write_private_atomic(&dir.path().join("copy.json"), &bytes).unwrap();
+            replace(&dir.path().join("personal.json"), &bytes, Privacy::OwnerOnly).unwrap();
+            replace(&dir.path().join("copy.json"), &bytes, Privacy::OwnerOnly).unwrap();
             let provider = secure_store::fallback_provider(dir.path());
             secure_identity_with_provider(dir.path(), "personal", &provider).unwrap();
             secure_identity_with_provider(dir.path(), "copy", &provider).unwrap();

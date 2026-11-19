@@ -19,7 +19,7 @@ use ed25519_dalek::SigningKey;
 use threshold_identity::bip39::{self, MnemonicError};
 use zeroize::Zeroizing;
 
-use super::{IdentityLock, SecretProvider, identity_from_record, ondisk};
+use super::{IdentityLock, Privacy, SecretProvider, identity_from_record, ondisk, replace};
 
 /// Words in a recovery key: 256 bits of seed and 8 of checksum, 11 a word.
 pub const RECOVERY_WORD_COUNT: usize = 24;
@@ -342,7 +342,7 @@ fn import_inner(
         },
         &seed,
     )?;
-    super::write_private_atomic(&path, &record)?;
+    replace(&path, &record, Privacy::OwnerOnly)?;
     if let Err(error) = secure(dir, &path, provider) {
         // Securing fails before publishing new metadata unless it says
         // otherwise; then the file still holds the complete inline record,
@@ -352,7 +352,7 @@ fn import_inner(
             tilo_files::native::atomic::publication_state(&error),
             None | Some(tilo_files::native::atomic::PublicationState::NotPublished)
         ) {
-            let _ = super::write_private_atomic(&path, &previous);
+            let _ = replace(&path, &previous, Privacy::OwnerOnly);
         }
         return Err(error);
     }

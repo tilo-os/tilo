@@ -353,7 +353,9 @@ impl Documents {
         };
         // A record that cannot be written leaves this session's table as
         // it is; only the next session forgets.
-        let _ = write_private(record, &snapshot);
+        let _ = serde_json::to_vec(&snapshot)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| tilo_files::native::atomic::write_private(record, &bytes));
     }
 
     /// Give `key` the item the person chose at `chosen`, as `kind`, and answer the path
@@ -430,13 +432,6 @@ impl Documents {
             self.keep();
         }
     }
-}
-
-/// Write `record` to `path` readable by this user only, whole or not at
-/// all, in an owner-only folder.
-fn write_private(path: &Path, record: &Record) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-    tilo_files::native::atomic::write_private(path, &bytes)
 }
 
 fn resolve_choice(chosen: &Path, kind: Kind) -> Result<PathBuf, GrantError> {

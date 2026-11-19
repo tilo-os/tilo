@@ -499,34 +499,11 @@ fn make_durable(
             appended
         }
         Write::Beside { name, line } => append_beside(root, name, &line),
-        Write::Replace { name, bytes } => replace_beside(root, name, &bytes),
+        Write::Replace { name, bytes } => {
+            tilo_files::native::atomic::write_with_mode(&root.join(name), &bytes, 0o600)
+                .map_err(|_| "side file write not durable")
+        }
     }
-}
-
-/// `bytes` as the whole of `root`'s side file `name`, through an atomic
-/// rename, then the file's data barrier: a reader sees the old file or the
-/// new one, never a half-written one.
-fn replace_beside(root: &Path, name: &str, bytes: &[u8]) -> Result<(), &'static str> {
-    let temporary = root.join(format!(".{name}-{}", uuid::Uuid::new_v4()));
-    let result: Result<(), &'static str> = (|| {
-        let mut file = OpenOptions::new()
-            .append(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&temporary)
-            .map_err(|_| "side file unavailable")?;
-        file.write_all(bytes)
-            .and_then(|()| file.sync_all())
-            .map_err(|_| "side file write not durable")?;
-        std::fs::rename(&temporary, root.join(name)).map_err(|_| "side file rename failed")?;
-        File::open(root)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|_| "side file write not durable")?;
-        Ok(())
-    })();
-    let _ = std::fs::remove_file(&temporary);
-    result
 }
 
 /// `line` appended to `root`'s side file `name` and its data barrier; the

@@ -496,16 +496,12 @@ fn host_key(state: &Path) -> anyhow::Result<SigningKey> {
         )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let key = SigningKey::from_bytes(&rand::random());
-            write_private(&path, &key.to_bytes()).context("save the host device key")?;
+            tilo_files::native::atomic::write_with_mode(&path, &key.to_bytes(), 0o600)
+                .context("save the host device key")?;
             Ok(key)
         }
         Err(error) => Err(error).context("read the host device key"),
     }
-}
-
-/// Write `bytes` to `path` atomically, readable by this user only.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
 }
 
 /// The workspace id kept in `id_file`.
