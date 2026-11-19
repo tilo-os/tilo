@@ -408,7 +408,7 @@ public struct TiloLiveView: View {
                 resting
             }
         }
-        .modifier(PageShape(keeps: shaped, ratio: size == .compact && asked == nil ? 6.0 / 5.0 : nil))
+        .modifier(PageShape(keeps: shaped, ratio: size == .compact && asked == nil ? 1.0 : nil))
         .frame(height: shaped && size == .compact ? asked : nil)
         .clipShape(RoundedRectangle(cornerRadius: shaped && size == .compact ? 10 : 0, style: .continuous))
         .accessibilityElement(children: .contain)
@@ -490,6 +490,6 @@ private struct PageShape: ViewModifier {
     let ratio: CGFloat?
 
     func body(content: Content) -> some View {
-        if keeps { content.aspectRatio(ratio, contentMode: .fit) } else { content }
+        if keeps, let ratio { content.aspectRatio(ratio, contentMode: .fit) } else { content }
     }
 }
