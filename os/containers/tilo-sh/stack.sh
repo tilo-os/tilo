@@ -637,6 +637,17 @@ server_env() {
         for toolchain in CARGO_HOME RUSTUP_HOME; do
           [[ -z ${!toolchain:-} ]] || printf '%s=%s\n' "$toolchain" "${!toolchain}"
         done
+        # This stack's own settings, so stack.sh started from that Terminal (an
+        # agent's `restart --detach server web`) acts on this stack, at its
+        # ports, and starts the server again with the model it uses, rather than
+        # on a stack at the defaults. The model's key stays out of the file.
+        printf 'TILO_SH_STATE=%s\nTILO_SH_PORT_BASE=%s\n' "$state" "$base"
+        local setting
+        while IFS= read -r setting; do
+          [[ $setting == TILO_SH_STATE || $setting == TILO_SH_PORT_BASE \
+            || $setting == TILO_SH_AGENT_API_KEY ]] || printf '%s=%s\n' "$setting" "${!setting}"
+        done < <(compgen -e | grep '^TILO_SH_')
+        [[ -z ${CARGO_BUILD_JOBS:-} ]] || printf 'CARGO_BUILD_JOBS=%s\n' "$CARGO_BUILD_JOBS"
       } > "$state/terminal-on-machine.env"
     else
       rm -f "$state/terminal-on-machine.env"

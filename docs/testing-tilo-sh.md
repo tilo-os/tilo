@@ -41,7 +41,10 @@ Without a VM for each workspace, a stack starts no programs in their Terminal
 beyond the shell's own commands. `TILO_SH_TERMINAL_ON_MACHINE=1` has it start them on
 the machine itself, as the stack's user with the `PATH` it was brought up with:
 for a stack that is one person's own machine, such as a development VM whose
-agent edits and rebuilds the stack. Nothing confines those programs.
+agent edits and rebuilds the stack. Nothing confines those programs. That
+Terminal also carries the stack's own settings (its state, port base, build tool
+and model), so `stack.sh restart --detach server web` typed there acts on this
+stack.
 
 `os/containers/tilo-sh/test-warm-restart.sh` checks that loop: it changes one
 crate, restarts the web entry, waits for the site to serve the new bundle, and
