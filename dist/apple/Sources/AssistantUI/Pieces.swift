@@ -101,6 +101,8 @@ enum BubbleTone {
 /// A bubble: `.b`, `.b.me`, `.b.lead`.
 struct Bubble<Content: View>: View {
     var tone = BubbleTone.plain
+    /// Whether its menu answers it where it stands, or leads to the chat to answer it in.
+    var answersInPlace = true
     /// The piece's words, where a person may copy them or mark a part of them: the bubble then
     /// has the piece's menu.
     var words: PieceWords?
@@ -116,8 +118,12 @@ struct Bubble<Content: View>: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 9)
         }
-        .background(fill, in: RoundedRectangle(cornerRadius: Measure.bubbleRadius))
-        .modifier(PieceMenu(words: words, marks: marks))
+        // The drawing's own roundness, a little more than a card's: a bubble is the roundest thing
+        // in a conversation, so that what is said stands as one thing and nothing is cut close.
+        .background {
+            RoundedRectangle(cornerRadius: Measure.bubbleRadius, style: .continuous).fill(fill)
+        }
+        .modifier(PieceMenu(words: words, marks: marks, answersInPlace: answersInPlace))
         .frame(maxWidth: .infinity, alignment: tone == .me ? .trailing : .leading)
     }
 
@@ -250,7 +256,7 @@ struct TaskLineView: View {
                         // The replies open under the line, and the same words put them away again.
                         Button("· \(said)") { model.toggleReplies(of: line.task, under: before, in: chat) }
                             .buttonStyle(.plain).foregroundStyle(Token.asst)
-                            .accessibilityLabel(model.openReplies[before] != nil ? AssistantWords.hideReplies.said
+                            .accessibilityLabel(model.repliesStandOpen(before) ? AssistantWords.hideReplies.said
                                 : AssistantWords.counted(replies, one: .showReplyOne, many: .showReplyMany))
                     } else {
                         Text("· \(said)").foregroundStyle(Token.ink3)
@@ -464,8 +470,8 @@ struct ReviewLine: View {
         .font(.body14)
         .foregroundStyle(Token.ink2)
         .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(Token.raised, in: RoundedRectangle(cornerRadius: Measure.cardRadius))
+        .padding(.vertical, 12)
+        .background(Token.raised, in: RoundedRectangle(cornerRadius: Measure.cardRadius, style: .continuous))
         .frame(maxWidth: 440, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -492,32 +498,29 @@ struct LiveThingPlace: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if isStaged {
-                HStack(spacing: 8) {
-                    Circle().fill(Token.asst).frame(width: 7, height: 7)
-                    Text(thing.title).font(.tilo(13, .semibold)).foregroundStyle(Token.ink).lineLimit(1)
-                    Spacer(minLength: 8)
-                    Button("Open in Stage") { model?.stagedLive = thing }
+            // The card's head names the thing once, and its button opens it in the stage: a thing
+            // that stands in the stage is said to, and one that does not is opened there.
+            HStack(spacing: 8) {
+                if isStaged { Circle().fill(Token.asst).frame(width: 7, height: 7) }
+                Text(thing.called).font(.small12).foregroundStyle(isStaged ? Token.ink : Token.ink2).lineLimit(1)
+                Spacer(minLength: 8)
+                if let model {
+                    #if os(macOS)
+                    // A press brings it to the stage, or, while the stage is put away, opens the
+                    // stage on it: one press either way.
+                    Button("\(AssistantWords.openInStage.said) ⤢") { model.stagedLive = thing }
                         .buttonStyle(BoxButtonStyle())
+                    #else
+                    Button("\(AssistantWords.openFullScreen.said) ⤢") { model.stagedLive = thing }
+                        .buttonStyle(BoxButtonStyle())
+                    #endif
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-            } else {
-                HStack(spacing: 8) {
-                    Text(thing.title).font(.small12).foregroundStyle(Token.ink2).lineLimit(1)
-                    Spacer(minLength: 8)
-                    if model != nil {
-                        #if os(macOS)
-                        Button("Open in Stage ⤢") { model?.stagedLive = thing }
-                            .buttonStyle(BoxButtonStyle())
-                        #else
-                        Button("Open Full Screen ⤢") { model?.stagedLive = thing }
-                            .buttonStyle(BoxButtonStyle())
-                        #endif
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, isStaged ? 10 : 7)
+            .accessibilityElement(children: .combine)
+            // While it stands in the stage, the only thing to open is the stage around it.
+            if !isStaged {
                 Rectangle().fill(Token.line).frame(height: 1)
                 Group {
                     if let draw {
@@ -525,7 +528,7 @@ struct LiveThingPlace: View {
                     } else {
                         VStack(spacing: 6) {
                             Mark(side: 22)
-                            Text(thing.title).font(.tilo(14, .medium)).foregroundStyle(Token.ink)
+                            Text(thing.called).font(.tilo(14, .medium)).foregroundStyle(Token.ink)
                             Fine(words: AssistantWords.liveThing.said)
                         }
                         .frame(maxWidth: .infinity)
@@ -533,12 +536,14 @@ struct LiveThingPlace: View {
                     }
                 }
                 .frame(maxWidth: .infinity)
-                .accessibilityLabel(thing.title)
+                .accessibilityLabel(thing.called)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Token.raised)
-        .clipShape(RoundedRectangle(cornerRadius: Measure.cardRadius))
-        .overlay { RoundedRectangle(cornerRadius: Measure.cardRadius).strokeBorder(Token.line, lineWidth: 1) }
+        .clipShape(RoundedRectangle(cornerRadius: Measure.cardRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Measure.cardRadius, style: .continuous).strokeBorder(Token.line, lineWidth: 1)
+        }
     }
 }

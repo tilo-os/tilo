@@ -56,7 +56,56 @@ public final class AssistantModel {
         public var way: KeyWay
     }
 
+    /// A message sent from this device whose delivery failed: kept visible in its conversation
+    /// with individual retry and dismiss actions.
+    public struct FailedSend: Equatable, Identifiable, Sendable {
+        public var id: Item.ID
+        public var submissionID: UUID
+        public var chat: Chat
+        public var reason: String
+    }
+
+    /// Which role a model choice applies to when picked independently in the assistant view.
+    public enum ModelRole: Hashable, Sendable {
+        case mainThread
+        case subAgentTask
+
+        public var workKinds: [WorkKind] {
+            switch self {
+            case .mainThread: [.request]
+            case .subAgentTask: [.task, .subtask]
+            }
+        }
+    }
+
+    /// Failed optimistic sends by their optimistic item id.
+    public private(set) var failedSends: [Item.ID: FailedSend] = [:]
+
+    /// The model picked independently for sub-agents and background tasks, when set.
+    public private(set) var subAgentModel: String?
+
+    /// Returns the failed send state for an optimistic item, when its delivery failed.
+    public func failedSend(for item: Item.ID) -> FailedSend? {
+        failedSends[item]
+    }
+
+    /// Cancels active message-history stepping in the composer field before a window cancel
+    /// shortcut closes a side panel or stage.
+    @ObservationIgnored var cancelFieldStepping: (@MainActor () -> Bool)?
+
     @ObservationIgnored public let source: any AssistantSource
+    /// What the window showed the last time it was open: read where the app opens, so that its
+    /// first frame holds it, and written as the window changes (`SnapshotCache`).
+    @ObservationIgnored private let snapshots: SnapshotCache
+    /// Whether what stands was read from the snapshot of an earlier opening rather than from the
+    /// source, and nothing of the source has come to take its place yet.
+    @ObservationIgnored private var standsFromSnapshot = false
+    /// Whose the snapshot's pieces are: where the source says this device is somebody else's,
+    /// what was kept of another person is put away rather than shown.
+    @ObservationIgnored private var snapshotPerson: Person.ID?
+    /// What the person sent and the window shows before the source's own copy of it comes, by
+    /// the piece each stands as (`Sent`).
+    @ObservationIgnored private var sent: [Chat: [Sent]] = [:]
     /// Nil until the source has said where this device stands.
     public private(set) var session: Session?
     /// Not known until the source has said it: nothing is said to have failed before a try has ended.
@@ -70,12 +119,12 @@ public final class AssistantModel {
     /// Which look the person's Tilo draws in, light or dark: the frame draws in the same
     /// (`AssistantRoot`). Nil while nothing is known of it, and the system's look stands in.
     public private(set) var look: Look?
-    public private(set) var subAgents: [SubAgent] = []
-    public private(set) var tasks: [AssistantTask] = []
-    public private(set) var automations: [Automation] = []
+    public internal(set) var subAgents: [SubAgent] = []
+    public internal(set) var tasks: [AssistantTask] = []
+    public internal(set) var automations: [Automation] = []
     public private(set) var supervision = Supervision()
-    public private(set) var conversations: [Chat: Conversation] = [:]
-    public private(set) var models: [ModelChoice] = []
+    public internal(set) var conversations: [Chat: Conversation] = [:]
+    public internal(set) var models: [ModelChoice] = []
     /// The providers a key can be typed for, as the source listed them: linked, or to link.
     public private(set) var providers: [ProviderChoice] = []
     /// The provider step shown in the main chat again after the first start: the person asked
@@ -86,11 +135,24 @@ public final class AssistantModel {
     private var mended: Set<Item.ID> = []
     /// What stands between the person and their assistant's first answer.
     public private(set) var setup = Setup.unknown
+    /// Whether the window rests on what was written down of an earlier opening while a try at
+    /// this device's Tilo is still in work: a person who had an assistant saw it a moment ago, and
+    /// an opening that found nothing where it looked is not yet no assistant at all. Every step of
+    /// the first start says so until a try ends. A try that ended with the assistant gone is read
+    /// at once, and only where the window showed an assistant of its own a moment ago.
+    private var waitsForFirstTry: Bool {
+        guard let person, reach == .unknown else { return false }
+        return switch setup {
+        case .unknown, .findingAssistant, .makingAssistant, .makingWorkspace: true
+        case .noAssistant: standsFromSnapshot && snapshotPerson == person.id
+        case .needsProvider, .needsModel, .ready: false
+        }
+    }
     /// From the app's opening until the main chat stands: its page, its session, the look for
     /// the assistant and the reading of what answers for it. The window says one sentence
     /// through all of it and names no step.
     public var isStarting: Bool {
-        reach == .unknown || setup == .findingAssistant || setup == .makingWorkspace
+        reach == .unknown || setup == .findingAssistant || setup == .makingWorkspace || waitsForFirstTry
     }
     /// What Tilo said before it asked whether to pair this device, kept while its code is compared.
     public private(set) var pairingSaid: [String] = []
@@ -123,8 +185,89 @@ public final class AssistantModel {
     /// The piece whose words are laid out for the person to mark a part of them: Select text in
     /// a piece's menu. Nil: none are.
     public var selecting: PieceWords?
-    /// A live artifact open in the Mac Split Studio stage or iPhone full-screen sheet.
-    public var stagedLive: LiveThing?
+    /// The live views opened in the Mac Split Studio stage or the iPhone's Now strip, newest last.
+    /// They stay while the stage is put away, so that a view put away opens again by one press on
+    /// its tab, as it stands now and with no word to the assistant and no second read of it.
+    public var openLiveTabs: [LiveThing] = []
+    /// The live view the Mac Split Studio stage, or the iPhone's full-screen sheet, shows now.
+    /// Nil: the stage is put away, and its tabs stand ready to open a view without asking again.
+    public var stagedLive: LiveThing? {
+        didSet {
+            if let old = oldValue, old.id != stagedLive?.id {
+                unstage(old.id)
+            }
+            if let thing = stagedLive {
+                if !openLiveTabs.contains(where: { $0.id == thing.id }) {
+                    openLiveTabs.append(thing)
+                }
+                if place != .chat(thing.chat) {
+                    open(thing.chat)
+                }
+            }
+        }
+    }
+
+    /// Put the stage away, keeping what was opened in it: the bar's tabs stand, and a press on one
+    /// opens its view again in the place it stood, as it stands now.
+    public func putAwayStage() {
+        stagedLive = nil
+    }
+
+    /// The tabs the stage shows, all in the conversation it is beside: the ones opened elsewhere
+    /// are that conversation's, and are not drawn here.
+    public func openLiveTabs(in chat: Chat) -> [LiveThing] {
+        openLiveTabs.filter { $0.chat == chat }
+    }
+
+    /// Show a live view in the stage, or in the full-screen sheet on an iPhone: the one press a
+    /// tab, a card's head and a strip's tab are. Showing the one that already stands changes
+    /// nothing, and showing it puts the stage in the conversation it belongs to.
+    public func show(_ thing: LiveThing) {
+        guard stagedLive?.id != thing.id else { return }
+        stagedLive = thing
+    }
+
+    /// Open the next of a conversation's live views, the one after the stage's and around to the
+    /// first: the key for looking through what a conversation shared, with the stage put away too.
+    /// Nothing where the conversation shared no view.
+    public func showNextLive(in chat: Chat) {
+        let list = liveThings(in: chat)
+        guard !list.isEmpty else { return }
+        guard let stage = stagedLive, let now = list.firstIndex(where: { $0.id == stage.id }) else {
+            stagedLive = list[0]
+            return
+        }
+        stagedLive = list[(now + 1) % list.count]
+    }
+
+    /// A live view read anew: every tab that holds it holds what it says now, so that a view put
+    /// away that comes again says what it is called now, not what it was called when it was opened.
+    public func freshen(_ thing: LiveThing) {
+        if let index = openLiveTabs.firstIndex(where: { $0.id == thing.id }) { openLiveTabs[index] = thing }
+        if stagedLive?.id == thing.id { stagedLive = thing }
+    }
+
+    /// A live view nothing shows any more, told to the source: a stage that was put away, or came
+    /// to show another thing. The page keeps it alive in this app's one process, so a view nobody sees is
+    /// a thing still running. The tab it was stands all the same: a thing put away is opened again
+    /// from its tab, and its page mounts anew.
+    public func unstage(_ thing: LiveThing.ID) {
+        guard stagedLive?.id != thing, let stops = stopsLive else { return }
+        Task { await stops(thing) }
+    }
+
+    /// Close a single tab in the Split Studio tab bar; activates an adjacent tab if one remains.
+    public func closeLiveTab(_ id: LiveThing.ID) {
+        guard let index = openLiveTabs.firstIndex(where: { $0.id == id }) else { return }
+        openLiveTabs.remove(at: index)
+        if stagedLive?.id == id {
+            if openLiveTabs.isEmpty {
+                stagedLive = nil
+            } else {
+                stagedLive = openLiveTabs[min(index, openLiveTabs.count - 1)]
+            }
+        }
+    }
     #if os(macOS)
     /// Where Copy in a piece's menu puts the words: the system's pasteboard. A test hands it one
     /// of its own.
@@ -134,12 +277,30 @@ public final class AssistantModel {
     /// hands it one of its own.
     @ObservationIgnored public var pasteboard = UIPasteboard.general
     #endif
+    /// Tells the source that a live view is not to be shown any more, where the app's views live in
+    /// Tilo's page (`Source`). Nil where they do not: a picture's or a test's.
+    @ObservationIgnored public var stopsLive: (@MainActor (LiveThing.ID) async -> Void)?
     /// A piece the conversation should bring into view.
     public var shownItem: Item.ID?
     /// Counts up each time the message field should take the caret.
     public private(set) var fieldCalls = 0
     /// The replies that stand open under a task's line, by the piece the line stands before.
     public private(set) var openReplies: [Item.ID: [Item]] = [:]
+    /// The task's line whose replies are being read, the conversation they stand in, and the
+    /// replies themselves once they came. The main chat shows them in place; a sub-agent's
+    /// window, or the assistant view, opens them where a piece is shown whole.
+    public var readingReplies: Replies?
+
+    /// A task's replies, being read under its line.
+    public struct Replies: Equatable, Identifiable, Sendable {
+        public var line: Item.ID
+        public var task: AssistantTask.ID
+        public var chat: Chat
+        /// Nil while they are being read: the line says so until they come.
+        public var items: [Item]?
+
+        public var id: Item.ID { line }
+    }
     /// The conversations in which a message the person sent from here was taken up by no turn
     /// for `takeUpPatience`. A quiet line says so under the message, until a turn begins.
     private var notTakenUp: Set<Chat> = []
@@ -158,8 +319,20 @@ public final class AssistantModel {
     @ObservationIgnored private var listeners: [Task<Void, Never>] = []
     @ObservationIgnored private var chats: [Chat: Task<Void, Never>] = [:]
 
+    /// The window reads what it showed the last time as it opens, so that its first frame holds
+    /// every piece, sub-agent, task and automation rather than waiting for the source's reading.
     public init(source: any AssistantSource) {
         self.source = source
+        snapshots = SnapshotCache()
+        take(snapshots)
+    }
+
+    /// A window whose snapshot is kept in a place of the check's own: nothing is written to this
+    /// Mac's caches, and a check may open a window twice and see what the first one kept.
+    public init(source: any AssistantSource, snapshots: SnapshotCache) {
+        self.source = source
+        self.snapshots = snapshots
+        take(snapshots)
     }
 
     isolated deinit {
@@ -173,21 +346,37 @@ public final class AssistantModel {
     public func start() {
         guard listeners.isEmpty else { return }
         follow(source.session()) { $0.take($1) }
-        follow(source.setup()) { $0.setup = $1 }
-        follow(source.reach()) { $0.take($1) }
+        follow(source.setup()) { model, setup in
+            model.setup = setup
+            model.keepSnapshot()
+        }
+        follow(source.reach()) { model, reach in
+            model.take(reach)
+            model.keepSnapshot()
+        }
         follow(source.pairingEnded()) { $0.take(ended: $1) }
         follow(source.pairingEndedDetails()) { $0.endedDetails = $1 }
         follow(source.subAgents()) { model, agents in
             model.subAgents = agents
             for agent in agents { model.listen(.subAgent(agent.id)) }
+            model.keepSnapshot()
         }
-        follow(source.tasks()) { $0.tasks = $1 }
-        follow(source.automations()) { $0.automations = $1 }
+        follow(source.tasks()) { model, tasks in
+            model.tasks = tasks
+            model.keepSnapshot()
+        }
+        follow(source.automations()) { model, automations in
+            model.automations = automations
+            model.keepSnapshot()
+        }
         follow(source.supervision()) { $0.supervision = $1 }
         follow(source.sinceLeft()) { $0.sinceLeft = $1 }
         follow(source.joinStops()) { $0.joinStops = $1 }
         follow(source.joinApproved()) { $0.joinApproved = $1 }
-        follow(source.pageLook()) { $0.look = $1 }
+        follow(source.pageLook()) { model, look in
+            model.look = look
+            model.keepSnapshot()
+        }
         listen(.main)
     }
 
@@ -213,10 +402,11 @@ public final class AssistantModel {
         look = await first(source.pageLook()) ?? nil
         for chat in [Chat.main] + subAgents.map({ Chat.subAgent($0.id) }) {
             guard let change = await first(source.conversation(chat)) else { continue }
-            var conversation = Conversation()
+            var conversation = conversations[chat] ?? Conversation()
             conversation.apply(change)
             conversations[chat] = conversation
         }
+        keepSnapshot()
     }
 
     /// Why a pairing ended without letting this device in: the way in says Tilo's own sentence
@@ -236,14 +426,21 @@ public final class AssistantModel {
     private func take(_ stands: Session) {
         switch stands {
         case .asked(let ask): pairingSaid = Array(ask.said.prefix(2))
-        case .signedOut, .signedIn: pairingSaid = []
+        case .signedOut: pairingSaid = []
+        case .signedIn(let person):
+            pairingSaid = []
+            // Another person's assistant is not shown the pieces of the one before.
+            if let kept = snapshotPerson, kept != person.id { putAwaySnapshot() }
         case .reset:
             // What the window showed of the workspace that is gone is put away with it. What
             // the person wrote and did not send stays in its field for when they are back.
             pairingSaid = []
+            stagedLive = nil
+            openLiveTabs = []
             place = .chat(.main)
             keyStep = nil
             openReplies = [:]
+            readingReplies = nil
         case .pairing, .confirming: break
         }
         session = stands
@@ -262,6 +459,9 @@ public final class AssistantModel {
 
     private func take(_ reach: Reach) {
         self.reach = reach
+        // A try has ended: what stands from the snapshot is what the source read, and what the
+        // snapshot says stands in its place no longer.
+        if reach != .unknown, person != nil, setup != .unknown { standsFromSnapshot = false }
         // A try has ended and the device is its person's: nothing handed from outside is kept for later.
         if reach != .unknown, person != nil { handed = nil }
     }
@@ -290,8 +490,43 @@ public final class AssistantModel {
         var conversation = conversations[chat] ?? Conversation()
         let known = conversation.isLoaded
         let before = conversation.items
+        // What the source says of the conversation takes the place of what was kept, and takes
+        // over the pieces the person sent that it now holds.
+        let sentBefore = sent[chat] ?? []
+        var sending = sentBefore
+        var matchedServerIDs: Set<Item.ID> = []
         conversation.apply(change)
+        switch change {
+        case .all:
+            standsFromSnapshot = false
+            let result = Sent.reconcile(sending, against: conversation.items)
+            sending = result.remaining
+            matchedServerIDs = result.matchedServerIDs
+            if !sending.isEmpty { conversation.apply(.added(sending.map(\.item))) }
+        case .added:
+            if !sending.isEmpty {
+                let result = Sent.reconcile(sending, against: conversation.items)
+                sending = result.remaining
+                matchedServerIDs = result.matchedServerIDs
+                for localID in result.matchedLocalIDs {
+                    conversation.apply(.removed(localID))
+                }
+            }
+        default:
+            break
+        }
+        sent[chat] = sending.isEmpty ? nil : sending
         conversations[chat] = conversation
+        // What was kept of the main chat waits until a reply that is being written is whole: a
+        // reply growing letter by letter is no reason for a file to be written.
+        if chat == .main {
+            switch change {
+            case .all(let all) where all.contains(where: { $0.message?.turn != nil }): break
+            case .changed(let piece) where piece.message?.turn != nil: break
+            case .all, .added, .changed, .removed: keepSnapshot()
+            default: break
+            }
+        }
         // A turn that begins, or anything that comes after the person's message, ends the wait for one.
         switch change {
         case .answering(true): turnBegan(in: chat)
@@ -299,8 +534,16 @@ public final class AssistantModel {
         default: break
         }
         guard known else { return }
+        // What a live view says of itself is read anew with its piece: its tab, and the stage it
+        // stands in, call it what it says now.
+        for thing in change.live { freshen(thing) }
         switch change {
-        case .added(let new): for item in new { told?(item, chat) }
+        // What the person sent stands here before the source's own copy of it comes: the copy is
+        // the news, and the copy that takes the place of a message sent from this device is not.
+        case .added(let new):
+            for item in new where !item.id.value.hasPrefix(Sent.prefix) && !matchedServerIDs.contains(item.id) {
+                told?(item, chat)
+            }
         case .changed(let item):
             // A piece that only now is a reminder, a brief or important was no news when its
             // words arrived: the person's Tilo said what it is a moment later. It is told now.
@@ -370,7 +613,7 @@ public final class AssistantModel {
         var result: [LiveThing] = []
         for item in conversation(chat).items.reversed() {
             if case .message(let message) = item.content {
-                for thing in message.live.reversed() where seen.insert(thing.id).inserted {
+                for thing in message.live.reversed() where thing.chat == chat && seen.insert(thing.id).inserted {
                     result.append(thing)
                 }
             }
@@ -422,8 +665,11 @@ public final class AssistantModel {
 
     /// Answer one piece of the open conversation: it stands above the field, which is called,
     /// and the message then sent says which piece it answers. `part` is the part of its words
-    /// that is answered, where the person marked one.
-    public func reply(to piece: Item.ID, saying words: String, part: String? = nil) {
+    /// that is answered, where the person marked one. `chat` is the conversation the piece
+    /// stands in, where the person answered it from somewhere else: opening a piece from the
+    /// Tasks panel answers it in the main chat, whatever the middle of the window shows.
+    public func reply(to piece: Item.ID, saying words: String, part: String? = nil, in chat: Chat? = nil) {
+        if let chat { open(chat) }
         guard case .chat(let chat) = place else { return }
         var draft = drafts[chat] ?? Draft(text: "")
         draft.answers = Answered(piece, words: part ?? words, isPart: part != nil, span: part.map { Answered.span(of: $0, in: words) })
@@ -447,17 +693,300 @@ public final class AssistantModel {
         return false
     }
 
-    /// Send what is written in a conversation's field. Nothing is lost when it does not go through.
+    /// Send what is written in a conversation's field. Each optimistic item carries a stable
+    /// client submission id so duplicate short replies and attachment-only messages never collide.
+    /// If delivery fails, the optimistic item stays visible in the thread with individual retry
+    /// and dismiss actions rather than clobbering the composer draft.
     public func send(in chat: Chat) {
         guard let draft = drafts[chat], !draft.isEmpty else { return }
         drafts[chat] = nil
-        Task {
-            let sent = await self.call { try await self.source.send(draft, to: chat) }
-            if !sent, self.drafts[chat] == nil { self.drafts[chat] = draft }
-            // A file the person picked is held open for the app until it is sent.
-            if sent { for file in draft.files { file.url.stopAccessingSecurityScopedResource() } }
-            if sent { self.awaitTurn(in: chat) }
+        turnBegan(in: chat)
+        let baseline = serverItemIDs(in: chat)
+        let sending = Sent(draft, in: chat, baselineIDs: baseline)
+        sent[chat, default: []].append(sending)
+        conversations[chat, default: Conversation()].apply(.added([sending.item]))
+        keepSnapshot()
+        dispatchSend(submissionID: sending.submissionID, in: chat)
+    }
+
+    /// Retry a failed optimistic message using its same stable client submission id.
+    public func retrySend(_ item: Item.ID, in chat: Chat) {
+        guard var list = sent[chat], let index = list.firstIndex(where: { $0.item.id == item && $0.failedReason != nil }) else {
+            return
         }
+        list[index].failedReason = nil
+        list[index].said = Date()
+        list[index].baselineIDs = serverItemIDs(in: chat)
+        let submissionID = list[index].submissionID
+        sent[chat] = list
+        failedSends[item] = nil
+        dispatchSend(submissionID: submissionID, in: chat)
+    }
+
+    /// Dismiss a failed optimistic message from the thread and release any attached files.
+    public func dismissFailedSend(_ item: Item.ID, in chat: Chat) {
+        failedSends[item] = nil
+        if var list = sent[chat], let index = list.firstIndex(where: { $0.item.id == item }) {
+            let removed = list.remove(at: index)
+            for file in removed.draft.files { file.url.stopAccessingSecurityScopedResource() }
+            sent[chat] = list.isEmpty ? nil : list
+        }
+        conversations[chat]?.apply(.removed(item))
+        keepSnapshot()
+    }
+
+    private func serverItemIDs(in chat: Chat) -> Set<Item.ID> {
+        Set(conversation(chat).items.map(\.id).filter { !$0.value.hasPrefix(Sent.prefix) })
+    }
+
+    private func dispatchSend(submissionID: UUID, in chat: Chat) {
+        guard let sending = sent[chat]?.first(where: { $0.submissionID == submissionID }) else { return }
+        let draft = sending.draft
+        let itemID = sending.item.id
+        Task {
+            let went = await self.call { try await self.source.send(draft, to: chat) }
+            if !went {
+                let reason = self.problem ?? AssistantWords.unreachable.said
+                if var list = self.sent[chat], let index = list.firstIndex(where: { $0.submissionID == submissionID }) {
+                    list[index].failedReason = reason
+                    self.sent[chat] = list
+                    self.failedSends[itemID] = FailedSend(id: itemID, submissionID: submissionID, chat: chat, reason: reason)
+                }
+                self.keepSnapshot()
+                return
+            }
+            // Release security-scoped file access once the message has been accepted.
+            for file in draft.files { file.url.stopAccessingSecurityScopedResource() }
+            if self.waitsForTurn(chat) { self.awaitTurn(in: chat) }
+            // Reconcile once the source has had time to echo the message.
+            try? await Task.sleep(for: Sent.patience)
+            self.reconcilePending(in: chat)
+        }
+    }
+
+    /// Reconcile any optimistic submissions in `chat` whose server copy is already present.
+    private func reconcilePending(in chat: Chat) {
+        guard let held = sent[chat], !held.isEmpty, var conversation = conversations[chat] else { return }
+        let result = Sent.reconcile(held, against: conversation.items)
+        guard !result.matchedLocalIDs.isEmpty else { return }
+        for localID in result.matchedLocalIDs {
+            conversation.apply(.removed(localID))
+        }
+        sent[chat] = result.remaining.isEmpty ? nil : result.remaining
+        conversations[chat] = conversation
+        keepSnapshot()
+    }
+
+    /// What the person sent, on this device, as it stands in a conversation until the source's own
+    /// copy of it comes. Identified by a stable client submission id and reconciled one-to-one
+    /// against non-baseline server messages so identical short replies and attachment-only
+    /// messages never collide.
+    private struct Sent {
+        /// How long a source is given to hand the message over before pending items are checked.
+        static let patience = Duration.seconds(4)
+
+        /// Stable client submission id preserved across retries.
+        let submissionID: UUID
+        /// Original draft preserved so failed items can be retried individually.
+        let draft: Draft
+        /// The words as the source was given them.
+        let text: String
+        /// Attached file names in order so attachment-only messages never collide.
+        let fileNames: [String]
+        /// The piece each part of them answers, where the person answered one.
+        let answers: Answered?
+        /// The piece the window shows until the source's copy comes: a message by this device,
+        /// with an id no source writes.
+        let item: Item
+        /// When this submission was dispatched, updated on retry.
+        var said: Date
+        /// Server item ids already present before this submission was dispatched, so an earlier
+        /// identical message in history can never consume this submission.
+        var baselineIDs: Set<Item.ID>
+        /// Failure reason when delivery failed; failed items remain visible until retried or dismissed.
+        var failedReason: String?
+
+        init(_ draft: Draft, in chat: Chat, baselineIDs: Set<Item.ID>) {
+            let said = Date()
+            let submissionID = UUID()
+            self.submissionID = submissionID
+            self.draft = draft
+            self.text = draft.text
+            self.fileNames = draft.files.map(\.name)
+            self.answers = draft.answers
+            self.said = said
+            self.baselineIDs = baselineIDs
+            let optimisticFiles = draft.files.enumerated().map { index, file in
+                Attachment(id: .init("\(Sent.prefix)\(submissionID.uuidString)-file-\(index)"), name: file.name, type: "")
+            }
+            let message = Message(.person, draft.text, attachments: optimisticFiles, answers: draft.answers)
+            item = Item(id: Item.ID("\(Sent.prefix)\(submissionID.uuidString)"), at: said, .message(message))
+        }
+
+        /// The mark of a piece only this device holds: no source writes a piece named like one.
+        static let prefix = "local-"
+
+        /// Whether a server piece can reconcile this submission.
+        func matches(_ piece: Item) -> Bool {
+            guard !piece.id.value.hasPrefix(Sent.prefix) else { return false }
+            if piece.id == item.id || piece.id.value == submissionID.uuidString { return true }
+            guard !baselineIDs.contains(piece.id) else { return false }
+            guard case .message(let message) = piece.content, message.author == .person else { return false }
+            return message.text == text
+                && message.answers?.piece == answers?.piece
+                && message.attachments.map(\.name) == fileNames
+        }
+
+        struct Reconciliation {
+            var remaining: [Sent]
+            var matchedLocalIDs: Set<Item.ID>
+            var matchedServerIDs: Set<Item.ID>
+        }
+
+        /// One-to-one FIFO reconciliation of pending optimistic submissions against server pieces.
+        /// Failed submissions are never dropped automatically.
+        static func reconcile(_ waiting: [Sent], against pieces: [Item]) -> Reconciliation {
+            let serverPieces = pieces.filter { !$0.id.value.hasPrefix(Sent.prefix) }
+            var consumed: Set<Item.ID> = []
+            var remaining: [Sent] = []
+            var matchedLocalIDs: Set<Item.ID> = []
+            for sending in waiting {
+                if sending.failedReason != nil {
+                    remaining.append(sending)
+                    continue
+                }
+                if let match = serverPieces.first(where: { !consumed.contains($0.id) && sending.matches($0) }) {
+                    consumed.insert(match.id)
+                    matchedLocalIDs.insert(sending.item.id)
+                } else {
+                    remaining.append(sending)
+                }
+            }
+            return Reconciliation(remaining: remaining, matchedLocalIDs: matchedLocalIDs, matchedServerIDs: consumed)
+        }
+    }
+
+    // MARK: What the window showed the last time it was open
+
+    /// Read what the window showed the last time, before the source has said anything: the main
+    /// chat's pieces, the sub-agents, the tasks, the automations, the look, and the models. The
+    /// very first frame of the app holds all of them, and the source's reading takes their places
+    /// as it comes. Nothing is read where the last window was somebody else's than this device's.
+    private func take(_ snapshots: SnapshotCache) {
+        guard let kept = snapshots.read(), let person = kept.person else { return }
+        snapshotPerson = person
+        standsFromSnapshot = true
+        // The person stands where they stood: their session is read again by the source, and what
+        // was kept only says whose the pieces are.
+        if case .signedOut = session { return }
+        session = .signedIn(Person(id: person, name: "", workspace: ""))
+        var conversation = Conversation()
+        conversation.apply(.all(kept.pieces + (sent[.main] ?? []).map(\.item)))
+        conversations[.main] = conversation
+        subAgents = kept.keptSubAgents
+        tasks = kept.tasks
+        automations = kept.keptAutomations
+        look = kept.keptLook
+        models = kept.keptModels
+    }
+
+    /// Put away what was kept of somebody else's window: their pieces, their sub-agents, their
+    /// tasks, and their automations.
+    private func putAwaySnapshot() {
+        guard standsFromSnapshot || snapshotPerson != nil else { return }
+        standsFromSnapshot = false
+        snapshotPerson = nil
+        conversations[.main] = Conversation()
+        subAgents = []
+        tasks = []
+        automations = []
+        releasePendingFiles()
+        sent = [:]
+        failedSends = [:]
+        snapshots.forget()
+    }
+
+    private func releasePendingFiles() {
+        for list in sent.values {
+            for sending in list {
+                for file in sending.draft.files { file.url.stopAccessingSecurityScopedResource() }
+            }
+        }
+    }
+
+    /// Write what the window shows now, a moment from now (`SnapshotCache`), so that the next
+    /// opening shows it at once. Nothing is written of a window that is nobody's: a device signed
+    /// out keeps nothing of what it showed.
+    private func keepSnapshot() {
+        // A window whose source this device has not got in is nobody's to keep: an app signed out
+        // leaves nothing of what it showed.
+        guard let person, case .signedIn = session else { return }
+        snapshotPerson = person.id
+        let pieces = conversation(.main).items.filter { !$0.id.value.hasPrefix(Sent.prefix) }
+        let agents = subAgents
+        let work = tasks
+        let meetings = automations
+        let look = self.look
+        let models = self.models
+        snapshots.keep {
+            SnapshotCache.Snapshot(pieces: pieces, subAgents: agents, works: work, automations: meetings,
+                                   look: look, models: models, person: person.id)
+        }
+    }
+
+    // MARK: One press out of what stopped
+
+    /// Whether their Tilo answers and does not let this device in. The window then offers the way
+    /// in, and no other way out, where it says what stopped.
+    public var needsWayIn: Bool { joinStops && reach == .unreachable }
+
+    /// Whether the main chat stands, and what last stopped can be mended by one press in it: the
+    /// provider step, the choice of a model, or Try again where their assistant could not be made.
+    /// Nil everywhere else, so that a person is never offered a press that leads nowhere.
+    public var onePressSetup: Setup? {
+        guard person != nil, reach == .reachable else { return nil }
+        switch setup {
+        case .noAssistant, .needsProvider, .needsModel: return setup
+        case .unknown, .ready: return keyStep != nil ? setup : nil
+        case .findingAssistant, .makingWorkspace, .makingAssistant: return nil
+        }
+    }
+
+    /// A try at the person's Tilo that ended without getting in, asked for again at once: their
+    /// page is asked for as the device the store holds, and none of what was typed waits for it.
+    public func tryAgain(whereItStopped itStopped: Bool = false) {
+        guard reach == .unreachable else { return }
+        Task {
+            if itStopped {
+                await self.source.goOn()
+            } else {
+                await self.source.startOver()
+            }
+        }
+    }
+
+    /// Go to what one press mends, and make the press: the main chat, where the step stands or
+    /// Try again does. What stands nowhere yet is read first and loaded, so that the press is the
+    /// one that shows the step, not a step already gone.
+    public func mend() {
+        guard let setup = onePressSetup else { return }
+        open(.main)
+        switch setup {
+        case .noAssistant:
+            makeAssistant()
+        case .needsProvider, .needsModel:
+            // A step that stands already is the one pressed at; otherwise the models are read,
+            // and the main chat's step turns up with them.
+            if keyStep == nil { loadModels() }
+        case .unknown, .ready, .findingAssistant, .makingWorkspace, .makingAssistant:
+            break
+        }
+    }
+
+    /// A called-out problem put away, once the person read it: a failure stands under the
+    /// conversation until it is read, and never for ever.
+    public func dismissProblem() {
+        problem = nil
     }
 
     /// Whether a quiet line stands under the person's newest message in a conversation: they
@@ -474,7 +1003,7 @@ public final class AssistantModel {
     /// writing an answer.
     private func waitsForTurn(_ chat: Chat) -> Bool {
         let held = conversation(chat)
-        guard !held.isAnswering, let newest = held.items.last else { return false }
+        guard !held.isAnswering, let newest = held.items.last, failedSends[newest.id] == nil else { return false }
         return AssistantModel.isOwnMessage(newest)
     }
 
@@ -499,17 +1028,40 @@ public final class AssistantModel {
         notTakenUp.remove(chat)
     }
 
-    /// Open a task's replies under its line, or put them away again.
+    /// Whether a task's line has its replies open under it: in the main chat they stand there, and
+    /// anywhere else the conversation they were read from stands over the piece.
+    public func repliesStandOpen(_ line: Item.ID) -> Bool {
+        openReplies[line] != nil || readingReplies?.line == line
+    }
+
+    /// Open a task's replies under its line, or put them away again. The main chat draws them
+    /// under the line itself; elsewhere the conversation says them over the piece, where the
+    /// line does not stand. A press that could not read them says so, and nothing is left open.
     public func toggleReplies(of task: AssistantTask.ID, under line: Item.ID, in chat: Chat) {
         if openReplies[line] != nil {
             openReplies[line] = nil
+            if readingReplies?.line == line { readingReplies = nil }
             return
         }
+        if readingReplies?.line == line {
+            readingReplies = nil
+            return
+        }
+        if chat != .main { readingReplies = Replies(line: line, task: task, chat: chat, items: nil) }
         Task {
             var found: [Item] = []
-            guard await self.call({ found = try await self.source.replies(of: task, in: chat) }) else { return }
+            guard await self.call({ found = try await self.source.replies(of: task, in: chat) }) else {
+                if self.readingReplies?.line == line { self.readingReplies = nil }
+                return
+            }
             self.openReplies[line] = found
+            if self.readingReplies?.line == line { self.readingReplies?.items = found }
         }
+    }
+
+    /// Put away the replies being read over a piece.
+    public func stopReadingReplies() {
+        readingReplies = nil
     }
 
     /// Stop the answer that is being written in a conversation.
@@ -590,6 +1142,7 @@ public final class AssistantModel {
             guard read else { return }
             self.models = found
             self.providers = listed
+            self.keepSnapshot()
         }
     }
 
@@ -668,8 +1221,24 @@ public final class AssistantModel {
 
     /// Choose the model of the main chat: the one that answers there and the one that works there.
     public func choose(_ model: ModelChoice.ID) {
+        choose(model, for: [.request, .task])
+    }
+
+    /// Choose a model independently for the main thread or for sub-agents and background tasks.
+    public func choose(_ model: ModelChoice.ID, for role: ModelRole) {
+        let chosenName = models.first { $0.id == model }?.name
         Task {
-            await self.call { try await self.source.choose(model, for: [.request, .task]) }
+            let ok = await self.call { try await self.source.choose(model, for: role.workKinds) }
+            if ok, role == .subAgentTask {
+                self.subAgentModel = chosenName
+            }
+        }
+    }
+
+    /// Choose a model for specific kinds of work.
+    public func choose(_ model: ModelChoice.ID, for work: [WorkKind]) {
+        Task {
+            await self.call { try await self.source.choose(model, for: work) }
         }
     }
 
@@ -703,6 +1272,7 @@ public final class AssistantModel {
         var offered: [ModelChoice] = []
         guard await call({ offered = try await self.source.link(provider, key: key) }) else { return false }
         models = offered
+        keepSnapshot()
         // What is linked now is read anew, and a step the person came back to is done with.
         if let listed = try? await source.providers() { providers = listed }
         // A reply that failed for this provider's key, or for want of a provider, has its mend.
@@ -753,7 +1323,25 @@ public final class AssistantModel {
         Task { await self.source.goOn() }
     }
 
+    /// Sign this device out, and forget what it showed: another person, or this one pairing it
+    /// afresh, is never shown the pieces of the window that was. What stands is taken down at once,
+    /// so that no frame of the way in holds it.
     public func signOut() {
+        snapshots.forget()
+        standsFromSnapshot = false
+        snapshotPerson = nil
+        conversations = [:]
+        releasePendingFiles()
+        sent = [:]
+        failedSends = [:]
+        subAgentModel = nil
+        subAgents = []
+        tasks = []
+        automations = []
+        openReplies = [:]
+        readingReplies = nil
+        stagedLive = nil
+        openLiveTabs = []
         Task {
             await self.source.signOut()
             self.place = .chat(.main)
@@ -772,4 +1360,11 @@ extension EnvironmentValues {
     /// Whether what stands in a protected field is put out of sight: while the app is not in
     /// front, when the system keeps a picture of its window.
     @Entry public var coversSecrets = false
+}
+
+extension LiveThing {
+    /// What its tab, its card's head and the Now strip call it: its page writes its name as a
+    /// page writes words, Markdown and all, and nothing that names a view shows the signs of it.
+    /// Its name as its page gave it stays for its source to find it by.
+    public var called: String { Markdown.plainTitle(title) }
 }

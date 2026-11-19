@@ -82,10 +82,12 @@ final class SaidTests: XCTestCase {
         // Inside the panel: its name, its two buttons, its four parts, then what waits, each group named with its count.
         let add = try place(said, "Add a task") { $0.isButton && $0.label == W.addTask.said }
         let active = try place(said, "Active") { $0.isButton && $0.label == W.active.said }
-        let group = try place(said, "the first group") { $0.isHeading && $0.label == "\(W.readyForReview.said), 2" }
-        let important = try place(said, "the important task") { $0.isButton && $0.label == "Reply to Maya at Northwind, Important" }
+        let needsGroup = try place(said, "the needs-input group") { $0.isHeading && $0.label == "\(W.needsInput.said), 1" }
         let needs = try place(said, "what needs input") { $0.isButton && $0.label == "Find the Q3 board deck, Two versions exist. Which one?" }
-        XCTAssertEqual([panel, add, active, group, important, needs], [panel, add, active, group, important, needs].sorted())
+        let group = try place(said, "the ready-for-review group") { $0.isHeading && $0.label == "\(W.readyForReview.said), 2" }
+        let important = try place(said, "the important task") { $0.isButton && $0.label == "Reply to Maya at Northwind, Important" }
+        XCTAssertEqual([panel, add, active, needsGroup, needs, group, important],
+                       [panel, add, active, needsGroup, needs, group, important].sorted())
         XCTAssertTrue(said[active].isSelected)
     }
 

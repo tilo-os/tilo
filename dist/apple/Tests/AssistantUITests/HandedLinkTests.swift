@@ -130,7 +130,7 @@ final class HandedLinkTests: XCTestCase {
         let inner = MemorySource(content)
         inner.set(reach)
         let source = Recording(inner)
-        return (AssistantModel(source: source), source)
+        return (AssistantModel(source: source, snapshots: cacheOfTheCheck()), source)
     }
 
     private func until(_ what: String, _ holds: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {

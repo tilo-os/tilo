@@ -16,12 +16,22 @@ public struct SupervisionView: View {
         var id: String { rawValue }
     }
 
-    public init() {}
+    /// Whether the view stands where the conversation and its field stood, rather than over them
+    /// in a sheet or in a phone's order: there the way back to what the person was reading is a
+    /// press of its own, and the Escape key.
+    private let standsInTheWindow: Bool
+
+    /// `standsInTheWindow` is the Mac window's: what was being read there took the view's place.
+    public init(standsInTheWindow: Bool = false) {
+        self.standsInTheWindow = standsInTheWindow
+    }
 
     public var body: some View {
         let facts = model.supervision
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
+                // Where it took what the person was reading, the head says what it is and leads back.
+                if standsInTheWindow { reading }
                 // At the largest text sizes Pause stands under the line it belongs to, not squeezed beside it.
                 let large = textSize.isAccessibilitySize
                 let head = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout(spacing: 6))
@@ -38,11 +48,37 @@ public struct SupervisionView: View {
                 .padding(.vertical, 4)
 
                 VStack(spacing: 0) {
-                    FactLine(key: .model, line: wording.model(facts)) {
+                    FactLine(key: .model, line: modelLine(facts)) {
                         Menu {
-                            if model.models.isEmpty { Text(AssistantWords.noModelNote.said) }
-                            ForEach(model.models) { choice in
-                                Button("\(choice.name) · \(choice.provider)") { model.choose(choice.id) }
+                            if model.models.isEmpty {
+                                Text(AssistantWords.noModelNote.said)
+                            } else {
+                                Menu(AssistantWords.mainChat.said) {
+                                    ForEach(model.models) { choice in
+                                        Button {
+                                            model.choose(choice.id, for: .mainThread)
+                                        } label: {
+                                            if facts.model == choice.name {
+                                                Label("\(choice.name) · \(choice.provider)", systemImage: "checkmark")
+                                            } else {
+                                                Text("\(choice.name) · \(choice.provider)")
+                                            }
+                                        }
+                                    }
+                                }
+                                Menu("\(AssistantWords.subAgents.said), \(AssistantWords.tasks.said)") {
+                                    ForEach(model.models) { choice in
+                                        Button {
+                                            model.choose(choice.id, for: .subAgentTask)
+                                        } label: {
+                                            if (model.subAgentModel ?? facts.model) == choice.name {
+                                                Label("\(choice.name) · \(choice.provider)", systemImage: "checkmark")
+                                            } else {
+                                                Text("\(choice.name) · \(choice.provider)")
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             // Under the models, the ways back to the provider step: another key for a
                             // provider that is linked, another provider. Each leads to the main chat,
@@ -57,9 +93,8 @@ public struct SupervisionView: View {
                         } label: {
                             Text(AssistantWords.change.said).font(.tilo(14, .medium)).foregroundStyle(Token.asst)
                         }
-                        .menuStyle(.button)
-                        .buttonStyle(.plain)
-                        .menuIndicator(.hidden)
+                        // The menu's own look, as the drawn button cannot colour a Mac menu's title.
+                        .menuStyle(.borderlessButton)
                         .fixedSize()
                     }
                     usage(facts.usage)
@@ -91,8 +126,41 @@ public struct SupervisionView: View {
         .sheet(item: $detail) { DetailSheet(detail: $0) }
     }
 
+    private func modelLine(_ facts: Supervision) -> Wording.Line {
+        let base = wording.model(facts)
+        guard let subModel = model.subAgentModel, !subModel.isEmpty, subModel != facts.model else {
+            return base
+        }
+        return Wording.Line(first: base.first,
+                            second: "\(AssistantWords.subAgents.said), \(AssistantWords.tasks.said): \(subModel)")
+    }
+
     private func link(_ words: AssistantWords, _ action: @escaping () -> Void) -> some View {
         Button(words.said, action: action).buttonStyle(LinkStyle()).font(.tilo(14, .medium))
+    }
+
+    /// The way back to the conversation the view took the place of, and how it is put away: a
+    /// press that says so, and the Escape key beside it, as a view that stands over another is.
+    private var reading: some View {
+        HStack(spacing: 10) {
+            Button {
+                model.open(.main)
+            } label: {
+                HStack(spacing: 4) {
+                    Glyph(.back, side: 13, grows: false)
+                    Text(AssistantWords.conversation.said).font(.tilo(13, .medium, relativeTo: .callout))
+                }
+                .foregroundStyle(Token.asst)
+                .frame(minHeight: 28)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // The key puts the same way back: Escape leaves nothing over the chat.
+            .keyboardShortcut(.cancelAction)
+            .accessibilityLabel(AssistantWords.backToConversation.said)
+            .tip(AssistantWords.backToConversation.said)
+            Spacer(minLength: 0)
+        }
     }
 
     /// Messages, tokens and money of the day: `.use`.
@@ -193,31 +261,9 @@ private struct DetailSheet: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    switch detail {
-                    case .logins:
-                        ForEach(facts.logins) { row(wording.said($0)) }
-                        if let manager = facts.manager { row(wording.said(manager)) }
-                    case .importance:
-                        ForEach(facts.importance, id: \.self) { row($0) }
-                        ForEach(facts.situations, id: \.name) { row("\($0.name): \($0.value)") }
-                    case .learned:
-                        ForEach(facts.learned) { fact in
-                            row(fact.text) {
-                                Button(AssistantWords.forget.said) { model.forget(fact.id) }
-                                    .buttonStyle(LinkStyle()).font(.tilo(13, .medium, relativeTo: .callout))
-                            }
-                        }
-                        if facts.learnedCount > facts.learned.count {
-                            Fine(words: AssistantWords.moreCount.said(["count": String(facts.learnedCount - facts.learned.count)]))
-                                .padding(.top, 10)
-                        }
-                    case .places:
-                        ForEach(facts.places, id: \.name) { row("\($0.name), \($0.detail)") }
-                    case .workspaces:
-                        ForEach(facts.workspaces, id: \.self) { row($0) }
-                        if facts.workspaces.count == 1 { Fine(words: AssistantWords.worksInThis.said).padding(.top, 10) }
-                    }
-                    if isEmpty(facts) { Fine(words: AssistantWords.none.said) }
+                    rows(facts)
+                    // Nothing to list is said once, under no row: the place of the rows' lines.
+                    if isEmpty(facts) { Fine(words: AssistantWords.none.said).padding(.vertical, 10) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -225,6 +271,33 @@ private struct DetailSheet: View {
         .padding(16)
         .frame(minWidth: 320, idealWidth: 460, minHeight: 260, idealHeight: 380)
         .background(Token.content)
+    }
+
+    @ViewBuilder private func rows(_ facts: Supervision) -> some View {
+        switch detail {
+        case .logins:
+            ForEach(facts.logins) { row(wording.said($0)) }
+            if let manager = facts.manager { row(wording.said(manager)) }
+        case .importance:
+            ForEach(facts.importance, id: \.self) { row($0) }
+            ForEach(facts.situations, id: \.name) { row("\($0.name): \($0.value)") }
+        case .learned:
+            ForEach(facts.learned) { fact in
+                row(fact.text) {
+                    Button(AssistantWords.forget.said) { model.forget(fact.id) }
+                        .buttonStyle(LinkStyle()).font(.tilo(13, .medium, relativeTo: .callout))
+                }
+            }
+            if facts.learnedCount > facts.learned.count {
+                Fine(words: AssistantWords.moreCount.said(["count": String(facts.learnedCount - facts.learned.count)]))
+                    .padding(.top, 10)
+            }
+        case .places:
+            ForEach(facts.places, id: \.name) { row("\($0.name), \($0.detail)") }
+        case .workspaces:
+            ForEach(facts.workspaces, id: \.self) { row($0) }
+            if facts.workspaces.count == 1 { Fine(words: AssistantWords.worksInThis.said).padding(.top, 10) }
+        }
     }
 
     private var title: String {

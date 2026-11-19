@@ -47,6 +47,10 @@ struct ConnectionAsk: Equatable {
     var added: Bool { answered == "allow" && outcome == "done" }
     /// The person said yes, and their server did not add it.
     var failed: Bool { answered == "allow" && (outcome == "failed" || outcome == "dropped") }
+    /// Their yes was taken here, and what came of it is not said: the press that made it did
+    /// not go through. The card says that the service was not added rather than wait on a list
+    /// that may hold none of it.
+    var unanswered: Bool { answered == "allow" && outcome == nil && !withdrawn }
 
     /// How the card stands, by the question and by the person's connections as their server
     /// last listed them (`listed`, nil while it has not).
@@ -58,10 +62,15 @@ struct ConnectionAsk: Equatable {
     ///
     /// - Parameter readSince: the list was read after the question said the service was added.
     ///   Only then does a list without it say that it is gone again.
-    func stands(among listed: [PersonConnection]?, readSince: Bool) -> ConnectionOffer.State {
+    /// - Parameter pressedYes: the person's yes was given on this device and its press did not
+    ///   go through.
+    func stands(among listed: [PersonConnection]?, readSince: Bool, pressedYes: Bool = false) -> ConnectionOffer.State {
         if withdrawn { return .declined }
         guard let answered else { return .waiting }
         guard answered == "allow", !failed else { return .declined }
+        // Their yes was taken here and its outcome is not said yet: where the press that made it
+        // did not go through (`Connected`), the card says so, and does not wait on a next list.
+        if pressedYes, unanswered, listed?.contains(where: { $0.address == address }) != true { return .declined }
         if let kept = listed?.first(where: { $0.address == address }) {
             return kept.state == "needs-sign-in" ? .waiting : .connected
         }
@@ -74,9 +83,10 @@ struct ConnectionAsk: Equatable {
 
     /// The card: the service by its own name, or by `site`, the site of its address, where it
     /// gave none. Where their server could not add the service, its reason stands under its words.
-    func offer(_ id: ConnectionOffer.ID, text: String, site: String, among listed: [PersonConnection]?, readSince: Bool) -> ConnectionOffer {
+    func offer(_ id: ConnectionOffer.ID, text: String, site: String, among listed: [PersonConnection]?, readSince: Bool,
+               pressedYes: Bool = false) -> ConnectionOffer {
         ConnectionOffer(id: id, text: failed && !why.isEmpty ? text + "\n\n" + why : text, name: name.isEmpty ? site : name, commands: commands,
-                        needsSignIn: needsSignIn, signInAt: signInAt, state: stands(among: listed, readSince: readSince))
+                        needsSignIn: needsSignIn, signInAt: signInAt, state: stands(among: listed, readSince: readSince, pressedYes: pressedYes))
     }
 }
 
@@ -90,6 +100,11 @@ struct Connected {
     private var addedSeen: [String: Bool] = [:]
     /// The cards a press is at work on: the press reads their server's list itself.
     private var pressed: Set<String> = []
+    /// The cards whose person said yes here and whose press did not go through: their yes went to
+    /// their server, or nowhere, and no answer came of it.
+    private var unansweredYes: Set<String> = []
+    /// The cards whose yes is being given on this device right now.
+    private var pressedYes: Set<String> = []
     /// The sign-ins begun on this device and not finished: the connection each card's is for.
     var signingIn: [ConnectionOffer.ID: String] = [:]
     /// How long their server may take to add a service after their yes before the press says
@@ -122,19 +137,36 @@ struct Connected {
             addedSeen[message] = false
             if let listed, !listed.contains(where: { $0.address == asked.address }), !pressed.contains(message) { askAgain = true }
         }
-        return (asked.offer(.init(message), text: text, site: site, among: listed, readSince: addedSeen[message] ?? false), askAgain)
+        return (asked.offer(.init(message), text: text, site: site, among: listed,
+                             readSince: addedSeen[message] ?? false, pressedYes: unansweredYes.contains(message)), askAgain)
     }
 
     /// A press on the card of `message` begins, or ends. While it lasts it reads their server's
     /// list itself, and the card asks for none.
     mutating func press(_ message: String, begins: Bool) {
-        if begins { pressed.insert(message) } else { pressed.remove(message) }
+        if begins {
+            pressed.insert(message)
+            pressedYes.insert(message)
+            unansweredYes.remove(message)
+        } else {
+            pressed.remove(message)
+            pressedYes.remove(message)
+        }
+    }
+
+    /// The person's yes was given here and did not go through. What their server answered for it
+    /// is no word of the service's: the card says that the service was not connected, rather
+    /// than wait for an answer that was not given.
+    mutating func pressFailed(_ message: String) {
+        pressedYes.remove(message)
+        unansweredYes.insert(message)
     }
 
     /// The service of the card of `message` was taken out again: the list that is read next
     /// says so.
     mutating func readAgain(for message: String) {
         addedSeen[message] = false
+        unansweredYes.remove(message)
     }
 
     /// Their server listed their connections, asked for while the cards `awaited` waited for

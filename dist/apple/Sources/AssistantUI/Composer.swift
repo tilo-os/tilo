@@ -40,7 +40,8 @@ public struct Composer: View {
                             .lineLimit(textSize.isAccessibilitySize ? 2 : 1).minimumScaleFactor(textSize.isAccessibilitySize ? 0.7 : 1)
                             .allowsHitTesting(false).accessibilityHidden(true)
                     }
-                    MarkdownField(text: text, label: placeholder, focus: model.fieldCalls, sent: { model.conversation(chat).items }) {
+                    MarkdownField(text: text, label: placeholder, focus: model.fieldCalls, sent: { model.conversation(chat).items },
+                                  registerCancelStepping: { handler in model.cancelFieldStepping = handler }) {
                         model.send(in: chat)
                     }
                         // As tall as its words up to its tallest, whatever room is left: the conversation gives way, not the field.
@@ -91,7 +92,7 @@ public struct Composer: View {
                 .padding(.horizontal, 6)
             }
 
-            HStack(spacing: 14) {
+            HStack(spacing: 16) {
                 Button {
                     picksFile = true
                 } label: {
@@ -123,10 +124,11 @@ public struct Composer: View {
             }
             .foregroundStyle(Token.ink2)
             .padding(.horizontal, 6)
+            .padding(.top, 2)
         }
         .frame(maxWidth: Measure.column)
-        .padding(.horizontal, Measure.columnGutter)
-        .padding(.bottom, 14)
+        .padding(.horizontal, Measure.rowGutter)
+        .padding(.bottom, 16)
         .frame(maxWidth: .infinity)
         // As tall as it is, whatever room is left: where room is short the conversation gives way.
         .fixedSize(horizontal: false, vertical: true)
@@ -209,6 +211,9 @@ enum FieldStyle {
     nonisolated static let ground = NSAttributedString.Key("so.tilo.assistant.field.ground")
     nonisolated static let groundPad: CGFloat = 5
     nonisolated static let groundRadius: CGFloat = 5
+    /// Marker drawn as a crisp round bullet dot for unordered Markdown lists when the caret is elsewhere.
+    nonisolated static let bullet = NSAttributedString.Key("so.tilo.assistant.field.bullet")
+    nonisolated static let bulletDiameter: CGFloat = 4.5
 
     static func base(_ scheme: ColorScheme) -> [NSAttributedString.Key: Any] {
         [.font: PlatformFont.tilo(15), .foregroundColor: Token.ink.platform(scheme),
@@ -257,23 +262,38 @@ enum FieldStyle {
                 let size: CGFloat = level == 1 ? 20 : (level == 2 ? 17 : 15)
                 storage.addAttributes([.font: PlatformFont.tilo(size, bold: true),
                                        .paragraphStyle: paragraph(first: 0, rest: 0, size: size)], range: range)
-            case .listItem:
+            case .listItem(let ordered):
                 // A list stands a little off the words before it, and its entries begin where
-                // their lines go on under them: the room the drawing gives a list's number.
+                // their lines go on under them.
                 let follows = marks.contains { $0.range.upperBound + 1 == mark.range.lowerBound && $0.isListItem }
                 let before: CGFloat = follows || mark.range.lowerBound == 0 ? 0 : 4
                 var rest: CGFloat = 20
                 if let sign = marks.first(where: { $0.kind == .marker && mark.range.contains($0.range.lowerBound) }),
                    sign.range.upperBound < length, let signRange = self.range(sign.range, in: length) {
                     // A list's number is set in figures of one width, as a page sets it.
-                    let face = mark.kind == .listItem(ordered: true) ? PlatformFont.tiloFigures(15) : PlatformFont.tilo(15)
+                    let face = ordered ? PlatformFont.tiloFigures(15) : PlatformFont.tilo(15)
                     storage.addAttribute(.font, value: face, range: signRange)
                     let written = storage.attributedSubstring(from: signRange).string + " "
                     let taken = (written as NSString).size(withAttributes: [.font: face]).width
-                    // In a face whose number is wider than the drawing's room, the lines go on where the words begin.
                     rest = max(rest, 4.5 + taken)
                     if rest - 4.5 - taken > 0 {
                         storage.addAttribute(.kern, value: rest - 4.5 - taken, range: NSRange(location: sign.range.upperBound, length: 1))
+                    }
+                    if ordered {
+                        storage.addAttribute(.foregroundColor, value: Token.ink2.platform(scheme), range: signRange)
+                    } else {
+                        let touchesMarker = selection.map { sel in
+                            let end = sel.location + sel.length
+                            return sel.location <= sign.range.upperBound && end >= sign.range.lowerBound
+                        } ?? false
+                        if touchesMarker {
+                            storage.addAttribute(.foregroundColor, value: Token.ink3.platform(scheme), range: signRange)
+                        } else {
+                            storage.addAttributes([
+                                .foregroundColor: PlatformColor.clear,
+                                FieldStyle.bullet: Token.ink2.platform(scheme),
+                            ], range: signRange)
+                        }
                     }
                 }
                 storage.addAttribute(.paragraphStyle, value: paragraph(first: 4.5, rest: rest, before: before), range: range)
@@ -393,6 +413,27 @@ final class FieldLayout: NSLayoutManager {
         return found
     }
 
+    /// Where unordered list bullets lie, in the text container's own coordinates, each with its colour.
+    func bullets() -> [(rect: CGRect, colour: PlatformColor)] {
+        guard let storage = textStorage, let container = textContainers.first else { return [] }
+        var found: [(rect: CGRect, colour: PlatformColor)] = []
+        let face = PlatformFont.tilo(15)
+        let diameter = FieldStyle.bulletDiameter
+        ensureLayout(for: container)
+        storage.enumerateAttribute(FieldStyle.bullet, in: NSRange(location: 0, length: storage.length), options: []) { value, range, _ in
+            guard let colour = value as? PlatformColor else { return }
+            let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            guard glyphs.length > 0 else { return }
+            let rect = boundingRect(forGlyphRange: glyphs, in: container)
+            let line = lineFragmentRect(forGlyphAt: glyphs.location, effectiveRange: nil)
+            let baseline = line.minY + location(forGlyphAt: glyphs.location).y
+            let centerY = baseline - (face.xHeight / 2)
+            let dot = CGRect(x: rect.midX - diameter / 2, y: centerY - diameter / 2, width: diameter, height: diameter)
+            found.append((dot, colour))
+        }
+        return found
+    }
+
     override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
         super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
         for ground in grounds() {
@@ -404,6 +445,17 @@ final class FieldLayout: NSLayoutManager {
                 NSBezierPath(roundedRect: rect, xRadius: FieldStyle.groundRadius, yRadius: FieldStyle.groundRadius).fill()
                 #else
                 UIBezierPath(roundedRect: rect, cornerRadius: FieldStyle.groundRadius).fill()
+                #endif
+            }
+        }
+        for bullet in bullets() {
+            let rect = bullet.rect.offsetBy(dx: origin.x, dy: origin.y)
+            bullet.colour.setFill()
+            MainActor.assumeIsolated {
+                #if os(macOS)
+                NSBezierPath(ovalIn: rect).fill()
+                #else
+                UIBezierPath(ovalIn: rect).fill()
                 #endif
             }
         }
@@ -474,10 +526,50 @@ import AppKit
 /// so Return and Shift Return are told apart by the key itself, however the key came.
 final class FieldTextView: NSTextView {
     private(set) var keyFlags: NSEvent.ModifierFlags = []
+    /// Handles Escape before the window's cancel shortcuts take it when stepping is active.
+    var onCancelStepping: (() -> Bool)?
 
     override func keyDown(with event: NSEvent) {
         keyFlags = event.modifierFlags
         super.keyDown(with: event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if window?.firstResponder === self, !hasMarkedText() {
+            let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            if event.keyCode == 53, mods.isEmpty, onCancelStepping?() == true {
+                return true
+            }
+            if mods == [.command], let key = event.charactersIgnoringModifiers?.lowercased() {
+                switch key {
+                case "b":
+                    wrapSelection(with: "**")
+                    return true
+                case "i":
+                    wrapSelection(with: "*")
+                    return true
+                case "e":
+                    wrapSelection(with: "`")
+                    return true
+                default:
+                    break
+                }
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    /// Wrap the active selection (or insert delimiters at the caret) as an undoable Markdown edit.
+    func wrapSelection(with marker: String) {
+        let range = selectedRange()
+        let current = (string as NSString).substring(with: range)
+        let replacement = "\(marker)\(current)\(marker)"
+        guard shouldChangeText(in: range, replacementString: replacement) else { return }
+        textStorage?.replaceCharacters(in: range, with: replacement)
+        didChangeText()
+        let markerUnits = (marker as NSString).length
+        let innerUnits = (current as NSString).length
+        setSelectedRange(NSRange(location: range.location + markerUnits, length: innerUnits))
     }
 }
 
@@ -489,6 +581,8 @@ struct MarkdownField: NSViewRepresentable {
     let focus: Int
     /// The conversation's pieces as the app holds them now: what Up in an empty field steps through.
     let sent: () -> [Item]
+    /// Registers an Escape handler for active stepping so window cancel shortcuts yield to it.
+    let registerCancelStepping: ((@MainActor () -> Bool)?) -> Void
     let onSend: () -> Void
     @Environment(\.colorScheme) private var scheme
 
@@ -525,10 +619,20 @@ struct MarkdownField: NSViewRepresentable {
         view.isAutomaticTextReplacementEnabled = false
         view.setAccessibilityLabel(label)
         view.string = text
+        let cancelHandler: @MainActor () -> Bool = { [weak coordinator = context.coordinator, weak view] in
+            guard let coordinator, let view, view.window?.firstResponder === view, !view.hasMarkedText() else { return false }
+            return coordinator.cancelStepping(in: view)
+        }
+        view.onCancelStepping = cancelHandler
+        registerCancelStepping(cancelHandler)
         scroll.documentView = view
         context.coordinator.focus = focus
         context.coordinator.style(view, scheme)
         return scroll
+    }
+
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.parent.registerCancelStepping(nil)
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
@@ -611,14 +715,18 @@ struct MarkdownField: NSViewRepresentable {
             case #selector(NSResponder.moveDown(_:)):
                 return step(textView, older: false)
             case #selector(NSResponder.cancelOperation(_:)):
-                // Escape lets a message that was brought back go. Anything else in the field is not its to take.
-                guard stepping.stands(textView.string, caret: textView.selectedRange()) else { return false }
-                stepping = Stepping()
-                put("", in: textView)
-                return true
+                return cancelStepping(in: textView)
             default:
                 return false
             }
+        }
+
+        /// Escape lets a message that was brought back go. Anything else in the field is not its to take.
+        func cancelStepping(in textView: NSTextView) -> Bool {
+            guard stepping.stands(textView.string, caret: textView.selectedRange()) else { return false }
+            stepping = Stepping()
+            put("", in: textView)
+            return true
         }
 
         /// Up or Down in an empty field, or while a sent message stands in it as it was brought
@@ -678,6 +786,7 @@ struct MarkdownField: UIViewRepresentable {
     let focus: Int
     /// The conversation's pieces as the app holds them now.
     let sent: () -> [Item]
+    let registerCancelStepping: ((@MainActor () -> Bool)?) -> Void
     let onSend: () -> Void
     @Environment(\.colorScheme) private var scheme
 

@@ -77,10 +77,12 @@ final class AssistantDay {
 /// that agent: nothing is assumed of a place no item says.
 ///
 /// An agent's item says whether the workspace's server works it, around the clock and with
-/// every device of its person off, or its keeper's own devices do. A sub-agent is worked by
-/// the server's own loop, unless its item holds what a coding agent's holds (`sub.coding`):
-/// then a coding harness works it in the workspace's machine, and the item says the harness's
-/// name and the folder it was started in.
+/// every device of its person off, or its keeper's own devices do. Where it says neither — an
+/// item older than the field, or one a server that keeps no such word listed — neither is said
+/// for certain, and the line says so rather than taking an unstated place for either. A sub-agent
+/// is worked by the server's own loop, unless its item holds what a coding agent's holds
+/// (`sub.coding`): then a coding harness works it in the workspace's machine, and the item says
+/// the harness's name and the folder it was started in.
 @MainActor
 enum AssistantPlaces {
     /// The places, the assistant's own first. A sub-agent counts while it is at work: one that
@@ -103,10 +105,26 @@ enum AssistantPlaces {
         }
         typealias W = AssistantWords
         var places: [Supervision.Place] = []
-        if own[TiloSource.answeredByServer]?.bool == true {
+        // What the item says of where its agent works is read as one of three things and never as
+        // two: it says the server does, it says its keeper's own devices do, or it says nothing,
+        // which is no word for either.
+        let onServer = own[TiloSource.answeredByServer]
+        let workedOnServer = onServer?.bool == true
+        let workedOnOwnDevices = onServer?.bool == false
+        if workedOnServer {
             let detail = onServer == 0 ? W.placeAlways.said : W.counted(onServer, one: .placeAlwaysWithOne, many: .placeAlwaysWithMany)
             places.append(.init(name: server, detail: detail))
+        } else if workedOnOwnDevices {
+            places.append(.init(name: W.placeOwnDevices.said, detail: W.placeWhileOpen.said))
+            if onServer > 0 {
+                places.append(.init(name: server, detail: W.counted(onServer, one: .placeSubAgentOne, many: .placeSubAgentMany)))
+            }
         } else {
+            // Where the item says nothing of where it works, the line promises no place at all: it
+            // does not take an unstated word for its keeper's own devices, which would say the
+            // assistant stops when every one of them closes. What sub-agents are at work is still
+            // said, as every sub-agent that says nothing of a coding harness is worked by the
+            // server's own loop.
             places.append(.init(name: W.placeOwnDevices.said, detail: W.placeWhileOpen.said))
             if onServer > 0 {
                 places.append(.init(name: server, detail: W.counted(onServer, one: .placeSubAgentOne, many: .placeSubAgentMany)))

@@ -4,6 +4,14 @@ import AssistantDrawing
 import SwiftUI
 import XCTest
 
+/// A snapshot place a check keeps to itself: nothing is written to this Mac's caches, and a check
+/// may open a window twice and see what the first one kept.
+@MainActor
+func cacheOfTheCheck() -> SnapshotCache {
+    SnapshotCache(file: URL(filePath: NSTemporaryDirectory(), directoryHint: .isDirectory)
+        .appending(path: "snapshot-\(UUID().uuidString).json"))
+}
+
 /// Wait until something holds, a little while at most.
 @MainActor
 private func until(_ holds: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
@@ -31,7 +39,7 @@ final class ModelTests: XCTestCase {
     }
 
     func testTheAppStartsEmptyAtTheWayIn() async {
-        let model = AssistantModel(source: MemorySource())
+        let model = AssistantModel(source: MemorySource(), snapshots: cacheOfTheCheck())
         XCTAssertNil(model.session, "until the source has spoken, the window shows nothing")
         await model.prime()
         XCTAssertEqual(model.session, .signedOut)
@@ -43,7 +51,7 @@ final class ModelTests: XCTestCase {
     }
 
     func testItHoldsWhatTheSourceHolds() async {
-        let model = AssistantModel(source: Drawing.source())
+        let model = AssistantModel(source: Drawing.source(), snapshots: cacheOfTheCheck())
         await model.prime()
         XCTAssertEqual(model.person, Drawing.person)
         XCTAssertEqual(model.conversation(.main).items, Drawing.mainChat)
@@ -56,28 +64,260 @@ final class ModelTests: XCTestCase {
 
     func testSendingEmptiesTheFieldAndNothingIsLostWhenItFails() async throws {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.start()
         try await until { model.conversation(.main).isLoaded }
         model.drafts[.main] = Draft(text: "**thanks**")
         model.send(in: .main)
         XCTAssertNil(model.drafts[.main], "the field is empty at once")
+        XCTAssertEqual(model.conversation(.main).items.count, Drawing.mainChat.count + 1,
+                       "the message stands at once, before the source has it")
+        try await until { source.items().count == Drawing.mainChat.count + 1 }
+        // The source's own copy of it takes the place of the one that stood, and the wait for a
+        // turn goes on as it did: one message, never two.
         try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 1 }
+        try await Task.sleep(for: .milliseconds(300))
+        print("D", model.conversation(.main).items.map(\.id), source.items().count)
+        XCTAssertEqual(model.conversation(.main).items.count, Drawing.mainChat.count + 1, "one message, never two")
         XCTAssertNil(model.problem)
-
         source.set(.unreachable)
         model.drafts[.main] = Draft(text: "are you there")
         model.send(in: .main)
-        try await until { model.problem != nil }
+        // The words appear in the conversation at once and stay visible as a retryable failed item.
+        XCTAssertEqual(model.conversation(.main).items.count, Drawing.mainChat.count + 2, "the message appears at once")
+        let failedItem = try XCTUnwrap(model.conversation(.main).items.last)
+        try await until { model.failedSend(for: failedItem.id) != nil }
         XCTAssertEqual(model.problem, AssistantWords.unreachable.said)
-        XCTAssertEqual(model.drafts[.main]?.text, "are you there", "what did not go through is back in the field")
+        XCTAssertEqual(model.failedSend(for: failedItem.id)?.reason, AssistantWords.unreachable.said)
+        XCTAssertNil(model.drafts[.main], "the composer stays clear for a new draft")
+        XCTAssertEqual(model.conversation(.main).items.count, Drawing.mainChat.count + 2,
+                       "failed optimistic item remains visible in the thread")
         XCTAssertEqual(source.items().count, Drawing.mainChat.count + 1)
         try await until { model.reach == .unreachable }
+        // Retrying once reachable sends with the same submission id and reconciles cleanly.
+        source.set(.reachable)
+        model.retrySend(failedItem.id, in: .main)
+        try await until { source.items().count == Drawing.mainChat.count + 2 }
+        try await until { model.failedSend(for: failedItem.id) == nil }
+        XCTAssertEqual(model.conversation(.main).items.count, Drawing.mainChat.count + 2, "one message after retry")
+    }
+
+    func testIdenticalShortRepliesAndAttachmentOnlyMessagesNeverCollide() async throws {
+        var content = Drawing.content()
+        content.main = [Item(id: "earlier-ok", at: Drawing.now.addingTimeInterval(-30), .message(Message(.person, "ok")))]
+        let source = MemorySource(content, now: { Drawing.now })
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+
+        // Sending two identical short replies when an older "ok" is already in history never collides.
+        model.drafts[.main] = Draft(text: "ok")
+        model.send(in: .main)
+        model.drafts[.main] = Draft(text: "ok")
+        model.send(in: .main)
+        XCTAssertEqual(model.conversation(.main).items.count, 3, "older ok plus both new optimistic oks")
+        try await until { source.items().count == 3 }
+        try await until { model.conversation(.main).items.allSatisfy { !$0.id.value.hasPrefix("local-") } }
+        XCTAssertEqual(model.conversation(.main).items.count, 3, "every ok reconciled one-to-one")
+
+        // Attachment-only messages appear optimistically and never collide by empty text.
+        let fileA = Draft.File(url: URL(fileURLWithPath: "/tmp/alpha.pdf"))
+        let fileB = Draft.File(url: URL(fileURLWithPath: "/tmp/beta.pdf"))
+        model.drafts[.main] = Draft(text: "", files: [fileA])
+        model.send(in: .main)
+        model.drafts[.main] = Draft(text: "", files: [fileB])
+        model.send(in: .main)
+        XCTAssertEqual(model.conversation(.main).items.count, 5)
+        try await until { source.items().count == 5 }
+        try await until { model.conversation(.main).items.allSatisfy { !$0.id.value.hasPrefix("local-") } }
+        XCTAssertEqual(model.conversation(.main).items.count, 5)
+        XCTAssertEqual(model.conversation(.main).items.suffix(2).map { $0.message?.attachments.map(\.name) },
+                       [["alpha.pdf"], ["beta.pdf"]])
+    }
+
+    func testFailedOptimisticSendPreservesComposerDraftAndSupportsRetryAndDismiss() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        source.set(.unreachable)
+
+        model.drafts[.main] = Draft(text: "first failed")
+        model.send(in: .main)
+        let firstItem = try XCTUnwrap(model.conversation(.main).items.last)
+        // User begins typing a new draft before the first send finishes failing.
+        model.drafts[.main] = Draft(text: "typing next message")
+        try await until { model.failedSend(for: firstItem.id) != nil }
+        XCTAssertEqual(model.drafts[.main]?.text, "typing next message", "active draft is never overwritten")
+
+        let originalSubmissionID = try XCTUnwrap(model.failedSend(for: firstItem.id)?.submissionID)
+        // Dismissing removes only the failed optimistic item and leaves the draft untouched.
+        model.dismissFailedSend(firstItem.id, in: .main)
+        XCTAssertNil(model.failedSend(for: firstItem.id))
+        XCTAssertFalse(model.conversation(.main).items.contains(where: { $0.id == firstItem.id }))
+        XCTAssertEqual(model.drafts[.main]?.text, "typing next message")
+
+        // Sending another message that fails and then retrying keeps the same submission id.
+        model.send(in: .main)
+        let secondItem = try XCTUnwrap(model.conversation(.main).items.last)
+        try await until { model.failedSend(for: secondItem.id) != nil }
+        let secondSubmissionID = try XCTUnwrap(model.failedSend(for: secondItem.id)?.submissionID)
+        XCTAssertNotEqual(originalSubmissionID, secondSubmissionID)
+        // Fail a second time on retry: submission id remains stable.
+        model.retrySend(secondItem.id, in: .main)
+        try await until { model.failedSend(for: secondItem.id) != nil }
+        XCTAssertEqual(model.failedSend(for: secondItem.id)?.submissionID, secondSubmissionID)
+    }
+
+    func testMainThreadAndSubAgentModelsCanBeChosenIndependently() async throws {
+        var content = MemorySource.Content()
+        content.session = .signedIn(Drawing.person)
+        content.models = Drawing.models
+        content.supervision = Supervision(model: Drawing.models[0].name)
+        let started = try await Started.app(content)
+        defer { started.end() }
+        started.model.loadModels()
+        await started.drive.until("models loaded") { started.model.models.count == Drawing.models.count }
+
+        started.model.choose(Drawing.models[1].id, for: .mainThread)
+        await started.drive.until("main thread choice reached source") { started.source.calls("choose").count == 1 }
+        XCTAssertEqual(started.source.calls("choose").last, "choose(\(Drawing.models[1].id), request)")
+        await started.drive.until("main model updated") { started.model.supervision.model == Drawing.models[1].name }
+
+        started.model.choose(Drawing.models[0].id, for: .subAgentTask)
+        await started.drive.until("sub-agent choice reached source") { started.source.calls("choose").count == 2 }
+        XCTAssertEqual(started.source.calls("choose").last, "choose(\(Drawing.models[0].id), task+subtask)")
+        await started.drive.until("sub-agent model tracked independently") { started.model.subAgentModel == Drawing.models[0].name }
+        XCTAssertEqual(started.model.supervision.model, Drawing.models[1].name, "main thread model stays independent")
+    }
+
+    #if os(macOS)
+    func testMacLiveArtifactCardOpensInSplitStudioWithoutInlineWebView() async throws {
+        let model = AssistantModel(source: Drawing.source(), snapshots: cacheOfTheCheck())
+        await model.prime()
+        var inlineMounts = 0
+        let thing = LiveThing(id: "brief-doc", title: "Quarterly Plan", chat: .main, reference: "shared:plan")
+        let view = AssistantRoot(model: model) {
+            MacLiveArtifactCard(thing: thing)
+                .frame(width: 360)
+                .padding(20)
+                .background(Token.content)
+        }
+        .environment(\.liveThingView, { _ in
+            inlineMounts += 1
+            return AnyView(Color.clear.frame(height: 60))
+        })
+        let hosting = NSHostingView(rootView: view)
+        let window = HeldWindow.make(NSRect(x: 0, y: 0, width: 400, height: 160), [.borderless])
+        window.contentView = hosting
+        defer {
+            window.contentView = nil
+            window.close()
+        }
+        let drive = Drive(window)
+        await drive.settle(200)
+        XCTAssertEqual(inlineMounts, 0, "Mac inline artifact card never mounts an inline live web view")
+        XCTAssertNil(model.stagedLive)
+        drive.press("\(thing.called), \(AssistantWords.openInStage.said)", role: "AXButton")
+        await drive.until("artifact staged in Split Studio") { model.stagedLive?.id == thing.id }
+        XCTAssertEqual(inlineMounts, 0)
+    }
+    #endif
+
+    /// The words a person presses Return on stand where they go before anything has answered: the
+    /// source is still on its way, and the message is already drawn.
+    func testWhatThePersonSendsStandsAtOnceBeforeTheSourceHasIt() async throws {
+        let source = Drawing.source()
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
+        model.start()
+        try await until { model.conversation(.main).isLoaded }
+        var told: [Item.ID] = []
+        model.told = { item, _ in told.append(item.id) }
+        let before = model.conversation(.main).items
+        model.drafts[.main] = Draft(text: "are you there")
+        model.send(in: .main)
+        let drawn = model.conversation(.main).items
+        XCTAssertEqual(drawn.count, before.count + 1, "the message is drawn before the source has it")
+        XCTAssertEqual(Array(drawn.dropLast()), before, "and stands after what was there")
+        XCTAssertEqual(drawn.last?.message?.author, .person)
+        XCTAssertEqual(drawn.last?.message?.text, "are you there")
+
+        // The source holds it a moment later: it stands once, where it stood, and nothing is told.
+        try await until { source.items().count == before.count + 1 }
+        try await until { model.conversation(.main).items.count == before.count + 1 }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(model.conversation(.main).items.count, before.count + 1, "one message, never two")
+        XCTAssertEqual(told, [])
+        XCTAssertNil(model.problem)
+    }
+
+    /// What the window showed is written down, and an app opened again holds it before anything
+    /// of the source has come: the main chat's pieces, the sub-agents, the tasks and the
+    /// automations stand in the very first frame.
+    func testAnAppOpenedAgainHoldsWhatTheLastOneShowedBeforeTheSourceSaysAnything() async throws {
+        let cache = cacheOfTheCheck()
+        let first = AssistantModel(source: Drawing.source(), snapshots: cache)
+        await first.prime()
+        first.loadModels()
+        try await until { first.models == Drawing.models }
+        // The snapshot is written a moment after the window changed.
+        for _ in 0..<400 where cache.read()?.keptModels != Drawing.models { try await Task.sleep(for: .milliseconds(5)) }
+        let kept = try XCTUnwrap(cache.read(), "the window was kept")
+
+        let source = MemorySource()
+        let again = AssistantModel(source: source, snapshots: cache)
+        XCTAssertEqual(again.person?.id, Drawing.person.id, "whose window it was stands before the source speaks")
+        XCTAssertEqual(again.conversation(.main).items, Drawing.mainChat, "every piece stands before the source speaks")
+        XCTAssertEqual(again.subAgents, Drawing.subAgents)
+        XCTAssertEqual(again.tasks, Drawing.tasks)
+        XCTAssertEqual(again.automations, Drawing.automations)
+        XCTAssertEqual(again.models, Drawing.models, "cached models stand before the source speaks")
+        XCTAssertEqual(kept.person, Drawing.person.id)
+        // The source says this device is nobody's: what was kept of it is put away.
+        await again.prime()
+        XCTAssertEqual(again.session, .signedOut)
+        XCTAssertTrue(again.conversation(.main).items.isEmpty, "nobody's window shows nothing")
+    }
+
+    /// Another person on this device is never shown the pieces of the window that was.
+    func testWhatWasKeptIsPutAwayWhenTheSourceSaysThisDeviceIsAnotherPerson() async throws {
+        let cache = cacheOfTheCheck()
+        let first = AssistantModel(source: Drawing.source(), snapshots: cache)
+        await first.prime()
+        for _ in 0..<400 where cache.read() == nil { try await Task.sleep(for: .milliseconds(5)) }
+
+        var content = MemorySource.Content()
+        content.session = .signedIn(Person(id: "someone-else", name: "Someone Else", workspace: "another"))
+        let source = MemorySource(content)
+        let other = AssistantModel(source: source, snapshots: cache)
+        XCTAssertFalse(other.conversation(.main).items.isEmpty, "the last window stands until the source says whose it is")
+        other.start()
+        try await until { other.person?.id == "someone-else" && other.conversation(.main).items.isEmpty }
+        XCTAssertTrue(other.subAgents.isEmpty && other.tasks.isEmpty && other.automations.isEmpty)
+        try await Task.sleep(for: .milliseconds(400))
+        let kept = cache.read()
+        XCTAssertNotEqual(kept?.person, Drawing.person.id, "their window holds nothing of the one before")
+        XCTAssertTrue(kept?.pieces.isEmpty ?? true)
+    }
+
+    /// Signing out leaves nothing of the window on the device, and the app opened after it shows
+    /// nothing at all.
+    func testSigningOutForgetsWhatTheWindowShowed() async throws {
+        let cache = cacheOfTheCheck()
+        let model = AssistantModel(source: Drawing.source(), snapshots: cache)
+        await model.prime()
+        for _ in 0..<400 where cache.read() == nil { try await Task.sleep(for: .milliseconds(5)) }
+        model.signOut()
+        XCTAssertTrue(model.conversation(.main).items.isEmpty, "what stood is taken down at once")
+        try await until { cache.read() == nil }
+        let again = AssistantModel(source: Drawing.source(), snapshots: cache)
+        XCTAssertNil(again.person)
+        XCTAssertTrue(again.conversation(.main).items.isEmpty)
     }
 
     func testWhatArrivesIsToldOnceAndWhatWasThereIsNot() async throws {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         var told: [Item.ID] = []
         var settled: [Item.ID] = []
         model.told = { item, _ in told.append(item.id) }
@@ -94,7 +334,7 @@ final class ModelTests: XCTestCase {
 
     func testAPieceItsServerLaterCallsAReminderIsToldThenAndNotAgain() async throws {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         var told: [Item.ID] = []
         var settled: [Item.ID] = []
         model.told = { item, _ in told.append(item.id) }
@@ -121,7 +361,7 @@ final class ModelTests: XCTestCase {
 
     func testWhatDidNotNotifyIsListedOnceWhatInsistsIsToldAgainAndNewOffersAreBroughtWithoutTelling() async throws {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         var told: [Item.ID] = []
         var settled: [Item.ID] = []
         var offered: [Item.ID] = []
@@ -188,17 +428,17 @@ final class ModelTests: XCTestCase {
         var content = Drawing.content()
         content.sinceLeft = Drawing.sinceLeft
         let source = MemorySource(content, now: { Drawing.now })
-        let primed = AssistantModel(source: source)
+        let primed = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         await primed.prime()
         XCTAssertEqual(primed.sinceLeft, Drawing.sinceLeft)
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         XCTAssertNil(model.sinceLeft)
         model.start()
         try await until { model.sinceLeft == Drawing.sinceLeft }
         source.setSinceLeft(nil)
         try await until { model.sinceLeft == nil }
         // A source that keeps no such count says nothing of it.
-        let plain = AssistantModel(source: Drawing.source())
+        let plain = AssistantModel(source: Drawing.source(), snapshots: cacheOfTheCheck())
         await plain.prime()
         XCTAssertNil(plain.sinceLeft)
     }
@@ -218,7 +458,7 @@ final class ModelTests: XCTestCase {
         var content = Drawing.content()
         content.main = Drawing.secretPiece
         let source = MemorySource(content)
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.start()
         try await until { model.conversation(.main).isLoaded }
         let kept = await model.keep(Secret("correct horse battery staple"), for: "linkedin")
@@ -235,7 +475,7 @@ final class ModelTests: XCTestCase {
     }
 
     func testATasksRepliesOpenUnderItsLineAndArePutAwayAgain() async throws {
-        let model = AssistantModel(source: Drawing.source())
+        let model = AssistantModel(source: Drawing.source(), snapshots: cacheOfTheCheck())
         model.start()
         try await until { model.conversation(.main).isLoaded }
         XCTAssertTrue(model.openReplies.isEmpty)
@@ -253,7 +493,7 @@ final class ModelTests: XCTestCase {
 
     func testRepliesThatCannotBeFetchedOpenNothingAndSayWhy() async throws {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.start()
         try await until { model.conversation(.main).isLoaded }
         source.set(.unreachable)
@@ -264,7 +504,7 @@ final class ModelTests: XCTestCase {
     }
 
     func testWordsWithNoLinkInThemPairNothing() async {
-        let model = AssistantModel(source: MemorySource())
+        let model = AssistantModel(source: MemorySource(), snapshots: cacheOfTheCheck())
         await model.prime()
         model.pair(with: "nothing to open here")
         XCTAssertEqual(model.problem, AssistantWords.noLink.said)
@@ -274,7 +514,7 @@ final class ModelTests: XCTestCase {
     }
 
     func testALinkWhereTiloDoesNotAnswerLeavesTheDeviceOutAndSaysSo() async throws {
-        let model = AssistantModel(source: MemorySource())
+        let model = AssistantModel(source: MemorySource(), snapshots: cacheOfTheCheck())
         model.start()
         try await until { model.session == .signedOut }
         model.pair(with: "https://tilo.example/pair#abc")
@@ -291,7 +531,7 @@ final class ModelTests: XCTestCase {
         content.pairingAsk = PairingAsk(heading: "Add this device?", said: ["Whose devices this one joins.", "Which server adds it."],
                                         go: "Add this device", stop: "Stop", site: "https://tilo.example")
         let source = MemorySource(content)
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.start()
         try await until { model.session == .signedOut }
         XCTAssertNil(model.problem)
@@ -306,7 +546,7 @@ final class ModelTests: XCTestCase {
     }
 
     func testThePanelStandsBesideTheMainChatAndComesElsewhereWhenAskedFor() {
-        let model = AssistantModel(source: Drawing.source())
+        let model = AssistantModel(source: Drawing.source(), snapshots: cacheOfTheCheck())
         XCTAssertTrue(model.showsPanel)
         model.open(.subAgent("usage-drop"))
         XCTAssertFalse(model.showsPanel, "a sub-agent's window is drawn without the panel")
@@ -321,7 +561,7 @@ final class ModelTests: XCTestCase {
     }
 
     func testChangingWhatItSetUpBeginsWithItsNameInTheField() {
-        let model = AssistantModel(source: Drawing.source())
+        let model = AssistantModel(source: Drawing.source(), snapshots: cacheOfTheCheck())
         model.place = .assistantView
         model.begin("Morning rundown: ")
         XCTAssertEqual(model.place, .chat(.main))
@@ -334,7 +574,7 @@ final class ModelTests: XCTestCase {
 
     func testAMessageNoTurnTakesUpInTimeGetsOneQuietLineWhichGoesWhenTheTurnBegins() async throws {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.takeUpPatience = .milliseconds(150)
         model.start()
         try await until { model.conversation(.main).isLoaded }
@@ -356,7 +596,7 @@ final class ModelTests: XCTestCase {
 
     func testAMessageATurnTakesUpInTimeGetsNoLineAndNeitherDoesOneThatIsAnsweredAtOnce() async throws {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.takeUpPatience = .milliseconds(200)
         model.start()
         try await until { model.conversation(.main).isLoaded }
@@ -378,11 +618,12 @@ final class ModelTests: XCTestCase {
         source.post(Item(id: "two", at: Date(), .message(Message(.assistant, "Two it is."))))
         try await Task.sleep(for: .milliseconds(450))
         XCTAssertFalse(model.isNotTakenUp(.main))
+        source.setAnswering(false)
     }
 
     func testWhatSheWritesAgainBeginsTheWaitAnewAndTheLineStandsUnderHerNewestMessage() async throws {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.takeUpPatience = .milliseconds(300)
         model.start()
         try await until { model.conversation(.main).isLoaded }
@@ -395,6 +636,7 @@ final class ModelTests: XCTestCase {
         try await until { model.conversation(.main).items.count == Drawing.mainChat.count + 2 }
         XCTAssertFalse(model.isNotTakenUp(.main))
         try await until { model.isNotTakenUp(.main) }
+        source.setAnswering(false)
     }
 }
 
@@ -450,7 +692,7 @@ final class LookTests: XCTestCase {
     }
 
     func testALiveActivitysPressLeadsToWhatItWasAbout() throws {
-        let model = AssistantModel(source: Drawing.source())
+        let model = AssistantModel(source: Drawing.source(), snapshots: cacheOfTheCheck())
         LiveLink.open(try XCTUnwrap(LiveLink.url(for: "sub-agent-usage-drop")), in: model)
         XCTAssertEqual(model.place, .chat(.subAgent("usage-drop")))
         LiveLink.open(try XCTUnwrap(LiveLink.url(for: "reminder-remind-jonas")), in: model)

@@ -16,7 +16,17 @@ enum Entry {
         if AssistantDrive.isAsked {
             AssistantDrive.run()
         }
-        MacApp(source: Source.make(), engine: Source.engine, live: { Source.live($0) }, liveStage: { Source.liveStage($0) }).run()
+        MacApp(source: Source.make(), engine: Source.engine, live: { Source.live($0) }, liveStage: { Source.liveStage($0) })
+            .running()
+    }
+}
+
+extension MacApp {
+    /// Be the app, with the live views a stage puts away taken down from Tilo's page with it.
+    @MainActor
+    func running() -> Never {
+        model.stopsLive = { id in await Source.stopLive(id) }
+        return run()
     }
 }
 #else

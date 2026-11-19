@@ -56,7 +56,15 @@ enum Source {
     static let name = String(describing: TiloSource.self)
 
     /// What stands in the window for the source to do its work, though it shows nothing.
-    static var engine: AnyView { tilo.engineRoom }
+    static var engine: AnyView { tilo.engineRest }
+
+    /// The system's word of the app coming back into the front, or leaving it: the page the
+    /// person was in is theirs again where the system took it while they were away.
+    static func standsInFront(_ now: Bool) { tilo.standsInFront(now) }
+
+    /// What takes a live view down from Tilo's page when nothing shows it any more: a stage put
+    /// away, or come to show another thing.
+    static func stopLive(_ id: LiveThing.ID) async { await tilo.stage.close(id.value) }
 
     /// The view of a live Tilo thing in a message.
     static func live(_ thing: LiveThing) -> AnyView { tilo.liveView(thing) }

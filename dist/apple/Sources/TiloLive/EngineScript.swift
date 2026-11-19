@@ -261,6 +261,16 @@ public enum EngineScript {
       // an element that fills the view, over the page; the one in front is the one shown.
       const lives = new Map();
       let instance = 100;
+      // How the mounting of each live thing the app asked for went, said to the engine as the
+      // page's own count: how many of its shows are at work, how many ended without bringing it,
+      // how many of those Tilo refused (so that asking again is answered the same), and whether
+      // it is mounted. Never a sentence and never an address: an app chooses its own words, and
+      // a mount that never answered ends with nothing said at all.
+      const reports = new Map();
+      const report = id => {
+        const told = reports.get(id) ?? {mounting: 0, failed: 0, refused: 0};
+        post({kind: 'live-report', id, mounting: told.mounting, failed: told.failed, refused: told.refused, mounted: lives.has(id)});
+      };
       const place = id => {
         const element = document.createElement('div');
         element.dataset.tiloLive = id;
@@ -306,15 +316,19 @@ public enum EngineScript {
       const live = id => (id ? lives.get(id)?.mount : mount);
       // The size a live thing's content asks for, as its mount's status says it (`content`):
       // handed on when it is first known and when it changes. The app gives its place that
-      // height.
+      // height. A size asked for as zero asks for nothing: say so, as a mount that names no
+      // size does, so that the place of a content that shrinks is given the height it asks
+      // now, and not the one it asked before.
       const sizes = new Map();
       const sized = (id, status) => {
         const asks = status?.content;
-        if (!asks || !Number.isFinite(asks.width) || !Number.isFinite(asks.height)) return;
-        const now = `${Math.ceil(asks.width)}x${Math.ceil(asks.height)}`;
+        const none = !asks || asks.width === 0 || asks.height === 0;
+        if (!none && (!Number.isFinite(asks.width) || !Number.isFinite(asks.height))) return;
+        const now = none ? 'none' : `${Math.ceil(asks.width)}x${Math.ceil(asks.height)}`;
         if (sizes.get(id) === now) return;
         sizes.set(id, now);
-        post({kind: 'live', id, width: Math.ceil(asks.width), height: Math.ceil(asks.height)});
+        if (none) post({kind: 'live', id});
+        else post({kind: 'live', id, width: Math.ceil(asks.width), height: Math.ceil(asks.height)});
       };
       // Chat shows the view one message carries, alone: the view `view` of the message's own
       // item, opened by the action the item offers for it. The message is named and never its
@@ -530,6 +544,19 @@ public enum EngineScript {
         // and bring it to the front. One that is mounted already only comes to the front.
         async show(id, what) {
           if (!mount) return JSON.stringify({error: {code: 'not-open', reason: 'The page is not in'}});
+          const counts = reports.get(id) ?? {mounting: 0, failed: 0, refused: 0};
+          counts.mounting++;
+          reports.set(id, counts);
+          report(id);
+          // A show that ended without bringing the thing, whatever ended it: a mount that says
+          // why, or one that answers nothing at all while the app gives up on it.
+          const ended = refused => {
+            const now = reports.get(id);
+            now.mounting = Math.max(now.mounting - 1, 0);
+            now.failed++;
+            if (refused) now.refused++;
+            report(id);
+          };
           try {
             if (!lives.has(id)) {
               const element = place(id);
@@ -552,8 +579,15 @@ public enum EngineScript {
             front(id);
             const shown = lives.get(id).mount;
             shown.editor?.focus?.();
+            const now = reports.get(id);
+            now.mounting = Math.max(now.mounting - 1, 0);
+            report(id);
             return JSON.stringify({ok: {record: shown.state()?.record ?? null, kept: lives.size}});
-          } catch (error) { return JSON.stringify({error: failure(error)}); }
+          } catch (error) {
+            // Refused: Tilo said why, and would say it again.
+            ended(Boolean(error?.code) || /^(unknown_action|not_permitted|not-open|gone):/.test(String(error?.message ?? '')));
+            return JSON.stringify({error: failure(error)});
+          }
         },
         // Nothing is in front: the view shows Chat's own page, which nobody is shown.
         rest() { front(null); return true; },
@@ -581,6 +615,7 @@ public enum EngineScript {
           if (!gone) return false;
           lives.delete(id);
           sizes.delete(id);
+          report(id);
           gone.element.remove();
           await gone.mount.cleanup?.().catch(() => {});
           return true;

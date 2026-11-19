@@ -462,7 +462,7 @@ final class AsksHoldTests: XCTestCase {
         try await until("Chat was asked to send") { (try? await self.page("return String(window.plan.send.length)")) == "0" }
         try await startOver()
         let problem = await sending.value
-        XCTAssertEqual(problem, .unreachable)
+        XCTAssertEqual(problem, .refused("Your Tilo is still opening, and this went no further. Try it again in a moment."))
         // She sends it again herself: it stands once.
         try await source.send(Draft(text: "Hello"), to: .main)
         let sent = try await page("return JSON.stringify(window.sent)")

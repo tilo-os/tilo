@@ -390,7 +390,9 @@ final class EngineTests: XCTestCase {
         try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
         var heard: [String] = []
         let listening = Task { @MainActor in
-            for await (id, size) in self.engine.contentSizes() { heard.append("\(id) \(Int(size.width))x\(Int(size.height))") }
+            for await (id, size) in self.engine.contentSizes() {
+                if let size { heard.append("\(id) \(Int(size.width))x\(Int(size.height))") }
+            }
         }
         defer { listening.cancel() }
         try await engine.show(live: "m7", .messageView(message: "m7", conversation: "c_chat"))

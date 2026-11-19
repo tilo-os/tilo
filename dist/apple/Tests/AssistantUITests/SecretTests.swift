@@ -225,7 +225,7 @@ final class SecretTests: XCTestCase {
             id: "mail", text: "Type the password of your mail account below.",
             name: "imap.provider.example, smtp.provider.example", state: .refused(said))))]
         content.tasks = []
-        let model = AssistantModel(source: MemorySource(content, now: { Drawing.now }))
+        let model = AssistantModel(source: MemorySource(content, now: { Drawing.now }), snapshots: cacheOfTheCheck())
         await model.prime()
         let view = AssistantRoot(model: model) {
             ConversationView(chat: .main).background(Token.content)
@@ -245,7 +245,7 @@ final class SecretTests: XCTestCase {
 
     /// The secret's card alone, with something in its field, as a window draws it.
     private func card(covered: Bool) async throws -> (HeldWindow, Drive, NSBitmapImageRep) {
-        let model = AssistantModel(source: MemorySource(asking, now: { Drawing.now }))
+        let model = AssistantModel(source: MemorySource(asking, now: { Drawing.now }), snapshots: cacheOfTheCheck())
         await model.prime()
         let view = AssistantRoot(model: model) {
             ConversationView(chat: .main, picturedSecret: "correct horse").background(Token.content)

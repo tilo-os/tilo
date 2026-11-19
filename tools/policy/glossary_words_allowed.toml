@@ -1211,3 +1211,9 @@ identifiers = ["host_backend"]
 reason = "`podman run`, t's run of a publishing check and the publishing channel tools/ci/publish/lib.sh names (dev, release, branch): names those tools give them, not Tilo concepts."
 words = ["run", "channel"]
 paths = ["tools/ci/publish/extension-manifests.sh", "tools/ci/publish/windows-compat-sysext.sh"]
+
+[[allow]]
+reason = "Foundation's `URLComponents.host`, Chat's wire `channel` field name, and existing Swift API labels (`runsOn`, `Sign.run`, test helper `run`) in dist/apple."
+words = ["host", "channel", "run"]
+identifiers = ["host", "channel", "run", "runsOn"]
+paths = ["dist/apple/*"]

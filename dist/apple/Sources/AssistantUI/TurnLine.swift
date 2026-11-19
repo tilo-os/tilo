@@ -16,12 +16,17 @@ struct TurnLine: View {
     /// where what shows of the conversation is not known yet.
     let tallest: CGFloat
     @Environment(\.accessibilityReduceMotion) private var reduced
+    /// Where the steps were opened and where they were left. The conversation draws the line anew
+    /// for every piece that comes, and a part that is drawn anew is asked for its end before it is
+    /// laid out: that ask, and only that ask, is not the person resting the steps.
+    @State private var place = TurnSteps.Place()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let turn, !turn.steps.isEmpty {
-                if open { TurnSteps(steps: turn.steps, tallest: tallest) }
+                if open { TurnSteps(steps: turn.steps, tallest: tallest, place: $place) }
                 Button {
+                    place = TurnSteps.Place()
                     withAnimation(reduced ? nil : .easeOut(duration: Motion.base)) { open.toggle() }
                 } label: {
                     line.contentShape(Rectangle())
@@ -39,6 +44,8 @@ struct TurnLine: View {
         .accessibilityElement(children: .contain)
         .font(.small12)
         .foregroundStyle(Token.ink3)
+        // A turn of its own begins: the steps the person scrolled of the last one are not these.
+        .onChange(of: turn?.steps.first?.id) { place = TurnSteps.Place() }
     }
 
     /// The reply's own words come: they say what the turn does. The line keeps its place, so
@@ -92,18 +99,59 @@ struct TurnLine: View {
 
 /// The opened steps in a part of their own. A few steps take only the height of their lines; past
 /// `tallest` the part scrolls and rests on its newest step, next to the line. No step is left out.
+/// Once the person scrolled the steps away from their newest, the part stays where they left it
+/// while the turn goes on: a step that comes does not pull the list out of their hands.
 struct TurnSteps: View {
     let steps: [Message.Turn.Step]
     let tallest: CGFloat
+    @Binding var place: Place
+    @Environment(\.accessibilityReduceMotion) private var reduced
+
+    /// Where the part was opened or left, as the turn goes on.
+    struct Place: Equatable {
+        /// The newest step the part rested on, or took as it came.
+        var on: Message.Turn.Step.ID?
+        /// Whether the person scrolled the part: then it is theirs, and no step that comes moves it.
+        var moved = false
+    }
 
     var body: some View {
-        ScrollView {
-            TurnStepList(steps: steps).frame(maxWidth: .infinity, alignment: .leading)
+        ScrollViewReader { reader in
+            ScrollView {
+                TurnStepList(steps: steps).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .defaultScrollAnchor(.bottom)
+            // As tall as its steps and no taller than `tallest`: by itself a scroll view takes all it is offered.
+            .frame(maxHeight: tallest)
+            .fixedSize(horizontal: false, vertical: true)
+            .onScrollGeometryChange(for: Resting.self) { place in
+                Resting(laidOut: place.containerSize.height > 0,
+                        rests: place.contentSize.height - place.visibleRect.maxY <= 2)
+            } action: { was, now in
+                // A part asked where it rests before it is laid out has scrolled nowhere yet.
+                guard was.laidOut, now.laidOut, was.rests != now.rests else { return }
+                place.moved = !now.rests
+            }
+            .onAppear { place.on = steps.last?.id }
+            .onChange(of: steps.last?.id) { _, newest in
+                // The person reads older steps: nothing moves under their hand.
+                guard !place.moved, place.on != newest else { return }
+                place.on = newest
+                withAnimation(reduced ? nil : .easeOut(duration: Motion.base)) { rest(newest, in: reader) }
+            }
         }
-        .defaultScrollAnchor(.bottom)
-        // As tall as its steps and no taller than `tallest`: by itself a scroll view takes all it is offered.
-        .frame(maxHeight: tallest)
-        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// What the part says of itself: whether it is laid out, and whether it rests on its newest step.
+    private struct Resting: Equatable {
+        var laidOut: Bool
+        var rests: Bool
+    }
+
+    /// Put the part's end back in sight, where the steps' own words say which step is which.
+    private func rest(_ step: Message.Turn.Step.ID?, in reader: ScrollViewProxy) {
+        guard let step else { return }
+        reader.scrollTo(step, anchor: .bottom)
     }
 }
 
@@ -115,21 +163,25 @@ struct TurnStepList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
-                HStack(spacing: 5) {
-                    Text("\(index + 1)").monospacedDigit().frame(minWidth: 18, alignment: .trailing)
-                    Text(step.words).lineLimit(1).truncationMode(.tail)
-                    if let took = step.took {
-                        Text("·").accessibilityHidden(true)
-                        Text(TurnStepList.said(took)).monospacedDigit().fixedSize()
-                    }
-                    if step.outcome == .failed {
-                        Text("·").accessibilityHidden(true)
-                        Text(AssistantWords.stepFailed.said).foregroundStyle(Token.ink2).fixedSize()
-                    }
-                }
-                .accessibilityElement(children: .combine)
+                line(index: index, step: step).id(step.id)
             }
         }
+    }
+
+    private func line(index: Int, step: Message.Turn.Step) -> some View {
+        HStack(spacing: 5) {
+            Text("\(index + 1)").monospacedDigit().frame(minWidth: 18, alignment: .trailing)
+            Text(step.words).lineLimit(1).truncationMode(.tail)
+            if let took = step.took {
+                Text("·").accessibilityHidden(true)
+                Text(TurnStepList.said(took)).monospacedDigit().fixedSize()
+            }
+            if step.outcome == .failed {
+                Text("·").accessibilityHidden(true)
+                Text(AssistantWords.stepFailed.said).foregroundStyle(Token.ink2).fixedSize()
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 
     /// How long a step took, as the language the step's own words are in says a short time.

@@ -12,6 +12,9 @@
 "show-sidebar" = "Show sidebar";
 "hide-sidebar" = "Hide sidebar";
 "sidebar" = "Sidebar";
+"sub-agents-count" = "{count} sub-agents";
+"clear-search" = "Clear the search";
+"search-shortcut" = "Search ({shortcut})";
 "working" = "working";
 "needs-you" = "needs you";
 "done" = "done";
@@ -31,6 +34,7 @@
 "show-reply-many" = "Show {count} replies";
 "hide-replies" = "Hide replies";
 "no-replies" = "Nothing more to show";
+"showing-replies" = "Showing the replies…";
 "conversation" = "Conversation";
 "you" = "You";
 "waits-for-answer" = "Waiting for your answer";
@@ -63,6 +67,15 @@
 "view-not-offered" = "This Tilo cannot show views in messages yet";
 "live-not-shown" = "Tilo could not show this";
 "stop-sharing" = "Stop sharing";
+"close-stage" = "Close the stage";
+"open-in-stage" = "Open in stage";
+"open-full-screen" = "Open full screen";
+"open-full-screen-named" = "Open {name} full screen";
+"back" = "Back";
+"stages-count" = "{count} open live stages";
+"open-live-view" = "Open a live view";
+"no-live-views" = "This conversation shared none yet";
+"back-to-conversation" = "Back to the conversation";
 "making-assistant" = "Setting up your assistant";
 "making-workspace" = "Tilo is making your workspace. The first time, this can take a few minutes.";
 "needs-provider" = "No model provider is linked yet, so your assistant cannot answer. Choose a provider and type your own key for it below.";
@@ -159,6 +172,8 @@
 "show-tasks" = "Show tasks";
 "hide-tasks" = "Hide tasks";
 "change-by-telling" = "Opens the chat, where you change it by telling your assistant";
+"waiting-count" = "{count} waiting";
+"show-sub-agent" = "Shows what it is doing";
 "assistant-view" = "Assistant view";
 "assistant-on" = "Assistant is on";
 "assistant-paused" = "Assistant is paused";

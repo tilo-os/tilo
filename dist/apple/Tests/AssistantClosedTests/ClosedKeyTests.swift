@@ -1,4 +1,5 @@
 import AssistantClosed
+import AssistantCore
 import CryptoKit
 import XCTest
 
@@ -117,5 +118,22 @@ final class ClosedKeyTests: XCTestCase {
         // The notice extension's bundle names the same place and no service.
         XCTAssertEqual(KeychainClosedKeys(info: ["TiloTeam": "TESTTEAM00", "TiloTold": "so.tilo.assistant.told"])?.group, build?.group)
         XCTAssertNil(KeychainClosedKeys(info: ["TiloTeam": "TESTTEAM00"]))
+    }
+
+    func testClosedBuildPreparesLiveActivityPushAddresses() throws {
+        let build = try XCTUnwrap(ClosedBuild(info: [
+            "TiloPush": "development",
+            "TiloTeam": "TESTTEAM00",
+            "TiloTold": "so.tilo.assistant.told",
+            "CFBundleIdentifier": "so.tilo.assistant",
+        ]))
+        let token = Data([0x11, 0x22, 0x33])
+        XCTAssertEqual(build.activityTopic(), "so.tilo.assistant.push-type.liveactivity")
+        XCTAssertEqual(build.address(for: .notices, token: token),
+                       PushAddress(use: .notices, token: token, service: .development, app: "so.tilo.assistant"))
+        XCTAssertEqual(build.address(for: .activityStart, token: token),
+                       PushAddress(use: .activityStart, token: token, service: .development, app: "so.tilo.assistant.push-type.liveactivity"))
+        XCTAssertEqual(build.address(for: .activity("task-1"), token: token),
+                       PushAddress(use: .activity("task-1"), token: token, service: .development, app: "so.tilo.assistant.push-type.liveactivity"))
     }
 }

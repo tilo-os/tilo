@@ -143,7 +143,7 @@ final class PieceMenuTests: XCTestCase {
     }
 
     func testCopyPutsAPiecesPlainWordsOnThePasteboardWithEveryLine() throws {
-        let model = AssistantModel(source: MemorySource(MemorySource.Content()))
+        let model = AssistantModel(source: MemorySource(MemorySource.Content()), snapshots: cacheOfTheCheck())
         let board = ownBoard()
         defer { board.releaseGlobally() }
         model.pasteboard = board

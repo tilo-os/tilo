@@ -23,7 +23,7 @@ final class SidebarSignTests: XCTestCase {
 
     func testARowIsWritingExactlyWhileItsConversationHasAReplyInWork() async {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.start()
         let agent = Chat.subAgent("usage-drop")
         await until("both conversations are held") { model.conversation(.main).isLoaded && model.conversation(agent).isLoaded }
@@ -192,7 +192,7 @@ final class SidebarSignTests: XCTestCase {
     }
 
     private func model(_ source: MemorySource = Drawing.source()) async -> AssistantModel {
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.start()
         await until("the main chat is held") { model.conversation(.main).isLoaded && model.person != nil }
         return model

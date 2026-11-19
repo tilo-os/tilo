@@ -20,6 +20,8 @@ struct AssistantPhoneApp: App {
         let model = AssistantModel(source: Source.make())
         // On a phone the Tasks panel is a sheet: it comes when asked for.
         model.showsPanelInMain = false
+        // A sheet put away takes the live view it showed down from Tilo's page with it.
+        model.stopsLive = { id in await Source.stopLive(id) }
         model.start()
         _model = State(initialValue: model)
         _teller = State(initialValue: Teller(model: model))
@@ -45,7 +47,13 @@ struct AssistantPhoneApp: App {
                 .onChange(of: model.subAgents) { activities.bring() }
                 .onChange(of: model.automations) { activities.bring() }
                 .onChange(of: model.conversation(.main).items.count) { activities.bring() }
-                .onChange(of: phase) { if phase == .active { activities.bring() } }
+                .onChange(of: phase) {
+                    if phase == .active { activities.bring() }
+                    // A person who leaves to answer someone else comes back to the conversation
+                    // they were in: the page is still theirs, and is loaded again only where the
+                    // system took it away while they were gone.
+                    Source.standsInFront(phase == .active)
+                }
                 .onOpenURL { AppAddress.open($0, in: model) }
         }
     }
@@ -60,6 +68,12 @@ final class PhoneDelegate: NSObject, UIApplicationDelegate {
         let address = PushAddress(use: .notices, token: deviceToken, service: closed.service, app: Bundle.main.bundleIdentifier ?? "")
         Task { await source.register(address) }
     }
+
+    /// A person leaving the app to answer someone else, and coming back: what they were in is
+    /// still theirs, and is loaded again only where the system took the page while they were away.
+    func applicationDidBecomeActive(_ application: UIApplication) { Source.standsInFront(true) }
+
+    func applicationDidEnterBackground(_ application: UIApplication) { Source.standsInFront(false) }
 
     /// A push that shows nothing: a thing the person was told of waits no more, and its notice is taken away.
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any],

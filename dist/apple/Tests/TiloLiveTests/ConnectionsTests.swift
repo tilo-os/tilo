@@ -317,7 +317,7 @@ final class TiloConnectionsTests: XCTestCase {
         try await until("the vault's item is listed") { seen.logins.map(\.name) == ["orchard.example"] }
         supervision.cancel()
         // A sign-in is finished once.
-        await refused("No sign-in was begun from this card") { try await self.source.signedIn(offer.id, at: returned) }
+        await refused(TiloSource.signInBeganElsewhere) { try await self.source.signedIn(offer.id, at: returned) }
         let tries = try await asked("finish-sign-in")
         XCTAssertEqual(tries?.array?.count, 1)
     }
@@ -364,7 +364,7 @@ final class TiloConnectionsTests: XCTestCase {
         XCTAssertEqual(kept, "0")
         // The sign-in that was begun is gone with it.
         let returned = try XCTUnwrap(URL(string: "so.tilo.assistant:/signed-in?code=made-up&state=s-1"))
-        await refused("No sign-in was begun from this card") { try await self.source.signedIn(offer.id, at: returned) }
+        await refused(TiloSource.signInBeganElsewhere) { try await self.source.signedIn(offer.id, at: returned) }
     }
 
     func testAServiceThatWasSignedInToIsNeverRemovedFromItsCard() async throws {

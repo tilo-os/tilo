@@ -100,4 +100,45 @@ final class FieldStyleTests: XCTestCase {
         let long = String(repeating: "words ", count: 40)
         XCTAssertGreaterThan(FieldStyle.height(of: styled(long), width: 300, scheme: .light), 2 * one)
     }
+
+    func testUnorderedBulletsDrawLiveDotsWhenCaretIsAwayAndRevealMarkerWhenEditing() throws {
+        let text = "- **first** item\n* *second* `code` item"
+        let away = styled(text)
+        XCTAssertEqual(away.string, text, "live bullet styling keeps every character intact")
+        // Caret away: dash and asterisk render as crisp bullet dots via FieldStyle.bullet.
+        XCTAssertNotNil(away.attribute(FieldStyle.bullet, at: 0, effectiveRange: nil))
+        XCTAssertEqual(away.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, NSColor.clear)
+        let secondLine = place(of: "* *second*", in: text)
+        XCTAssertNotNil(away.attribute(FieldStyle.bullet, at: secondLine, effectiveRange: nil))
+        // Inline bold, italic, and code all style inside bullet items too.
+        XCTAssertTrue(isBold(try font(away, at: place(of: "first", in: text))))
+        let secondWord = place(of: "second", in: text)
+        let traits = NSFontManager.shared.traits(of: try font(away, at: secondWord))
+        XCTAssertTrue(traits.contains(.italicFontMask) || away.attribute(.obliqueness, at: secondWord, effectiveRange: nil) != nil)
+        XCTAssertTrue(try font(away, at: place(of: "code", in: text)).isFixedPitch)
+
+        // Caret on the first bullet marker: raw dash reappears softly and dot attribute is omitted.
+        let editing = styled(text, caret: 0)
+        XCTAssertNil(editing.attribute(FieldStyle.bullet, at: 0, effectiveRange: nil))
+        XCTAssertEqual(editing.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor, Token.ink3.platform(.light))
+        // Second bullet stays styled as a dot.
+        XCTAssertNotNil(editing.attribute(FieldStyle.bullet, at: secondLine, effectiveRange: nil))
+    }
+
+    func testWrapSelectionFormatsBoldItalicAndInlineCode() {
+        let view = FieldTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 40))
+        view.string = "hello world"
+        view.setSelectedRange(NSRange(location: 6, length: 5))
+        view.wrapSelection(with: "**")
+        XCTAssertEqual(view.string, "hello **world**")
+        XCTAssertEqual(view.selectedRange(), NSRange(location: 8, length: 5))
+
+        view.wrapSelection(with: "*")
+        XCTAssertEqual(view.string, "hello ***world***")
+
+        view.string = "check status"
+        view.setSelectedRange(NSRange(location: 6, length: 6))
+        view.wrapSelection(with: "`")
+        XCTAssertEqual(view.string, "check `status`")
+    }
 }

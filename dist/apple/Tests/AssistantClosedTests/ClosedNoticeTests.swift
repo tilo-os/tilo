@@ -73,4 +73,57 @@ final class ClosedNoticeTests: XCTestCase {
         XCTAssertNil(ClosedPush(["told": 7]))
         XCTAssertNil(ClosedPush([:]))
     }
+
+    func testRemotePrivacyFilteredPushRoutesThroughOpaqueToldTag() throws {
+        let tag = key.name(of: "question:ws-1:m_ask_1")
+        let payload = try Sealing.push(named: tag, kind: "question", saying: nil, for: key)
+        let route = try XCTUnwrap(ClosedRoute(userInfo: payload))
+        XCTAssertTrue(route.isPrivacyFiltered)
+        XCTAssertEqual(route.target, .told(tag, kind: "question"))
+        XCTAssertEqual(route.told, tag)
+        XCTAssertEqual(route.kind, "question")
+
+        var waiting = Item(
+            id: "ws-1/chat.messages/messages/m_ask_1",
+            at: Date(timeIntervalSince1970: 0),
+            .question(Question(id: "m_ask_1", text: "Send the form?", choices: [Choice(id: "allow", title: "Allow", isMain: true)]))
+        )
+        waiting.toldAs = tag
+        let resolved = route.resolve(conversations: [.main: [waiting]], tasks: [])
+        XCTAssertEqual(resolved, .item(waiting.id, chat: .main))
+    }
+
+    func testRemotePushParsesExplicitItemDecisionAndTaskIdentifiers() throws {
+        let decisionPayload: [AnyHashable: Any] = [
+            "aps": ["alert": ["loc-key": "TOLD_WAITS"]],
+            "tilo": ["decision_id": "m_ask_2", "sub_agent": "code-review"],
+        ]
+        let decisionRoute = try XCTUnwrap(ClosedRoute(userInfo: decisionPayload))
+        XCTAssertFalse(decisionRoute.isPrivacyFiltered)
+        XCTAssertEqual(decisionRoute.target, .decision("m_ask_2", chat: .subAgent("code-review")))
+
+        let subItem = Item(
+            id: "ws-1/chat.messages/messages/m_ask_2",
+            at: Date(timeIntervalSince1970: 0),
+            .question(Question(id: "ws-1/chat.messages/messages/m_ask_2", text: "Apply patch?", choices: []))
+        )
+        XCTAssertEqual(
+            decisionRoute.resolve(conversations: [.subAgent("code-review"): [subItem]], tasks: []),
+            .item(subItem.id, chat: .subAgent("code-review"))
+        )
+
+        let taskPayload: [AnyHashable: Any] = ["aps": ["alert": "Update"], "task_id": "task-42"]
+        let taskRoute = try XCTUnwrap(ClosedRoute(userInfo: taskPayload))
+        XCTAssertEqual(taskRoute.target, .task("task-42"))
+        let task = AssistantTask(id: "task-42", title: "Review draft", state: .needsInput, item: "m-42")
+        XCTAssertEqual(taskRoute.resolve(conversations: [:], tasks: [task]), .task("task-42", item: "m-42", state: .needsInput))
+    }
+
+    func testWithdrawnAndPrivateOrInvalidPayloadsAreFilteredOut() {
+        XCTAssertNil(ClosedRoute(userInfo: ["told": "rf-qsLfA_59buuS5z2pKfA", "gone": true]))
+        XCTAssertNil(ClosedRoute(userInfo: ["aps": ["alert": "Hello"], "enc": "secret-blob"]))
+        XCTAssertNil(ClosedRoute(userInfo: ["item": "bad\nidentifier"]))
+        XCTAssertNil(ClosedRoute(userInfo: ["item": String(repeating: "a", count: 300)]))
+        XCTAssertNil(ClosedRoute(userInfo: [:], requestIdentifier: "unrelated-uuid"))
+    }
 }

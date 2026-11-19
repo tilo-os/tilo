@@ -132,20 +132,19 @@ extension TiloFiles {
 
     /// The file `attachment` names, on this device. A file is named by its message's item and
     /// its place among what the message carries; the message is read again, so what it
-    /// carries now is what is opened. A page that hands the app no link is asked for nothing.
+    /// carries now is what is opened, at what it carries alone. A page that hands the app no
+    /// link is asked for nothing.
     @MainActor
     static func fetch(_ attachment: Attachment.ID, through engine: TiloEngine, by download: Download) async throws -> URL {
-        guard try await engine.linkIsOffered() else { throw SourceProblem.refused(cannotOpen) }
         let gone = SourceProblem.refused("This file is no longer in the conversation")
         let named = attachment.value
         guard let cut = named.lastIndex(of: "#"), let index = Int(named[named.index(after: cut)...]) else { throw gone }
-        let message: ChatMessage?
-        do {
-            message = try await engine.chatMessage(String(named[..<cut]))
-        } catch TiloEngine.Problem.refused {
-            message = nil
-        }
-        guard let file = message?.files.first(where: { $0.index == index }) else { throw gone }
+        let item = String(named[..<cut])
+        guard try await engine.linkIsOffered() else { throw SourceProblem.refused(cannotOpen) }
+        // An item that could not be read at all (the page is on its way in, the network answered
+        // nothing) is not a file that went: it is looked at again by a press made later.
+        guard let read = await read(item, through: engine) else { throw SourceProblem.unreachable }
+        guard let file = read.files.first(where: { $0.index == index }) else { throw gone }
         let link = try await engine.contentLink(to: file.content, named: file.name)
         let fetched: URL
         do {
@@ -161,6 +160,29 @@ extension TiloFiles {
             throw SourceProblem.refused("\(file.name) could not be kept on this device")
         }
     }
+
+    /// Where a message carries files, as one read of Chat goes: all that an opened file is looked
+    /// for in, and nothing else of the message (its words, its author, who it answers) read.
+    ///
+    /// A page whose Chat keeps no file at all refuses that part of a read, and is asked for the
+    /// message whole then: its files are fewer to sort from, never a file less.
+    @MainActor
+    private static func read(_ item: String, through engine: TiloEngine) async -> ChatMessage? {
+        do {
+            let read = try await engine.read(item, ["fields": .array(TiloFiles.wanted.map(JSON.string))])
+            if let message = ChatMessage(id: item, fields: read) { return message }
+        } catch TiloEngine.Problem.refused {
+            // Asked for a part a message need not keep: the message whole, below.
+        } catch {
+            return nil
+        }
+        // What went, or a refusal of the read, says that there is no such message: nil.
+        return try? await engine.chatMessage(item)
+    }
+
+    /// What an opened file is looked for in: which conversation the message is in (Chat's own
+    /// name for that field), that it is a message at all, and the files it carries.
+    static let wanted = ["channel", "ts", "text", "attachments"]
 
     /// Move what was fetched to where opened files lie, in a folder of its own, under the
     /// last part of the file's name alone: a name never says where on this device a file

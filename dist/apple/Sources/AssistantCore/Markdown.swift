@@ -73,6 +73,15 @@ public enum Markdown {
             .joined(separator: " ")
     }
 
+    /// What a name comes out as without its signs, as a tab or a card says it: what `plain` keeps
+    /// of one line's words, its line breaks with it. A live thing's name comes as its page writes
+    /// it, and its page writes Markdown as a page does: `**Bold**` and `` `code` `` read as the
+    /// words, never as the signs.
+    public static func plainTitle(_ text: String) -> String {
+        let read = plain(text)
+        return read.isEmpty ? text.trimmingCharacters(in: .whitespacesAndNewlines) : read
+    }
+
     // MARK: Blocks
 
     public enum Block: Equatable, Sendable {

@@ -55,6 +55,68 @@ public struct AssistantRoot<Content: View>: View {
     }
 }
 
+/// Direct deep-link destination for the first waiting decision or item.
+public enum WaitingTarget: Equatable, Sendable {
+    case item(Item.ID, Chat)
+    case subAgent(SubAgent.ID)
+}
+
+extension AssistantModel {
+    /// Resolve the highest-priority waiting decision or item to jump straight to.
+    public func firstWaitingTarget(preferring lines: [SinceLeft.Line] = []) -> WaitingTarget? {
+        if let item = lines.first(where: { $0.item != nil })?.item {
+            return .item(item, .main)
+        }
+        if let item = tasks(.needsInput).first(where: { $0.item != nil })?.item {
+            return .item(item, .main)
+        }
+        if let item = tasks(.readyForReview).first(where: { $0.item != nil })?.item {
+            return .item(item, .main)
+        }
+        if let item = sinceLeft?.waits.first(where: { $0.item != nil })?.item {
+            return .item(item, .main)
+        }
+        if let item = conversation(.main).items.first(where: { $0.waits }) {
+            return .item(item.id, .main)
+        }
+        if let agent = subAgents.first(where: { $0.state == .needsYou }) {
+            let subChat = Chat.subAgent(agent.id)
+            if let item = conversation(subChat).items.first(where: { $0.waits }) {
+                return .item(item.id, subChat)
+            }
+            return .subAgent(agent.id)
+        }
+        return nil
+    }
+
+    /// Jump directly to the first waiting decision or item; falls back to Tasks only when none can be addressed directly.
+    @discardableResult
+    public func openFirstWaiting(preferring lines: [SinceLeft.Line] = []) -> Bool {
+        putAwayStage()
+        if let target = firstWaitingTarget(preferring: lines) {
+            showsPanel = false
+            switch target {
+            case .item(let item, let chat):
+                show(item, in: chat)
+            case .subAgent(let id):
+                open(.subAgent(id))
+            }
+            return true
+        }
+        showTasks(.active)
+        return false
+    }
+}
+
+/// The line a phone's views stand on: the same edge the conversation and the message field stand
+/// on, so that a strip, a card and a field are never a point or two out from one another.
+private let phoneEdge: CGFloat = 16
+
+/// The room a phone's sheet keeps under the grabber the system draws at its top: the grabber lies
+/// over a sheet's first points, and a head that stands there is a head the person cannot read.
+/// The stage sheet and the Tasks sheet begin under it with the same room.
+let phoneSheetGrabber: CGFloat = 22
+
 /// A button of the window's top bar: `.tb`, and `.tb.on`.
 struct BarButton: View {
     let sign: Sign
@@ -116,12 +178,12 @@ struct JobSheet: View {
 }
 
 /// What is said over the message field of whether Tilo answers. After a try that failed: that
-/// Tilo cannot be reached. From the app's opening until the main chat stands: the quiet word
-/// for waiting, one sentence through every step behind it (the page, the session, the look for
-/// the assistant, what answers for it), so that a server that takes its time is not silent and
-/// no step is said as if it were something new. A try that is in work is never said to have
-/// failed, however long it takes. Where Tilo answers and does not let this device in, that is
-/// said in its place, with the way in offered (`WayInOffer`).
+/// Tilo cannot be reached, and the one press that asks again. From the app's opening until the
+/// main chat stands: the quiet word for waiting, one sentence through every step behind it (the
+/// page, the session, the look for the assistant, what answers for it), so that a server that
+/// takes its time is not silent and no step is said as if it were something new. A try that is
+/// in work is never said to have failed, however long it takes. Where Tilo answers and does not
+/// let this device in, that is said in its place, with the way in offered (`WayInOffer`).
 public struct ReachLine: View {
     @Environment(AssistantModel.self) private var model
 
@@ -131,10 +193,18 @@ public struct ReachLine: View {
         if model.joinStops {
             WayInOffer()
         } else if model.reach == .unreachable {
-            Text(AssistantWords.notReachable.said).font(.small12).foregroundStyle(Token.ink2)
-                .padding(.horizontal, 10).padding(.vertical, 3)
-                .background(Token.raised, in: Capsule())
-                .padding(.bottom, 6)
+            // What says it carries the way on with it: the press is where the sentence is, not
+            // hunted for in the menu bar or at the way in.
+            HStack(spacing: 10) {
+                Text(AssistantWords.notReachable.said).font(.small12).foregroundStyle(Token.ink2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(AssistantWords.tryAgain.said) { model.tryAgain(whereItStopped: model.joinApproved != nil) }
+                    .buttonStyle(PillStyle(isMain: true))
+            }
+            .padding(.leading, 12).padding(.trailing, 5).padding(.vertical, 5)
+            .background(Token.raised, in: Capsule())
+            .padding(.horizontal, 16).padding(.bottom, 6)
+            .accessibilityElement(children: .contain)
         } else if model.isStarting {
             Fine(words: AssistantWords.pairing.said).padding(.bottom, 6)
         }
@@ -203,7 +273,7 @@ public struct MacWindow: View {
                     ReachLine()
                     Composer(chat: chat).layoutPriority(1)
                 case .assistantView:
-                    SupervisionView()
+                    SupervisionView(standsInTheWindow: true)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -214,11 +284,14 @@ public struct MacWindow: View {
             .accessibilityLabel((model.place == .assistantView ? AssistantWords.assistantView : AssistantWords.conversation).said)
             if let staged = model.stagedLive, case .chat(let chat) = model.place {
                 Rectangle().fill(Token.line).frame(width: 1)
-                SplitStudioStage(staged: staged, artifacts: model.liveThings(in: chat))
+                SplitStudioStage(staged: staged, chat: chat)
                     .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
             } else if model.showsPanel, model.chat != nil {
                 Rectangle().fill(Token.line).frame(width: 1)
-                TasksPanel { model.showsPanel = false }
+                TasksPanel {
+                    if model.cancelFieldStepping?() == true { return }
+                    model.showsPanel = false
+                }
                     .frame(width: Measure.panel)
             }
         }
@@ -246,22 +319,42 @@ public struct MacWindow: View {
                 } label: {
                     HStack(spacing: 6) {
                         Circle().fill(Token.asst).frame(width: 6, height: 6)
-                        Text(model.activeSubAgents.count == 1 ? active.title : "\(model.activeSubAgents.count) sub-agents")
+                        // The one at work is named; where more than one is, the count is said in the
+                        // person's language, as every other count of the window is.
+                        Text(model.activeSubAgents.count == 1
+                            ? active.title
+                            : AssistantWords.subAgentsCount.said(["count": String(model.activeSubAgents.count)]))
                             .font(.small12).foregroundStyle(Token.ink).lineLimit(1)
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(Token.raised, in: Capsule())
                     .overlay { Capsule().strokeBorder(Token.line, lineWidth: 1) }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(model.activeSubAgents.count == 1
+                        ? "\(active.title), \(AssistantWords.showSubAgent.said)"
+                        : AssistantWords.subAgentsCount.said(["count": String(model.activeSubAgents.count)]))
                 }
                 .buttonStyle(.plain)
             }
             if model.chat != nil {
                 BarButton(sign: .panel, isOn: model.showsPanel,
                           label: (model.showsPanel ? AssistantWords.hideTasks : AssistantWords.showTasks).said) {
-                    model.stagedLive = nil
+                    // The Tasks panel takes the stage's place, and the stage is put away with its
+                    // tabs kept: they stand in the bar again when it is opened.
+                    model.putAwayStage()
                     model.showsPanel.toggle()
                 }
+            }
+            // What the conversation shared is opened here while nothing of it stands: one press on
+            // a view opens the stage on it, and it stays where it stood as the person goes on reading.
+            if model.stagedLive == nil, !model.showsPanel, let chat = model.chat,
+               !model.openLiveTabs(in: chat).isEmpty || !model.liveThings(in: chat).isEmpty {
+                BarButton(sign: .plus, label: AssistantWords.openLiveView.said) {
+                    model.showNextLive(in: chat)
+                }
+                // The key for it, said where the button is; the menu says it too.
+                .keyboardShortcut("j", modifiers: [.command, .option])
             }
             BarButton(sign: .new, label: AssistantWords.newSubAgent.said) { model.asksForJob = true }
         }
@@ -276,7 +369,8 @@ public struct MacWindow: View {
 /// Variant A (Split Studio): full-height live Tilo stage right beside the conversation.
 private struct SplitStudioStage: View {
     let staged: LiveThing
-    let artifacts: [LiveThing]
+    /// The conversation the stage stands beside: the tabs are its views, and so is the +.
+    let chat: Chat
     @Environment(AssistantModel.self) private var model
     @Environment(\.liveStageView) private var drawStage
     @Environment(\.liveThingView) private var drawInline
@@ -284,15 +378,16 @@ private struct SplitStudioStage: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
+                // Every view opened in this conversation, and every one it shared, once each: a tab
+                // put away opens again by one press, and one whose tab was closed reopens here.
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
-                        let list = artifacts.contains(where: { $0.id == staged.id }) ? artifacts : [staged] + artifacts
-                        ForEach(list) { item in
+                        ForEach(tabs) { item in
                             let selected = item.id == staged.id
                             Button {
-                                model.stagedLive = item
+                                model.show(item)
                             } label: {
-                                Text(item.title)
+                                Text(item.called)
                                     .font(.tilo(12, selected ? .semibold : .medium))
                                     .foregroundStyle(selected ? Token.ink : Token.ink2)
                                     .lineLimit(1)
@@ -305,18 +400,49 @@ private struct SplitStudioStage: View {
                                     }
                             }
                             .buttonStyle(.plain)
+                            .accessibilityAddTraits(selected ? .isSelected : [])
+                            .contextMenu {
+                                // A tab of the conversation's own is let go of here; one pressed on
+                                // again after that opens from the +.
+                                Button(AssistantWords.closeStage.said) { model.closeLiveTab(item.id) }
+                            }
                         }
                     }
                 }
+                // A view the conversation shared stands in no bar: the + opens any of them, and the
+                // one after the stage's: nothing of it is asked of the assistant.
+                Menu {
+                    let shared = model.liveThings(in: chat)
+                    if shared.isEmpty {
+                        Text(AssistantWords.noLiveViews.said)
+                    }
+                    ForEach(shared) { item in
+                        Button(item.called) { model.show(item) }
+                    }
+                } label: {
+                    Glyph(.plus, side: 13, grows: false).foregroundStyle(Token.ink2)
+                        .frame(width: 28, height: 28)
+                        .background(Token.content, in: RoundedRectangle(cornerRadius: 7))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityLabel(AssistantWords.openLiveView.said)
+                .tip(AssistantWords.openLiveView.said)
                 Button {
-                    model.stagedLive = nil
+                    if model.cancelFieldStepping?() == true { return }
+                    model.putAwayStage()
                 } label: {
                     Text("×").font(.tilo(16, .medium)).foregroundStyle(Token.ink2)
                         .frame(width: 28, height: 28)
                         .background(Token.content, in: RoundedRectangle(cornerRadius: 7))
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Close stage")
+                // The stage is put away and its tabs stand: one press opens the view again, and
+                // nothing is asked of the assistant meanwhile. Escape puts it away as well.
+                .keyboardShortcut(.cancelAction)
+                .accessibilityLabel(AssistantWords.closeStage.said)
+                .tip(AssistantWords.closeStage.said)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -325,10 +451,11 @@ private struct SplitStudioStage: View {
             Group {
                 if let draw = drawStage ?? drawInline {
                     draw(staged)
+                        .id(staged.id)
                 } else {
                     VStack(spacing: 8) {
                         Mark(side: 28)
-                        Text(staged.title).font(.title15).foregroundStyle(Token.ink)
+                        Text(staged.called).font(.title15).foregroundStyle(Token.ink)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -336,6 +463,18 @@ private struct SplitStudioStage: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(Token.content)
+    }
+
+    /// What the bar's tabs hold, each view once: every view opened in this conversation, the one
+    /// the stage shows first so that it never stands out of sight, then the ones the conversation
+    /// shared that were not opened, so that a view whose tab was closed comes back from the +.
+    private var tabs: [LiveThing] {
+        var list: [LiveThing] = [staged]
+        for thing in model.openLiveTabs(in: chat) + model.liveThings(in: chat)
+        where !list.contains(where: { $0.id == thing.id }) {
+            list.append(thing)
+        }
+        return list
     }
 }
 #endif
@@ -384,10 +523,15 @@ public struct PhoneRoot: View {
                         .navigationDestination(for: AssistantModel.Place.self) { screen($0) }
                 }
                 .tint(Token.ink)
-                .onChange(of: model.place) { if path.last != model.place { path = [model.place] } }
+                // While a live view fills the screen, its sheet is what the back gesture puts away:
+                // the chat under it stays the one the person was in.
+                .onChange(of: model.place) {
+                    if model.stagedLive == nil, path.last != model.place { path = [model.place] }
+                }
                 .sheet(isPresented: $model.showsPanel) {
                     TasksPanel { model.showsPanel = false }
-                        .padding(.top, 8)
+                        // Its own head stands under the grabber, as the stage's does.
+                        .padding(.top, phoneSheetGrabber)
                         .background(Token.content)
                         .presentationDetents([.medium, .large])
                         .presentationDragIndicator(.visible)
@@ -430,10 +574,13 @@ public struct PhoneRoot: View {
                     Text(head).font(.small12).foregroundStyle(Token.ink3)
                         .accessibilityLabel(head.spoken)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16).padding(.vertical, 6)
+                        .padding(.horizontal, phoneEdge).padding(.vertical, 6)
                 }
+                // The strip and the conversation are one stretch: the strip's own hairline closes it,
+                // and the conversation's end fades over nothing but the pieces that scroll under it.
                 PhoneNowStrip(chat: chat)
-                ConversationView(chat: chat, head: textSize.isAccessibilitySize ? head : nil)
+                let nothingUnder = model.liveThings(in: chat).isEmpty && model.activeSubAgents.isEmpty && model.waiting == 0
+                ConversationView(chat: chat, head: textSize.isAccessibilitySize ? head : nil, footFade: nothingUnder)
                     // A touch on the conversation puts the keyboard away. What is touched still takes the touch.
                     .simultaneousGesture(TapGesture().onEnded { Self.putKeyboardAway() })
                 ReachLine()
@@ -492,22 +639,32 @@ private struct PhoneNowStrip: View {
 
     var body: some View {
         let active = model.activeSubAgents
-        let latestLive = model.liveThings(in: chat).first
-        if !active.isEmpty || model.waiting > 0 || latestLive != nil {
+        let live = model.liveThings(in: chat)
+        // Every live view open in this conversation stands in the strip, the one in the stage or
+        // the sheet first, so that one put away opens again by one press: nothing is asked of
+        // the assistant, and no view is read again.
+        let staged = model.stagedLive.flatMap { $0.chat == chat ? $0 : nil }
+        let lives = PhoneNowStrip.tabs(staged: staged, opened: model.openLiveTabs(in: chat), live: live)
+        if !active.isEmpty || model.waiting > 0 || !lives.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     if model.waiting > 0 {
                         Button {
-                            model.showsPanel = true
+                            model.openFirstWaiting()
                         } label: {
                             HStack(spacing: 6) {
                                 Circle().fill(Token.you).frame(width: 6, height: 6)
-                                Text("\(model.waiting) waiting").font(.tilo(12, .semibold)).foregroundStyle(Token.ink)
+                                Text(AssistantWords.waitingCount.said(["count": String(model.waiting)]))
+                                    .font(.tilo(12, .semibold)).foregroundStyle(Token.ink)
                             }
-                            .padding(.horizontal, 11).padding(.vertical, 6)
+                            .padding(.horizontal, 11).padding(.vertical, 8)
                             .background(Token.youTint, in: Capsule())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(AssistantWords.waitingCount.said(["count": String(model.waiting)]))
+                        .accessibilityHint(model.firstWaitingTarget() != nil
+                            ? AssistantWords.waitsForAnswer.said
+                            : AssistantWords.showTasks.said)
                     }
                     ForEach(active) { agent in
                         Button {
@@ -517,32 +674,49 @@ private struct PhoneNowStrip: View {
                                 Circle().fill(Token.asst).frame(width: 6, height: 6)
                                 Text(agent.title).font(.tilo(12, .medium)).foregroundStyle(Token.ink).lineLimit(1)
                             }
-                            .padding(.horizontal, 11).padding(.vertical, 6)
+                            .padding(.horizontal, 11).padding(.vertical, 8)
                             .background(Token.asstTint, in: Capsule())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("\(agent.title), \(AssistantWords.showSubAgent.said)")
                     }
-                    if let latestLive {
+                    ForEach(lives) { thing in
+                        let shown = thing.id == staged?.id
                         Button {
-                            model.stagedLive = latestLive
+                            model.stagedLive = thing
                         } label: {
                             HStack(spacing: 6) {
-                                Circle().fill(Token.on).frame(width: 6, height: 6)
-                                Text("\(latestLive.title) ⤢").font(.tilo(12, .medium)).foregroundStyle(Token.ink).lineLimit(1)
+                                // The stage's view is the assistant's colour, as the card's own dot is;
+                                // one put away is a quiet mark, not a green one, which says a thing is on.
+                                Circle().fill(shown ? Token.asst : Token.ink3).frame(width: 6, height: 6)
+                                Text("\(thing.called) ⤢").font(.tilo(12, .medium)).foregroundStyle(Token.ink).lineLimit(1)
                             }
-                            .padding(.horizontal, 11).padding(.vertical, 6)
+                            .padding(.horizontal, 11).padding(.vertical, 8)
                             .background(Token.raised, in: Capsule())
-                            .overlay { Capsule().strokeBorder(Token.line, lineWidth: 1) }
+                            .overlay { Capsule().strokeBorder(shown ? Token.asst : Token.line, lineWidth: 1) }
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(AssistantWords.openFullScreenNamed.said(["name": thing.called]))
+                        .accessibilityAddTraits(shown ? .isSelected : [])
                     }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
+                .padding(.horizontal, phoneEdge)
+                .padding(.vertical, 8)
             }
             .background(Token.content)
             Rectangle().fill(Token.line).frame(height: 1)
         }
+    }
+
+    /// What the strip shows, newest first, each view once: the one in the sheet, then the views
+    /// opened before it, then the ones the conversation holds. One put away stands here still.
+    static func tabs(staged: LiveThing?, opened: [LiveThing], live: [LiveThing]) -> [LiveThing] {
+        var tabs: [LiveThing] = []
+        for thing in [staged].compactMap({ $0 }) + opened.reversed() + live
+        where !tabs.contains(where: { $0.id == thing.id }) {
+            tabs.append(thing)
+        }
+        return tabs
     }
 }
 
@@ -555,23 +729,42 @@ private struct PhoneLiveStageSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(thing.title).font(.title15).foregroundStyle(Token.ink).lineLimit(1)
-                Spacer()
-                Button("Done") { model.stagedLive = nil }
-                    .font(.tilo(14, .semibold))
+            // The way back, its hairline, and the name of what fills the sheet: the hairline stretches
+            // the whole way across, and what stands above it stands on the sheet's own ground.
+            HStack(spacing: 10) {
+                Button {
+                    model.stagedLive = nil
+                } label: {
+                    HStack(spacing: 3) {
+                        Glyph(.back, side: 15, grows: false)
+                        Text(AssistantWords.back.said).font(.tilo(15, .medium))
+                    }
                     .foregroundStyle(Token.asst)
-                    .buttonStyle(.plain)
+                    .frame(minHeight: 34)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                // The way back takes the Escape key on a Mac, as every view that stands over
+                // another is put away by it.
+                .keyboardShortcut(.cancelAction)
+                .accessibilityLabel(AssistantWords.back.said)
+                Text(thing.called)
+                    .font(.title15)
+                    .foregroundStyle(Token.ink)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Token.raised)
+            .padding(.horizontal, phoneEdge)
+            .padding(.top, phoneSheetGrabber)
+            .padding(.bottom, 10)
+            .background(Token.content)
             Rectangle().fill(Token.line).frame(height: 1)
             if let draw = drawStage ?? drawInline {
                 draw(thing).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .background(Token.content)
+        .presentationBackground(Token.content)
     }
 }
 #endif

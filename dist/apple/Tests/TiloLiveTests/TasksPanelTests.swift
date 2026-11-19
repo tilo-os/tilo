@@ -236,6 +236,32 @@ final class TasksPanelTests: XCTestCase {
         XCTAssertEqual(asked, [#"read {"assignee":"agent:assistant"}"#])
     }
 
+    func testImportantTasksProjectIntoLiveActivitiesFromRealTrackerFields() async throws {
+        try await start()
+        try await enter("""
+            window.issues = [
+              issue('i-urgent', 'Investigate outage', 'in-progress', {priority: 1}),
+              issue('i-high', 'Prepare board memo', 'in-review', {priority: 'high'}),
+              issue('i-labeled', 'Review contract', 'in-progress', {labels: ['important']}),
+              issue('i-normal', 'Tidy inbox', 'in-progress', {priority: 3}),
+            ]
+            """)
+        try await until("all four tasks are listed") { self.lists.last?.count == 4 }
+        let listed = try XCTUnwrap(lists.last)
+        let byID = Dictionary(uniqueKeysWithValues: listed.map { ($0.id.value, $0) })
+        XCTAssertEqual(byID["i-urgent"]?.isImportant, true)
+        XCTAssertEqual(byID["i-high"]?.isImportant, true)
+        XCTAssertEqual(byID["i-labeled"]?.isImportant, true)
+        XCTAssertEqual(byID["i-normal"]?.isImportant, false)
+
+        let activities = LiveActivityPlan.activities(tasks: listed, subAgents: [], automations: [], items: [], now: Date())
+        XCTAssertEqual(activities["task-i-urgent"]?.isImportant, true)
+        XCTAssertEqual(activities["task-i-urgent"]?.state, .running)
+        XCTAssertEqual(activities["task-i-high"]?.state, .needsYou)
+        XCTAssertEqual(activities["task-i-labeled"]?.isImportant, true)
+        XCTAssertNil(activities["task-i-normal"])
+    }
+
     func testALongListIsReadPageByPageInTheTrackersOrder() async throws {
         try await start()
         try await enter("window.pageMost = 2; window.issues = ['a', 'b', 'c', 'd', 'e'].map(letter => issue('i-' + letter, 'Task ' + letter, 'todo'))")

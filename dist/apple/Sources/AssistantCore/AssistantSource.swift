@@ -54,6 +54,11 @@ public protocol AssistantSource: Sendable {
     /// `session()` says how it goes on, and `pairingEnded()` what stopped it where it stops.
     func goOn() async
 
+    /// Ask the person's Tilo for its page once more, as the device the store holds: what Try
+    /// again does where a try ended without getting in, and nothing is paired twice. It is told
+    /// nothing of what did not go through, so a call made before it waits for the try.
+    func startOver() async
+
     /// Pair this device with a link that "Pair a new device" made on a device where the person is
     /// signed in: scanned as a code, or pasted. `session()` says how it goes on.
     func pair(with link: PairingLink) async throws
@@ -239,6 +244,7 @@ extension AssistantSource {
     /// A source that keeps no approved join has none to go on with.
     public func joinApproved() -> AsyncStream<Date?> { AsyncStream { $0.yield(nil) } }
     public func goOn() async {}
+    public func startOver() async {}
     public func setup() -> AsyncStream<Setup> { AsyncStream { $0.yield(.ready) } }
     public func makeAssistant() async throws {}
     public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {
@@ -268,6 +274,25 @@ public enum ConversationChange: Equatable, Sendable {
     case removed(Item.ID)
     /// Whether whoever the conversation is with is writing an answer right now.
     case answering(Bool)
+
+    /// The live views the pieces it carries hold, as they are now: a view that came again, or was
+    /// named anew since it was opened, is held anew by whoever keeps it to open again.
+    public var live: [LiveThing] {
+        switch self {
+        case .all(let items), .added(let items): items.compactMap(\.message).flatMap(\.live)
+        case .changed(let item): item.message?.live ?? []
+        case .removed, .answering: []
+        }
+    }
+}
+
+extension Item {
+    /// The message this piece carries, where it carries one: a report, a question, a card or a
+    /// reminder holds no live view.
+    public var message: Message? {
+        if case .message(let message) = content { return message }
+        return nil
+    }
 }
 
 /// What the person wrote and attached, before it is sent.
@@ -306,15 +331,24 @@ public struct Draft: Equatable, Sendable {
 public struct PairingLink: Equatable, Sendable {
     public let url: URL
 
-    /// The first web address in the words. Nil when they hold none.
+    /// The first address in the words that can pair, taken out of whatever was scanned or
+    /// pasted around it. A link written as a phone sees it is the link the computer showed: its
+    /// scheme in any case (`HTTPS://…`), a name with the dot that ends it (`tilo.example.`).
+    /// Nothing else of what was handed over is read as the link.
     public init?(in words: String) {
-        let edges = CharacterSet(charactersIn: "<>\"'()[]{}.,;").union(.whitespacesAndNewlines)
+        let edges = CharacterSet(charactersIn: "<>\"'()[]{},;").union(.whitespacesAndNewlines)
         for word in words.split(whereSeparator: \.isWhitespace) {
             let trimmed = word.trimmingCharacters(in: edges)
             guard let found = URLComponents(string: trimmed), let scheme = found.scheme?.lowercased(),
-                  scheme == "https" || scheme == "http", let host = found.host, !host.isEmpty,
-                  found.user == nil, let url = found.url
+                  scheme == "https" || scheme == "http", let name = found.host, !name.isEmpty,
+                  found.user == nil, found.password == nil
             else { continue }
+            var parts = found
+            // The scheme as the link is written elsewhere, and a name without the dot that ends
+            // it: a phone writes both, and both are the one address.
+            parts.scheme = scheme
+            if name.hasSuffix(".") { parts.host = String(name.dropLast()) }
+            guard let url = parts.url else { continue }
             self.url = url
             return
         }

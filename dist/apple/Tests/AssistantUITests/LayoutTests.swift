@@ -66,7 +66,7 @@ final class LayoutTests: XCTestCase {
     /// The real line at an iPhone's width: its second part starts where its title starts, not
     /// at the window's edge under the arrow.
     func testOnANarrowWindowATasksSecondPartAlignsWithItsTitle() async throws {
-        let model = AssistantModel(source: Drawing.source())
+        let model = AssistantModel(source: Drawing.source(), snapshots: cacheOfTheCheck())
         await model.prime()
         let line = TaskLine(task: "maya", title: "Reply to Maya at Northwind", state: .replies(2))
         let view = AssistantRoot(model: model) {

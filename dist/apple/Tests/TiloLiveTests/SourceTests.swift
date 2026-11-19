@@ -833,6 +833,32 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(words(held[1]), "Maya asks for the October numbers.")
     }
 
+    func testABriefWithStartTimeProjectsIntoLiveActivity() async throws {
+        try await start(.agent(id: "assistant", name: "Assistant"))
+        try await enter(device: true, "window.byKind = true; window.holds = 60000")
+        let now = Date(timeIntervalSince1970: 1_794_900_000)
+        let begins = now.addingTimeInterval(15 * 60)
+        let beginsMs = Int(begins.timeIntervalSince1970 * 1000)
+        try await run("""
+            direct({id: 'm_ask_brief', author: {agent: 'e-brief'}, text: 'Brief me.',
+              cause: {kind: 'brief', label: 'Board call in 15 minutes', key: 'k-brief', begins_at_ms: \(beginsMs), person: {person: ADA}}});
+            direct({id: 'm_reply_brief', author: {agent: 'assistant'}, text: '- Revenue up 14%\\n- Retention flat', parent: 'm_ask_brief'})
+            """)
+        try await until("the reply stands in the main chat") { self.held.count == 1 }
+        try await run(Self.told(1, "brief", about: "m_ask_brief", title: "Board call in 15 minutes", important: true))
+        try await until("the brief with its start time is projected") {
+            if case .brief(let brief)? = self.held.first?.content { brief.begins != nil } else { false }
+        }
+        guard case .brief(let brief)? = held.first?.content else { return XCTFail("expected brief") }
+        XCTAssertEqual(brief.begins, begins)
+        let activities = LiveActivityPlan.activities(tasks: [], subAgents: [], automations: [], items: held, now: now)
+        let live = try XCTUnwrap(activities["brief-\(held[0].id)"])
+        XCTAssertEqual(live.kind, .brief)
+        XCTAssertEqual(live.until, begins)
+        XCTAssertEqual(live.points, ["Revenue up 14%", "Retention flat"])
+        XCTAssertTrue(live.isImportant)
+    }
+
     func testWhatFollowsAnAnsweredQuestionStandsUnderItAndCarriesNoLine() async throws {
         try await start(.agent(id: "assistant", name: "Assistant"))
         try await enter(device: true, "window.byKind = true; window.holds = 60000")

@@ -76,11 +76,11 @@ final class ReplyTests: XCTestCase {
         // The person's words go with which piece they answer.
         model.drafts[.main]?.text = "Which nine?"
         model.send(in: .main)
+        await drive.until("the reply to reach the source") { started.source.calls("send").count == 1 }
         await drive.until("the reply in the conversation") { self.says("Which nine?", in: model) }
         let (_, reply) = try piece(saying: "Which nine?", in: model)
         XCTAssertEqual(reply.author, .person)
         XCTAssertEqual(reply.answers, Answered(answered.id, words: said))
-        XCTAssertEqual(started.source.calls("send").count, 1)
         await drive.settle(300)
         // Above the field nothing is answered any more. Above the reply's words stands the line, to be pressed.
         XCTAssertNil(model.drafts[.main]?.answers)
@@ -132,7 +132,7 @@ final class ReplyTests: XCTestCase {
     func testAtAPhonesWidthALongAnsweredLineIsCutBeforeItsCrossAndStandsAboveTheField() async throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
         if let faces = ProcessInfo.processInfo.environment["TILO_FONTS_DIR"] { Typeface.register(in: URL(fileURLWithPath: faces)) }
-        let model = AssistantModel(source: MemorySource(Drawing.content(), now: { Drawing.now }))
+        let model = AssistantModel(source: MemorySource(Drawing.content(), now: { Drawing.now }), snapshots: cacheOfTheCheck())
         model.start()
         let window = HeldWindow.make(NSRect(origin: .zero, size: CGSize(width: 402, height: 874)), [.borderless])
         window.contentView = NSHostingView(rootView: AssistantRoot(model: model) {

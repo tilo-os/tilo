@@ -42,7 +42,7 @@ final class ReplyWayTests: XCTestCase {
     }
 
     private func model(_ content: MemorySource.Content) async -> AssistantModel {
-        let model = AssistantModel(source: MemorySource(content))
+        let model = AssistantModel(source: MemorySource(content), snapshots: cacheOfTheCheck())
         await model.prime()
         return model
     }
@@ -161,7 +161,7 @@ final class ReplyWayTests: XCTestCase {
 
     func testAKeyTypedForTheProviderThatFailedEndsTheOfferAndANewerFailureOffersItAnew() async throws {
         let source = MemorySource(person([asked("a", "Hello?"), replied("b", "No.", refused)]))
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.start()
         try await until("the main chat to be held") { model.conversation(.main).isLoaded }
         XCTAssertEqual(model.replyWay(in: .main)?.item, "b")

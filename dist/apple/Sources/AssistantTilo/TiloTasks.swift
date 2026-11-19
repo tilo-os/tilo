@@ -15,8 +15,31 @@ enum TiloTasks {
             // A piece of a task that is listed stands under it in Tasks: the panel lists the task.
             if let parent = row["parent"]?.string?.split(separator: "/").last, named.contains(String(parent)) { return nil }
             let (state, note) = place(row)
-            return AssistantTask(id: .init(id), title: row["name"]?.string ?? "", state: state, note: note)
+            return AssistantTask(id: .init(id), title: row["name"]?.string ?? "", state: state,
+                                 isImportant: isImportant(row), note: note)
         }
+    }
+
+    /// Whether a tracker issue carries an importance signal from the server: an explicit
+    /// importance flag, urgent/high priority, or an important/urgent label.
+    private static func isImportant(_ row: JSON) -> Bool {
+        if row["important"]?.bool == true || row["isImportant"]?.bool == true || row["is_important"]?.bool == true {
+            return true
+        }
+        if row["work"]?["important"]?.bool == true {
+            return true
+        }
+        if let priority = row["priority"] {
+            if let level = priority.number, level == 1 || level == 2 { return true }
+            if ["urgent", "high", "important"].contains(word(priority)) { return true }
+        }
+        if let labels = row["labels"]?.array {
+            for label in labels {
+                let text = (label.string ?? label["name"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if text == "important" || text == "urgent" { return true }
+            }
+        }
+        return false
     }
 
     private static func id(_ row: JSON) -> String? {

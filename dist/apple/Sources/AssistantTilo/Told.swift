@@ -1,3 +1,4 @@
+import AssistantClosed
 import AssistantCore
 import Foundation
 import TiloLive
@@ -6,8 +7,9 @@ import TiloLive
 // not notify, the buttons under its notice, and the message about what came while they were
 // away. Their server decides all of it; this only puts it into the frame's values.
 extension TiloSource {
-    /// Mark a piece as its person's server told of it.
-    static func mark(_ item: inout Item, as told: ToldThing) {
+    /// Mark a piece as its person's server told of it, stamping its opaque push identifier when
+    /// a closed-app push key is present so tapping a remote notification routes straight to it.
+    static func mark(_ item: inout Item, as told: ToldThing, pushKey: ClosedKey? = nil) {
         item.keptQuiet = told.reaches ? nil
             : Quiet.line(about: told.title, code: told.why.code, fact: told.why.fact, value: told.why.value, words: told.why.words)
         // A question that was answered offers nothing more, and neither does what was taken back.
@@ -15,6 +17,24 @@ extension TiloSource {
         if case .question(let asked) = item.content, !asked.waits { over = true }
         item.offers = told.reaches && !over ? offers(of: told) : []
         item.raised = told.isSettled ? 0 : told.raised
+        item.toldAs = pushKey?.name(of: told.id)
+    }
+
+    /// Match a parsed notification route back to the server's `ToldThing` using either the
+    /// privacy-preserving `told` tag or an exact item/decision message identifier.
+    static func toldMatch(for route: ClosedRoute, in toldByMessage: [String: ToldThing], pushKey: ClosedKey?) -> ToldThing? {
+        if let tag = route.told, let pushKey,
+           let matched = toldByMessage.values.first(where: { pushKey.name(of: $0.id) == tag }) {
+            return matched
+        }
+        switch route.target {
+        case .item(let id, _):
+            return toldByMessage[name(of: id)]
+        case .decision(let id, _):
+            return toldByMessage[name(of: Item.ID(id.value))]
+        case .task, .told:
+            return nil
+        }
     }
 
     /// What a thing told offers, as far as this app can do it, as the buttons under its notice.

@@ -407,6 +407,8 @@ public struct LiveThing: Identifiable, Hashable, Sendable {
     public var id: ID
     /// What it is called, for people and for VoiceOver.
     public var title: String
+    /// The conversation it stands in: the one whose window shows it.
+    public var chat: Chat
     /// Whatever the source needs to find it again. Nothing but the source's own view reads it.
     public var reference: String
     /// Whether the source's view says how tall the thing is, as a view on live data does. One that
@@ -416,9 +418,11 @@ public struct LiveThing: Identifiable, Hashable, Sendable {
     /// source says so from what Tilo keeps of the share. Tilo decides when they ask.
     public var theirsToEnd: Bool
 
-    public init(id: ID, title: String, reference: String, sizesItself: Bool = false, theirsToEnd: Bool = false) {
+    public init(id: ID, title: String, chat: Chat = .main, reference: String,
+                sizesItself: Bool = false, theirsToEnd: Bool = false) {
         self.id = id
         self.title = title
+        self.chat = chat
         self.reference = reference
         self.sizesItself = sizesItself
         self.theirsToEnd = theirsToEnd

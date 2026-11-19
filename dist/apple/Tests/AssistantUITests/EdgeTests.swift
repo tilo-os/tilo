@@ -41,7 +41,7 @@ final class EdgeTests: XCTestCase {
         let lines = (1...40).map { "Line \($0) of a reply that is far longer than the window is high." }
         content.main = [Item(id: "long", at: Drawing.now, .message(Message(.assistant, lines.joined(separator: "\n\n"))))]
         content.tasks = []
-        let model = AssistantModel(source: MemorySource(content, now: { Drawing.now }))
+        let model = AssistantModel(source: MemorySource(content, now: { Drawing.now }), snapshots: cacheOfTheCheck())
         await model.prime()
         let view = AssistantRoot(model: model) {
             ConversationView(chat: .main).background(Token.content)

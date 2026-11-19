@@ -11,6 +11,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case assistant, mainChat = "main-chat", subAgents = "sub-agents", newSubAgent = "new-sub-agent"
     case search, searchField = "search-field", nothingFound = "nothing-found"
     case noSubAgents = "no-sub-agents", showSidebar = "show-sidebar", hideSidebar = "hide-sidebar", sidebar
+    case subAgentsCount = "sub-agents-count", clearSearch = "clear-search", searchShortcut = "search-shortcut"
     case working, needsYou = "needs-you", done, doneToday = "done-today", doneYesterday = "done-yesterday"
     case doneOn = "done-on", failed, stopped
     // The conversation.
@@ -18,7 +19,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case lineScheduled = "line-scheduled", lineActedAlone = "line-acted-alone"
     case replyOne = "reply-one", replyMany = "reply-many", important
     case showReplyOne = "show-reply-one", showReplyMany = "show-reply-many", hideReplies = "hide-replies"
-    case noReplies = "no-replies", conversation, you, waitsForAnswer = "waits-for-answer"
+    case noReplies = "no-replies", showingReplies = "showing-replies", conversation, you, waitsForAnswer = "waits-for-answer"
     case readyOne = "ready-one", readyMany = "ready-many", seeAllTasks = "see-all-tasks"
     case youChose = "you-chose", answering, moreBelow = "more-below", notTakenUp = "not-taken-up", earlier
     case thinking, atWork = "at-work", stepOne = "step-one", stepMany = "step-many", stepFailed = "step-failed"
@@ -27,6 +28,10 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case liveThing = "live-thing", attachment, selectText = "select-text"
     case reply, replyingTo = "replying-to", dropReply = "drop-reply", earlierMessage = "earlier-message", quote, selectToQuote = "select-to-quote"
     case viewNotOffered = "view-not-offered", liveNotShown = "live-not-shown", stopSharing = "stop-sharing"
+    case closeStage = "close-stage", openInStage = "open-in-stage", openFullScreen = "open-full-screen"
+    case openFullScreenNamed = "open-full-screen-named", back = "back"
+    case stagesCount = "stages-count", openLiveView = "open-live-view", noLiveViews = "no-live-views"
+    case backToConversation = "back-to-conversation"
     // The first run, in the main chat.
     case makingAssistant = "making-assistant", makingWorkspace = "making-workspace"
     case needsProvider = "needs-provider", providerKey = "provider-key"
@@ -64,6 +69,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
     case nothingActive = "nothing-active", nothingUpNext = "nothing-up-next"
     case nothingScheduled = "nothing-scheduled", nothingResolved = "nothing-resolved"
     case isOn = "is-on", showTasks = "show-tasks", hideTasks = "hide-tasks", changeByTelling = "change-by-telling"
+    case waitingCount = "waiting-count", showSubAgent = "show-sub-agent"
     // The assistant view.
     case assistantView = "assistant-view", assistantOn = "assistant-on", assistantPaused = "assistant-paused"
     case pause, resume, model, modelNote = "model-note", noModel = "no-model", noModelNote = "no-model-note", change
@@ -123,6 +129,9 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .showSidebar: "Show sidebar"
         case .hideSidebar: "Hide sidebar"
         case .sidebar: "Sidebar"
+        case .subAgentsCount: "{count} sub-agents"
+        case .searchShortcut: "Search ({shortcut})"
+        case .clearSearch: "Clear the search"
         case .working: "working"
         case .needsYou: "needs you"
         case .done: "done"
@@ -142,6 +151,7 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .showReplyMany: "Show {count} replies"
         case .hideReplies: "Hide replies"
         case .noReplies: "Nothing more to show"
+        case .showingReplies: "Showing the replies…"
         case .conversation: "Conversation"
         case .you: "You"
         case .waitsForAnswer: "Waiting for your answer"
@@ -174,6 +184,15 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .viewNotOffered: "This Tilo cannot show views in messages yet"
         case .liveNotShown: "Tilo could not show this"
         case .stopSharing: "Stop sharing"
+        case .closeStage: "Close the stage"
+        case .openInStage: "Open in stage"
+        case .openFullScreen: "Open full screen"
+        case .openFullScreenNamed: "Open {name} full screen"
+        case .back: "Back"
+        case .stagesCount: "{count} open live stages"
+        case .openLiveView: "Open a live view"
+        case .noLiveViews: "This conversation shared none yet"
+        case .backToConversation: "Back to the conversation"
         case .makingAssistant: "Setting up your assistant"
         case .makingWorkspace: "Tilo is making your workspace. The first time, this can take a few minutes."
         case .needsProvider: "No model provider is linked yet, so your assistant cannot answer. Choose a provider and type your own key for it below."
@@ -268,6 +287,8 @@ public enum AssistantWords: String, CaseIterable, Sendable {
         case .nothingResolved: "Nothing is resolved yet"
         case .isOn: "On"
         case .showTasks: "Show tasks"
+        case .waitingCount: "{count} waiting"
+        case .showSubAgent: "Shows what it is doing"
         case .hideTasks: "Hide tasks"
         case .changeByTelling: "Opens the chat, where you change it by telling your assistant"
         case .assistantView: "Assistant view"

@@ -48,7 +48,7 @@ final class KeyAgainTests: XCTestCase {
     }
 
     func testTheModelLineOffersAnotherKeyForEachLinkedProviderAndAnotherProviderWhereOneIsLeft() async throws {
-        let model = AssistantModel(source: MemorySource(linked))
+        let model = AssistantModel(source: MemorySource(linked), snapshots: cacheOfTheCheck())
         await model.prime()
         XCTAssertEqual(model.keyWays, [], "nothing is offered before the person's providers are read")
         model.loadModels()
@@ -59,7 +59,7 @@ final class KeyAgainTests: XCTestCase {
         // Where every provider is linked, each can be given another key and none is left to link.
         var both = linked
         both.providers = [anthropic, ProviderChoice(id: "gemini", name: "Google Gemini", isLinked: true)]
-        let every = AssistantModel(source: MemorySource(both))
+        let every = AssistantModel(source: MemorySource(both), snapshots: cacheOfTheCheck())
         await every.prime()
         every.loadModels()
         try await until("both providers to be read") { every.providers.count == 2 }
@@ -68,7 +68,7 @@ final class KeyAgainTests: XCTestCase {
         // Where none is linked the main chat shows the step by itself: the Model line adds no way of its own.
         var none = linked
         none.providers = [gemini]
-        let unlinked = AssistantModel(source: MemorySource(none))
+        let unlinked = AssistantModel(source: MemorySource(none), snapshots: cacheOfTheCheck())
         await unlinked.prime()
         unlinked.loadModels()
         try await until("the provider to be read") { unlinked.providers == [self.gemini] }

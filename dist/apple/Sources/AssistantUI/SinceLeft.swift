@@ -14,22 +14,43 @@ struct SinceLeftCard: View {
 
     var body: some View {
         CardBox(name: AssistantWords.sinceLeft.said, note: wording.mark(since.left)) {
-            lines(AssistantWords.sinceWaits.said, since.waits)
-            lines(AssistantWords.sinceDidAlone.said, since.didAlone)
-            lines(AssistantWords.sinceCameIn.said, since.cameIn)
+            lines(AssistantWords.sinceWaits.said, since.waits, isWaiting: true)
+            lines(AssistantWords.sinceDidAlone.said, since.didAlone, isWaiting: false)
+            lines(AssistantWords.sinceCameIn.said, since.cameIn, isWaiting: false)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(AssistantWords.sinceLeft.said)
     }
 
     @ViewBuilder
-    private func lines(_ name: String, _ all: [SinceLeft.Line]) -> some View {
+    private func lines(_ name: String, _ all: [SinceLeft.Line], isWaiting: Bool) -> some View {
         if !all.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
-                Fine(words: name).accessibilityAddTraits(.isHeader)
+                HStack(spacing: 8) {
+                    Fine(words: name).accessibilityAddTraits(.isHeader)
+                    if isWaiting {
+                        Spacer(minLength: 0)
+                        Button {
+                            model.openFirstWaiting(preferring: all)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Circle().fill(Token.you).frame(width: 6, height: 6)
+                                Text(AssistantWords.waitingCount.said(["count": String(all.count)]))
+                                    .font(.tilo(11.5, .semibold)).foregroundStyle(Token.ink)
+                            }
+                            .padding(.horizontal, 9).padding(.vertical, 3)
+                            .background(Token.youTint, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(AssistantWords.waitingCount.said(["count": String(all.count)]))
+                        .accessibilityHint(AssistantWords.waitsForAnswer.said)
+                    }
+                }
                 ForEach(all.prefix(SinceLeftCard.most)) { line in
                     if let item = line.item {
                         Button { model.show(item, in: .main) } label: { said(line) }.buttonStyle(.plain)
+                    } else if isWaiting {
+                        Button { model.openFirstWaiting(preferring: all) } label: { said(line) }.buttonStyle(.plain)
                     } else {
                         said(line)
                     }

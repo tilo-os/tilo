@@ -21,7 +21,7 @@ private func until(_ holds: () -> Bool, file: StaticString = #filePath, line: UI
 @MainActor
 final class StartTests: XCTestCase {
     func testUntilTheSourceHasSaidItNothingIsKnownOfWhetherTiloAnswers() async {
-        let model = AssistantModel(source: MemorySource())
+        let model = AssistantModel(source: MemorySource(), snapshots: cacheOfTheCheck())
         XCTAssertEqual(model.reach, .unknown, "the window held whether Tilo answers before anything had said it")
         await model.prime()
         XCTAssertEqual(model.reach, .reachable)
@@ -115,7 +115,7 @@ final class StartTests: XCTestCase {
 
     func testAMessageSentBeforeItIsKnownWaitsAndGoesOutOnceTheTryGetsIn() async throws {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.start()
         try await until { model.conversation(.main).isLoaded }
         source.set(Reach.unknown)
@@ -138,7 +138,7 @@ final class StartTests: XCTestCase {
 
     func testAMessageSentBeforeItIsKnownIsBackInTheFieldWithTheReasonWhereTheTryFails() async throws {
         let source = Drawing.source()
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.start()
         try await until { model.conversation(.main).isLoaded }
         source.set(Reach.unknown)
@@ -148,10 +148,11 @@ final class StartTests: XCTestCase {
         model.send(in: .main)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertNil(model.problem, "a message sent in the first seconds was said not to have gone before the try ended")
+        let optimistic = try XCTUnwrap(model.conversation(.main).items.last)
         source.set(Reach.unreachable)
-        try await until { model.problem != nil }
+        try await until { model.failedSend(for: optimistic.id) != nil }
         XCTAssertEqual(model.problem, AssistantWords.unreachable.said)
-        XCTAssertEqual(model.drafts[.main]?.text, "are you there", "what did not go through is back in the field")
+        XCTAssertEqual(model.failedSend(for: optimistic.id)?.reason, AssistantWords.unreachable.said)
         XCTAssertEqual(source.items().count, Drawing.mainChat.count)
     }
 }

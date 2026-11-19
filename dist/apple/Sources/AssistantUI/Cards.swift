@@ -175,14 +175,14 @@ struct SetupStep: View {
             case .makingWorkspace:
                 // Their server has been making their own workspace for a while: said here, so
                 // that nobody takes the wait for a window that stopped.
-                Fine(words: AssistantWords.makingWorkspace.said).padding(.leading, 14)
+                Fine(words: AssistantWords.makingWorkspace.said).padding(.leading, 12)
             case .makingAssistant:
                 // The first time: an assistant is being made for a person who keeps none.
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
                     Text(AssistantWords.makingAssistant.said).font(.body14).foregroundStyle(Token.ink2)
                 }
-                .padding(.leading, 14)
+                .padding(.leading, 12)
                 .accessibilityElement(children: .combine)
             case .noAssistant(let why):
                 Bubble { MarkdownText(text: why) }
@@ -325,7 +325,9 @@ struct ModelCard: View {
 
     var body: some View {
         let providers = ModelCard.providers(of: models)
-        let named = chosen?.name ?? answers
+        // What it answers on now, as the person's Tilo says it: a model chosen a moment ago is
+        // said once Tilo has taken it, so no two answers stand here at once.
+        let named = answers ?? chosen?.name
         Bubble { MarkdownText(text: (answers == nil ? AssistantWords.needsModel : AssistantWords.keyTaken).said) }
         CardBox(name: AssistantWords.model.said, note: ModelCard.note(chosen: chosen, among: models)) {
             if let named { Settled(words: AssistantWords.answersOn.said(["model": named])) }
@@ -344,9 +346,8 @@ struct ModelCard: View {
                 Text((named == nil ? AssistantWords.chooseModel : AssistantWords.change).said)
                     .font(.tilo(14, .medium)).foregroundStyle(Token.asst)
             }
-            .menuStyle(.button)
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
+            // The menu's own look, as the drawn button cannot colour a Mac menu's title.
+            .menuStyle(.borderlessButton)
             .fixedSize()
         }
     }

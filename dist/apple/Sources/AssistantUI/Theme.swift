@@ -74,7 +74,20 @@ public enum Measure {
     public static let sidebar: CGFloat = 250
     public static let panel: CGFloat = 340
     public static let column: CGFloat = 700
+    /// What stands between the edge of what shows and the conversation's column: a row's ground.
+    /// It is the drawing's gutter on a Mac, and the 16 points every row of a screen stands on,
+    /// and every leading edge of a phone's views — a strip, a card, a field — with it.
+    #if os(iOS)
+    public static let rowGutter: CGFloat = 16
+    #else
+    public static let rowGutter: CGFloat = 24
+    #endif
+    /// The drawing's gutter beside a conversation's column, where a window has area to keep it.
     public static let columnGutter: CGFloat = 24
+    /// How far in a piece stands from the ground its conversation stands on: a line that belongs to
+    /// the conversation but not to a bubble (a turn being written, a word about the person's own
+    /// message) stands this far in, under the bubbles' words rather than the bubbles' edge.
+    public static let pieceInset: CGFloat = 16
     /// What stays free under a conversation's last piece: `.col`'s `padding-bottom`.
     public static let columnFoot: CGFloat = 14
     /// How much of what shows of a conversation the opened steps of its turn may take before they
@@ -84,7 +97,10 @@ public enum Measure {
     /// what stays free under the last piece, so nothing that is at rest stands under a fade.
     public static let edgeFade: CGFloat = columnFoot
     public static let bubbleWidth: CGFloat = 500
-    public static let bubbleRadius: CGFloat = 14
+    /// A bubble's shape. A message of one line is a capsule, as the system's own bubbles are, and
+    /// grows into a rounded rectangle as its words take more lines; the two share these curves.
+    public static let bubbleRadius: CGFloat = 16
+    public static let bubbleRadiusShort: CGFloat = 18
     public static let rowRadius: CGFloat = 8
     public static let cardRadius: CGFloat = 12
     public static let fieldHeight: CGFloat = 58
@@ -151,10 +167,10 @@ extension View {
 }
 
 /// Draws text a little lower than the system lays it out. The system gives a taller line its
-/// extra room under the letters; a page shares it out above and under them, and so does the
+/// extra leading under the letters; a page shares it out above and under them, and so does the
 /// drawing. Nothing is measured differently: only where the letters are drawn in their line.
 struct MiddleOfLine: TextRenderer {
-    /// The share of a line that is extra room, halved: (1.45 - 1.22) / 1.45 / 2, where 1.22 is
+    /// The share of a line that is extra leading, halved: (1.45 - 1.22) / 1.45 / 2, where 1.22 is
     /// the face's own line.
     private static let share: CGFloat = 0.079
 

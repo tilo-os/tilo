@@ -19,7 +19,7 @@ import WebKit
 ///   site's own page, in the main frame, is heard.
 ///
 /// On an iPhone a web view runs its page only while it stands in a window, so the app puts
-/// `view` into its own, unseen (`EngineRoom`). A Mac needs no window for it.
+/// `view` into its own, unseen (`EngineRest`). A Mac needs no window for it.
 @MainActor
 public final class TiloEngine: NSObject {
     /// Where the page keeps what it keeps: the device's key, its certificate, the records.
@@ -77,6 +77,9 @@ public final class TiloEngine: NSObject {
         case notOfThisSite
         /// The page gave no answer that can be read.
         case noAnswer
+        /// What was asked for is done already: an answer told to stop that stopped by itself, a
+        /// thing taken away by another device first. Nothing is wrong, and nothing is said.
+        case alreadyDone
     }
 
     public let settings: ShellSettings
@@ -91,7 +94,13 @@ public final class TiloEngine: NSObject {
             guard state != oldValue else { return }
             if case .open = state {} else {
                 found.removeAll()
+                askedSizes.removeAll()
                 endAsks()
+                // Nothing is mounted in a page that is not there.
+                if !liveReportsNow.isEmpty {
+                    liveReportsNow.removeAll()
+                    for listener in liveListeners.values { listener.yield(liveReportsNow) }
+                }
             }
             for listener in stateListeners.values { listener.yield(state) }
         }
@@ -127,7 +136,7 @@ public final class TiloEngine: NSObject {
     private let ear = Ear()
     private var stateListeners: [UUID: AsyncStream<State>.Continuation] = [:]
     private var changeListeners: [UUID: AsyncStream<Void>.Continuation] = [:]
-    private var sizeListeners: [UUID: AsyncStream<(String, CGSize)>.Continuation] = [:]
+    private var sizeListeners: [UUID: AsyncStream<(String, CGSize?)>.Continuation] = [:]
     /// Whoever waits for the page's next word of a change, once.
     private var changeWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     /// How many loads in a row stopped since the page was last in. The first is loaded again
@@ -363,15 +372,20 @@ public final class TiloEngine: NSObject {
     }
 
     /// The size a live thing's content asks for, by the thing's id, as its mount in the page
-    /// says it: once it is known and whenever it changes, from now on.
-    public func contentSizes() -> AsyncStream<(String, CGSize)> {
-        let (stream, continuation) = AsyncStream.makeStream(of: (String, CGSize).self, bufferingPolicy: .bufferingNewest(32))
+    /// said it last: once known and whenever it changes, from now on. A thing whose content
+    /// asks for none says so with no size, and a thing taken down says so too.
+    public func contentSizes() -> AsyncStream<(String, CGSize?)> {
+        let (stream, continuation) = AsyncStream.makeStream(of: (String, CGSize?).self, bufferingPolicy: .bufferingNewest(32))
         let id = UUID()
         sizeListeners[id] = continuation
+        for known in askedSizes { continuation.yield((known.key, known.value)) }
         continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.sizeListeners[id] = nil } }
         return stream
     }
 
+    /// The size each live thing's content asked for most recently. A page that is left took its
+    /// things with it. Each is told once: one whose content asked for no size says nothing of it.
+    private var askedSizes: [String: CGSize] = [:]
     /// The app expects what the page holds to change soon: an agent is at work on what it
     /// shows. For `time`, a minute at most, every word of the page is handed on, also where
     /// nothing says that its device heard anything.
@@ -380,7 +394,9 @@ public final class TiloEngine: NSObject {
         view.callAsyncJavaScript("globalThis.__tiloLive?.expect(ms)", arguments: ["ms": ms], in: nil, in: .page, completionHandler: nil)
     }
 
-    /// The page's next word of a change: `false` when none came within `patience`.
+    /// The page's next word of a change: `false` when none came within `patience`, or when the
+    /// ask was cancelled. A cancelled wait takes its waiter with it at once: nothing of it stays
+    /// in the engine to be resumed later, and a page that never changes again leaves no waiter.
     public func nextChange(within patience: Duration) async -> Bool {
         let id = UUID()
         let timer = Task { [weak self] in
@@ -388,7 +404,19 @@ public final class TiloEngine: NSObject {
             guard !Task.isCancelled else { return }
             self?.changeWaiters.removeValue(forKey: id)?.resume(returning: false)
         }
-        let heard = await withCheckedContinuation { waiting in changeWaiters[id] = waiting }
+        // A wait that is still out when its ask is cancelled is ended here, and one that the
+        // page answered before its ask was cancelled is resumed where it stands.
+        let heard = await withTaskCancellationHandler {
+            await withCheckedContinuation { waiting in
+                guard !Task.isCancelled else {
+                    waiting.resume(returning: false)
+                    return
+                }
+                changeWaiters[id] = waiting
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in self?.changeWaiters.removeValue(forKey: id)?.resume(returning: false) }
+        }
         timer.cancel()
         return heard
     }
@@ -442,6 +470,38 @@ public final class TiloEngine: NSObject {
     /// What a resource reads as now, from the records the page holds: its `read` action's value.
     public func read(_ resource: String, _ arguments: [String: JSON] = [:], in live: String? = nil) async throws -> JSON {
         try await invoke("read", on: resource, arguments, in: live)["output"]?["value"] ?? .null
+    }
+
+    /// One word of how a live thing's mount went, as the page has it now: how many of its shows
+    /// are at work, how many ended without bringing it (and how many of those Tilo refused, so
+    /// that asking again would be answered the same), and whether it is mounted. The page's own
+    /// count, and no address or sentence: what a place says to a person is its app's to choose.
+    public struct LiveReports: Equatable, Sendable {
+        public var mounting: Int = 0
+        public var failed: Int = 0
+        public var refused: Int = 0
+        public var mounted = false
+    }
+
+    /// How the mounting of each live thing the engine asked for went, by the thing's id. A
+    /// place reads it to go on saying what it said where a mount the page never answered ended
+    /// with nothing on its own (`LiveStage.mountFailed`). Empty once the page is left.
+    public func liveReports() -> AsyncStream<[String: LiveReports]> {
+        let (stream, continuation) = AsyncStream.makeStream(of: [String: LiveReports].self, bufferingPolicy: .bufferingNewest(8))
+        let id = UUID()
+        liveListeners[id] = continuation
+        continuation.yield(liveReportsNow)
+        continuation.onTermination = { [weak self] _ in Task { @MainActor in self?.liveListeners[id] = nil } }
+        return stream
+    }
+
+    private var liveReportsNow: [String: LiveReports] = [:]
+    private var liveListeners: [UUID: AsyncStream<[String: LiveReports]>.Continuation] = [:]
+
+    /// Whether the mounting of a live thing has already failed without a word: the page counted
+    /// it before the engine finished answering.
+    func mountAlreadyFailed(_ id: String) -> Bool {
+        liveReportsNow[id]?.failed ?? 0 > 0
     }
 
     // MARK: Live things
@@ -517,7 +577,9 @@ public final class TiloEngine: NSObject {
             }
             view.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { [weak self] result in
                 let text = (try? result.get()) as? String
-                Task { @MainActor in
+                // Weak like the timer beside it: a page may answer long after whoever asked is
+                // gone, and an answer waited for by nobody is no reason for the engine to stay.
+                Task { @MainActor [weak self] in
                     giveUp.cancel()
                     self?.asked.removeValue(forKey: id)?.resume(returning: text)
                 }
@@ -637,11 +699,18 @@ public final class TiloEngine: NSObject {
             for waiter in waiting.values { waiter.resume(returning: true) }
         case "live":
             // What a live thing's content asks for. A page's number is a wish, never a command:
-            // it is taken only as a size a message can have.
-            guard let id = said["id"] as? String, let width = said["width"] as? Double, let height = said["height"] as? Double,
-                  width.isFinite, height.isFinite, width >= 0, height >= 0
-            else { return }
-            let size = CGSize(width: min(width, 4096), height: min(height, 4096))
+            // it is taken only as a size a message can have. No number is no size: the thing's
+            // content asks for none now.
+            guard let id = said["id"] as? String else { return }
+            var size: CGSize?
+            if let width = said["width"] as? Double, let height = said["height"] as? Double,
+               width.isFinite, height.isFinite, width > 0, height > 0 {
+                size = CGSize(width: min(width, 4096), height: min(height, 4096))
+            } else if said["width"] != nil || said["height"] != nil {
+                return
+            }
+            guard askedSizes[id] != size else { return }
+            askedSizes[id] = size
             for listener in sizeListeners.values { listener.yield((id, size)) }
         case "state":
             let details = said["details"] as? String ?? ""
@@ -657,6 +726,17 @@ public final class TiloEngine: NSObject {
             // A page may say its sentence first and show the details under it a moment later:
             // whoever was told how the try ended hears that there is more to it.
             if came { for listener in endListeners.values { listener.yield() } }
+        case "live-report":
+            // How the mounting of a live thing went, in the page's own count: read as what it
+            // counts, never as a sentence or an address.
+            guard let id = said["id"] as? String else { return }
+            let report = LiveReports(mounting: max(0, said["mounting"] as? Int ?? 0),
+                                     failed: max(0, said["failed"] as? Int ?? 0),
+                                     refused: max(0, said["refused"] as? Int ?? 0),
+                                     mounted: said["mounted"] as? Bool ?? false)
+            guard liveReportsNow[id] != report else { return }
+            liveReportsNow[id] = report
+            for listener in liveListeners.values { listener.yield(liveReportsNow) }
         case "look":
             // Light or dark, as the page says it of itself: one of two cases, and nothing else is taken.
             guard let dark = said["dark"] as? Bool else { return }
@@ -716,17 +796,9 @@ public final class TiloEngine: NSObject {
             // was asked for.
             let elsewhere = EngineAddress.isElsewhere(inside, than: wantedWorkspace)
             if parts.first != "/app/" || elsewhere {
-                guard moves > 0, let address = EngineAddress.page(of: EngineAddress.chat, in: elsewhere ? wantedWorkspace ?? inside : inside,
-                                                                  of: settings)
-                else {
-                    fail(elsewhere ? "The site opened another workspace than the one that was asked for"
-                        : "The site did not open the page that shows one app")
-                    return
+                if elsewhere { self.elsewhere(wantedWorkspace ?? inside) } else {
+                    fail("The site did not open the page that shows one app")
                 }
-                moves -= 1
-                wanted = address
-                state = .arriving("open")
-                load(address)
                 return
             }
             stops = 0
@@ -766,6 +838,21 @@ public final class TiloEngine: NSObject {
         }
     }
 
+    /// The page stands in another workspace than the one asked for, or shows something other
+    /// than the one app that was asked for: it is loaded again there, a few times at most. A
+    /// page that keeps coming back elsewhere is loaded again later, as a page that stopped is
+    /// (`stopped`), rather than left as it is: what it shows is not what was asked for.
+    private func elsewhere(_ place: String) {
+        guard moves > 0, let address = EngineAddress.page(of: EngineAddress.chat, in: place, of: settings) else {
+            fail("The site opened another workspace than the one that was asked for")
+            return
+        }
+        moves -= 1
+        wanted = address
+        state = .arriving("open")
+        load(address)
+    }
+
     /// The page stopped: on its way in, or after it was in. In a system web view the page
     /// before this one may still hold the lock on its storage as the next asks for it, and the
     /// next then stops; loaded again a moment later it gets in. So the first stop is not said:
@@ -790,6 +877,8 @@ public final class TiloEngine: NSObject {
             if pairs { return }
         }
         let pause = min(stopPause * (1 << min(before, 6)), .seconds(60))
+        // A page that kept coming back elsewhere than asked for may do so again.
+        moves = 3
         retrying?.cancel()
         retrying = Task { [weak self] in
             try? await Task.sleep(for: pause)

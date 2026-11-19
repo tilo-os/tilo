@@ -17,6 +17,26 @@ public struct Sidebar: View {
         self.chose = chose
     }
 
+    /// What the sub-agents' head says of them beside their name: how many wait for the person,
+    /// how many are at work, and how many are done, failed or stopped. Nothing while there are none.
+    private var stood: String {
+        let agents = model.subAgents
+        guard !agents.isEmpty else { return "" }
+        let finished: Set<SubAgent.State> = [.done, .failed, .stopped]
+        var parts: [String] = []
+        for state in [SubAgent.State.needsYou, .working, .done] {
+            let count = agents.filter { finished.contains(state) ? finished.contains($0.state) : $0.state == state }.count
+            guard count > 0 else { continue }
+            let words: String = switch state {
+            case .needsYou: AssistantWords.needsYou.said
+            case .working: AssistantWords.working.said
+            default: AssistantWords.done.said
+            }
+            parts.append("\(count) \(words)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
@@ -41,8 +61,11 @@ public struct Sidebar: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Token.ink3)
+                // The window's Find brings up the search of the conversation it shows, with no
+                // menu line of its own: the shortcut is said where the button is.
+                .keyboardShortcut("f", modifiers: .command)
                 .accessibilityLabel(AssistantWords.search.said)
-                .tip(AssistantWords.search.said)
+                .tip(AssistantWords.searchShortcut.said(["shortcut": "⌘F"]))
                 .popover(isPresented: $searches) { SearchList { chose() } }
             }
             .padding(EdgeInsets(top: 6, leading: 8, bottom: 14, trailing: 8))
@@ -71,7 +94,14 @@ public struct Sidebar: View {
             .accessibilityValue(model.isWriting(.main) ? AssistantWords.answering.said : "")
 
             HStack {
-                Text(AssistantWords.subAgents.said).font(.small12).foregroundStyle(Token.ink3)
+                // How many there are and which of them wait for the person: the head says it once,
+                // above the rows that say it each, so the list is read without opening a row.
+                // Where there are none, the list under it already says so: nothing repeated.
+                let stood = self.stood
+                Text(stood.isEmpty ? AssistantWords.subAgents.said : "\(AssistantWords.subAgents.said) · \(stood)")
+                    .font(.small12).foregroundStyle(Token.ink3)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .accessibilityLabel(AssistantWords.subAgents.said)
                     .accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 0)
                 Button {
@@ -217,10 +247,24 @@ struct SearchList: View {
         let chat = model.chat ?? .main
         let found = words.count < 2 ? [] : model.conversation(chat).items.filter { $0.said.localizedCaseInsensitiveContains(words) }
         VStack(alignment: .leading, spacing: 8) {
-            TextField(AssistantWords.searchField.said, text: $words)
-                .textFieldStyle(.plain).font(.body14)
-                .padding(.horizontal, 10).padding(.vertical, 7)
-                .background(Token.raised, in: RoundedRectangle(cornerRadius: Measure.rowRadius))
+            HStack(spacing: 8) {
+                TextField(AssistantWords.searchField.said, text: $words)
+                    .textFieldStyle(.plain).font(.body14)
+                // The field's words come off with one press: the next search begins at nothing.
+                if !words.isEmpty {
+                    Button {
+                        words = ""
+                    } label: {
+                        Glyph(.x, side: 11).contentShape(Rectangle().inset(by: -6))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Token.ink3)
+                    .accessibilityLabel(AssistantWords.clearSearch.said)
+                    .tip(AssistantWords.clearSearch.said)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(Token.raised, in: RoundedRectangle(cornerRadius: Measure.rowRadius))
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
                     if words.count >= 2, found.isEmpty {
@@ -248,5 +292,9 @@ struct SearchList: View {
         .padding(12)
         .frame(minWidth: 300, idealWidth: 340, minHeight: 240, idealHeight: 320)
         .background(Token.content)
+        // A popover on an iPhone is a sheet, whose own drag puts it away; there it is said as such.
+        #if os(iOS)
+        .presentationBackground(Token.content)
+        #endif
     }
 }

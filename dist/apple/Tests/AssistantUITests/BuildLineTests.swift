@@ -40,7 +40,7 @@ final class BuildLineTests: XCTestCase {
     }
 
     private func hosted(_ content: MemorySource.Content, build: String?, @ViewBuilder _ view: () -> some View) async -> Hosted {
-        let model = AssistantModel(source: MemorySource(content, now: { Drawing.now }))
+        let model = AssistantModel(source: MemorySource(content, now: { Drawing.now }), snapshots: cacheOfTheCheck())
         await model.prime()
         let rooted = AssistantRoot(model: model) { view().background(Token.content) }
             .environment(\.buildSaid, build)

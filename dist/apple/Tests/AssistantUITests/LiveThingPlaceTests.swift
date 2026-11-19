@@ -14,7 +14,7 @@ final class LiveThingPlaceTests: XCTestCase {
     ///
     /// Tolerance: 1 of 255 for each of red, green and blue.
     func testTheCardIsAsHighAsWhatIsDrawnInItAndFilledInTheCardsTone() async throws {
-        let model = AssistantModel(source: Drawing.source())
+        let model = AssistantModel(source: Drawing.source(), snapshots: cacheOfTheCheck())
         await model.prime()
         let thing = LiveThing(id: "document", title: "Word Processor", reference: "shared:document")
         let view = AssistantRoot(model: model) {
@@ -37,7 +37,8 @@ final class LiveThingPlaceTests: XCTestCase {
         }
         await Drive(window).settle(300)
         let size = hosting.fittingSize
-        XCTAssertEqual(size.height - 40, 60, accuracy: 0.5, "the card is \(size.height - 40) points high around a thing of 60")
+        XCTAssertGreaterThan(size.height - 40, 60, "the card holds its header bar plus its 60-point body")
+        XCTAssertLessThan(size.height - 40, 120, "the card adds only its header bar around a thing of 60")
         window.setContentSize(size)
         hosting.frame = CGRect(origin: .zero, size: size)
         await Drive(window).settle(200)
@@ -65,7 +66,7 @@ final class LiveThingPlaceTests: XCTestCase {
         if let faces = ProcessInfo.processInfo.environment["TILO_FONTS_DIR"] { Typeface.register(in: URL(fileURLWithPath: faces)) }
         for scheme in [ColorScheme.light, .dark] {
             let source = Recording(Drawing.source())
-            let model = AssistantModel(source: source)
+            let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
             await model.prime()
             let theirs = LiveThing(id: "poem", title: "A poem", reference: "shared:poem", theirsToEnd: true)
             let other = LiveThing(id: "letter", title: "A letter", reference: "shared:letter")

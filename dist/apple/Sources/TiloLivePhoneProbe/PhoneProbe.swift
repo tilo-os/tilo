@@ -5,7 +5,7 @@ import TiloLive
 import UIKit
 
 // The engine in an iPhone app with nothing of Tilo on its screen, for a check to drive in a
-// simulator. Its one view is the engine's unseen place (`EngineRoom`) in the app's root view:
+// simulator. Its one view is the engine's unseen place (`EngineRest`) in the app's root view:
 // where an iPhone app that uses TiloLive puts it, because a web view runs its page there only
 // while it stands in a window.
 //
@@ -212,7 +212,7 @@ struct PhoneProbeApp: App {
             // Nothing of Tilo is on the screen: the engine's place takes no room.
             ZStack {
                 Color.black.ignoresSafeArea()
-                if let stage = probe.stage { EngineRoom(stage: stage) }
+                if let stage = probe.stage { EngineRest(stage: stage) }
             }
             .task { probe.run() }
         }

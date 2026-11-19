@@ -152,7 +152,7 @@ final class GrowingReplyTests: XCTestCase {
         }
         NSApplication.shared.setActivationPolicy(.prohibited)
         let source = MemorySource(content, now: { Drawing.now })
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         model.start()
         let size = CGSize(width: 402, height: 874)
         let window = HeldWindow.make(NSRect(origin: .zero, size: size), [.borderless])

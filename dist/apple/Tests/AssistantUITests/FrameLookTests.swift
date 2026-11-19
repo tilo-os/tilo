@@ -60,7 +60,7 @@ final class FrameLookTests: XCTestCase {
         content.tasks = []
         content.look = look
         let source = MemorySource(content, now: { Drawing.now })
-        let model = AssistantModel(source: source)
+        let model = AssistantModel(source: source, snapshots: cacheOfTheCheck())
         await model.prime()
         model.start()
         let seen = Seen()

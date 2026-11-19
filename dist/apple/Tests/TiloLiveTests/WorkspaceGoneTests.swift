@@ -532,7 +532,7 @@ final class WorkspaceGoneTests: XCTestCase {
         XCTAssertTrue(entry.contains("document.documentElement.dataset.connection = reading.state;"),
                       "an open page no longer says on its root how its connection stands")
         let connection = try String(contentsOf: web.appendingPathComponent("connection-status.mjs"), encoding: .utf8)
-        XCTAssertTrue(connection.contains("kind: '\(TiloEngine.cut)',"), "web/connection-status.mjs calls a connection that is cut by another name")
+        XCTAssertTrue(connection.contains("'\(TiloEngine.cut)'"), "web/connection-status.mjs calls a connection that is cut by another name")
         // What says nothing of a workspace that is gone.
         for name in ["", "refused", "removed", "no-access", "invitation-only", "unreachable", "stopped"] {
             XCTAssertFalse(TiloEngine.gone(failure: name, status: "Couldn’t open Lounge. The workspace did not let you in."), name)

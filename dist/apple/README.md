@@ -234,7 +234,7 @@ and hears only that site's page in the main frame.
 A web view in no window calls its page hidden and asks it for no frame, and Tilo's page is in
 only once it drew one. So while nobody sees the page a clock asks for its frames, slowly; while
 someone does, the screen asks (`EngineScript`). On an iPhone a web view runs its page only in a
-window: the app puts `EngineRoom` into its root view, which takes no room.
+window: the app puts `EngineRest` into its root view, which takes no area.
 
 **A live thing** (`TiloLiveView`) is one app on one record, drawn by Tilo's own runtime inside a
 native view. It is one more mount in the engine's own document, through the page's own
@@ -242,7 +242,7 @@ connection, so it is the same device: a second web view of the same store would 
 key of its own, which a paired device cannot certify. The engine's one web view is what the
 native view shows. So one thing is live at a time: the others show the picture taken as they
 left the front, and wake when they come to it (`LiveStage`). In a message it is looked at and
-takes no touch, so the conversation scrolls over it; when the person hops in it fills its room
+takes no touch, so the conversation scrolls over it; when the person hops in it fills its area
 and the keyboard is its own, on the same mount.
 
 **Where a paired device stands.** A site lets a new device in where it lets people in, which

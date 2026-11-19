@@ -36,6 +36,7 @@ public struct TasksPanel: View {
                 }
                 .accessibilityLabel(AssistantWords.close.said)
                 .tip(AssistantWords.close.said)
+                .keyboardShortcut(.cancelAction)
             }
             .buttonStyle(.plain)
             .foregroundStyle(Token.ink3)
@@ -90,6 +91,20 @@ public struct TasksPanel: View {
         .accessibilityLabel(AssistantWords.tasks.said)
     }
 
+    /// The groups of what is in work: what waits for the person first, since the count that waits
+    /// for them opens this panel. Where none waits, the group that asks something stands first and
+    /// what is ready for a review next; work that waits for no one keeps the last. The order is the
+    /// same everywhere, so a panel opened by a press is read from its top.
+    private var activeGroups: [(AssistantWords, AssistantTask.State, Sign)] {
+        let waiting: [(AssistantWords, AssistantTask.State, Sign)] = [
+            (.needsInput, .needsInput, .ask), (.readyForReview, .readyForReview, .check),
+        ]
+        let rest: [(AssistantWords, AssistantTask.State, Sign)] = [(.inProgress, .inProgress, .run)]
+        // One that waits for the person stands first: that is what the count that opened the panel means.
+        let ordered = waiting.sorted { !model.tasks($0.1).isEmpty && model.tasks($1.1).isEmpty }
+        return ordered + rest
+    }
+
     private func name(_ tab: AssistantModel.PanelTab) -> String {
         switch tab {
         case .active: AssistantWords.active.said
@@ -100,9 +115,7 @@ public struct TasksPanel: View {
     }
 
     @ViewBuilder private var active: some View {
-        let groups: [(AssistantWords, AssistantTask.State, Sign)] = [
-            (.readyForReview, .readyForReview, .check), (.needsInput, .needsInput, .ask), (.inProgress, .inProgress, .run),
-        ]
+        let groups: [(AssistantWords, AssistantTask.State, Sign)] = activeGroups
         if groups.allSatisfy({ model.tasks($0.1).isEmpty }) { Empty(words: .nothingActive) }
         ForEach(groups, id: \.0) { name, state, sign in
             let tasks = model.tasks(state)

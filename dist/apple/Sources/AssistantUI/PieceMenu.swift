@@ -41,11 +41,12 @@ public enum PieceAction: CaseIterable, Sendable {
 }
 
 extension AssistantModel {
-    /// Do what a row of a piece's menu says.
-    public func take(_ action: PieceAction, of words: PieceWords) {
+    /// Do what a row of a piece's menu says. `chat` is the conversation the piece stands in, where
+    /// it is not the one the window shows: Reply then answers it in the chat it stands in.
+    public func take(_ action: PieceAction, of words: PieceWords, in chat: Chat? = nil) {
         switch action {
         case .reply:
-            reply(to: words.id, saying: words.text)
+            reply(to: words.id, saying: words.text, in: chat)
         case .quote:
             // A quote is a part of the words: they are laid out, and the person selects it there.
             var laid = words
@@ -70,24 +71,33 @@ struct PieceMenu: ViewModifier {
     let words: PieceWords?
     /// Whether, on a Mac, a drag marks the words where they stand: a message's do.
     var marks = false
+    /// Whether Reply answers the piece where it stands. A bubble in a conversation without a field
+    /// of its own (the Tasks panel, a task's replies read apart) carries its conversation, so that
+    /// the answer stands above the field of the chat the person answers in.
+    var answersInPlace = true
     @Environment(AssistantModel.self) private var model
+
+    /// What the piece replies to: itself, and the chat it is answered in where that is not the open one.
+    private func replies(_ words: PieceWords) {
+        model.reply(to: words.id, saying: words.text, in: answersInPlace ? nil : model.chat)
+    }
 
     func body(content: Content) -> some View {
         if let words {
             content
                 #if os(macOS)
                 .modifier(MarkedInPlace(rows: marks ? PieceAction.allCases.map { action in
-                    SecondButtonView.Row(title: action.words.said) { model.take(action, of: words) }
+                    SecondButtonView.Row(title: action.words.said) { model.take(action, of: words, in: answersInPlace ? nil : model.chat) }
                 } : nil))
                 #else
                 // Lifted by its menu on an iPhone, the piece keeps its round corners.
                 .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: Measure.bubbleRadius))
                 // A swipe to the right answers the piece, as Reply in its menu does.
-                .modifier(SwipeToReply { model.take(.reply, of: words) })
+                .modifier(SwipeToReply { replies(words) })
                 #endif
                 .contextMenu {
                     ForEach(PieceAction.allCases, id: \.self) { action in
-                        Button(action.words.said) { model.take(action, of: words) }
+                        Button(action.words.said) { model.take(action, of: words, in: answersInPlace ? nil : model.chat) }
                     }
                 }
         } else {

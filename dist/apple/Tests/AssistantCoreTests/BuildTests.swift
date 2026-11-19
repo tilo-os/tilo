@@ -187,7 +187,7 @@ final class BuildTests: XCTestCase {
         [
             "com.apple.security.app-sandbox": true, "com.apple.security.network.client": true,
             "com.apple.security.device.microphone": true, "com.apple.security.device.audio-input": true,
-            "com.apple.security.files.user-selected.read-only": true,
+            "com.apple.security.files.user-selected.read-write": true,
         ]
     }
     private static let macSigned = [

@@ -8,6 +8,6 @@
   <!-- Dictation. The first key is the sandbox's, the second the hardened runtime's. -->
   <key>com.apple.security.device.microphone</key><true/>
   <key>com.apple.security.device.audio-input</key><true/>
-  <!-- A file the person picks to attach. -->
-  <key>com.apple.security.files.user-selected.read-only</key><true/>
+  <!-- Files and folders the person picks to attach or authorize for local coding agents. -->
+  <key>com.apple.security.files.user-selected.read-write</key><true/>
 </dict></plist>
