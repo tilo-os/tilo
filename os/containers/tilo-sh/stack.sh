@@ -72,7 +72,7 @@ stack.sh: tilo.sh, whole, on this machine, from this checkout.
                          the server starts with as its owner, as production's
                          TILO_WORKSPACES_OWNERS names its own, approves an API
                          key on the spot. Prints export TILO_API_KEY=…, so
-                         eval "$(stack.sh owner --here)" holds it; stack.sh env
+                         eval "\$(stack.sh owner --here)" holds it; stack.sh env
                          exports it from then on
   stack.sh tilo ARGS...  tilo as that owner, with their key:
                          stack.sh tilo workspace people wait-list -w <lounge id>
@@ -154,8 +154,8 @@ reached through that one, its iroh endpoint on every address, so people on
 other networks join it with an invitation over iroh while nothing of the
 stack is on the web. Its invitation links then carry the server's signed
 address themselves (under https://tilo.sh, or TILO_SH_INVITE_ENTRY), and
-`tilo login '<link>'` joins with one from anywhere. The state keeps it for
-`restart server` and `restart api`; an empty value goes back to the stack's
+\`tilo login '<link>'\` joins with one from anywhere. The state keeps it for
+\`restart server\` and \`restart api\`; an empty value goes back to the stack's
 own relay.
 
 A running stack belongs to the checkout that started it: up, down and restart
