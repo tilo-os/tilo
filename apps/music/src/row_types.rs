@@ -24,6 +24,12 @@ pub(crate) struct Player;
 #[row(kind = "music.queue", label = "Queue", effects = crate::actions::MusicEffect)]
 pub(crate) struct Queue;
 
+/// A view of the library (Downloads, Liked, Albums), as a place a link or a
+/// search opens.
+#[derive(tilo_resource::Row)]
+#[row(kind = "music.view", label = "View")]
+pub(crate) struct View;
+
 /// One occurrence in this device's queue.
 #[derive(tilo_resource::Row)]
 #[row(

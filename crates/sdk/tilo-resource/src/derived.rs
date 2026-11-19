@@ -236,6 +236,9 @@ struct Place {
     field: Option<String>,
     label: String,
     kind: Option<String>,
+    /// The declared type it is an entity of ([`Derived::typed`]): what search
+    /// names it by, as a document's item names its own type.
+    words: Option<tilo_actions::ResourceType>,
     actions: Vec<BoundVerb>,
     effects: Vec<tilo_actions::ActionSpec>,
     /// What each of `effects` was made from, in order.
@@ -281,6 +284,7 @@ impl PartialEq for Place {
             && self.field == other.field
             && self.label == other.label
             && self.kind == other.kind
+            && self.words == other.words
             && self.actions == other.actions
             && self.offers == other.offers
             && !self.offers.contains(&Offer::Asking)
@@ -339,6 +343,9 @@ impl Place {
         for effect in &self.effects {
             child = child.with_action(effect.clone());
         }
+        if let Some(words) = &self.words {
+            child = child.with_type(words.clone());
+        }
         child.with_children(
             self.children
                 .iter()
@@ -374,6 +381,7 @@ impl<R> Derived<R> {
                 field: None,
                 label,
                 kind: None,
+                words: None,
                 actions: Vec::new(),
                 effects: Vec::new(),
                 offers: Vec::new(),
@@ -396,6 +404,16 @@ impl<R> Derived<R> {
     #[must_use]
     pub fn of_kind(mut self, kind: impl Into<String>) -> Self {
         self.place.kind = Some(kind.into());
+        self
+    }
+
+    /// Say what the place is as people name it: it is an entity of the
+    /// declared row type `R`, so search names it by `R`'s words and
+    /// [`LiveRow::declared`](crate::row::LiveRow::declared) publishes it as a
+    /// row of that type.
+    #[must_use]
+    pub fn typed<T: crate::words::RowType>(mut self) -> Self {
+        self.place.words = Some(T::words());
         self
     }
 

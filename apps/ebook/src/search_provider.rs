@@ -676,7 +676,7 @@ impl BookSearch {
     pub(crate) fn resolve(&self, id: &str) -> Option<LiveRow> {
         self.found(id).map(|found| match found {
             Found::Row(row) => row,
-            Found::Place(place) => LiveRow::from_resource(*place),
+            Found::Place(place) => LiveRow::declared(*place),
         })
     }
 

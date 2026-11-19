@@ -237,6 +237,12 @@ fn a_row_binds_its_own_state_into_the_effects_it_offers() {
 }
 
 #[test]
+#[should_panic(expected = "names none")]
+fn a_resource_no_declaration_shaped_is_not_a_row() {
+    let _ = LiveRow::declared(tilo_actions::ResourceSpec::new("x", "test.none", "None"));
+}
+
+#[test]
 fn a_row_asks_the_value_it_would_act_with_as_the_default() {
     let bindings = tilo_resource::RowBindings::new().bind_asking(
         TransferEffect::PAUSE,

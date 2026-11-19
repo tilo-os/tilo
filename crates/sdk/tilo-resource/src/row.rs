@@ -352,16 +352,25 @@ impl LiveRow {
         self
     }
 
-    /// `resource`, an entity the surface already describes as a resource
-    /// (a search hit, a catalogue entry), as a row: its presentation,
-    /// views, operations and children. Its document actions are dropped at
-    /// any depth: the resource's own publication carries them.
+    /// `resource`, an entity a declaration shaped — a document's child, a
+    /// search hit's place, a tree a declared type's verbs built — as a row:
+    /// its presentation, views, operations and children, its document
+    /// actions dropped at any depth (the resource's own publication carries
+    /// them). The entity says what it is (its type's words), so search names
+    /// it by that and its type's effects are the ones it offers.
     ///
-    /// Framework-internal, beside [`Self::new`]: the row takes whatever the
-    /// resource carries rather than a declared type's words and effects, so
-    /// nothing here says what it is to search.
-    #[doc(hidden)]
-    pub fn from_resource(resource: ResourceSpec) -> Self {
+    /// # Panics
+    /// When `resource` names no declared type: an entity no declaration
+    /// shaped has no words to be searched by and no type whose effects it
+    /// offers, so it is not a row. Publish it as one with
+    /// [`Self::typed`](Self::typed) instead.
+    #[must_use]
+    pub fn declared(resource: ResourceSpec) -> Self {
+        assert!(
+            resource.resource_type.is_some(),
+            "a row is an entity of a declared type, and `{}` names none",
+            resource.id.as_str()
+        );
         Self {
             resource: std::rc::Rc::new(crate::share::resolved_outside_document(resource)),
         }
