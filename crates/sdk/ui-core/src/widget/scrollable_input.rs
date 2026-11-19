@@ -246,6 +246,7 @@ impl Scrollable {
     /// Returns whether anything moved.
     pub(super) fn pan(&mut self, dx: f32, dy: f32) -> bool {
         let now = crate::motion::frame_now();
+        let drawn_before = self.drawn_offset();
         let hand = vello::kurbo::Vec2::new(f64::from(dx), f64::from(dy));
         let viewport = self.band_viewport();
         let rest = self.band.take_in(hand, viewport, self.motion, now);
@@ -270,6 +271,10 @@ impl Scrollable {
         );
         if excess != vello::kurbo::Vec2::ZERO {
             self.band.pull(excess, viewport, self.motion, now);
+        }
+        // The give moves what the content is placed at, as a scroll does.
+        if self.drawn_offset() != drawn_before {
+            self.scroll_unplaced = true;
         }
         let gave = took_in || self.band.is_stretched(now);
         if gave {

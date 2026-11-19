@@ -214,6 +214,21 @@ tilo_test_env::scenario! {
         });
     }
 
+    phase a_pan_that_only_pulls_the_give_asks_for_the_layout_that_places_it;
+    {
+        use crate::time::testing::with_monotonic_time;
+        let mut s = vertical(1000.0);
+        with_monotonic_time(crate::time::now(), || {
+            assert!(!s.is_layout_dirty(), "a rested view places nothing");
+            assert!(s.pan(0.0, -60.0), "the give is a move");
+            assert_ne!(s.drawn_offset(), (0.0, 0.0), "the content is drawn given");
+            assert!(
+                s.is_layout_dirty(),
+                "the content is placed where it is drawn, so the frame lays it out"
+            );
+        });
+    }
+
     phase a_browsers_swipe_past_the_top_springs_back_once_it_pauses;
     {
         use crate::time::testing::with_monotonic_time;
