@@ -293,8 +293,21 @@ impl ResourceApp for RowPublishingApp {
                             .row(LiveRow::typed::<Job>("job:3:step", "Sweep step")),
                     ]
                 })
-                .row_status(|id| {
-                    (id == "job:2" || id == "job:3:step")
+                .row_status(|id| match id {
+                    "job:1" => vec![
+                        EffectStatus::described(JobEffect::STOP, "This job can be stopped now")
+                            .on(id),
+                    ],
+                    "job:2" => vec![
+                        EffectStatus::unavailable(
+                            JobEffect::STOP,
+                            "busy",
+                            "This job is busy and cannot be stopped now",
+                        )
+                        .on(id)
+                        .with_phrase("job:2"),
+                    ],
+                    _ => (id == "job:3:step")
                         .then(|| {
                             EffectStatus::unavailable(
                                 JobEffect::STOP,
@@ -304,7 +317,7 @@ impl ResourceApp for RowPublishingApp {
                             .on(id)
                         })
                         .into_iter()
-                        .collect()
+                        .collect(),
                 })
                 .item_presentation(|field, id| {
                     (field == "jobs").then(|| tilo_actions::ResourcePresentation {
@@ -349,6 +362,26 @@ fn a_row_status_and_an_items_presentation_reach_the_published_tree() {
             reason: "This job is busy and cannot be stopped now".into(),
         },
         "the status is about this row alone"
+    );
+
+    assert_eq!(
+        stop.contract.confirmation,
+        tilo_actions::ConfirmationPolicy::Phrase {
+            phrase: "job:2".into()
+        },
+        "a status says what its caller types to confirm the effect here"
+    );
+
+    let idle = find(&resources, "job:1").expect("the first job is published");
+    let stop = idle
+        .actions
+        .iter()
+        .find(|action| action.id == "stop")
+        .unwrap();
+    assert_eq!(
+        stop.description.as_deref(),
+        Some("This job can be stopped now"),
+        "a status says what the effect does on this row"
     );
 
     let nested = find(&resources, "job:3:step").expect("a nested row is published");
