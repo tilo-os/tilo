@@ -1816,7 +1816,10 @@ mod tests {
                     ["--seccomp".to_string(), crate::SECCOMP_CHILD_FD.to_string()],
                 );
             }
-            let outcome = crate::BwrapExecutor.execute(&command).unwrap();
+            let outcome = crate::BwrapExecutor
+                .start(&command)
+                .and_then(|program| program.wait())
+                .unwrap();
             assert!(outcome.success, "{profile:?}: {outcome:?}");
             assert_eq!(
                 std::fs::read_to_string(&immutable_lock).unwrap(),
@@ -1982,7 +1985,9 @@ mod tests {
         } else {
             command.bwrap_argv.drain(shim..=separator);
         }
-        let outcome = crate::BwrapExecutor.execute(&command);
+        let outcome = crate::BwrapExecutor
+            .start(&command)
+            .and_then(|program| program.wait());
         std::fs::remove_file(socket).unwrap();
         assert!(
             outcome.as_ref().is_ok_and(|result| result.success),

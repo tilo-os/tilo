@@ -211,25 +211,6 @@ where
             .map_err(Into::into)
     }
 
-    /// Take up the programs the desktop kept through its last restart: each is open again, ended
-    /// and reported as one this service started.
-    fn take_back(&self) {
-        for taken in self.service.taken_back() {
-            if let Err(error) = crate::programs::watch(
-                &self.programs,
-                &taken.entry_id,
-                &taken.workspace_id,
-                &taken.display_name,
-                taken.program,
-                // An appliance program closes inside Windows, as it did before the restart.
-                !crate::vm_adapter::is_appliance_entry(&taken.entry_id),
-                self.service.release_taken_back(),
-            ) {
-                tracing::warn!(%error, "a kept Windows program is not watched");
-            }
-        }
-    }
-
     fn launch_entry(
         &self,
         entry: &RegisteredProgram,
@@ -282,26 +263,6 @@ where
             .map_err(Into::into)
     }
 
-    fn install_in_capsule(
-        &self,
-        source: File,
-        source_name: &str,
-        workspace_id: &str,
-        capabilities: &[CapOverride],
-        expected: &crate::VmInstallerInput,
-    ) -> Result<crate::InstallReceipt, SessionError> {
-        self.service
-            .install_in_capsule(
-                source,
-                source_name,
-                workspace_id,
-                capabilities,
-                try_unix_now(),
-                expected,
-            )
-            .map_err(Into::into)
-    }
-
     fn install_in_vm(
         &self,
         source: File,
@@ -340,17 +301,6 @@ where
             .map_err(Into::into)
     }
 
-    fn retry_install(
-        &self,
-        capsule_id: &str,
-        workspace_id: &str,
-        capabilities: &[CapOverride],
-    ) -> Result<crate::InstallReceipt, SessionError> {
-        self.service
-            .retry_install(capsule_id, workspace_id, capabilities, try_unix_now())
-            .map_err(Into::into)
-    }
-
     fn escalate_install_to_vm(
         &self,
         capsule_id: &str,
@@ -367,17 +317,6 @@ where
             .map_err(Into::into)
     }
 
-    fn vendor_uninstall(
-        &self,
-        capsule_id: &str,
-        workspace_id: &str,
-        capabilities: &[CapOverride],
-    ) -> Result<crate::InstallReceipt, SessionError> {
-        self.service
-            .vendor_uninstall(capsule_id, workspace_id, capabilities, try_unix_now())
-            .map_err(Into::into)
-    }
-
     fn delete_data(&self, capsule_id: &str) -> Result<(), SessionError> {
         self.service.delete_capsule(capsule_id).map_err(Into::into)
     }
@@ -390,6 +329,121 @@ where
     E: SandboxExecutor + 'static,
     V: VmDelegate + 'static,
 {
+    /// Take up the programs the desktop kept through its last restart: each is open again, ended
+    /// and reported as one this service started.
+    fn take_back(self: &Arc<Self>) {
+        for taken in self.service.taken_back() {
+            let release = self.service.release_taken_back();
+            // A setup kept through the restart closes its transaction when it ends, as it would
+            // have before.
+            let program = match self.service.setup_entry(&taken.entry_id) {
+                Some(capsule) => self.finishing(capsule, taken.program),
+                None => taken.program,
+            };
+            if let Err(error) = crate::programs::watch(
+                &self.programs,
+                &taken.entry_id,
+                &taken.workspace_id,
+                &taken.display_name,
+                program,
+                // An appliance program closes inside Windows, as it did before the restart.
+                !crate::vm_adapter::is_appliance_entry(&taken.entry_id),
+                release,
+            ) {
+                tracing::warn!(%error, "a kept Windows program is not watched");
+            }
+        }
+    }
+
+    /// `program`, the setup or uninstaller of `capsule`, closing its transaction when it ended.
+    fn finishing(
+        self: &Arc<Self>,
+        capsule: String,
+        program: Box<dyn crate::StartedProgram>,
+    ) -> Box<dyn crate::StartedProgram> {
+        // Weak: the service may end before the program does, and then has nothing to close.
+        let managed = Arc::downgrade(self);
+        crate::programs::finishing(program, move |outcome| {
+            if let Some(managed) = managed.upgrade()
+                && let Err(error) = managed.service.finish_setup(&capsule, outcome)
+            {
+                tracing::warn!(%error, "a Windows setup's end is not recorded");
+            }
+        })
+    }
+
+    /// Watch `setup` as a program of `workspace_id`, and answer the manager that it is open.
+    fn watch_setup(
+        self: &Arc<Self>,
+        workspace_id: &str,
+        setup: crate::service::StartedSetup,
+    ) -> Result<crate::InstallReceipt, SessionError> {
+        let crate::service::StartedSetup {
+            receipt,
+            entry_id,
+            display_name,
+            program,
+            release,
+        } = setup;
+        let program = self.finishing(receipt.capsule_id.clone(), program);
+        crate::programs::watch(
+            &self.programs,
+            &entry_id,
+            workspace_id,
+            &display_name,
+            program,
+            true,
+            release,
+        )?;
+        Ok(receipt)
+    }
+
+    fn install_in_capsule(
+        self: &Arc<Self>,
+        source: File,
+        source_name: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+        expected: &crate::VmInstallerInput,
+    ) -> Result<crate::InstallReceipt, SessionError> {
+        let setup = self.service.install_in_capsule(
+            source,
+            source_name,
+            workspace_id,
+            capabilities,
+            try_unix_now(),
+            expected,
+        )?;
+        self.watch_setup(workspace_id, setup)
+    }
+
+    fn retry_install(
+        self: &Arc<Self>,
+        capsule_id: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+    ) -> Result<crate::InstallReceipt, SessionError> {
+        let setup =
+            self.service
+                .retry_install(capsule_id, workspace_id, capabilities, try_unix_now())?;
+        self.watch_setup(workspace_id, setup)
+    }
+
+    fn vendor_uninstall(
+        self: &Arc<Self>,
+        capsule_id: &str,
+        workspace_id: &str,
+        capabilities: &[CapOverride],
+    ) -> Result<crate::InstallReceipt, SessionError> {
+        let setup = self.service.vendor_uninstall(
+            capsule_id,
+            workspace_id,
+            capabilities,
+            try_unix_now(),
+        )?;
+        self.watch_setup(workspace_id, setup)
+    }
+
     /// Show `application` from the Windows appliance, with the portal-chosen `file` when one is
     /// given. Answered at once: the appliance starting and its window showing happen on a
     /// thread of their own, and how it went is reported as the program's end.
@@ -649,7 +703,10 @@ impl Drop for CompatSessionHandle {
         if let Some(listener) = self.listener.take() {
             let _ = listener.join();
         }
-        join_workers(&self.workers);
+        // A worker still answering a request is left to end on its own: one may wait on what a
+        // program or the session does next, and a desktop restarting or logging out never waits
+        // on a program. Each stops at its next request.
+        reap_finished_workers(&self.workers);
         self.reopenings.stop();
         let _ = fs::remove_file(&self.path);
     }
@@ -808,17 +865,6 @@ fn reap_finished_workers(workers: &Mutex<Vec<JoinHandle<()>>>) {
         })
         .unwrap_or_default();
     for worker in finished {
-        let _ = worker.join();
-    }
-}
-
-fn join_workers(workers: &Mutex<Vec<JoinHandle<()>>>) {
-    reap_finished_workers(workers);
-    let pending = workers
-        .lock()
-        .map(|mut workers| std::mem::take(&mut *workers))
-        .unwrap_or_default();
-    for worker in pending {
         let _ = worker.join();
     }
 }
@@ -1243,6 +1289,20 @@ where
     E: SandboxExecutor,
     V: VmDelegate,
 {
+    // A setup goes on after the request that started it: the launchers it found since are this
+    // manager's as the capsule it may already address is.
+    let entries = managed.entries()?;
+    let capsules: BTreeSet<&str> = entries
+        .iter()
+        .filter(|entry| allowed_entry_ids.contains(&entry.entry_id))
+        .map(|entry| entry.capsule_id.as_str())
+        .collect();
+    let widened: Vec<String> = entries
+        .iter()
+        .filter(|entry| capsules.contains(entry.capsule_id.as_str()))
+        .map(|entry| entry.entry_id.clone())
+        .collect();
+    allowed_entry_ids.extend(widened);
     let mut applications = Vec::new();
     // Read before the ends, so a program that ends in between is reported
     // ended rather than both running and ended.
@@ -1257,7 +1317,7 @@ where
     if let Some(installation) = &vm_installation {
         authorize_vm_candidates(allowed_entry_ids, installation);
     }
-    for entry in managed.entries()?.into_iter().filter(|entry| {
+    for entry in entries.into_iter().filter(|entry| {
         allowed_entry_ids.contains(&entry.entry_id)
             && entry.program.kind == ProgramKind::Application
     }) {
@@ -2195,6 +2255,7 @@ mod tests {
                 program: Box::new(Ended),
             }]))),
         )
+        .map(Arc::new)
         .unwrap();
         assert!(
             std::mem::take(&mut *heard.0.lock().unwrap()),

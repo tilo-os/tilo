@@ -213,6 +213,9 @@ struct Probe {
     /// The real launcher: a launch whose network is filtered starts through its
     /// `windows-network`, as the computer's own launches do.
     launcher: PathBuf,
+    /// The capsule store a setup installs into: a setup's sandbox writes what [`install_example`]
+    /// writes, then shows and ends as any program does.
+    setup: Option<PathBuf>,
 }
 
 /// What the probe finds at the descriptor it is handed.
@@ -227,6 +230,14 @@ impl SandboxExecutor for Probe {
             .map(|bind| PathBuf::from(&bind[1]))
             .expect("the plan binds a display");
         *self.planned.lock().unwrap() = Some((display.clone(), plan.bwrap_argv.clone()));
+        if let Some(store) = &self.setup
+            && plan
+                .bwrap_argv
+                .iter()
+                .any(|arg| arg.contains("tilo-installers"))
+        {
+            install_example(store, &plan.capsule_id)?;
+        }
         let mut args = vec![format!("{PROBE_DIR}={}", self.dir.display())];
         if self.tell_display {
             args.push(format!("WAYLAND_DISPLAY={}", display.display()));
@@ -715,6 +726,7 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
                     planned,
                     sound: None,
                     launcher,
+                    setup: None,
                 },
                 LazyVmDelegate::new(|| Err("no appliance is set up here".to_owned())),
             )
@@ -889,6 +901,23 @@ fn manager_steps() {
                     entry_id: entry_id.clone(),
                 },
             ),
+            // The list once no setup is open any more.
+            "settled" => {
+                let deadline = std::time::Instant::now() + Duration::from_secs(60);
+                loop {
+                    let answer = ask(&mut client, &list);
+                    if std::time::Instant::now() >= deadline
+                        || answer["installations"].as_array().is_none_or(|all| {
+                            all.iter().all(|one| {
+                                one["status"] != "installing" && one["status"] != "uninstalling"
+                            })
+                        })
+                    {
+                        break answer;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
             "ended" => {
                 let deadline = std::time::Instant::now() + Duration::from_secs(60);
                 loop {
@@ -929,6 +958,8 @@ struct KeptRig {
     sound: Option<PathBuf>,
     /// The Windows appliance is set up, with [`PUBLISHED`] in its catalogue.
     appliance: bool,
+    /// A setup in a capsule installs the program "Example" ([`install_example`]).
+    setup: bool,
 }
 
 /// One desktop, until it ends.
@@ -955,6 +986,7 @@ impl KeptDesktop {
         fs::write(dir.join("workspace"), &self.workspace).unwrap();
         fs::write(dir.join("entry"), &rig.entry).unwrap();
         fs::write(dir.join("steps"), steps.join("\n")).unwrap();
+        fs::write(dir.join("setup.exe"), setup_exe()).unwrap();
         let mut manager = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "windows_compat::manager_steps", "--nocapture"])
             .env(STEPS_DIR, &dir)
@@ -1012,6 +1044,7 @@ impl KeptRig {
             network_leases,
             sound: None,
             appliance: false,
+            setup: false,
         }
     }
 
@@ -1125,6 +1158,9 @@ impl KeptRig {
             )
         });
         let launcher_bin = self.launcher.clone();
+        let setup = self
+            .setup
+            .then(|| self.home.data().join("tilo/windows-compat"));
         let network_leases = NetResources {
             root: self.network_leases.clone(),
         };
@@ -1151,6 +1187,7 @@ impl KeptRig {
                     planned: Arc::default(),
                     sound,
                     launcher: launcher_bin,
+                    setup,
                 },
                 vm,
             )
@@ -2322,41 +2359,56 @@ struct SetUp {
 
 impl SandboxExecutor for SetUp {
     fn command(&self, plan: &CapsuleCommandPlan) -> Result<SandboxCommand, ExecutionError> {
-        let prefix = CapsuleStore::new(&self.store)
-            .expect("the capsule store")
-            .prefix_path(&plan.capsule_id);
-        let program_files = prefix.join("drive_c/Program Files");
-        let mut placeholder = b"MZ".to_vec();
-        placeholder.resize(0x40, 0);
-        placeholder.extend_from_slice(b"Wine builtin DLL");
-        for (folder, name, bytes) in [
-            ("Internet Explorer", "iexplore.exe", placeholder.clone()),
-            ("Windows Media Player", "wmplayer.exe", placeholder),
-            (
-                "Example",
-                "example.exe",
-                b"MZ the installed program".to_vec(),
-            ),
-        ] {
-            fs::create_dir_all(program_files.join(folder))?;
-            fs::write(program_files.join(folder).join(name), bytes)?;
-        }
-        // The Start menu is what a person sees: the shortcut setup wrote for the program.
-        let start_menu = prefix.join(
-            "drive_c/users/root/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Example",
-        );
-        fs::create_dir_all(&start_menu)?;
-        let mut shortcut = vec![0_u8; 0x4c];
-        shortcut[0] = 0x4c;
-        shortcut[0x14..0x18].copy_from_slice(&1_u32.to_le_bytes()); // HasLinkTargetIDList
-        shortcut.extend_from_slice(&4_u16.to_le_bytes());
-        shortcut.extend_from_slice(&[0; 4]);
-        fs::write(start_menu.join("Example.lnk"), shortcut)?;
+        install_example(&self.store, &plan.capsule_id)?;
         Ok(SandboxCommand::new(
             PathBuf::from("/usr/bin/true"),
             Vec::<String>::new(),
         ))
     }
+}
+
+/// What a setup of the program "Example" leaves in the prefix of `capsule` in `store`: the
+/// program, its Start menu shortcut, and the placeholders Wine writes into every prefix.
+fn install_example(store: &Path, capsule: &str) -> std::io::Result<()> {
+    let prefix = CapsuleStore::new(store)
+        .expect("the capsule store")
+        .prefix_path(capsule);
+    let program_files = prefix.join("drive_c/Program Files");
+    let mut placeholder = b"MZ".to_vec();
+    placeholder.resize(0x40, 0);
+    placeholder.extend_from_slice(b"Wine builtin DLL");
+    for (folder, name, bytes) in [
+        ("Internet Explorer", "iexplore.exe", placeholder.clone()),
+        ("Windows Media Player", "wmplayer.exe", placeholder),
+        (
+            "Example",
+            "example.exe",
+            b"MZ the installed program".to_vec(),
+        ),
+    ] {
+        fs::create_dir_all(program_files.join(folder))?;
+        fs::write(program_files.join(folder).join(name), bytes)?;
+    }
+    // The Start menu is what a person sees: the shortcut setup wrote for the program.
+    let start_menu = prefix
+        .join("drive_c/users/root/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Example");
+    fs::create_dir_all(&start_menu)?;
+    let mut shortcut = vec![0_u8; 0x4c];
+    shortcut[0] = 0x4c;
+    shortcut[0x14..0x18].copy_from_slice(&1_u32.to_le_bytes()); // HasLinkTargetIDList
+    shortcut.extend_from_slice(&4_u16.to_le_bytes());
+    shortcut.extend_from_slice(&[0; 4]);
+    fs::write(start_menu.join("Example.lnk"), shortcut)
+}
+
+/// A setup program the person chose: the smallest file read as a 64-bit Windows program.
+fn setup_exe() -> Vec<u8> {
+    let mut installer = vec![0_u8; 0x200];
+    installer[..2].copy_from_slice(b"MZ");
+    installer[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
+    installer[0x80..0x84].copy_from_slice(b"PE\0\0");
+    installer[0x84..0x86].copy_from_slice(&0x8664_u16.to_le_bytes());
+    installer
 }
 
 /// An installer the person chose and approved for a private capsule sets up there, and the
@@ -2408,13 +2460,8 @@ fn an_installer_approved_for_a_private_capsule_lists_what_it_installed() {
     let dir = home.home().join("manager");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("workspace"), &workspace).unwrap();
-    fs::write(dir.join("steps"), "install\nlist").unwrap();
-    let mut installer = vec![0_u8; 0x200];
-    installer[..2].copy_from_slice(b"MZ");
-    installer[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
-    installer[0x80..0x84].copy_from_slice(b"PE\0\0");
-    installer[0x84..0x86].copy_from_slice(&0x8664_u16.to_le_bytes());
-    fs::write(dir.join("setup.exe"), installer).unwrap();
+    fs::write(dir.join("steps"), "install\nsettled").unwrap();
+    fs::write(dir.join("setup.exe"), setup_exe()).unwrap();
     let mut manager = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "windows_compat::manager_steps", "--nocapture"])
         .env(STEPS_DIR, &dir)
@@ -2432,7 +2479,10 @@ fn an_installer_approved_for_a_private_capsule_lists_what_it_installed() {
         "the service asks where the installer goes: {answers:?}"
     );
     assert_eq!(answers[1]["result"], "installed", "{answers:?}");
-    assert_eq!(answers[1]["receipt"]["status"], "installed", "{answers:?}");
+    assert_eq!(
+        answers[2]["installations"][0]["status"], "installed",
+        "{answers:?}"
+    );
     let names: Vec<&str> = answers[2]["applications"]
         .as_array()
         .expect("the list")
@@ -2444,4 +2494,72 @@ fn an_installer_approved_for_a_private_capsule_lists_what_it_installed() {
         ["Example"],
         "only the installed program: {answers:?}"
     );
+}
+
+/// A Windows setup is one of the session's launches: it stays open through an in-place restart,
+/// which never waits on it, and the desktop after the restart shows it and its setup in progress,
+/// then lists what it installed once it ends. A logout ends it without waiting on it either.
+#[test]
+fn a_windows_setup_stays_open_through_an_in_place_restart_and_never_holds_it_up() {
+    let mut rig = KeptRig::new();
+    rig.setup = true;
+    let mut first = rig.start(false);
+    let answers = first.manage(&rig, "first", &["install", "list"]);
+    assert_eq!(answers[1]["result"], "installed", "{answers:?}");
+    assert_eq!(
+        answers[1]["receipt"]["status"], "installing",
+        "the manager is answered while the setup is open: {answers:?}"
+    );
+    assert_eq!(
+        answers[2]["installations"][0]["status"], "installing",
+        "{answers:?}"
+    );
+    first.shown();
+    let [pid] = rig.starts()[..] else {
+        panic!("one setup: {:?}", rig.starts());
+    };
+
+    let restart = std::time::Instant::now();
+    first.end(tilo_app_launch::Teardown::InPlaceRestart);
+    assert!(
+        restart.elapsed() < Duration::from_secs(10),
+        "a restart waited {:?} on the open setup",
+        restart.elapsed()
+    );
+    assert!(alive(pid), "the setup outlives the desktop that started it");
+    let mut second = rig.start(true);
+    second.shown();
+    assert_eq!(rig.starts(), [pid], "the same setup, not a new one");
+    let answers = second.manage(&rig, "second", &["list"]);
+    assert_eq!(
+        answers[0]["installations"][0]["status"], "installing",
+        "the setup is still in progress: {answers:?}"
+    );
+    rig.exit(0);
+    let answers = second.manage(&rig, "third", &["settled"]);
+    assert_eq!(
+        answers[0]["installations"][0]["status"], "installed",
+        "{answers:?}"
+    );
+    let names: Vec<&str> = answers[0]["applications"]
+        .as_array()
+        .expect("the list")
+        .iter()
+        .filter_map(|application| application["display_name"].as_str())
+        .collect();
+    assert!(names.contains(&"Example"), "what it installed: {answers:?}");
+
+    // A logout ends an open setup, without waiting on it.
+    let answers = second.manage(&rig, "fourth", &["install"]);
+    assert_eq!(answers[1]["receipt"]["status"], "installing", "{answers:?}");
+    second.shown();
+    let pid = *rig.starts().last().unwrap();
+    let logout = std::time::Instant::now();
+    second.end(tilo_app_launch::Teardown::Logout);
+    assert!(
+        logout.elapsed() < Duration::from_secs(10),
+        "a logout waited {:?} on the open setup",
+        logout.elapsed()
+    );
+    KeptRig::gone([pid]);
 }

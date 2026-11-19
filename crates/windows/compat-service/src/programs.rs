@@ -210,6 +210,47 @@ pub(crate) fn watch(
     Ok(())
 }
 
+/// `program`, telling `finish` how it ended before anyone waiting on it hears: a setup's
+/// transaction is closed by the time a manager reads that it ended.
+pub(crate) fn finishing(
+    program: Box<dyn StartedProgram>,
+    finish: impl FnOnce(Result<ExecutionOutcome, String>) + Send + 'static,
+) -> Box<dyn StartedProgram> {
+    Box::new(Finishing {
+        program,
+        finish: Mutex::new(Some(Box::new(finish))),
+    })
+}
+
+type Finish = Box<dyn FnOnce(Result<ExecutionOutcome, String>) + Send>;
+
+struct Finishing {
+    program: Box<dyn StartedProgram>,
+    finish: Mutex<Option<Finish>>,
+}
+
+impl StartedProgram for Finishing {
+    fn wait(&self) -> Result<ExecutionOutcome, ExecutionError> {
+        let outcome = self.program.wait();
+        let finish = self
+            .finish
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(finish) = finish {
+            finish(match &outcome {
+                Ok(outcome) => Ok(outcome.clone()),
+                Err(error) => Err(error.to_string()),
+            });
+        }
+        outcome
+    }
+
+    fn stop(&self) {
+        self.program.stop();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

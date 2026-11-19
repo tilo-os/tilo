@@ -156,11 +156,6 @@ pub trait SandboxExecutor: Send + Sync {
     fn start(&self, plan: &CapsuleCommandPlan) -> Result<Box<dyn StartedProgram>, ExecutionError> {
         self.command(plan)?.spawn()
     }
-
-    /// Waits for the plan to end: a setup or an uninstaller, whose end is the answer.
-    fn execute(&self, plan: &CapsuleCommandPlan) -> Result<ExecutionOutcome, ExecutionError> {
-        self.start(plan)?.wait()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]

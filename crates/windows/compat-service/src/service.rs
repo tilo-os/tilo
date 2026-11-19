@@ -254,6 +254,32 @@ pub struct Launched {
     pub release: Box<dyn FnOnce() + Send>,
 }
 
+/// A setup or a vendor uninstaller a manager started, which goes on after the call returns:
+/// [`CompatibilityService::finish_setup`] closes its transaction once it ended.
+pub(crate) struct StartedSetup {
+    /// What the manager is answered: the transaction open.
+    pub receipt: InstallReceipt,
+    /// The entry it is kept under through a desktop restart.
+    pub entry_id: String,
+    pub display_name: String,
+    pub program: Box<dyn StartedProgram>,
+    /// Gives back what it was lent once it ended.
+    pub release: Box<dyn FnOnce() + Send>,
+}
+
+/// Who a program is started for.
+struct Started<'a> {
+    app_id: &'a str,
+    entry_id: &'a str,
+    workspace_id: &'a str,
+    capabilities: &'a CapabilityPlan,
+    lease: &'a crate::LaunchLease,
+}
+
+/// The program id of a capsule's setup, and of its vendor uninstaller.
+const INSTALLER_CONTROL: &str = "installer-control";
+const VENDOR_UNINSTALLER: &str = "vendor-uninstaller";
+
 /// A program that had ended by the time its launch returned.
 struct Ended(ExecutionOutcome);
 
@@ -546,6 +572,9 @@ pub struct CompatibilityService<R, B, E, V> {
     /// application launches, but two managers cannot concurrently replace or
     /// retire the same private prefix.
     installation_lock: Mutex<()>,
+    /// The capsules whose setup or uninstaller is open: it goes on after the request that
+    /// started it, and nothing else changes the capsule until it ended.
+    setups: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl<R, B, E, V> CompatibilityService<R, B, E, V>
@@ -575,6 +604,7 @@ where
             displays,
             capsule_lock: Mutex::new(()),
             installation_lock: Mutex::new(()),
+            setups: Mutex::default(),
         })
     }
 
@@ -676,10 +706,6 @@ where
 
     /// Start the program `input` names. The call returns once it started; the program goes on,
     /// and [`Launched::program`] says when and how it ended.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the launch's stages are kept in order: what is planned, what is started, and what a refusal releases"
-    )]
     pub fn launch(&self, input: &LaunchInput) -> Result<Launched, ServiceError> {
         validate_launch_id("app id", &input.app_id)?;
         validate_launch_id("workspace id", &input.workspace_id)?;
@@ -732,49 +758,18 @@ where
             workspace_id: &input.workspace_id,
             capabilities: &capabilities,
         })?;
-        let started: Result<(CapsuleCommandPlan, Box<dyn StartedProgram>), ServiceError> = (|| {
-            // A program is kept behind a display of its own where the caller keeps programs: it
-            // stays open while the desktop restarts in place.
-            let entry_id = crate::store::managed_program_id(&capsule.id, &program.id);
-            let kept = self
-                .displays
-                .kept_display(&crate::KeptProgram {
-                    app_id: &input.app_id,
-                    display_name: &program.display_name,
-                    entry_id: &entry_id,
-                    workspace_id: &input.workspace_id,
-                    x11: crate::plan::shows_through_x11(route.runtime.layer),
-                })
-                .transpose()
-                .map_err(PlanError::NoDisplay)?;
-            let display = match &kept {
-                Some(kept) => kept.display().clone(),
-                None => self.display_for(&input.workspace_id)?,
-            };
-            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &display)?;
-            // A kept program's proxy answers the session that adopts it after a restart through
-            // a control socket in its keeper's directory.
-            let planner = match &kept {
-                Some(kept) => planner.with_network_control(
-                    kept.display().runtime_dir.join(launcher::netproxy::CONTROL),
-                ),
-                None => planner,
-            };
-            let plan = planner.plan(
-                &route,
-                &capsule,
-                &program,
-                &capabilities,
-                &input.workspace_id,
-                &lease,
-            )?;
-            let command = self.executor.command(&plan)?;
-            let program = match kept {
-                Some(kept) => kept.start(command)?,
-                None => command.spawn()?,
-            };
-            Ok((plan, program))
-        })(
+        let entry_id = crate::store::managed_program_id(&capsule.id, &program.id);
+        let started = self.start_program(
+            &route,
+            &capsule,
+            &program,
+            &Started {
+                app_id: &input.app_id,
+                entry_id: &entry_id,
+                workspace_id: &input.workspace_id,
+                capabilities: &capabilities,
+                lease: &lease,
+            },
         );
         let (command, program) = match started {
             Ok(started) => started,
@@ -796,6 +791,138 @@ where
             program,
             release: Box::new(move || resources.revoke(&lease.id)),
         })
+    }
+
+    /// Start `program` of `capsule` behind a display of its own where the caller keeps programs:
+    /// it stays open while the desktop restarts in place, a setup as much as an application.
+    fn start_program(
+        &self,
+        route: &LaunchPlan,
+        capsule: &CapsuleState,
+        program: &CapsuleProgram,
+        started: &Started<'_>,
+    ) -> Result<(CapsuleCommandPlan, Box<dyn StartedProgram>), ServiceError> {
+        let kept = self
+            .displays
+            .kept_display(&crate::KeptProgram {
+                app_id: started.app_id,
+                display_name: &program.display_name,
+                entry_id: started.entry_id,
+                workspace_id: started.workspace_id,
+                x11: crate::plan::shows_through_x11(route.runtime.layer),
+            })
+            .transpose()
+            .map_err(PlanError::NoDisplay)?;
+        let display = match &kept {
+            Some(kept) => kept.display().clone(),
+            None => self.display_for(started.workspace_id)?,
+        };
+        let planner = SandboxPlanner::new(&self.store, &self.runtimes, &display)?;
+        // A kept program's proxy answers the session that adopts it after a restart through
+        // a control socket in its keeper's directory.
+        let planner = match &kept {
+            Some(kept) => planner
+                .with_network_control(kept.display().runtime_dir.join(launcher::netproxy::CONTROL)),
+            None => planner,
+        };
+        let plan = planner.plan(
+            route,
+            capsule,
+            program,
+            started.capabilities,
+            started.workspace_id,
+            started.lease,
+        )?;
+        let command = self.executor.command(&plan)?;
+        let program = match kept {
+            Some(kept) => kept.start(command)?,
+            None => command.spawn()?,
+        };
+        Ok((plan, program))
+    }
+
+    /// Claim `capsule_id` for a setup or an uninstaller: one at a time replaces or retires a
+    /// private prefix.
+    fn claim_setup(&self, capsule_id: &str) -> Result<(), ServiceError> {
+        let claimed = self
+            .setups
+            .lock()
+            .map_err(|_| ServiceError::StateLock)?
+            .insert(capsule_id.to_owned());
+        if claimed {
+            Ok(())
+        } else {
+            Err(ServiceError::SetupOpen)
+        }
+    }
+
+    fn unclaim_setup(&self, capsule_id: &str) {
+        if let Ok(mut setups) = self.setups.lock() {
+            setups.remove(capsule_id);
+        }
+    }
+
+    /// Refuse a change to `capsule_id` while its setup or uninstaller is open.
+    fn not_in_setup(&self, capsule_id: &str) -> Result<(), ServiceError> {
+        let open = self
+            .setups
+            .lock()
+            .map_err(|_| ServiceError::StateLock)?
+            .contains(capsule_id);
+        if open {
+            Err(ServiceError::SetupOpen)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The capsule whose setup or uninstaller `entry_id` names, while its transaction is open: a
+    /// kept one the desktop before a restart started, which this service takes up and finishes.
+    pub(crate) fn setup_entry(&self, entry_id: &str) -> Option<String> {
+        let states = self.store.installations().ok()?;
+        let capsule = states.into_iter().find(|state| {
+            state.installation.as_ref().is_some_and(|installation| {
+                matches!(
+                    installation.status,
+                    InstallationStatus::Installing | InstallationStatus::Uninstalling
+                )
+            }) && [INSTALLER_CONTROL, VENDOR_UNINSTALLER]
+                .iter()
+                .any(|program| crate::store::managed_program_id(&state.id, program) == entry_id)
+        })?;
+        self.claim_setup(&capsule.id).ok()?;
+        Some(capsule.id)
+    }
+
+    /// The setup or uninstaller of `capsule_id` ended as `outcome` says: what it installed is
+    /// discovered and the transaction closed, whether this service or the one before a desktop
+    /// restart started it.
+    pub(crate) fn finish_setup(
+        &self,
+        capsule_id: &str,
+        outcome: Result<ExecutionOutcome, String>,
+    ) -> Result<InstallationStatus, ServiceError> {
+        let finished = (|| {
+            let _mutation = self
+                .installation_lock
+                .lock()
+                .map_err(|_| ServiceError::StateLock)?;
+            let state = self
+                .store
+                .load(capsule_id)?
+                .ok_or_else(|| CapsuleError::NotFound(capsule_id.to_string()))?;
+            match state
+                .installation
+                .as_ref()
+                .map(|installation| installation.status)
+            {
+                Some(InstallationStatus::Installing) => self.setup_ended(state, outcome),
+                Some(InstallationStatus::Uninstalling) => self.uninstall_ended(state, &outcome),
+                _ => Err(ServiceError::NotManagedInstallation),
+            }
+        })();
+        self.unclaim_setup(capsule_id);
+        finished
     }
 
     /// Launch a row from the authenticated guest publication. This bypasses
@@ -895,7 +1022,7 @@ where
         })
     }
 
-    pub fn install_in_capsule(
+    pub(crate) fn install_in_capsule(
         &self,
         mut source: File,
         source_name: &str,
@@ -903,7 +1030,7 @@ where
         capabilities: &[CapOverride],
         now_unix: Option<u64>,
         expected: &VmInstallerInput,
-    ) -> Result<InstallReceipt, ServiceError> {
+    ) -> Result<StartedSetup, ServiceError> {
         validate_launch_id("workspace id", workspace_id)?;
         let inspection = inspect_installer(&mut source, source_name)?;
         if &vm_installer_input(&inspection) != expected {
@@ -980,19 +1107,20 @@ where
     /// Retry the exact digest-pinned installer retained in a capsule. The
     /// management client cannot substitute bytes, executable arguments, or a
     /// route during repair.
-    pub fn retry_install(
+    pub(crate) fn retry_install(
         &self,
         capsule_id: &str,
         workspace_id: &str,
         capabilities: &[CapOverride],
         now_unix: Option<u64>,
-    ) -> Result<InstallReceipt, ServiceError> {
+    ) -> Result<StartedSetup, ServiceError> {
         validate_launch_id("capsule id", capsule_id)?;
         validate_launch_id("workspace id", workspace_id)?;
         let _mutation = self
             .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
+        self.not_in_setup(capsule_id)?;
         let state = self
             .store
             .load(capsule_id)?
@@ -1014,7 +1142,7 @@ where
         self.run_setup(
             state,
             &route,
-            inspection,
+            &inspection,
             workspace_id,
             capabilities,
             now_unix,
@@ -1032,6 +1160,7 @@ where
             .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
+        self.not_in_setup(capsule_id)?;
         let state = self
             .store
             .load(capsule_id)?
@@ -1077,6 +1206,7 @@ where
             .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
+        self.not_in_setup(capsule_id)?;
         let state = self
             .store
             .load(capsule_id)?
@@ -1098,6 +1228,7 @@ where
             .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
+        self.not_in_setup(capsule_id)?;
         let mut state = self
             .store
             .load(capsule_id)?
@@ -1118,19 +1249,20 @@ where
     /// Run the installer-recorded vendor uninstaller inside the same sandbox.
     /// Success removes Tilo launchers but deliberately retains the prefix so
     /// users can inspect or later delete leftover data as a separate action.
-    pub fn vendor_uninstall(
+    pub(crate) fn vendor_uninstall(
         &self,
         capsule_id: &str,
         workspace_id: &str,
         capabilities: &[CapOverride],
         now_unix: Option<u64>,
-    ) -> Result<InstallReceipt, ServiceError> {
+    ) -> Result<StartedSetup, ServiceError> {
         validate_launch_id("capsule id", capsule_id)?;
         validate_launch_id("workspace id", workspace_id)?;
         let _mutation = self
             .installation_lock
             .lock()
             .map_err(|_| ServiceError::StateLock)?;
+        self.not_in_setup(capsule_id)?;
         let mut state = self
             .store
             .load(capsule_id)?
@@ -1153,68 +1285,26 @@ where
             ..ApplicationQuery::default()
         };
         let route = launch_plan_from_state(&state, &query);
-        let app_id = imported_app_id(&installation.sha256);
-        let resolved = CapabilityPlan::for_app(&app_id, capabilities, now_unix);
         if let Some(journal) = state.installation.as_mut() {
             journal.status = InstallationStatus::Uninstalling;
             journal.last_error = None;
         }
-        self.store.save(&state)?;
         let program = CapsuleProgram {
-            id: "vendor-uninstaller".to_string(),
+            id: VENDOR_UNINSTALLER.to_string(),
             display_name: format!("Uninstall {}", installation.display_name),
             prefix_relative_executable: uninstaller,
             query,
             kind: ProgramKind::InstallerControl,
             arguments: Vec::new(),
         };
-        let lease = self.resources.materialize(ResourceRequest {
-            app_id: &app_id,
+        self.start_setup(
+            state,
+            &route,
+            &program,
             workspace_id,
-            capabilities: &resolved,
-        })?;
-        let execution = (|| {
-            let display = self.display_for(workspace_id)?;
-            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &display)?;
-            let command =
-                planner.plan(&route, &state, &program, &resolved, workspace_id, &lease)?;
-            self.executor.execute(&command).map_err(ServiceError::from)
-        })();
-        self.resources.revoke(&lease.id);
-        let outcome = execution?;
-        let status = if outcome.success {
-            state
-                .programs
-                .retain(|_, program| program.kind == ProgramKind::InstallerControl);
-            InstallationStatus::Uninstalled
-        } else {
-            InstallationStatus::NeedsAttention
-        };
-        if let Some(journal) = state.installation.as_mut() {
-            journal.status = status;
-            journal.last_exit_code = outcome.exit_code;
-            journal.last_error = (!outcome.success)
-                .then(|| "The vendor uninstaller did not complete successfully".to_string());
-        }
-        self.store.save(&state)?;
-        Ok(InstallReceipt {
-            capsule_id: state.id,
-            display_name: installation.display_name,
-            route: RouteKind::from(route.runtime.layer),
-            status,
-            discovered_programs: state
-                .programs
-                .values()
-                .filter(|program| program.kind == ProgramKind::Application)
-                .count(),
-            exit_code: outcome.exit_code,
-            detail: if outcome.success {
-                "Vendor uninstall completed. Private leftover data is retained until you choose Delete data."
-                    .to_string()
-            } else {
-                "Vendor uninstall needs attention; the private capsule was retained.".to_string()
-            },
-        })
+            capabilities,
+            now_unix,
+        )
     }
 
     fn install_inspected(
@@ -1224,7 +1314,7 @@ where
         workspace_id: &str,
         capabilities: &[CapOverride],
         now_unix: Option<u64>,
-    ) -> Result<InstallReceipt, ServiceError> {
+    ) -> Result<StartedSetup, ServiceError> {
         let query = installer_query(inspection);
         let app_id = imported_app_id(&inspection.sha256);
         let route = self.resolve_route(&query, VmFallback::Disabled, &app_id, None)?;
@@ -1232,6 +1322,7 @@ where
             return Err(ServiceError::VmInstallNeedsExplicitFallback);
         }
         let mut state = self.store.ensure_for_plan(&route)?;
+        self.not_in_setup(&state.id)?;
         if let Some(existing) = &state.installation
             && existing.sha256 != inspection.sha256
         {
@@ -1261,7 +1352,7 @@ where
         self.run_setup(
             state,
             &route,
-            inspection.clone(),
+            inspection,
             workspace_id,
             capabilities,
             now_unix,
@@ -1272,44 +1363,138 @@ where
         &self,
         mut state: CapsuleState,
         route: &LaunchPlan,
-        inspection: InstallerInspection,
+        inspection: &InstallerInspection,
         workspace_id: &str,
-        capability_records: &[CapOverride],
+        granted: &[CapOverride],
         now_unix: Option<u64>,
-    ) -> Result<InstallReceipt, ServiceError> {
-        let app_id = imported_app_id(&inspection.sha256);
-        let capabilities = CapabilityPlan::for_app(&app_id, capability_records, now_unix);
-        let control = installer_control(&state, &inspection)?;
+    ) -> Result<StartedSetup, ServiceError> {
+        let control = installer_control(&state, inspection)?;
         if let Some(installation) = state.installation.as_mut() {
             installation.status = InstallationStatus::Installing;
             installation.last_error = None;
         }
-        self.store.save(&state)?;
-        let lease = self.resources.materialize(ResourceRequest {
-            app_id: &app_id,
-            workspace_id,
-            capabilities: &capabilities,
-        })?;
-        let execution = (|| {
-            let display = self.display_for(workspace_id)?;
-            let planner = SandboxPlanner::new(&self.store, &self.runtimes, &display)?;
-            let plan =
-                planner.plan(route, &state, &control, &capabilities, workspace_id, &lease)?;
-            self.executor.execute(&plan).map_err(ServiceError::from)
-        })();
-        self.resources.revoke(&lease.id);
-        let outcome = match execution {
-            Ok(outcome) => outcome,
+        self.start_setup(state, route, &control, workspace_id, granted, now_unix)
+    }
+
+    /// Start `program`, the setup or the vendor uninstaller of `state`, whose open transaction
+    /// `state` holds: answered once it started, as a launch is. It goes on behind a display of
+    /// its own, through a desktop restart, and [`Self::finish_setup`] closes the transaction
+    /// when it ended.
+    fn start_setup(
+        &self,
+        mut state: CapsuleState,
+        route: &LaunchPlan,
+        program: &CapsuleProgram,
+        workspace_id: &str,
+        granted: &[CapOverride],
+        now_unix: Option<u64>,
+    ) -> Result<StartedSetup, ServiceError> {
+        let app_id = imported_app_id(
+            &state
+                .installation
+                .as_ref()
+                .ok_or(ServiceError::NotManagedInstallation)?
+                .sha256,
+        );
+        self.claim_setup(&state.id)?;
+        let capabilities = CapabilityPlan::for_app(&app_id, granted, now_unix);
+        let entry_id = crate::store::managed_program_id(&state.id, &program.id);
+        let started = self
+            .store
+            .save(&state)
+            .map_err(ServiceError::from)
+            .and_then(|()| {
+                let lease = self.resources.materialize(ResourceRequest {
+                    app_id: &app_id,
+                    workspace_id,
+                    capabilities: &capabilities,
+                })?;
+                match self.start_program(
+                    route,
+                    &state,
+                    program,
+                    &Started {
+                        app_id: &app_id,
+                        entry_id: &entry_id,
+                        workspace_id,
+                        capabilities: &capabilities,
+                        lease: &lease,
+                    },
+                ) {
+                    Ok((_, started)) => Ok((started, lease)),
+                    Err(error) => {
+                        self.resources.revoke(&lease.id);
+                        Err(error)
+                    }
+                }
+            });
+        let (started, lease) = match started {
+            Ok(started) => started,
             Err(error) => {
+                self.unclaim_setup(&state.id);
                 if let Some(installation) = state.installation.as_mut() {
-                    installation.status = InstallationStatus::Failed;
+                    // An uninstaller that did not start leaves the program installed.
+                    installation.status = match installation.status {
+                        InstallationStatus::Uninstalling => InstallationStatus::NeedsAttention,
+                        _ => InstallationStatus::Failed,
+                    };
                     installation.last_error = Some(bounded_error(&error.to_string()));
                 }
                 self.store.save(&state)?;
                 return Err(error);
             }
         };
+        let installation = state
+            .installation
+            .as_ref()
+            .ok_or(ServiceError::NotManagedInstallation)?;
+        let resources = Arc::clone(&self.resources);
+        Ok(StartedSetup {
+            receipt: InstallReceipt {
+                capsule_id: state.id.clone(),
+                display_name: installation.display_name.clone(),
+                route: RouteKind::from(route.runtime.layer),
+                status: installation.status,
+                discovered_programs: 0,
+                exit_code: None,
+                detail: install_detail(installation.status, 0),
+            },
+            entry_id,
+            display_name: program.display_name.clone(),
+            program: started,
+            release: Box::new(move || resources.revoke(&lease.id)),
+        })
+    }
 
+    /// The setup of `state` ended as `outcome` says: the programs it installed are its launchers.
+    fn setup_ended(
+        &self,
+        mut state: CapsuleState,
+        outcome: Result<ExecutionOutcome, String>,
+    ) -> Result<InstallationStatus, ServiceError> {
+        let installation = state
+            .installation
+            .clone()
+            .ok_or(ServiceError::NotManagedInstallation)?;
+        let inspection = InstallerInspection {
+            source_name: installation.source_name.clone(),
+            display_name: installation.display_name.clone(),
+            sha256: installation.sha256.clone(),
+            size: 0,
+            kind: installation.kind,
+            machine: None,
+        };
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if let Some(installation) = state.installation.as_mut() {
+                    installation.status = InstallationStatus::Failed;
+                    installation.last_error = Some(bounded_error(&error));
+                }
+                self.store.save(&state)?;
+                return Ok(InstallationStatus::Failed);
+            }
+        };
         let (mut programs, uninstaller) = self
             .store
             .discover_programs(&state.id, &installer_query(&inspection))?;
@@ -1318,14 +1503,10 @@ where
             && inspection.kind == InstallerKind::Exe
             && !looks_like_setup(&inspection.source_name)
         {
-            let installation = state
-                .installation
-                .as_ref()
-                .ok_or(ServiceError::NotManagedInstallation)?;
             programs.push(CapsuleProgram {
                 id: "portable-application".to_string(),
                 display_name: inspection.display_name.clone(),
-                prefix_relative_executable: installation.installer_relative_path.clone(),
+                prefix_relative_executable: installation.installer_relative_path,
                 query: installer_query(&inspection),
                 kind: ProgramKind::Application,
                 arguments: Vec::new(),
@@ -1358,15 +1539,38 @@ where
             installation.uninstaller_relative_path = uninstaller;
         }
         self.store.save(&state)?;
-        Ok(InstallReceipt {
-            capsule_id: state.id,
-            display_name: inspection.display_name,
-            route: RouteKind::from(route.runtime.layer),
-            status,
-            discovered_programs: programs.len(),
-            exit_code: outcome.exit_code,
-            detail: install_detail(status, programs.len()),
-        })
+        Ok(status)
+    }
+
+    /// The vendor uninstaller of `state` ended as `outcome` says: a success removes the launchers
+    /// and keeps the prefix, so leftover data is deleted only as a separate choice.
+    fn uninstall_ended(
+        &self,
+        mut state: CapsuleState,
+        outcome: &Result<ExecutionOutcome, String>,
+    ) -> Result<InstallationStatus, ServiceError> {
+        let (success, exit_code) = match outcome {
+            Ok(outcome) => (outcome.success, outcome.exit_code),
+            Err(_) => (false, None),
+        };
+        let status = if success {
+            state
+                .programs
+                .retain(|_, program| program.kind == ProgramKind::InstallerControl);
+            InstallationStatus::Uninstalled
+        } else {
+            InstallationStatus::NeedsAttention
+        };
+        if let Some(journal) = state.installation.as_mut() {
+            journal.status = status;
+            journal.last_exit_code = exit_code;
+            journal.last_error = (!success).then(|| match outcome {
+                Err(error) => bounded_error(error),
+                Ok(_) => "The vendor uninstaller did not complete successfully".to_string(),
+            });
+        }
+        self.store.save(&state)?;
+        Ok(status)
     }
 
     /// An installed program starts in the capsule its setup put it in (`capsule_id`): one setup
@@ -1469,7 +1673,7 @@ fn installer_control(
         }
     };
     Ok(CapsuleProgram {
-        id: "installer-control".to_string(),
+        id: INSTALLER_CONTROL.to_string(),
         display_name: format!("Install {}", inspection.display_name),
         prefix_relative_executable: executable,
         query: installer_query(inspection),
@@ -1648,6 +1852,8 @@ pub enum ServiceError {
     VendorUninstallerUnavailable,
     #[error("this installation cannot be escalated while its current lifecycle action is active")]
     VmEscalationUnavailable,
+    #[error("this application's setup is still open; finish or close it first")]
+    SetupOpen,
     #[error("capsule service state lock is poisoned")]
     StateLock,
 }
@@ -1828,7 +2034,7 @@ mod tests {
                 )
                 .unwrap();
             let InstallOutcome::Confirmation { input, .. } = outcome;
-            let receipt = service
+            let setup = service
                 .install_in_capsule(
                     installer.reopen().unwrap(),
                     "Favorite_App.exe",
@@ -1838,9 +2044,19 @@ mod tests {
                     &input,
                 )
                 .unwrap();
+            let capsule = setup.receipt.capsule_id;
+            assert!(
+                matches!(
+                    service.escalate_install_to_vm(&capsule, "workspace"),
+                    Err(ServiceError::SetupOpen)
+                ),
+                "nothing else changes a capsule while its setup is open"
+            );
+            let ended = setup.program.wait().map_err(|error| error.to_string());
+            service.finish_setup(&capsule, ended).unwrap();
 
             let status = service
-                .escalate_install_to_vm(&receipt.capsule_id, "workspace")
+                .escalate_install_to_vm(&capsule, "workspace")
                 .unwrap();
 
             assert_eq!(status.phase, VmInstallationPhase::Starting);
