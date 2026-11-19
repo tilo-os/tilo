@@ -408,22 +408,64 @@ fn edit<R: Resource>(edit: Edit<()>) -> Option<Built> {
 
 struct VocabularyOf<R>(std::marker::PhantomData<R>);
 
+/// The least permission any of the resource's actions needs, as publishing it
+/// states it; a model build applies actions and publishes nothing.
+#[cfg(tilo_model_guest)]
+fn least_need_default() -> ActionNeed {
+    tilo_actions::ActionContract::default().need()
+}
+
+#[cfg(tilo_model_guest)]
+fn empty_op_schemas() -> Vec<(String, serde_json::Value)> {
+    Vec::new()
+}
+
+#[cfg(tilo_model_guest)]
+fn no_item_effects(_: &str, _: &Id) -> Vec<ActionSpec> {
+    Vec::new()
+}
+
+#[cfg(tilo_model_guest)]
+fn no_item_views(_: &str, _: &Id) -> Vec<ResourceViewSpec> {
+    Vec::new()
+}
+
 impl<R: Resource> VocabularyOf<R> {
     const VOCABULARY: Vocabulary = Vocabulary {
         kind: R::KIND,
         app: R::APP_ID,
         label: R::LABEL,
+        // What a model build leaves out is what a device applying an action
+        // never reads: the words of the resource's catalogue, the effects its
+        // items offer and the views they open, the schemas of its operations,
+        // and the least permission its actions need. Publishing them is the
+        // app's own work, so those bytes stay in the app.
+        #[cfg(tilo_model_guest)]
+        catalogue: None,
+        #[cfg(not(tilo_model_guest))]
         catalogue: R::CATALOGUE,
         action_type: R::ACTION_TYPE,
         edits: R::EDITS,
         resource_table: R::RESOURCE_TABLE,
         type_id: TypeId::of::<R>,
         shape: R::shape,
+        #[cfg(tilo_model_guest)]
+        op_schemas: empty_op_schemas,
+        #[cfg(not(tilo_model_guest))]
         op_schemas: R::op_schemas,
         action_schema: R::action_schema,
+        #[cfg(tilo_model_guest)]
+        least_need: least_need_default,
+        #[cfg(not(tilo_model_guest))]
         least_need: R::least_need,
         declare: declarations::<R>,
+        #[cfg(tilo_model_guest)]
+        item_effects: no_item_effects,
+        #[cfg(not(tilo_model_guest))]
         item_effects: R::item_effects,
+        #[cfg(tilo_model_guest)]
+        item_views: no_item_views,
+        #[cfg(not(tilo_model_guest))]
         item_views: R::item_views,
         read: read::<R>,
         edit: edit::<R>,
