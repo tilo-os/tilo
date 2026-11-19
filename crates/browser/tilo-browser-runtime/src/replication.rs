@@ -45,7 +45,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_client::engine::ResourceReading;
 use tilo_session_client::{DocumentAnswer, Events, Link};
-use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
+use ui::automerge::{AutoCommit, transaction::Transactable as _};
 use ui::collaboration::document_content::ContentLink;
 use ui::resource::{DocumentSync, WorkspaceAnswer};
 use ui::state::DocumentReplica;
