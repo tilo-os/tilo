@@ -1478,7 +1478,7 @@ impl crate::Shared {
                     enter.push(ToEnter {
                         workspace,
                         name,
-                        host: hint.host.device_public_key,
+                        host: hint.host.writes_for(),
                         held: true,
                     });
                 }
@@ -1652,7 +1652,9 @@ impl crate::Shared {
             );
             return None;
         };
-        if opened.host != hint.host.device_public_key {
+        // The address is signed by the service of the device the list names, under the service's own
+        // key: it names that device all the same.
+        if !hint.host.is_of_device(&opened.host) {
             tracing::debug!(
                 %workspace,
                 listed = %hex::encode(opened.host),
