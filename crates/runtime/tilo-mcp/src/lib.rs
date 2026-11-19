@@ -13,7 +13,7 @@ pub mod test_hosts;
 mod turn;
 
 pub use images::MediaReader;
-use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, image_mime};
+use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, PictureSource, image_mime};
 
 #[path = "mcp_agent.rs"]
 mod agent;
@@ -853,28 +853,39 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         target: Option<&RemoteActionTarget>,
     ) {
         let stamp = value.pointer("/update/output/value/agent").cloned();
-        let Some(media) = self.media.clone() else {
-            return;
-        };
         if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
             return;
         }
-        let hashes: Vec<String> = value
+        // Each picture by its hash (what tells one already shown) and the reference the
+        // workspace reads it by, which a sealed piece of content needs whole.
+        let pictures: Vec<(String, String)> = value
             .pointer("/update/output/resources")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
-            .filter_map(tilo_actions::content_hash)
+            .filter_map(|reference| {
+                tilo_actions::content_hash(reference)
+                    .map(|hash| (hash.to_owned(), reference.to_owned()))
+            })
             .take(MAX_IMAGES)
-            .map(str::to_owned)
             .collect();
-        let Some(app_id) = self.produced_by().get(&invocation).cloned() else {
-            return;
-        };
-        if hashes.is_empty() {
+        if pictures.is_empty() {
             return;
         }
+        // Where the pictures are read: on a desktop, from the store the app wrote them to, in
+        // its own scope; through a device's session with its workspace (`tilo mcp` on a
+        // computer, the API's agent sessions), from the workspace, as `tilo_get` reads them.
+        let source = match (self.media.clone(), self.workspace_gets()) {
+            (Some(media), _) => {
+                let Some(app_id) = self.produced_by().get(&invocation).cloned() else {
+                    return;
+                };
+                PictureSource::Media(media, app_id)
+            }
+            (None, Some(gets)) => PictureSource::Workspace(gets, Box::new(self.caller())),
+            (None, None) => return,
+        };
         let effect = match self.is_effect(invocation, stamp.as_ref()) {
             EffectOf::Ran(effect) => effect,
             EffectOf::Unsaid => match target {
@@ -885,6 +896,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if effect {
             return;
         }
+        let hashes = pictures.iter().map(|(hash, _)| hash.clone()).collect();
         let (hashes, unchanged) = self.not_yet_shown(hashes, invocation, again);
         if let Some(earlier) = unchanged.first()
             && let Some(fields) = value.as_object_mut()
@@ -898,13 +910,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .into(),
             );
         }
-        if hashes.is_empty() {
+        let fresh: Vec<(String, String)> = pictures
+            .into_iter()
+            .filter(|(hash, _)| hashes.contains(hash))
+            .collect();
+        if fresh.is_empty() {
             return;
         }
         let read = tokio::task::spawn_blocking(move || {
-            hashes
+            fresh
                 .iter()
-                .filter_map(|hash| media.read(&app_id, hash).ok().flatten())
+                .filter_map(|(hash, reference)| source.read(hash, reference))
                 .filter(|bytes| bytes.len() <= MAX_IMAGE_BYTES)
                 .filter_map(|bytes| {
                     use base64::Engine as _;

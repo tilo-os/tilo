@@ -6,8 +6,8 @@
 //! action after `#`. `browser@4711/page#read-page` names one window of an
 //! app by its provider (what the desktop's `open` answers, what `tilo_ls`
 //! lists); without it the app's newest window answers. The host's own
-//! services answer to their app too: `desktop#list-windows` is the desktop's
-//! layout. A path names things as a person would and survives a
+//! services answer to their app too: `desktop` is the desktop's layout, on a
+//! desktop that serves it. A path names things as a person would and survives a
 //! compositor restart; the opaque ids a broker mints per publication
 //! (`tilo-ui-bound:v1:<uuid>:<uuid>:<hex>`) stay inside this module, which
 //! resolves a path against the live directory on every call.
@@ -1393,7 +1393,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 };
                 // A host service (the desktop's layout, on `desktop:session`)
                 // publishes everything on its one resource: its actions are
-                // the service's own, `desktop#list-windows`. A record's one
+                // the service's own, `desktop#<action>`. A resource's one
                 // container (Tasks' tracker) holds what the app offers more.
                 if provider.parse::<u64>().is_err()
                     && root.own.is_empty()

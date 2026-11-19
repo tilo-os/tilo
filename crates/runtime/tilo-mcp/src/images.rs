@@ -43,3 +43,43 @@ pub(crate) fn take_images(value: &mut Value) -> Vec<Value> {
     }
     images
 }
+
+/// Where the pictures an answer names are read from, to show them as images.
+pub(crate) enum PictureSource {
+    /// The store an app of this desktop wrote them to, read in that app's own scope.
+    Media(std::sync::Arc<dyn crate::MediaReader>, String),
+    /// The workspace, through this device's session with it, as the caller reads it.
+    Workspace(
+        std::sync::Arc<dyn tilo_actions::remote::ContentGets>,
+        Box<tilo_actions::remote::Caller>,
+    ),
+}
+
+impl PictureSource {
+    /// The bytes of the picture `hash` (`reference` as the answer named it), when they can be
+    /// read and are no larger than an image this server shows.
+    pub(crate) fn read(&self, hash: &str, reference: &str) -> Option<Vec<u8>> {
+        match self {
+            Self::Media(media, app_id) => media.read(app_id, hash).ok().flatten(),
+            Self::Workspace(gets, caller) => {
+                let mut bytes = Vec::new();
+                loop {
+                    let offset = u64::try_from(bytes.len()).ok()?;
+                    let piece = gets.get(caller, reference, offset, 0).ok()?;
+                    if usize::try_from(piece.size).ok()? > MAX_IMAGE_BYTES || piece.offset != offset
+                    {
+                        return None;
+                    }
+                    if piece.bytes.is_empty() {
+                        break;
+                    }
+                    bytes.extend_from_slice(&piece.bytes);
+                    if u64::try_from(bytes.len()).ok()? >= piece.size {
+                        break;
+                    }
+                }
+                Some(bytes)
+            }
+        }
+    }
+}

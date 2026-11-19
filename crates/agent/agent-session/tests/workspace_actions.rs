@@ -32,6 +32,9 @@ mod agent_mcp;
 #[path = "workspace_actions/agent_member.rs"]
 mod agent_member;
 #[cfg(test)]
+#[path = "workspace_actions/agent_views.rs"]
+mod agent_views;
+#[cfg(test)]
 #[path = "workspace_actions/api.rs"]
 mod api;
 #[cfg(test)]
