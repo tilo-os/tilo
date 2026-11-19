@@ -76,6 +76,11 @@ GROW_FILESYSTEM = 1 << 59
 MIB = 1 << 20
 GIB = 1 << 30
 
+# The qcow2 header's incompatible feature bit for a compression type other than
+# the implicit zlib: zstd-compressed images set it (disk-image.sh's
+# TILO_QCOW2_COMPRESS), and qemu-img converts them like any other cluster.
+COMPRESSION_TYPE = 1 << 3
+
 SCHEMA = 2
 PURPOSE = 'tilo-internal-installer'
 # build-custom-installer.sh never sizes the live root below this floor; the
@@ -507,12 +512,26 @@ def qcow_virtual_size(header):
     require(struct.unpack_from('>I', header, 60)[0] == 0 and struct.unpack_from('>Q', header, 64)[0] == 0,
             'qcow2 snapshots unsupported')
     incompatible, compatible, autoclear, refcount_order, header_length = struct.unpack_from('>QQQII', header, 72)
-    require(incompatible == compatible == autoclear == 0 and refcount_order == 4 and header_length in (104, 112),
-            'qcow2 feature/extension profile unsupported (including external data files)')
+    # The installer medium's clusters are zstd (TILO_QCOW2_COMPRESS, disk-image.sh),
+    # which qemu-img converts from like any other cluster and only sets the
+    # compression-type feature bit for. Every other feature bit stays refused: an
+    # external data file, a backing file or an extended L2 table would change what
+    # the conversion reads, and none of them is what this pipeline writes.
+    require(incompatible & ~COMPRESSION_TYPE == 0 and compatible == autoclear == 0
+            and refcount_order == 4 and header_length in (104, 112),
+            'qcow2 feature/extension profile unsupported (including external data files): '
+            'incompatible=%#x compatible=%#x autoclear=%#x refcount_order=%d header_length=%d'
+            % (incompatible, compatible, autoclear, refcount_order, header_length))
     # QEMU 5.1+ writes a 112-byte header: one compression-type byte (0 = zlib,
-    # the only type readable without the incompatible feature bit) and padding.
+    # 1 = zstd) and seven of padding. The bit is set exactly when the type is
+    # not the implicit zlib.
+    compression = 0
     if header_length == 112:
-        require(len(header) >= 112 and header[104:112] == bytes(8), 'qcow2 compression type unsupported')
+        require(len(header) >= 112 and header[105:112] == bytes(7) and header[104] in (0, 1),
+                'qcow2 compression type unsupported')
+        compression = header[104]
+    require(bool(incompatible & COMPRESSION_TYPE) == (compression != 0),
+            'qcow2 compression type disagrees with its feature bits')
     integer(size, 68*SECTOR)
     require(size % SECTOR == 0, 'unaligned virtual size')
     return size
