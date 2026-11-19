@@ -26,7 +26,10 @@ pub(crate) fn draw_action_presence(
     let occupied = occupied(tree, viewport);
     presence.relabel_items(label_of);
     for interaction in presence.visible_interactions(now) {
-        let under = presence.unshown_write_item(&interaction);
+        // Words written under an item that no view here shows in place (a comment added to an
+        // issue, seen in the list; a note made while another is open) stand on the item's row.
+        let under = crate::presence::written_under(&interaction)
+            .filter(|_| !presence.placed(interaction.invocation));
         let Some(bounds) = text_loci
             .iter()
             .find(|(invocation, _)| *invocation == interaction.invocation)

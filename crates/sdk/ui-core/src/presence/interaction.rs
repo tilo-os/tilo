@@ -347,15 +347,6 @@ impl PresenceCtx {
             .is_some_and(|entry| entry.placed.get())
     }
 
-    /// The item a write landed in when no view here shows the words it wrote: a comment added to
-    /// an issue, seen in the list; a note made while another is open. Its row stands for the write.
-    pub(crate) fn unshown_write_item(&self, interaction: &SemanticInteraction) -> Option<String> {
-        if self.placed(interaction.invocation) {
-            return None;
-        }
-        written_under(interaction)
-    }
-
     /// A frame drew `invocation`'s current phase at `now`: its dwell counts from the first such
     /// frame.
     pub fn note_drawn(&self, invocation: InvocationId, now: Instant) {
@@ -567,19 +558,15 @@ impl PresenceCtx {
                 &Circle::new(target, radius),
             );
         }
-        // The agent wears the nametag it wears wherever it points, in its colour, clear of the
-        // text around it. Where the place already says what it did (the caret it writes with
-        // says "Ada: renamed"), the tag names the agent alone: a second sentence says it twice,
-        // and a long one pushes out of the window. A write no view here shows has no such caret:
-        // on the item's row the tag is all a person sees of it, so it says what it did there.
-        let words = if self.unshown_write_item(interaction).is_some() {
-            self.interaction_status_label(interaction)
-        } else {
-            actor_label(self, interaction)
-        };
+        // The agent wears the nametag it wears wherever it points, in its colour: its name alone,
+        // one tag for the agent, clear of the text around it. What it is doing is said by the
+        // caret it writes with, the card of the action it took, and its line among who is here —
+        // not by a second sentence on the tag, which a long one pushes out of the window.
+        let words = actor_label(self, interaction);
         // A caret it writes with may wear its tag already (an agent writing in a document): the
-        // pointer then goes without, one tag for one agent, at its caret. A second tag beside it,
-        // or floating where the pointer is, says the same agent twice.
+        // pointer then goes without, one tag for one agent, at its caret. The caret's tag names
+        // the agent ("Claude Code") where this one would say what it does; a second tag
+        // beside it, or floating where the pointer is, says the same agent twice.
         // Its caret is where it acts then, so no pointer is drawn either: a pointer of its own
         // stood on the very words the caret had just written, or apart from them where it last
         // pointed. A caret anywhere else (an agent writing in one field while it presses
@@ -1920,40 +1907,6 @@ pub(crate) mod tests {
                 .map(|tag| tag.label)
                 .collect();
             assert_eq!(tags.len(), 2, "one at its caret, one where it would press");
-        }
-
-        phase a_write_no_view_shows_wears_what_it_did_on_its_tag;
-        // A write whose words no view here shows (a comment added to an issue, seen in the list)
-        // has no caret to say what the agent did there: the tag on the item's row says it.
-        {
-            let at = crate::time::now();
-            let theme = Theme::default();
-            let mut presence = PresenceCtx::empty();
-            presence.set_display_name(MemberId::agent("quill"), "Claude Code");
-            let quill = MemberId::agent("quill");
-            let mut wrote = interaction(42, 1, InteractionPhase::Committed);
-            wrote.actor = Acting::agent("quill");
-            wrote.action.step = Some(StepKind::Write);
-            wrote.anchor = InteractionAnchor::Text {
-                region: "comments".into(),
-                ranges: vec![tilo_actions::InteractionTextRange {
-                    block: "issue-b/c1".into(),
-                    start: 0,
-                    end: 4,
-                }],
-            };
-            presence.apply_interaction_at(wrote.clone(), at).unwrap();
-            let locus = Rect::new(100.0, 296.0, 400.0, 322.0);
-            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-            paint_marker(&mut presence, &wrote, locus, viewport, "note", at, &theme)
-                .expect("the write is marked on its row");
-            let tags: Vec<String> = presence
-                .caret_tags()
-                .into_iter()
-                .filter(|tag| tag.user == quill)
-                .map(|tag| tag.label)
-                .collect();
-            assert_eq!(tags, vec!["Claude Code: wrote".to_owned()]);
         }
 
         phase the_place_an_agent_would_press_is_washed_in_its_colour;
