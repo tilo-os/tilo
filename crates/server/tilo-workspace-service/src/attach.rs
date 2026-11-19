@@ -11,13 +11,15 @@
 //! through the same ordered persistence owner device peers use.
 //!
 //! Anti-entropy (`SyncRequest`, answered with the changes the requester's
-//! materialized heads lack) runs on events only: once when the session
-//! starts, again for as long as an answer still brings something new, and
-//! whenever the upstream says it withheld a change from this host. An
-//! upstream does not forward a change another host attached to it sent it
-//! back to a third (that would loop), so a change crossing two hops reaches
-//! the far host this way. A converged session does nothing until a change
-//! arrives: no timer runs while it is connected.
+//! materialized heads lack) runs when the session starts, again for as long
+//! as an answer still brings something new, whenever the upstream says it
+//! withheld a change from this device, and on a slow tick besides. The tick is
+//! what makes a change this device missed a delay and not a loss: a live offer
+//! can go missing while its subscription is being registered, or sit behind a
+//! queue that has not drained, and neither side would write again until
+//! something else changed. An upstream does not forward a change another
+//! device attached to it sent it back to a third (that would loop), so a
+//! change crossing two hops reaches the far device this way.
 //!
 //! A session carries changes one way, from the host dialed to the host
 //! dialing: every holder of a workspace dials every other.
@@ -44,6 +46,18 @@ use crate::metrics::Metrics;
 use crate::peer::WorkspaceRegistry;
 use crate::transport::Envelope;
 use tilo_server_protocol::WorkspaceId;
+
+/// How often the dialing device asks the upstream for what its copies lack
+/// besides the events it hears: the interval that turns a live offer it
+/// missed into a delayed change rather than a lost one. A converged session's
+/// ask brings nothing back and costs the upstream one prepared turn.
+const SYNC_TICK: Duration = Duration::from_secs(5);
+
+/// How long the session waits for a change it took in to be kept before it
+/// reads the next one. The owner keeps changes in order and bounds how many
+/// it holds, so a slow durable write is a reason to read on, not to stop
+/// reading: a change behind it would otherwise wait for the person's action.
+const ADMIT_WAIT: Duration = Duration::from_secs(2);
 
 /// Which host an attach session dials: the device `device` of the person
 /// `person`, at `addr`, both pinned by the handshake. The governor of a
@@ -431,7 +445,7 @@ struct Session<'a> {
 impl Session<'_> {
     /// Follow the upstream for the life of the connection: ask once for what
     /// each shared workspace lacks, then admit what arrives, asking again
-    /// only on an event (see the module documentation).
+    /// on an event and on a slow tick (see the module documentation).
     async fn follow(&self, intersection: &[WorkspaceId]) -> Result<(), String> {
         for id in intersection {
             self.ask(*id).await?;
@@ -440,7 +454,26 @@ impl Session<'_> {
         // brought nothing this host could take in, and asking again would
         // only repeat it.
         let mut answered: HashMap<WorkspaceId, blake3::Hash> = HashMap::new();
-        while let Some(envelope) = self.client.recv().await {
+        let mut tick = tokio::time::interval(SYNC_TICK);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // The interval's first tick is due at once; the one that asks is a
+        // whole period after the asks above.
+        tick.tick().await;
+        loop {
+            let envelope = tokio::select! {
+                envelope = self.client.recv() => match envelope {
+                    Some(envelope) => envelope,
+                    None => break,
+                },
+                // A change this device missed is picked up on the next ask:
+                // what the live offer did not bring, anti-entropy does.
+                _ = tick.tick() => {
+                    for id in intersection {
+                        self.ask(*id).await?;
+                    }
+                    continue;
+                }
+            };
             match envelope {
                 Envelope::SyncResponse {
                     workspace_id,
@@ -500,9 +533,11 @@ impl Session<'_> {
                 });
                 // An upstream replays all it retains of the workspace at once,
                 // faster than this host keeps it: each change is kept before the
-                // next is taken, so a workspace with a long history fills no
-                // queue and the session holds.
-                crate::peer::enqueue_from_host(
+                // next is taken, and the owner's admission bounds how many wait,
+                // so a workspace with a long history fills no queue. A durable
+                // write slower than that bound is left to the owner's order
+                // rather than stopping the reads behind it.
+                let kept = crate::peer::enqueue_from_host(
                     &workspace,
                     envelope,
                     self.source.clone(),
@@ -510,9 +545,8 @@ impl Session<'_> {
                     false,
                 )
                 .await
-                .map_err(|error| error.to_string())?
-                .kept()
-                .await;
+                .map_err(|error| error.to_string())?;
+                let _kept = tokio::time::timeout(ADMIT_WAIT, kept.kept()).await;
                 if let Some((tap, author, body)) = notice {
                     crate::peer::tell_governor(&workspace, &tap, author, body).await;
                 }
@@ -598,7 +632,7 @@ impl Session<'_> {
             delta: delta_since,
             signature: [0; 64],
         };
-        crate::peer::enqueue_from_host(
+        let kept = crate::peer::enqueue_from_host(
             &workspace,
             envelope,
             self.source.clone(),
@@ -606,9 +640,8 @@ impl Session<'_> {
             true,
         )
         .await
-        .map_err(|error| error.to_string())?
-        .kept()
-        .await;
+        .map_err(|error| error.to_string())?;
+        let _kept = tokio::time::timeout(ADMIT_WAIT, kept.kept()).await;
         // What the governor held back for lack of this history is taken in
         // with it.
         let authority = workspace.lock().await.workspace_authority.clone();
