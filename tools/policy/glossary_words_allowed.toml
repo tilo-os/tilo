@@ -1477,3 +1477,9 @@ reason = "The browser effect that reads what the tab did, which the window must 
 words = ["record"]
 identifiers = ["ReadPageRecord", "READ_PAGE_RECORD"]
 paths = ["apps/browser/src/browser_widget.rs"]
+
+[[allow]]
+reason = "The lineage a document's frames are retained on, which the wire names a channel (`neighbour_wire::app_document_channel`) and this file reads by throughout."
+words = ["channel"]
+identifiers = ["channel", "frame_channel", "app_document_channel"]
+paths = ["crates/server/tilo-workspace-service/src/store/document_sync.rs", "crates/server/tilo-workspace-service/src/store/document_sync_tests.rs"]

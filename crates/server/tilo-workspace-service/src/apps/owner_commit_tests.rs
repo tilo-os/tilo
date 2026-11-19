@@ -327,6 +327,7 @@ mod owner_commit_tests {
                             document: fixture.route.document_id.clone(),
                             envelope: Box::new(owner_snapshot(&fixture)),
                             own: None,
+                            readers: None,
                         },
                     };
                     let state = fixture.state.clone();
@@ -378,6 +379,7 @@ mod owner_commit_tests {
                         document: fixture.route.document_id.clone(),
                         envelope: Box::new(owner_snapshot(&fixture)),
                         own: None,
+                        readers: None,
                     },
                 };
                 fixture
@@ -1411,6 +1413,7 @@ mod owner_commit_tests {
                     document: f.route.document_id.clone(),
                     envelope: Box::new(owner_snapshot(&f)),
                     own: None,
+                    readers: None,
                 },
             };
             let expected = request.clone();

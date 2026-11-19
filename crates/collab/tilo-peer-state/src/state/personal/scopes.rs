@@ -158,6 +158,7 @@ mod tests {
             document_id: own.clone(),
             envelope: Box::new(forged),
             own: None,
+            readers: None,
         };
         let refused = a.receive(&a_key, b_key.device_public_key(), sent, now());
         assert!(refused.is_err(), "{refused:?}");
@@ -225,6 +226,7 @@ mod tests {
             document_id: own.clone(),
             envelope,
             own: None,
+            readers: None,
         };
         let outcome = c
             .receive(&c_key, b_key.device_public_key(), relayed, now())

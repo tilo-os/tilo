@@ -210,15 +210,21 @@ impl DocumentMutation {
 }
 
 /// The artifact of `document_id`, a document of `app_id` in `workspace_id`: what its writes name
-/// and its content is sealed for, as every member reads it
-/// ([`crate::readers::content_artifact_id`]).
+/// and its content is sealed for, under the keys of its reader set
+/// ([`crate::readers::content_artifact_id`]): a store document's, as its id names it, and every
+/// member's for an app's own document.
 #[must_use]
 pub fn document_artifact_id(app_id: &str, workspace_id: &str, document_id: &str) -> ArtifactId {
-    crate::readers::content_artifact_id(
-        workspace_id,
-        crate::readers::EVERY_MEMBER,
-        &crate::readers::app_document_id(app_id, document_id),
-    )
+    // A document of the workspace's resource store is sealed for its reader set, which its id
+    // names; any other is an app's own, which every member reads.
+    match crate::readers::store_document_readers(document_id) {
+        Some(readers) => crate::readers::content_artifact_id(workspace_id, readers, document_id),
+        None => crate::readers::content_artifact_id(
+            workspace_id,
+            crate::readers::EVERY_MEMBER,
+            &crate::readers::app_document_id(app_id, document_id),
+        ),
+    }
 }
 
 static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =

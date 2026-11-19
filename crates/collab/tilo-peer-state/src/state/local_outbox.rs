@@ -293,11 +293,17 @@ impl PeerOutboxMut<'_> {
         let own = candidate
             .core
             .own_write(&local.route.app, &local.route.record, &selected);
+        // The renewal is read by whoever read the write it renews.
+        let readers = match original {
+            NeighbourMsg::AppDocument { readers, .. } => readers.clone(),
+            _ => None,
+        };
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(&selected),
             app_id: local.route.app,
             cluster_id: candidate.core.workspace.clone(),
             own,
+            readers,
             document_id: local.route.record,
             envelope: Box::new(renewal),
         };

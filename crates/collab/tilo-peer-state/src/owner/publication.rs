@@ -685,6 +685,7 @@ pub(crate) fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, Stri
         document_id,
         envelope,
         own,
+        readers,
         ..
     } = message
     else {
@@ -697,6 +698,7 @@ pub(crate) fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, Stri
             document: document_id.clone(),
             envelope: envelope.clone(),
             own: own.clone(),
+            readers: readers.clone(),
         },
     })
 }
@@ -775,6 +777,7 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
         document: record,
         envelope,
         own,
+        readers,
     } = &request.operation
     else {
         return Err("native outgoing requires document".into());
@@ -797,6 +800,7 @@ pub(crate) fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
             document_id: record.clone(),
             envelope: envelope.clone(),
             own: own.clone(),
+            readers: readers.clone(),
         },
         MAX_BYTES,
     )
@@ -2540,6 +2544,7 @@ fn drafted_here(
         document_id,
         envelope,
         own,
+        readers,
     } = message
     else {
         return Err("a compaction held is a document write".into());
@@ -2574,6 +2579,7 @@ fn drafted_here(
         document_id,
         envelope: Box::new(op),
         own,
+        readers,
     })
 }
 /// `message` carrying `envelope`, a segment of the compaction it carries, in its place.

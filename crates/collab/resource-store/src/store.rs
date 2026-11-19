@@ -63,35 +63,9 @@ const PARENT: &str = "p";
 const ORDER: &str = "o";
 const FIELDS: &str = "f";
 
-/// Whether `name` names a document the store placed: `<readers>/<owner>#<n>`, or a content
-/// document `<readers>/<kind>/<id>~<n>`, where `<readers>` is `*` or a digest. Any other name is
-/// an app's own document, which no store holds.
-#[must_use]
-pub fn is_store_document(name: &str) -> bool {
-    let Some((readers, rest)) = name.split_once('/') else {
-        return false;
-    };
-    let named = readers == "*"
-        || (readers.len() == 16 && readers.bytes().all(|byte| byte.is_ascii_hexdigit()));
-    let numbered = rest.rsplit_once(['#', '~']).is_some_and(|(_, number)| {
-        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
-    });
-    named && numbered
-}
-
-/// The name a document id gives the reader set `readers`: `*` for the whole group, a digest of
-/// any other set, so a long list of people is in no id.
-fn readers_name(readers: &str) -> String {
-    if readers == "*" {
-        return readers.to_owned();
-    }
-    let digest = blake3::hash(readers.as_bytes()).to_hex();
-    digest.as_str().get(..16).unwrap_or_default().to_owned()
-}
-
 /// The content document of the resource `id` of `kind`, read by `readers`.
 fn content_id(readers: &str, kind: &str, id: &str) -> String {
-    format!("{}/{kind}/{id}~0", readers_name(readers))
+    format!("{}/{kind}/{id}~0", collab_types::reader_set_name(readers))
 }
 
 /// Why the store refused a write or a peer's changes.
@@ -307,7 +281,11 @@ impl Store {
             filled.held = 0;
         }
         filled.held = filled.held.saturating_add(1);
-        format!("{}/{owner}#{}", readers_name(readers), filled.newest)
+        format!(
+            "{}/{owner}#{}",
+            collab_types::reader_set_name(readers),
+            filled.newest
+        )
     }
 
     /// Writes `resource` as the resource `id` of `kind`: a new one into the document the store
@@ -927,7 +905,7 @@ impl Store {
     /// goes to the newest document known.
     fn know_document(&mut self, doc: &str, readers: &str, owner: &str, count: usize) {
         let Some(number) = doc
-            .strip_prefix(readers_name(readers).as_str())
+            .strip_prefix(collab_types::reader_set_name(readers).as_str())
             .and_then(|rest| rest.strip_prefix('/'))
             .and_then(|rest| rest.strip_prefix(owner))
             .and_then(|rest| rest.strip_prefix('#'))

@@ -111,6 +111,7 @@ fn message(
         document_id: String::new(),
         envelope: Box::new(envelope),
         own: None,
+        readers: None,
     }
 }
 

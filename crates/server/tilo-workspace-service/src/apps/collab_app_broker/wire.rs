@@ -393,6 +393,7 @@ impl JoinedChannel {
                                 &route.document_id,
                                 current_identity.verified.user_public_key,
                             ),
+                            readers: None,
                         },
                     },
                     self.resource_type.clone(),

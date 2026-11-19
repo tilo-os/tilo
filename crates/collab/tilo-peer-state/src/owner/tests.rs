@@ -172,6 +172,7 @@ fn edit_from_view(
             document: String::new(),
             envelope,
             own: None,
+            readers: None,
         },
     })
 }
@@ -557,6 +558,7 @@ fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
             document: String::new(),
             envelope: Box::new(envelope),
             own: None,
+            readers: None,
         },
     }
 }
@@ -969,6 +971,7 @@ fn commit_sealed_as(
                     document: String::new(),
                     envelope: envelope.clone(),
                     own: None,
+                    readers: None,
                 },
             },
             joined.now,
@@ -1456,6 +1459,7 @@ async fn a_draft_under_a_write_its_device_sent_meanwhile_is_saved() {
                         document: String::new(),
                         envelope: Box::new(envelope),
                         own: None,
+                        readers: None,
                     },
                 })
             })
@@ -1569,6 +1573,7 @@ async fn an_apps_write_names_the_governance_its_owner_admitted_it_under() {
         document_id: String::new(),
         envelope,
         own: None,
+        readers: None,
     };
     receiver
         .receive_from(

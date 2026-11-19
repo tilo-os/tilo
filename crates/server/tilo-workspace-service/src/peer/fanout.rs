@@ -38,9 +38,10 @@ pub(super) struct LiveFrame<'a> {
     asks_admission: bool,
     /// Who holds the frame's record ([`crate::store::document_sync`]).
     reach: crate::store::document_sync::Reach,
-    /// The person whose own record the frame changes: only their devices
-    /// are sent it.
-    owner: Option<[u8; 32]>,
+    /// The people alone who read the frame's document: the person a member's
+    /// own one is of, or a resource store document's reader set. Only their
+    /// devices are sent it.
+    readers: Option<std::collections::BTreeSet<[u8; 32]>>,
 }
 
 impl<'a> LiveFrame<'a> {
@@ -64,7 +65,7 @@ impl<'a> LiveFrame<'a> {
                 .is_some_and(|(_, _, body)| payloads.asks_admission(body)),
             _ => false,
         };
-        let (reach, owner) = record_reach(runtime, envelope);
+        let (reach, readers) = record_reach(runtime, envelope);
         Self {
             envelope,
             budget,
@@ -73,18 +74,21 @@ impl<'a> LiveFrame<'a> {
             audience,
             asks_admission,
             reach,
-            owner,
+            readers,
         }
     }
 }
 
 /// Who holds the record a live frame changes: a document frame on a channel
 /// whose record is on-demand reaches only the devices that hold it; and the
-/// person whose own record it is, if it is one.
+/// people alone who read it, if not every member does.
 fn record_reach(
     runtime: &crate::workspace::WorkspaceRuntime,
     envelope: &Arc<Envelope>,
-) -> (crate::store::document_sync::Reach, Option<[u8; 32]>) {
+) -> (
+    crate::store::document_sync::Reach,
+    Option<std::collections::BTreeSet<[u8; 32]>>,
+) {
     use crate::coedit::CoeditPayload;
     let Envelope::Delta { delta, .. } = &**envelope else {
         return (Reach::Everyone, None);
@@ -96,7 +100,7 @@ fn record_reach(
         ) => runtime.store.frame_reach(&channel, &body),
         None => Reach::Everyone,
     };
-    (reach, runtime.store.frame_owner(delta))
+    (reach, runtime.store.frame_readers(delta))
 }
 
 /// Fan one frame out to a commit's captured sessions, under the workspace's lock.
@@ -179,13 +183,15 @@ impl LiveFanout<'_> {
         if !held && !runtime.attached(recipient) {
             return None;
         }
+        // A document a set of people reads goes to their devices alone.
         // A person's own record goes to their devices alone: no other member's
         // device is sent it, whatever its role. A host the workspace is
         // attached to keeps all of the workspace.
         if self
             .frame
-            .owner
-            .is_some_and(|owner| owner != target.peer.user_public_key)
+            .readers
+            .as_ref()
+            .is_some_and(|readers| !readers.contains(&target.peer.user_public_key))
             && !runtime.attached(recipient)
         {
             return None;

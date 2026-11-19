@@ -355,6 +355,7 @@ fn signed_write(
         document_id: DOCUMENT.into(),
         envelope: Box::new(envelope),
         own: None,
+        readers: None,
     }
 }
 

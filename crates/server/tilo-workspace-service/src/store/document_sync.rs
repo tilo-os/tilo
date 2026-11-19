@@ -16,7 +16,7 @@
 //! ([`neighbour_wire::chain_head`]), is sent whichever part that is, and
 //! follows the chain's later heads from then on ([`Reach::ChainHead`]).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::Path;
@@ -80,6 +80,10 @@ pub(super) struct Classes {
     /// The person (their user root key) whose own record each channel
     /// carries: only their devices are sent it.
     owners: HashMap<[u8; 32], [u8; 32]>,
+    /// The people (their user root keys) who read each channel's resource
+    /// store document read by a set of people: only their devices are sent
+    /// it. A set its frames never named, or named unlike its id, is no one.
+    readers: HashMap<[u8; 32], BTreeSet<[u8; 32]>>,
     /// The person (their user root key) of each member device whose retained
     /// identity was read for it ([`WorkspaceStore::device_person`]): a
     /// certificate binds its device to one person for good.
@@ -106,6 +110,24 @@ impl Classes {
             && neighbour_wire::app_document_channel(app, record) == channel
         {
             self.owners.insert(channel, own.owner);
+        }
+        // The set a frame names is taken only when it is the set the id names
+        // by its digest: no frame widens a document past the people its id
+        // was placed for.
+        if let Some(named) = collab_types::store_document_readers(record)
+            && named != collab_types::EVERY_MEMBER
+            && neighbour_wire::app_document_channel(app, record) == channel
+        {
+            let people = route
+                .readers
+                .as_deref()
+                .filter(|readers| collab_types::reader_set_name(readers) == named)
+                .and_then(collab_types::Readers::parse);
+            if let Some(collab_types::Readers::People(people)) = people {
+                self.readers.insert(channel, people);
+            } else {
+                self.readers.entry(channel).or_default();
+            }
         }
         if self.channels.contains_key(&channel) {
             return;
@@ -145,6 +167,7 @@ impl Classes {
                 cluster_id: String::new(),
                 document_id: record.to_owned(),
                 own: None,
+                readers: None,
             },
         );
     }
@@ -182,6 +205,25 @@ impl Classes {
                 }
             }
         })
+    }
+
+    /// Who alone may be sent the document `channel` carries: its person, for
+    /// a member's own one, or its reader set's people. `None` when every
+    /// member may.
+    fn readers_of(&self, channel: &[u8; 32]) -> Option<BTreeSet<[u8; 32]>> {
+        if let Some(owner) = self.owners.get(channel) {
+            return Some(BTreeSet::from([*owner]));
+        }
+        self.readers.get(channel).cloned()
+    }
+
+    /// Whether a device of `person` may be sent the document `channel` carries.
+    fn reaches(&self, channel: &[u8; 32], person: &[u8; 32]) -> bool {
+        self.owners.get(channel).is_none_or(|owner| owner == person)
+            && self
+                .readers
+                .get(channel)
+                .is_none_or(|people| people.contains(person))
     }
 
     /// The channel of the head of the chain whose head channel is `chain`
@@ -309,7 +351,8 @@ impl WorkspaceStore {
 
     /// Whether a device of the person whose user root key is `person` may be
     /// sent the record `channel` carries: any device for a record of the
-    /// workspace, only that person's for a person's own record.
+    /// workspace, only that person's for a person's own one, only its
+    /// people's for a resource store's document a set of people reads.
     pub(crate) fn reaches_person(&self, channel: &[u8; 32], person: &[u8; 32]) -> bool {
         // Every retained record's person is known first: a host that just
         // started has read no lineage yet.
@@ -317,26 +360,44 @@ impl WorkspaceStore {
             tracing::warn!(%error, "the retained records' people did not read");
             return false;
         }
-        self.classes()
-            .owners
-            .get(channel)
-            .is_none_or(|owner| owner == person)
+        self.classes().reaches(channel, person)
     }
 
     /// The person (their user root key) whose own record the state frame
     /// `delta` changes: retained on a record's channel, or sent as it is.
     /// `None` for a frame of no member's own record.
     pub(crate) fn frame_owner(&self, delta: &[u8]) -> Option<[u8; 32]> {
+        let channel = self.frame_channel(delta)?;
+        self.classes().owners.get(&channel).copied()
+    }
+
+    /// Who alone may be sent the document the state frame `delta` changes:
+    /// its person, for a member's own one, or the people of its reader set,
+    /// for a resource store's document only they read. `None` for a document
+    /// every member reads.
+    pub(crate) fn frame_readers(&self, delta: &[u8]) -> Option<BTreeSet<[u8; 32]>> {
+        let channel = self.frame_channel(delta)?;
+        self.classes().readers_of(&channel)
+    }
+
+    /// Where the document the state frame `delta` changes is retained, which
+    /// document that is learned from the frame unless its person is known
+    /// already: retained there, or sent as it is.
+    fn frame_channel(&self, delta: &[u8]) -> Option<[u8; 32]> {
         if let Some(
             crate::coedit::CoeditPayload::Checkpoint { channel, body }
             | crate::coedit::CoeditPayload::RetainedDelta { channel, body },
         ) = crate::coedit::CoeditPayload::decode(delta)
         {
-            return self.resource_owner(&channel, Some(&body));
+            self.resource_owner(&channel, Some(&body));
+            return Some(channel);
         }
         let (route, _) = self.payloads.open_document(delta)?;
         let channel = neighbour_wire::app_document_channel(&route.app_id, &route.document_id);
-        self.resource_owner(&channel, Some(delta))
+        if !self.classes().owners.contains_key(&channel) {
+            self.classes().learn(channel, &route);
+        }
+        Some(channel)
     }
 
     /// Learn the record of `channel` from `bytes`, a frame about to be
@@ -407,6 +468,7 @@ impl WorkspaceStore {
                 cluster_id: String::new(),
                 document_id: record,
                 own: Some(own.clone()),
+                readers: None,
             },
         );
     }

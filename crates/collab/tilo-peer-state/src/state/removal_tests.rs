@@ -196,6 +196,7 @@ fn sealed(
         document_id: DOCUMENT.into(),
         envelope: Box::new(envelope),
         own: None,
+        readers: None,
     }
 }
 

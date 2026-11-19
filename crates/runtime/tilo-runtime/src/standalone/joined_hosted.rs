@@ -226,6 +226,7 @@ impl Joined {
             document_id: record.clone(),
             envelope: Box::new(envelope.clone()),
             own: own_resource,
+            readers: None,
         };
         let digest =
             *blake3::hash(&postcard::to_allocvec(&message).map_err(|error| error.to_string())?)

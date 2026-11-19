@@ -149,6 +149,7 @@ async fn write_all(
                         document: String::new(),
                         envelope: Box::new(op),
                         own: None,
+                        readers: None,
                     },
                 })
             })

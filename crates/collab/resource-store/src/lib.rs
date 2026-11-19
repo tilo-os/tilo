@@ -37,5 +37,5 @@ pub use admit::{Admit, Proposal, Received, Refusal, Stamp, Touch, Touched};
 pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};
 pub use query::{Absent, Cursor, Filter, Order, Page, Query, Sort};
 pub use schema::{Expected, FIELD_EDIT, Field, FieldKind, Schema, Type, Verb, Writes};
-pub use store::{Resource, Source, Store, StoreError, Written, is_store_document};
+pub use store::{Resource, Source, Store, StoreError, Written};
 pub use value::{Cell, Value};

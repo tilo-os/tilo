@@ -1315,7 +1315,9 @@ impl Engine {
 
     /// [`Self::write_resource`] of a document only `readers` read
     /// ([`collab_types::Readers`]): sealed under `sealed`, the keys of that reader set's group,
-    /// for the document as those readers read it ([`collab_types::content_artifact_id`]).
+    /// for the scope the document's id derives ([`collab_types::document_artifact_id`]). A
+    /// resource store's document carries its set in the clear, so its host sends it to the
+    /// set's people alone.
     /// # Errors
     /// As [`Self::write_resource`].
     pub(crate) async fn write_resource_read_by(
@@ -1330,11 +1332,9 @@ impl Engine {
         use tilo_broker_core::owner_service::OwnerService as _;
         let device = self.identity.device_cert.device_public_key;
         let now = tilo_clock::wall();
-        let artifact = collab_types::content_artifact_id(
-            &workspace.to_string(),
-            readers,
-            &collab_types::app_document_id(app, doc),
-        );
+        let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), doc);
+        let named = (collab_types::is_store_document(doc) && readers != collab_types::EVERY_MEMBER)
+            .then(|| readers.to_owned());
         let frame = if founding {
             collab_types::DocumentMutation::Snapshot(changes.to_vec())
         } else {
@@ -1381,6 +1381,7 @@ impl Engine {
                     document: doc.to_owned(),
                     envelope: Box::new(op),
                     own: view.peer().own_write(app, doc, &device),
+                    readers: named.clone(),
                 },
             }])
         };

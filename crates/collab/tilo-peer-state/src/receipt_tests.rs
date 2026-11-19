@@ -347,6 +347,7 @@ fn signed_write_stamped(
         document_id: RECORD.into(),
         envelope: Box::new(envelope),
         own: None,
+        readers: None,
     }
 }
 
@@ -495,6 +496,7 @@ tilo_test_env::scenario! {
             document_id,
             mut envelope,
             own,
+            readers,
         } = wrote_other
         else {
             panic!("a document write")
@@ -525,6 +527,7 @@ tilo_test_env::scenario! {
             document_id,
             envelope,
             own,
+            readers,
         };
         let refused = receive(&mut peer, &guest, lying).unwrap_err();
         assert!(refused.contains("do not name exactly"), "{refused}");
@@ -641,6 +644,7 @@ tilo_test_env::scenario! {
                 document_id,
                 mut envelope,
                 own,
+                readers,
             } = message
             else {
                 panic!("a document write")
@@ -654,6 +658,7 @@ tilo_test_env::scenario! {
                 document_id,
                 envelope,
                 own,
+                readers,
             }
         };
         let edited = guest_write(
@@ -700,6 +705,7 @@ tilo_test_env::scenario! {
                 document_id: RECORD.into(),
                 envelope: Box::new(envelope),
                 own: None,
+                readers: None,
             },
         )
         .expect("an editor names the newer surface");
@@ -926,6 +932,7 @@ fn upgraded_write(
         document_id: RECORD.into(),
         envelope: Box::new(envelope),
         own: None,
+        readers: None,
     }
 }
 

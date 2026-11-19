@@ -311,6 +311,7 @@ impl PeerPublicationMut<'_> {
                 app_id: app.into(),
                 cluster_id: self.peer.core.workspace.clone(),
                 own: self.peer.core.own_write(app, record, op.author.as_bytes()),
+                readers: None,
                 document_id: record.into(),
                 envelope: Box::new(op),
             })
@@ -1247,6 +1248,7 @@ impl PeerPublicationMut<'_> {
             cluster_id: self.peer.core.workspace.clone(),
             document_id: record.into(),
             own: self.peer.core.own_write(app, record, author.as_bytes()),
+            readers: None,
             envelope: Box::new(op),
         })
     }
@@ -1357,6 +1359,7 @@ impl StatePeer {
                         own: self
                             .core
                             .own_write(&route.app, &route.record, author.as_bytes()),
+                        readers: None,
                     });
                 }
             }

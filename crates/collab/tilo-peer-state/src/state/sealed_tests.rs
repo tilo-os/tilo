@@ -52,6 +52,7 @@ fn sealed(peer: &StatePeer, key: &SigningKey, seq: u64, ciphertext: &[u8]) -> Ne
         document_id: RECORD.into(),
         envelope: Box::new(envelope),
         own: None,
+        readers: None,
     }
 }
 

@@ -834,6 +834,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
                 document: String::new(),
                 envelope,
                 own: None,
+                readers: None,
             },
         })
         .await;
@@ -871,6 +872,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
             document: String::new(),
             envelope,
             own: None,
+            readers: None,
         },
     };
     let asked_seq = document_seq(&asked);
@@ -947,6 +949,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
                 document: String::new(),
                 envelope,
                 own: None,
+                readers: None,
             },
         })
         .await
@@ -1552,6 +1555,7 @@ fn signed_write(
             document: RECORD.into(),
             envelope: Box::new(envelope),
             own: None,
+            readers: None,
         },
     }
 }

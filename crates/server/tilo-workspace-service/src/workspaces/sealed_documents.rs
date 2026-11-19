@@ -825,6 +825,7 @@ impl Workspaces {
                     cluster_id: name.clone(),
                     document_id: record,
                     own,
+                    readers: None,
                 };
                 if let Err(error) = compactor
                     .reseal(&workspace, workspace_id, channel, &route)
@@ -894,6 +895,7 @@ impl Workspaces {
                     cluster_id: name.clone(),
                     document_id: record,
                     own,
+                    readers: None,
                 };
                 if let Err(error) = compactor
                     .repair(&workspace, workspace_id, channel, &route)

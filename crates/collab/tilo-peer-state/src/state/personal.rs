@@ -1339,6 +1339,7 @@ impl PersonalStore {
             // The person's own store holds only theirs: none is a member's own
             // resource of a workspace.
             own: None,
+            readers: None,
         }
     }
 
@@ -2524,6 +2525,7 @@ mod tests {
                     document_id: route.record,
                     envelope: Box::new(envelope),
                     own: None,
+                    readers: None,
                 },
                 now(),
             );

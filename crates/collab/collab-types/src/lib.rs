@@ -140,7 +140,10 @@ pub use personal::{
     is_personal_cluster, person_document_id, person_resource_type, personal_cluster,
     personal_cluster_of,
 };
-pub use readers::{EVERY_MEMBER, Readers, app_document_id, content_artifact_id, reader_group};
+pub use readers::{
+    EVERY_MEMBER, Readers, app_document_id, content_artifact_id, is_store_document, reader_group,
+    reader_set_name, store_document_readers,
+};
 pub use receipt::{
     Allows, ChangeAuthor, Receipt, ReceiptRefusal, ReceiptSurface, SurfaceSource, Surfaces,
     WrittenDocument, check_appearances, check_claims, check_claims_by_kind, check_continuations,

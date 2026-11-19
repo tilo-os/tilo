@@ -28,6 +28,10 @@ pub enum CommitOperation {
         /// carries it on the wire.
         #[serde(default)]
         own: Option<collab_types::OwnResource>,
+        /// The reader set of the resource store's document `document` is, when
+        /// it is one: the write carries it on the wire.
+        #[serde(default)]
+        readers: Option<String>,
     },
     /// Only the broker's redacted `WorkspaceEffectReceipt` encoding belongs here.
     /// Private arguments, results and error messages never cross this boundary.

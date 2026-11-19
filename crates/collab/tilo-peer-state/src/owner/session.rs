@@ -291,6 +291,7 @@ pub fn app_write(
         document_id,
         envelope,
         own,
+        readers: _,
     } = msg
     else {
         return None;

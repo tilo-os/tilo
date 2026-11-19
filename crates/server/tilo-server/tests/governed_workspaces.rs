@@ -793,6 +793,7 @@ params = []
             document_id: String::new(),
             envelope: Box::new(op),
             own: None,
+            readers: None,
         }
     };
     // An edit of the topic: published by the app, not granted to a commenter.

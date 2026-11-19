@@ -212,6 +212,7 @@ impl NativeDevice {
                 document_id: route.document.clone(),
                 envelope: Box::new(op),
                 own: None,
+                readers: None,
             },
         );
     }

@@ -85,6 +85,37 @@ pub fn reader_group(workspace: WorkspaceId, readers: &str) -> Option<WorkspaceId
     }
 }
 
+/// The name a document id gives the reader set `readers`: [`EVERY_MEMBER`] as itself, any other
+/// set as the first 16 hex digits of its BLAKE3 digest, so a long list of people is in no id.
+#[must_use]
+pub fn reader_set_name(readers: &str) -> String {
+    if readers == EVERY_MEMBER {
+        return readers.to_owned();
+    }
+    let digest = blake3::hash(readers.as_bytes()).to_hex();
+    digest.as_str().get(..16).unwrap_or_default().to_owned()
+}
+
+/// The reader set's name a document of a workspace's resource store carries in its id
+/// (`<readers>/<owner>#<n>`, or a content document `<readers>/<kind>/<id>~<n>`); `None` for any
+/// other document, which is an app's own.
+#[must_use]
+pub fn store_document_readers(document: &str) -> Option<&str> {
+    let (readers, rest) = document.split_once('/')?;
+    let named = readers == EVERY_MEMBER
+        || (readers.len() == 16 && readers.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let numbered = rest.rsplit_once(['#', '~']).is_some_and(|(_, number)| {
+        !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+    });
+    (named && numbered).then_some(readers)
+}
+
+/// Whether `document` is a document a workspace's resource store placed.
+#[must_use]
+pub fn is_store_document(document: &str) -> bool {
+    store_document_readers(document).is_some()
+}
+
 /// What content of document `document` of `workspace`, read by `readers`, is sealed for: its
 /// group's keys open it only under this id. Every sealed document derives its key scope here,
 /// a document of an app as [`app_document_id`] names it.
@@ -106,6 +137,18 @@ pub fn app_document_id(app: &str, document: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_store_document_is_told_from_an_apps_own_document_by_its_name() {
+        assert_eq!(store_document_readers("*/tasks.issue#0"), Some("*"));
+        assert!(is_store_document("0123456789abcdef/board-7#12"));
+        assert!(is_store_document("*/tasks.issue/i-1~0"));
+        assert!(!is_store_document("derived:default@tab:0"));
+        assert!(!is_store_document("notes/archive"));
+        assert!(!is_store_document("*/tasks.issue"));
+        assert_eq!(reader_set_name(EVERY_MEMBER), EVERY_MEMBER);
+        assert_eq!(reader_set_name(&"a".repeat(64)).len(), 16);
+    }
 
     #[test]
     fn a_reader_set_has_one_text_one_group_and_its_own_key_scope() {

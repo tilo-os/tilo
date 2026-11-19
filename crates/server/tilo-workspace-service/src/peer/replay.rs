@@ -286,7 +286,7 @@ impl ReplayFilter {
     ///   ([`GovernanceCertificates`]): every member device's is retained,
     ///   those of devices long gone too;
     /// - a change of another person's own record, which only their devices
-    ///   are sent.
+    ///   are sent, or of a document a set of people reads without this one.
     fn leaves_out(&self, frame: &Envelope, catchup: &ReplayCatchup) -> bool {
         if self.every_frame {
             return false;
@@ -302,8 +302,8 @@ impl ReplayFilter {
         }
         if self
             .store
-            .frame_owner(delta)
-            .is_some_and(|owner| owner != self.person)
+            .frame_readers(delta)
+            .is_some_and(|readers| !readers.contains(&self.person))
         {
             return true;
         }
