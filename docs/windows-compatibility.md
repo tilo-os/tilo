@@ -143,9 +143,13 @@ reparse path, a changed digest or an out-of-bound argv means no vendor-uninstall
 action appears.
 
 Setup is an ordinary Tilo window while Windows Apps reports installing, failed
-or ready. Discovery is bounded and keeps only application executables under
-Program Files or per-user Local AppData, excluding system, helper, updater,
-setup and uninstall executables. An EXE with no installed launcher and no
+or ready. Discovery is bounded and keeps what the Start menu opens: each
+shortcut under a Start Menu folder whose target is an application executable
+under Program Files or per-user Local AppData, named as its shortcut shows, with
+system, helper, updater, setup and uninstall executables left out. An MSI's
+advertised shortcut carries no path of its own and names its program by its own
+name. A program its installer gives no shortcut — an updater or a console tool
+it keeps for itself — is not listed. An EXE with no installed launcher and no
 setup-like name is kept as a portable application. A failed or launcher-less
 setup stays visible with a retry action on the stored digest.
 
