@@ -24,8 +24,8 @@
 //! the first page to reach the shell asks for, the renderer's maker, which
 //! the page asks for as it compiles its pipelines, and the code that runs a
 //! view written in the app language, which the first view an app places asks
-//! for, and the code that reads the workspace's resources, which the page
-//! fetches as it starts.
+//! for, and the code that reads the workspace's resources and the code that
+//! performs a bound action, which the page fetches as it starts.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -240,6 +240,13 @@ split_code! {
 }
 
 split_code! {
+    /// The code that performs a bound action. The page fetches it as it starts; a press before then
+    /// waits for it.
+    mod actions: tilo_ui::bound_dispatch::ActionCode = tilo_ui::bound_dispatch::builtin_actions()
+        => tilo_ui::bound_dispatch::ACTIONS, module = "actions", hash = "a4c07e93f1d265b8";
+}
+
+split_code! {
     /// The page's layout actions: the page asks for them as it first draws, and an action asked
     /// before they are in waits for them.
     mod page_layout: tilo_browser_runtime::MakePageLayout = tilo_browser_runtime::builtin_page_layout()
@@ -413,6 +420,8 @@ pub(crate) fn register() {
     workspace_resources::register();
     // Fetched at once: a window the first frame lays out shows its app arriving until it is in.
     let _ = tilo_browser_runtime::WORKSPACE_RESOURCES.get();
+    actions::register();
+    let _ = tilo_ui::bound_dispatch::ACTIONS.get();
     sheets::register();
     questions::register();
     desktop_search::register();
