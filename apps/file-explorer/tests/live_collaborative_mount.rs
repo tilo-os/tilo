@@ -215,5 +215,5 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
     drop(env);
     fs::fuse_session::unmount_and_join(session, &mount).unwrap();
     shutdown_endpoint.close().await;
-    shutdown_store.store().shutdown().await.unwrap();
+    shutdown_store.shutdown().await.unwrap();
 }
