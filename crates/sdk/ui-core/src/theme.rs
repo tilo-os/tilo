@@ -607,6 +607,16 @@ impl Theme {
         c.intent.selection_hover = c.lift_on(ground, 0.5);
         c.intent.value_fill =
             crate::tokens::colors::value_fill_on(c.intent.accent_ink, ground, c.intent.selection);
+        c.intent.value_track = crate::tokens::colors::value_track_on(
+            c.surfaces.raised,
+            ground,
+            &[
+                c.intent.value_fill,
+                c.semantic.success,
+                c.semantic.warning,
+                c.semantic.danger,
+            ],
+        );
         let ground_dark = crate::color::relative_luminance(ground) < Self::POLARITY_LUMINANCE;
         if ground_dark != c.palette.dark && matches!(c.emphasis, crate::tokens::Emphasis::Inverted)
         {

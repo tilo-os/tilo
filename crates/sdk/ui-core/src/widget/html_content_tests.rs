@@ -206,15 +206,15 @@ fn a_conversation_composes_as_a_list_of_authors_and_words() {
     );
 }
 
-/// A progress bar is the browser's own, with its value and what it is doing.
+/// A progress bar on the page is the track and fill it paints in the window, its value and
+/// what it is doing for a reader, and a shown label as words over the track.
 #[test]
-fn a_progress_bar_composes_as_the_browsers_own_with_its_value() {
-    let bar = crate::widget::ProgressBar::new(0.4).with_label("Uploading");
-    let composition = composed(Box::new(bar), (300, 30));
+fn a_progress_bar_composes_its_track_fill_and_shown_label() {
+    let bar = crate::widget::ProgressBar::new(0.4).with_shown_label("Uploading");
+    let composition = composed(Box::new(bar), (300, 40));
     let root = shown(&composition);
-    assert_eq!(root.tag, Some("progress"), "the browser's bar: {root:?}");
-    assert_eq!(attribute(root, "value"), Some("40"));
-    assert_eq!(attribute(root, "max"), Some("100"));
+    assert_eq!(attribute(root, "aria-valuenow"), Some("40"));
+    assert_eq!(attribute(root, "aria-valuemax"), Some("100"));
     assert_eq!(
         root.semantics
             .as_ref()
@@ -222,6 +222,23 @@ fn a_progress_bar_composes_as_the_browsers_own_with_its_value() {
         Some("Uploading"),
         "it says what it is doing"
     );
+    assert_eq!(texts(root), vec!["Uploading".to_owned()], "the label shows");
+    let ground = |key: &str| {
+        nodes(root)
+            .into_iter()
+            .find(|node| node.path.ends_with(key))
+            .and_then(|node| node.ground.as_ref())
+            .and_then(|ground| ground.fill)
+    };
+    let theme = crate::theme::Theme::dark();
+    assert_eq!(
+        ground("track"),
+        Some(crate::composition::rgba8(
+            theme.tokens.colors.intent.value_track
+        )),
+        "the track is the one every progress indicator stands on"
+    );
+    assert!(ground("fill").is_some(), "the share done is filled");
 }
 
 /// An avatar is a person's mark: their initials as words, their name for a reader.

@@ -14,40 +14,18 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::tokens::colors::Colors;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{Tone, Widget};
 
-const TRACK_ALPHA: u8 = 40;
 const BAR_TRACK_H: f64 = 8.0;
 
-fn track_color(theme: &Theme, alpha: u8) -> Color {
-    crate::tokens::colors::tier_on(theme.tokens.colors.surfaces.raised, alpha)
-}
-
 /// Paint options of a [`BarGauge`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GaugeStyle {
-    pub track_alpha: u8,
     pub compact_labels: bool,
 }
 
-impl Default for GaugeStyle {
-    fn default() -> Self {
-        Self {
-            track_alpha: TRACK_ALPHA,
-            compact_labels: false,
-        }
-    }
-}
-
 impl GaugeStyle {
-    #[must_use]
-    pub fn with_track_alpha(mut self, alpha: u8) -> Self {
-        self.track_alpha = alpha;
-        self
-    }
-
     #[must_use]
     pub fn compact(mut self) -> Self {
         self.compact_labels = true;
@@ -174,22 +152,6 @@ enum RingFill {
     Tone(Tone),
 }
 
-fn ring_track(ground: Color) -> Color {
-    use crate::color::contrast_ratio;
-    let mut alpha = RING_TRACK_ALPHA;
-    let mut track = crate::tokens::colors::composite(Colors::hairline_on(ground, alpha), ground);
-    while contrast_ratio(track, ground) < crate::tokens::colors::NON_TEXT_MIN_CONTRAST
-        && alpha < u8::MAX
-    {
-        alpha = alpha.saturating_add(RING_TRACK_STEP);
-        track = crate::tokens::colors::composite(Colors::hairline_on(ground, alpha), ground);
-    }
-    track
-}
-
-const RING_TRACK_ALPHA: u8 = 56;
-const RING_TRACK_STEP: u8 = 4;
-
 /// Immediate-mode progress ring: a countdown or progress with an optional centred readout.
 #[derive(Clone, Copy, Debug)]
 pub struct ProgressRingFace<'a> {
@@ -259,7 +221,7 @@ impl<'a> ProgressRingFace<'a> {
                 crate::tokens::colors::value_fill_on(
                     colors.intent.accent_ink,
                     colors.surfaces.content,
-                    ring_track(colors.surfaces.content),
+                    colors.intent.value_track,
                 )
             }
             #[allow(
@@ -286,7 +248,7 @@ impl<'a> ProgressRingFace<'a> {
         let radius = (side - thickness) / 2.0;
         let center = rect.center();
         let fill = self.fill_colour(theme);
-        let track = ring_track(theme.tokens.colors.surfaces.content);
+        let track = theme.tokens.colors.intent.value_track;
         ctx.scene.stroke(
             &Stroke::new(thickness),
             ctx.transform,
@@ -713,16 +675,6 @@ impl BarGauge {
     /// Paint `reading.label` top-left and `reading.value` top-right of `rect`, over a track
     /// along its bottom filled to `reading.frac`.
     pub fn draw_at(ctx: &mut PaintCtx<'_>, rect: Rect, reading: &GaugeReading<'_>) {
-        Self::draw_styled(ctx, rect, reading, &GaugeStyle::default());
-    }
-
-    /// [`Self::draw_at`] with an explicit [`GaugeStyle`].
-    pub fn draw_styled(
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        reading: &GaugeReading<'_>,
-        style: &GaugeStyle,
-    ) {
         if rect.width() <= 0.0 {
             return;
         }
@@ -767,7 +719,7 @@ impl BarGauge {
         scene.fill(
             Fill::NonZero,
             transform,
-            track_color(theme, style.track_alpha),
+            theme.tokens.colors.intent.value_track,
             None,
             &RoundedRect::from_rect(track, radius),
         );
@@ -803,7 +755,6 @@ impl BarGauge {
         theme: &Theme,
         (from, to): (f32, f32),
         fill: &Brush,
-        style: &GaugeStyle,
     ) {
         if track.width() <= 0.0 || track.height() <= 0.0 {
             return;
@@ -812,7 +763,7 @@ impl BarGauge {
         scene.fill(
             Fill::NonZero,
             transform,
-            track_color(theme, style.track_alpha),
+            theme.tokens.colors.intent.value_track,
             None,
             &RoundedRect::from_rect(track, radius),
         );
@@ -880,7 +831,7 @@ impl Widget for BarGauge {
         }
         let ground = cx.part("track", "BarGauge", track);
         ground.ground = Some(Ground {
-            fill: Some(rgba8(track_color(theme, self.style.track_alpha))),
+            fill: Some(rgba8(theme.tokens.colors.intent.value_track)),
             edge: None,
             radius,
         });
@@ -919,11 +870,10 @@ impl Widget for BarGauge {
             label: &self.label,
             value: &self.value,
         };
-        BarGauge::draw_styled(
+        BarGauge::draw_at(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
             &reading,
-            &self.style,
         );
     }
 
@@ -1051,36 +1001,39 @@ mod tests {
             bar_label_and_value_paint();
         }
 
-        phase progress_ring_track_and_fill_read_against_the_ground_on_every_preset;
+        phase a_progress_fill_reads_against_its_track_and_the_page_on_every_preset;
         {
+            // What a person reads is the indicator: the fill. The track is one light neutral
+            // under every bar, ring and gauge; the fill stands out from it and from the page.
             let min = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let ground = theme.tokens.colors.surfaces.content;
-                let track = ring_track(ground);
-                let ratio = crate::color::contrast_ratio(track, ground);
-                assert!(
-                    ratio >= min,
-                    "{}: the track shows the ring's extent at only {ratio:.2}:1",
-                    theme.name
-                );
-                let progress = ProgressRingFace::new(0.5).fill_colour(&theme);
-                let ratio = crate::color::contrast_ratio(progress, track);
-                assert!(
-                    ratio >= min,
-                    "{}: progress on track {ratio:.2}:1",
-                    theme.name
-                );
-                for face in [
-                    ProgressRingFace::new(0.5).tone(Tone::Success),
-                    ProgressRingFace::new(0.9).level(GaugeThresholds::default()),
+                let track = theme.tokens.colors.intent.value_track;
+                assert_ne!(track, ground, "{}: the track shows the extent", theme.name);
+                for (what, fill) in [
+                    ("ring", ProgressRingFace::new(0.5).fill_colour(&theme)),
+                    ("bar", theme.tokens.colors.intent.value_fill),
+                    (
+                        "success ring",
+                        ProgressRingFace::new(0.5)
+                            .tone(Tone::Success)
+                            .fill_colour(&theme),
+                    ),
+                    (
+                        "level ring",
+                        ProgressRingFace::new(0.9)
+                            .level(GaugeThresholds::default())
+                            .fill_colour(&theme),
+                    ),
                 ] {
-                    let fill = face.fill_colour(&theme);
-                    assert!(
-                        crate::color::contrast_ratio(fill, ground) >= min,
-                        "{}: a status fill reads on the ground",
-                        theme.name
-                    );
-                    assert_ne!(fill, track);
+                    for (on, against) in [("track", track), ("page", ground)] {
+                        let ratio = crate::color::contrast_ratio(fill, against);
+                        assert!(
+                            ratio >= min,
+                            "{}: the {what}'s fill reads on the {on} at only {ratio:.2}:1",
+                            theme.name
+                        );
+                    }
                 }
             }
         }
@@ -1163,17 +1116,8 @@ mod tests {
                 &theme,
                 (0.7, 0.7),
                 &Brush::Solid(theme.tokens.colors.intent.accent),
-                &GaugeStyle::default(),
             );
             assert_eq!(count_color_tags(&scene), 2);
-            let (faint, firm) = (
-                track_color(&theme, TRACK_ALPHA),
-                track_color(
-                    &theme,
-                    GaugeStyle::default().with_track_alpha(56).track_alpha,
-                ),
-            );
-            assert!(firm.components[3] > faint.components[3]);
         }
     }
 }
