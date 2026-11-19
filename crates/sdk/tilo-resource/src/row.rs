@@ -430,6 +430,35 @@ impl LiveRow {
         self
     }
 
+    /// Offer the row's operation `effect` as unavailable, with `code` a
+    /// program reads and `reason` a person reads.
+    #[must_use]
+    pub fn unavailable(
+        self,
+        effect: &str,
+        code: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        self.amend(effect, move |spec| spec.unavailable(code, reason))
+    }
+
+    /// Say what the row's operation `effect` does on this row, where only
+    /// the row can say it.
+    #[must_use]
+    pub fn describe(self, effect: &str, description: impl Into<String>) -> Self {
+        self.amend(effect, move |spec| spec.with_description(description))
+    }
+
+    /// Change the operation `effect` this row offers, when it offers it.
+    fn amend(mut self, effect: &str, change: impl FnOnce(ActionSpec) -> ActionSpec) -> Self {
+        let actions = &mut std::rc::Rc::make_mut(&mut self.resource).actions;
+        if let Some(at) = actions.iter().position(|action| action.id == effect) {
+            let spec = actions.remove(at);
+            actions.insert(at, change(spec));
+        }
+        self
+    }
+
     /// Nest `row` beneath this one (a container's logs).
     #[must_use]
     pub fn row(mut self, row: LiveRow) -> Self {
