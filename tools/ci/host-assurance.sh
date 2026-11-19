@@ -375,13 +375,17 @@ if [[ $installer_status != 0 ]]; then
   die "the disk install failed in its guest (exit $installer_status)"
 fi
 # The disk and the one recovery key the install made, out of the guest while it
-# is still up. The key is this check's way into the machine at every boot until
-# the image carries a signed boot chain for a TPM keyslot, which this one does
-# not yet.
-mkdir -p "$work/install"
-ssh_guest "tar -C $guest_work/install -cf - qcow2/disk.qcow2 qcow2/recovery-key.txt" \
+# is still up. The key is this check's way into the machine on its first boot;
+# after that the machine seals the volume to itself.
+mkdir -p "$work/install/qcow2"
+# The disk is world-readable; the key is root's, so it comes out through sudo.
+ssh_guest "tar -C $guest_work/install -cf - qcow2/disk.qcow2" \
   | tar -C "$work/install" -xf - \
   || { stop_installer; die 'could not take the installed disk out of the guest'; }
+as_guest_root "cat $guest_work/install/qcow2/recovery-key.txt" \
+  > "$work/install/qcow2/recovery-key.txt" \
+  || { stop_installer; die "could not take the install's recovery key out of the guest"; }
+chmod 0600 "$work/install/qcow2/recovery-key.txt"
 stop_installer
 disk=$work/disk.qcow2
 mv "$work/install/qcow2/disk.qcow2" "$disk"
