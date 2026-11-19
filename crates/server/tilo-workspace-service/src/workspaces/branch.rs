@@ -299,7 +299,9 @@ mod copy {
                 .map_err(|error| files()(error.to_string()))?
                 .map_err(files())?
             };
-            let keys = if file_keys != BranchFileKeys::None {
+            let keys = if file_keys == BranchFileKeys::None {
+                None
+            } else {
                 let route = |workspace: &str| tilo_peer_state::document_frame::DocumentRoute {
                     app_id: tilo_app_id::apps::FILE_EXPLORER.to_owned(),
                     cluster_id: workspace.to_owned(),
@@ -323,8 +325,6 @@ mod copy {
                     .ok_or_else(|| files()("the branch's Files keys are unavailable".to_owned()))?
                     .map_err(files())?;
                 Some((source, branch))
-            } else {
-                None
             };
             let (source, branch) = (source.to_owned(), branch.to_owned());
             tokio::task::spawn_blocking(move || {
