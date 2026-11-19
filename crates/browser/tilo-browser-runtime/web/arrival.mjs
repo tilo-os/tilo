@@ -307,8 +307,17 @@ export function refusedByHost(error) {
  * front entry: it apologises, says why, and asks for an address. Without
  * one, it names the workspace and how to get an invite.
  */
-export function refusalCopy({workspace = null, waitList = false, messages = null} = {}) {
+export function refusalCopy({workspace = null, waitList = false, signIn = false, messages = null} = {}) {
   const say = (key, english, args) => localized(messages, key, english, args);
+  // A link to a workspace only its people open, with nobody signed in here.
+  if (signIn) {
+    return {
+      heading: workspace
+        ? say('arrival-refusal-sign-in-heading', 'Sign in to open { $workspace }', {workspace})
+        : say('arrival-refusal-sign-in-heading-unnamed', 'Sign in to open this workspace'),
+      body: say('arrival-refusal-sign-in-body', 'Only the people in this workspace can open it. Sign in as one of them, or paste an invite link someone sent you.'),
+    };
+  }
   if (waitList) {
     return {
       heading: say('arrival-refusal-wait-heading', 'Sorry, Tilo is invite-only right now'),

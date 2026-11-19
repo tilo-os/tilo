@@ -802,6 +802,42 @@ function rendererCard({reason, steps}) {
  * page load at most, and none of them waits for an answer. `report` is handed
  * to the host as well, which sends a runtime panic this way
  * (`reportPageErrors`). */
+/** The most a report's body holds: the entry reads no more
+ * (`MAX_PAGE_ERROR_BYTES` in tilo-server-protocol). */
+export const MAX_REPORT_BYTES = 4096;
+
+/** A page error report's body, cut to fit `MAX_REPORT_BYTES`: the stack
+ * goes first, then the message, so the cause the page showed always
+ * arrives. */
+export function reportBody(fields) {
+  const report = {...fields, message: String(fields.message ?? ''), stack: String(fields.stack ?? '')};
+  const size = () => new TextEncoder().encode(JSON.stringify(report)).length;
+  for (const field of ['stack', 'message', 'source', 'page']) {
+    while (size() > MAX_REPORT_BYTES && report[field]) {
+      report[field] = report[field].slice(0, Math.floor(report[field].length / 2));
+    }
+  }
+  return JSON.stringify(report);
+}
+
+/** Send `body` to `url`: a request that outlives the page, which every
+ * browser sends. Not a beacon first: LibreWolf and hardened Firefox keep
+ * `navigator.sendBeacon` with beacons turned off (`beacon.enabled`), where
+ * it answers that it sent and sends nothing. A beacon only where the page
+ * has no fetch. */
+export function sendReport(url, body, {navigator = globalThis.navigator, fetch = globalThis.fetch} = {}) {
+  try {
+    if (typeof fetch === 'function') {
+      void Promise.resolve(fetch(url, {method: 'POST', body, keepalive: true, mode: 'no-cors', credentials: 'omit',
+        headers: {'content-type': 'text/plain'}})).catch(() => {});
+      return;
+    }
+  } catch { /* Refused at once: a beacon below. */ }
+  try {
+    navigator?.sendBeacon?.(url, new Blob([body], {type: 'text/plain'}));
+  } catch { /* Reporting must never throw. */ }
+}
+
 function reportErrors() {
   let entry = null;
   let sent = 0;
@@ -811,10 +847,10 @@ function reportErrors() {
   const report = (kind, message, stack, at = {}) => {
     if (!entry || sent++ >= 5) return;
     try {
-      navigator.sendBeacon(new URL('errors', entry), new Blob([JSON.stringify({
-        kind, message: String(message), source: at.source ?? '', line: at.line ?? 0, column: at.column ?? 0,
+      sendReport(new URL('errors', entry), reportBody({
+        kind, message, source: at.source ?? '', line: at.line ?? 0, column: at.column ?? 0,
         stack: stack || '', page: location.pathname, build: PAGE_BUILD,
-      })], {type: 'text/plain'}));
+      }));
     } catch { /* Reporting must never throw. */ }
   };
   const fresh = error => !(error && typeof error === 'object' && told.has(error));
@@ -1095,6 +1131,13 @@ export async function startEntryPage({mode}) {
       return runtime;
     },
     rendererUnavailable: () => renderer,
+    // Whether someone is signed in on this browser: an identity unlocked, one
+    // it keeps, or a person whose device it became on the link's host (signed
+    // in with their agent). Asked before any join, so a link nobody here can
+    // open asks them to sign in rather than make a stranger of them.
+    holdsPerson: async ({origin} = {}) => Boolean(currentIdentity()
+      || (origin && remembering(() => keptMembership({host: {origin}}))?.paired)
+      || await keptIdentity().catch(() => null)),
     onAdmitted: peer => { admitted = peer; letIn(peer); },
     prefetchApplication,
     prefetchDesktop,
@@ -1260,12 +1303,14 @@ export async function startEntryPage({mode}) {
           profile, deviceKey, displayName, runtime, requireExistingCertificate: true}));
       }
       const identity = currentIdentity() ?? await browserIdentity({create: false});
-      const kept = identity && hostToReconnect(origin, identity.userPublicKey);
-      if (!kept) {
-        console.warn('reconnect: this browser kept nothing to reconnect to this host with',
-          identity ? 'as this person' : 'and holds no person');
+      if (!identity) {
+        console.warn('reconnect: this browser holds no person to reconnect to this host as');
         return null;
       }
+      // A person signed in here comes back as themself, whether or not this
+      // browser kept this host (signed in just now, from a link to it): the
+      // host says whether they are in the workspace.
+      const kept = hostToReconnect(origin, identity.userPublicKey) ?? {userPublicKey: identity.userPublicKey};
       displayName = chosenDisplayName(identity.userPublicKey) ?? defaultDisplayName(identity.userPublicKey);
       if (kept.owner) {
         // On a machine of their own the owner enters any of its workspaces
@@ -1392,6 +1437,7 @@ export async function startEntryPage({mode}) {
       const messages = await localeMessagesSoon();
       const cause = failureCause(error, {online: navigator.onLine !== false});
       const screen = failureScreen(cause, {workspace: joined?.name ?? null, host: failingHost(error), error, messages});
+      pageErrors.report('failed', `${cause}: ${describeError(error)}`, error?.stack, {source: failingHost(error) ?? ''});
       await card(`${screen.heading}. ${screen.body}`, [['Close', null]]);
     }
   };
@@ -1407,6 +1453,9 @@ export async function startEntryPage({mode}) {
       document.documentElement.dataset.entry = 'unsupported';
       status.textContent = '';
       rendererCard(page.rendererUnavailable);
+      // The host hears it too: a page that could not open its workspace here.
+      pageErrors.report('failed', `unsupported: ${page.rendererUnavailable.reason ?? 'this browser cannot draw'}`, '',
+        {source: page.peer?.origin ?? ''});
       void page.peer?.dispose?.();
       return;
     }
@@ -1754,6 +1803,21 @@ export async function startEntryPage({mode}) {
     // Turned away for coming without an invitation: the entry is a page of
     // its own, with its own ways in, and nothing else is shown over it. No
     // desktop speaks behind it, so it speaks the visitor's own language.
+    // Nobody signed in here, at a link to a workspace no entry lets a
+    // stranger into: the same page, asking them to sign in, and the link
+    // opens as them once they did (`sign-in` in admission.mjs).
+    if (error?.code === 'sign-in' && admitting?.scope?.kind === 'workspace') {
+      const language = visitorLocale();
+      const messages = await localeMessagesSoon(1500, globalThis, language);
+      const {host, workspace} = admitting.scope;
+      // Its own name where this browser kept one, never the site's home's.
+      const linked = {name: remembering(() => rememberedWorkspace(admitting.scope))?.name ?? null, host: {origin: host}, workspace,
+        admission: error.entry ?? undefined};
+      offerRefusal({messages, language, named: linked.name, error, workspace: linked, runtime, link: admitting.link,
+        home: homeAdmissionWorkspace(admitting.entry), pair: pairSignIn(linked), signIn: true});
+      status.textContent = `${document.getElementById('arrival-refusal-heading')?.textContent ?? ''}. ${document.getElementById('arrival-refusal-body')?.textContent ?? ''}`;
+      return;
+    }
     if (error?.code === 'invitation-only') {
       const language = visitorLocale();
       const messages = await localeMessagesSoon(1500, globalThis, language);
@@ -1932,7 +1996,7 @@ const ENTRY_SIGNED_IN = 'tilo-entry-signed-in';
  * at the foot of the page (`offerOwnDesktop`); while the home takes people
  * by invitation only, nothing does.
  */
-function offerRefusal({messages, language, named, error, workspace, runtime, link, home = null, pair = null}) {
+function offerRefusal({messages, language, named, error, workspace, runtime, link, home = null, pair = null, signIn = false}) {
   const entry = document.getElementById('arrival-refusal');
   // The first screen of a first visit is not for someone the entry turns
   // away: it asks them to set an agent up in a workspace they are not in. It
@@ -1950,7 +2014,7 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
   if (!entry || !form || !toggle || !field || !problem) return;
   const say = (key, english, args) => localized(messages, key, english, args);
   const waitList = Boolean(error?.entry?.waitList && workspace?.admission);
-  const copy = refusalCopy({workspace: named, waitList, messages});
+  const copy = refusalCopy({workspace: named, waitList, signIn, messages});
   document.getElementById('arrival-refusal-heading').textContent = copy.heading;
   document.getElementById('arrival-refusal-body').textContent = copy.body;
   const own = document.getElementById('arrival-own');
@@ -1962,7 +2026,8 @@ function offerRefusal({messages, language, named, error, workspace, runtime, lin
     });
   }
   if (waitList) offerWaitList({workspace, contact: error.entry.contact, mail: error.entry.mail === true, messages, language});
-  offerSignIn({workspace, named, messages, runtime, link, home, pair});
+  // Signing in from a link comes back to the link; at the site's entry, to a workspace of their own.
+  offerSignIn({workspace, named, messages, runtime, link, home, pair, stay: signIn});
   // The link that lets someone in, an invitation or a pairing from a device
   // of theirs: behind a small toggle beside the wait list; shown where it is
   // the only way in.
@@ -2027,7 +2092,7 @@ function offerWaitList({workspace, contact, mail, messages, language}) {
  * use this site's), trying again changes nothing: the entry says the way in
  * that works there, a device where the person is signed in adding this one.
  */
-export function offerSignIn({workspace, named, messages, runtime, link, home = null, pair = null}) {
+export function offerSignIn({workspace, named, messages, runtime, link, home = null, pair = null, stay = false}) {
   const say = (key, english, args) => localized(messages, key, english, args);
   const row = document.getElementById('arrival-sign-in');
   const agent = document.getElementById('arrival-sign-in-agent');
@@ -2046,7 +2111,7 @@ export function offerSignIn({workspace, named, messages, runtime, link, home = n
   agent.hidden = !signInWithAgent;
   if (signInWithAgent) {
     const codes = loginCodes(runtime, new URL(origin).origin);
-    const signIn = claimed => signInAs(claimed, {origin, home}, link, pair);
+    const signIn = claimed => signInAs(claimed, {origin, home, stay}, link, pair);
     agent.addEventListener('click', () => {
       const run = openSignIn(document, {onBack: () => agent.focus()});
       run?.offerAgentSignIn(async () => ({...await codes.create(null), signIn}));
@@ -2081,7 +2146,8 @@ export function offerSignIn({workspace, named, messages, runtime, link, home = n
       // back to a workspace of their own, as a tab their agent signed in
       // does: the home workspace's shared desktop is where people meet, not
       // where someone starts.
-      try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
+      // From a link, the link: the page loads it again as them.
+      if (!stay) try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
       // Someone who signs in has been here: the first screen of a first
       // visit is not theirs, and would name a new workspace for them that
       // their host does not keep.
@@ -2467,12 +2533,19 @@ function offerFirstRunCodes({origin, identity, runtime, link, home = null, pair 
  * (`pair`), as a new device of theirs, and then loads, once, the workspace it
  * opens: the one the person last used on the host at `origin`, else their own
  * (`signInWorkspace`). `home` is that host's shared home workspace, which is
- * where people meet, not where someone starts.
+ * where people meet, not where someone starts. With `stay` (signed in from a
+ * link to a workspace) the tab loads that link again instead.
  */
-export async function signInAs({user, invite}, {origin, home = null}, link, pair) {
+export async function signInAs({user, invite}, {origin, home = null, stay = false}, link, pair) {
   setupDone();
   askOwnPairing(user, invite);
   const peer = await pair(user, invite);
+  // Signed in from a link: the link opens again, now as them.
+  if (stay) {
+    await peer.dispose?.();
+    globalThis.location.reload();
+    return;
+  }
   let destination;
   try {
     destination = await signInWorkspace(peer, {origin, home});

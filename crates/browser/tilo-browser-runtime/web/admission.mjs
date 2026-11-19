@@ -28,7 +28,10 @@
  * 5. a host this browser set up for its person, or joined as them through
  *    an invitation, is reconnected to with the root the page holds
  *    (`reconnect`); the host decides whether that person is in the workspace;
- * 6. anyone else is told they have no access and who can invite them.
+ * 6. a browser where nobody is signed in, at any other workspace, is asked
+ *    to sign in first (`sign-in`): nothing joins as a stranger no entry
+ *    lets in, and the page comes back to the link as the person;
+ * 7. anyone else is told they have no access and who can invite them.
  * A scope without a workspace (the web host's home workspace, whose workspace the
  * page learns on admission) can only be entered through its host's entry.
  * A link never grants anything: each step is the workspace's own entry. A failure
@@ -40,6 +43,9 @@ import {parsePairSecret} from './pairing.mjs';
 import {deviceRemoved} from './session-refusal.mjs';
 
 export const NO_ACCESS = 'You don’t have access to this workspace. Ask the person who shared the link to invite you.';
+/** A link to a workspace no entry lets a stranger into, in a browser where
+ * nobody is signed in (`sign-in`). */
+export const SIGN_IN = 'Sign in to open this workspace.';
 /** An invitation the site no longer keeps, or one that does not open: the
  * same words for both, so a link tells nothing about invitations it does not
  * hold. */
@@ -104,14 +110,26 @@ async function ready(peer, onProgress = () => {}) {
  * one of its workspaces' entries under its directory (`…/directory/<workspace>/`),
  * and the entry the site lists is its own workspace's. */
 function entryUrl(listed, workspace) {
-  if (!listed?.admission || !workspace || listed.workspace === workspace) return listed;
+  if (!listed?.admission || !workspace || listedWorkspace(listed) === workspace) return listed;
   const entry = new URL(listed.admission);
   const segments = entry.pathname.split('/');
   const at = segments.lastIndexOf('directory');
   if (at >= 0 && segments[at + 1]) segments[at + 1] = encodeURIComponent(workspace);
   else segments.splice(segments.length - 1, 0, 'directory', encodeURIComponent(workspace));
   entry.pathname = segments.join('/');
-  return {...listed, workspace, admission: entry.href};
+  // Another workspace: the listed one's name is not its name.
+  return {...listed, workspace, admission: entry.href, name: null};
+}
+
+/** The workspace `listed`'s entry admits to: the one it names, else the one
+ * its admission URL names (`…/directory/<workspace>/`). */
+function listedWorkspace(listed) {
+  if (listed?.workspace) return listed.workspace;
+  try {
+    const segments = new URL(listed?.admission).pathname.split('/').filter(Boolean);
+    const at = segments.lastIndexOf('directory');
+    return at >= 0 ? decodeURIComponent(segments[at + 1] ?? '') || null : null;
+  } catch { return null; }
 }
 
 /** Admission through `workspace`'s host entry, held to the workspace the
@@ -155,6 +173,7 @@ const REFUSED = {
   'no-tickets': ['unsupported', 'This page cannot redeem guest tickets'],
   'no-pairing': ['unsupported', 'This page cannot pair a device'],
   'no-access': ['no-access', NO_ACCESS],
+  'sign-in': ['sign-in', SIGN_IN],
 };
 
 /**
@@ -170,6 +189,10 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
   const pairing = secrets.pair ? parsePairSecret(secrets.pair) : null;
   const here = {
     entry: Boolean(listed?.admission),
+    // The link names the listed workspace, whose entry lets anyone in.
+    listed: Boolean(listed?.admission) && (!id || listedWorkspace(listed) === id),
+    // Someone is signed in here: the page comes back as them where no entry lets a stranger in.
+    person: Boolean(await deps.holdsPerson?.({origin})),
     entered: Boolean(origin && id && deps.entered?.({origin, workspace: id})),
     tickets: Boolean(tickets),
     pairing: Boolean(deps.pairDevice),
@@ -279,6 +302,9 @@ export async function admit({scope, secrets = {}, tickets, home = null, runtime,
       }
       default: {
         const [code, message] = REFUSED[way] ?? REFUSED['no-access'];
+        // Signing in pairs this device through the site's listed entry, as
+        // any sign-in does; the link then opens as a device of the person.
+        if (way === 'sign-in') throw Object.assign(new AdmissionError(code, message), {entry: listed?.admission ?? null});
         throw new AdmissionError(code, message);
       }
     }

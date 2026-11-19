@@ -37,13 +37,24 @@ function answeredWithError(error) {
   return Number.isInteger(error?.status) && error.status >= 400 || /\bHTTP [45]\d\d\b/.test(String(error?.message ?? ''));
 }
 
+/** The case a session the host stopped says, by its code (`whenReady` in peer.mjs). */
+const SESSION_CAUSES = {
+  'host-changed': 'gone',
+  'workspace-deleted': 'deleted',
+  'not-admitted': 'no-access',
+  'certificate-expired': 'certificate',
+  'certificate-rejected': 'certificate',
+  'protocol-rejected': 'incompatible',
+};
+
 /**
  * The case of a failure:
  * - `removed`, `cooling-down`, `invitation-only`: the host's entry turned
  *   the person away;
  * - `gone`, `deleted`, `no-access`, `refused`: the workspace is not there
- *   for this browser any more, or the link or invitation could not be used
- *   (`refused` says the page's own words for it);
+ *   for this browser any more (the host said so as the session started:
+ *   `host-changed`, `workspace-deleted`, `not-admitted`), or the link or
+ *   invitation could not be used (`refused` says the page's own words for it);
  * - `device-key-busy`: every device this browser keeps is open in other tabs;
  * - `offline`: the browser itself is offline;
  * - `unreachable`: the host never answered, while this site does (so the
@@ -54,6 +65,9 @@ function answeredWithError(error) {
  * - `host-refused`: the host answered the page's join with a no, and said
  *   why (`not-let-in`, with the session's `permission-required`);
  * - `host-silent`: the page reached the host, which never let it in;
+ * - `certificate`, `incompatible`: the host stopped the session over this
+ *   browser's certificate, or over what the page sent it; `join-stopped`:
+ *   the host stopped it for another reason, which it said;
  * - `host-error`: the host answered with an error;
  * - `desktop`: the host let the person in and the desktop did not start;
  *   `stopped`: the desktop stopped after it was drawn;
@@ -69,13 +83,19 @@ export function failureCause(error, {settled = null, admitted = false, drawn = f
   const code = error?.code;
   const fromEntry = ['AdmissionError', 'HostAdmissionError'].includes(error?.name);
   if (fromEntry && ['removed', 'invitation-only', 'cooling-down'].includes(code)) return code;
+  // The workspace's entry lets nobody in by itself (it is not public, or
+  // there is no such workspace): the same as no access, never which it was.
+  if (error?.name === 'HostAdmissionError' && code === 'refused' && !answeredWithError(error)) return 'no-access';
   if (error?.name === 'AdmissionError') return code === 'no-access' ? 'no-access' : 'refused';
   if (error?.name === 'DeviceKeyError' && code === 'device-key-busy') return 'device-key-busy';
   if (drawn) return 'stopped';
   // Connected, and the host said no, with its reason.
   if (error?.code === 'not-let-in' && error.sessionErrorCode === 'permission-required') return 'host-refused';
   // Connected, and the host never let the page in.
-  if (error?.code === 'not-let-in' || error?.name === 'TimeoutError' && error.connected) return 'host-silent';
+  if (error?.code === 'not-let-in' || error?.code === 'timed-out') return 'host-silent';
+  // The host stopped the session as it started, and its code says why.
+  if (SESSION_CAUSES[code]) return SESSION_CAUSES[code];
+  if (error?.sessionErrorCode === code && code && !['unanswered', 'device-revoked'].includes(code)) return 'join-stopped';
   if (unanswered(error)) {
     if (online === false) return 'offline';
     if (!siteAnswers) return 'no-connection';
@@ -95,7 +115,7 @@ export function retryHelps(cause) {
 
 /** Each case's English heading and body, with and without the workspace's
  * name; the locale file words them as `entry-failure-<cause>[-unnamed]` and
- * `entry-failure-<cause>-body`. `{ $host }` is the host's address. */
+ * `entry-failure-<cause>-body`. `{ $server }` is the host's address. */
 export const SCREENS = {
   removed: ['You were removed from { $workspace }', 'You were removed from this workspace',
     'To come back, ask someone in it for a new invitation.'],
@@ -108,37 +128,43 @@ export const SCREENS = {
   deleted: ['{ $workspace } was deleted', 'This workspace was deleted',
     'Its owner deleted it, so it can’t be opened anymore.'],
   'no-access': ['{ $workspace } didn’t let this browser in', 'This workspace didn’t let this browser in',
-    'You may have been removed from it, or it no longer exists.'],
+    'You’re not in it, or it no longer exists. Ask someone in it for an invite link.'],
   refused: ['Couldn’t open { $workspace }', 'Couldn’t open this workspace', '{ $reason }'],
   'device-key-busy': ['{ $workspace } is open in your other tabs', 'This workspace is open in your other tabs',
     'This browser can open it in only so many tabs at once. Close one of the others, then try again.'],
   offline: ['You’re offline', 'You’re offline',
     'The workspace opens here as soon as you’re back online.'],
-  unreachable: ['Can’t connect to { $host }', 'Can’t connect to { $host }',
+  unreachable: ['Can’t connect to { $server }', 'Can’t connect to { $server }',
     'This site loads, so your connection works. The host may be restarting: try again in a moment.'],
-  'unreachable-local': ['Can’t connect to { $host }', 'Can’t connect to { $host }',
-    'This site loads, so your connection works. Either the host is down, or this browser doesn’t trust its certificate. Open { $host } to see which, then try again.'],
-  'no-connection': ['Can’t connect to { $host }', 'Can’t connect to { $host }',
+  'unreachable-local': ['Can’t connect to { $server }', 'Can’t connect to { $server }',
+    'This site loads, so your connection works. Either the host is down, or this browser doesn’t trust its certificate. Open { $server } to see which, then try again.'],
+  'no-connection': ['Can’t connect to { $server }', 'Can’t connect to { $server }',
     'This site doesn’t answer either. Check your connection, then try again.'],
-  'host-refused': ['{ $host } refused this tab entry to { $workspace }', '{ $host } refused this tab entry',
-    'It said: { $reason }. If you expected to get in, copy the technical details below and send them to whoever runs this site.'],
-  'host-silent': ['{ $host } didn’t let this tab into { $workspace }', '{ $host } didn’t let this tab in',
-    'The host answered, but didn’t let this tab in. Try again. If it stops again, copy the technical details below and send them to whoever runs this site.'],
-  'host-error': ['{ $host } couldn’t open { $workspace }', '{ $host } couldn’t open this workspace',
+  'host-refused': ['{ $server } refused this tab entry to { $workspace }', '{ $server } refused this tab entry',
+    'It said: { $reason }.'],
+  'host-silent': ['{ $server } didn’t let this tab into { $workspace }', '{ $server } didn’t let this tab in',
+    'It answered, but kept this tab waiting. Try again in a moment.'],
+  certificate: ['{ $server } didn’t accept this browser', '{ $server } didn’t accept this browser',
+    'It turned down the certificate this browser signs in with.'],
+  incompatible: ['{ $server } couldn’t read what this page sent', '{ $server } couldn’t read what this page sent',
+    'This page and { $server } may be on different versions of Tilo. Try again to load the page anew.'],
+  'join-stopped': ['{ $server } stopped this tab joining { $workspace }', '{ $server } stopped this tab joining',
+    'It said: { $reason } Try again.'],
+  'host-error': ['{ $server } couldn’t open { $workspace }', '{ $server } couldn’t open this workspace',
     'It answered with an error. If it was restarting, trying again in a moment opens it.'],
   desktop: ['{ $workspace } didn’t start', 'This workspace didn’t start',
     '{ $step } Your windows and documents are kept in this browser, so trying again picks up where you left off.'],
   stopped: ['{ $workspace } stopped working', 'The desktop stopped working',
     'Your windows and documents are kept in this browser, so trying again picks up where you left off.'],
   loading: ['Couldn’t open { $workspace }', 'Couldn’t open Tilo',
-    '{ $step } Try again. If it stops again, copy the technical details below and send them to whoever runs this site.'],
+    '{ $step } Try again.'],
 };
 
 /** Where the page stopped, by its arrival step (`entry-page.mjs`), as the
  * body of `desktop` and `loading` says it. */
 const STEPS = {
   load: ['entry-failure-step-load', 'It stopped while loading Tilo.'],
-  join: ['entry-failure-step-join', 'It stopped while joining.'],
+  join: ['entry-failure-step-join', 'It stopped while joining the workspace.'],
   open: ['entry-failure-step-open', 'It stopped while setting up its desktop.'],
   draw: ['entry-failure-step-draw', 'It stopped while drawing its first screen.'],
 };
@@ -155,9 +181,9 @@ export function failureScreen(cause, {workspace = null, host = null, step = null
   const say = (id, english, args) => localized(messages, id, english, args);
   const address = hostName(host) ?? say('entry-failure-the-host', 'the host');
   const [stepId, stepEnglish] = STEPS[step] ?? STEPS.load;
-  const args = {workspace, host: address, step: say(stepId, stepEnglish),
+  const args = {workspace, server: address, step: say(stepId, stepEnglish),
     // A host's refusal of the join says its own reason; any other refusal is the page's words for it.
-    reason: String((cause === 'host-refused' ? error?.sessionError : null) ?? error?.message ?? '').trim()
+    reason: String((['host-refused', 'join-stopped'].includes(cause) ? error?.sessionError : null) ?? error?.message ?? '').trim()
       || say('entry-failure-refused-fallback', 'This link or invitation can’t be used.')};
   return {
     cause,
@@ -218,7 +244,7 @@ export function domFailureView({document = globalThis.document, messages = () =>
       // only the browser can say what is wrong with it, else trying again.
       if (opener) {
         opener.hidden = !host;
-        opener.textContent = host ? say('entry-failure-open-host', 'Open { $host }', {host: hostName(host)}) : '';
+        opener.textContent = host ? say('entry-failure-open-host', 'Open { $server }', {server: hostName(host)}) : '';
         opener.className = host ? 'failure-primary' : '';
       }
       if (retry) {

@@ -1418,22 +1418,28 @@ async function connect({
           if (error) reject(error); else resolve(value);
         };
         const abort = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-        // Not a refusal: the host has not let the page in yet. What the
-        // session last said goes with it (whether the host answered at all,
-        // and why it waits), for the page to say which of the two it was.
-        const timedOut = () => finish(Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {
-          phase: snapshot.phase ?? null, sessionError: snapshot.error ?? null, sessionErrorCode: snapshot.errorCode ?? null,
-          connected: snapshot.health?.transport?.phase === 'connected'}));
+        // Not a refusal: the host has not let the page in yet. A session
+        // that never got through to the host by then is a host that did not
+        // answer (`unanswered`, as `hostUnreached` says it sooner), which the
+        // page asks again; one the host answered and never let in is
+        // `timed-out`. What the session last said goes with it.
+        const timedOut = () => {
+          const connected = snapshot.health?.transport?.phase === 'connected';
+          finish(Object.assign(new Error('Workspace admission timed out'), {
+            name: 'TimeoutError', code: connected ? 'timed-out' : 'unanswered', phase: snapshot.phase ?? null,
+            sessionError: snapshot.error ?? null, sessionErrorCode: snapshot.errorCode ?? null, connected}));
+        };
         const check = current => {
           if (disposed) finish(new Error('Shared resource connection closed'));
           else if (current.phase === 'ready') finish(undefined, current);
           else if (shown && current.phase === 'admitting' && hasRecord(DESKTOP_APP, DESKTOP_RECORD)) finish(undefined, current);
-          // A host never reached (`hostUnreached`) keeps its code: nothing it refused.
-          // So does a session its server stopped because this browser was removed from
-          // its person's devices (`device-revoked`): the page says that, and asks nothing again.
+          // The session stopped: its code says why (a host never reached,
+          // `hostUnreached`; the host's refusal, `not-admitted`,
+          // `device-revoked`, `workspace-deleted` and the rest), for the page
+          // to say that, not that it stopped.
           else if (current.phase === 'failed') {
             finish(Object.assign(new Error(current.error ?? 'the host refused this device'),
-              ['unanswered', 'device-revoked'].includes(current.errorCode) ? {code: current.errorCode} : {}));
+              current.errorCode ? {code: current.errorCode, sessionError: current.error ?? null, sessionErrorCode: current.errorCode} : {}));
           }
           // The host answered the page's subscription with a no: the session
           // asks no more, so nothing comes of waiting on.

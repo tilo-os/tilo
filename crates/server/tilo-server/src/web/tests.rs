@@ -445,6 +445,88 @@ async fn the_public_directory_answers_any_site_and_lets_nobody_in_over_http() {
     stop(server, serving).await;
 }
 
+/// A page on any site that stops on its failure screen reaches its host's log
+/// with the cause it showed, through the entry's `errors` route, as a browser
+/// whose beacons send nothing sends it: a plain `no-cors` POST from another
+/// origin, its body as large as a page sends.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the server governs the workspace until it shuts down at the end"
+)]
+async fn a_page_that_could_not_open_its_workspace_reaches_the_host_log() {
+    #[derive(Clone, Default)]
+    struct Sink(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Sink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let sink = Sink::default();
+    let writer = sink.clone();
+    // The server serves on the test's own thread: its log goes to the sink.
+    let _log = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish(),
+    );
+    let root = SigningKey::from_bytes(&[141; 32]);
+    let host = host(&root, 142, tilo_user_identity::DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = server_at(&state, host.identity(), ServerConfig::default()).await;
+    let workspace = server
+        .workspaces()
+        .unwrap()
+        .create("Lounge")
+        .await
+        .unwrap()
+        .workspace;
+    let (addr, serving) = serve_web(Arc::new(web_of(&server, &host))).await;
+
+    // What a page sends (`reportBody` in entry-page.mjs): the cause first,
+    // a stack cut so the whole fits the 4 KiB the entry reads.
+    let mut report = serde_json::json!({
+        "kind": "failed", "message": "loading: Error: Shared resource connection closed",
+        "source": "https://lounge.example", "line": 0, "column": 0, "stack": "",
+        "page": "/", "build": "7",
+    });
+    let spare = tilo_server_protocol::directory::MAX_PAGE_ERROR_BYTES - report.to_string().len();
+    report["stack"] = serde_json::Value::String(
+        "@https://lounge.example/v/7/peer.mjs:1:1 ".repeat(200)[..spare].to_owned(),
+    );
+    let report = report.to_string();
+    assert_eq!(
+        report.len(),
+        tilo_server_protocol::directory::MAX_PAGE_ERROR_BYTES
+    );
+    let head = format!(
+        "POST {API_PREFIX}/directory/{workspace}/errors HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://lounge.example\r\nSec-Fetch-Mode: no-cors\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
+        report.len()
+    );
+    let (status, head, _) = exchange(addr, &head, report.as_bytes()).await;
+    assert_eq!(status, 204, "{head}");
+
+    stop(server, serving).await;
+    let logged = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    let line = logged
+        .lines()
+        .find(|line| line.contains("a page could not open its workspace"))
+        .unwrap_or_else(|| panic!("no failure line in the host's log: {logged}"));
+    for said in [
+        "cause=\"loading: Error: Shared resource connection closed\"",
+        "host=\"https://lounge.example\"",
+        &format!("workspace=\"{workspace}\""),
+    ] {
+        assert!(line.contains(said), "no {said} in {line}");
+    }
+}
+
 /// The shelf answers a site's own `/i/<handle>`: an inviter leaves sealed
 /// bytes, a redeemer fetches exactly those, and the inviter takes them back.
 /// The site reads no key, because no request carries one.
