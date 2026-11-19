@@ -37,6 +37,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::NodeId;
 
+mod action_part;
+pub(crate) use action_part::{StoreActions, ToolkitPart};
+
 mod input_provenance;
 #[cfg(test)]
 pub(crate) use input_provenance::physical_text;
@@ -3767,109 +3770,6 @@ struct NativeTextPolicy {
     continuable: bool,
 }
 
-pub(crate) struct ResourceActionState {
-    pub(crate) invocation_provenance: Rc<RefCell<crate::invocation_scope::InvocationProvenance>>,
-    pending: Option<PendingResourceAction>,
-    pub(crate) generation: Option<u64>,
-    statuses: HashMap<(MemberId, crate::application::InstanceId), crate::undo::UndoStatus>,
-    /// The status last answered per author's window, with where the document, the history and the
-    /// pending action stood: a frame asks every time, and it changes only when one of them moves.
-    answered: HashMap<
-        (MemberId, crate::application::InstanceId),
-        (
-            crate::state::HistoryMoment,
-            bool,
-            u64,
-            crate::undo::UndoStatus,
-        ),
-    >,
-    /// Changes the workspace refused and the record withdrew, not yet told to
-    /// the app that has it ([`crate::resource::ResourceStore::take_refusals`]).
-    pub(crate) refusals: Vec<crate::resource::ResourceRefusal>,
-    /// What windows said they did, held until the workspace keeps it
-    /// ([`crate::resource::ResourceStore::hold_notice`]).
-    pub(crate) notices: crate::resource::WorkspaceNotices,
-    /// The writers this replica has written the record as: the record writer and each writer derived
-    /// for an author an action ran as.
-    pub(crate) writers: Rc<RefCell<crate::state::WritingActors>>,
-}
-impl Default for ResourceActionState {
-    fn default() -> Self {
-        Self {
-            invocation_provenance: Rc::default(),
-            pending: None,
-            generation: Some(0),
-            statuses: HashMap::new(),
-            answered: HashMap::new(),
-            refusals: Vec::new(),
-            notices: crate::resource::WorkspaceNotices::default(),
-            writers: Rc::default(),
-        }
-    }
-}
-impl ResourceActionState {
-    #[cfg(test)]
-    pub(crate) fn statuses_for_test(
-        &self,
-    ) -> Vec<(
-        tilo_actions::MemberId,
-        crate::application::InstanceId,
-        crate::undo::UndoStatus,
-    )> {
-        let mut statuses = self
-            .statuses
-            .iter()
-            .map(|((author, instance), status)| (author.clone(), *instance, status.clone()))
-            .collect::<Vec<_>>();
-        statuses.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
-        statuses
-    }
-
-    /// Persistence may close a storage transaction while retaining the logical undo burst; preserve its
-    /// original provenance before serialization does so.
-    pub(crate) fn commit_for_save(&self, doc: &mut AutoCommit) {
-        if let Some(pending) = &self.pending {
-            tilo_resource::history::commit_stamped_with_message(
-                doc,
-                pending.context.clone().in_step().change_message(),
-            );
-        } else if doc.pending_ops() != 0 {
-            // Legacy widget input is not wrapped in a bound action frame.
-            // Persistence must still close that transaction or DocWriter sees
-            // unchanged heads and silently writes only the earlier snapshot.
-            doc.commit_with(
-                automerge::transaction::CommitOptions::default()
-                    .with_message(tilo_actions::FrameworkChange::Native.change_message()),
-            );
-        }
-    }
-    /// Explicit external mutable loans (merge/import/revision/legacy history)
-    /// are boundaries before foreign changes can join a local logical burst.
-    pub(crate) fn finish_external(
-        &mut self,
-        doc: &mut AutoCommit,
-        history: &mut crate::state::UndoLog,
-    ) {
-        if let Some(pending) = self.pending.take() {
-            tilo_resource::history::commit_stamped_with_message(
-                doc,
-                pending.context.clone().in_step().change_message(),
-            );
-            let after = doc.get_heads();
-            history.record_committed_span(
-                doc,
-                pending.before,
-                after,
-                None,
-                pending.metadata,
-                Some(pending.author),
-                Some(pending.instance_id),
-            );
-        }
-        self.statuses.clear();
-    }
-}
-
 struct ActiveMutation {
     binding: CallbackBinding,
     before: Option<Vec<ChangeHash>>,
@@ -3878,7 +3778,7 @@ struct ActiveMutation {
 }
 struct ActionFrame {
     history: crate::state::UndoLog,
-    state: ResourceActionState,
+    state: crate::resource::ResourceActions,
     mutation: Option<ActiveMutation>,
     operations: Vec<OperationSpan>,
     writer: automerge::ActorId,
@@ -3965,6 +3865,7 @@ fn note_native_text_policy(
     };
     let previous = frame
         .state
+        .part()
         .pending
         .as_ref()
         .filter(|pending| {
@@ -4046,7 +3947,7 @@ pub(crate) fn report_typed_action(
         .last_mut()
         .and_then(|operation| operation.native_text.take());
     let continues = native.as_ref().is_some_and(|policy| policy.continues)
-        && frame.state.pending.as_ref().is_some_and(|pending| {
+        && frame.state.part().pending.as_ref().is_some_and(|pending| {
             Rc::ptr_eq(&pending.owner, &binding.closing)
                 && pending.author == binding.author
                 && pending.instance_id == binding.instance_id
@@ -4068,9 +3969,9 @@ pub(crate) fn report_typed_action(
     }
     if let Some(native) = native.filter(|policy| policy.continuable) {
         if !continues {
-            frame.state.pending = Some(PendingResourceAction::new(&binding, before));
+            frame.state.part().pending = Some(PendingResourceAction::new(&binding, before));
         }
-        if let Some(pending) = frame.state.pending.as_mut() {
+        if let Some(pending) = frame.state.part().pending.as_mut() {
             pending.native_text = Some(NativeTextSpan {
                 action: native.action,
                 frontier: after.clone(),
@@ -4079,7 +3980,7 @@ pub(crate) fn report_typed_action(
         if let Some(active) = frame.mutation.as_mut() {
             active.before = (!active.binding.same_component(&binding)).then_some(after);
         }
-        frame.state.statuses.clear();
+        frame.state.part().statuses.clear();
         frame.state.generation = frame
             .state
             .generation
@@ -4196,7 +4097,7 @@ impl Drop for BoundOperation<'_> {
 
 struct RestoreFrame<'a> {
     history: &'a mut crate::state::UndoLog,
-    state: &'a mut ResourceActionState,
+    state: &'a mut crate::resource::ResourceActions,
     frame: FrameHandle,
 }
 impl Drop for RestoreFrame<'_> {
@@ -4268,17 +4169,17 @@ impl ActionFrame {
             .or_else(|| self.mutation.as_ref().map(|active| active.binding.clone()));
         match binding {
             Some(binding) => self.reset_operation_baseline(&binding, after),
-            None => self.state.pending = None,
+            None => self.state.part().pending = None,
         }
         self.state.generation = self.state.generation.and_then(|value| value.checked_add(1));
     }
 
     fn reset_operation_baseline(&mut self, binding: &CallbackBinding, after: Vec<ChangeHash>) {
-        self.state.pending = Some(PendingResourceAction::new(binding, after.clone()));
+        self.state.part().pending = Some(PendingResourceAction::new(binding, after.clone()));
         if let Some(active) = self.mutation.as_mut() {
             active.before = (!active.binding.same_component(binding)).then_some(after);
         }
-        self.state.statuses.clear();
+        self.state.part().statuses.clear();
     }
     fn status(
         &mut self,
@@ -4290,7 +4191,7 @@ impl ActionFrame {
         let moment = self.history.moment(doc);
         let pending_undo = self.pending_undo(doc, author, instance);
         let locale = crate::i18n::I18nManager::revision();
-        if let Some((at, pending, described_in, status)) = self.state.answered.get(&key)
+        if let Some((at, pending, described_in, status)) = self.state.part().answered.get(&key)
             && *at == moment
             && *pending == pending_undo
             && *described_in == locale
@@ -4298,10 +4199,11 @@ impl ActionFrame {
             return status.clone();
         }
         let status = self.status_now(doc, author, instance);
-        if self.state.answered.len() >= 32 {
-            self.state.answered.clear();
+        if self.state.part().answered.len() >= 32 {
+            self.state.part().answered.clear();
         }
         self.state
+            .part()
             .answered
             .insert(key, (moment, pending_undo, locale, status.clone()));
         status
@@ -4313,7 +4215,7 @@ impl ActionFrame {
         author: &MemberId,
         instance: crate::application::InstanceId,
     ) -> bool {
-        self.state.pending.as_ref().is_some_and(|pending| {
+        self.state.pending().is_some_and(|pending| {
             pending.author == *author
                 && pending.instance_id == instance
                 && (pending.before != doc.base_heads()
@@ -4333,19 +4235,25 @@ impl ActionFrame {
         let undo = self.history.next_undo_in(doc, author, instance);
         let redo = self.history.next_redo_in(doc, author, instance);
         let key = (author.clone(), instance);
-        let mut status = self.state.statuses.get(&key).cloned().unwrap_or_default();
+        let mut status = self
+            .state
+            .part()
+            .statuses
+            .get(&key)
+            .cloned()
+            .unwrap_or_default();
         let pending_undo = self.pending_undo(doc, author, instance);
         status.can_undo = undo.is_some() || pending_undo;
         status.can_redo = redo.is_some() && !pending_undo;
         if doc.pending_ops() == 0 {
-            self.state.statuses.retain(|(author, instance), _| {
+            self.state.part().statuses.retain(|(author, instance), _| {
                 self.history.next_undo_in(doc, author, *instance).is_some()
                     || self.history.next_redo_in(doc, author, *instance).is_some()
             });
             status.undo_summary = undo.as_ref().and_then(crate::undo::step_summary);
             status.redo_summary = redo.as_ref().and_then(crate::undo::step_summary);
             if status.can_undo || status.can_redo {
-                self.state.statuses.insert(key, status.clone());
+                self.state.part().statuses.insert(key, status.clone());
             }
         }
         if pending_undo {
@@ -4372,14 +4280,14 @@ impl ActionFrame {
         {
             Some(operation.binding.authored_context())
         } else {
-            match (&self.mutation, &self.state.pending) {
+            match (&self.mutation, self.state.pending()) {
                 (Some(active), Some(pending))
                     if Rc::ptr_eq(&active.binding.closing, &pending.owner) =>
                 {
                     Some(pending.context.clone())
                 }
                 (Some(active), _) => Some(active.binding.authored_context()),
-                (None, pending) => pending.as_ref().map(|pending| pending.context.clone()),
+                (None, pending) => pending.map(|pending| pending.context.clone()),
             }
         };
         context.and_then(|context| context.in_step().change_message())
@@ -4405,7 +4313,7 @@ impl ActionFrame {
     }
 
     fn finish_pending_at(&mut self, after: Vec<ChangeHash>, doc: &AutoCommit) {
-        if let Some(pending) = self.state.pending.take() {
+        if let Some(pending) = self.state.part().pending.take() {
             let author = pending.author.clone();
             let instance = pending.instance_id;
             self.history.record_committed_span(
@@ -4433,14 +4341,15 @@ impl ActionFrame {
         if before != after {
             if self
                 .state
+                .part()
                 .pending
                 .as_ref()
                 .is_some_and(|p| !Rc::ptr_eq(&p.owner, &binding.closing))
             {
                 self.finish_pending_at(before.clone(), doc);
             }
-            if self.state.pending.is_none() {
-                self.state.pending = Some(PendingResourceAction::new(&binding, before));
+            if self.state.part().pending.is_none() {
+                self.state.part().pending = Some(PendingResourceAction::new(&binding, before));
             }
         }
     }
@@ -4449,6 +4358,7 @@ impl ActionFrame {
         self.settle_segment(doc);
         let same_owner = self
             .state
+            .part()
             .pending
             .as_ref()
             .is_some_and(|p| Rc::ptr_eq(&p.owner, &binding.closing));
@@ -4459,8 +4369,8 @@ impl ActionFrame {
             Some(heads)
         };
         self.switch_writer(doc, self.writer_of(binding));
-        if self.state.pending.is_none() {
-            self.state.pending = Some(PendingResourceAction::new(
+        if self.state.part().pending.is_none() {
+            self.state.part().pending = Some(PendingResourceAction::new(
                 binding,
                 before.unwrap_or_default(),
             ));
@@ -4758,8 +4668,11 @@ impl CallbackBinding {
                 ))
             });
         }
+        let lifetime = self.lifetime_id;
         self.records
-            .document_edit_stamp(&self.checkout.id, self.lifetime_id)
+            .read_edit_state(&self.checkout.id, |document, revision| {
+                DocumentEditStamp::for_owned_document(document, lifetime, revision)
+            })
             .map_err(BoundDispatchError::Record)
     }
     pub(crate) fn drain_widget_actions(
@@ -4798,6 +4711,7 @@ impl CallbackBinding {
             frame.settle_segment(doc);
             if frame
                 .state
+                .part()
                 .pending
                 .as_ref()
                 .is_some_and(|pending| !Rc::ptr_eq(&pending.owner, &self.closing))
@@ -4811,15 +4725,15 @@ impl CallbackBinding {
             // reported by an ancestor LocalDispatch. Only advance the pending
             // boundary; never move it backwards across a recorded action.
             frame.commit_physical(doc);
-            let advances = frame.state.pending.as_ref().is_none_or(|pending| {
+            let advances = frame.state.part().pending.as_ref().is_none_or(|pending| {
                 before == pending.before
                     || doc.get_changes(&before).len() < doc.get_changes(&pending.before).len()
             });
             if advances {
                 frame.finish_pending_at(before.clone(), doc);
-                frame.state.pending = Some(PendingResourceAction::new(self, before));
+                frame.state.part().pending = Some(PendingResourceAction::new(self, before));
             }
-            if let Some(pending) = frame.state.pending.as_mut() {
+            if let Some(pending) = frame.state.part().pending.as_mut() {
                 pending.metadata = metadata;
             }
         }
@@ -4881,7 +4795,7 @@ impl CallbackBinding {
                         .redo_in(doc, &self.author, self.instance_id, None, None)
                 }
             };
-            frame.state.pending = Some(PendingResourceAction::new(self, doc.get_heads()));
+            frame.state.part().pending = Some(PendingResourceAction::new(self, doc.get_heads()));
             Ok(entry)
         })?
     }
@@ -4897,7 +4811,9 @@ impl CallbackBinding {
     ) -> Result<bool, BoundDispatchError> {
         let pending_action = self
             .records
-            .with_action_state(&self.checkout.id, |_, _, state| state.pending.is_some())
+            .with_action_state(&self.checkout.id, |_, _, state| {
+                state.part().pending.is_some()
+            })
             .map_err(BoundDispatchError::Record)?;
         if !pending_action {
             return Ok(false);
@@ -4945,7 +4861,7 @@ impl CallbackBinding {
         frame.settle_segment(doc);
         let heads = frame.commit_physical(doc);
         frame.finish_pending_at(heads.clone(), doc);
-        frame.state.pending = Some(PendingResourceAction::new(self, heads));
+        frame.state.part().pending = Some(PendingResourceAction::new(self, heads));
         if let Some(active) = frame.mutation.as_mut() {
             active.before = None;
         }
@@ -5102,6 +5018,7 @@ impl CallbackBinding {
             }
             if frame
                 .state
+                .part()
                 .pending
                 .as_ref()
                 .is_some_and(|pending| !same_frontier(&pending.before, &doc.base_heads()))
@@ -5272,6 +5189,7 @@ pub(crate) fn restore_resource_history(
     store
         .with_action_state(&checkout.id, |doc, history, state| {
             if state
+                .part()
                 .pending
                 .as_ref()
                 .is_some_and(|pending| !same_frontier(&pending.before, &doc.base_heads()))
@@ -5292,8 +5210,8 @@ pub(crate) fn restore_resource_history(
             .apply(write)?;
             if receipt.changed {
                 state.generation = Some(next);
-                state.pending = None;
-                state.statuses.clear();
+                state.part().pending = None;
+                state.part().statuses.clear();
             }
             Ok(receipt)
         })
@@ -5375,9 +5293,9 @@ pub(crate) fn defers_remote(store: &ResourceStore, checkout: &DocumentCheckout) 
         .unwrap_or(false)
 }
 
-fn defers_remote_state(doc: &AutoCommit, state: &ResourceActionState) -> bool {
+fn defers_remote_state(doc: &AutoCommit, state: &crate::resource::ResourceActions) -> bool {
     doc.pending_ops() != 0
-        || state.pending.as_ref().is_some_and(|pending| {
+        || state.pending().is_some_and(|pending| {
             !crate::state::owned_restore::same_frontier(&pending.before, &doc.base_heads())
         })
 }
@@ -5423,16 +5341,17 @@ pub(crate) fn merge_remote_owned_document(
                 // Observe only the actual newly merged range. Existing
                 // unscoped local edits cannot acquire another caller or
                 // become trusted merely because remote data arrived.
-                if state.invocation_provenance.borrow().is_required() {
+                if state.part().invocation_provenance.borrow().is_required() {
                     state
+                        .part()
                         .invocation_provenance
                         .borrow_mut()
                         .observe_admitted(&observed);
                 }
                 *doc = candidate;
-                state.pending = None;
+                state.part().pending = None;
                 history.rebase(doc);
-                state.statuses.clear();
+                state.part().statuses.clear();
                 state.generation = Some(next);
             }
             if let crate::collaboration::Incoming::Changes(bytes) = incoming {

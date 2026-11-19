@@ -1,4 +1,5 @@
 use super::*;
+use crate::bound_dispatch::ToolkitPart as _;
 use crate::history_mode::*;
 use crate::widget::{AppModel, ModelPath};
 use automerge::{ROOT, transaction::Transactable};
@@ -723,7 +724,7 @@ impl RoutedOwners {
                     doc.pending_ops(),
                     history.revision(),
                     actions.generation,
-                    actions.statuses_for_test(),
+                    actions.part().statuses_for_test(),
                 )
             })
             .unwrap()
@@ -1117,7 +1118,7 @@ impl RoutedPrimary {
                     doc.pending_ops(),
                     history.revision(),
                     actions.generation,
-                    actions.statuses_for_test(),
+                    actions.part().statuses_for_test(),
                 )
             })
             .unwrap()

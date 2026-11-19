@@ -46,7 +46,7 @@ fn snapshot(binding: &CallbackBinding) -> Snapshot {
             revision: history.revision(),
             generation: state.generation,
             can_redo: history.can_redo_as(doc, None),
-            pending_before: state.pending.as_ref().map(|p| p.before.clone()),
+            pending_before: state.part().pending.as_ref().map(|p| p.before.clone()),
             history: crate::state::owned_restore_tests::history_snapshot(history, doc),
         })
         .unwrap()
@@ -94,7 +94,7 @@ tilo_test_env::scenario! {
                             binding.author.clone()
                         )))
                     );
-                    assert_eq!(state.pending.as_ref().unwrap().before, receipt.after);
+                    assert_eq!(state.part().pending.as_ref().unwrap().before, receipt.after);
                 })
                 .unwrap();
             binding
@@ -127,7 +127,7 @@ tilo_test_env::scenario! {
                     history
                         .undo_as(doc, Some(&binding.author), None, None)
                         .unwrap();
-                    state.pending = Some(PendingResourceAction::new(&binding, doc.base_heads()));
+                    state.part().pending = Some(PendingResourceAction::new(&binding, doc.base_heads()));
                     prepare_content_restore(doc, &SCHEMA, &doc.base_heads(), &doc.base_heads()).unwrap()
                 })
                 .unwrap();
@@ -168,7 +168,7 @@ tilo_test_env::scenario! {
                     history
                         .undo_as(doc, Some(&binding.author), None, None)
                         .unwrap();
-                    state.pending = Some(PendingResourceAction::new(&binding, doc.base_heads()));
+                    state.part().pending = Some(PendingResourceAction::new(&binding, doc.base_heads()));
                     prepare_content_restore(doc, &SCHEMA, &doc.base_heads(), &target).unwrap()
                 })
                 .unwrap();
@@ -218,7 +218,7 @@ tilo_test_env::scenario! {
                                 doc.put(ROOT, "body", "pending").unwrap();
                             }
                             1 => {
-                                state.pending =
+                                state.part().pending =
                                     Some(PendingResourceAction::new(&binding, doc.base_heads()));
                                 doc.put(ROOT, "body", "closed").unwrap();
                                 doc.commit();

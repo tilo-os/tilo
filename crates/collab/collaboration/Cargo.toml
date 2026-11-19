@@ -92,6 +92,7 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [dev-dependencies]
 tempfile.workspace = true
+libc.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }

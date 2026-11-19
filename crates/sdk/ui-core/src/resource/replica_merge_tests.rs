@@ -2,6 +2,10 @@
 //! changes out of order or the host's empty document for a new record.
 
 use super::*;
+use std::rc::Rc;
+
+use automerge::transaction::Transactable as _;
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 use durable_store::MemoryStore;
 
 fn put_text(doc: &mut AutoCommit, key: &str, value: &str) {

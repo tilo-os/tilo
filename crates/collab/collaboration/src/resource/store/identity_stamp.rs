@@ -17,7 +17,7 @@ fn record_metadata_present(doc: &AutoCommit) -> Result<bool, String> {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ReplicaIdentityStamp {
+pub struct ReplicaIdentityStamp {
     checkout: DocumentCheckout,
     workspace: String,
     metadata: bool,
@@ -46,7 +46,7 @@ impl ReplicaIdentityStamp {
         })
     }
 
-    pub(crate) fn validate(&self, doc: &AutoCommit) -> Result<(), String> {
+    pub fn validate(&self, doc: &AutoCommit) -> Result<(), String> {
         validate_identity(doc, &self.checkout, &self.workspace)
             .map_err(|error| error.to_string())?;
         if record_metadata_present(doc)? != self.metadata

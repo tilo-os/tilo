@@ -422,7 +422,7 @@ mod tests {
             }
             let mut merged = AutoCommit::load(&saved.bytes).unwrap();
             for change in &written {
-                crate::history_mode::routes::load_incremental(&mut merged, change).unwrap();
+                crate::resource::store::load_incremental(&mut merged, change).unwrap();
             }
             let changes = merged.get_changes(&[]);
             let sequences: std::collections::HashSet<_> = changes
@@ -465,7 +465,7 @@ mod tests {
                         let heads = doc.get_heads();
                         let copy = doc.get_actor().clone();
                         doc.set_actor(automerge::ActorId::from(
-                            crate::bound_dispatch::document_writer(&tilo_actions::Actor::Member(tilo_actions::MemberId::person("alice")), doc),
+                            crate::history_source::authors::device_actor(&tilo_actions::Actor::Member(tilo_actions::MemberId::person("alice")).actor_bytes(), doc.get_actor()),
                         ));
                         doc.put(automerge::ROOT, "message", value).unwrap();
                         let hash = doc.commit().unwrap();
@@ -473,7 +473,7 @@ mod tests {
                         (hash, doc.save_after(&heads))
                     })
                     .unwrap();
-                crate::history_mode::routes::load_incremental(&mut relay, &sent).unwrap();
+                crate::resource::store::load_incremental(&mut relay, &sent).unwrap();
                 hash
             };
             send("hello");

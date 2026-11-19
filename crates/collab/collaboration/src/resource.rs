@@ -3,7 +3,9 @@
 //! This is model state, not UI state: a server, a peer and a window read and stamp it alike, so it
 //! lives beside the documents it describes rather than in the toolkit that shows them.
 
+mod store;
 pub mod transfer;
+pub use store::*;
 
 use std::rc::Rc;
 
