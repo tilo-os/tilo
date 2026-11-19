@@ -118,6 +118,16 @@ fn policy(workspace: uuid::Uuid) -> WorkspacePolicy {
 }
 
 fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundle>) -> Member {
+    member_with_archive(bus, workspace, person, bundle, None)
+}
+
+fn member_with_archive(
+    bus: &Rc<Bus>,
+    workspace: uuid::Uuid,
+    person: &str,
+    bundle: &Arc<Bundle>,
+    archive: Option<automerge::AutoCommit>,
+) -> Member {
     let route = tilolang_process::route_of(&bundle.meta, workspace, person);
     let broker = Broker::on(bus, route.clone(), person);
     let (inbox, sent) = (broker.inbox(), broker.sent());
@@ -134,6 +144,19 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
         InstanceDocument::new(automerge::AutoCommit::new(), manager, route.clone(), person);
     let mut host = TilolangProcess::new(None, wake());
     let kept = host.kept(MAIL).unwrap();
+    if let Some(mut archive) = archive {
+        let earlier = tilolang_tilo::member_document_of(MAIL, person).unwrap();
+        let document = collab_types::document::DocumentId::parse(&earlier).unwrap();
+        collaboration::document::save::resource_document(
+            &kept.documents,
+            MAIL,
+            &workspace.to_string(),
+            &document.storage_key(),
+        )
+        .unwrap()
+        .save(&mut archive)
+        .unwrap();
+    }
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
     let mut policy = policy(workspace);
@@ -334,4 +357,128 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
     assert!(bo.host.set_access(MAIL, Some(&revoked)));
     assert_eq!(bo.host.instances().count(), 0);
     assert_eq!(bo.host.take_ended(), [1]);
+}
+
+#[test]
+fn an_archive_owner_recovers_drafts_into_the_shared_mailbox_once() {
+    use tilolang_tilo::runtime::Value;
+
+    let bundle = Arc::new(mail());
+    let workspace = uuid::Uuid::new_v4();
+    let mut earlier = member(&Rc::new(Bus::default()), workspace, ADA, &bundle);
+    earlier.settle();
+    earlier
+        .host
+        .instances_mut()
+        .next()
+        .unwrap()
+        .stage("a reply being written");
+    earlier.settle();
+    let schedule = earlier
+        .hosted()
+        .published()
+        .iter()
+        .find(|action| action.address.action == "send_later")
+        .expect("the draft can be scheduled")
+        .address
+        .clone();
+    let at = serde_json::json!({ "at": "2099-12-31T12:00:00Z" });
+    earlier
+        .inbox
+        .borrow_mut()
+        .push_back(CollabEvent::Invocation {
+            id: 9,
+            invocation: tilo_actions::InvocationId::new(),
+            resource: schedule.resource,
+            action: schedule.action,
+            argument: Some(format!("{}{at}", tilo_actions::ARGUMENTS_JSON_PREFIX)),
+            actor: tilo_actions::MemberId::person(ADA).into(),
+            context: None,
+        });
+    earlier.settle();
+    assert!(
+        earlier.answer(9).contains("Succeeded"),
+        "{}",
+        earlier.answer(9)
+    );
+    assert_eq!(
+        earlier
+            .hosted()
+            .instance()
+            .host()
+            .unwrap()
+            .runtime()
+            .pending_outbox()
+            .len(),
+        1,
+        "the earlier copy has an unsent job"
+    );
+    let old_draft = earlier.hosted().record().doc();
+
+    let bus = Rc::new(Bus::default());
+    let mut ada = member_with_archive(&bus, workspace, ADA, &bundle, Some(old_draft));
+    let mut bo = member(&bus, workspace, BO, &bundle);
+    ada.settle();
+    bo.settle();
+    let recover = ada
+        .hosted()
+        .published()
+        .iter()
+        .find(|action| action.address.action == "recover_previous")
+        .expect("the mailbox offers recovery")
+        .address
+        .clone();
+    let invoke = |id, actor: &str| CollabEvent::Invocation {
+        id,
+        invocation: tilo_actions::InvocationId::new(),
+        resource: recover.resource.clone(),
+        action: recover.action.clone(),
+        argument: None,
+        actor: tilo_actions::MemberId::person(actor).into(),
+        context: None,
+    };
+    let drafts = |member: &Member| {
+        let host = member.hosted().instance().host().unwrap();
+        let root = host.root_of(MAIL).unwrap();
+        let Value::List(drafts) = host.runtime().read(&root, "drafts").unwrap() else {
+            panic!("the mailbox holds drafts");
+        };
+        drafts
+            .into_iter()
+            .map(|item| {
+                let Value::Ref(draft) = item else {
+                    panic!("a draft item")
+                };
+                let text = host.runtime().read(&draft.target, "subject").unwrap();
+                assert!(matches!(
+                    host.runtime().read(&draft.target, "sent"),
+                    Ok(Value::Bool(false))
+                ));
+                text.as_text().unwrap().to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    ada.inbox.borrow_mut().push_back(invoke(10, BO));
+    ada.settle();
+    assert!(ada.answer(10).contains("permission_denied"));
+    assert!(drafts(&ada).is_empty());
+    for id in [11, 12] {
+        ada.inbox.borrow_mut().push_back(invoke(id, ADA));
+        ada.settle();
+        bo.settle();
+        assert!(ada.answer(id).contains("Succeeded"), "{}", ada.answer(id));
+        let expected = ["Re: Launch plan for the autumn release"];
+        assert_eq!(drafts(&ada), expected);
+        assert_eq!(drafts(&bo), expected);
+        assert!(
+            ada.hosted()
+                .instance()
+                .host()
+                .unwrap()
+                .runtime()
+                .pending_outbox()
+                .is_empty()
+        );
+    }
 }

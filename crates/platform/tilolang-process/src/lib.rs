@@ -22,6 +22,7 @@
 
 pub mod files;
 pub mod hosted;
+mod mail_recovery;
 pub mod personal;
 pub mod phrases;
 pub mod presence;

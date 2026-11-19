@@ -128,8 +128,16 @@ type Mail {
     accounts: Collection<Account>
     drafts: Collection<Draft>
     labels: Collection<Label>
+    /// Previously imported drafts, including ones subsequently deleted.
+    recovered_drafts: Set<Text>
+
     /// How many seconds members have to undo a send. The default is ten seconds.
     hold: Int = 10
+
+    search {
+        filter hold
+        hide recovered_drafts
+    }
 }
 
 root Mail
@@ -187,6 +195,35 @@ action check_now(a: Account) (icon: .refresh, label: "Check now") {
 primary action new_message(a: Account) -> Draft (icon: .pencil, label: "New message") {
     let m = root Mail
     m.drafts.insert(Draft(from: a.key, body: signature_of(m, a.key)))
+}
+
+/// Copies drafts and labels from the earlier private mailbox into this workspace.
+action recover_previous(m: Mail, drafts: List<List<Text>> = [], labels: List<Text> = []) -> Int (
+    icon: .archive,
+    label: "Recover previous drafts and labels",
+) {
+    let before = m.drafts.len() + m.labels.len()
+    for row in drafts {
+        let key = row.at(0) ?? ""
+        if row.len() == 8 and key != "" and not m.recovered_drafts.contains(key) {
+            m.drafts.insert(Draft(
+                from: row.at(1) ?? "",
+                to: row.at(2) ?? "",
+                cc: row.at(3) ?? "",
+                subject: row.at(4) ?? "",
+                body: row.at(5) ?? "",
+                in_reply_to: row.at(6) ?? "",
+                references: row.at(7) ?? "",
+            ))
+            m.recovered_drafts.add(key)
+        }
+    }
+    for name in labels {
+        if name != "" and not m.labels.any(l -> l.name == name) {
+            m.labels.insert(Label(name: name))
+        }
+    }
+    m.drafts.len() + m.labels.len() - before
 }
 
 /// Starts a message from the first account.

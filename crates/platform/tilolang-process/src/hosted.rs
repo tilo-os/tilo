@@ -797,6 +797,7 @@ pub struct Hosted {
     /// The workspace's document of each person's own state: what the person picked in the views
     /// and what they have seen, given to the views and kept back as they change it.
     personal: PersonalDocument,
+    mail_archive: Option<Rc<dyn durable_store::DurableStore>>,
     /// Who else is where in the document, as the connection hears it, and what the instance last
     /// said of its own person there.
     presence: Presence,
@@ -904,6 +905,9 @@ impl Hosted {
         registry.connect_content(record.content().clone());
         drop(in_scope);
         let presence = Presence::new(&spec.app, &spec.person);
+        let mail_archive =
+            (spec.app == crate::mail_recovery::APP).then(|| Rc::clone(&kept.documents));
+
         Self {
             spec,
             bundle,
@@ -934,6 +938,7 @@ impl Hosted {
             identity: None,
             scope,
             personal,
+            mail_archive,
             access,
             presence,
             early: Vec::new(),
@@ -1900,6 +1905,40 @@ impl Hosted {
         output
     }
 
+    fn recover_earlier_mail(
+        &self,
+        host: &tilolang_tilo::host::Host,
+        invoker: &ActionInvoker,
+    ) -> Result<String, Refused> {
+        let route = self.record.route();
+        let policy_node = collab_types::document_node(
+            &route.cluster_id.to_string(),
+            &route.app_id,
+            route.document.as_deref().unwrap_or_default(),
+        );
+        let may_import = invoker.acting.is_person()
+            && invoker.acting.by.member_id().and_then(MemberId::person_id)
+                == Some(self.spec.person.as_str())
+            && self.access.borrow().as_ref().is_some_and(|access| {
+                use tilo_action_policy::ActionKind;
+                let now = tilo_clock::wall();
+                [ActionKind::Read, ActionKind::Undoable]
+                    .into_iter()
+                    .all(|kind| access.allows(&policy_node, kind, now))
+            });
+        if !may_import {
+            return Err(Refused::new(
+                "permission_denied",
+                "Only the archive owner can recover mail into a workspace they may edit",
+            ));
+        }
+        let documents = self.mail_archive.as_ref().ok_or_else(|| {
+            Refused::new("action_unavailable", "The earlier mailbox is unavailable")
+        })?;
+        crate::mail_recovery::arguments(documents, route, &self.spec.person, &self.bundle, host)
+            .map_err(|error| Refused::new("action_failed", error))
+    }
+
     /// Build the action `address` names for `invoker`, through the spec the instance publishes
     /// now, and run it: a document action is applied as the invoker's step; the host's own
     /// vocabulary is answered by the runtime, and what it commits is the invoker's.
@@ -1922,6 +1961,15 @@ impl Hosted {
             .instance
             .host()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
+        let recovery;
+        let argument = if self.spec.app == crate::mail_recovery::APP
+            && address.action == crate::mail_recovery::ACTION
+        {
+            recovery = self.recover_earlier_mail(&host, &invoker)?;
+            Some(recovery.as_str())
+        } else {
+            argument
+        };
         // The action is applied as soon as it is built: the run that builds it is the one whose
         // writes the document commits.
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));

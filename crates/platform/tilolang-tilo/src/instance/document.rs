@@ -270,14 +270,35 @@ fn previous_profile_document(
     else {
         return Ok(None);
     };
+    let Some(mut chunks) =
+        archived_member_document(documents, &route.app_id, app, context, person)?
+    else {
+        return Ok(None);
+    };
+    retire_archived_effects(&mut chunks.0)?;
+    for (_, part) in &mut chunks.1 {
+        retire_archived_effects(part)?;
+    }
+    Ok(Some(chunks))
+}
+
+/// Open the locally retained archive of the given member and app. The caller
+/// must authorize the member and workspace before reading any fields.
+pub fn archived_member_document(
+    documents: &Rc<dyn DurableStore>,
+    stored_under: &str,
+    app: &str,
+    workspace: uuid::Uuid,
+    person: &str,
+) -> Result<Option<ProfileArchive>, DocumentError> {
     // A renamed package wrote under its previous app id, but could name the
     // member document using either version's kind.
     let mut archive = None;
-    for name in std::iter::once(app).chain((app != route.app_id).then_some(route.app_id.as_str())) {
+    for name in std::iter::once(app).chain((app != stored_under).then_some(stored_under)) {
         let Some(id) = crate::member_document_of(name, person) else {
             continue;
         };
-        let previous = RouteSpec::document(route.app_id.clone(), context, id);
+        let previous = RouteSpec::document(stored_under.to_owned(), workspace, id);
         if let Some(document) = route_document(documents, &previous)?
             .load_complete()
             .map_err(|error| DocumentError::Open(error.to_string()))?
@@ -295,16 +316,9 @@ fn previous_profile_document(
         let copy = copy_document(documents, &previous, index)
             .and_then(|mut store| store.load_complete().ok().flatten())
             .ok_or_else(|| {
-                DocumentError::Open(
-                    "the previous profile document has a part on another device".to_owned(),
-                )
+                DocumentError::Open("the archive has a part on another device".to_owned())
             })?;
         parts.push((index, copy));
-    }
-    let mut document = document;
-    retire_archived_effects(&mut document)?;
-    for (_, part) in &mut parts {
-        retire_archived_effects(part)?;
     }
     Ok(Some((document, parts)))
 }

@@ -41,8 +41,11 @@ App data shared in a workspace resolves to the same records for every member.
 Roles and document grants decide access to those records. Mail uses a workspace
 mailbox and Passwords uses a workspace vault. Mail accounts still use credentials
 from the account owner's profile. Native Mail and Passwords provide actions to
-recover the current member's earlier data into these shared resources. The
-earlier TiloLang Mail mailboxes remain private archives.
+recover the current member's earlier data into these shared resources. In
+TiloLang Mail, **Recover previous drafts and labels** copies those items from
+the current member's locally held archive into the shared mailbox in batches.
+It recovers drafts with known unsent jobs as editable drafts. The shared
+mailbox can refetch server mail through its configured accounts.
 
 Workspaces refuse new writes to archived per-member app documents. Those
 documents retain their original read rules so members can recover earlier data.
