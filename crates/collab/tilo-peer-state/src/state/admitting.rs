@@ -118,6 +118,12 @@ impl StatePeer {
             return Err("transport author or document workspace mismatch".into());
         }
         self.core.learn_own(&app_id, &document_id, own.as_ref());
+        self.check_document_key_scope(
+            (&app_id, &document_id),
+            envelope.encryption,
+            now,
+            retained_replay,
+        )?;
         // A piece of a compaction that spans several ops changes nothing on its
         // own: it is gathered, and the compaction is admitted once it is whole.
         let envelope = if collab_types::is_compaction_piece(&envelope)

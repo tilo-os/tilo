@@ -1,7 +1,7 @@
 //! A workspace's authority: its owner, its members' roles and its grants,
 //! changed only through the workspace's governance actions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +36,12 @@ pub struct WorkspacePolicy {
     pub joined: BTreeMap<String, u64>,
     /// Every grant in the workspace, role presets included.
     pub grants: Vec<Grant>,
+    /// Workspace-defined roles by their stable id, with their display name.
+    #[serde(default)]
+    pub custom_roles: BTreeMap<String, String>,
+    /// The custom roles assigned to each member, in addition to their preset.
+    #[serde(default)]
+    pub assigned_roles: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// A [`WorkspacePolicy`] as written, before its built-in roles are brought to
@@ -48,6 +54,10 @@ struct StoredWorkspacePolicy {
     #[serde(default)]
     joined: BTreeMap<String, u64>,
     grants: Vec<Grant>,
+    #[serde(default)]
+    custom_roles: BTreeMap<String, String>,
+    #[serde(default)]
+    assigned_roles: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl From<StoredWorkspacePolicy> for WorkspacePolicy {
@@ -58,6 +68,8 @@ impl From<StoredWorkspacePolicy> for WorkspacePolicy {
             members: stored.members,
             joined: stored.joined,
             grants: stored.grants,
+            custom_roles: stored.custom_roles,
+            assigned_roles: stored.assigned_roles,
         }
         .with_current_roles()
     }
@@ -98,9 +110,38 @@ pub enum Change {
     },
     Grant(Grant),
     Revoke(GrantId),
+    /// Create a custom role, or rename the role with this id.
+    DefineRole {
+        id: String,
+        name: String,
+    },
+    /// Remove the role's rules and assignments together.
+    RemoveRole {
+        id: String,
+    },
+    /// Legacy whole-set assignment, kept for replay. New changes set one role at a time.
+    SetMemberRoles {
+        person: String,
+        roles: BTreeSet<String>,
+    },
+    /// Assign or remove one custom role without replacing other assignments.
+    SetMemberCustomRole {
+        person: String,
+        role: String,
+        assigned: bool,
+    },
 }
 
 impl Change {
+    /// Whether this change manages a custom role or its assignment.
+    #[must_use]
+    pub const fn is_custom_role_change(&self) -> bool {
+        matches!(
+            self,
+            Self::DefineRole { .. } | Self::RemoveRole { .. } | Self::SetMemberCustomRole { .. }
+        )
+    }
+
     /// The governance action this change is.
     #[must_use]
     pub const fn action(&self) -> &'static str {
@@ -112,8 +153,15 @@ impl Change {
             Self::Restrict { .. } => governance::RESTRICT,
             Self::Unrestrict { .. } => governance::UNRESTRICT,
             Self::SetRole { .. } => governance::SET_ROLE,
-            Self::Grant(_) => governance::GRANT,
-            Self::Revoke(_) => governance::REVOKE,
+            Self::Grant(_)
+            | Self::DefineRole { .. }
+            | Self::SetMemberRoles { .. }
+            | Self::SetMemberCustomRole { assigned: true, .. } => governance::GRANT,
+            Self::Revoke(_)
+            | Self::RemoveRole { .. }
+            | Self::SetMemberCustomRole {
+                assigned: false, ..
+            } => governance::REVOKE,
         }
     }
 
@@ -127,8 +175,13 @@ impl Change {
             | Self::Unban { person }
             | Self::Restrict { person, .. }
             | Self::Unrestrict { person }
-            | Self::SetRole { person, .. } => Some(person),
-            Self::Grant(_) | Self::Revoke(_) => None,
+            | Self::SetRole { person, .. }
+            | Self::SetMemberRoles { person, .. }
+            | Self::SetMemberCustomRole { person, .. } => Some(person),
+            Self::Grant(_)
+            | Self::Revoke(_)
+            | Self::DefineRole { .. }
+            | Self::RemoveRole { .. } => None,
         }
     }
 }
@@ -203,11 +256,15 @@ pub enum Refusal {
     /// An id that is no person's root key: a change naming software, or a
     /// spelling no device of ours writes, as a person.
     NotAPerson(String),
+    InvalidRole,
+    UnknownRole(String),
 }
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidRole => f.write_str("invalid custom role id or name"),
+            Self::UnknownRole(id) => write!(f, "unknown custom role: {id}"),
             Self::NotPermitted(why) | Self::NeedsApproval(why) => f.write_str(why),
             Self::Owner => f.write_str("the workspace's owner cannot be removed or demoted"),
             Self::OwnerRole => {
@@ -286,6 +343,8 @@ impl WorkspacePolicy {
             members: BTreeMap::new(),
             joined: BTreeMap::new(),
             grants,
+            custom_roles: BTreeMap::new(),
+            assigned_roles: BTreeMap::new(),
         }
     }
 
@@ -309,6 +368,8 @@ impl WorkspacePolicy {
             members: BTreeMap::new(),
             joined: BTreeMap::new(),
             grants,
+            custom_roles: BTreeMap::new(),
+            assigned_roles: BTreeMap::new(),
         }
     }
 
@@ -544,6 +605,9 @@ impl WorkspacePolicy {
         let mut grantees = vec![Grantee::person(id)];
         if let Some(role) = self.role_of(person) {
             grantees.push(Grantee::role(role));
+            if let Some(roles) = self.assigned_roles.get(person) {
+                grantees.extend(roles.iter().cloned().map(Grantee::CustomRole));
+            }
         }
         grantees
     }
@@ -900,6 +964,42 @@ impl WorkspacePolicy {
                 self.grants.push(grant);
             }
             Change::Revoke(id) => self.grants.retain(|grant| grant.id != id),
+            Change::DefineRole { id, name } => {
+                self.custom_roles.insert(id, name);
+            }
+            Change::RemoveRole { id } => {
+                self.custom_roles.remove(&id);
+                self.assigned_roles.retain(|_, roles| {
+                    roles.remove(&id);
+                    !roles.is_empty()
+                });
+                self.grants.retain(
+                    |grant| !matches!(&grant.grantee, Grantee::CustomRole(role) if role == &id),
+                );
+            }
+            Change::SetMemberRoles { person, roles } => {
+                if roles.is_empty() {
+                    self.assigned_roles.remove(&person);
+                } else {
+                    self.assigned_roles.insert(person, roles);
+                }
+            }
+            Change::SetMemberCustomRole {
+                person,
+                role,
+                assigned,
+            } => {
+                if assigned {
+                    self.assigned_roles.entry(person).or_default().insert(role);
+                } else if let std::collections::btree_map::Entry::Occupied(mut entry) =
+                    self.assigned_roles.entry(person)
+                {
+                    entry.get_mut().remove(&role);
+                    if entry.get().is_empty() {
+                        entry.remove();
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -908,6 +1008,7 @@ impl WorkspacePolicy {
     fn drop_member(&mut self, person: &str) {
         self.members.remove(person);
         self.joined.remove(person);
+        self.assigned_roles.remove(person);
         self.grants
             .retain(|grant| grant.grantee.person_id() != Some(person));
     }
@@ -1075,6 +1176,9 @@ impl WorkspacePolicy {
                 if grant.node.workspace_id() != Some(self.workspace.as_str()) {
                     return Err(Refusal::OutsideWorkspace(grant.node.clone()));
                 }
+                if let Grantee::CustomRole(id) = &grant.grantee {
+                    self.require_custom_role(id)?;
+                }
                 if let Some(held) = self.grants.iter().find(|held| held.id == grant.id) {
                     // The same grant again converges: a replayed command
                     // leaves the workspace as it was instead of refusing.
@@ -1095,6 +1199,60 @@ impl WorkspacePolicy {
                     Err(Refusal::UnknownGrant(id.clone()))
                 }
             }
+            Change::DefineRole { id, name } => {
+                if id.is_empty()
+                    || id.len() > 64
+                    || !id
+                        .bytes()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+                    || name.trim().is_empty()
+                    || name.trim() != name
+                    || name.chars().count() > 80
+                    || name.chars().any(char::is_control)
+                {
+                    return Err(Refusal::InvalidRole);
+                }
+                Ok(())
+            }
+            Change::RemoveRole { id } => self.require_custom_role(id),
+            Change::SetMemberRoles { person, roles } => {
+                if !self.members.contains_key(person) {
+                    return Err(Refusal::NotAMember(person.clone()));
+                }
+                for role in roles {
+                    self.require_custom_role(role)?;
+                }
+                for grant in &self.grants {
+                    if matches!(&grant.grantee, Grantee::CustomRole(id) if roles.contains(id)) {
+                        Self::check_within(actor, grant, cx)?;
+                    }
+                }
+                Ok(())
+            }
+            Change::SetMemberCustomRole {
+                person,
+                role,
+                assigned,
+            } => {
+                if !self.members.contains_key(person) {
+                    return Err(Refusal::NotAMember(person.clone()));
+                }
+                self.require_custom_role(role)?;
+                for grant in self.grants.iter().filter(|grant| {
+                    *assigned && matches!(&grant.grantee, Grantee::CustomRole(id) if id == role)
+                }) {
+                    Self::check_within(actor, grant, cx)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn require_custom_role(&self, id: &str) -> Result<(), Refusal> {
+        if self.custom_roles.contains_key(id) {
+            Ok(())
+        } else {
+            Err(Refusal::UnknownRole(id.to_owned()))
         }
     }
 }

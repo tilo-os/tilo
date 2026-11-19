@@ -48,16 +48,24 @@ impl HistoryKeys {
             .map_err(|error| error.to_string())
     }
 
-    /// Seal `cleartext`, the merged history of `app`'s `record`, as that record's checkpoint
+    /// Seal `cleartext`, the merged history of `app`'s `document`, as that document's checkpoint
     /// under the epoch these keys seal with now. The plaintext never leaves this call.
     pub fn seal_checkpoint(
         &self,
         app: &str,
-        record: &str,
+        document: &str,
         cleartext: &[u8],
     ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-        let artifact =
-            collab_types::document_artifact_id(app, &self.0.workspace().to_string(), record);
+        self.seal_checkpoint_on(self.0.workspace(), (app, document), cleartext)
+    }
+
+    fn seal_checkpoint_on(
+        &self,
+        workspace: WorkspaceId,
+        (app, document): (&str, &str),
+        cleartext: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), document);
         // A compaction's snapshot too large for one op goes as segments, the
         // later ones following its first in a store's retained tail.
         self.0
@@ -98,7 +106,7 @@ impl SharedKeys {
     /// [`Err`] when it does and holds none yet.
     #[must_use]
     pub fn history_keys(&self, workspace: WorkspaceId) -> Option<Result<HistoryKeys, String>> {
-        self.run(|service| service.history_keys(workspace))
+        self.with_service(|service| service.history_keys(workspace))
             .unwrap_or_else(|| Some(Err("the key service is unavailable".into())))
             .map(|keys| keys.map(HistoryKeys))
     }
@@ -112,11 +120,64 @@ impl SharedKeys {
         workspace: WorkspaceId,
         envelope: &SignedOp,
     ) -> Result<Vec<u8>, String> {
-        let keys = self
-            .run(|service| service.record_keys(workspace))
-            .ok_or("key service unavailable")?
-            .ok_or("this device holds no existing key for the history's group")??;
-        HistoryKeys(keys).open(envelope)
+        let group = envelope
+            .encryption
+            .ok_or("the write is not sealed")?
+            .key_group(workspace);
+        HistoryKeys(self.held_history_keys(group, None)?).open(envelope)
+    }
+
+    /// Seal a checkpoint in the document's group after comparing its current
+    /// key holders with the reader roster from the owner's policy snapshot.
+    pub fn seal_scoped_checkpoint(
+        &self,
+        workspace: WorkspaceId,
+        document: (&str, &str),
+        readers: &std::collections::BTreeSet<[u8; 32]>,
+        cleartext: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        self.scoped_history_keys(workspace, document, readers)?
+            .seal_checkpoint_on(workspace, document, cleartext)
+    }
+
+    /// Renew a held write under the document's current group, including a
+    /// write held since before the document received its own group.
+    pub fn renew_scoped_document(
+        &self,
+        workspace: WorkspaceId,
+        document: (&str, &str),
+        readers: &std::collections::BTreeSet<[u8; 32]>,
+        write: &SignedOp,
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let metadata = write.encryption.ok_or("the write is not sealed")?;
+        let target = self.scoped_history_keys(workspace, document, readers)?;
+        if metadata.key_group(workspace) == target.0.workspace() {
+            return target.renew(write);
+        }
+        let cleartext = self.open_history_write(workspace, write)?;
+        let retention = metadata
+            .retention()
+            .ok_or("the write has no content retention")?;
+        target
+            .0
+            .seal_content(write.artifact, retention, &cleartext)
+            .map_err(|error| error.to_string())
+    }
+
+    fn scoped_history_keys(
+        &self,
+        workspace: WorkspaceId,
+        document: (&str, &str),
+        readers: &std::collections::BTreeSet<[u8; 32]>,
+    ) -> Result<HistoryKeys, String> {
+        let group = neighbour_wire::KeyScope::Document {
+            workspace,
+            app: document.0.to_owned(),
+            document: document.1.to_owned(),
+        }
+        .group();
+        self.held_history_keys(group, Some(readers))
+            .map(HistoryKeys)
     }
 
     /// Seal `cleartext`, the merged history of a sealed record, as that

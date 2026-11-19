@@ -25,17 +25,23 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
+use collab_types::WorkspaceId;
 use futures_util::future::BoxFuture;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
 use iroh_base::{EndpointAddr, EndpointId};
+use key_group::ContentKeys;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 use tokio::io::AsyncReadExt as _;
 
 /// The link between the session and its files daemon, both ways.
 pub const LINK_ALPN: &[u8] = b"tilo-fs/session-link/1";
+
+/// Local-only request for one workspace's Files keys, authenticated like the daemon link.
+const FILE_KEYS_ALPN: &[u8] = b"tilo-fs/file-keys/1";
+const MAX_FILE_KEY_BYTES: usize = 64 * 1024 * 1024;
 
 /// The link file's name, beside the daemon's document-media socket.
 pub const LINK_FILE: &str = "fs-session-link";
@@ -254,6 +260,24 @@ impl SessionLink {
         self.hello.subscribe()
     }
 
+    pub(crate) async fn file_keys(&self, workspace: WorkspaceId) -> Result<ContentKeys> {
+        let hello = self
+            .hello()
+            .context("no login session is connected to Files")?;
+        let connection = self.endpoint.connect(hello.session, FILE_KEYS_ALPN).await?;
+        ensure!(
+            connection.remote_id() == self.device,
+            "the session answered as another device"
+        );
+        let (mut send, mut recv) = connection.open_bi().await?;
+        write_frame(&mut send, &workspace).await?;
+        send.finish()?;
+        let response: Result<(), String> = read_frame(&mut recv).await?;
+        response.map_err(|reason| anyhow!(reason))?;
+        let bytes = zeroize::Zeroizing::new(recv.read_to_end(MAX_FILE_KEY_BYTES).await?);
+        Ok(ContentKeys::from_bytes(&bytes)?)
+    }
+
     async fn connect(&self, target: EndpointAddr, alpn: &[u8]) -> Result<Connection> {
         let Some(hello) = self.hello() else {
             bail!("no session runs to reach {} through", target.id);
@@ -346,6 +370,7 @@ impl DaemonLink {
         endpoint: Endpoint,
         file: PathBuf,
         wake: Arc<dyn Fn() + Send + Sync>,
+        identity_socket: Option<PathBuf>,
     ) -> Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)> {
         let link = Arc::new(Self {
             endpoint,
@@ -359,6 +384,15 @@ impl DaemonLink {
                 link: Arc::clone(&link),
             }),
         )];
+        if let Some(identity_socket) = identity_socket {
+            served.push((
+                FILE_KEYS_ALPN.to_vec(),
+                Box::new(FilesKeyRequest {
+                    link: Arc::clone(&link),
+                    identity_socket,
+                }),
+            ));
+        }
         for alpn in daemon_alpns() {
             served.push((
                 alpn.to_vec(),
@@ -373,6 +407,55 @@ impl DaemonLink {
 
     fn daemon(&self) -> Option<EndpointAddr> {
         self.daemon.lock_recover().clone()
+    }
+}
+
+/// Ask the signed-in person's identity service for the Files document keys of one workspace.
+#[derive(Clone)]
+struct FilesKeyRequest {
+    link: Arc<DaemonLink>,
+    identity_socket: PathBuf,
+}
+
+impl std::fmt::Debug for FilesKeyRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("FilesKeyRequest")
+    }
+}
+
+impl ProtocolHandler for FilesKeyRequest {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        if self.link.daemon().map(|daemon| daemon.id) != Some(connection.remote_id()) {
+            return Err(refused(
+                "only this device's Files daemon can request local keys",
+            ));
+        }
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        let workspace: WorkspaceId = read_frame(&mut recv).await.map_err(refused)?;
+        let result = crate::hydration::FileKeys::new(workspace, self.identity_socket.clone())
+            .access()
+            .await
+            .and_then(|keys| keys.to_bytes().map_err(anyhow::Error::from))
+            .and_then(|bytes| {
+                ensure!(
+                    bytes.len() <= MAX_FILE_KEY_BYTES,
+                    "the Files key history is too large"
+                );
+                Ok(bytes)
+            });
+        write_frame(
+            &mut send,
+            &result.as_ref().map(|_| ()).map_err(ToString::to_string),
+        )
+        .await
+        .map_err(refused)?;
+        if let Ok(bytes) = result {
+            send.write_all(&bytes).await.map_err(refused)?;
+        }
+        send.finish()?;
+        // Keep the authenticated connection alive until the requester has received the response.
+        let _ = send.stopped().await.map_err(refused)?;
+        Ok(())
     }
 }
 
@@ -666,6 +749,107 @@ mod tests {
         .await;
     }
 
+    fn answer_files_identity(
+        listener: std::os::unix::net::UnixListener,
+        workspace: WorkspaceId,
+        keys: &ContentKeys,
+    ) {
+        use tilo_identity_client::wire::{
+            FRAMING, HANDSHAKE_FRAMING, KeyAccess, PresentationHandshake, Request, Response,
+        };
+        let (mut stream, _) = listener.accept().unwrap();
+        let hello: PresentationHandshake =
+            serde_json::from_slice(&HANDSHAKE_FRAMING.read(&mut stream).unwrap().unwrap()).unwrap();
+        assert_eq!(hello.handshake.workspace_id, workspace.to_string());
+        assert_eq!(hello.handshake.app_id, fs_protocol::tree::FILES_APP);
+        assert!(matches!(
+            postcard::from_bytes::<Request>(&FRAMING.read(&mut stream).unwrap().unwrap()).unwrap(),
+            Request::Metadata
+        ));
+        let metadata = Response::Metadata {
+            display_name: "Files test".into(),
+            avatar_color: [0; 3],
+            group_public_key: [0; 32],
+            signing_public_key: [0; 32],
+            device_certificate: None,
+            threshold: 1,
+            total_shares: 1,
+            share_index: 1,
+        };
+        FRAMING
+            .write(&mut stream, &postcard::to_allocvec(&metadata).unwrap())
+            .unwrap();
+        let request =
+            postcard::from_bytes::<Request>(&FRAMING.read(&mut stream).unwrap().unwrap()).unwrap();
+        assert!(
+            matches!(request, Request::GroupKeys { workspace_id, app_id, document_id, known_generation: 0 }
+                if workspace_id == workspace.to_string()
+                    && app_id == fs_protocol::tree::FILES_APP
+                    && document_id == fs_protocol::tree::document_id())
+        );
+        let answer = Response::GroupKeys {
+            access: KeyAccess::Ready,
+            generation: 1,
+            keys: keys.to_bytes().unwrap().to_vec(),
+        };
+        FRAMING
+            .write(&mut stream, &postcard::to_allocvec(&answer).unwrap())
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn system_files_requests_keys_over_its_authenticated_session_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(LINK_FILE);
+        let socket = dir.path().join("identity.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let workspace = WorkspaceId::new();
+        let keys = key_group::KeyGroup::create(
+            workspace,
+            key_group::MemberKey::generate("member").unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap();
+        let kept = keys.clone();
+        let broker = std::thread::spawn(move || answer_files_identity(listener, workspace, &kept));
+
+        let session = Endpoint::builder(presets::Minimal)
+            .relay_mode(iroh::RelayMode::Disabled)
+            .bind_addr((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let link = SessionLink::bind(session.id(), &file).await.unwrap();
+        let _daemon = Net::Session(link.clone()).serve(Arc::new(Blobs {
+            store: Arc::new(ContentStore::memory()),
+            answered: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let mut router = Router::builder(session.clone());
+        for (alpn, handler) in
+            DaemonLink::serve(session.clone(), file, Arc::new(|| {}), Some(socket))
+        {
+            router = router.accept(alpn, handler);
+        }
+        let _session = router.spawn();
+        let mut hellos = link.hellos();
+        tilo_test_env::within(
+            "the system Files daemon answers the session's hello",
+            hellos.wait_for(Option::is_some),
+        )
+        .await
+        .unwrap();
+        let obtained = tilo_test_env::within(
+            "the Files daemon receives its workspace keys",
+            link.file_keys(workspace),
+        )
+        .await
+        .unwrap();
+        assert_eq!(&*obtained.to_bytes().unwrap(), &*keys.to_bytes().unwrap());
+        broker.join().unwrap();
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn files_reach_and_leave_the_device_through_the_sessions_endpoint() {
         let relay = tilo_test_env::relay::relay().await;
@@ -692,7 +876,7 @@ mod tests {
         // The session binds the device's one endpoint and greets the daemon.
         let session = on_relay(device.clone(), &relay).await;
         let mut router = Router::builder(session.clone());
-        for (alpn, handler) in DaemonLink::serve(session.clone(), file, Arc::new(|| {})) {
+        for (alpn, handler) in DaemonLink::serve(session.clone(), file, Arc::new(|| {}), None) {
             router = router.accept(alpn, handler);
         }
         let _session_router = router.spawn();
