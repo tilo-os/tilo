@@ -32,9 +32,13 @@ pub fn ime(id: u64, kind: &str, text: &str) -> Result<(), JsValue> {
     };
     with_mount(id, |m| {
         let event = WindowEvent::Ime(event);
+        let stage = m.metric_start();
         m.frame.send_host_event(&event);
+        m.metric_end("ime:input", stage);
         m.publish_committed(&event);
+        let stage = m.metric_start();
         m.present_after_input();
+        m.metric_end("ime:frame", stage);
         Ok(())
     })
 }

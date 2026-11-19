@@ -3363,10 +3363,16 @@ pub(crate) fn service_retained_owner_model(
 /// A record's save moved on and nothing else woke the owner
 /// ([`crate::owner_wake::OwnerWakeRequest::save_progress_only`]): its owner is told the save status
 /// alone.
+/// Show the save status this wake sampled to the owner, when it differs from
+/// `told` — the status the window last told the owner. Returns the status the
+/// owner was told, or `None` when it already shows the sampled one: a save
+/// landing after every keystroke repeats the status the key's own frame
+/// already showed, and telling it again would draw a second frame for it.
 pub(crate) fn service_owner_save_progress(
     root: &mut dyn Widget,
     work: &crate::owner_wake::OwnerWakeRequest,
-) -> Result<bool, BoundDispatchError> {
+    told: Option<&crate::resource::ResourceSaveStatus>,
+) -> Result<Option<crate::resource::ResourceSaveStatus>, BoundDispatchError> {
     let captured = work.binding();
     let _entry = captured.enter()?;
     let mut result = None;
@@ -3382,10 +3388,11 @@ pub(crate) fn service_owner_save_progress(
                 let status = current
                     .sampled_save_status(&parts, &wake)
                     .map_err(BoundDispatchError::Record)?;
-                let bar = crate::window_toolbar::revision();
-                owner.resource_save_status(status);
-                Ok(crate::window_toolbar::revision() != bar
-                    || (owner.needs_redraw() || owner.needs_animation_frame()))
+                if told == Some(&status) {
+                    return Ok(None);
+                }
+                owner.resource_save_status(status.clone());
+                Ok(Some(status))
             }));
         }
         None

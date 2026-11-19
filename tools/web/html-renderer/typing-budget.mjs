@@ -214,7 +214,14 @@ async function run({page, render}) {
       result.metrics = taken.map(m => {
         const stages = {};
         for (const {stage, ms} of m.samples) (stages[stage] ??= []).push(ms);
+        // What one frame's passes spent, over the frames presented while the
+        // keys were typed: the app's view sync, the layout solved, the scene
+        // it drew, and the input it handled.
+        const us = pass => m.layoutPasses.map(frame => frame[pass]).filter(value => typeof value === 'number');
+        const meanMs = values => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) / 1000 : null;
         return {requesters: m.requesters, measuredBy: m.measuredBy, lastRelayout: m.lastRelayout,
+          frames: m.layoutPasses.length,
+          passes: Object.fromEntries(['sync_us', 'build_layout_us', 'apply_layout_us', 'draw_us', 'handle_event_us'].map(pass => [pass, meanMs(us(pass))])),
           stages: Object.fromEntries(Object.entries(stages).map(([k, v]) => [k, {n: v.length, p50: pct(v, 0.5), p90: pct(v, 0.9)}]))};
       });
     }

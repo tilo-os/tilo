@@ -304,6 +304,7 @@ mod caller_palette;
 mod capture;
 mod composition;
 mod inspection;
+mod owner_models;
 mod scene_paint;
 
 /// What `widget` shows, as the frame harness's inspection reads it: a skipped pass is checked against
@@ -642,6 +643,9 @@ pub struct FrameHarness {
     input_frame_pending: bool,
     /// A save-status-only owner service changed what an owner shows since the last frame.
     owner_save_shown: bool,
+    /// The save status the window last told its owner: a service that samples the
+    /// same one again shows nothing new, and asks for no frame.
+    save_status_told: Option<crate::resource::ResourceSaveStatus>,
     /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
     pointer_redraw_diagnostics: bool,
     pointer_redraw_sources: Vec<String>,
@@ -1033,54 +1037,6 @@ impl FrameHarness {
         self.owner_wake_queue
             .as_ref()
             .is_some_and(crate::owner_wake::OwnerWakeQueue::has_pending)
-    }
-
-    fn service_owner_model_batch(
-        &mut self,
-        attempted: &mut bool,
-        presented: &mut bool,
-        completed: &mut usize,
-    ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
-        let _running = self.running();
-        let Some(queue) = self.owner_wake_queue.clone() else {
-            return Ok(());
-        };
-        let mut batch = queue.take_batch();
-        if batch.front().is_some() && batch.all_save_progress_only() {
-            while let Some(work) = batch.front() {
-                let _profile =
-                    tilo_resource::profiling::Phase::start("ui.owner_wake.save_progress");
-                *presented |=
-                    crate::bound_dispatch::service_owner_save_progress(self.root.as_mut(), work)?;
-                batch.complete_front();
-                *completed += 1;
-            }
-            return Ok(());
-        }
-        let mut aside = None;
-        if batch.front().is_some() {
-            // An unknown visitor can replace descendants before it finds the target, so the
-            // physical maps are retired before the first arbitrary callback and kept for
-            // readmission to check.
-            *attempted = true;
-            aside = self.set_layout_aside();
-            self.last_layout_viewport = None;
-            self.owner_service_layout_retired = true;
-        }
-        while let Some(work) = batch.front() {
-            let _profile = tilo_resource::profiling::Phase::start("ui.owner_wake.service");
-            crate::bound_dispatch::service_retained_owner_model(
-                self.root.as_mut(),
-                &mut self.state.doc,
-                work,
-            )?;
-            batch.complete_front();
-            *completed += 1;
-        }
-        // Only a service whose every callback returned keeps them; an error
-        // or an unwind drops them with this frame.
-        self.serviced_layout = aside;
-        Ok(())
     }
 
     fn drain_component_wakes(&self) {
@@ -1596,6 +1552,7 @@ impl FrameHarness {
             coalesce_input_frames: false,
             input_frame_pending: false,
             owner_save_shown: false,
+            save_status_told: None,
             pointer_redraw_diagnostics: false,
             pointer_redraw_sources: Vec::new(),
             layout_built: false,
