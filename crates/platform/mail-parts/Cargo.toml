@@ -1,0 +1,25 @@
+[package]
+name = "tilo-mail-parts"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "A mail message whose large parts (attachments, big bodies) are kept apart from it, in pieces, and put back byte for byte."
+
+[lib]
+name = "tilo_mail_parts"
+path = "src/lib.rs"
+
+[features]
+# A message with attachments of chosen sizes, for tests that carry large mail.
+fixture = []
+
+[dependencies]
+mail-parser = "0.11.4"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

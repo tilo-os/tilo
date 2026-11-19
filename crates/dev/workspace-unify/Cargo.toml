@@ -1293,6 +1293,7 @@ doc = false
 "tilo-locale" = { path = "../../../crates/platform/tilo-locale", default-features = false, features = [] }
 "tilo-location" = { path = "../../../crates/platform/tilo-location", default-features = false, features = [] }
 "tilo-lock" = { path = "../../../crates/platform/tilo-lock", default-features = false, features = [] }
+"tilo-mail-parts" = { path = "../../../crates/platform/mail-parts", default-features = false, features = ["fixture"] }
 "tilo-mail-session" = { path = "../../../crates/platform/mail-session", default-features = false, features = [] }
 "tilo-mcp" = { path = "../../../crates/runtime/tilo-mcp", default-features = false, features = ["test-support"] }
 "tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }

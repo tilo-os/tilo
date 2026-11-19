@@ -156,6 +156,19 @@ fn addr_tuples(addrs: &[Addr]) -> Vec<(String, String)> {
 }
 
 pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Message> {
+    parse_eml_apart(raw, timestamp_min, folder, &[])
+}
+
+/// [`parse_eml`] of a message some of whose parts are kept apart from it
+/// (`apart`: where each one's body goes in `raw`, and the size of its
+/// content): those parts' attachments are named with their size and read
+/// from where they are kept when opened.
+pub fn parse_eml_apart(
+    raw: &[u8],
+    timestamp_min: i64,
+    folder: Folder,
+    apart: &[(u64, u64)],
+) -> Option<Message> {
     let parsed = MessageParser::default().parse(raw)?;
 
     let from = parsed
@@ -213,45 +226,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         .unwrap_or_default();
     let attachments: Vec<Attachment> = parsed
         .attachments()
-        .map(|part| {
-            // A part the HTML shows in place (`cid:`) is an image of the
-            // message, not a file attached to it.
-            let inline_id = part
-                .content_id()
-                .map(|id| {
-                    id.trim()
-                        .trim_start_matches('<')
-                        .trim_end_matches('>')
-                        .to_owned()
-                })
-                .filter(|id| {
-                    !id.is_empty()
-                        && referenced.contains(&format!("cid:{}", id.to_ascii_lowercase()))
-                });
-            let filename = part
-                .attachment_name()
-                .unwrap_or("attachment.bin")
-                .to_string();
-            let declared = part.content_type().map(|kind| {
-                format!("{}/{}", kind.ctype(), kind.subtype().unwrap_or_default())
-                    .to_ascii_lowercase()
-            });
-            let mime = match declared {
-                Some(declared) if inline_id.is_some() => declared,
-                _ => mime_from_filename(&filename).to_string(),
-            };
-            let content = part.contents().to_vec();
-            Attachment {
-                size: content.len() as u64,
-                mime,
-                filename,
-                hydrated: !content.is_empty(),
-                content_id: None,
-                content,
-                kept: false,
-                inline_id,
-            }
-        })
+        .map(|part| attachment_of(part, &referenced, apart))
         .collect();
 
     // Derive a STABLE id from the RFC `Message-ID` so that re-fetching the same
@@ -284,6 +259,56 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         account: String::new(),
         server: None,
     })
+}
+
+/// The attachment `part` is, in a message whose HTML says `referenced`
+/// (lower case) and some of whose parts are kept `apart` (where each one's
+/// body goes, and the size of its content).
+fn attachment_of(
+    part: &mail_parser::MessagePart<'_>,
+    referenced: &str,
+    apart: &[(u64, u64)],
+) -> Attachment {
+    // A part the HTML shows in place (`cid:`) is an image of the message,
+    // not a file attached to it.
+    let inline_id = part
+        .content_id()
+        .map(|id| {
+            id.trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_owned()
+        })
+        .filter(|id| {
+            !id.is_empty() && referenced.contains(&format!("cid:{}", id.to_ascii_lowercase()))
+        });
+    let filename = part
+        .attachment_name()
+        .unwrap_or("attachment.bin")
+        .to_string();
+    let declared = part.content_type().map(|kind| {
+        format!("{}/{}", kind.ctype(), kind.subtype().unwrap_or_default()).to_ascii_lowercase()
+    });
+    let mime = match declared {
+        Some(declared) if inline_id.is_some() => declared,
+        _ => mime_from_filename(&filename).to_string(),
+    };
+    let content = part.contents().to_vec();
+    let kept_apart = apart
+        .iter()
+        .find(|(at, _)| content.is_empty() && *at == u64::from(part.offset_body))
+        .map(|(_, size)| *size);
+    Attachment {
+        size: kept_apart.unwrap_or(content.len() as u64),
+        mime,
+        filename,
+        hydrated: !content.is_empty() || kept_apart.is_some(),
+        content_id: None,
+        content,
+        kept: false,
+        inline_id,
+        apart: kept_apart.is_some(),
+    }
 }
 
 pub fn stable_message_id(message_id: &str) -> Uuid {

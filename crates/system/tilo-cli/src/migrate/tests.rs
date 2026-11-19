@@ -532,3 +532,83 @@ fn a_review_names_what_it_could_not_read_and_still_lists_the_rest() {
         "{text}"
     );
 }
+
+#[test]
+fn a_message_larger_than_one_upload_comes_over_with_its_parts_apart() {
+    use migration_sources::thunderbird::fixture::{
+        LARGE_FILES, LARGE_MESSAGE_ID, append_large_message,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    migration_sources::thunderbird::fixture::write_sample_profile(&home);
+    let sent = append_large_message(&home);
+    assert!(sent.len() > 40 * 1024 * 1024, "{} bytes", sent.len());
+    let place = Place::at(&dir.path().join("state"));
+    let mut review = thunderbird::review(&home, None).unwrap();
+    let work = review
+        .items
+        .iter()
+        .find(|item| item.key == "ada@example.com")
+        .unwrap();
+    assert_eq!(work.count, 5, "the review counts the large message too");
+    review
+        .choose(&["ada@example.com".to_owned()], true, true)
+        .unwrap();
+    place.keep_review(&review).unwrap();
+
+    let mut workspace = Recorded::default();
+    let journal = run_once(&home, &place, &mut workspace).unwrap();
+    assert_eq!(journal.brought.get("messages"), Some(&5), "{journal:?}");
+    let largest = workspace.puts.iter().map(Vec::len).max().unwrap();
+    assert!(
+        largest <= tilo_mail_parts::PIECE_BYTES,
+        "no one upload carries the message: the largest is {largest} bytes"
+    );
+
+    // Delivered as the message kept and its parts apart, which put back together are the
+    // message as the mbox holds it, byte for byte.
+    let delivery = workspace
+        .of("mail/mail.messages#deliver-message")
+        .into_iter()
+        .find(|delivery| delivery["message_id"] == format!("<{LARGE_MESSAGE_ID}>"))
+        .cloned()
+        .unwrap();
+    let uploaded = |reference: &Value| -> Vec<u8> {
+        let hash = reference
+            .as_str()
+            .unwrap()
+            .strip_prefix("tilo.content:")
+            .unwrap();
+        workspace
+            .puts
+            .iter()
+            .find(|bytes| blake3::hash(bytes).to_hex().as_str() == hash)
+            .cloned()
+            .unwrap()
+    };
+    let rest = uploaded(&delivery["original"]);
+    let parts = delivery["parts"].as_array().unwrap();
+    assert_eq!(parts.len(), LARGE_FILES.len(), "{delivery}");
+    let bodies: Vec<(u64, Vec<u8>)> = parts
+        .iter()
+        .map(|part| {
+            let body = part["pieces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(uploaded)
+                .collect();
+            (part["at"].as_u64().unwrap(), body)
+        })
+        .collect();
+    let sizes: Vec<u64> = parts
+        .iter()
+        .map(|part| part["size"].as_u64().unwrap())
+        .collect();
+    assert_eq!(sizes, LARGE_FILES.map(|(_, size)| size as u64));
+    let bodies: Vec<(u64, &[u8])> = bodies
+        .iter()
+        .map(|(at, body)| (*at, body.as_slice()))
+        .collect();
+    assert_eq!(tilo_mail_parts::join(&rest, &bodies).unwrap(), sent);
+}

@@ -208,6 +208,7 @@ paths = [
     "apps/mail/*",
     "apps/tl/mail/*",
     "crates/platform/mail-session/*",
+    "crates/platform/mail-parts/*",
     "crates/server/tilo-workspace-service/src/workspaces/mail_watch.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings/sending.rs",
@@ -1212,3 +1213,9 @@ identifiers = ["host_backend"]
 reason = "`podman run`, t's run of a publishing check and the publishing channel tools/ci/publish/lib.sh names (dev, release, branch): names those tools give them, not Tilo concepts."
 words = ["run", "channel"]
 paths = ["tools/ci/publish/extension-manifests.sh", "tools/ci/publish/windows-compat-sysext.sh"]
+
+[[allow]]
+reason = "`tilo migrate`'s run of one source, as its journal (RunState) names it: the tests' helper that lands a review once."
+words = ["run"]
+identifiers = ["run_once"]
+paths = ["crates/system/tilo-cli/src/migrate/tests.rs"]

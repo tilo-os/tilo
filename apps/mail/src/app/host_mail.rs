@@ -884,6 +884,7 @@ fn message_of(
                 content: Vec::new(),
                 kept: false,
                 inline_id: attachment.inline_id,
+                apart: false,
             })
             .collect(),
         timestamp_min: message.minutes,

@@ -410,6 +410,7 @@ members = [
     "crates/platform/tilo-selector",
     "crates/platform/tilo-face",
     "crates/platform/tilo-mime",
+    "crates/platform/mail-parts",
     "crates/platform/tilo-wake",
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-workspace-agent",

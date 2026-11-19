@@ -39,7 +39,8 @@ pub use mbox::{MboxMessages, MessageTooLarge};
 
 const MAX_PROFILE_INDEX: u64 = 64 * 1024;
 const MAX_PREFERENCE_BYTES: u64 = 2 * 1024 * 1024;
-/// A larger message is reported, never buffered without limit or silently skipped.
+/// The largest message a review reads to count its flags and attachments, and the installer's
+/// stream carries; a larger one is counted, never buffered without limit or silently skipped.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_MESSAGES: u64 = 100_000;
 /// The largest address book or calendar sidecar one profile read keeps.
@@ -1118,6 +1119,8 @@ fn count_maildir(
                         break;
                     }
                 }
+                // Larger than a review reads, but a message all the same: the import brings it.
+                Err(error) if mbox::is_too_large(&error) => messages = messages.saturating_add(1),
                 Err(_) => counted = false,
             }
         }
@@ -1191,9 +1194,9 @@ fn mbox_facts(
                 }
             }
             Ok(None) => break,
+            // Larger than a review reads, but a message all the same: the import brings it.
             Err(error) if mbox::is_too_large(&error) => {
-                counted = false;
-                break;
+                facts.messages = facts.messages.saturating_add(1);
             }
             Err(error) => return Err(error),
         }

@@ -1,8 +1,10 @@
 //! Reading one Thunderbird folder's messages, for a laptop command that copies
 //! them into a mail app without the installer's importer.
 //!
-//! The folder is read the way the installer reads it: an mbox in fixed chunks
-//! with one bound per message, a maildir one bounded file per message.
+//! The folder is read the way the installer reads it, an mbox in fixed chunks
+//! and a maildir one file per message, but whole: memory follows the largest
+//! message, and no message is too large or folder too full to come over, since
+//! the mail app keeps a message's large parts apart from it.
 
 use std::io::BufReader;
 use std::ops::ControlFlow;
@@ -12,8 +14,8 @@ use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
 use cap_primitives::fs::{FollowSymlinks, OpenOptions};
 
 use super::{
-    FolderFormat, MAX_MESSAGE_BYTES, MAX_MESSAGES, MboxMessages, ReviewedFolder,
-    ReviewedThunderbird, header, maildir_read_flags, mbox, message_facts, read_file, scan, walk,
+    FolderFormat, MboxMessages, ReviewedFolder, ReviewedThunderbird, header, maildir_read_flags,
+    mbox, message_facts, read_file, scan, walk,
 };
 
 /// One message as the folder holds it, with its flags.
@@ -72,18 +74,10 @@ fn read_mbox(
     options.read(true).follow(FollowSymlinks::No).nonblock(true);
     let file = cap_primitives::fs::open(&directory.file, Path::new(name), &options)
         .map_err(|error| error.to_string())?;
-    let mut messages = MboxMessages::new(
-        BufReader::with_capacity(mbox::CHUNK, file),
-        MAX_MESSAGE_BYTES,
-    );
-    let mut count = 0_u64;
+    let mut messages = MboxMessages::new(BufReader::with_capacity(mbox::CHUNK, file), usize::MAX);
     loop {
         match messages.next_message() {
             Ok(Some(raw)) => {
-                count = count.saturating_add(1);
-                if count > MAX_MESSAGES {
-                    return Err("the folder holds more messages than one read takes".into());
-                }
                 let (read, starred, _) = message_facts(&raw, None);
                 let message_id = header(&raw, b"message-id:").map(|value| value.trim().to_owned());
                 if each(StoredMessage {
@@ -109,7 +103,6 @@ fn read_maildir(
     each: &mut dyn FnMut(StoredMessage) -> ControlFlow<()>,
 ) -> Result<(), String> {
     let directory = walk(&reviewed.root, &folder.relative).map_err(|error| error.to_string())?;
-    let mut count = 0_u64;
     for part in ["cur", "new"] {
         let part = part.to_owned();
         let Ok(current) = walk(&directory, std::slice::from_ref(&part)) else {
@@ -120,16 +113,7 @@ fn read_maildir(
             if !info.is_file() || info.is_symlink() || name.starts_with('.') {
                 continue;
             }
-            let raw = read_file(
-                &current,
-                &name,
-                u64::try_from(MAX_MESSAGE_BYTES).unwrap_or(u64::MAX),
-            )
-            .map_err(|error| error.to_string())?;
-            count = count.saturating_add(1);
-            if count > MAX_MESSAGES {
-                return Err("the folder holds more messages than one read takes".into());
-            }
+            let raw = read_file(&current, &name, u64::MAX).map_err(|error| error.to_string())?;
             let (read, starred) = maildir_read_flags(&name);
             let message_id = header(&raw, b"message-id:").map(|value| value.trim().to_owned());
             if each(StoredMessage {

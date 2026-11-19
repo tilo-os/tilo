@@ -6,7 +6,8 @@
 //! (or some of its folders), and the address books and calendars only if they choose them.
 //!
 //! What comes over lands through the apps' own actions as the agent's run: each message in the
-//! workspace's Mail as it was sent, its MIME bytes whole (HTML, attachments, headers), in its
+//! workspace's Mail as it was sent, its MIME bytes whole (HTML, attachments, headers; its large
+//! parts carried apart from the rest, so no message is too large to come over), in its
 //! folder with its read state and its conversation (Mail's `deliver-message`, which keeps it
 //! under the id its `Message-ID` names and knows a message it already holds), each contact and
 //! event in
@@ -439,10 +440,24 @@ fn land_message(
         |workspace, run| {
             // The message as it was sent travels whole, so its HTML, attachments and headers
             // are what Mail keeps; the words beside it are for whoever reads the record alone.
-            let original = workspace.put(&message.bytes)?;
+            // Its large parts travel apart from it, each in pieces, so a message of any size
+            // comes over and no one upload or piece of content holds all of it.
+            let split = tilo_mail_parts::split(&message.bytes);
+            let original = workspace.put(&split.rest)?;
+            let mut parts = Vec::with_capacity(split.apart.len());
+            for part in &split.apart {
+                let pieces = part
+                    .pieces()
+                    .map(|piece| workspace.put(piece))
+                    .collect::<Result<Vec<_>>>()?;
+                parts.push(json!({"at": part.at, "size": part.size, "pieces": pieces}));
+            }
             let mut delivery = delivery;
             if let Some(fields) = delivery.as_object_mut() {
                 fields.insert("original".into(), json!(original));
+                if !parts.is_empty() {
+                    fields.insert("parts".into(), json!(parts));
+                }
                 if let Some(id) = &message.message_id {
                     fields.insert("message_id".into(), json!(id));
                 }
