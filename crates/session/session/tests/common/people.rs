@@ -1586,13 +1586,18 @@ impl Device {
         }
         impl std::fmt::Display for Present<'_> {
             fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let state = self.device.state();
                 write!(
                     formatter,
-                    "{} says {} is in {}; it says {:?}",
+                    "{} says {} is in {}; it says {:?}, holds {:?}, knows {}, and its live \
+                     sessions are {}",
                     self.device.label,
                     self.publisher,
                     self.workspace,
-                    self.device.present(self.workspace)
+                    self.device.present(self.workspace),
+                    self.device.held(),
+                    state["state"]["peers"],
+                    state["state"]["sharing"]["live"],
                 )
             }
         }
