@@ -106,7 +106,7 @@ impl ResourceRoot {
             .cloned()
             .collect();
         overlay = self.typed.bind(overlay, bound);
-        for status in availability {
+        for status in availability.iter().filter(|status| status.item().is_none()) {
             if !overlay.actions.iter().any(|spec| spec.id == status.id())
                 && let Some(spec) = own.iter().find(|spec| spec.id == status.id())
             {

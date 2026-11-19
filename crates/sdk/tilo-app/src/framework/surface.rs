@@ -341,6 +341,24 @@ pub(crate) trait SurfacePublication {
     fn availability(&self) -> Vec<EffectStatus> {
         Vec::new()
     }
+    /// What the effects on the row `row` are like now, when they differ from
+    /// their declaration ([`EffectStatus::on`](super::EffectStatus::on)): a
+    /// row whose entity cannot be ended says why. Read for every published
+    /// child, so the palette, agents and the API follow the row it is about.
+    fn row_status(&self, _row: &str) -> Vec<EffectStatus> {
+        Vec::new()
+    }
+    /// How the item `id` of the collection `field` stands right now, when
+    /// the view knows something its document does not hold (a fetched
+    /// forecast beside a saved place). Read for every published item child,
+    /// and laid over the child's presentation.
+    fn item_presentation(
+        &self,
+        _field: &str,
+        _id: &str,
+    ) -> Option<tilo_actions::ResourcePresentation> {
+        None
+    }
     fn live_rows(&self) -> Vec<LiveRow>;
     fn live_row(&self, id: &str) -> Option<LiveRow>;
     fn live_row_pending(&self, _id: &str) -> bool {

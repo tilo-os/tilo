@@ -104,6 +104,8 @@ pub mod render_anchor;
 pub mod render_view;
 #[path = "replay.rs"]
 pub mod replay;
+#[path = "row_effects.rs"]
+pub mod row_effects;
 #[path = "save_document.rs"]
 pub mod save_document;
 #[path = "scenarios.rs"]

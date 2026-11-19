@@ -28,6 +28,10 @@ type Pending = Rc<dyn Fn(&str) -> bool>;
 /// handed (and nothing else); whether the row has any.
 type RowEdits = Rc<dyn Fn(&str, &mut dyn std::any::Any) -> bool>;
 type Statuses = Rc<dyn Fn() -> Vec<EffectStatus>>;
+/// What the effects on one row are like now, by the row's id.
+type RowStatus = Rc<dyn Fn(&str) -> Vec<EffectStatus>>;
+/// How an item of a collection stands, by the collection and the item's id.
+type ItemPresentation = Rc<dyn Fn(&str, &str) -> Option<tilo_actions::ResourcePresentation>>;
 type Intents = Rc<RefCell<dyn FnMut() -> Option<AppProcessIntent>>>;
 type Entries = Rc<dyn Fn() -> Vec<SearchEntry>>;
 type Unlocked = Rc<dyn Fn() -> Option<bool>>;
@@ -51,6 +55,8 @@ struct Sources {
     pending: Option<Pending>,
     row_edits: Option<RowEdits>,
     availability: Option<Statuses>,
+    row_status: Option<RowStatus>,
+    item_presentation: Option<ItemPresentation>,
     entries: Option<Entries>,
     /// Whether the system's search index forgets the entries once the app
     /// closes.
@@ -133,6 +139,32 @@ impl<R: Resource> Publishes<R> {
     #[must_use]
     pub fn availability(mut self, statuses: impl Fn() -> Vec<EffectStatus> + 'static) -> Self {
         self.sources.availability = Some(Rc::new(statuses));
+        self
+    }
+
+    /// The effects on the row `row` that differ from their declaration right
+    /// now, as the view's live state says ([`EffectStatus::on`]): a process
+    /// that is a system service cannot be ended, and says why. Read for every
+    /// published child, so the palette, agents and the API follow the row it
+    /// is about while the resource's own actions stay as they are.
+    #[must_use]
+    pub fn row_status(mut self, statuses: impl Fn(&str) -> Vec<EffectStatus> + 'static) -> Self {
+        self.sources.row_status = Some(Rc::new(statuses));
+        self
+    }
+
+    /// How the item `id` of the collection `field` stands, when the view
+    /// knows something its document does not hold: the fetched forecast
+    /// beside a saved place, a file's size beside its resource. Read for every
+    /// published item child, and laid over the presentation the document
+    /// gives it, so what search and the palette show is what the app knows
+    /// now.
+    #[must_use]
+    pub fn item_presentation(
+        mut self,
+        presentation: impl Fn(&str, &str) -> Option<tilo_actions::ResourcePresentation> + 'static,
+    ) -> Self {
+        self.sources.item_presentation = Some(Rc::new(presentation));
         self
     }
 
@@ -302,6 +334,22 @@ impl SurfacePublication for Publishing {
             .availability
             .as_ref()
             .map_or_else(Vec::new, |statuses| statuses())
+    }
+    fn row_status(&self, row: &str) -> Vec<EffectStatus> {
+        self.sources
+            .row_status
+            .as_ref()
+            .map_or_else(Vec::new, |statuses| statuses(row))
+    }
+    fn item_presentation(
+        &self,
+        field: &str,
+        id: &str,
+    ) -> Option<tilo_actions::ResourcePresentation> {
+        self.sources
+            .item_presentation
+            .as_ref()
+            .and_then(|presentation| presentation(field, id))
     }
     fn live_rows(&self) -> Vec<LiveRow> {
         self.sources

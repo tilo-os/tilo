@@ -1374,6 +1374,9 @@ pub struct EffectStatus {
     id: &'static str,
     availability: Option<Availability>,
     label: Option<String>,
+    /// The row or item resource the status is about, when it is about one
+    /// ([`Self::on`]) rather than the resource its view publishes.
+    item: Option<String>,
 }
 
 impl EffectStatus {
@@ -1391,6 +1394,7 @@ impl EffectStatus {
                 reason: reason.into(),
             }),
             label: None,
+            item: None,
         }
     }
 
@@ -1400,7 +1404,19 @@ impl EffectStatus {
             id: effect.id,
             availability: None,
             label: Some(label.into()),
+            item: None,
         }
+    }
+
+    /// This status is about the item or row published as `item` rather than
+    /// the resource its view publishes: the effect is offered as the status
+    /// says on that entity's published actions alone (a process that is a
+    /// system service cannot be ended), served by
+    /// [`Publishes::row_status`](super::Publishes::row_status).
+    #[must_use]
+    pub fn on(mut self, item: impl Into<String>) -> Self {
+        self.item = Some(item.into());
+        self
     }
 
     /// Offer the effect as `label` too.
@@ -1413,6 +1429,12 @@ impl EffectStatus {
     /// The id of the action or effect this status is about.
     pub(crate) fn id(&self) -> &'static str {
         self.id
+    }
+
+    /// The item or row this status is about, when it is about one rather
+    /// than the published resource.
+    pub(crate) fn item(&self) -> Option<&str> {
+        self.item.as_deref()
     }
 
     /// Show `spec` as this status says it is right now.
@@ -1470,7 +1492,10 @@ fn overlaid(specs: Vec<ActionSpec>, statuses: &[EffectStatus]) -> Vec<ActionSpec
         .into_iter()
         .map(|mut spec| {
             let id = spec.id.clone();
-            for status in statuses.iter().filter(|status| status.id == id) {
+            for status in statuses
+                .iter()
+                .filter(|status| status.item.is_none() && status.id == id)
+            {
                 status.overlay(&mut spec);
             }
             require_host(&mut spec, host_lacks);

@@ -373,3 +373,8 @@ test-chain-api-log = Log
 test-chain-api-log-rename = Rename the log
 test-chain-api-log-part = Lines
 test-chain-api-log-part-write = Write a line
+
+## crates/sdk/tilo-app/tests/row_effects.rs
+test-jobs = Jobs
+test-jobs-add-job = Add a job
+test-jobs-effect-stop = Stop this job

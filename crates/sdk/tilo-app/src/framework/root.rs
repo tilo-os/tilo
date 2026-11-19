@@ -745,6 +745,32 @@ impl ResourceRoot {
         walk(self.content.as_ref(), self.resource.id, visit);
     }
 
+    /// What the surfaces say of the effects on the published entity `id`
+    /// now (`Publishes::row_status`), laid over its actions by the
+    /// publication.
+    fn row_statuses(&self, id: &str) -> Vec<super::effect::EffectStatus> {
+        let mut statuses = Vec::new();
+        self.surfaces(&mut |surface| statuses.extend(surface.row_status(id)));
+        statuses
+    }
+
+    /// How the surfaces say the item `id` of the collection `field` stands
+    /// now (`Publishes::item_presentation`), when they know what its document
+    /// does not hold.
+    fn item_presentation(
+        &self,
+        field: &str,
+        id: &str,
+    ) -> Option<tilo_actions::ResourcePresentation> {
+        let mut found = None;
+        self.surfaces(&mut |surface| {
+            if found.is_none() {
+                found = surface.item_presentation(field, id);
+            }
+        });
+        found
+    }
+
     /// Bind the edits views offer on the rows `rows` name
     /// ([`Publishes::row_edits`](super::Publishes::row_edits)).
     ///
@@ -1049,7 +1075,7 @@ impl ResourceRoot {
             }
         });
         resource = self.typed.bind(resource, bound);
-        for status in &availability {
+        for status in availability.iter().filter(|status| status.item().is_none()) {
             for spec in resource
                 .actions
                 .iter_mut()
@@ -1060,6 +1086,23 @@ impl ResourceRoot {
         }
         if children {
             merge(&mut resource.children, rows);
+            // What the views say of the items and rows they published beside
+            // the document: an item's presentation from state the document
+            // does not hold, and an effect unavailable on one row.
+            let kind = resource.kind.clone();
+            for child in &mut resource.children {
+                let statuses = self.row_statuses(child.id.as_str());
+                if !statuses.is_empty() {
+                    super::rows::apply_statuses(child, &statuses);
+                }
+                if let Some((field, id)) =
+                    tilo_resource::items::item_of_resource_in(&kind, child.id.as_str())
+                    && let Some(presentation) = self.item_presentation(field, id.as_str())
+                    && presentation.is_valid()
+                {
+                    child.presentation = Some(presentation);
+                }
+            }
             let _profile = tilo_resource::profiling::Phase::start("framework.row_declarations");
             self.bind_row_declarations(&mut resource.children);
             // The nested editors the views opened ([`Dispatcher::child`]):
@@ -2407,6 +2450,17 @@ impl RootPublishes for ResourceRoot {
         };
         if let Some(mut resolved) = resolved {
             self.bind_row_declarations(std::slice::from_mut(&mut resolved));
+            let statuses = self.row_statuses(resolved.id.as_str());
+            if !statuses.is_empty() {
+                super::rows::apply_statuses(&mut resolved, &statuses);
+            }
+            if let Some((field, item)) =
+                tilo_resource::items::item_of_resource_in(self.resource.kind, resolved.id.as_str())
+                && let Some(presentation) = self.item_presentation(field, item.as_str())
+                && presentation.is_valid()
+            {
+                resolved.presentation = Some(presentation);
+            }
             if self.stages.opens() {
                 offer_item_open(self.resource.opens_as_item, &mut resolved);
             }
