@@ -726,6 +726,12 @@ async fn both_routes_decide_every_callers_actions_alike() {
                         | ActionCallError::UnknownAction
                         | ActionCallError::ConfirmationRequired { .. },
                 } => Admitted::Refused,
+                // The workspace refused the change the action made: the
+                // invocation is one it would refuse again, whatever the
+                // action answered.
+                ReceiptStatus::Failed { error } if error.code == "write_refused" => {
+                    Admitted::Refused
+                }
                 _ if was_asked => Admitted::AsksFirst,
                 // It ran: what the action answered is its own.
                 ReceiptStatus::Completed { .. } | ReceiptStatus::Failed { .. } => Admitted::Runs,
@@ -998,12 +1004,14 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     }
 }
 
-/// Seen on another person's host: a workspace a node someone else runs
-/// governs (a Lounge's), a member's agent through `tilo mcp`'s path is seen
-/// once, named and narrated, as the run that host speaks for, by the member's
-/// own page, and the host's device is no member's, as it serves the
-/// workspace. A member device that says a run on the host's track is not
-/// heard, and one it says on the live session is its own, never the host's.
+/// Seen on a server another person keeps: a workspace it governs (a
+/// Lounge's), a member's agent through `tilo mcp`'s path is seen once, named
+/// and narrated, as the work the server speaks for, by the member's own
+/// page, and the server's device is its operator's, who enrolled it: the
+/// server joins its person's identity, and holding the workspace never makes
+/// it a member of it. A member device that claims to speak for an agent on
+/// the server's track is not heard, and one that says so on the live session
+/// is its own, never the server's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     use tilo_peer_state::join::Role;
@@ -1043,8 +1051,8 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         .with_agent_session("session-guest");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
 
-    // The host serves the workspace, so the member list names no device of it: the page reads
-    // whose each member device is, and the host is none of them.
+    // The server serves the workspace and is no member of it: the member list names whose
+    // each device is, and it is its operator's, who enrolled it.
     let host_key = hex::encode(host.cert.device_public_key);
     let members = loop {
         browser.pump();
@@ -1060,9 +1068,10 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    assert!(
-        !members.contains_key(&host_key),
-        "the host is listed as a member's device though it serves the workspace: {members:?}"
+    assert_eq!(
+        members.get(&host_key),
+        Some(&hex::encode(operator.verifying_key().to_bytes())),
+        "the serving device is not listed as its operator's: {members:?}"
     );
 
     // A member device that says it speaks for a run, as the host would: on
