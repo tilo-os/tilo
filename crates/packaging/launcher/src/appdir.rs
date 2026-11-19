@@ -514,7 +514,7 @@ mod tests {
                     ]
                 );
                 assert!(
-                    !argv.iter().any(|arg| arg.contains("/records")),
+                    !argv.iter().any(|arg| arg.contains("/documents")),
                     "the settings document reaches Settings through the shell's settings service, \
                  never a bind: {argv:?}"
                 );

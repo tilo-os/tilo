@@ -551,12 +551,12 @@ tilo_test_env::scenario! {
         environment.set("XDG_CONFIG_HOME", home.join(".config"));
         // The setup's settings store holds its profile in this Home: its
         // documents, the lock each one leases and the socket it serves.
-        let records =
-            tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
-        let [lock, socket] = records.runtime_files();
+        let documents = tilo_paths::profile_dir().unwrap();
+        let lock = documents.join(tilo_paths::PROFILE_LOCK);
+        let socket = documents.join(tilo_paths::PROFILE_SOCKET);
         fs::create_dir_all(lock.parent().unwrap()).unwrap();
         fs::write(&lock, b"").unwrap();
-        let device = records.dir().join("device");
+        let device = documents.join("device");
         fs::create_dir_all(&device).unwrap();
         fs::write(device.join("canonical.lock"), b"").unwrap();
         fs::write(device.join("state.automerge"), b"settings").unwrap();

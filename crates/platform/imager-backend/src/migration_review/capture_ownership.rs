@@ -278,9 +278,8 @@ mod tests {
             environment.set("XDG_STATE_HOME", temporary.path().join("state"));
             environment.set("XDG_CONFIG_HOME", home.join(".config"));
             // The setup holds its settings profile in this Home while it runs.
-            let records =
-                tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
-            let [lock, _] = records.runtime_files();
+            let documents = tilo_paths::profile_dir().unwrap();
+            let lock = documents.join(tilo_paths::PROFILE_LOCK);
             std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
             std::fs::write(&lock, b"").unwrap();
             std::fs::write(home.join("document"), b"real user document").unwrap();
@@ -301,8 +300,8 @@ mod tests {
             }
             assert!(SourceInventory::capture_captured_home(&pin, Some(&forged)).is_err());
             // A different file in its place is Home data again.
-            std::fs::write(records.dir().join("replacement"), b"").unwrap();
-            std::fs::rename(records.dir().join("replacement"), &lock).unwrap();
+            std::fs::write(documents.join("replacement"), b"").unwrap();
+            std::fs::rename(documents.join("replacement"), &lock).unwrap();
             assert!(SourceInventory::capture_captured_home(&pin, Some(&token)).is_err());
         }
     }

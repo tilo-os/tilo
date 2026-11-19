@@ -438,6 +438,34 @@ pub fn state_dir() -> Option<PathBuf> {
     platform::state()
 }
 
+/// The per-user Tilo profile root: `$XDG_CONFIG_HOME/tilo`, else
+/// `$HOME/.config/tilo` on Linux and other Unix, the platform's configuration
+/// directory elsewhere.
+#[must_use]
+pub fn profile_root() -> Option<PathBuf> {
+    Some(xdg::config_home()?.join("tilo"))
+}
+
+/// The directory a profile keeps its settings documents in, below
+/// [`profile_root`](profile_root()).
+pub const PROFILE_DIR: &str = "documents";
+
+/// The document whose lock says which process holds a profile, relative to
+/// [`PROFILE_DIR`]: the person's, which the holder leases first. It stays
+/// behind when the holder exits.
+pub const PROFILE_LOCK: &str = "person/canonical.lock";
+
+/// The socket the process holding a profile answers other processes' writes on,
+/// below [`profile_dir`](profile_dir()).
+pub const PROFILE_SOCKET: &str = "settings.sock";
+
+/// Where a profile keeps its settings documents: [`profile_root`](profile_root())
+/// below [`PROFILE_DIR`].
+#[must_use]
+pub fn profile_dir() -> Option<PathBuf> {
+    Some(profile_root()?.join(PROFILE_DIR))
+}
+
 /// The platform's per-user cache directory: [`xdg::cache_home`] on Linux and
 /// other Unix, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows.
 #[must_use]

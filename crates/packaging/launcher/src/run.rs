@@ -4422,9 +4422,8 @@ mod app_dir_tests {
             // The settings document is the shell's: Settings reaches it through the settings service on
             // its channel, like every app, not a bind.
             assert!(
-                !argv
-                    .iter()
-                    .any(|arg| arg.ends_with("/records") || arg.ends_with("/records/person/state.automerge")),
+                !argv.iter().any(|arg| arg.ends_with("/documents")
+                    || arg.ends_with("/documents/person/state.automerge")),
                 "Settings must not bind or name the session document: {argv:?}"
             );
             assert_eq!(argv.last().map(String::as_str), Some("/entry"));

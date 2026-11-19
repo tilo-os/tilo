@@ -91,7 +91,6 @@ tilo-lock = { path = "../tilo-lock", optional = true }
 # The live installer's account fixtures for the imager's tests (`test-support`).
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"], optional = true }
 tilo-paths = { path = "../../platform/tilo-paths" }
-tilo-settings-records = { path = "../../platform/tilo-settings-records" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 

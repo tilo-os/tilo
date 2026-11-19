@@ -1,12 +1,12 @@
 //! One profile's settings, kept as two Automerge documents: the person's in
-//! `<root>/records/person/` and this device's in `<root>/records/device/`.
+//! `<root>/documents/person/` and this device's in `<root>/documents/device/`.
 //!
 //! The documents are kept in the device's document store (`app_state::FsStore` over
-//! `<root>/records`), the same layer an app's own documents live in: one process holds a profile
+//! `<root>/documents`), the same layer an app's own documents live in: one process holds a profile
 //! at a time as the documents' only writer, and its writes append what changed, which the store
 //! commits on its own thread, so no write waits for the disk; a failed save is reported and
 //! retried with the next change. Another process opening the profile follows the holder's saves,
-//! and its writes, conditional ones included, go to the holder over `<root>/records/settings.sock`,
+//! and its writes, conditional ones included, go to the holder over `<root>/documents/settings.sock`,
 //! so one process decides every change.
 
 use std::collections::BTreeMap;
@@ -20,31 +20,34 @@ use serde_json::{Map, Value};
 use tilo_automerge::{ApplyIncoming as _, json};
 use tilo_lock::MutexRecover as _;
 
+use app_state::held::{Follow, Socket, Watch};
 use app_state::{FsStore, Held, Save, SavePlan};
 use automerge::ChangeHash;
 use durable_store::{DurableStore as _, StorageKey, WriteOp};
-use tilo_settings_records::{Records, Socket, Watch};
+use tilo_paths::{PROFILE_DIR, PROFILE_SOCKET};
 
 use crate::placement::{self, Holder};
 use crate::{ChangeOrigin, ConditionalUpdate, SectionChange, SettingsSource, merge_section};
-
-pub use tilo_settings_records::RECORDS_DIR;
 
 /// The prefix of the root keys that keep a document's history (what was
 /// undone) rather than a section.
 pub const BOOKKEEPING: &str = "tilo:";
 
 /// The two documents, as keys of the device's document store: the person's is leased first, and
-/// its lock is the profile's ([`tilo_settings_records::LOCK_FILE`]).
+/// its lock is the profile's ([`tilo_paths::PROFILE_LOCK`]).
 const PERSON: &str = "person";
 const DEVICE: &str = "device";
-const DOCUMENTS: &[&str] = &[PERSON, DEVICE];
 
 fn key(holder: Holder) -> StorageKey {
     StorageKey::app(match holder {
         Holder::Person => PERSON,
         Holder::Device => DEVICE,
     })
+}
+
+/// The documents in the order they are leased: the person's first, whose lock is the profile's.
+fn keys() -> [StorageKey; 2] {
+    [key(Holder::Person), key(Holder::Device)]
 }
 
 /// What a write makes of the section it found: the leaves to merge, or
@@ -84,7 +87,7 @@ impl Docs {
         document
     }
 
-    fn loaded(mut person: AutoCommit, mut device: AutoCommit, seen: u64) -> Self {
+    fn loaded(mut person: AutoCommit, mut device: AutoCommit) -> Self {
         let saved = [
             (person.get_heads(), SavePlan::default()),
             (device.get_heads(), SavePlan::default()),
@@ -93,7 +96,7 @@ impl Docs {
             person,
             device,
             unsaved: std::collections::BTreeSet::new(),
-            seen,
+            seen: 0,
             saved,
         }
     }
@@ -111,9 +114,12 @@ struct Snapshot {
 pub struct Store {
     me: Weak<Store>,
     root: PathBuf,
-    records: Records,
+    /// The directory the documents live in, which the holder's socket opens in.
+    dir: PathBuf,
     /// The device's document store the documents live in.
     kept: FsStore,
+    /// The documents as a follower notices the holder's saves.
+    follow: Follow,
     follower: std::sync::atomic::AtomicBool,
     may_hold: bool,
     /// The leases of both documents while this process holds the profile.
@@ -148,7 +154,7 @@ enum Hold {
 }
 
 fn try_hold(kept: &FsStore) -> Hold {
-    let lease = |holder| kept.hold(&key(holder));
+    let lease = |holder| kept.lease(&key(holder));
     match lease(Holder::Person) {
         Ok(person) => match lease(Holder::Device) {
             Ok(device) => Hold::Held([person, device]),
@@ -182,25 +188,11 @@ fn load_doc(kept: &FsStore, holder: Holder) -> std::io::Result<AutoCommit> {
     }
 }
 
-/// Where the documents' files stand: their lengths and change times, so a follower takes a save
-/// in once.
-fn stamp(kept: &FsStore) -> u64 {
-    use std::hash::{Hash as _, Hasher as _};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for holder in [Holder::Person, Holder::Device] {
-        kept.local_path(&key(holder))
-            .and_then(|path| tilo_files::native::stamp(&path))
-            .hash(&mut hasher);
-    }
-    hasher.finish()
-}
-
+/// The documents as their files hold them.
 fn load_docs(kept: &FsStore) -> std::io::Result<Docs> {
-    let seen = stamp(kept);
     Ok(Docs::loaded(
         load_doc(kept, Holder::Person)?,
         load_doc(kept, Holder::Device)?,
-        seen,
     ))
 }
 
@@ -219,10 +211,12 @@ impl Store {
     }
 
     fn open_as(root: &Path, hold: bool) -> std::io::Result<Arc<Self>> {
-        let records = Records::of(root);
-        let kept = FsStore::new(records.dir());
+        let dir = root.join(PROFILE_DIR);
+        let kept = FsStore::new(&dir);
+        let follow = Follow::of(&kept, &keys());
         let taken = if hold { try_hold(&kept) } else { Hold::Busy };
-        let docs = load_docs(&kept)?;
+        let mut docs = load_docs(&kept)?;
+        docs.seen = follow.stamp();
         let document = Arc::new(docs.projection());
         let (lock, refused) = match taken {
             Hold::Held(lock) => (Some(lock), None),
@@ -237,8 +231,9 @@ impl Store {
         let store = Arc::new_cyclic(|me| Self {
             me: me.clone(),
             root: root.to_path_buf(),
-            records,
+            dir,
             kept,
+            follow,
             follower: std::sync::atomic::AtomicBool::new(follower),
             may_hold: hold,
             lock: Mutex::new(lock),
@@ -256,8 +251,7 @@ impl Store {
         }
         if follower {
             let weak = Arc::downgrade(&store);
-            let file = app_state::DOCUMENT_FILE;
-            *store.watch.lock_recover() = store.records.watch(DOCUMENTS, file, move || {
+            *store.watch.lock_recover() = store.follow.watch(move || {
                 if let Some(store) = weak.upgrade() {
                     store.take_in_saves();
                 }
@@ -268,7 +262,7 @@ impl Store {
 
     fn open_socket(&self) {
         let weak = self.me.clone();
-        let opened = self.records.open_socket(move |request| {
+        let opened = Socket::open(self.dir.join(PROFILE_SOCKET), move |request| {
             let answer = match weak.upgrade() {
                 Some(store) => socket::answer(&store, request),
                 None => socket::Answer::Refused("the settings were closed".to_owned()),
@@ -350,7 +344,7 @@ impl Store {
         if !self.is_follower() {
             return;
         }
-        let now = stamp(&self.kept);
+        let now = self.follow.stamp();
         let mut docs = self.docs.lock_recover();
         if docs.seen == now {
             return;
@@ -744,7 +738,7 @@ impl Store {
             sections: Vec::new(),
             changes: Some(changes),
         };
-        match socket::send(&self.records, &request) {
+        match socket::send(&self.dir, &request) {
             Ok(_) => {
                 self.take_in_saves();
                 Ok(())
@@ -895,7 +889,7 @@ impl Store {
             sections,
             changes: None,
         };
-        let answer = match socket::send(&self.records, &request) {
+        let answer = match socket::send(&self.dir, &request) {
             Ok(answer) => answer,
             // The holder lets the settings go before it closes its socket:
             // where the socket no longer answers and the lock is free, this
@@ -927,10 +921,10 @@ impl Store {
 
 mod socket {
     use serde_json::{Map, Value};
-    use tilo_settings_records::Records;
 
-    use super::Store;
+    use super::{PROFILE_SOCKET, Socket, Store};
     use crate::{ChangeOrigin, ConditionalUpdate};
+    use std::path::Path;
 
     /// One write: merge `sections`, provided each section still reads as
     /// `expected` (what the writer decided over); or take `changes`, made
@@ -991,9 +985,9 @@ mod socket {
         }
     }
 
-    pub(super) fn send(records: &Records, request: &Request) -> std::io::Result<ConditionalUpdate> {
+    pub(super) fn send(dir: &Path, request: &Request) -> std::io::Result<ConditionalUpdate> {
         let body = serde_json::to_vec(request).map_err(std::io::Error::other)?;
-        let line = records.send(&body)?;
+        let line = Socket::send(&dir.join(PROFILE_SOCKET), &body)?;
         match serde_json::from_slice::<Answer>(&line).map_err(std::io::Error::other)? {
             Answer::Stored => Ok(ConditionalUpdate::Stored),
             Answer::Superseded => Ok(ConditionalUpdate::Superseded),
@@ -1139,16 +1133,20 @@ pub fn profile(root: &Path) -> Arc<Store> {
 }
 
 fn empty(root: &Path) -> Arc<Store> {
+    let dir = root.join(PROFILE_DIR);
+    let kept = FsStore::new(&dir);
+    let follow = Follow::of(&kept, &keys());
     Arc::new_cyclic(|me| Store {
         me: me.clone(),
         root: root.to_path_buf(),
-        records: Records::of(root),
-        kept: FsStore::new(Records::of(root).dir()),
+        dir,
+        kept,
+        follow,
         follower: std::sync::atomic::AtomicBool::new(false),
         may_hold: false,
         lock: Mutex::new(None),
         refused: Mutex::new(None),
-        docs: Mutex::new(Docs::loaded(AutoCommit::new(), AutoCommit::new(), 0)),
+        docs: Mutex::new(Docs::loaded(AutoCommit::new(), AutoCommit::new())),
         snapshot: Mutex::new(Snapshot {
             document: Arc::new(Map::new()),
         }),
@@ -1193,7 +1191,7 @@ mod tests {
     fn deep_profile() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("a".repeat(60)).join("b".repeat(60));
-        let [_, socket] = Records::of(&root).runtime_files();
+        let socket = root.join(PROFILE_DIR).join(PROFILE_SOCKET);
         assert!(socket.as_os_str().len() > 108, "{}", socket.display());
         (dir, root)
     }
@@ -1207,7 +1205,7 @@ mod tests {
         holder.flush_pending();
         let follower = Store::open(dir.path()).unwrap();
         *holder.socket.lock_recover() = None;
-        let [_, socket] = holder.records.runtime_files();
+        let socket = holder.dir.join(PROFILE_SOCKET);
         drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
 
         let writer = Arc::clone(&follower);

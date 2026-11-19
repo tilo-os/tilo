@@ -771,7 +771,7 @@ fn running_setup_paths(home: &Path) -> Vec<PathBuf> {
 fn setup_settings_lock(home: &Path) -> Option<PathBuf> {
     let home = std::fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     setup_profile_dir()?
-        .join(tilo_settings_records::LOCK_FILE)
+        .join(tilo_paths::PROFILE_LOCK)
         .strip_prefix(&home)
         .ok()
         .map(Path::to_path_buf)
@@ -779,14 +779,11 @@ fn setup_settings_lock(home: &Path) -> Option<PathBuf> {
 
 #[cfg(target_os = "linux")]
 fn setup_profile_dir() -> Option<PathBuf> {
-    let root = tilo_settings_records::profile_root()?;
-    let directory = tilo_settings_records::Records::of(&root)
-        .dir()
-        .to_path_buf();
+    let directory = tilo_paths::profile_dir()?;
     Some(std::fs::canonicalize(&directory).unwrap_or(directory))
 }
 
-/// A bounded path of plain names ending where the settings records keep it.
+/// A bounded path of plain names ending where the settings documents keep their holder's lock.
 #[cfg(target_os = "linux")]
 fn settings_lock_shape(relative: &Path) -> bool {
     !relative.as_os_str().is_empty()
@@ -794,9 +791,7 @@ fn settings_lock_shape(relative: &Path) -> bool {
         && relative
             .components()
             .all(|part| matches!(part, std::path::Component::Normal(_)))
-        && relative.ends_with(
-            Path::new(tilo_settings_records::RECORDS_DIR).join(tilo_settings_records::LOCK_FILE),
-        )
+        && relative.ends_with(Path::new(tilo_paths::PROFILE_DIR).join(tilo_paths::PROFILE_LOCK))
 }
 
 /// Reached one no-follow edge at a time; `None` where nothing, or anything but a plain file, is

@@ -112,7 +112,7 @@ pub use source::{
     flush_pending_writes, install_source, installed_source, installed_version, merge_section,
     note_deferred_failure, scoped_source, take_deferred_failures,
 };
-pub use store::{BOOKKEEPING, RECORDS_DIR, Store, made_by, profile};
+pub use store::{BOOKKEEPING, Store, made_by, profile};
 
 /// The per-user Tilo config root: `$XDG_CONFIG_HOME/tilo`, else `$HOME/.config/tilo`. `None`
 /// only when neither variable yields a usable path. Per the XDG spec, `XDG_CONFIG_HOME` is
@@ -120,7 +120,7 @@ pub use store::{BOOKKEEPING, RECORDS_DIR, Store, made_by, profile};
 /// `$HOME`, and getting that rule wrong in one reader and right in another is what made this
 /// crate necessary.
 pub fn config_root() -> Option<PathBuf> {
-    tilo_settings_records::profile_root()
+    tilo_paths::profile_root()
 }
 
 pub fn config_path(relative: &Path) -> Option<PathBuf> {
@@ -424,7 +424,7 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(
             !home
-                .join(".config/tilo/records/person/state.automerge")
+                .join(".config/tilo/documents/person/state.automerge")
                 .exists()
         );
 
