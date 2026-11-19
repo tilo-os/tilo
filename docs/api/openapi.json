@@ -15777,16 +15777,6 @@
         "required": [],
         "description": ""
       },
-      "disks.system.select.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {}
-        },
-        "required": [
-          "device"
-        ],
-        "description": ""
-      },
       "disks.system.show-tab.Arguments": {
         "type": "object",
         "properties": {
@@ -32670,12 +32660,6 @@
       "resource": "disks.system",
       "action": "rescan",
       "arguments": "#/components/schemas/disks.system.rescan.Arguments"
-    },
-    {
-      "app": "so.tilo.disks",
-      "resource": "disks.system",
-      "action": "select",
-      "arguments": "#/components/schemas/disks.system.select.Arguments"
     },
     {
       "app": "so.tilo.disks",

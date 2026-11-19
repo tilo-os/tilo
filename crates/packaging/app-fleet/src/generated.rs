@@ -147,7 +147,7 @@ pub(super) const SURFACES: &[(&str, &str)] = &[
     ),
     (
         "so.tilo.disks",
-        "# Written by `tilo-app surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"disks.system\"\nlabel = \"Storage devices\"\nversion = 1\nfields = [\n  { path = \"names\", type = { map = \"text\" } },\n]\n\n[[resources.verbs]]\nid = \"name-drive\"\nkind = \"undoable\"\nparams = [\n  { name = \"serial\", type = \"text\", required = true, schema = { type = \"string\" } },\n  { name = \"name\", type = { option = \"text\" }, required = false, schema = { type = [\"string\", \"null\"] } },\n]\n\n[[resources.verbs]]\nid = \"rescan\"\nkind = \"read\"\n\n[[resources.verbs]]\nid = \"select\"\nkind = \"read\"\nparams = [\n  { name = \"device\", type = \"text\", required = true },\n]\n\n[[resources.verbs]]\nid = \"show-tab\"\nkind = \"read\"\nparams = [\n  { name = \"tab\", type = \"text\", required = true },\n]\n\n",
+        "# Written by `tilo-app surface`; review changes like an API change.\n\nformat = 2\n\n[[resources]]\nkind = \"disks.system\"\nlabel = \"Storage devices\"\nversion = 1\nfields = [\n  { path = \"names\", type = { map = \"text\" } },\n]\n\n[[resources.verbs]]\nid = \"name-drive\"\nkind = \"undoable\"\nparams = [\n  { name = \"serial\", type = \"text\", required = true, schema = { type = \"string\" } },\n  { name = \"name\", type = { option = \"text\" }, required = false, schema = { type = [\"string\", \"null\"] } },\n]\n\n[[resources.verbs]]\nid = \"rescan\"\nkind = \"read\"\n\n[[resources.verbs]]\nid = \"show-tab\"\nkind = \"read\"\nparams = [\n  { name = \"tab\", type = \"text\", required = true },\n]\n\n",
     ),
     (
         "so.tilo.ebook",
