@@ -32,7 +32,12 @@
  *
  * The page holds no peer and reads no runtime until the person agrees: a
  * sign-in link is not a workspace, and the desktop's bundle has no part in
- * answering one.
+ * answering one. What it can say of the card it reads without either: the
+ * workspaces this browser entered by name, and the site's own home workspace
+ * from `entry.json`. A grant that reaches a workspace neither names is said
+ * in plain words, never by its id; so is where the service is when its
+ * origin is this computer rather than a name people know; and its date reads in the
+ * page's own language.
  */
 
 import {openDeviceKey as openStoredDeviceKey, idbStorage} from './device-key.mjs';
@@ -166,34 +171,80 @@ export function readSignInRequest(search, {now = Date.now()} = {}) {
   });
 }
 
+/** The date style the card shows a grant's end in. */
+const DATE = Object.freeze({year: 'numeric', month: 'long', day: 'numeric'});
+
+/** The language the page is written in, from its own `<html lang>`: what the
+ * card's date reads in, never the browser's language. */
+export function pageLocale(document = globalThis.document) {
+  const lang = document?.documentElement?.lang;
+  return typeof lang === 'string' && /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i.test(lang) ? lang : 'en';
+}
+
+/** Where a service is, in words: `{name, local}`. `name` is the site's
+ * name a person reads; `local` says a program on this computer asks (a
+ * loopback address); an address that names no site (an IP) gives neither. */
+export function serviceWords(origin) {
+  let url;
+  try {
+    url = new URL(origin);
+  } catch {
+    return {name: null, local: false};
+  }
+  const address = url.hostname;
+  if (address === 'localhost' || address === '127.0.0.1' || address === '[::1]' || address === '::1') {
+    return {name: null, local: true};
+  }
+  // A bare address is no name a person knows: nothing to say.
+  if (address.startsWith('[') || /^\d{1,3}(\.\d{1,3}){3}$/.test(address)) return {name: null, local: false};
+  return {name: address, local: false};
+}
+
+/** When `expiresMs` ends, in `locale`; English where the page's tag is one
+ * the browser's date formatter does not know. */
+function dateWords(expiresMs, locale) {
+  const at = new Date(expiresMs);
+  try {
+    return at.toLocaleDateString(locale, DATE);
+  } catch {
+    return at.toLocaleDateString('en', DATE);
+  }
+}
+
 /**
- * What the card says to the person about `request`: who asks, through
- * which service, what the grant reaches and until when. `locale` is the
- * page's (tests fix it; the page leaves it to the browser).
+ * What the card says to the person about `request`: who asks, from where,
+ * what the grant reaches and until when. `locale` is the page's own (its
+ * `<html lang>`), so the date reads in the language of the words around it.
+ * `home` is the workspace the page's own site calls its home
+ * (`{workspace, name}`), which names a grant that reaches it.
  */
-export function requestWords(request, {locale = undefined, local = globalThis.localStorage} = {}) {
-  const {client, host, grantScope, grantExpiresMs, grantPages} = request;
+export function requestWords(request, {locale = pageLocale(), local = globalThis.localStorage, home = null} = {}) {
+  const {client, grantScope, grantExpiresMs, grantPages} = request;
+  const service = serviceWords(request.audience);
   if (grantScope === null) {
     return {
-      heading: `Sign in to ${host}?`,
-      service: `Tilo in this browser will prove to ${host} that this is your device.`,
+      heading: service.name ? `Sign in to ${service.name}?` : `Sign in to ${client}?`,
+      service: service.local
+        ? 'Tilo in this browser will prove to the service on this computer that this is your device.'
+        : service.name
+          ? `Tilo in this browser will prove to ${service.name} that this is your device.`
+          : null,
       reaches: null,
       until: null,
       pages: null,
     };
   }
-  const one = workspaceName(grantScope, {local});
+  const name = workspaceName(grantScope, {local, home});
   return {
     heading: `Let ${client} act for you?`,
-    service: `Through ${host}.`,
+    service: service.local ? 'From a terminal on this computer.'
+      : service.name ? `Through ${service.name}.` : null,
     reaches: grantScope === 'all'
       ? 'All your workspaces, and it may create new ones'
-      : one === null
-        ? `Only the workspace with id ${grantScope}`
-        : `Only the workspace “${one}”`,
-    until: grantExpiresMs === null
-      ? 'Until you revoke it'
-      : new Date(grantExpiresMs).toLocaleDateString(locale, {year: 'numeric', month: 'long', day: 'numeric'}),
+      : name
+        ? `Only the workspace “${name}”`
+        : 'Only one of your workspaces',
+    until: grantExpiresMs === null ? 'Until you revoke it' : dateWords(grantExpiresMs, locale),
     pages: grantPages
       ? 'It navigates, fills in and clicks the page without asking you each time. Submitting still asks you.'
       : 'It asks you before every page action.',
@@ -216,11 +267,35 @@ export function rememberedWorkspaces({local = globalThis.localStorage} = {}) {
   return workspaces;
 }
 
-/** The name this browser knows the workspace `id` by, or `null` where it
- * knows none: what a card names a workspace it was asked to reach, by its id
- * where the person saw it under no name here. */
-export function workspaceName(id, {local = globalThis.localStorage} = {}) {
-  return rememberedWorkspaces({local}).find(workspace => workspace.scope === id)?.name ?? null;
+/** The name this browser knows the workspace `id` by — from a workspace it
+ * entered, else from the site's home workspace (`home`, `{workspace, name}`)
+ * when the grant reaches that one — or `null` where it knows none: a card
+ * then says what it reaches in plain words, never by the id. */
+export function workspaceName(id, {local = globalThis.localStorage, home = null} = {}) {
+  const known = rememberedWorkspaces({local}).find(workspace => workspace.scope === id)?.name;
+  if (known) return known;
+  return home?.workspace === id && typeof home.name === 'string' && home.name ? home.name : null;
+}
+
+/** The workspace the page's own site calls its home, as `entry.json` names it
+ * (`home.name` and the workspace its admission address spells): `{workspace,
+ * name}` where it names both, else `null`. */
+export function siteHome(entry) {
+  const name = typeof entry?.home?.name === 'string' ? entry.home.name.trim() : '';
+  const admission = entry?.home?.admission;
+  const match = typeof admission === 'string' ? admission.match(/\/directory\/([^/]+)\/?$/) : null;
+  return match && name ? {workspace: match[1], name} : null;
+}
+
+/** The page's site configuration (`entry.json` beside it), or `null` where
+ * this bundle has none: read once, never what the card waits for long. */
+async function readSiteEntry(window) {
+  try {
+    const response = await window.fetch(new URL('entry.json', window.location.href), {cache: 'no-cache'});
+    return response.ok ? await response.json() : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -386,20 +461,27 @@ export async function startSignInPage({
     return stop(error instanceof SignInLinkError ? error.message : 'This sign-in link cannot be read.');
   }
   tell('');
+  // What the page can know of the person's workspaces without the runtime:
+  // those this browser entered, and the site's own home (`entry.json`).
+  const entry = await readSiteEntry(window);
+  const home = siteHome(entry);
+  const locale = pageLocale(document);
   let listening = false;
   if (!(await keptIdentity({storage}))) {
     // Nobody is signed in here yet. The card says what the link asks, and
     // offers the ways in right where it is: a passkey the person made on
     // Tilo, or Tilo itself in another tab. Whichever way they come in, the
     // card goes on to the question by itself: the link is not followed again.
-    return offerSignIn({window, card, show, tell, storage, signIn, hosts, words: requestWords(request, {local}), then: askRequest});
+    return offerSignIn({window, card, show, tell, storage, signIn, hosts,
+      words: requestWords(request, {locale, local, home}), then: askRequest});
   }
   return askRequest();
 
   function askRequest() {
-    const words = requestWords(request, {local});
+    const words = requestWords(request, {locale, local, home});
     card.heading.textContent = words.heading;
-    card.service.textContent = words.service;
+    card.service.textContent = words.service ?? '';
+    show('service', words.service !== null);
     card.reaches.textContent = words.reaches ?? '';
     show('reachesRow', words.reaches !== null);
     // Where the service asked for all of the person's workspaces, they say
@@ -454,7 +536,8 @@ export async function startSignInPage({
           decided(false);
           show('request', false);
           show('actions', false);
-          return offerSignIn({window, card, show, tell, storage, signIn, hosts, words: requestWords(request, {local}), then: askRequest});
+          return offerSignIn({window, card, show, tell, storage, signIn, hosts,
+            words: requestWords(request, {locale, local, home}), then: askRequest});
         }
         if (person.locked || !person.sign) throw new SignInLinkError(LOCKED);
         const runtime = await loadRuntime();
@@ -501,7 +584,8 @@ function offerSignIn({window, card, show, tell, storage, signIn, hosts, words, t
   const {document} = window;
   document.documentElement.dataset.signIn = 'signed-out';
   card.heading.textContent = words.heading;
-  card.service.textContent = words.service;
+  card.service.textContent = words.service ?? '';
+  show('service', words.service !== null);
   // What the request reaches is said before the person signs in to answer it,
   // not only after: a key that reaches one workspace says which.
   card.reaches.textContent = words.reaches ?? '';
