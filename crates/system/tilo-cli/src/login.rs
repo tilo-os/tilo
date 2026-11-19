@@ -715,7 +715,7 @@ async fn home_server(site: &Origin) -> Result<String> {
 ///
 /// A code the server does not know is asked about again for a moment: the server
 /// keeps a code from the moment the tab showing it follows it, which the tab
-/// does as soon as the prompt is on its screen (`web/first-run.mjs`,
+/// does as soon as the prompt is on its screen (`web/first-screen.mjs`,
 /// `watchShown`), so a person who hands the prompt to their agent at once can
 /// beat that request when their machine draws the page slowly. The server
 /// counts resolves that miss, so the asking is a few tries, not a wait.
