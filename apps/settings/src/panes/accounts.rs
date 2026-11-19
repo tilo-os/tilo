@@ -73,6 +73,26 @@ mod cloud_import_acceptance;
 #[cfg(test)]
 mod signin_tests;
 
+/// An account the person linked, as the pane publishes it: a row of the
+/// `settings.account` type, offering what its kind and state allow (edit,
+/// sync, recover, sign in again, test, remove).
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.account", label = "Account")]
+pub(crate) struct AccountRow;
+
+/// A browser identity the pane lists, as it publishes it: a row of the
+/// `settings.browser-identity` type, offering to turn it on or off and to
+/// remove it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.browser-identity", label = "Browser identity")]
+pub(crate) struct BrowserIdentityRow;
+
+/// A browser session an account authorized, as the pane publishes it: a row
+/// of the `settings.browser-service-session` type, offering to remove it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.browser-service-session", label = "Browser session")]
+pub(crate) struct BrowserServiceSessionRow;
+
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AccountsEffect {
@@ -743,9 +763,8 @@ impl AccountsArea {
             .flat_map(|kind| model.dir.views_of(kind))
             .map(|view| {
                 let id = view.id.clone();
-                let mut row = LiveRow::new(
+                let mut row = LiveRow::typed::<AccountRow>(
                     format!("settings.account:{id}"),
-                    "settings.account",
                     view.label.clone(),
                 );
                 if let Some(action) = model.files_handoff_in(&store, &view) {
@@ -792,31 +811,28 @@ impl AccountsArea {
         published.extend(model.calendar_choice_rows());
         for account in store.list(&accounts::person::TILO_IDENTITY_TYPE.into()) {
             let id = account.id.as_str().to_owned();
-            published.push(
-                LiveRow::new(
-                    format!("settings.browser-identity:{id}"),
-                    "settings.browser-identity",
-                    account.display_name.clone(),
-                )
+            let mut row = LiveRow::typed::<BrowserIdentityRow>(
+                format!("settings.browser-identity:{id}"),
+                account.display_name.clone(),
+            );
+            row = row
                 .operation(offer(AccountsEffect::SetBrowserIdentityEnabled {
                     account: id.clone(),
                     enabled: !account.enabled,
                 }))
-                .operation(offer(AccountsEffect::RemoveBrowserIdentity { account: id })),
-            );
+                .operation(offer(AccountsEffect::RemoveBrowserIdentity { account: id }));
+            published.push(row);
         }
         for account in model.browser_service_sessions() {
             let id = account.id.as_str().to_owned();
-            published.push(
-                LiveRow::new(
-                    format!("settings.browser-service-session:{id}"),
-                    "settings.browser-service-session",
-                    account.display_name,
-                )
-                .operation(offer(AccountsEffect::RemoveBrowserServiceSession {
-                    session_id: id,
-                })),
+            let mut row = LiveRow::typed::<BrowserServiceSessionRow>(
+                format!("settings.browser-service-session:{id}"),
+                account.display_name,
             );
+            row = row.operation(offer(AccountsEffect::RemoveBrowserServiceSession {
+                session_id: id,
+            }));
+            published.push(row);
         }
         published
     }
@@ -1182,12 +1198,9 @@ impl AccountsPane {
             return cx.actions().effect(&SettingsEffect::from(effect));
         };
         let id = effect.id();
-        let live = LiveRow::new(
-            format!("settings.account:{account}"),
-            "settings.account",
-            &account,
-        )
-        .effect(&SettingsEffect::from(effect));
+        let mut live =
+            LiveRow::typed::<AccountRow>(format!("settings.account:{account}"), &account);
+        live = live.effect(&SettingsEffect::from(effect));
         let invocation = ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(
             id,
             &[],
@@ -2175,12 +2188,9 @@ impl AccountsPane {
     fn files_button(&self, view: &AccountView, details: &mut Vec<String>) -> Option<Button> {
         let spec = self.files_handoff(view)?;
         let label = spec.label.clone();
-        let live = LiveRow::new(
-            format!("settings.account:{}", view.id),
-            "settings.account",
-            &view.label,
-        )
-        .operation(spec);
+        let mut live =
+            LiveRow::typed::<AccountRow>(format!("settings.account:{}", view.id), &view.label);
+        live = live.operation(spec);
         let binding = ui::tilo_actions::ActionBinding::unit_for(&live, "open-files").ok()?;
         let store = self.account_root.store();
         if let Some(account) = store.get(&view.id.clone().into()) {

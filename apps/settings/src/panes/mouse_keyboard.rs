@@ -1089,6 +1089,24 @@ pub struct InputArea {
     seen: RefCell<Option<Seen>>,
 }
 
+/// The pane's map of the keyboard's keys, as it publishes it: a row of the
+/// `settings.keyboard-map` type, offering to show the layout.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.keyboard-map", label = "Keyboard map")]
+pub(crate) struct KeyboardMap;
+
+/// A tablet, as the pane publishes it: a row of the `settings.tablet` type,
+/// whose actions are its pen preferences.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.tablet", label = "Tablet")]
+pub(crate) struct Tablet;
+
+/// A tablet's touchpad, as the pane publishes it: a row of the
+/// `settings.tablet-pad` type, whose actions are its pad preferences.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.tablet-pad", label = "Tablet pad")]
+pub(crate) struct TabletPad;
+
 impl InputArea {
     pub fn new(cx: &AreaContext) -> Self {
         let live = cx.devices;
@@ -1323,17 +1341,15 @@ impl InputArea {
     }
 
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
-        let inspection = LiveRow::new(
-            "settings.keyboard-map",
-            "settings.keyboard-map",
-            t("input-map-title"),
-        )
-        .operation(SettingsEffect::from(InputEffect::InspectKeyboardMap).bound());
+        let mut inspection =
+            LiveRow::typed::<KeyboardMap>("settings.keyboard-map", t("input-map-title"));
+        inspection =
+            inspection.operation(SettingsEffect::from(InputEffect::InspectKeyboardMap).bound());
         let Some(devices) = self.devices() else {
             return vec![inspection];
         };
-        let row = |device: &InputDeviceSnapshot, id: String, kind: &str| {
-            LiveRow::new(id, kind, device_title(device)).presentation(ResourcePresentation {
+        let row = |device: &InputDeviceSnapshot, row: LiveRow| {
+            row.presentation(ResourcePresentation {
                 detail: Some(device.key.clone()),
                 ..ResourcePresentation::default()
             })
@@ -1354,7 +1370,13 @@ impl InputArea {
                     .into_iter()
                     .map(|device| {
                         offer(
-                            row(device, tablet_resource_id(&device.key), "settings.tablet"),
+                            row(
+                                device,
+                                LiveRow::typed::<Tablet>(
+                                    tablet_resource_id(&device.key),
+                                    device_title(device),
+                                ),
+                            ),
                             tablet::pen_operations(&device.key),
                         )
                     })
@@ -1366,8 +1388,10 @@ impl InputArea {
                                 offer(
                                     row(
                                         device,
-                                        pad_resource_id(&device.key),
-                                        "settings.tablet-pad",
+                                        LiveRow::typed::<TabletPad>(
+                                            pad_resource_id(&device.key),
+                                            device_title(device),
+                                        ),
                                     ),
                                     tablet::pad_operations(&device.key),
                                 )

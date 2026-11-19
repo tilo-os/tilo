@@ -479,6 +479,24 @@ pub fn pane_row_id(category: Category) -> String {
     format!("settings.section:{}", category.slug())
 }
 
+/// The entity a row id names: the part after the row kind's `:`, or the whole
+/// id when it already names the entity itself, as a control or a link does.
+/// An effect offered on a row is bound to the row's id; the area it reaches
+/// reads the entity from it this way.
+#[cfg_attr(
+    not(feature = "tilo-os"),
+    allow(
+        dead_code,
+        reason = "only the device panes publish rows their effects act on"
+    )
+)]
+#[must_use]
+pub(crate) fn row_entity<'a>(row: &'a str, kind: &str) -> &'a str {
+    row.strip_prefix(kind)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .unwrap_or(row)
+}
+
 #[must_use]
 pub fn open_pane(category: Category) -> SettingsEffect {
     NavigationEffect::OpenPane {
@@ -542,12 +560,10 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
         let rows: Vec<_> = Category::ALL
             .iter()
             .map(|category| {
-                ui::framework::LiveRow::new(
+                ui::framework::LiveRow::typed::<SectionPane>(
                     pane_row_id(*category),
-                    "settings.section",
                     category.label(),
                 )
-                .operation(open_pane(*category).bound())
             })
             .collect();
         *built = Some((language, rows.clone()));
@@ -557,13 +573,23 @@ fn pane_rows() -> Vec<ui::framework::LiveRow> {
 
 pub const SETTING_ANCHOR: &str = "settings.setting:";
 
+/// A pane of Settings, as the window publishes it: a row of the
+/// `settings.section` type whose effect opens the pane it names.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.section",
+    label = "Settings pane",
+    effects = NavigationEffect
+)]
+pub(crate) struct SectionPane;
+
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum NavigationEffect {
     /// Open a pane of Settings.
-    #[effect(view)]
+    #[effect(view, on = SectionPane)]
     OpenPane {
-        #[param("The pane: its id, such as `appearance` or `network`")]
+        #[param("The pane's row, or its id such as `appearance` or `network`")]
         pane: String,
     },
     /// Open the pane a setting is on, scrolled to it, with the keyboard on
@@ -582,7 +608,10 @@ fn answer_navigation(
 ) -> EffectAnswer {
     match effect {
         NavigationEffect::OpenPane { pane } => {
-            let category = Category::from_any_slug(&pane)
+            // A pane's row binds the pane's row id; a link or a control names
+            // the pane by its slug. Both open the same pane.
+            let pane = pane.strip_prefix("settings.section:").unwrap_or(&pane);
+            let category = Category::from_any_slug(pane)
                 .ok_or_else(|| format!("Settings has no pane `{pane}`"))?;
             app.request_pane(category);
             Ok(ui::framework::Effected::done())

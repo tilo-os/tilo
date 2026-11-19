@@ -60,6 +60,22 @@ pub(crate) use labels::{
 #[cfg(test)]
 mod tests;
 
+/// A Wi-Fi network the pane lists, as it publishes it: a row of the
+/// `network.wifi` type, offering its page and, in range, to join it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "network.wifi", label = "Wi-Fi network", effects = NetworkEffect)]
+pub(crate) struct WifiNetwork;
+
+/// A network this device saved, as the pane publishes it: a row of the
+/// `settings.network-profile` type, offering its settings and forgetting it.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.network-profile",
+    label = "Saved network",
+    effects = NetworkEffect
+)]
+pub(crate) struct NetworkProfileRow;
+
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum NetworkEffect {
@@ -105,9 +121,9 @@ pub enum NetworkEffect {
         ssid: String,
     },
     /// Open a network's page: how it stands and its settings.
-    #[effect(view, row, label = "net-network-settings")]
+    #[effect(view, row, label = "net-network-settings", on = WifiNetwork)]
     OpenNetworkPage {
-        #[param("The network's name (SSID)")]
+        #[param("The network's row, or its name (SSID)")]
         ssid: String,
     },
     /// Show every network in range.
@@ -280,11 +296,11 @@ pub enum NetworkEffect {
         on: bool,
     },
     /// Forget a saved network and its password.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = NetworkProfileRow)]
     #[effect(job, row, destructive)]
     #[effect(keywords = "remove network, forget wifi, delete network")]
     ForgetNetwork {
-        #[param("The saved network's id")]
+        #[param("The saved network's row, or its id")]
         profile: String,
     },
     /// Seal a saved Wi-Fi network's password for the person's other
@@ -2284,11 +2300,7 @@ impl NetworkModel {
 
     fn wifi_live(&self, ssid: &str) -> LiveRow {
         let offer = |effect: NetworkEffect| SettingsEffect::from(effect).bound();
-        let mut row = LiveRow::new(wifi_row_id(ssid), "network.wifi", ssid.to_owned()).operation(
-            offer(NetworkEffect::OpenNetworkPage {
-                ssid: ssid.to_owned(),
-            }),
-        );
+        let mut row = LiveRow::typed::<WifiNetwork>(wifi_row_id(ssid), ssid.to_owned());
         if let Some(network) = self.in_range(ssid) {
             if !network.connected {
                 row = row.operation(offer(NetworkEffect::ConnectNetwork {
@@ -2339,23 +2351,16 @@ impl NetworkModel {
         if profile.kind == "802-11-wireless" {
             return self.wifi_live(&profile.name);
         }
-        let row = LiveRow::new(
+        let mut row = LiveRow::typed::<NetworkProfileRow>(
             format!("settings.network-profile:{}", profile.uuid),
-            "settings.network-profile",
             profile.name.clone(),
-        )
-        .operation(
+        );
+        row = row.operation(
             SettingsEffect::from(NetworkEffect::SetAutoconnect {
                 profile: profile.uuid.clone(),
                 on: !profile.autoconnect,
             })
             .bound_asking(&["on"]),
-        )
-        .operation(
-            SettingsEffect::from(NetworkEffect::ForgetNetwork {
-                profile: profile.uuid.clone(),
-            })
-            .bound(),
         );
         self.with_wake(row, profile)
     }
@@ -2458,6 +2463,7 @@ impl NetworkModel {
                 Begun::Done
             }
             NetworkEffect::OpenNetworkPage { ssid } => {
+                let ssid = crate::effects::row_entity(&ssid, "network.wifi").to_owned();
                 if self.in_range(&ssid).is_none() && self.saved_profile_of(&ssid).is_none() {
                     return Err(format!("{ssid} is neither in range nor saved."));
                 }
@@ -2810,7 +2816,10 @@ impl NetworkModel {
                 )
             }
             NetworkEffect::ForgetNetwork { profile } => {
-                let profile = self.profile(&profile)?;
+                let profile = self.profile(crate::effects::row_entity(
+                    &profile,
+                    "settings.network-profile",
+                ))?;
                 self.change(
                     NetworkChange::Forget {
                         uuid: profile.uuid,

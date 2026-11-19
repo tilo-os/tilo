@@ -121,9 +121,9 @@ pub enum SpeakerEffect {
     },
     /// Delete a speaker set; its devices play on their own again.
     #[effect(kind = "outside")]
-    #[effect(job, row, destructive, returns)]
+    #[effect(job, row, destructive, returns, on = SpeakerGroup)]
     DeleteSpeakerSet {
-        #[param("The speaker set's id")]
+        #[param("The speaker set's row, or its id")]
         group: String,
     },
 }
@@ -195,6 +195,14 @@ pub(crate) fn answer(
     effect: SpeakerEffect,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
+    // A set's row binds the set's row id; a control names the set's id. The
+    // service takes the set's id.
+    let effect = match effect {
+        SpeakerEffect::DeleteSpeakerSet { group } => SpeakerEffect::DeleteSpeakerSet {
+            group: crate::effects::row_entity(&group, "settings.speaker-group").to_owned(),
+        },
+        effect => effect,
+    };
     if !effect.command().valid() {
         return Err(
             "that speaker request is incomplete: check the names, members and ids".to_owned(),
@@ -325,6 +333,16 @@ struct Finished {
     result: Result<SpeakerReply, String>,
 }
 
+/// A saved speaker set, as the pane publishes it: a row of the
+/// `settings.speaker-group` type, whose effect deletes the set.
+#[derive(ui::tilo_resource::Row)]
+#[row(
+    kind = "settings.speaker-group",
+    label = "Speaker set",
+    effects = SpeakerEffect
+)]
+pub(crate) struct SpeakerGroup;
+
 pub struct SpeakersArea {
     devices: bool,
     staged: Option<crate::scenarios::SpeakersSample>,
@@ -377,16 +395,9 @@ impl SpeakersArea {
             .iter()
             .filter(|group| group.led_here)
             .map(|group| {
-                LiveRow::new(
+                LiveRow::typed::<SpeakerGroup>(
                     format!("settings.speaker-group:{}", group.id),
-                    "settings.speaker-group",
                     group.name.clone(),
-                )
-                .operation(
-                    SettingsEffect::from(SpeakerEffect::DeleteSpeakerSet {
-                        group: group.id.clone(),
-                    })
-                    .bound(),
                 )
             })
             .collect()

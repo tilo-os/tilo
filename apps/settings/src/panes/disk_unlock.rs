@@ -138,9 +138,8 @@ impl DiskUnlockArea {
             .shown_volumes()
             .iter()
             .map(|volume| {
-                let mut row = LiveRow::new(
+                let mut row = LiveRow::typed::<UnlockVolumeRow>(
                     format!("settings.disk-unlock-volume:{}", volume.volume),
-                    "settings.disk-unlock-volume",
                     volume.short_name(),
                 );
                 for network in candidates(volume, model.saved_wifi()) {
@@ -308,24 +307,37 @@ fn network_arguments(volume: &UnlockVolume, network: &str, using: bool) -> (Stri
     (volume.volume.clone(), networks)
 }
 
+/// A volume that needs unlocking, as the pane publishes it: a row of the
+/// `settings.disk-unlock-volume` type, holding the saved networks it may
+/// unlock over.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.disk-unlock-volume", label = "Unlock volume")]
+pub(crate) struct UnlockVolumeRow;
+
+/// A saved network a volume may unlock over, as the pane publishes it: a row
+/// of the `settings.disk-unlock-network` type, offering to use it or not.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.disk-unlock-network", label = "Unlocking network")]
+pub(crate) struct UnlockNetwork;
+
 fn network_resource(volume: &UnlockVolume, network: &str) -> LiveRow {
-    LiveRow::new(
+    let mut row = LiveRow::typed::<UnlockNetwork>(
         format!(
             "settings.disk-unlock-network:{}.{}",
             volume.volume,
             hex::encode(network.as_bytes())
         ),
-        "settings.disk-unlock-network",
         network.to_owned(),
-    )
-    .operation(
+    );
+    row = row.operation(
         SettingsEffect::from(network_change(
             volume,
             network,
             !volume.networks.iter().any(|name| name == network),
         ))
         .bound(),
-    )
+    );
+    row
 }
 
 #[must_use]

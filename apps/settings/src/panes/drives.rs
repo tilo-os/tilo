@@ -46,6 +46,16 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&DrivesArea> {
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_GRANT_BYTES: usize = 64;
 
+/// A remembered drive, as the pane publishes it: a row of the
+/// `settings.drive` type, whose effect forgets the drive.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.drive",
+    label = "Remembered drive",
+    effects = DrivesEffect
+)]
+pub(crate) struct DriveRow;
+
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum DrivesEffect {
@@ -55,10 +65,10 @@ pub enum DrivesEffect {
     RefreshDrives,
     /// Forget a remembered drive: it is closed if open, and asked about
     /// again the next time.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DriveRow)]
     #[effect(job, row, returns)]
     ForgetDrive {
-        #[param("The remembered drive, as the drive list names it")]
+        #[param("The drive's row, or its grant as the drive list names it")]
         grant: String,
     },
     /// Open a drive inside this computer safely (a confined driver, a bit
@@ -72,15 +82,16 @@ pub enum DrivesEffect {
     },
 }
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "each area receives its owned variant from the shared Settings effect vocabulary"
-)]
 pub(crate) fn answer(
     app: &SettingsApp,
-    operation: DrivesEffect,
+    mut operation: DrivesEffect,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
+    // A drive's row binds the drive's row id; a control names its grant. The
+    // service takes the grant.
+    if let DrivesEffect::ForgetDrive { grant } = &mut operation {
+        *grant = crate::effects::row_entity(grant, "settings.drive").to_owned();
+    }
     let model = crate::panes::drives::area(app)
         .ok_or_else(crate::area::missing)?
         .model();
@@ -247,17 +258,8 @@ impl DrivesArea {
 }
 
 fn drive_live_row(drive: &RememberedDrive) -> LiveRow {
-    let mut row = LiveRow::new(
-        format!("settings.drive:{}", drive.grant),
-        "settings.drive",
-        drive_name(drive),
-    )
-    .operation(
-        SettingsEffect::from(DrivesEffect::ForgetDrive {
-            grant: drive.grant.clone(),
-        })
-        .bound(),
-    );
+    let mut row =
+        LiveRow::typed::<DriveRow>(format!("settings.drive:{}", drive.grant), drive_name(drive));
     if drive.placement == Placement::Internal {
         row = row.operation(
             SettingsEffect::from(DrivesEffect::SetDriveOpensSafely {

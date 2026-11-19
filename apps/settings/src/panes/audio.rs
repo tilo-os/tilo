@@ -103,6 +103,31 @@ fn event_sound(event: SystemSoundEvent) -> ui::tilo_resource::Path<AudioPrefs, b
     }
 }
 
+/// An audio device the pane lists, as it publishes it: a row of the
+/// `settings.audio-output` type (a speaker set included), offering to select
+/// it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.audio-output", label = "Audio output")]
+pub(crate) struct AudioOutput;
+
+/// An audio input, as the pane publishes it: a row of the
+/// `settings.audio-input` type, offering to select it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.audio-input", label = "Audio input")]
+pub(crate) struct AudioInput;
+
+/// A playing sound stream, as the pane publishes it: a row of the
+/// `settings.audio-playback` type, offering its volume, mute and route.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.audio-playback", label = "Playing stream")]
+pub(crate) struct PlaybackStream;
+
+/// A recording sound stream, as the pane publishes it: a row of the
+/// `settings.audio-recording` type, offering its volume, mute and route.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.audio-recording", label = "Recording stream")]
+pub(crate) struct RecordingStream;
+
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AudioEffect {
@@ -510,41 +535,35 @@ impl AudioArea {
         for stream in &model.sound.streams {
             rows.push(stream_live_row(stream));
         }
-        for (kind, devices) in [
-            ("settings.audio-output", &model.sound.outputs),
-            ("settings.audio-input", &model.sound.inputs),
-        ] {
-            for device in devices {
-                let select = if kind == "settings.audio-output" {
-                    AudioEffect::SelectOutput {
-                        device: device.label.clone(),
-                    }
-                } else {
-                    AudioEffect::SelectInput {
-                        device: device.label.clone(),
-                    }
-                };
-                rows.push(
-                    LiveRow::new(
-                        format!("{kind}:{}", device.node),
-                        kind,
-                        device.label.clone(),
-                    )
-                    .operation(offer(select)),
-                );
-            }
+        for device in &model.sound.outputs {
+            let mut row = LiveRow::typed::<AudioOutput>(
+                format!("settings.audio-output:{}", device.node),
+                device.label.clone(),
+            );
+            row = row.operation(offer(AudioEffect::SelectOutput {
+                device: device.label.clone(),
+            }));
+            rows.push(row);
+        }
+        for device in &model.sound.inputs {
+            let mut row = LiveRow::typed::<AudioInput>(
+                format!("settings.audio-input:{}", device.node),
+                device.label.clone(),
+            );
+            row = row.operation(offer(AudioEffect::SelectInput {
+                device: device.label.clone(),
+            }));
+            rows.push(row);
         }
         for set in &model.sets.shown {
-            rows.push(
-                LiveRow::new(
-                    format!("settings.audio-output:set:{}", set.id),
-                    "settings.audio-output",
-                    set.name.clone(),
-                )
-                .operation(offer(AudioEffect::SelectSpeakerSet {
-                    group: set.id.clone(),
-                })),
+            let mut row = LiveRow::typed::<AudioOutput>(
+                format!("settings.audio-output:set:{}", set.id),
+                set.name.clone(),
             );
+            row = row.operation(offer(AudioEffect::SelectSpeakerSet {
+                group: set.id.clone(),
+            }));
+            rows.push(row);
         }
         rows
     }
@@ -562,20 +581,24 @@ fn bound<I, C: ui::framework::ActionControl<I>>(
 
 fn stream_live_row(stream: &Stream) -> LiveRow {
     let offer = |effect: AudioEffect| SettingsEffect::from(effect).bound();
-    let kind = if stream.playback {
-        "settings.audio-playback"
+    let mut row = if stream.playback {
+        LiveRow::typed::<PlaybackStream>(
+            format!("settings.audio-playback:{}", stream.node),
+            stream.label(),
+        )
     } else {
-        "settings.audio-recording"
+        LiveRow::typed::<RecordingStream>(
+            format!("settings.audio-recording:{}", stream.node),
+            stream.label(),
+        )
     };
-    let row = LiveRow::new(format!("{kind}:{}", stream.node), kind, stream.label());
-    let row = match stream.plays() {
-        Some(plays) => row.presentation(ResourcePresentation {
+    if let Some(plays) = stream.plays() {
+        row = row.presentation(ResourcePresentation {
             detail: Some(plays.to_owned()),
             badge: None,
             preview: None,
-        }),
-        None => row,
-    };
+        });
+    }
     row.operation(offer(AudioEffect::SetStreamMuted {
         stream: stream.node,
         muted: !stream.muted,

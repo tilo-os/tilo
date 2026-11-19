@@ -71,6 +71,17 @@ fn is_routed_address(text: &str) -> bool {
     prefix.is_none_or(|prefix| prefix.parse::<u8>().is_ok_and(|prefix| prefix <= longest))
 }
 
+/// A VPN set up on this device, as the pane publishes it: a row of the
+/// `vpn.connection` type, whose effects show its page, connect it and
+/// delete it.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "vpn.connection",
+    label = "VPN connection",
+    effects = VpnEffect
+)]
+pub(crate) struct VpnConnection;
+
 /// What VPN does on this device. The import, connect, disconnect and delete
 /// effects keep the ids the VPN app published, so what asked for them
 /// before finds them here.
@@ -81,9 +92,9 @@ pub enum VpnEffect {
     #[effect(view)]
     ShowVpns,
     /// Show a VPN's page: its settings, Export and Delete.
-    #[effect(view, row)]
+    #[effect(view, row, on = VpnConnection)]
     ShowVpnProfile {
-        #[param("The VPN's id or name")]
+        #[param("The VPN's row, or its id or name")]
         connection: String,
     },
     /// Show the kinds of VPN that can be added.
@@ -182,10 +193,10 @@ pub enum VpnEffect {
         connection: String,
     },
     /// Delete a VPN from this device, with its keys.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = VpnConnection)]
     #[effect(job, row, destructive, label = "net-vpn-delete")]
     DeleteConnection {
-        #[param("The VPN's id or name")]
+        #[param("The VPN's row, or its id or name")]
         connection: String,
     },
     /// Rename a VPN.
@@ -289,10 +300,10 @@ pub enum VpnEffect {
         seconds: u32,
     },
     /// Save a VPN as a file to set it up elsewhere: its keys are in it.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = VpnConnection)]
     #[effect(attended, row)]
     ExportVpn {
-        #[param("The VPN's id or name")]
+        #[param("The VPN's row, or its id or name")]
         connection: String,
     },
     /// Send this device's traffic through another of the person's devices,
@@ -314,10 +325,10 @@ pub enum VpnEffect {
     #[effect(idempotent, label = "net-device-vpn-share")]
     SetDeviceExit { on: bool },
     /// Stop another of the person's devices using this one as a VPN.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = devices::ExitUserRow)]
     #[effect(row)]
     StopDeviceExit {
-        #[param("The other device's id")]
+        #[param("The other device's row, or its id")]
         device: String,
     },
 }
@@ -805,6 +816,8 @@ impl NetworkModel {
                 open(self, PAGE_VPN, t("net-vpn"))
             }
             VpnEffect::ShowVpnProfile { connection } => {
+                let connection =
+                    crate::effects::row_entity(&connection, "vpn.connection").to_owned();
                 let vpn = match self.vpn(&connection) {
                     Ok(vpn) => vpn,
                     Err(_) if !self.loaded => {
@@ -953,7 +966,7 @@ impl NetworkModel {
             VpnEffect::Connect { connection } => self.vpn_switch(&connection, true),
             VpnEffect::Disconnect { connection } => self.vpn_switch(&connection, false),
             VpnEffect::DeleteConnection { connection } => {
-                let vpn = self.vpn(&connection)?;
+                let vpn = self.vpn(crate::effects::row_entity(&connection, "vpn.connection"))?;
                 Ok(self.change(
                     NetworkChange::VpnDelete {
                         uuid: vpn.uuid,
@@ -1089,7 +1102,7 @@ impl NetworkModel {
                 },
             ),
             VpnEffect::ExportVpn { connection } => {
-                let vpn = self.vpn(&connection)?;
+                let vpn = self.vpn(crate::effects::row_entity(&connection, "vpn.connection"))?;
                 if self.vpn.export.is_none() {
                     let suggested = if vpn.kind == "wireguard" {
                         format!(
@@ -1117,7 +1130,9 @@ impl NetworkModel {
             VpnEffect::SetDeviceVpn { device, on } => self.route_through_device(&device, on),
             VpnEffect::SetDeviceVpnKillSwitch { on } => self.set_device_kill_switch(on),
             VpnEffect::SetDeviceExit { on } => self.share_device(on),
-            VpnEffect::StopDeviceExit { device } => self.stop_exit_user(&device),
+            VpnEffect::StopDeviceExit { device } => {
+                self.stop_exit_user(crate::effects::row_entity(&device, "vpn.exit-user"))
+            }
         }
     }
 
@@ -1207,44 +1222,35 @@ impl NetworkModel {
             |effect: VpnEffect, asking: &[&str]| SettingsEffect::from(effect).bound_asking(asking);
         let connection = vpn.uuid.clone();
         let on = self.set_to_connect(vpn);
-        let mut row = LiveRow::new(
+        let mut row = LiveRow::typed::<VpnConnection>(
             format!("vpn.connection:{}", vpn.uuid),
-            "vpn.connection",
             vpn.name.clone(),
-        )
-        .operation(offer(VpnEffect::ShowVpnProfile {
-            connection: connection.clone(),
-        }))
-        .operation(asking(
-            VpnEffect::SetVpnConnected {
-                connection: connection.clone(),
-                on: !on,
-            },
-            &["on"],
-        ))
-        .operation(asking(
-            VpnEffect::SetKillSwitch {
-                connection: connection.clone(),
-                on: self.kill_switch(&vpn.uuid).is_none(),
-                allow_local: None,
-            },
-            &["on", "allow_local"],
-        ))
-        .operation(offer(if on {
-            VpnEffect::Disconnect {
-                connection: connection.clone(),
-            }
-        } else {
-            VpnEffect::Connect {
-                connection: connection.clone(),
-            }
-        }))
-        .operation(offer(VpnEffect::DeleteConnection {
-            connection: connection.clone(),
-        }))
-        .operation(offer(VpnEffect::ExportVpn {
-            connection: connection.clone(),
-        }));
+        );
+        row = row
+            .operation(asking(
+                VpnEffect::SetVpnConnected {
+                    connection: connection.clone(),
+                    on: !on,
+                },
+                &["on"],
+            ))
+            .operation(asking(
+                VpnEffect::SetKillSwitch {
+                    connection: connection.clone(),
+                    on: self.kill_switch(&vpn.uuid).is_none(),
+                    allow_local: None,
+                },
+                &["on", "allow_local"],
+            ))
+            .operation(offer(if on {
+                VpnEffect::Disconnect {
+                    connection: connection.clone(),
+                }
+            } else {
+                VpnEffect::Connect {
+                    connection: connection.clone(),
+                }
+            }));
         if let Some(settings) = self.vpn.settings.get(&vpn.uuid) {
             row = Self::setting_operations(row, connection, settings);
         }

@@ -9,6 +9,19 @@ use super::{
     SettingsEffect, SettingsSection, Step, ViewCx, merge_config, note, row, rows, section,
     setting_row_described, t, value_row,
 };
+use ui::tilo_resource;
+
+/// The calendars an account offers, as the pane publishes it: a row of the
+/// `settings.calendar-choices` type, holding each calendar beneath it.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "settings.calendar-choices", label = "Calendar choices")]
+pub(super) struct CalendarChoices;
+
+/// One calendar an account offers, as the pane publishes it: a row of the
+/// `settings.calendar-choice` type, offering to subscribe or not.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "settings.calendar-choice", label = "Calendar choice")]
+pub(super) struct CalendarChoiceRow;
 
 impl AccountsPane {
     pub fn connect_nextcloud_calendars(&mut self, id: &str) -> Result<(), String> {
@@ -70,29 +83,27 @@ impl AccountsPane {
         if self.calendar_choices.is_empty() {
             return Vec::new();
         }
-        let mut root = LiveRow::new(
-            "settings.calendar-choices",
+        let mut root = LiveRow::typed::<CalendarChoices>(
             "settings.calendar-choices",
             t("accounts-calendars-title"),
-        )
-        .operation(SettingsEffect::from(AccountsEffect::InspectCalendarChoices).bound())
-        .operation(SettingsEffect::from(AccountsEffect::SaveAccountForm).bound())
-        .operation(SettingsEffect::from(AccountsEffect::CancelAccountForm).bound());
+        );
+        root = root
+            .operation(SettingsEffect::from(AccountsEffect::InspectCalendarChoices).bound())
+            .operation(SettingsEffect::from(AccountsEffect::SaveAccountForm).bound())
+            .operation(SettingsEffect::from(AccountsEffect::CancelAccountForm).bound());
         for (calendar, selected) in &self.calendar_choices {
-            root = root.row(
-                LiveRow::new(
-                    format!("settings.calendar-choice:{}", calendar.href),
-                    "settings.calendar-choice",
-                    calendar.name.clone(),
-                )
-                .operation(
-                    SettingsEffect::from(AccountsEffect::SelectCalendar {
-                        href: calendar.href.clone(),
-                        selected: !selected,
-                    })
-                    .bound(),
-                ),
+            let mut choice = LiveRow::typed::<CalendarChoiceRow>(
+                format!("settings.calendar-choice:{}", calendar.href),
+                calendar.name.clone(),
             );
+            choice = choice.operation(
+                SettingsEffect::from(AccountsEffect::SelectCalendar {
+                    href: calendar.href.clone(),
+                    selected: !selected,
+                })
+                .bound(),
+            );
+            root = root.row(choice);
         }
         vec![root]
     }

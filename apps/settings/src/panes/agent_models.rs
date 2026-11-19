@@ -198,6 +198,27 @@ fn as_json(value: &impl serde::Serialize) -> Result<serde_json::Value, String> {
     serde_json::to_value(value).map_err(|error| error.to_string())
 }
 
+/// A model installed on this device, as the pane publishes it: a row of the
+/// `settings.agent-model` type, whose actions depend on the model and fit.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.agent-model", label = "Installed model")]
+pub(crate) struct InstalledModel;
+
+/// A model the apps load in their own process, as the pane publishes it: a
+/// row of the `settings.agent-model-in-process` type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.agent-model-in-process", label = "In-process model")]
+pub(crate) struct InProcessModel;
+
+/// The model the pane recommends for this device, as it publishes it: a row
+/// of the `settings.agent-model-recommendation` type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.agent-model-recommendation",
+    label = "Recommended model"
+)]
+pub(crate) struct RecommendedModel;
+
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AgentModelsEffect {
@@ -984,9 +1005,8 @@ impl AgentModelsArea {
             .iter()
             .map(|installed| {
                 model_actions(installed).into_iter().fold(
-                    LiveRow::new(
+                    LiveRow::typed::<InstalledModel>(
                         format!("settings.agent-model:{}", installed.package.id),
-                        "settings.agent-model",
                         installed.package.name.clone(),
                     ),
                     |row, action| row.operation(offer(model_effect(installed, action))),
@@ -996,9 +1016,8 @@ impl AgentModelsArea {
         // In-process models run inside the apps that use them on any CPU, so
         // neither the hardware fit nor accelerator setup blocks them.
         for local in &model.snapshot.in_process {
-            let mut row = LiveRow::new(
+            let mut row = LiveRow::typed::<InProcessModel>(
                 format!("settings.agent-model:{}", local.package.id),
-                "settings.agent-model-in-process",
                 local.package.name.clone(),
             );
             if local.installable() {
@@ -1015,17 +1034,15 @@ impl AgentModelsArea {
             rows.push(row);
         }
         if let Some(package) = &model.snapshot.recommendation {
-            rows.push(
-                LiveRow::new(
-                    format!("settings.agent-model-recommendation:{}", package.id),
-                    "settings.agent-model-recommendation",
-                    package.name.clone(),
-                )
-                .operation(offer(AgentModelsEffect::InstallModel {
-                    model: package.id.clone(),
-                    revision: package.revision.clone(),
-                })),
+            let mut row = LiveRow::typed::<RecommendedModel>(
+                format!("settings.agent-model-recommendation:{}", package.id),
+                package.name.clone(),
             );
+            row = row.operation(offer(AgentModelsEffect::InstallModel {
+                model: package.id.clone(),
+                revision: package.revision.clone(),
+            }));
+            rows.push(row);
         }
         rows.extend(model.hub.rows());
         rows.extend(model.panel.rows().into_iter().map(|row| {

@@ -286,6 +286,13 @@ fn sample_apps() -> Vec<InstalledNotificationApp> {
     .collect()
 }
 
+/// An installed app, as the pane publishes it: a row of the
+/// `settings.notification-app` type. Its actions are the app's own switches,
+/// which the pane declares and binds to the app.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.notification-app", label = "Notifications app")]
+pub(crate) struct NotificationApp;
+
 fn app_row(
     sections: &Sections,
     prefs: &NotificationPrefs,
@@ -321,9 +328,8 @@ fn app_row(
         })
         .chain(mute);
     offered.fold(
-        LiveRow::new(
+        LiveRow::typed::<NotificationApp>(
             format!("settings.notification-app:{}", app.id),
-            "settings.notification-app",
             app.name.clone(),
         ),
         |row, decl| match sections.operation(&decl) {

@@ -476,14 +476,24 @@ impl UsersArea {
     }
 }
 
+/// A user account on this device, as the pane publishes it: a row of the
+/// `settings.user` type, offering to make it an administrator, log it in
+/// automatically or remove it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.user", label = "Device user")]
+pub(crate) struct DeviceAccount;
+
+/// An identity this device keeps, as the pane publishes it: a row of the
+/// `settings.identity` type, offering to use, protect or remove it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.identity", label = "Identity")]
+pub(crate) struct DeviceIdentity;
+
 fn user_live_row(user: &DeviceUser) -> LiveRow {
     let name = user.username.clone();
-    let mut row = LiveRow::new(
-        format!("settings.user:{name}"),
-        "settings.user",
-        user.full_name.clone(),
-    )
-    .operation(
+    let mut row =
+        LiveRow::typed::<DeviceAccount>(format!("settings.user:{name}"), user.full_name.clone());
+    row = row.operation(
         SettingsEffect::from(UsersEffect::SetAdministrator {
             user: name.clone(),
             admin: !user.admin,
@@ -510,9 +520,8 @@ fn user_live_row(user: &DeviceUser) -> LiveRow {
 
 fn identity_live_row(identity: &IdentitySummary) -> LiveRow {
     let id = identity.id.clone();
-    let mut row = LiveRow::new(
+    let mut row = LiveRow::typed::<DeviceIdentity>(
         format!("settings.identity:{id}"),
-        "settings.identity",
         identity_name(identity).to_owned(),
     );
     if !identity.active {

@@ -76,6 +76,27 @@ pub(crate) fn automatic_brightness(cx: &ViewCx<DisplayPrefs>) -> Item {
         )
 }
 
+/// A connected display, as the pane publishes it: a row of the
+/// `settings.display-output` type, whose effects show it, stage its layout
+/// and make it the primary.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.display-output",
+    label = "Display output",
+    effects = DisplayEffect
+)]
+pub(crate) struct DisplayOutputRow;
+
+/// A display tool the person trusted, as the pane publishes it: a row of the
+/// `settings.display-tool` type, offering to ask again.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.display-tool",
+    label = "Display tool",
+    effects = DisplayEffect
+)]
+pub(crate) struct DisplayToolRow;
+
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum DisplayEffect {
@@ -92,7 +113,7 @@ pub enum DisplayEffect {
     #[effect(returns, row, idempotent)]
     UseDisplay { display: String, on: bool },
     /// Make a display the one panels and new windows open on.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     SetPrimaryDisplay { display: String },
     /// A display's scale. Staged until applied.
@@ -180,10 +201,10 @@ pub enum DisplayEffect {
     #[effect(job, returns)]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayToolRow)]
     #[effect(returns, row, label = "display-tools-forget")]
     ForgetDisplayTool {
-        #[param("The tool's executable")]
+        #[param("The tool's row, or its executable")]
         tool: String,
     },
 }
@@ -925,16 +946,9 @@ pub struct DisplayModel {
 
 impl DisplayModel {
     fn tool_row(tool: &settings_store::display_tools::DisplayTool) -> LiveRow {
-        LiveRow::new(
+        LiveRow::typed::<DisplayToolRow>(
             format!("settings.display-tool:{}", tool.executable),
-            "settings.display-tool",
             tool.name().to_owned(),
-        )
-        .operation(
-            SettingsEffect::from(DisplayEffect::ForgetDisplayTool {
-                tool: tool.executable.clone(),
-            })
-            .bound(),
         )
     }
 
@@ -1388,9 +1402,8 @@ impl DisplayModel {
 
     fn output_row(&self, output: &DisplayOutput) -> LiveRow {
         let display = &output.connector;
-        let mut row = LiveRow::new(
+        let mut row = LiveRow::typed::<DisplayOutputRow>(
             format!("settings.display-output:{display}"),
-            "settings.display-output",
             output_title(output),
         );
         let target = || display.clone();
@@ -1401,10 +1414,6 @@ impl DisplayModel {
                     on: false,
                 },
                 vec!["on"],
-            ),
-            (
-                DisplayEffect::SetPrimaryDisplay { display: target() },
-                vec![],
             ),
             (
                 DisplayEffect::SetOutputScale {
@@ -1706,10 +1715,13 @@ impl DisplayModel {
                 }
                 Ok(())
             }),
-            DisplayEffect::SetPrimaryDisplay { display } => self.stage(display, |cfg, _, _| {
-                cfg.primary = true;
-                Ok(())
-            }),
+            DisplayEffect::SetPrimaryDisplay { display } => self.stage(
+                crate::effects::row_entity(display, "settings.display-output"),
+                |cfg, _, _| {
+                    cfg.primary = true;
+                    Ok(())
+                },
+            ),
             DisplayEffect::SetOutputScale { display, scale } => {
                 let factor =
                     scale_factor_of(scale).ok_or_else(|| format!("`{scale}` is not a scale"))?;
@@ -1844,6 +1856,9 @@ impl DisplayModel {
                     })
             }
             DisplayEffect::ForgetDisplayTool { tool } => {
+                // A tool's row binds the row's id; a control names its
+                // executable.
+                let tool = crate::effects::row_entity(tool, "settings.display-tool");
                 settings_store::display_tools::TrustedDisplayTools::forget(tool)
                     .map(|()| t("display-tools-forgotten"))
                     .map_err(|error| format!("The display tool was not forgotten: {error}"))
