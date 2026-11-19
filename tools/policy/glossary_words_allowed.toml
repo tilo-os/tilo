@@ -568,7 +568,10 @@ paths = ["crates/agent/agent-session/src/workspace_actions/index.rs"]
 reason = "The helper that names a document's action provider, as the action service knows it."
 words = ["record"]
 identifiers = ["record_provider"]
-paths = ["crates/agent/agent-session/tests/workspace_actions/search_beside_requests.rs"]
+paths = [
+    "crates/agent/agent-session/tests/workspace_actions/search_beside_requests.rs",
+    "crates/agent/agent-session/tests/workspace_actions/person_before_agent.rs",
+]
 
 [[allow]]
 reason = "A LUKS key slot: the one of a volume's keys a boot asks a sibling to unlock with."

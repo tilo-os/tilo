@@ -211,6 +211,10 @@ mod workspace_find;
 mod search_beside_requests;
 
 #[cfg(test)]
+#[path = "workspace_actions/person_before_agent.rs"]
+mod person_before_agent;
+
+#[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]
 mod workspace_per_customer;
 
