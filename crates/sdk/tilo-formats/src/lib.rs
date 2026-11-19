@@ -10,6 +10,7 @@ mod clock;
 mod dates;
 mod region;
 mod shown;
+mod stored;
 #[cfg(test)]
 mod tests;
 
@@ -22,6 +23,11 @@ pub use dates::{
 };
 pub use region::{DateStyle, FirstDayOfWeek, NumberStyle, RegionFormats};
 pub use shown::{sentence, shown};
+pub use stored::{
+    clock_from_text, clock_text, compact_date_from_text, compact_date_text,
+    compact_moment_from_text, compact_moment_text, date_from_text, date_text, minute_from_text,
+    minute_text,
+};
 
 /// `body` is text for a machine -- a file name, a protocol field, a stored
 /// value a program reads back -- and stands as it is, `reason` (a string
