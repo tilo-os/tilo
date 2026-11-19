@@ -413,6 +413,27 @@ mod tests {
         p
     }
 
+    /// A case that points the environment at a fresh directory gets the
+    /// store under that directory, never the one a case before it opened:
+    /// this device's store is kept per data home, resolved when it is asked
+    /// for.
+    #[test]
+    fn a_new_data_home_answers_a_store_of_its_own() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_DATA_HOME", first.path().join("data"))
+            .set("XDG_CONFIG_HOME", first.path().join("config"));
+        let one = device().expect("a store under the first data home");
+        env.set("XDG_DATA_HOME", second.path().join("data"))
+            .set("XDG_CONFIG_HOME", second.path().join("config"));
+        let two = device().expect("a store under the second data home");
+        assert!(
+            !Arc::ptr_eq(&one, &two),
+            "the second case's settings are its own, not the first's"
+        );
+    }
+
     #[test]
     fn a_hand_started_test_harness_never_writes_the_callers_settings() {
         // This test binary is itself a harness under `deps/`: with the test environment's

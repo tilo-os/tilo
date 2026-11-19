@@ -8713,13 +8713,10 @@ dependencies = [
  "defmt",
  "jiff-core",
  "jiff-static",
- "jiff-tzdb-platform",
- "js-sys",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -8750,15 +8747,6 @@ name = "jiff-tzdb"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0980fca2cc272465bd60e82397607ba9f33add9e48defd77923301bbd03808f2"
-
-[[package]]
-name = "jiff-tzdb-platform"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
-dependencies = [
- "jiff-tzdb",
-]
 
 [[package]]
 name = "jni"
@@ -18951,7 +18939,9 @@ name = "tilo-clock"
 version = "0.1.0"
 dependencies = [
  "jiff",
+ "js-sys",
  "tilo-test-env",
+ "wasm-bindgen",
  "web-time",
 ]
 
@@ -22862,6 +22852,7 @@ dependencies = [
  "tilo-desktop-surface",
  "tilo-failure",
  "tilo-live",
+ "tilo-resource",
  "tilo-ui",
  "tokio",
  "tracing",

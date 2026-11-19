@@ -364,8 +364,11 @@ fn search_finds_each_snippet_by_what_it_holds() {
         "kubectl rollout",
         "Roll a deployment",
     ] {
+        // Search folds case, so the language is found however its name is spelled.
         assert!(
-            hit.fields.iter().any(|(text, _)| text.contains(held)),
+            hit.fields
+                .iter()
+                .any(|(text, _)| text.to_lowercase().contains(&held.to_lowercase())),
             "{held} in {:?}",
             hit.fields
         );

@@ -24,7 +24,7 @@ use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
+use tilo_desktop_surface::surface::window_menu::move_to_workspace_id;
 
 use crate::common::window::{Client, KEY_A, WINDOW_BYTES};
 use crate::layout::{Device, tabs, tile_of, until, workspace_of};
@@ -367,7 +367,7 @@ fn shown_and_told(rig: &Rig, pass: &mut Pass, titles: &[&str]) -> Vec<(String, T
 fn send(session: &mut Session, tab: TabId, to: WorkspaceId) {
     session
         .handle()
-        .choose_window_menu(tab, &format!("{MOVE_TO_WORKSPACE}:{to}"), None)
+        .choose_window_menu(tab, &move_to_workspace_id(to), None)
         .expect("the person moves the window");
     until(session, "the window is in the other workspace", |session| {
         workspace_of(session, tab) == Some(to)

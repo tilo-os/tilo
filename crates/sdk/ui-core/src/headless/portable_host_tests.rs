@@ -1112,8 +1112,9 @@ fn agent_marks(root: Box<dyn Widget>, event: &tilo_actions::SemanticInteraction)
 
 /// An agent's write on an item a list shows is drawn on the item's row: a rename on the row's
 /// title, its caret saying "renamed", never the title it had; a comment on the issue, or a note
-/// it made whose words show nowhere, on the row saying "wrote". In the issue's thread the
-/// comment's words are drawn as the agent's.
+/// it made whose words show nowhere, as the agent's mark on the row, whose pointer tag names the
+/// agent alone. In the issue's thread the comment's words are drawn as the agent's, its caret
+/// saying "wrote" where they stand.
 #[test]
 fn an_agents_writes_are_drawn_on_the_items_row() {
     use crate::widget::{ListRow, Text};
@@ -1157,12 +1158,12 @@ fn an_agents_writes_are_drawn_on_the_items_row() {
     let thread =
         Box::new(Column::new().push(Box::new(Text::new(words).edits("comments", "issue-b/c1"))));
     assert_eq!(agent_marks(thread, &event), vec!["Ada: wrote".to_owned()]);
-    assert_eq!(agent_marks(rows(), &event), vec!["Ada: wrote".to_owned()]);
+    assert_eq!(agent_marks(rows(), &event), vec!["Ada".to_owned()]);
 
     event.resource.id = "tasks.tracker/issues/issue-b".into();
     event.resource.kind = "tasks.tracker.issues".into();
     event.anchor = text("body", "0ca48c75", 7);
-    assert_eq!(agent_marks(rows(), &event), vec!["Ada: wrote".to_owned()]);
+    assert_eq!(agent_marks(rows(), &event), vec!["Ada".to_owned()]);
 }
 
 /// A list's row names the field its title shows by its address, as a field bound to it is named: an

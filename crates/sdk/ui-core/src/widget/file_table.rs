@@ -413,9 +413,7 @@ impl<R: FileRow> FileTable<R> {
                             if with_time {
                                 crate::format::timestamp(&at)
                             } else {
-                                crate::format::date(
-                                    at.to_zoned(jiff::tz::TimeZone::system()).date(),
-                                )
+                                crate::format::date(crate::clock::at(at).date())
                             }
                         })
                     },

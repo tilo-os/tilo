@@ -24,15 +24,7 @@ pub(crate) fn query() -> wire::SessionsQuery {
 
 pub(crate) const SESSION_KIND: &str = "console.session";
 
-/// A session as the type its rows are items of: what a published session says it is, so search
-/// names it as it names a resource's item ("sessions of Console") instead of taking the app's
-/// word for it.
-pub(crate) struct Session;
-
-impl ui::tilo_resource::words::RowType for Session {
-    const KIND: &'static str = SESSION_KIND;
-    const LABEL: &'static str = "Session";
-}
+pub(crate) use console_model::Session;
 
 /// How many of the sessions read are published as resources of their own: a published tree
 /// stays bounded, and any other session's address is answered by [`live_session`] alone.
@@ -68,11 +60,15 @@ pub(crate) fn live_session(sessions: &[wire::AgentSession], id: &str) -> LiveRow
             || tr("console-session"),
             |session| session.instruction.clone(),
         );
-    LiveRow::typed::<Session>(session_resource_id(id), label)
-        .effect(&ConsoleEffect::ViewSession {
-            session: id.to_owned(),
-        })
-        .view(session_view())
+    LiveRow::typed_with::<Session>(
+        session_resource_id(id),
+        label,
+        &ui::tilo_resource::RowBindings::new().bind(
+            ConsoleEffect::VIEW_SESSION,
+            [("session", serde_json::Value::from(id.to_owned()))],
+        ),
+    )
+    .view(session_view())
 }
 
 /// The sessions `sessions` lists as resources of their own, up to the limit, first session first.

@@ -137,17 +137,6 @@ pub enum CalendarEffect {
         #[param("Calendar id")]
         id: String,
     },
-    /// Show or hide a calendar
-    ///
-    /// A display choice of this person, which follows them to their other
-    /// devices.
-    #[effect(kind = "outside")]
-    SetVisibility {
-        #[param("Calendar id")]
-        id: String,
-        #[param("Whether its events are shown")]
-        visible: bool,
-    },
     /// Show calendar view
     #[effect(view, idempotent)]
     ShowView {

@@ -94,6 +94,15 @@ pub(crate) fn window(cx: &ViewCx<Project>, mut window: CodeApp) -> Element {
         Publishes::new()
             .live_rows(move || rows.borrow().shown.live_rows())
             .live_row(move |id| row.borrow().shown.live_row(id))
+            // A file's committed text is read through the reader this app
+            // registers, beside the effects its item declares.
+            .item_reads(|field, id| {
+                if field == "files" {
+                    vec![crate::text_operations::snapshot_spec(id.to_owned())]
+                } else {
+                    Vec::new()
+                }
+            })
             .search_entries(move || entries.borrow().shown.entries.to_vec()),
         Box::new(window),
     )

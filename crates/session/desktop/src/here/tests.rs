@@ -711,21 +711,17 @@ tilo_test_env::scenario! {
             workspaces: vec![workspace],
             ..Layout::default()
         };
-        // When the workspace admitted each of its people, as the host hands it over.
-        let joined: BTreeMap<String, u64> = tree
-            .active_workspace()
-            .expect("the workspace is in front")
-            .policy
-            .admitted()
-            .map(|(person, admitted)| (person.to_owned(), admitted))
-            .collect();
+        // The workspace's people as the host hands them over.
+        let (joined, names) = super::workspace_people(
+            tree.active_workspace().expect("the workspace is in front"),
+        );
         let alex = |publisher: &str, person: &str| LiveMember {
             user: Some(person.into()),
             ..member(publisher, "person", "Alex")
         };
         let page = |own: (&str, &str), others: Vec<LiveMember>| {
             let mut here = HereState::default();
-            here.set_joined(&joined);
+            here.set_workspace_people(&joined, &names);
             here.set_members(Some(alex(own.0, own.1)), Some(others));
             here
         };
@@ -759,9 +755,10 @@ tilo_test_env::scenario! {
         );
         assert_eq!(theirs.own_shown().as_deref(), Some("Alex (1)"));
 
-        // Alone, nobody needs a number.
+        // A namesake away from here still numbers them: the roster lists both, and every surface
+        // reads the same number.
         mine.set_members(Some(alex("dev-a", "person-a")), Some(Vec::new()));
-        assert_eq!(mine.own_shown().as_deref(), Some("Alex"));
+        assert_eq!(mine.own_shown().as_deref(), Some("Alex (2)"));
     }
 
     phase a_persons_devices_are_one_person;

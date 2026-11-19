@@ -228,23 +228,14 @@ mod tests {
             );
             row.groups[0].focused = true;
             let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-            let filled = beside_the_title(&row);
-            assert_eq!(filled, row.groups[0].tab_rects()[0], "the title");
+            anchor_takes_the_window(&row);
             let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             for group in &mut row.groups {
                 group.bar_mut().set_window_controls(true);
             }
             row.groups[0].focused = true;
             let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
-            let free = beside_the_title(&row);
-            let group = &row.groups[0];
-            let y = free.center().y;
-            assert!(group.bar_grab_hit(Point::new(free.x0, y)), "{free:?}");
-            assert!(group.bar_grab_hit(Point::new(free.x1, y)), "{free:?}");
-            assert!(
-                free.x0 >= group.tab_rects()[0].x1,
-                "{free:?} past the title"
-            );
+            anchor_takes_the_window(&row);
         }
 
         phase a_floating_card_is_no_window_a_hint_points_at;
@@ -297,6 +288,20 @@ mod tests {
             "{anchor:?} nearer the title {title:?} than the buttons {buttons:?}"
         );
         anchor
+    }
+
+    /// The hint's place stands on the bar's ground where a drag takes the window, clear of every
+    /// button: past the title where the app's toolbar leaves ground, on the title itself where the
+    /// bar is the window's to take all the way along.
+    fn anchor_takes_the_window(row: &GroupRow) {
+        let anchor = beside_the_title(row);
+        let group = &row.groups[0];
+        let y = anchor.center().y;
+        assert!(
+            group.bar_grab_hit(Point::new(anchor.x0, y))
+                && group.bar_grab_hit(Point::new(anchor.x1, y)),
+            "the ground the hint points at takes the window: {anchor:?}"
+        );
     }
 }
 

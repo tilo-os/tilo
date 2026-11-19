@@ -99,11 +99,19 @@ fn process_resource_label(process: &ProcessInfo) -> String {
 /// One process row, bound to its PID generation.
 pub(crate) fn process_row(process: &ProcessInfo) -> LiveRow {
     let id = process_resource_id(process.pid, process.started_at);
-    let row = LiveRow::typed::<Process>(id, process_resource_label(process));
-    match process.app.clone() {
-        Some(app) => row.effect(&MonitorEffect::EndApp { app }),
-        None => row,
+    let bound = || [("process", serde_json::Value::from(id.clone()))];
+    let mut bindings = ui::tilo_resource::RowBindings::new()
+        .bind(MonitorEffect::INSPECT, bound())
+        .bind(MonitorEffect::COPY_PID, bound())
+        .bind(MonitorEffect::END_PROCESS, bound())
+        .bind(MonitorEffect::KILL, bound());
+    if let Some(app) = process.app.clone() {
+        bindings = bindings.bind(
+            MonitorEffect::END_APP,
+            [("app", serde_json::Value::from(app))],
+        );
     }
+    LiveRow::typed_with::<Process>(id, process_resource_label(process), &bindings)
 }
 
 fn indexed_text(value: &str) -> String {

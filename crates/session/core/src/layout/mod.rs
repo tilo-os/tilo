@@ -32,8 +32,8 @@ use sizing::canvas_size;
 use sizing::width_in_view;
 mod published;
 use published::{
-    hash_resources, layout_resource, place_actions, place_label, record_resource, row_label,
-    strip_actions, strip_label,
+    LayoutRow, LayoutStrip, Place, hash_resources, history_resource, layout_resource, place_label,
+    row_label, strip_label,
 };
 pub use published::{place_kind_resource, resources, row_kind_resource, strip_kind_resource};
 mod queries;
@@ -68,7 +68,7 @@ pub const OPERATION: &str = "tilo.shell.layout";
 /// served app's `open` into the layout's own, so the two are one address.
 pub const RESOURCE: &str = session_actions::LAYOUT_RESOURCE;
 /// The resource its history is published as: its undo and redo.
-pub const RECORD_RESOURCE: &str = "shell:layout-record";
+pub const HISTORY_RESOURCE: &str = "shell:layout-history";
 /// The kind of a place's own resource.
 pub const PLACE_KIND: &str = "layout.place";
 /// The kind of a strip's own resource.
@@ -1469,28 +1469,26 @@ impl Layout {
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
         let reading = self.reading();
-        let rows = reading
-            .rows
-            .iter()
-            .map(|row| ResourceSpec::new(Item::Row.resource(&row.key), ROW_KIND, row_label(row)));
+        let rows = reading.rows.iter().map(|row| {
+            tilo_resource::LiveRow::typed::<LayoutRow>(Item::Row.resource(&row.key), row_label(row))
+                .into_resource()
+        });
         let strips = reading.strips.iter().map(|strip| {
-            strip_actions(&strip.key, &self.words).into_iter().fold(
-                ResourceSpec::new(
+            published::carried(
+                tilo_resource::LiveRow::typed::<LayoutStrip>(
                     Item::Strip.resource(&strip.key),
-                    STRIP_KIND,
                     strip_label(&self.words, strip),
-                ),
-                ResourceSpec::with_action,
+                )
+                .into_resource(),
             )
         });
         let places = reading.places.iter().map(|place| {
-            place_actions(&place.key, &self.words).into_iter().fold(
-                ResourceSpec::new(
+            published::carried(
+                tilo_resource::LiveRow::typed::<Place>(
                     Item::Place.resource(&place.key),
-                    PLACE_KIND,
                     place_label(&self.words, place),
-                ),
-                ResourceSpec::with_action,
+                )
+                .into_resource(),
             )
         });
         // A query a place shows while its app answers is a resource of its own beside the places,
@@ -1502,7 +1500,7 @@ impl Layout {
         vec![
             layout_resource(&self.words)
                 .with_children(rows.chain(strips).chain(places).chain(queries)),
-            record_resource(&self.words),
+            history_resource(&self.words),
         ]
     }
 

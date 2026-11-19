@@ -4,12 +4,15 @@
 
 use ui::tilo_resource;
 
+/// This window's library: the effects its source buttons and Spotify menus
+/// request, offered where a control binds them.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "music.library",
+    label = "Library",
+    effects = crate::actions::MusicEffect
+)]
 pub(crate) struct Library;
-
-impl ui::tilo_resource::words::RowType for Library {
-    const KIND: &'static str = "music.library";
-    const LABEL: &'static str = "Library";
-}
 
 /// This device's player, the transport's controls act on.
 #[derive(tilo_resource::Row)]

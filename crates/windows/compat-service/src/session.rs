@@ -188,6 +188,7 @@ where
                 &entry.query,
                 VmFallback::Disabled,
                 &entry.app_id,
+                Some(&entry.capsule_id),
                 capabilities,
                 try_unix_now(),
             )
@@ -200,6 +201,7 @@ where
                 query,
                 VmFallback::Disabled,
                 "so.tilo.windows.preview",
+                None,
                 &[],
                 try_unix_now(),
             )
@@ -241,6 +243,7 @@ where
             app_id: entry.app_id.clone(),
             workspace_id: workspace_id.to_string(),
             program_id: entry.program.id.clone(),
+            capsule_id: Some(entry.capsule_id.clone()),
             query: entry.query.clone(),
             vm_fallback: VmFallback::Disabled,
             capabilities,

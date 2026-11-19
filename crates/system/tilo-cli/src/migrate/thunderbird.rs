@@ -33,8 +33,9 @@ use super::{Landed, Lander};
 /// The source name `tilo migrate` uses.
 pub const SOURCE: &str = "thunderbird";
 
-/// Where a message goes: the workspace's mailbox, in its folder.
-const DELIVER: &str = "mail/mail.mailbox#deliver-message";
+/// Where a message goes: the messages kept beside the workspace's mailbox, in its folder, which
+/// Mail delivers to (the mailbox itself keeps folders, drafts and accounts).
+const DELIVER: &str = "mail/mail.messages#deliver-message";
 const ADD_CONTACTS: &str = "contacts/contacts.contacts#add-contacts";
 const NEW_EVENT: &str = "calendar/calendar.calendar#new-event";
 /// Where an email account joins the person's accounts (Mail's, which the person allows).

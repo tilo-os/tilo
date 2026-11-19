@@ -1,5 +1,5 @@
-//! The clock as a person reads it: local date and time. [`local_now`] is the wall clock in the local
-//! time zone.
+//! The clock as a person reads it: local date and time in their zone. [`local_now`] is the wall
+//! clock in that zone.
 
 pub use tilo_formats::TimeStyle;
 
@@ -7,7 +7,7 @@ pub use tilo_formats::TimeStyle;
 /// 30 June 2026, 10:42.
 pub const CAPTURE_LOCAL_TIME: (i16, i8, i8, i8, i8) = (2026, 6, 30, 10, 42);
 
-pub use tilo_clock::local::{instant_of, now as local_now, today};
+pub use tilo_clock::local::{Zone, at, instant_of, now as local_now, today};
 
 /// Pin the wall clock to [`CAPTURE_LOCAL_TIME`] in the local time zone for
 /// the rest of the process. The launcher calls this before it builds an app

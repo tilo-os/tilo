@@ -113,32 +113,35 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     out
 }
 
-/// An app on this device, by `app.<id>` : its own `open` , which the session carries out by
+/// An app on this device, as a declared type: its own `open` , which the session carries out by
 /// starting it in the workspace in front ([`crate::Session`]'s shell serve).
+pub struct Application;
+
+impl tilo_resource::words::RowType for Application {
+    const KIND: &'static str = tilo_actions::remote::APPLICATION_RESOURCE_KIND;
+    const LABEL: &'static str = "Application";
+}
+
+/// What an app offers: opening it in the workspace in front.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "tilo.application.launch")]
+pub enum ApplicationOpen {
+    /// Open the app
+    #[effect(kind = "undoable", label = "session-application-open")]
+    Open,
+}
+
 fn application() -> ResourceSpec {
-    ResourceSpec::new(
-        String::new(),
-        tilo_actions::remote::APPLICATION_RESOURCE_KIND,
-        String::new(),
-    )
-    .with_action(ActionSpec::typed_operation(
-        tilo_actions::remote::APPLICATION_OPEN_ACTION,
-        String::new(),
-        String::new(),
-        tilo_actions::OperationKind::Effect,
-        tilo_actions::remote::ApplicationLaunch::TYPE,
-        Vec::new(),
-        |_| {
-            tilo_actions::EncodedAction::encode_operation(
-                tilo_actions::remote::ApplicationLaunch::TYPE,
-                &(),
-            )
-            .unwrap_or_else(|error| tilo_actions::EncodedAction {
-                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.to_owned(),
-                payload: error.to_string().into_bytes(),
-            })
-        },
-    ))
+    let mut resource = tilo_resource::offer::<ApplicationOpen>(tilo_resource::typed_resource::<
+        Application,
+    >(String::new(), String::new()));
+    // The kind stands for whatever app a package names: neither its verb nor its resource is
+    // labelled here.
+    for action in &mut resource.actions {
+        action.type_mut().label.clear();
+        action.type_mut().description = None;
+    }
+    resource
 }
 
 /// The type of a parameter as the description writes it. A resource is a resource of the kind it

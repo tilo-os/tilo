@@ -1369,3 +1369,24 @@ so-tilo-layout-move-to-display = Move to another display
 so-tilo-layout-search = Search the desktop
 so-tilo-layout-step-focus = Step through the windows
 so-tilo-layout-wait-window = Keep waiting
+
+# Parameter descriptions of the declared vocabularies, read as `<label>-<argument>`.
+
+desktop-action-show-osd-kind = What it is about: volume, brightness, keyboard-backlight, microphone, airplane-mode, touchpad, play, pause, next-track, previous-track, stop, no-backlight, night-light, do-not-disturb, magnifier, captured-keys or pointer-released
+desktop-action-show-osd-level = The level, from 0 to 1
+desktop-action-show-osd-on = Whether it is on
+desktop-action-show-osd-device = The device it changed, as a person knows it
+desktop-action-show-osd-device-glyph = The device's glyph: speaker, headphones, display or keyboard
+desktop-action-show-osd-chord = The chord that asked for it
+desktop-action-show-osd-display = The connector of the display it shows on
+session-window-share-share-window = The window, by the identifier its app may capture; leave out for the window the tab shows
+session-window-share-share-tab = The tab the window is shown in on this device
+session-window-share-share-app_id = The app the window belongs to; leave out for the app of the window the tab shows
+session-window-share-share-workspace = The workspace to share it in; leave out for the one the tab stands in
+session-window-share-stop-tab = The tab the window is shown in on this device
+session-window-share-allow-input-tab = The tab the window is shown in on this device
+session-window-share-allow-input-on = Whether they may control it; leave out to switch it
+session-window-share-watch-tab = The tab the window is shown in on this device
+session-window-share-watch-workspace = The workspace to show it from
+session-window-share-unwatch-tab = The tab the window is shown in on this device
+session-window-share-unwatch-workspace = The workspace it is shown from

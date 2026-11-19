@@ -83,6 +83,61 @@ impl Chained for LogPart {
     }
 }
 
+/// Posts of a thread, each answering one before it: a chain every view lists
+/// whole, whose answers name the post they answer wherever it is kept.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct Post {
+    pub text: String,
+    pub answers: String,
+}
+
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct ThreadPart {
+    #[model(readonly)]
+    pub posts: Collection<Post>,
+}
+
+#[resource(kind = "test.chain-thread-part", catalogue = "tests/locales")]
+impl ThreadPart {
+    /// Post something.
+    #[action]
+    pub fn post(&mut self, cx: &mut ActionCx, text: String, answers: String) {
+        self.posts.push(cx.id(), Post { text, answers });
+    }
+}
+
+impl Chained for ThreadPart {
+    type Base = Log;
+
+    fn chain() -> DocumentId {
+        DocumentId::derived("thread", &DocumentId::workspace_default())
+    }
+
+    const HELD_WHOLE: bool = true;
+
+    /// An answer names a post the thread has, in any of its parts.
+    fn prepare(
+        actions: &mut [Self::Action],
+        _: &Log,
+        parts: &[(u64, Rc<Self>)],
+        _: &tilo_actions::ActionInvoker,
+    ) -> Result<(), String> {
+        for action in actions {
+            let ThreadPartAction::Post(thread_part::Post { answers, .. }) = &action.operation
+            else {
+                continue;
+            };
+            let known = parts
+                .iter()
+                .any(|(_, part)| part.posts.get(&Id::from_raw(answers.as_str())).is_some());
+            if !answers.is_empty() && !known {
+                return Err(format!("no post named {answers}"));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Parts of [`PART_LINES`] lines while it is held.
 fn small_parts() -> PartLimits {
     PartLimits::scoped(PART_LINES, usize::MAX)
@@ -700,4 +755,92 @@ tilo_test_env::scenario! {
         assert!(texts(&chain.parts()).is_empty(), "both members taken back");
         assert!(!chain.undo_last(), "nothing more to take back");
     }
+}
+
+/// A device that joined late holds the head of a thread every view lists
+/// whole, its earlier parts still on their way. An answer to a post kept in
+/// one of them is not refused as naming nothing: it waits, and lands once
+/// the parts arrived. The write that names something no part has is refused
+/// once every part is here.
+#[test]
+fn a_write_naming_an_item_of_a_part_on_its_way_waits_for_it() {
+    let _parts = small_parts();
+    let post = |text: &str, answers: &str| {
+        ThreadPart::POST.with(thread_part::Post {
+            text: text.into(),
+            answers: answers.into(),
+        })
+    };
+    use durable_store::{DurableStore as _, StorageKey};
+    let theirs = Rc::new(durable_store::MemoryStore::new());
+    let writer = device_keeping(&theirs);
+    let writing = Chain::<ThreadPart>::detached_in(
+        writer,
+        "so.tilo.test-chain-log",
+        &MemberId::person("ada"),
+        || Rc::new(Log::default()),
+    )
+    .unwrap();
+    for n in 0..=2 * PART_LINES {
+        writing.invoke(&post(&format!("post {n}"), "")).unwrap();
+    }
+    assert_eq!(writing.head(), Some(2));
+    let first = writing
+        .parts()
+        .first()
+        .and_then(|(_, part)| part.posts.iter().next().map(|(id, _)| id.clone()))
+        .expect("the first post");
+
+    let ours = Rc::new(durable_store::MemoryStore::new());
+    let reader = device_keeping(&ours);
+    reader.ask_workspace_for_missing();
+    let chain = Chain::<ThreadPart>::detached_in(
+        reader.clone(),
+        "so.tilo.test-chain-log",
+        &MemberId::person("bo"),
+        || Rc::new(Log::default()),
+    )
+    .unwrap();
+    // The workspace's part reaches the reader's own copy of it.
+    let arrives = |index: u64| {
+        let key = StorageKey::document(
+            "so.tilo.test-chain-log",
+            "workspace",
+            ThreadPart::chain().part(index).storage_key(),
+        );
+        let kept = theirs.read(&key).unwrap().expect("the writer kept it");
+        ours.hydrate(key, kept).unwrap();
+        reader.note_kept();
+    };
+    arrives(2);
+    let held: Vec<u64> = chain.parts().iter().map(|(index, _)| *index).collect();
+    assert_eq!(
+        held,
+        [2],
+        "the head arrived, the parts before it are on their way"
+    );
+
+    assert_eq!(
+        chain.invoke(&post("an answer", first.as_str())).unwrap(),
+        None,
+        "it waits for the parts on their way, never refused as naming nothing"
+    );
+    arrives(0);
+    arrives(1);
+    let answered: Vec<String> = chain
+        .parts()
+        .iter()
+        .flat_map(|(_, part)| part.posts.values())
+        .filter(|post| post.answers == first.as_str())
+        .map(|post| post.text.clone())
+        .collect();
+    assert_eq!(answered, ["an answer"], "it landed once they arrived");
+
+    let refused = chain.invoke(&post("astray", "no-such-post"));
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("no post named")),
+        "with every part here it is refused: {refused:?}"
+    );
 }

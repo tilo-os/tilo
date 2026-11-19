@@ -250,7 +250,7 @@ fn connected_account_files_handoff_is_typed_and_matches_files_resource() {
                 "workspace-a",
                 "so.tilo.file-explorer",
                 file_explorer::remote_accounts::resource_id(&id),
-                "open-remote-account",
+                file_explorer::search_provider::REMOTE_ACCOUNT_OPEN_ACTION,
             )
         );
         assert!(matches!(

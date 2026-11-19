@@ -7,10 +7,12 @@ use std::rc::Rc;
 use serde_json::Value as Json;
 use tilo_actions::{Actor, MemberId, ResourceSpec};
 
+use super::published::LayoutEffect;
 use super::{
-    Ask, AskOrigin, Busy, CanvasRect, Find, Found, Layout, LayoutAction, Pointed, RECORD_RESOURCE,
+    Ask, AskOrigin, Busy, CanvasRect, Find, Found, HISTORY_RESOURCE, Layout, LayoutAction, Pointed,
     RESOURCE,
 };
+use tilo_resource::Effect as _;
 
 /// The answer a layout action that asks the record gives: complete, with nothing for the
 /// caller to read back. A place that stands on a later pass is complete when it is asked, never
@@ -86,7 +88,7 @@ impl LayoutActions {
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         // The layout publishes its record's undo and redo beside its layout actions: both
         // step the record, never decode as a layout action.
-        if address.resource == RECORD_RESOURCE
+        if address.resource == HISTORY_RESOURCE
             || (address.resource == RESOURCE && matches!(address.action.as_str(), "undo" | "redo"))
         {
             return self.step(address);
@@ -97,10 +99,11 @@ impl LayoutActions {
         let encoded = built
             .build_json(arguments)
             .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
-        let mut action =
-            LayoutAction::decode(&encoded.type_id, &encoded.payload).ok_or_else(|| {
-                tilo_actions::ApiError::UnregisteredType("tilo.shell.layout".to_owned())
-            })?;
+        let effect = LayoutEffect::from_payload(&encoded.payload)
+            .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
+        let Some(mut action) = effect.layout() else {
+            return self.step(address);
+        };
         // An action that names no one is the person's own input: theirs to take back, and never
         // made to wait for themselves.
         let person = Actor::from(MemberId::person(self.person()));

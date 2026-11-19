@@ -319,7 +319,6 @@ calendar-effects-set-color = Set calendar colour
 calendar-effects-show-calendar = Show calendar
 calendar-effects-hide-calendar = Hide calendar
 calendar-effects-read-calendar = Read calendar
-calendar-effects-set-visibility = Show or hide a calendar
 calendar-effects-show-view = Show calendar view
 calendar-effects-show-all-calendars = Show all calendars
 calendar-effects-show-month = Show month

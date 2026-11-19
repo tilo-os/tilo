@@ -968,20 +968,18 @@ impl PeerGovernanceMut<'_> {
     /// asks, whether its person is a member or a holder that is none.
     /// Whether the workspace changed.
     ///
-    /// # Errors
-    ///
-    /// Admit `device`, a device certified by the root of someone already a
-    /// member, as that member's: it needs no invitation, and the device
-    /// `key` that keeps the workspace's keys writes it in when it first
-    /// asks, whether its person is a member or a holder that is none.
-    /// Whether the workspace changed.
+    /// A device the workspace already holds is admitted again under the same
+    /// certificate, and a later certificate of it replaces the held one
+    /// ([`PeerGovernanceMut::renew_member_certificate`]): a device is its key,
+    /// whatever certificate of its person's root it comes back with.
     ///
     /// # Errors
     ///
     /// Returns an error if `key` is not a current member's device nor one of
     /// the workspace's key-holding holders, `device`
-    /// does not verify, is revoked or conflicts with the workspace's, its person
-    /// is not a member, or governance cannot be updated.
+    /// does not verify, is revoked or names another device than the one the
+    /// workspace holds, its person is not a member, or governance cannot be
+    /// updated.
     pub fn admit_member_device(
         self,
         device: &DeviceCert,
@@ -993,17 +991,27 @@ impl PeerGovernanceMut<'_> {
         if self.peer.core.revocations.refuses(device) {
             return Err("device revoked".into());
         }
-        match self.peer.core.certificates.get(&device.device_public_key) {
-            Some(old) if old.as_ref() == device => return Ok(false),
-            Some(_) => return Err("certificate conflict".into()),
-            None => {}
-        }
         let mut doc = self
             .peer
             .core
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
+        let known = hex::encode(device.device_public_key);
+        match self.peer.core.certificates.get(&device.device_public_key) {
+            Some(old) if old.as_ref() == device => return Ok(false),
+            Some(old) => {
+                if !super::supersedes(old.as_ref(), device) {
+                    return Err("certificate conflict".into());
+                }
+                // A later certificate of the same device replaces the one the
+                // workspace keeps, and keeps the rest of that device's row.
+                if doc.identities().contains_key(&known) {
+                    return self.renew_member_certificate(device, key, now);
+                }
+            }
+            None => {}
+        }
         let person = hex::encode(device.user_public_key);
         let owner = self.peer.core.owner == device.user_public_key;
         if !owner

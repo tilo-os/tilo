@@ -233,13 +233,15 @@ pub fn desktop_say_doing(id: u64, now_ms: f64) -> Result<(), JsValue> {
             )]
             let now = now_ms.max(0.0) as u64;
             let tree = desktop.handle.read(Clone::clone);
-            let actions = desktop.activity.own_actions(
-                &tree,
-                tree.active,
-                &desktop.author,
-                now.saturating_sub(RECENT_MS),
-            );
-            tilo_session::activity::doing_now(&actions)
+            tilo_session::activity::SAY_DOING.get().and_then(|say| {
+                say(
+                    &desktop.activity,
+                    &tree,
+                    tree.active,
+                    &desktop.author,
+                    now.saturating_sub(RECENT_MS),
+                )
+            })
         } else {
             None
         };

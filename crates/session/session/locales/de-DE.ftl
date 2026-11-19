@@ -205,6 +205,11 @@ session-display-external = Externer Bildschirm
 session-clipboard = Zwischenablage
 session-quick-settings = Schnelleinstellungen
 session-shell-styles = Schreibtischstile
+session-style-make = Zu meinem machen
+session-style-check = Ein Stilpaket prüfen
+session-style-install = Ein Stilpaket installieren
+session-turn-conversation = Ganze Unterhaltung
+session-application-open = Die App öffnen
 session-devices = Geräte
 session-devices-press = Eines deiner Geräte drücken
 session-bluetooth-app = Bluetooth
@@ -433,6 +438,9 @@ call-screen-reason = um diesen Bildschirm im Anruf zu teilen
 ## What the window names
 session-resource-keyboard = Bildschirmtastatur
 session-resource-diagnostics = Sitzungsdiagnose
+session-diagnostics-profile-start = Die Bilder der Sitzung profilieren
+session-diagnostics-profile-stop = Das Profilieren der Sitzung beenden
+session-diagnostics-profile-status = Was Profiler und Heap der Sitzung tun
 session-resource-window-menu = Fenstermenü
 session-resource-surfaces = Oberflächen
 session-resource-keyboard-focus = Tastaturfokus
@@ -450,6 +458,11 @@ session-action-pin-pinned = Ob er angeheftet ist
 session-action-position = Einen Platz an einen Punkt der Fläche stellen, wie ein Ziehen, das ihn dort losließ
 session-action-position-x = Sein x auf der Fläche
 session-action-position-y = Sein y auf der Fläche
+session-action-size = Einem Platz eine Größe geben, wie das Ziehen an seiner Kante
+session-action-size-width = Seine Breite in Pixeln der Fläche
+session-action-size-height = Seine Höhe in Pixeln der Fläche
+session-action-drawn = Melden, wie hoch ein mitwachsender Platz gerade gezeichnet wird, wie seine Fläche es sieht
+session-action-drawn-height = Seine gezeichnete Höhe in Pixeln der Fläche
 session-action-close = Einen Platz schließen
 session-action-activate = Einen Platz vor seine Leiste holen
 session-action-move = Einen Platz in eine Zeile bewegen, oder als Tab in eine Leiste
@@ -561,3 +574,9 @@ machines-waiting-body-hardware = { $machine } ({ $hardware }) möchte beitreten 
 machines-waiting-review = Ansehen, was beitreten will
 machines-waiting-approve = { $code } bestätigen
 machines-waiting-decline = Ablehnen
+
+## Die Beschreibung eines Parameters wird als `<Label>-<Argument>` gelesen.
+
+session-toggle-touchpad-on = Ob das Touchpad an ist; weglassen zum Umschalten
+session-night-light-toggle-on = Ob das Nachtlicht an ist; weglassen zum Umschalten
+session-apps-uninstall-app = Der Name der App

@@ -1272,6 +1272,30 @@ impl PackageStore {
         Ok(self.usage_index(&self.registry()?).disk_usage())
     }
 
+    /// Every payload blob the content store holds, whether or not an
+    /// installed package still references it. Small blobs live in the
+    /// store's index and large ones in its files, so this is the only way
+    /// to see the whole of what it keeps.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the store's lock cannot be taken or its content
+    /// store cannot be read.
+    pub fn stored_blobs(&self) -> Result<Vec<BlobHash>, StoreError> {
+        let _lock = self.lock()?;
+        if !self.layout.content().exists() {
+            return Ok(Vec::new());
+        }
+        #[allow(
+            clippy::redundant_closure_for_method_calls,
+            reason = "naming the method as a path is not general enough for the session's borrowed lifetime"
+        )]
+        let blobs = content::session(&self.layout.content(), &self.layout.tmp(), |content| {
+            content.hashes()
+        })?;
+        Ok(blobs)
+    }
+
     /// Evict unpinned packages, least recently used first, until the
     /// store's distinct payload bytes are at most `max_bytes`. `0` disables
     /// the sweep. A package a running app has mounted, or a launch is

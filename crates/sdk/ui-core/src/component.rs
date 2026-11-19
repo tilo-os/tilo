@@ -529,7 +529,7 @@ fn moment_of(at: &str) -> Option<Moment> {
 #[must_use]
 pub fn moment_day(text: &str) -> Option<jiff::civil::Date> {
     if let Ok(at) = text.parse::<jiff::Timestamp>() {
-        return Some(at.to_zoned(jiff::tz::TimeZone::system()).date());
+        return Some(crate::clock::at(at).date());
     }
     jiff::civil::Date::strptime("%Y-%m-%d", text.get(..10).unwrap_or(text)).ok()
 }

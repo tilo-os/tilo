@@ -273,10 +273,13 @@ fn search_offers_people_no_arranging_internals() {
     let words: super::Words = std::rc::Rc::new(|_, _, fallback| fallback.to_owned());
     let mut resources = super::resources(&words);
     for key in ["1", "2", "3"] {
-        resources.push(super::place_actions(key, &words).into_iter().fold(
-            tilo_actions::ResourceSpec::new(key, super::PLACE_KIND, "Notes"),
-            tilo_actions::ResourceSpec::with_action,
-        ));
+        resources.push(
+            tilo_resource::LiveRow::typed::<super::published::Place>(
+                super::Item::Place.resource(key),
+                "Notes",
+            )
+            .into_resource(),
+        );
     }
     let published = Published(vec![PublishedActions::of("session", "", &resources)]);
     let titles = |needle: &str| -> Vec<String> {
@@ -299,4 +302,50 @@ fn search_offers_people_no_arranging_internals() {
         ["Redo the last layout change"],
         "once, on the layout"
     );
+}
+
+/// The published actions keep what the hand-built specs declared: the verbs that arrange are
+/// listed for agents and scripts and never as a person's palette rows, each names what it did in
+/// the layout's history, and a drawn height only reads.
+#[test]
+fn the_layout_actions_keep_their_audience_history_words_and_read_kind() {
+    let words: super::Words = std::rc::Rc::new(|_, _, fallback| fallback.to_owned());
+    let layout = super::published::layout_resource(&words);
+    let action = |id: &str| {
+        layout
+            .actions
+            .iter()
+            .find(|spec| spec.id == id)
+            .unwrap_or_else(|| panic!("{id}"))
+    };
+    for id in ["place", "place-found", "open", "show", "retry-query"] {
+        let spec = action(id);
+        assert!(
+            spec.reaches_agents(),
+            "{id} is listed for agents and scripts"
+        );
+        assert!(
+            !spec.reaches_people(),
+            "{id} is no row of a person's palette"
+        );
+    }
+    assert_eq!(action("pin").action_type().did.as_deref(), Some("pinned"));
+    assert_eq!(action("place").action_type().did.as_deref(), Some("showed"));
+
+    let place = tilo_resource::LiveRow::typed::<super::published::Place>(
+        super::Item::Place.resource("7"),
+        "Notes",
+    )
+    .into_resource();
+    let drawn = place
+        .actions
+        .iter()
+        .find(|spec| spec.id == "drawn")
+        .expect("the place offers its drawn height");
+    assert_eq!(
+        drawn.action_type().contract.kind,
+        tilo_actions::ActionKind::Read,
+        "a drawn height is view state: it reads and takes nothing back"
+    );
+    assert!(drawn.reaches_agents());
 }

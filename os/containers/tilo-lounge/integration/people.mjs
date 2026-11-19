@@ -1914,16 +1914,21 @@ try {
   if (errors.length) failed(`pages reported errors: ${errors.slice(0, 5).join('; ')}`);
 
   // The shell one person arranged is the shell the other shows: neither of the
-  // two people sharing it had a write of the shared desktop refused. What the
-  // invitation's person writes is not asked of them: the link brings them in as
-  // a Commenter, and A makes them a Viewer, so the workspace refuses their
-  // changes to its layout as those roles say it must, and their page keeps
-  // showing the layout it holds.
+  // two people sharing it had a write of the shared desktop refused. The
+  // invitation's person keeps their view of the layout on their own page: the
+  // link brings them in as a Commenter and A makes them a Viewer, and neither
+  // role writes in the workspace, so their page sends nothing of its layout,
+  // which the workspace would refuse.
   const refused = both.filter(line => /the workspace refused a change/.test(line));
   report.refused = refused;
   const refusedOfTheSharing = [...a.tab.log, ...b.tab.log]
     .filter(line => /the workspace refused a change/.test(line));
   if (refusedOfTheSharing.length) failed(`a page's change was refused: ${refusedOfTheSharing.slice(0, 5).join('; ')}`);
+  const refusedLayout = refused
+    .filter(line => /so\.tilo\.browser-desktop\/desktop: the workspace refused a change/.test(line));
+  if (refusedLayout.length) {
+    failed(`a page wrote the workspace's layout its role does not write: ${refusedLayout.slice(0, 5).join('; ')}`);
+  }
   // A frame repainted in part must leave no stale pixel. A page built with the
   // retained-frame check says so where it happens; the check also says when it
   // could not read its two frames back. A stale pixel on either page fails the

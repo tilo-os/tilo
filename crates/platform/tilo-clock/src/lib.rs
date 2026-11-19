@@ -8,37 +8,283 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// The clock types under `std::time`'s names, for signatures that need one;
-/// times are read through [`now`] and [`wall`].
-/// The clock as a person reads it: [`local::now`] is the wall clock in the system's time zone.
+/// The clock as a person reads it: [`local::now`] is the wall clock in their zone. A device
+/// reads the zone from its time-zone database; a page asks the browser, which answers the
+/// zone's offset for each instant and so knows an hour's change across a year.
 #[cfg(feature = "local")]
 pub mod local {
+    use jiff::civil::{Date, DateTime};
+    use jiff::{Timestamp, Zoned};
+
+    /// The person's zone.
+    #[derive(Clone, Debug)]
+    pub struct Zone(platform::Zone);
+
+    impl Zone {
+        /// The zone of the device or page this is read on.
+        #[must_use]
+        pub fn here() -> Self {
+            Self(platform::Zone::here())
+        }
+
+        /// The zone a device's database names, for a test that reads a time somewhere else.
+        #[cfg(not(target_family = "wasm"))]
+        #[must_use]
+        pub fn of(zone: jiff::tz::TimeZone) -> Self {
+            Self(platform::Zone::of(zone))
+        }
+
+        /// The instant `at` as the person reads it: the zone's offset then, which a page asks
+        /// the browser for rather than reading a database it does not have.
+        #[must_use]
+        pub fn at(&self, at: Timestamp) -> Zoned {
+            self.0.at(at)
+        }
+
+        /// The zone's name (`Europe/Vienna`), where it has one.
+        #[must_use]
+        pub fn name(&self) -> Option<String> {
+            self.0.name()
+        }
+
+        /// The instant `local` names in the zone: the earlier one where the clocks went back,
+        /// none where they skipped it.
+        #[must_use]
+        pub fn instant_of(&self, local: DateTime) -> Option<Timestamp> {
+            self.0.instant_of(local)
+        }
+    }
+
     /// The current local date and time.
     #[must_use]
-    pub fn now() -> jiff::Zoned {
-        jiff::Timestamp::try_from(crate::to_std(crate::wall()))
-            .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
-            .to_zoned(jiff::tz::TimeZone::system())
+    pub fn now() -> Zoned {
+        at(Timestamp::try_from(crate::to_std(crate::wall())).unwrap_or(Timestamp::UNIX_EPOCH))
+    }
+
+    /// The instant `at` as the person reads it.
+    #[must_use]
+    pub fn at(at: Timestamp) -> Zoned {
+        Zone::here().at(at)
     }
 
     /// Today's local date.
     #[must_use]
-    pub fn today() -> jiff::civil::Date {
+    pub fn today() -> Date {
         now().date()
     }
 
-    /// The instant `local` names in the system's zone: the earlier one where the clocks went
-    /// back, none where they skipped it.
+    /// The instant `local` names in the person's zone.
     #[must_use]
-    pub fn instant_of(local: jiff::civil::DateTime) -> Option<jiff::Timestamp> {
-        let local = jiff::tz::TimeZone::system().to_ambiguous_timestamp(local);
-        if matches!(local.offset(), jiff::tz::AmbiguousOffset::Gap { .. }) {
-            return None;
+    pub fn instant_of(local: DateTime) -> Option<Timestamp> {
+        Zone::here().instant_of(local)
+    }
+
+    /// The instant `local` names, from the zone's offset at each instant: the offset a page has
+    /// is the browser's answer, so the offsets either side of a change of clocks are read a day
+    /// out, and the instants they name are kept when they read back as `local` at that offset.
+    #[cfg(any(test, all(target_family = "wasm", not(tilo_no_js))))]
+    fn resolve(
+        local: DateTime,
+        offset_at: impl Fn(Timestamp) -> jiff::tz::Offset,
+    ) -> Option<Timestamp> {
+        /// Wider than any offset from UTC, so a change of clocks is inside it.
+        const A_DAY: jiff::SignedDuration = jiff::SignedDuration::from_hours(26);
+        let bare = local.to_zoned(jiff::tz::TimeZone::UTC).ok()?.timestamp();
+        let around = [
+            bare.checked_sub(A_DAY).ok()?,
+            bare,
+            bare.checked_add(A_DAY).ok()?,
+        ];
+        let instants = around.map(|instant| {
+            let offset = offset_at(instant);
+            bare.checked_sub(jiff::SignedDuration::from_secs(i64::from(offset.seconds())))
+                .ok()
+        });
+        instants
+            .into_iter()
+            .flatten()
+            .filter(|at| read(*at, &offset_at).datetime() == local)
+            .min()
+    }
+
+    /// The instant `at` as a zone of the offsets `offset_at` reads it.
+    #[cfg(any(test, all(target_family = "wasm", not(tilo_no_js))))]
+    fn read(at: Timestamp, offset_at: impl Fn(Timestamp) -> jiff::tz::Offset) -> Zoned {
+        at.to_zoned(jiff::tz::TimeZone::fixed(offset_at(at)))
+    }
+
+    /// The system's zone database.
+    #[cfg(any(not(target_family = "wasm"), tilo_no_js))]
+    mod platform {
+        use jiff::civil::DateTime;
+        use jiff::tz::{AmbiguousOffset, TimeZone};
+        use jiff::{Timestamp, Zoned};
+
+        #[derive(Clone, Debug)]
+        pub(super) struct Zone(TimeZone);
+
+        impl Zone {
+            pub(super) fn here() -> Self {
+                Self(TimeZone::system())
+            }
+
+            pub(super) fn of(zone: TimeZone) -> Self {
+                Self(zone)
+            }
+
+            pub(super) fn at(&self, at: Timestamp) -> Zoned {
+                at.to_zoned(self.0.clone())
+            }
+
+            pub(super) fn name(&self) -> Option<String> {
+                self.0.iana_name().map(str::to_owned)
+            }
+
+            pub(super) fn instant_of(&self, local: DateTime) -> Option<Timestamp> {
+                let named = self.0.to_ambiguous_timestamp(local);
+                if matches!(named.offset(), AmbiguousOffset::Gap { .. }) {
+                    return None;
+                }
+                named.earlier().ok()
+            }
         }
-        local.earlier().ok()
+    }
+
+    /// The browser's zone: the offset it reports for each instant, and its name for the zone.
+    #[cfg(all(target_family = "wasm", not(tilo_no_js)))]
+    mod platform {
+        use jiff::civil::DateTime;
+        use jiff::tz::Offset;
+        use jiff::{Timestamp, Zoned};
+
+        #[derive(Clone, Copy, Debug)]
+        pub(super) struct Zone;
+
+        impl Zone {
+            pub(super) fn here() -> Self {
+                Self
+            }
+
+            pub(super) fn at(&self, at: Timestamp) -> Zoned {
+                super::read(at, offset)
+            }
+
+            pub(super) fn name(&self) -> Option<String> {
+                crate::page::zone_name()
+            }
+
+            pub(super) fn instant_of(&self, local: DateTime) -> Option<Timestamp> {
+                super::resolve(local, offset)
+            }
+        }
+
+        /// The browser's offset from UTC at `at`.
+        fn offset(at: Timestamp) -> Offset {
+            Offset::from_seconds(crate::page::offset_seconds(at.as_millisecond()))
+                .unwrap_or(Offset::UTC)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use jiff::Timestamp;
+        use jiff::civil::{Date, DateTime, Time};
+        use jiff::tz::{Offset, TimeZone};
+
+        use super::{read, resolve};
+
+        /// The instant of `local` on the UTC clock.
+        fn instant(local: DateTime) -> Timestamp {
+            local
+                .to_zoned(TimeZone::UTC)
+                .expect("the test's wall times are inside the calendar")
+                .timestamp()
+        }
+
+        /// The instant the clocks go forward an hour, 02:00 becoming 03:00.
+        fn spring() -> Timestamp {
+            instant(Date::new(2026, 3, 29).unwrap().at(1, 0, 0, 0))
+        }
+
+        /// The instant they go back, 03:00 becoming 02:00.
+        fn autumn() -> Timestamp {
+            instant(Date::new(2026, 10, 25).unwrap().at(1, 0, 0, 0))
+        }
+
+        /// A zone whose clocks keep +1 and go to +2 between [`spring`] and [`autumn`].
+        fn offsets(at: Timestamp) -> Offset {
+            if (spring()..autumn()).contains(&at) {
+                jiff::tz::offset(2)
+            } else {
+                jiff::tz::offset(1)
+            }
+        }
+
+        fn wall(at: Timestamp) -> DateTime {
+            read(at, offsets).datetime()
+        }
+
+        fn seconds(at: Timestamp) -> i64 {
+            at.as_second()
+        }
+
+        #[test]
+        fn a_clock_reads_local_on_each_side_of_a_change_of_clocks() {
+            let before = spring()
+                .checked_sub(jiff::SignedDuration::from_secs(1))
+                .unwrap();
+            assert_eq!((wall(before).hour(), wall(before).minute()), (1, 59));
+            assert_eq!(read(before, offsets).offset().seconds(), 3600);
+            assert_eq!(
+                (wall(spring()).hour(), wall(spring()).minute()),
+                (3, 0),
+                "02:00 is skipped"
+            );
+            assert_eq!(read(spring(), offsets).offset().seconds(), 7200);
+            let before = autumn()
+                .checked_sub(jiff::SignedDuration::from_secs(1))
+                .unwrap();
+            assert_eq!(read(before, offsets).offset().seconds(), 7200);
+            assert_eq!((wall(before).hour(), wall(before).minute()), (2, 59));
+            assert_eq!(wall(autumn()).hour(), 2, "02:00 comes twice");
+            assert_eq!(read(autumn(), offsets).offset().seconds(), 3600);
+        }
+
+        #[test]
+        fn a_wall_time_the_clocks_skipped_names_no_instant() {
+            let skipped = Date::new(2026, 3, 29).unwrap().at(2, 30, 0, 0);
+            assert_eq!(resolve(skipped, offsets), None);
+        }
+
+        #[test]
+        fn a_wall_time_the_clocks_passed_twice_names_the_earlier_instant() {
+            let twice = Date::new(2026, 10, 25).unwrap().at(2, 30, 0, 0);
+            let at = resolve(twice, offsets).expect("02:30 stands twice");
+            assert_eq!(wall(at), twice, "the earlier one still reads 02:30");
+            assert_eq!(
+                seconds(at),
+                seconds(autumn()) - 1800,
+                "at +2, before the change"
+            );
+        }
+
+        #[test]
+        fn a_wall_time_away_from_a_change_names_its_one_instant() {
+            let noon = Date::new(2026, 7, 1).unwrap().at(12, 0, 0, 0);
+            let at = resolve(noon, offsets).expect("noon of a July day stands once");
+            assert_eq!(wall(at), noon);
+            assert_eq!(at.as_second() % 60, 0);
+            let midnight = Date::new(2026, 1, 1).unwrap().to_datetime(Time::midnight());
+            assert_eq!(
+                read(resolve(midnight, offsets).unwrap(), offsets).datetime(),
+                midnight
+            );
+        }
     }
 }
 
+/// The clock types under `std::time`'s names, for signatures that need one;
+/// times are read through [`now`] and [`wall`].
 pub mod time {
     pub use crate::imp::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
 }
@@ -453,19 +699,70 @@ pub fn local_zone_name() -> Option<String> {
         let (_, zone) = link.to_str()?.split_once("zoneinfo/")?;
         (!zone.is_empty()).then(|| zone.to_owned())
     }
-    // A page has no TZ or /etc/localtime: the browser names its zone (`Intl`), which the
-    // system zone reads on wasm. Without the name, a day in summer would be read at winter's
-    // offset (the one in force now), an hour off.
-    #[cfg(all(target_family = "wasm", feature = "local"))]
+    // A page has no TZ or /etc/localtime: the browser names its zone (`Intl`), and an offset
+    // that is right for the instant asked about rather than the one in force now.
+    #[cfg(all(target_family = "wasm", not(tilo_no_js)))]
     {
-        jiff::tz::TimeZone::system().iana_name().map(str::to_owned)
+        page::zone_name()
     }
     #[cfg(not(any(
         all(unix, not(target_family = "wasm")),
-        all(target_family = "wasm", feature = "local")
+        all(target_family = "wasm", not(tilo_no_js))
     )))]
     {
         None
+    }
+}
+
+/// What the browser answers about the person's zone: the only zone a page has.
+#[cfg(all(target_family = "wasm", not(tilo_no_js)))]
+mod page {
+    use wasm_bindgen::JsValue;
+
+    thread_local! {
+        /// The name the browser gave first: asking builds a formatter, and the zone's name
+        /// changes only when the person changes it in the system's settings, as a device's does.
+        static ZONE_NAME: std::cell::OnceCell<Option<String>> = const { std::cell::OnceCell::new() };
+    }
+
+    /// The browser's IANA name for the person's zone (`Europe/Vienna`).
+    pub(crate) fn zone_name() -> Option<String> {
+        ZONE_NAME.with(|name| name.get_or_init(read_zone_name).clone())
+    }
+
+    fn read_zone_name() -> Option<String> {
+        let format = js_sys::Intl::DateTimeFormat::default();
+        let resolved = js_sys::Intl::DateTimeFormat::resolved_options(&format);
+        js_sys::Reflect::get(&resolved, &JsValue::from_str("timeZone"))
+            .ok()?
+            .as_string()
+    }
+
+    /// The zone's offset from UTC at `unix_ms`, in seconds east of it.
+    #[cfg(feature = "local")]
+    pub(crate) fn offset_seconds(unix_ms: i64) -> i32 {
+        let date = js_sys::Date::new(&millis(unix_ms));
+        // `getTimezoneOffset` counts minutes west of UTC.
+        let west = minutes(js_sys::Date::get_timezone_offset(&date));
+        west.saturating_mul(60).saturating_neg()
+    }
+
+    #[cfg(feature = "local")]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "the browser's clock takes milliseconds as a double, which holds them exactly"
+    )]
+    fn millis(unix_ms: i64) -> JsValue {
+        JsValue::from_f64(unix_ms as f64)
+    }
+
+    #[cfg(feature = "local")]
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the browser's offset is a whole number of minutes, within an hour's twelve"
+    )]
+    fn minutes(west_of_utc: f64) -> i32 {
+        i32::try_from(west_of_utc as i64).unwrap_or(0)
     }
 }
 

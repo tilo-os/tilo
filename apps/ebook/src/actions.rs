@@ -7,39 +7,20 @@
 //! verbs with the page or the selection filled in — bookmark this page,
 //! note this page, highlight or note the selection.
 
-use tilo_actions::ActionSpec;
-use ui::tilo_resource::{ActionDecl, Effect};
+use ui::tilo_resource::ActionDecl;
 
 use crate::model::HighlightColor;
-use crate::resource::{BooksEffect, Ebook, HiPiece, books};
+use crate::resource::{Ebook, HiPiece, books};
 
 /// What invoking `effect` where it is bound sends its handler.
 #[cfg(test)]
-pub(crate) fn effect_payload(effect: &BooksEffect) -> Vec<u8> {
+pub(crate) fn effect_payload(effect: &crate::resource::BooksEffect) -> Vec<u8> {
+    use ui::tilo_resource::Effect as _;
     effect
         .bound()
         .build_json(&serde_json::Map::new())
         .map(|encoded| encoded.payload)
         .unwrap_or_default()
-}
-
-/// `effect` bound to the row it acts on, under that row's own `label`.
-pub(crate) fn bound(effect: &BooksEffect, label: &str) -> ActionSpec {
-    let mut spec = effect.bound();
-    label.clone_into(&mut spec.type_mut().label);
-    spec
-}
-
-pub(crate) fn open_at(book: &str, chapter: usize, block: Option<usize>, label: &str) -> ActionSpec {
-    bound(
-        &BooksEffect::Open {
-            book: book.to_owned(),
-            chapter,
-            page: 0,
-            block,
-        },
-        label,
-    )
 }
 
 /// Where the reader is in the open book, and the library's verbs with that

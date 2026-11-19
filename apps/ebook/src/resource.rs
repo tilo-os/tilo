@@ -1236,6 +1236,8 @@ pub enum BooksEffect {
     /// Shows a book at a chapter, page and block. A place that the book no
     /// longer has is refused rather than opened somewhere near it.
     #[effect(view, row)]
+    #[effect(on = crate::search_provider::Passage)]
+    #[effect(on = crate::search_provider::Chapter)]
     Open {
         book: String,
         chapter: usize,

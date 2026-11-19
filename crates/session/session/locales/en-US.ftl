@@ -200,6 +200,11 @@ session-display-external = External display
 session-clipboard = Clipboard
 session-quick-settings = Quick Settings
 session-shell-styles = Shell styles
+session-style-make = Make it mine
+session-style-check = Check a style package
+session-style-install = Install a style package
+session-turn-conversation = Whole conversation
+session-application-open = Open the app
 session-devices = Devices
 session-devices-press = Press one of your devices
 session-bluetooth-app = Bluetooth
@@ -428,6 +433,9 @@ call-screen-reason = to share this screen in the call
 ## What the window names
 session-resource-keyboard = On-screen keyboard
 session-resource-diagnostics = Session diagnostics
+session-diagnostics-profile-start = Profile the session's frames
+session-diagnostics-profile-stop = Stop profiling the session
+session-diagnostics-profile-status = What the session's profiler and heap are doing
 session-resource-window-menu = Window menu
 session-resource-surfaces = Surfaces
 session-resource-keyboard-focus = Keyboard focus
@@ -445,6 +453,11 @@ session-action-pin-pinned = Whether it is pinned
 session-action-position = Stand a place at a point on the canvas, as a drag that let it go there
 session-action-position-x = Its canvas x
 session-action-position-y = Its canvas y
+session-action-size = Give a place a size, as dragging its edge does
+session-action-size-width = Its width in canvas pixels
+session-action-size-height = Its height in canvas pixels
+session-action-drawn = Report how tall a hugging place is drawn now, as its canvas sees it
+session-action-drawn-height = Its drawn height in canvas pixels
 session-action-close = Close a place
 session-action-activate = Bring a place in front of its strip
 session-action-move = Move a place into a row, or into a strip as a tab of it
@@ -556,3 +569,9 @@ machines-waiting-body-hardware = { $machine } ({ $hardware }) wants to join, sho
 machines-waiting-review = See what will join
 machines-waiting-approve = Approve { $code }
 machines-waiting-decline = Decline
+
+## A declared action's parameter description is read as `<label>-<argument>`.
+
+session-toggle-touchpad-on = Whether the touchpad is on; leave out to switch it
+session-night-light-toggle-on = Whether the night light is on; leave out to switch it
+session-apps-uninstall-app = The app's name

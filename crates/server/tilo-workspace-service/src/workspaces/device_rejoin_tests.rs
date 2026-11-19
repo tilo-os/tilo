@@ -141,3 +141,176 @@ async fn a_later_certificate_of_a_device_replaces_it_and_an_escalating_or_older_
     );
     server.shutdown().await;
 }
+
+/// A tab's certificate that `signer` — one of the person's own devices, certified
+/// by their root — signed: what a computer that is already the person's signs
+/// their browser tab in with.
+fn based_on(
+    root: &SigningKey,
+    (signer, signer_cert): (&SigningKey, &DeviceCert),
+    label: &str,
+    now: u64,
+) -> DeviceCert {
+    let key = SigningKey::from_bytes(&rand::random());
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: label.into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: now,
+        expires_at_ns: Some(now + 30 * 24 * 60 * 60 * 1_000_000_000),
+        signature: [0; 64],
+        issuer: Some(Box::new(signer_cert.clone())),
+    };
+    sign_device_cert(&mut cert, signer).expect("a device of the person's signs their tab's");
+    cert
+}
+
+/// A tab one of the person's devices signed enters the person's own workspace as
+/// theirs, and the workspace lets it in again on a session of its own: what a
+/// reloaded tab does.
+#[tokio::test]
+async fn a_tab_a_member_device_signed_enters_and_comes_back_as_the_person() {
+    use crate::workspace_access::{DenyReason, ServerTrust, WorkspaceOperation, decide};
+    use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
+    let created = workspaces.create("Home").await.unwrap();
+    let workspace = created.workspace.clone();
+    let root = SigningKey::from_bytes(&rand::random());
+    let now = tilo_clock::unix_now_ns();
+    let entry = |through: Through| Entry {
+        entering: Entering {
+            workspace: workspace.clone(),
+            name: "Jane".into(),
+            request_id: rand::random(),
+            through,
+        },
+        access: None,
+        proof: [0; 64],
+    };
+
+    // The person's computer, certified by their root, joins the workspace they
+    // were invited into.
+    let (computer_key, computer) =
+        super::tests::device_cert(&root, "Laptop", DeviceCapabilities::primary());
+    let joined = pre_admitted_join(workspaces, &cert, &workspace, computer.clone()).await;
+    assert!(
+        matches!(
+            joined,
+            tilo_server_protocol::workspaces::JoinReply::Admitted { .. }
+        ),
+        "{joined:?}"
+    );
+
+    // The tab their computer signed, as the sign-in makes it, comes in as theirs.
+    let tab = based_on(&root, (&computer_key, &computer), "Firefox on phone", now);
+    let entered = crate::handshake::Admit::enter(workspaces, &tab, entry(Through::Entry)).await;
+    assert!(
+        matches!(entered, Entered::Admitted { .. }),
+        "a tab one of the person's devices signed enters as theirs: {entered:?}"
+    );
+
+    // Reloaded, it holds a session of its own: the workspace's admission, with no entry.
+    let runtime = workspaces
+        .inner
+        .host
+        .workspaces
+        .lock()
+        .await
+        .get(&created.workspace_id)
+        .cloned()
+        .unwrap();
+    let runtime = runtime.lock().await;
+    let peer = crate::auth::AuthenticatedPeer {
+        user_public_key: tab.user_public_key,
+        device_public_key: tab.device_public_key,
+        cert: tab.clone(),
+    };
+    let service = &workspaces.inner.host;
+    let trust = ServerTrust {
+        revocations: &service.revocations,
+        policy: &service.trust_policy,
+        own_user: &service.cert.user_public_key,
+        agents: &service.agents,
+        environments: &service.environments,
+    };
+    assert_ne!(
+        decide(&runtime, &trust, &peer, WorkspaceOperation::Subscribe),
+        crate::workspace_access::Decision::Deny(DenyReason::NotAMember),
+        "the workspace admits the tab again on its own session"
+    );
+    drop(runtime);
+    server.shutdown().await;
+}
+
+/// A member's device whose certificate ran out comes back through the entry
+/// under a later certificate of its own person's root: the workspace holds the
+/// device, and takes the later certificate in the one it held's place.
+#[tokio::test]
+async fn a_member_device_whose_certificate_ran_out_comes_back_under_its_renewal() {
+    use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces();
+    let created = workspaces.create("Home").await.unwrap();
+    let workspace = created.workspace.clone();
+    let root = SigningKey::from_bytes(&rand::random());
+    let now = tilo_clock::unix_now_ns();
+    let entry = || Entry {
+        entering: Entering {
+            workspace: workspace.clone(),
+            name: "Jane".into(),
+            request_id: rand::random(),
+            through: Through::Entry,
+        },
+        access: None,
+        proof: [0; 64],
+    };
+    let certified = |key: &SigningKey, issued_at_ns: u64, expires_at_ns: Option<u64>| {
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns,
+            expires_at_ns,
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &root).unwrap();
+        cert
+    };
+
+    // The certificate the workspace is given expires two seconds from now.
+    let device = SigningKey::from_bytes(&rand::random());
+    let short = certified(
+        &device,
+        now.saturating_sub(1_000_000_000),
+        Some(now + 2_000_000_000),
+    );
+    let joined = pre_admitted_join(workspaces, &cert, &workspace, short).await;
+    assert!(
+        matches!(
+            joined,
+            tilo_server_protocol::workspaces::JoinReply::Admitted { .. }
+        ),
+        "{joined:?}"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(2_500)).await;
+
+    // Its person's root certifies the same device again, and it comes back as
+    // the device the workspace holds: no conflict.
+    let renewed = certified(&device, tilo_clock::unix_now_ns(), None);
+    let entered = crate::handshake::Admit::enter(workspaces, &renewed, entry()).await;
+    assert!(
+        matches!(entered, Entered::Admitted { .. }),
+        "a member's device comes back under its renewal: {entered:?}"
+    );
+    server.shutdown().await;
+}

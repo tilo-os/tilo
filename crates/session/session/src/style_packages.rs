@@ -27,10 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde_json::{Map, Value, json};
-use tilo_actions::{
-    ActionAddress, ActionOutput, ActionParam, ActionSpec, ApiError, EncodedAction, OperationKind,
-    ParamType, ResourceSpec,
-};
+use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::surfaces::Published;
 use ui::host_operation::ResourceOperationStart;
@@ -41,7 +38,49 @@ use crate::i18n::t;
 pub const RESOURCE: &str = "session-authoring";
 
 /// What kind of resource [`RESOURCE`] is.
-pub const KIND: &str = "session.authoring";
+pub const KIND: &str = <ShellStyles as tilo_resource::words::RowType>::KIND;
+
+/// The person's style packages as the session publishes them, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.authoring", label = "Shell styles")]
+pub struct ShellStyles;
+
+/// The three commands a person types at `tilolang` for a style, declared once: make a copy of a
+/// shipped style their own, check a package, install it.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.session.authoring")]
+pub enum StylePackageEffect {
+    /// Make it mine
+    ///
+    /// Copies a shipped shell style's source into your workspace as your own package, with the
+    /// same parts, and installs it: the shipped style never overwrites it.
+    #[effect(kind = "undoable", sensitive, returns, label = "session-style-make")]
+    MakeItMine {
+        /// The shipped style, by its view reference (`so.tilo.shell:strips`)
+        #[param("The shipped style, by its view reference (`so.tilo.shell:strips`)")]
+        style: String,
+    },
+    /// Check a style package
+    ///
+    /// Compiles a package in your workspace against the installed shell and session and answers
+    /// its diagnostics; nothing is written.
+    #[effect(view, kind = "undoable", returns, label = "session-style-check")]
+    Check {
+        /// The package, by its id (`mine.shell`)
+        #[param("The package, by its id (`mine.shell`)")]
+        package: String,
+    },
+    /// Install a style package
+    ///
+    /// Compiles a package in your workspace, signs it with your development key, and installs it,
+    /// so its styles are offered without a restart.
+    #[effect(kind = "undoable", sensitive, returns, label = "session-style-install")]
+    Install {
+        /// The package, by its id (`mine.shell`)
+        #[param("The package, by its id (`mine.shell`)")]
+        package: String,
+    },
+}
 
 /// The package id a "make it mine" copy of the shipped shell is installed as: the person's own,
 /// so it never collides with the shipped `so.tilo.shell`, and an update to the shipped style
@@ -122,74 +161,22 @@ impl Served {
 
 /// The four commands, described as the broker lists them.
 pub(crate) fn resource() -> ResourceSpec {
-    let result = tilo_actions::ResultSpec::Json {
-        schema: json!({"type": "object"}),
-    };
-    let make = ActionSpec::typed_operation(
-        "make-it-mine",
-        "Make it mine",
-        "Copies a shipped shell style's source into your workspace as your own package, with the \
-         same parts, and installs it: the shipped style never overwrites it.",
-        OperationKind::Effect,
-        KIND,
-        vec![ActionParam::required_owned(
-            "style",
-            ParamType::Text,
-            "The shipped style, by its view reference (`so.tilo.shell:strips`)",
-        )],
-        |_| EncodedAction {
-            type_id: KIND.into(),
-            payload: b"make-it-mine".to_vec(),
-        },
-    );
-    let check = ActionSpec::typed_operation(
-        "check",
-        "Check a style package",
-        "Compiles a package in your workspace against the installed shell and session and \
-         answers its diagnostics; nothing is written.",
-        OperationKind::View,
-        KIND,
-        vec![ActionParam::required_owned(
-            "package",
-            ParamType::Text,
-            "The package, by its id (`mine.shell`)",
-        )],
-        |_| EncodedAction {
-            type_id: KIND.into(),
-            payload: b"check".to_vec(),
-        },
-    );
-    let install = ActionSpec::typed_operation(
-        "install",
-        "Install a style package",
-        "Compiles a package in your workspace, signs it with your development key, and installs \
-         it, so its styles are offered without a restart.",
-        OperationKind::Effect,
-        KIND,
-        vec![ActionParam::required_owned(
-            "package",
-            ParamType::Text,
-            "The package, by its id (`mine.shell`)",
-        )],
-        |_| EncodedAction {
-            type_id: KIND.into(),
-            payload: b"install".to_vec(),
-        },
-    );
-    let mut spec = ResourceSpec::new(RESOURCE, KIND, t("session-shell-styles"));
-    for mut action in [make, check, install] {
-        // Installing code is the person's decision: the broker holds an agent's step that
-        // installs or copies a package for the person's answer on the system's sheet
-        // (`shell.md` §6, "Agents make styles with the same commands a person types"). The
-        // person's own press is their answer, as it is for every action they take themselves.
+    let mut resource =
+        tilo_resource::offer::<StylePackageEffect>(tilo_resource::typed_resource::<ShellStyles>(
+            RESOURCE,
+            t("session-shell-styles"),
+        ));
+    // Installing code is the person's decision: the broker holds an agent's step that installs or
+    // copies a package for the person's answer on the system's sheet
+    // (`shell.md` §6, "Agents make styles with the same commands a person types"). The person's
+    // own press is their answer, as it is for every action they take themselves, so the action
+    // itself asks nothing more.
+    for action in &mut resource.actions {
         if action.id == "install" || action.id == "make-it-mine" {
-            action.type_mut().contract.kind = tilo_actions::ActionKind::Outside;
-            action.type_mut().contract.risk = tilo_actions::RiskLevel::Sensitive;
+            action.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::None;
         }
-        action.type_mut().contract.result = result.clone();
-        spec = spec.with_action(action);
     }
-    spec
+    resource
 }
 
 impl Published for Served {

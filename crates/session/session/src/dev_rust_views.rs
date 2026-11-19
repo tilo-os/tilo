@@ -105,33 +105,56 @@ impl RustApps {
     }
 }
 
+/// The development session's sample rows, as declared types: Tube's channels and videos, and
+/// Chat's channels, exactly as those apps declare them.
+pub struct SampleChannel;
+
+impl tilo_resource::words::RowType for SampleChannel {
+    const KIND: &'static str = "tube.channel";
+    const LABEL: &'static str = "Channel";
+}
+
+pub struct SampleVideo;
+
+impl tilo_resource::words::RowType for SampleVideo {
+    const KIND: &'static str = "tube.video";
+    const LABEL: &'static str = "Video";
+}
+
+pub struct SampleConversation;
+
+impl tilo_resource::words::RowType for SampleConversation {
+    const KIND: &'static str = "chat.workspace.channels";
+    const LABEL: &'static str = "Channel";
+}
+
 impl Service for RustApps {
     fn resources(&self) -> Vec<ResourceSpec> {
         let channels = self.model.channels.iter().map(|channel| {
-            let mut spec = ResourceSpec::new(
+            let mut spec = tilo_resource::typed_resource::<SampleChannel>(
                 format!("tube.channel:{}", channel.id),
-                "tube.channel",
                 channel.name.clone(),
             )
-            .with_view(tilo_actions::ResourceViewSpec::new(
-                "page",
-                channel.name.clone(),
-                "open",
-            ))
+            // Tube's own words for a channel, as its window publishes it.
             .with_type(tilo_actions::ResourceType {
                 noun: tilo_actions::Noun::new("channel", "channels"),
                 app: tilo_actions::Noun::new("Tube", "Tube"),
                 root: false,
-            });
+            })
+            .view(tilo_actions::ResourceViewSpec::new(
+                "page",
+                channel.name.clone(),
+                "open",
+            ));
             spec.app_id = Some("tube".to_owned());
             spec
         });
         let videos = self.model.videos.iter().map(|video| {
-            let mut spec = ResourceSpec::new(
+            let mut spec = tilo_resource::typed_resource::<SampleVideo>(
                 format!("tube.video:{}", video.id),
-                "tube.video",
                 video.title.clone(),
             )
+            // Tube's own words for a video, as its window publishes it.
             .with_type(tilo_actions::ResourceType {
                 noun: tilo_actions::Noun::new("video", "videos"),
                 app: tilo_actions::Noun::new("Tube", "Tube"),
@@ -144,21 +167,21 @@ impl Service for RustApps {
         let chat: Vec<ResourceSpec> = conversations
             .into_iter()
             .map(|conversation| {
-                let mut chat = ResourceSpec::new(
+                let mut chat = tilo_resource::typed_resource::<SampleConversation>(
                     conversation.resource().id,
-                    "chat.workspace.channels",
                     format!("#{}", conversation.name),
                 )
-                .with_view(tilo_actions::ResourceViewSpec::new(
-                    "page",
-                    conversation.name,
-                    "open",
-                ))
+                // Chat's own words for a channel, as its window publishes it.
                 .with_type(tilo_actions::ResourceType {
                     noun: tilo_actions::Noun::new("channel", "channels"),
                     app: tilo_actions::Noun::new("Chat", "Chat"),
                     root: false,
-                });
+                })
+                .view(tilo_actions::ResourceViewSpec::new(
+                    "page",
+                    conversation.name,
+                    "open",
+                ));
                 // What the page's composer runs: Chat's own `send`, as Chat declares it.
                 if let Some(send) = chat::effects::ChatEffect::spec(SEND) {
                     chat = chat.with_action(send);

@@ -1,364 +1,664 @@
 //! What the layout publishes as actions: those that put a resource on the canvas and step the
-//! layout's history, and those every place, strip and row offers. Each label and each argument is
-//! a message of the host's catalogue, so a palette, a script and an agent read them in the
-//! person's language.
+//! layout's history, and those every place, strip, row and query offers. They are declared once
+//! as [`LayoutEffect`], whose labels and arguments are messages of the session's catalogue, so a
+//! palette, a script and an agent read them in the person's language; each published resource is
+//! an item of a declared type ([`Place`], [`Strip`], [`LayoutRow`], [`Query`]).
 
-use serde_json::Value as Json;
-use tilo_actions::{
-    ActionArgs, ActionContract, ActionParam, ActionSpec, Audience, EncodedAction, ExecutionMode,
-    OperationKind, ParamType, ResourceSpec, ResultSpec,
-};
+use tilo_actions::{Audience, ResourceSpec};
 use tilo_desktop_model::{FloatCorner, FloatPlace, WorkspaceId};
+use tilo_resource::{LiveRow, offer, typed_resource};
 
 use super::{
-    DEFAULT_HEIGHT, DEFAULT_WIDTH, FLOAT_HEIGHT, FLOAT_INSET, FLOAT_WIDTH, Item, LayoutAction,
-    OPERATION, PLACE_KIND, PlaceReading, RECORD_RESOURCE, RESOURCE, ROW_KIND, RowReading,
-    STRIP_KIND, StripReading, Words,
+    DEFAULT_HEIGHT, DEFAULT_WIDTH, FLOAT_HEIGHT, FLOAT_INSET, FLOAT_WIDTH, HISTORY_RESOURCE, Item,
+    LayoutAction, PlaceReading, RESOURCE, RowReading, StripReading, Words,
 };
-
-/// What the layout calls the action `id`, and its argument `argument`, in the person's language:
-/// the catalogue's `session-action-<id>`, and `session-action-<id>-<argument>`, `source` where it
-/// has no such message.
-fn action_word(words: &Words, id: &str, argument: Option<&str>, source: &str) -> String {
-    let key = match argument {
-        Some(argument) => format!("session-action-{id}-{argument}"),
-        None => format!("session-action-{id}"),
-    };
-    words(&key, &[], source)
-}
 
 /// The person's layout actions, published as every other action is: a person's own drag, a
 /// script and an agent all change the layout through them, and the catalogue lists them for
 /// agents. What is already arranged is published per place, strip and row by
-/// [`Layout::resources`].
+/// [`Layout::resources`](super::Layout::resources).
 #[must_use]
 pub fn resources(words: &Words) -> Vec<ResourceSpec> {
-    vec![layout_resource(words), record_resource(words)]
+    vec![layout_resource(words), history_resource(words)]
 }
+
+/// The layout itself, as a declared type: what puts a resource on the canvas and steps its
+/// history.
+#[derive(tilo_resource::Row)]
+#[row(kind = "shell", label = "Tree")]
+pub struct Layout;
+
+/// The layout's history, as a declared type: a person is offered undo and redo once, on the
+/// layout.
+#[derive(tilo_resource::Row)]
+#[row(kind = "shell", label = "Tree history")]
+pub struct LayoutHistory;
+
+/// A place, as a declared type: what its own actions act on.
+#[derive(tilo_resource::Row)]
+#[row(kind = "layout.place", label = "Place", effects = LayoutEffect)]
+pub struct Place;
+
+/// A strip, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "layout.strip", label = "Strip", effects = LayoutEffect)]
+pub struct LayoutStrip;
+
+/// A row, as a declared type: what a place moves into.
+#[derive(tilo_resource::Row)]
+#[row(kind = "layout.row", label = "Row")]
+pub struct LayoutRow;
+
+/// A query a place shows while its app answers it, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "layout.query", label = "Search", effects = LayoutEffect)]
+pub struct Query;
 
 /// What puts a resource on the canvas and steps the layout's history.
 pub(super) fn layout_resource(words: &Words) -> ResourceSpec {
-    placing_actions(words)
-        .into_iter()
-        .fold(
-            ResourceSpec::new(
-                RESOURCE,
-                "shell",
-                words("session-resource-layout", &[], "Tree"),
-            ),
-            ResourceSpec::with_action,
-        )
-        .with_action(step_action(words, "undo", "Undo the last layout change"))
-        .with_action(step_action(words, "redo", "Redo the last layout change"))
+    carried(offer::<LayoutEffect>(typed_resource::<Layout>(
+        RESOURCE,
+        words("session-resource-layout", &[], "Tree"),
+    )))
 }
 
 /// The record itself, whose actions step its history by the record's address: a person is offered
 /// undo and redo once, on the layout.
-pub(super) fn record_resource(words: &Words) -> ResourceSpec {
-    ResourceSpec::new(
-        RECORD_RESOURCE,
-        "shell",
+pub(super) fn history_resource(words: &Words) -> ResourceSpec {
+    let mut resource = typed_resource::<LayoutHistory>(
+        HISTORY_RESOURCE,
         words("session-resource-layout-history", &[], "Tree history"),
-    )
-    .with_action(
-        step_action(words, "undo", "Undo the last layout change").for_audience(Audience::Agents),
-    )
-    .with_action(
-        step_action(words, "redo", "Redo the last layout change").for_audience(Audience::Agents),
-    )
+    );
+    for spec in [LayoutEffect::UNDO.spec(), LayoutEffect::REDO.spec()]
+        .into_iter()
+        .flatten()
+    {
+        resource = resource.with_action(spec.for_audience(Audience::Agents));
+    }
+    resource
 }
 
 /// The resource a place's own actions are published on, for the package the session describes: no
 /// key, so it stands for every place. A place's resource is named by the place's key
-/// ([`Layout::resources`]).
+/// ([`Layout::resources`](super::Layout::resources)).
 #[must_use]
-pub fn place_kind_resource(words: &Words) -> ResourceSpec {
-    place_actions("", words).into_iter().fold(
-        ResourceSpec::new(String::new(), PLACE_KIND, String::new()),
-        ResourceSpec::with_action,
-    )
+pub fn place_kind_resource(_words: &Words) -> ResourceSpec {
+    carried(LiveRow::typed::<Place>(String::new(), String::new()).into_resource())
 }
 
 /// The resource a strip's own actions are published on: [`place_kind_resource`] for a strip.
 #[must_use]
-pub fn strip_kind_resource(words: &Words) -> ResourceSpec {
-    strip_actions("", words).into_iter().fold(
-        ResourceSpec::new(String::new(), STRIP_KIND, String::new()),
-        ResourceSpec::with_action,
-    )
+pub fn strip_kind_resource(_words: &Words) -> ResourceSpec {
+    carried(LiveRow::typed::<LayoutStrip>(String::new(), String::new()).into_resource())
 }
 
 /// The resource a row is published as: [`place_kind_resource`] for a row. A row offers no action of
 /// its own: it is what a place moves into, named by the place's `move` .
 #[must_use]
 pub fn row_kind_resource() -> ResourceSpec {
-    ResourceSpec::new(String::new(), ROW_KIND, String::new())
+    typed_resource::<LayoutRow>(String::new(), String::new())
 }
 
-/// The actions a place's own resource offers, its key bound into each: the place is the resource
-/// they are pressed on, so none of them names it and its key is never read as a number. What a
-/// press names instead is a row, by that row's resource.
-pub(super) fn place_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
-    let pinned = key.to_owned();
-    let closed = key.to_owned();
-    let moved = key.to_owned();
-    let in_front = key.to_owned();
-    vec![
-        action(
-            words,
-            "pin",
-            "Pin a place, so an agent's changes leave it alone",
-            vec![optional(
-                words,
-                "pin",
-                "pinned",
-                ParamType::Boolean,
-                "Whether it is pinned",
-            )],
-            move |args| LayoutAction::Pin {
-                place: count_of(&pinned),
-                pinned: args.boolean("pinned").unwrap_or(true),
+/// Every change the layout publishes, declared once: what a person's drag, a script, an agent or
+/// the session's own calls make. Each is answered by [`LayoutAction`], which the layout's document
+/// keeps.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "tilo.shell.layout", catalogue = "../session/locales")]
+pub enum LayoutEffect {
+    /// Show a resource on the canvas, as one of its views
+    #[effect(kind = "undoable", audience = "agents", label = "session-action-place")]
+    Place {
+        /// The workspace whose canvas it stands on, by its id; the one in front when left out
+        #[param(
+            "The workspace whose canvas it stands on, by its id; the one in front when left \
+                 out"
+        )]
+        workspace: Option<String>,
+        /// The row it stands in; the row in front when left out
+        #[param("The row it stands in; the row in front when left out")]
+        row: Option<i64>,
+        /// The strip it stands in; a new one when left out
+        #[param("The strip it stands in; a new one when left out")]
+        strip: Option<i64>,
+        /// The id the new place takes; a new one when left out
+        #[param("The id the new place takes; a new one when left out")]
+        place: Option<i64>,
+        /// The resource it shows
+        #[param(resource = "", "The resource it shows")]
+        resource: String,
+        /// The view it shows it through
+        #[param("The view it shows it through")]
+        view: Option<String>,
+        /// Its canvas x
+        #[param("Its canvas x")]
+        x: Option<i64>,
+        /// Its canvas y
+        #[param("Its canvas y")]
+        y: Option<i64>,
+        /// Without x and y, it stands beside the place showing this resource, by its address; an
+        /// agent's step stands it beside the conversation it was asked in
+        #[param(
+            "Without x and y, it stands beside the place showing this resource, by its \
+                 address; an agent's step stands it beside the conversation it was asked in"
+        )]
+        beside: Option<String>,
+        /// Its width in canvas pixels
+        #[param("Its width in canvas pixels")]
+        width: Option<i64>,
+        /// Its height in canvas pixels
+        #[param("Its height in canvas pixels")]
+        height: Option<i64>,
+        /// Floats it above its workspace's windows at this corner of the work area: top-left,
+        /// top-right, bottom-right (the default) or bottom-left
+        #[param(
+            "Floats it above its workspace's windows at this corner of the work area: top-left, \
+             top-right, bottom-right (the default) or bottom-left"
+        )]
+        float: Option<String>,
+        /// A float's distance from that corner's side edge, in canvas pixels
+        #[param("A float's distance from that corner's side edge, in canvas pixels")]
+        dx: Option<i64>,
+        /// A float's distance from that corner's top or bottom edge, in canvas pixels
+        #[param("A float's distance from that corner's top or bottom edge, in canvas pixels")]
+        dy: Option<i64>,
+    },
+    /// Put what a text finds on the canvas, or into a strip as a tab
+    #[effect(
+        kind = "undoable",
+        audience = "agents",
+        label = "session-action-place-found"
+    )]
+    PlaceFound {
+        /// What to find and place
+        #[param("What to find and place")]
+        text: String,
+        /// The view it shows it through
+        #[param("The view it shows it through")]
+        view: Option<String>,
+        /// The strip it joins as a tab, by its id; a strip of its own when left out
+        #[param("The strip it joins as a tab, by its id; a strip of its own when left out")]
+        strip: Option<String>,
+        /// Its canvas x
+        #[param("Its canvas x")]
+        x: Option<i64>,
+        /// Its canvas y
+        #[param("Its canvas y")]
+        y: Option<i64>,
+        /// The width of the rectangle it fills, in canvas pixels; its own when left out
+        #[param("The width of the rectangle it fills, in canvas pixels; its own when left out")]
+        width: Option<i64>,
+        /// The height of the rectangle it fills, in canvas pixels; its own when left out
+        #[param("The height of the rectangle it fills, in canvas pixels; its own when left out")]
+        height: Option<i64>,
+        /// The canvas x of the part of the canvas the person sees
+        #[param("The canvas x of the part of the canvas the person sees")]
+        seen_x: Option<i64>,
+        /// The canvas y of the part of the canvas the person sees
+        #[param("The canvas y of the part of the canvas the person sees")]
+        seen_y: Option<i64>,
+        /// The width of the part of the canvas the person sees, in canvas pixels
+        #[param("The width of the part of the canvas the person sees, in canvas pixels")]
+        seen_width: Option<i64>,
+        /// The height of the part of the canvas the person sees, in canvas pixels
+        #[param("The height of the part of the canvas the person sees, in canvas pixels")]
+        seen_height: Option<i64>,
+    },
+    /// Open a resource with its own view, beside what the ask is in
+    #[effect(kind = "undoable", audience = "agents", label = "session-action-open")]
+    Open {
+        /// The resource it shows
+        #[param(resource = "", "The resource it shows")]
+        resource: String,
+        /// The view it shows it through
+        #[param("The view it shows it through")]
+        view: Option<String>,
+        /// The resource whose place it stands beside, by its address; the place in front when
+        /// left out
+        #[param(
+            "The resource whose place it stands beside, by its address; the place in front when \
+             left out"
+        )]
+        beside: Option<String>,
+    },
+    /// Show another resource in a place, keeping the place where it is
+    #[effect(kind = "undoable", audience = "agents", label = "session-action-show")]
+    Show {
+        /// The place, by its resource
+        #[param(resource = "layout.place", "The place, by its resource")]
+        place: String,
+        /// The resource it shows from now on
+        #[param(resource = "", "The resource it shows from now on")]
+        resource: String,
+        /// The view it shows it through
+        #[param("The view it shows it through")]
+        view: Option<String>,
+    },
+    /// Look for what a place's search names again
+    #[effect(
+        kind = "undoable",
+        audience = "agents",
+        label = "session-action-retry-query"
+    )]
+    RetryQuery {
+        /// The place, by its resource
+        #[param(resource = "layout.place", "The place, by its resource")]
+        place: String,
+    },
+    /// Undo the last layout change
+    #[effect(kind = "undoable", label = "session-action-undo")]
+    Undo,
+    /// Redo the last layout change
+    #[effect(kind = "undoable", label = "session-action-redo")]
+    Redo,
+    /// Pin a place, so an agent's changes leave it alone
+    #[effect(on = Place, kind = "undoable", audience = "agents", label = "session-action-pin")]
+    Pin {
+        /// The place
+        #[param("The place")]
+        place: String,
+        /// Whether it is pinned
+        #[param("Whether it is pinned")]
+        pinned: Option<bool>,
+    },
+    /// Stand a place at a point on the canvas, as a drag that let it go there
+    #[effect(
+        on = Place,
+        kind = "undoable",
+        audience = "agents",
+        label = "session-action-position"
+    )]
+    Position {
+        /// The place
+        #[param("The place")]
+        place: String,
+        /// Its canvas x
+        #[param("Its canvas x")]
+        x: Option<i64>,
+        /// Its canvas y
+        #[param("Its canvas y")]
+        y: Option<i64>,
+        /// Without x and y, it stands in the free space beside this: a place
+        /// (`shell:place:<key>`) or the resource a place shows, by its address
+        #[param(
+            "Without x and y, it stands in the free space beside this: a place (`shell:place:<key>`) \
+             or the resource a place shows, by its address"
+        )]
+        beside: Option<String>,
+    },
+    /// Give a place a size, as dragging its edge does
+    #[effect(
+        on = Place,
+        kind = "undoable",
+        audience = "agents",
+        label = "session-action-size"
+    )]
+    Size {
+        /// The place
+        #[param("The place")]
+        place: String,
+        /// Its width in canvas pixels
+        #[param("Its width in canvas pixels")]
+        width: i64,
+        /// Its height in canvas pixels
+        #[param("Its height in canvas pixels")]
+        height: i64,
+    },
+    /// Report how tall a hugging place is drawn now, as its canvas sees it
+    #[effect(
+        on = Place,
+        kind = "read",
+        audience = "agents",
+        label = "session-action-drawn"
+    )]
+    Drawn {
+        /// The place
+        #[param("The place")]
+        place: String,
+        /// Its drawn height in canvas pixels
+        #[param("Its drawn height in canvas pixels")]
+        height: i64,
+    },
+    /// Close a place
+    #[effect(on = Place, kind = "undoable", audience = "agents", label = "session-action-close")]
+    Close {
+        /// The place
+        #[param("The place")]
+        place: String,
+    },
+    /// Bring a place in front of its strip
+    #[effect(
+        on = Place,
+        kind = "undoable",
+        audience = "agents",
+        label = "session-action-activate"
+    )]
+    Activate {
+        /// The place
+        #[param("The place")]
+        place: String,
+    },
+    /// Move a place into a row, or into a strip as a tab of it
+    #[effect(on = Place, kind = "undoable", audience = "agents", label = "session-action-move")]
+    Move {
+        /// The place
+        #[param("The place")]
+        place: String,
+        /// The row it goes into
+        #[param(resource = "layout.row", "The row it goes into")]
+        row: String,
+        /// The strip it becomes a tab of, in that strip's row
+        #[param(
+            resource = "layout.strip",
+            "The strip it becomes a tab of, in that strip's row"
+        )]
+        strip: Option<String>,
+        /// The place it goes before in that strip
+        #[param(resource = "layout.place", "The place it goes before in that strip")]
+        before: Option<String>,
+    },
+    /// Float a place above its workspace's windows, where every member sees it
+    #[effect(on = Place, kind = "undoable", audience = "agents", label = "session-action-float")]
+    Float {
+        /// The place
+        #[param("The place")]
+        place: String,
+        /// The corner of the work area it keeps its distance from: top-left, top-right,
+        /// bottom-right (the default) or bottom-left
+        #[param(
+            "The corner of the work area it keeps its distance from: top-left, top-right, \
+             bottom-right (the default) or bottom-left"
+        )]
+        corner: Option<String>,
+        /// Its distance from that corner's side edge, in canvas pixels
+        #[param("Its distance from that corner's side edge, in canvas pixels")]
+        dx: Option<i64>,
+        /// Its distance from that corner's top or bottom edge, in canvas pixels
+        #[param("Its distance from that corner's top or bottom edge, in canvas pixels")]
+        dy: Option<i64>,
+        /// Its width in canvas pixels
+        #[param("Its width in canvas pixels")]
+        width: Option<i64>,
+        /// Its height in canvas pixels
+        #[param("Its height in canvas pixels")]
+        height: Option<i64>,
+    },
+    /// Snap a floating place back among its workspace's windows
+    #[effect(
+        on = Place,
+        kind = "undoable",
+        audience = "agents",
+        label = "session-action-snap-back"
+    )]
+    Snap {
+        /// The place
+        #[param("The place")]
+        place: String,
+        /// The row it goes into; its own when left out
+        #[param(resource = "layout.row", "The row it goes into; its own when left out")]
+        row: Option<String>,
+        /// The place it goes before in that row
+        #[param(resource = "layout.place", "The place it goes before in that row")]
+        before: Option<String>,
+    },
+    /// Resize a strip
+    #[effect(on = LayoutStrip, kind = "undoable", audience = "agents", label = "session-action-resize")]
+    Resize {
+        /// The strip
+        #[param("The strip")]
+        strip: String,
+        /// Its width in per-mille of the row
+        #[param("Its width in per-mille of the row")]
+        permille: i64,
+    },
+    /// Maximize a strip, so it stands alone and fills the shell
+    #[effect(
+        on = LayoutStrip,
+        kind = "undoable",
+        audience = "agents",
+        label = "session-action-maximize-strip"
+    )]
+    MaximizeStrip {
+        /// The strip
+        #[param("The strip")]
+        strip: String,
+        /// Whether it fills the shell
+        #[param("Whether it fills the shell")]
+        on: Option<bool>,
+    },
+    /// Show a match of the search in this place
+    #[effect(
+        on = Query,
+        kind = "undoable",
+        audience = "agents",
+        label = "session-action-show-match"
+    )]
+    ShowMatch {
+        /// The query
+        #[param("The query")]
+        query: String,
+        /// The resource the row names
+        #[param(resource = "", "The resource the row names")]
+        resource: String,
+    },
+    /// Look for it again
+    #[effect(on = Query, kind = "undoable", audience = "agents", label = "session-action-retry")]
+    Retry {
+        /// The query
+        #[param("The query")]
+        query: String,
+    },
+}
+
+impl LayoutEffect {
+    /// The change this effect makes, as the layout's document keeps it; `None` for a step of the
+    /// history, which the layout steps itself.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each declared change maps to the layout change it makes in one match, so the two read together"
+    )]
+    pub(super) fn layout(&self) -> Option<LayoutAction> {
+        Some(match self {
+            Self::Place {
+                workspace,
+                row,
+                strip,
+                place,
+                resource,
+                view,
+                x,
+                y,
+                beside: _,
+                width,
+                height,
+                float,
+                dx,
+                dy,
+            } => LayoutAction::Place {
+                workspace: workspace
+                    .as_deref()
+                    .and_then(|id| WorkspaceId::parse(id.trim()))
+                    .unwrap_or_default(),
+                row: count(*row),
+                strip: count(*strip),
+                place: count(*place),
+                resource: resource.clone(),
+                view: view.clone().unwrap_or_default(),
+                x: x.unwrap_or_default(),
+                y: y.unwrap_or_default(),
+                width: width.unwrap_or(DEFAULT_WIDTH),
+                height: height.unwrap_or(DEFAULT_HEIGHT),
+                float: float.as_deref().map(|corner| {
+                    FloatPlace::new(
+                        float_corner(Some(corner)),
+                        float_coord(*dx, FLOAT_INSET),
+                        float_coord(*dy, FLOAT_INSET),
+                        float_side(*width, FLOAT_WIDTH),
+                        float_side(*height, FLOAT_HEIGHT),
+                    )
+                }),
+                // Named no height, it hugs what it shows up to a window's (canvas.md §7).
+                hugs: height.is_none(),
             },
-        )
-        .with_did("pinned"),
-        position_action(key, words),
-        size_action(key, words),
-        drawn_action(key, words),
-        action(words, "close", "Close a place", Vec::new(), move |_| {
-            LayoutAction::Close {
-                place: count_of(&closed),
-            }
-        })
-        .with_did("closed"),
-        action(
-            words,
-            "activate",
-            "Bring a place in front of its strip",
-            Vec::new(),
-            move |_| LayoutAction::Activate {
-                place: count_of(&in_front),
+            Self::PlaceFound {
+                text,
+                view,
+                strip,
+                x,
+                y,
+                width,
+                height,
+                seen_x,
+                seen_y,
+                seen_width,
+                seen_height,
+            } => LayoutAction::PlaceFound {
+                text: text.clone(),
+                view: view.clone().unwrap_or_default(),
+                strip: strip
+                    .as_deref()
+                    .and_then(|strip| strip.trim().parse().ok())
+                    .filter(|strip| *strip != 0),
+                x: x.unwrap_or_default(),
+                y: y.unwrap_or_default(),
+                width: width.unwrap_or_default(),
+                height: height.unwrap_or_default(),
+                seen_x: seen_x.unwrap_or_default(),
+                seen_y: seen_y.unwrap_or_default(),
+                seen_width: seen_width.unwrap_or_default(),
+                seen_height: seen_height.unwrap_or_default(),
             },
-        )
-        .with_did("brought to the front"),
-        action(
-            words,
-            "move",
-            "Move a place into a row, or into a strip as a tab of it",
-            vec![
-                required(
-                    words,
-                    "move",
-                    "row",
-                    ParamType::Resource,
-                    "The row it goes into",
-                )
-                .of_resource_kind(ROW_KIND),
-                optional(
-                    words,
-                    "move",
-                    "strip",
-                    ParamType::Resource,
-                    "The strip it becomes a tab of, in that strip's row",
-                )
-                .of_resource_kind(STRIP_KIND),
-                optional(
-                    words,
-                    "move",
-                    "before",
-                    ParamType::Resource,
-                    "The place it goes before in that strip",
-                )
-                .of_resource_kind(PLACE_KIND),
-            ],
-            move |args| LayoutAction::Move {
-                place: count_of(&moved),
-                row: named(args, "row", Item::Row).unwrap_or_default(),
-                before: named(args, "before", Item::Place),
-                strip: named(args, "strip", Item::Strip),
+            Self::Open {
+                resource,
+                view,
+                beside,
+            } => LayoutAction::Open {
+                resource: resource.clone(),
+                view: view.clone().unwrap_or_default(),
+                beside: beside.clone().unwrap_or_default(),
             },
-        )
-        .with_did("moved"),
-    ]
-    .into_iter()
-    .chain(float_actions(key, words))
-    .collect()
-}
-
-/// `position`: a place stood at a point on the canvas, or beside another, its key bound in.
-fn position_action(key: &str, words: &Words) -> ActionSpec {
-    let positioned = key.to_owned();
-    action(
-        words,
-        "position",
-        "Stand a place at a point on the canvas, as a drag that let it go there",
-        vec![
-            optional(words, "position", "x", ParamType::Integer, "Its canvas x"),
-            optional(words, "position", "y", ParamType::Integer, "Its canvas y"),
-            // A place moved next to another stands in the free space beside it, as one opened
-            // there does: what "put my notes next to the inbox" asks.
-            optional(
-                words,
-                "position",
-                "beside",
-                ParamType::Text,
-                "Without x and y, it stands in the free space beside this: a place (`shell:place:<key>`) or the resource a place shows, by its address",
-            ),
-        ],
-        move |args| LayoutAction::Position {
-            place: count_of(&positioned),
-            x: args.integer("x").unwrap_or_default(),
-            y: args.integer("y").unwrap_or_default(),
-        },
-    )
-    .with_did("moved on the canvas")
-}
-
-/// `size`: a place given a size on the canvas, its key bound in.
-fn size_action(key: &str, words: &Words) -> ActionSpec {
-    let sized = key.to_owned();
-    action(
-        words,
-        "size",
-        "Give a place a size on the canvas, as dragging its edge does",
-        vec![
-            required(
-                words,
-                "size",
-                "width",
-                ParamType::Integer,
-                "Its width in canvas pixels",
-            ),
-            required(
-                words,
-                "size",
-                "height",
-                ParamType::Integer,
-                "Its height in canvas pixels",
-            ),
-        ],
-        move |args| LayoutAction::Size {
-            place: count_of(&sized),
-            width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
-            height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
-        },
-    )
-    .with_did("sized")
-}
-
-/// `drawn`: how tall a hugging place is drawn now, its key bound in. What its canvas reports as
-/// the view grows and shrinks, never a step of the person's.
-fn drawn_action(key: &str, words: &Words) -> ActionSpec {
-    let drawn = key.to_owned();
-    let mut spec = action(
-        words,
-        "drawn",
-        "Report how tall a hugging place is drawn now, as its canvas sees it",
-        vec![required(
-            words,
-            "drawn",
-            "height",
-            ParamType::Integer,
-            "Its drawn height in canvas pixels",
-        )],
-        move |args| LayoutAction::Drawn {
-            place: count_of(&drawn),
-            height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
-        },
-    )
-    .for_audience(Audience::Agents);
-    // View state the canvas reports as it draws, never a change of the layout the person asked
-    // for: it reads, and it takes back nothing.
-    spec.type_mut().contract.kind = tilo_actions::ActionKind::Read;
-    spec
-}
-
-/// The actions that float a place and snap it back, its key bound into each as every place action's
-/// is.
-fn float_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
-    let floating = key.to_owned();
-    let snapping = key.to_owned();
-    vec![
-        action(
-            words,
-            "float",
-            "Float a place above its workspace's windows, where every member sees it",
-            vec![
-                optional(
-                    words,
-                    "float",
-                    "corner",
-                    ParamType::Text,
-                    "The corner of the work area it keeps its distance from: top-left, top-right, bottom-right (the default) or bottom-left",
-                ),
-                optional(
-                    words,
-                    "float",
-                    "dx",
-                    ParamType::Integer,
-                    "Its distance from that corner's side edge, in canvas pixels",
-                ),
-                optional(
-                    words,
-                    "float",
-                    "dy",
-                    ParamType::Integer,
-                    "Its distance from that corner's top or bottom edge, in canvas pixels",
-                ),
-                optional(
-                    words,
-                    "float",
-                    "width",
-                    ParamType::Integer,
-                    "Its width in canvas pixels",
-                ),
-                optional(
-                    words,
-                    "float",
-                    "height",
-                    ParamType::Integer,
-                    "Its height in canvas pixels",
-                ),
-            ],
-            move |args| LayoutAction::Float {
-                place: count_of(&floating),
+            Self::Show {
+                place,
+                resource,
+                view,
+            } => LayoutAction::Show {
+                place: named(Some(place), Item::Place).unwrap_or_default(),
+                resource: resource.clone(),
+                view: view.clone().unwrap_or_default(),
+            },
+            Self::RetryQuery { place } => LayoutAction::RetryQuery {
+                place: named(Some(place), Item::Place).unwrap_or_default(),
+            },
+            Self::Undo | Self::Redo => return None,
+            Self::Pin { place, pinned } => LayoutAction::Pin {
+                place: key_of(place),
+                pinned: pinned.unwrap_or(true),
+            },
+            Self::Position {
+                place,
+                x,
+                y,
+                beside: _,
+            } => LayoutAction::Position {
+                place: key_of(place),
+                x: x.unwrap_or_default(),
+                y: y.unwrap_or_default(),
+            },
+            Self::Size {
+                place,
+                width,
+                height,
+            } => LayoutAction::Size {
+                place: key_of(place),
+                width: *width,
+                height: *height,
+            },
+            Self::Drawn { place, height } => LayoutAction::Drawn {
+                place: key_of(place),
+                height: *height,
+            },
+            Self::Close { place } => LayoutAction::Close {
+                place: key_of(place),
+            },
+            Self::Activate { place } => LayoutAction::Activate {
+                place: key_of(place),
+            },
+            Self::Move {
+                place,
+                row,
+                strip,
+                before,
+            } => LayoutAction::Move {
+                place: key_of(place),
+                row: named(Some(row), Item::Row).unwrap_or_default(),
+                before: named(before.as_deref(), Item::Place),
+                strip: named(strip.as_deref(), Item::Strip),
+            },
+            Self::Float {
+                place,
+                corner,
+                dx,
+                dy,
+                width,
+                height,
+            } => LayoutAction::Float {
+                place: key_of(place),
                 float: FloatPlace::new(
-                    float_corner(args.text("corner")),
-                    float_coord(args.integer("dx"), FLOAT_INSET),
-                    float_coord(args.integer("dy"), FLOAT_INSET),
-                    float_side(args.integer("width"), FLOAT_WIDTH),
-                    float_side(args.integer("height"), FLOAT_HEIGHT),
+                    float_corner(corner.as_deref()),
+                    float_coord(*dx, FLOAT_INSET),
+                    float_coord(*dy, FLOAT_INSET),
+                    float_side(*width, FLOAT_WIDTH),
+                    float_side(*height, FLOAT_HEIGHT),
                 ),
             },
-        ),
-        action(
-            words,
-            "snap-back",
-            "Snap a floating place back among its workspace's windows",
-            vec![
-                optional(
-                    words,
-                    "snap-back",
-                    "row",
-                    ParamType::Resource,
-                    "The row it goes into; its own when left out",
-                )
-                .of_resource_kind(ROW_KIND),
-                optional(
-                    words,
-                    "snap-back",
-                    "before",
-                    ParamType::Resource,
-                    "The place it goes before in that row",
-                )
-                .of_resource_kind(PLACE_KIND),
-            ],
-            move |args| LayoutAction::Snap {
-                place: count_of(&snapping),
-                row: named(args, "row", Item::Row),
-                before: named(args, "before", Item::Place),
+            Self::Snap { place, row, before } => LayoutAction::Snap {
+                place: key_of(place),
+                row: named(row.as_deref(), Item::Row),
+                before: named(before.as_deref(), Item::Place),
             },
-        ),
-    ]
+            Self::Resize { strip, permille } => LayoutAction::Resize {
+                strip: key_of(strip),
+                permille: u32::try_from(*permille).unwrap_or(1),
+            },
+            Self::MaximizeStrip { strip, on } => LayoutAction::Maximize {
+                strip: key_of(strip),
+                maximized: on.unwrap_or(true),
+            },
+            Self::ShowMatch { query, resource } => LayoutAction::Show {
+                place: key_of(query),
+                resource: resource.clone(),
+                view: String::new(),
+            },
+            Self::Retry { query } => LayoutAction::RetryQuery {
+                place: key_of(query),
+            },
+        })
+    }
+}
+
+/// The key of the item the published resource id names: the prefix each item's resources
+/// begin with, then the key. `0` for an id naming nothing, which the action then refuses.
+fn key_of(id: &str) -> u64 {
+    [Item::Place, Item::Strip, Item::Row, Item::Query]
+        .into_iter()
+        .find_map(|item| item.key(id))
+        .map_or(0, count_of)
+}
+
+/// The key of the item the resource id `id` names, when it names one.
+fn named(id: Option<&str>, item: Item) -> Option<u64> {
+    id.and_then(|id| item.key(id.trim())).and_then(|key| {
+        tilo_failure::ignored!(
+            "an id that is not a number names no row, which the action refuses",
+            key.parse().ok()
+        )
+    })
+}
+
+/// A count `value` names, `0` where it is negative or absent.
+fn count(value: Option<i64>) -> u64 {
+    value
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or_default()
 }
 
 /// The corner a `float` action names, the work area's bottom-right when it names none.
@@ -376,58 +676,29 @@ fn float_side(value: Option<i64>, default: u32) -> u32 {
     u32::try_from(value.unwrap_or_else(|| i64::from(default)).max(1)).unwrap_or(u32::MAX)
 }
 
-/// The actions a strip's own resource offers, its key bound into each: the strip is the resource
-/// they are pressed on.
-pub(super) fn strip_actions(key: &str, words: &Words) -> Vec<ActionSpec> {
-    let resized = key.to_owned();
-    let maximized = key.to_owned();
-    vec![
-        action(
-            words,
-            "resize",
-            "Resize a strip",
-            vec![required(
-                words,
-                "resize",
-                "permille",
-                ParamType::Integer,
-                "Its width in per-mille of the row",
-            )],
-            move |args| LayoutAction::Resize {
-                strip: count_of(&resized),
-                permille: u32::try_from(args.integer("permille").unwrap_or(1)).unwrap_or(1),
-            },
-        ),
-        action(
-            words,
-            "maximize-strip",
-            "Maximize a strip, so it stands alone and fills the shell",
-            vec![optional(
-                words,
-                "maximize-strip",
-                "on",
-                ParamType::Boolean,
-                "Whether it fills the shell",
-            )],
-            move |args| LayoutAction::Maximize {
-                strip: count_of(&maximized),
-                maximized: args.boolean("on").unwrap_or(true),
-            },
-        ),
-    ]
-}
+/// What a change of the layout did, as its history says it: the words the hand-built specs
+/// declared beside each action, kept on the published spec.
+const DIDS: &[(&str, &str)] = &[
+    ("pin", "pinned"),
+    ("position", "moved on the canvas"),
+    ("size", "sized"),
+    ("close", "closed"),
+    ("activate", "brought to the front"),
+    ("move", "moved"),
+    ("show", "showed in its place"),
+    ("place", "showed"),
+    ("place-found", "put on the canvas"),
+    ("open", "opened"),
+];
 
-/// The row `arguments` names as `name` , by the id of the row's resource. `None` for an id of
-/// another resource, which the action then refuses as naming no row.
-fn named(args: &ActionArgs, name: &str, item: Item) -> Option<u64> {
-    args.text(name)
-        .and_then(|id| item.key(id.trim()))
-        .and_then(|key| {
-            tilo_failure::ignored!(
-                "an id that is not a number names no row, which the action refuses",
-                key.parse().ok()
-            )
-        })
+/// `resource` with each of its actions that a change of the layout says what it did by.
+pub(super) fn carried(mut resource: ResourceSpec) -> ResourceSpec {
+    for action in &mut resource.actions {
+        if let Some((_, did)) = DIDS.iter().find(|(id, _)| *id == action.id) {
+            action.type_mut().did = Some((*did).to_owned());
+        }
+    }
+    resource
 }
 
 /// The record key of a place, a strip or a row, as its actions take it. `0` for the keyless
@@ -463,15 +734,6 @@ pub(super) fn place_label(words: &Words, place: &PlaceReading) -> String {
     }
 }
 
-/// The state a query's matches settle it at, and the kind of resource the query names: `failed`
-/// when the app gave a reason, else `one` for exactly one match a place can show, `several` for
-/// more, `none` for none — and `searching` while a state is still being waited for (the caller
-/// passes `""` for `state` only once the app answered). `kind` is the one every match shares, or
-/// the first's, as the app publishes it.
-/// The state and reason a query starts in, from the app's own search invocation's result: a
-/// refusal or failure is the query `.failed` with the action's own reason; a run that was taken is
-/// `searching`, answered later into the app's records (shell.md §8). The invocation itself says,
-/// never a guess from the app's records.
 /// Feed what `specs` publish into `hasher` : each resource's id, kind and label, and its
 /// children's, so two revisions are equal exactly when the action API publishes the same.
 pub(super) fn hash_resources(specs: &[ResourceSpec], hasher: &mut std::hash::DefaultHasher) {
@@ -483,475 +745,4 @@ pub(super) fn hash_resources(specs: &[ResourceSpec], hasher: &mut std::hash::Def
         hash_resources(&spec.children, hasher);
     }
     hasher.write_u8(0);
-}
-
-/// The actions that put a resource on the canvas: by naming it and one of its views, or by what a
-/// text finds (shell.md §8).
-fn placing_actions(words: &Words) -> Vec<ActionSpec> {
-    vec![
-        place_action(words),
-        place_found_action(words),
-        open_action(words),
-        show_action(words),
-        retry_query_action(words),
-    ]
-}
-
-/// `show`: a place shows another resource, keeping its id and its place on the canvas. What an
-/// answered canvas query's place becomes, and Undo puts the query back (shell.md §8).
-fn show_action(words: &Words) -> ActionSpec {
-    action(
-        words,
-        "show",
-        "Show another resource in a place, keeping the place where it is",
-        vec![
-            required(
-                words,
-                "show",
-                "place",
-                ParamType::Resource,
-                "The place, by its resource",
-            )
-            .of_resource_kind(PLACE_KIND),
-            required(
-                words,
-                "show",
-                "resource",
-                ParamType::Resource,
-                "The resource it shows from now on",
-            ),
-            optional(
-                words,
-                "show",
-                "view",
-                ParamType::Text,
-                "The view it shows it through",
-            ),
-        ],
-        |args| LayoutAction::Show {
-            place: named(args, "place", Item::Place).unwrap_or_default(),
-            resource: text(args, "resource"),
-            view: args.text("view").unwrap_or_default().to_owned(),
-        },
-    )
-    .with_did("showed in its place")
-}
-
-/// `retry-query`: ask the app the query a place shows again for what the person typed.
-fn retry_query_action(words: &Words) -> ActionSpec {
-    action(
-        words,
-        "retry-query",
-        "Look for what a place's search names again",
-        vec![
-            required(
-                words,
-                "retry-query",
-                "place",
-                ParamType::Resource,
-                "The place, by its resource",
-            )
-            .of_resource_kind(PLACE_KIND),
-        ],
-        |args| LayoutAction::RetryQuery {
-            place: named(args, "place", Item::Place).unwrap_or_default(),
-        },
-    )
-}
-
-/// What a `place` names: the surface in front's workspace and row when left out, the place's own
-/// strip and id when it makes them, and where it stands and what it shows.
-fn place_params(words: &Words) -> Vec<ActionParam> {
-    vec![
-        // Each left out is the surface in front's: its workspace and row, and a strip and place
-        // id of its own.
-        optional(
-            words,
-            "place",
-            "workspace",
-            ParamType::Text,
-            "The workspace whose canvas it stands on, by its id; the one in front when left out",
-        ),
-        optional(
-            words,
-            "place",
-            "row",
-            ParamType::Integer,
-            "The row it stands in; the row in front when left out",
-        ),
-        optional(
-            words,
-            "place",
-            "strip",
-            ParamType::Integer,
-            "The strip it stands in; a new one when left out",
-        ),
-        optional(
-            words,
-            "place",
-            "place",
-            ParamType::Integer,
-            "The id the new place takes; a new one when left out",
-        ),
-        required(
-            words,
-            "place",
-            "resource",
-            ParamType::Resource,
-            "The resource it shows",
-        ),
-        optional(
-            words,
-            "place",
-            "view",
-            ParamType::Text,
-            "The view it shows it through",
-        ),
-        optional(words, "place", "x", ParamType::Integer, "Its canvas x"),
-        optional(words, "place", "y", ParamType::Integer, "Its canvas y"),
-        // Where it stands when it names no point: beside the place showing this resource, in the
-        // free space nearest it. An agent's step names the conversation it was asked in, so what
-        // it places stands next to that conversation (`shell.md` §8.1).
-        optional(
-            words,
-            "place",
-            "beside",
-            ParamType::Text,
-            "Without x and y, it stands beside the place showing this resource, by its address; an agent's step stands it beside the conversation it was asked in",
-        ),
-        optional(
-            words,
-            "place",
-            "width",
-            ParamType::Integer,
-            "Its width in canvas pixels",
-        ),
-        optional(
-            words,
-            "place",
-            "height",
-            ParamType::Integer,
-            "Its height in canvas pixels",
-        ),
-        // A place that floats stands above the windows rather than on the canvas: it has no
-        // canvas x and y, and the corner and insets are its own instead (`width` and
-        // `height` are its size). Left out, the place stands on the canvas.
-        optional(
-            words,
-            "place",
-            "float",
-            ParamType::Text,
-            "Floats it above its workspace's windows at this corner of the work area: top-left, top-right, bottom-right (the default) or bottom-left",
-        ),
-        optional(
-            words,
-            "place",
-            "dx",
-            ParamType::Integer,
-            "A float's distance from that corner's side edge, in canvas pixels",
-        ),
-        optional(
-            words,
-            "place",
-            "dy",
-            ParamType::Integer,
-            "A float's distance from that corner's top or bottom edge, in canvas pixels",
-        ),
-    ]
-}
-
-/// Show a resource on the canvas, as one of its views.
-fn place_action(words: &Words) -> ActionSpec {
-    action(
-        words,
-        "place",
-        "Show a resource on the canvas, as one of its views",
-        place_params(words),
-        |args| {
-            let float = args.text("float").map(|corner| {
-                FloatPlace::new(
-                    tilo_failure::ignored!(
-                        "a corner's name that names none stands at the default corner",
-                        FloatCorner::parse(corner).unwrap_or_default()
-                    ),
-                    float_coord(args.integer("dx"), FLOAT_INSET),
-                    float_coord(args.integer("dy"), FLOAT_INSET),
-                    float_side(args.integer("width"), FLOAT_WIDTH),
-                    float_side(args.integer("height"), FLOAT_HEIGHT),
-                )
-            });
-            LayoutAction::Place {
-                workspace: workspace_text(args, "workspace"),
-                row: count(args, "row"),
-                strip: count(args, "strip"),
-                place: count(args, "place"),
-                resource: text(args, "resource"),
-                view: args.text("view").unwrap_or_default().to_owned(),
-                x: args.integer("x").unwrap_or_default(),
-                y: args.integer("y").unwrap_or_default(),
-                width: args.integer("width").unwrap_or(DEFAULT_WIDTH),
-                height: args.integer("height").unwrap_or(DEFAULT_HEIGHT),
-                float,
-                // Named no height, it hugs what it shows up to a window's (canvas.md §7).
-                hugs: args.integer("height").is_none(),
-            }
-        },
-    )
-    .with_did("showed")
-}
-
-/// `place-found`: what a text finds, put on the canvas at the caret, or into a strip as a tab.
-fn place_found_action(words: &Words) -> ActionSpec {
-    action(
-        words,
-        "place-found",
-        "Put what a text finds on the canvas, or into a strip as a tab",
-        place_found_params(words),
-        |args| LayoutAction::PlaceFound {
-            text: text(args, "text"),
-            view: args.text("view").unwrap_or_default().to_owned(),
-            strip: args
-                .text("strip")
-                .map(|_| id_text(args, "strip"))
-                .filter(|strip| *strip != 0),
-            x: args.integer("x").unwrap_or_default(),
-            y: args.integer("y").unwrap_or_default(),
-            width: args.integer("width").unwrap_or_default(),
-            height: args.integer("height").unwrap_or_default(),
-            seen_x: args.integer("seen_x").unwrap_or_default(),
-            seen_y: args.integer("seen_y").unwrap_or_default(),
-            seen_width: args.integer("seen_width").unwrap_or_default(),
-            seen_height: args.integer("seen_height").unwrap_or_default(),
-        },
-    )
-    .with_did("put on the canvas")
-}
-
-/// What a `place-found` names: the text, the view, the strip it joins, the point and rectangle
-/// it fills, and what the person saw when they pointed.
-fn place_found_params(words: &Words) -> Vec<ActionParam> {
-    vec![
-        required(
-            words,
-            "place-found",
-            "text",
-            ParamType::Text,
-            "What to find and place",
-        ),
-        optional(
-            words,
-            "place-found",
-            "view",
-            ParamType::Text,
-            "The view it shows it through",
-        ),
-        optional(
-            words,
-            "place-found",
-            "strip",
-            ParamType::Text,
-            "The strip it joins as a tab, by its id; a strip of its own when left out",
-        ),
-        optional(
-            words,
-            "place-found",
-            "x",
-            ParamType::Integer,
-            "Its canvas x",
-        ),
-        optional(
-            words,
-            "place-found",
-            "y",
-            ParamType::Integer,
-            "Its canvas y",
-        ),
-        // A rectangle the person dragged: what is found is laid out to it, and an answer's
-        // views fill it. Left out, it stands at its own size.
-        optional(
-            words,
-            "place-found",
-            "width",
-            ParamType::Integer,
-            "The width of the rectangle it fills, in canvas pixels; its own when left out",
-        ),
-        optional(
-            words,
-            "place-found",
-            "height",
-            ParamType::Integer,
-            "The height of the rectangle it fills, in canvas pixels; its own when left out",
-        ),
-        // What the person saw when they pointed: an answer's views stand in free room
-        // inside it, so everything it places stays in view.
-        optional(
-            words,
-            "place-found",
-            "seen_x",
-            ParamType::Integer,
-            "The canvas x of the part of the canvas the person sees",
-        ),
-        optional(
-            words,
-            "place-found",
-            "seen_y",
-            ParamType::Integer,
-            "The canvas y of the part of the canvas the person sees",
-        ),
-        optional(
-            words,
-            "place-found",
-            "seen_width",
-            ParamType::Integer,
-            "The width of the part of the canvas the person sees, in canvas pixels",
-        ),
-        optional(
-            words,
-            "place-found",
-            "seen_height",
-            ParamType::Integer,
-            "The height of the part of the canvas the person sees, in canvas pixels",
-        ),
-    ]
-}
-
-/// Open a resource with its own view, beside what the ask is in.
-fn open_action(words: &Words) -> ActionSpec {
-    action(
-        words,
-        "open",
-        "Open a resource with its own view, beside what the ask is in",
-        vec![
-            required(
-                words,
-                "open",
-                "resource",
-                ParamType::Resource,
-                "The resource it shows",
-            ),
-            optional(
-                words,
-                "open",
-                "view",
-                ParamType::Text,
-                "The view it shows it through",
-            ),
-            optional(
-                words,
-                "open",
-                "beside",
-                ParamType::Text,
-                "The resource whose place it stands beside, by its address; the place in front when left out",
-            ),
-        ],
-        |args| LayoutAction::Open {
-            resource: text(args, "resource"),
-            view: args.text("view").unwrap_or_default().to_owned(),
-            beside: text(args, "beside"),
-        },
-    )
-    .with_did("opened")
-}
-
-/// An immediate effect action `id` the session answers itself: a step of the layout's history.
-#[expect(
-    clippy::expect_used,
-    reason = "the step action always serializes to JSON"
-)]
-fn step_action(words: &Words, id: &'static str, label: &str) -> ActionSpec {
-    let mut spec = ActionSpec::typed_operation(
-        id,
-        action_word(words, id, None, label),
-        String::new(),
-        OperationKind::Effect,
-        OPERATION,
-        Vec::new(),
-        |_| {
-            EncodedAction::encode_operation(OPERATION, &Json::Null)
-                .expect("a step action always serializes")
-        },
-    );
-    spec.type_mut().contract = ActionContract {
-        execution: ExecutionMode::Immediate,
-        result: ResultSpec::None,
-        ..ActionContract::default()
-    };
-    spec
-}
-
-/// An immediate effect action `id` that builds an [`LayoutAction`]. It is listed for agents and
-/// scripts, never for a person to pick: a person arranges by dragging and through the window bar,
-/// which submit it by address, and a place's actions name no place a listing could tell apart
-/// (three windows were three identical "Stand a place" rows in search).
-#[expect(
-    clippy::expect_used,
-    reason = "a layout action always serializes to JSON"
-)]
-pub(super) fn action(
-    words: &Words,
-    id: &'static str,
-    label: &str,
-    params: Vec<ActionParam>,
-    build: impl Fn(&ActionArgs) -> LayoutAction + Send + Sync + 'static,
-) -> ActionSpec {
-    let mut spec = ActionSpec::typed_operation(
-        id,
-        action_word(words, id, None, label),
-        String::new(),
-        OperationKind::Effect,
-        OPERATION,
-        params,
-        move |args| {
-            EncodedAction::encode_operation(OPERATION, &build(args))
-                .expect("a layout action always serializes")
-        },
-    );
-    spec.type_mut().contract = ActionContract {
-        execution: ExecutionMode::Immediate,
-        result: ResultSpec::None,
-        ..ActionContract::default()
-    };
-    spec.for_audience(Audience::Agents)
-}
-
-pub(super) fn required(
-    words: &Words,
-    id: &str,
-    name: &'static str,
-    ty: ParamType,
-    help: &str,
-) -> ActionParam {
-    ActionParam::required_owned(name, ty, action_word(words, id, Some(name), help))
-}
-
-fn optional(words: &Words, id: &str, name: &'static str, ty: ParamType, help: &str) -> ActionParam {
-    ActionParam::optional_owned(name, ty, action_word(words, id, Some(name), help))
-}
-
-fn count(args: &ActionArgs, name: &str) -> u64 {
-    args.whole(name).unwrap_or_default()
-}
-
-/// An id given as text: one no workspace has (`0`) when it is not a number,
-/// which the action then refuses as naming no workspace.
-fn id_text(args: &ActionArgs, name: &str) -> u64 {
-    tilo_failure::ignored!(
-        "text that is not a number names nothing, which the action refuses",
-        args.text(name)
-            .and_then(|id| id.trim().parse().ok())
-            .unwrap_or_default()
-    )
-}
-
-fn workspace_text(args: &ActionArgs, name: &str) -> WorkspaceId {
-    tilo_failure::ignored!(
-        "text that is not a workspace id names no workspace, which the action refuses",
-        args.text(name)
-            .and_then(|id| WorkspaceId::parse(id.trim()))
-            .unwrap_or_default()
-    )
-}
-
-pub(super) fn text(args: &ActionArgs, name: &str) -> String {
-    args.text(name).unwrap_or_default().to_owned()
 }

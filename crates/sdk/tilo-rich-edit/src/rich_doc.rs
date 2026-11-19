@@ -487,12 +487,12 @@ impl InlineTime {
 pub fn time_label(
     time: &InlineTime,
     now: jiff::Timestamp,
-    zone: &jiff::tz::TimeZone,
+    zone: &ui::clock::Zone,
     formats: ui::format::Formats,
 ) -> String {
     let ahead = time.at.duration_since(now).as_secs();
     match time.show {
-        TimeShow::Absolute => formats.timestamp(time.at.to_zoned(zone.clone()).datetime()),
+        TimeShow::Absolute => formats.timestamp(zone.at(time.at).datetime()),
         TimeShow::Countdown if ahead > 0 && ahead < 86_400 => {
             ui::format::timecode(u64::try_from(ahead).unwrap_or_default())
         }
@@ -505,7 +505,7 @@ pub fn time_label(
 #[derive(Clone, Debug)]
 pub struct Reading {
     pub now: jiff::Timestamp,
-    pub zone: jiff::tz::TimeZone,
+    pub zone: ui::clock::Zone,
     pub formats: ui::format::Formats,
 }
 
@@ -513,7 +513,7 @@ pub struct Reading {
 pub fn reading_here() -> Reading {
     Reading {
         now: ui::clock::local_now().timestamp(),
-        zone: jiff::tz::TimeZone::system(),
+        zone: ui::clock::Zone::here(),
         formats: ui::format::Formats::current(),
     }
 }
@@ -684,7 +684,7 @@ mod tests {
         }
     }
 
-    fn reading(zone: jiff::tz::TimeZone) -> Reading {
+    fn reading(zone: ui::clock::Zone) -> Reading {
         Reading {
             now: at("2026-10-29T10:00:00Z"),
             zone,
@@ -712,10 +712,15 @@ mod tests {
                 show: TimeShow::Relative
             })
         );
-        let utc = blocks_at(&rich, &reading(jiff::tz::TimeZone::UTC));
+        let utc = blocks_at(
+            &rich,
+            &reading(ui::clock::Zone::of(jiff::tz::TimeZone::UTC)),
+        );
         let tokyo = blocks_at(
             &rich,
-            &reading(jiff::tz::TimeZone::fixed(jiff::tz::offset(9))),
+            &reading(ui::clock::Zone::of(jiff::tz::TimeZone::fixed(
+                jiff::tz::offset(9),
+            ))),
         );
         let (utc, tokyo) = (utc[0].text.as_str(), tokyo[0].text.as_str());
         assert!(utc.contains("2026-10-29") && utc.contains("23:30"), "{utc}");
@@ -730,7 +735,7 @@ mod tests {
             "nobody reads the writer's words for it"
         );
 
-        let mut later = reading(jiff::tz::TimeZone::UTC);
+        let mut later = reading(ui::clock::Zone::of(jiff::tz::TimeZone::UTC));
         later.now = at("2026-10-29T11:08:00Z");
         assert!(
             blocks_at(&rich, &later)[0]
@@ -758,9 +763,12 @@ mod tests {
         I18nManager::add_resource("de-DE", "window = Fenster".to_owned());
         I18nManager::register_widget_messages();
         I18nManager::set_locale("de-DE");
-        let german = blocks_at(&rich, &reading(jiff::tz::TimeZone::UTC))[0]
-            .text
-            .clone();
+        let german = blocks_at(
+            &rich,
+            &reading(ui::clock::Zone::of(jiff::tz::TimeZone::UTC)),
+        )[0]
+        .text
+        .clone();
         I18nManager::set_locale("en-US");
         assert!(german.contains("in 2 Std."), "{german}");
     }

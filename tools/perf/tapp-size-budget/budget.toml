@@ -275,7 +275,7 @@ x86_64 = 2883584
 aarch64 = 2686976
 
 [apps."so.tilo.tasks"]
-x86_64 = 2490368
+x86_64 = 2424832
 aarch64 = 1572864
 
 [apps."so.tilo.terminal"]

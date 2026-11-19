@@ -17,7 +17,7 @@ use std::rc::Rc;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_session_core::layout::LayoutDocument;
 use tilo_session_core::layout::{
-    Ask, AskOrigin, Busy, Find, FindDone, Item, Layout, LayoutActions, RECORD_RESOURCE, RESOURCE,
+    Ask, AskOrigin, Busy, Find, FindDone, HISTORY_RESOURCE, Item, Layout, LayoutActions, RESOURCE,
 };
 
 /// What the page asks of its layout, as the trait object [`PAGE_LAYOUT`] makes.
@@ -185,7 +185,7 @@ impl PageLayout {
     /// and a row, strip or place of it.
     pub(crate) fn holds(resource: &str) -> bool {
         resource == RESOURCE
-            || resource == RECORD_RESOURCE
+            || resource == HISTORY_RESOURCE
             || [Item::Place, Item::Strip, Item::Row, Item::Query]
                 .into_iter()
                 .any(|item| item.key(resource).is_some())
@@ -398,7 +398,7 @@ mod tests {
                 "an action on that place reaches the layout"
             );
             assert!(
-                PageLayout::holds(RECORD_RESOURCE),
+                PageLayout::holds(HISTORY_RESOURCE),
                 "the layout's record is the person's to step back"
             );
             assert!(
@@ -434,7 +434,7 @@ mod tests {
                 "floating is the person's own step of the layout's history"
             );
 
-            page.invoke(RECORD_RESOURCE, "undo", &serde_json::Map::new());
+            page.invoke(HISTORY_RESOURCE, "undo", &serde_json::Map::new());
             assert!(!page.floating(place), "the person's undo puts it back");
         }
 

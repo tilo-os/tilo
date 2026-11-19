@@ -17,7 +17,8 @@
 //! notification centre,
 //! which opening it asks for, the people roster, which the bar's faces
 //! open, the server an invitation names, which the entry page fetches when it
-//! follows an invitation, the HTML presenter, which a page mounted
+//! follows an invitation, what the page's person is doing, which the page
+//! fetches once its first frame is up, the HTML presenter, which a page mounted
 //! with `dom: true` asks for, the directory and invite sheets and the
 //! shortcut guide, which opening one asks for, a hosted window's page, which
 //! the first page to reach the shell asks for, the renderer's maker, which
@@ -210,6 +211,13 @@ split_code! {
 }
 
 split_code! {
+    /// The accounts a person linked to the services this workspace is connected to: the page
+    /// fetches them the first time something asks where they stand.
+    mod linked_accounts: ui::linked_accounts::MakeAccounts = ui::linked_accounts::builtin_accounts()
+        => ui::linked_accounts::ACCOUNTS, module = "linked_accounts", hash = "b07c41e95d2af683";
+}
+
+split_code! {
     /// The profile card: the first card that opens asks for it.
     mod profile_card: tilo_desktop::profile_card::MakeProfileCard = tilo_desktop::profile_card::builtin_profile_card()
         => tilo_desktop::profile_card::PROFILE_CARD, module = "profile_card", hash = "5f81c2e94a3d07b6";
@@ -250,6 +258,13 @@ split_code! {
     /// fetches it when it follows an invitation.
     mod invited_server: tilo_browser_runtime::InvitedServer = tilo_browser_runtime::builtin_invited_server()
         => tilo_browser_runtime::INVITED_SERVER, module = "invited_server", hash = "3f81b6c20e97d4a5";
+}
+
+split_code! {
+    /// What the page's person is doing, read off their own steps: fetched once the first frame is
+    /// up, before the page next says.
+    mod say_doing: tilo_session::activity::SayDoing = tilo_session::activity::builtin_say_doing()
+        => tilo_session::activity::SAY_DOING, module = "say_doing", hash = "6e2b9d47c10a8f35";
 }
 
 split_code! {
@@ -388,6 +403,7 @@ pub(crate) fn register() {
     feedback_code::register();
     dom_presenter::register();
     profile_card::register();
+    linked_accounts::register();
     people::register();
     jobs_band::register();
     page_drops::register();
@@ -409,9 +425,11 @@ pub(crate) fn register() {
     renderer::register();
     pdf_words::register();
     written_views::register();
+    say_doing::register();
     prepare_settings_keeper_after_first_frame();
     prepare_page_drops_after_first_frame();
     prepare_page_search_after_first_frame();
+    prepare_say_doing_after_first_frame();
 }
 
 /// Once the page has drawn its first frame, fetch what a file dropped on the
@@ -436,6 +454,23 @@ fn prepare_page_drops_after_first_frame() {
 /// too.
 fn fetch_desktop_search() {
     let _ = tilo_desktop_search::DESKTOP_SEARCH.get();
+}
+
+/// Once the page has drawn its first frame, fetch the code that reads what the page's person is
+/// doing.
+///
+/// The page says what its person does every few seconds, and a tick before the code is in says
+/// nothing: the module goes after the first frame, so the first tick that matters has it. Nothing
+/// of it is needed for that frame.
+fn prepare_say_doing_after_first_frame() {
+    let work = Closure::once_into_js(move |_deadline: f64| {
+        if tilo_browser_runtime::first_frame_presented() {
+            let _ = tilo_session::activity::SAY_DOING.get();
+        } else {
+            prepare_say_doing_after_first_frame();
+        }
+    });
+    after_idle(SPELLING_POLL_MS, &work);
 }
 
 /// Once the page has drawn its first frame, fetch the page search's code.

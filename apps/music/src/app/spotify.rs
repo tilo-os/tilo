@@ -161,20 +161,16 @@ impl Music {
     /// effect declaration and member authority before starting the job.
     pub(super) fn queue_spotify_effect_control(&mut self, effect: &MusicEffect) {
         use ui::tilo_resource::Effect as _;
-        let Some(spec) = MusicEffect::specs()
-            .into_iter()
-            .find(|spec| spec.id == effect.id())
-        else {
-            return;
-        };
-        let row = ui::framework::LiveRow::typed::<crate::row_types::Library>(
+        let arguments = effect.arguments();
+        let bindings =
+            ui::tilo_resource::RowBindings::new().bind_id(effect.id(), arguments.clone());
+        let row = ui::framework::LiveRow::typed_with::<crate::row_types::Library>(
             "music.library",
             crate::i18n::CATALOG.t("music-resource-library"),
-        )
-        .operation(spec.clone());
-        let arguments = effect.arguments();
+            &bindings,
+        );
         let Ok(binding) =
-            tilo_actions::ActionBinding::new(&row, &spec, move |()| arguments.clone())
+            tilo_actions::ActionBinding::static_json_for(&row, effect.id(), arguments)
         else {
             return;
         };

@@ -257,10 +257,13 @@ paths = [
     "apps/mail/*",
     "apps/tl/mail/*",
     "crates/platform/mail-session/*",
+    "crates/platform/tilolang-process/src/mail_recovery.rs",
+    "crates/platform/tilolang-process/tests/own_resources.rs",
     "crates/server/tilo-workspace-service/src/workspaces/mail_watch.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings/sending.rs",
     "crates/agent/agent-session/tests/mail_for_agents.rs",
+    "crates/agent/agent-session/tests/workspace_actions/hosted_mail_delivery.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_assistant_tests.rs",
 ]
 
@@ -334,6 +337,14 @@ paths = [
     "crates/agent/agent-session/tests/workspace_actions/held_roles.rs",
     "crates/sdk/ui-core/src/mentions.rs",
     "crates/session/session/src/mentions.rs",
+]
+
+[[allow]]
+reason = "The session publishes Chat's and Tube's own rows under their apps' kinds: the `channel` in those kinds, and the words those apps' windows name a channel by."
+words = ["channel"]
+paths = [
+    "crates/session/session/src/conversations.rs",
+    "crates/session/session/src/dev_rust_views.rs",
 ]
 
 [[allow]]
@@ -1560,3 +1571,9 @@ reason = "YouTube's channels, which tube's model names as the product's API does
 words = ["channel"]
 identifiers = ["Channel", "channel_id"]
 paths = ["apps/tube/src/rows.rs", "apps/tube/src/actions.rs"]
+
+[[allow]]
+reason = "A test drives the workspace service through the fixture named `test_host` and the `host` field of the service every embedder reads; neither is prose."
+words = ["host"]
+identifiers = ["host", "test_host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/device_rejoin_tests.rs"]

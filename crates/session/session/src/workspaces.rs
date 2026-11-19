@@ -1084,12 +1084,13 @@ impl crate::Shared {
         // Who is here is numbered in the order the workspace admitted them, as its governance,
         // projected onto the shell, records it: the order the roster numbers them in too.
         if let Some(sync) = &self.sync {
-            let joined = self.handle.read(|tree| {
+            let (joined, names) = self.handle.read(|tree| {
                 tree.active_workspace()
-                    .map(|workspace| workspace.policy.joined.clone())
-                    .unwrap_or_default()
+                    .map_or_else(Default::default, tilo_desktop::here::workspace_people)
             });
-            sync.here().borrow_mut().set_joined(&joined);
+            sync.here()
+                .borrow_mut()
+                .set_workspace_people(&joined, &names);
         }
     }
 

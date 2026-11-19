@@ -7607,7 +7607,7 @@ mod tests {
                 );
                 assert_eq!(row.cursor_shape(p), Some(winit::window::CursorIcon::Grab));
                 let pill = row.groups[0].tab_rects()[0].center();
-                assert!(!row.groups[0].bar_grab_hit(pill));
+                assert!(row.groups[0].bar_grab_hit(pill), "the lone tab is the title");
             }
 
             fn drag_group_to_end_reorders_group_vector_and_publishes_one_shot() {

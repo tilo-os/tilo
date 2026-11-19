@@ -1148,7 +1148,7 @@ mod tests {
     use tilo_compositor::OutputConfig;
     use tilo_desktop_model::{Strip, StripId};
     use tilo_desktop_policy::Window;
-    use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
+    use tilo_desktop_surface::surface::window_menu::move_to_workspace_id;
     use ui::resource::transfer::retirement;
     use ui::resource::{DocumentCheckout, ResourceOwners, ResourceType};
 
@@ -1351,7 +1351,7 @@ mod tests {
         fn carry(&mut self) {
             self.session
                 .handle()
-                .choose_window_menu(self.tab, &format!("{MOVE_TO_WORKSPACE}:{}", self.to), None)
+                .choose_window_menu(self.tab, &move_to_workspace_id(self.to), None)
                 .expect("the person moves the window");
             self.session
                 .step(Duration::from_millis(1))
