@@ -195,10 +195,14 @@ impl GovernedWorkspace {
     /// them, without opening a group it has none of: `None` when this host
     /// runs on a device that takes part in no group of the workspace.
     pub(super) async fn route_keys(&self) -> Option<Result<ContentKeys, String>> {
+        self.reader_keys(collab_types::EVERY_MEMBER).await
+    }
+
+    /// The keys of the group of `readers` in this workspace as this device
+    /// holds them, without opening a group it has none of: `None` when it takes part in none.
+    pub(super) async fn reader_keys(&self, readers: &str) -> Option<Result<ContentKeys, String>> {
         let device = self.device.as_ref()?;
-        device
-            .group_keys(self.workspace(), collab_types::EVERY_MEMBER, false)
-            .await
+        device.group_keys(self.workspace(), readers, false).await
     }
 
     /// Whether this host holds the workspace's keys: it can then read sealed

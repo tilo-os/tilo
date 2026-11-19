@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
-use tilo_resource_store::{Admit, Received, Refusal, Store};
+use tilo_resource_store::{Admit, Received, Refusal, Store, is_store_document};
 
 use super::{GovernedWorkspace, Workspaces};
 
@@ -31,21 +31,6 @@ const DOCS: &str = "docs";
 const INDEX: &str = "index";
 /// How long a document nobody wrote stays in memory.
 const IDLE: Duration = Duration::from_secs(300);
-
-/// Whether `name` names a document the store placed: `<readers>/<owner>#<n>` or
-/// `<readers>/<kind>/<id>~<n>`, where `<readers>` is `*` or a digest. Every other document of an
-/// app is the app's own, which the governor's copy follows.
-pub(crate) fn is_store_document(name: &str) -> bool {
-    let Some((readers, rest)) = name.split_once('/') else {
-        return false;
-    };
-    let named = readers == "*"
-        || (readers.len() == 16 && readers.bytes().all(|byte| byte.is_ascii_hexdigit()));
-    let numbered = rest.rsplit_once(['#', '~']).is_some_and(|(_, number)| {
-        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
-    });
-    named && numbered
-}
 
 /// The file a document is kept in: its id, hex-encoded, since an id holds `/`.
 fn file_name(doc: &str) -> String {
@@ -305,22 +290,33 @@ impl GovernedWorkspace {
     ///
     /// # Errors
     /// The write does not open or decode, or the store cannot keep it.
+    ///
+    /// Whether any change of it took effect.
     pub(super) async fn take_resources(
         &mut self,
         author: [u8; 32],
         (app, doc): (&str, &str),
         envelope: &collab_types::SignedOp,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
+        // The reader set picks the key: every member's for `*`, else the set the store met the
+        // document under.
+        let known = match doc.split_once('/') {
+            Some((collab_types::EVERY_MEMBER, _)) => Some(collab_types::EVERY_MEMBER.to_owned()),
+            _ => self.resources.readers(doc),
+        };
         let payload = match envelope.encryption {
             None => envelope.payload.clone(),
             Some(metadata) => {
-                let Some(Ok(keys)) = self.route_keys().await else {
-                    return Ok(());
+                let Some(readers) = &known else {
+                    return Ok(false);
+                };
+                let Some(Ok(keys)) = self.reader_keys(readers).await else {
+                    return Ok(false);
                 };
                 let ciphertext =
                     collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
-                let artifact = collab_types::document_artifact_id(app, self.workspace(), doc);
-                keys.open_content(artifact, &metadata, &ciphertext)
+                // The scope the writer sealed it for, which its signature covers.
+                keys.open_content(envelope.artifact, &metadata, &ciphertext)
                     .map_err(|error| error.to_string())?
                     .to_vec()
             }
@@ -335,33 +331,36 @@ impl GovernedWorkspace {
             }
         };
         let (changes, named) = changes_of(mutation)?;
-        let readers = match doc.split_once('/') {
-            Some(("*", _)) => "*".to_owned(),
-            _ => named
-                .or_else(|| self.resources.readers(doc))
-                .ok_or("a write of a resource document of readers this device never met")?,
-        };
+        let readers = known
+            .or(named)
+            .ok_or("a write of a resource document of readers this device never met")?;
         // Every change of one write is its author's: whether they may write the document is
         // asked once, of the workspace's one permission check.
         let permitted = self
             .may_start(author, (app, doc), tilo_clock::wall())
             .is_ok();
         let admit = move |_: &tilo_resource_store::Proposal<'_>| permitted;
-        let received = changes
+        let received: Vec<Received> = changes
             .into_iter()
             .map(|change| Received { change, author })
             .collect();
+        let taken = received.len();
         let refused = self.resources.receive(doc, &readers, received, &admit)?;
+        let applied = refused.len() < taken;
         for (change, refusal) in refused {
             tracing::info!(workspace = %self.workspace(), %doc, %change, ?refusal, "a member's change to a resource was refused");
         }
-        Ok(())
+        Ok(applied)
     }
 }
 
 impl Workspaces {
     /// Takes `message`, `author`'s write, into `workspace`'s store when it writes a document the
     /// store placed; hands any other write back.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays held until its followers are told, so they read the write"
+    )]
     pub(super) async fn absorb_resources(
         &self,
         workspace: &str,
@@ -385,10 +384,16 @@ impl Workspaces {
             .await
             .map_err(|error| error.to_string())?;
         let mut governed = governed.lock().await;
-        governed
+        if governed
             .take_resources(author, (app_id, document_id), envelope)
-            .await
-            .map(|()| None)
+            .await?
+        {
+            // Whoever follows the workspace's writes (its bots) is woken by a resource's
+            // change as by any, while the workspace is held, so it reads the change.
+            let written = (app_id.clone(), document_id.clone());
+            self.tell_followers(&governed, written, &message).await;
+        }
+        Ok(None)
     }
 }
 

@@ -143,7 +143,14 @@ async fn a_members_resource_writes_are_queryable_on_the_governor_and_after_a_res
     let (member_key, _) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
     let mut writer = Writer::new(&workspaces, &workspace, member_key).await;
 
+    let mut woken = workspaces.document_writes();
     writer.put(&workspaces, &workspace, "i-1", "First").await;
+    let write = woken.try_recv().expect("the workspace's bots are woken");
+    assert_eq!(
+        (write.app.as_str(), write.workspace.as_str()),
+        (APP, workspace.as_str())
+    );
+    assert!(tilo_resource_store::is_store_document(&write.record));
     assert_eq!(
         title(&workspaces, &workspace, "i-1").await,
         Some(Value::Text("First".into())),

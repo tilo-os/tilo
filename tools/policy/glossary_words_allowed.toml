@@ -1416,3 +1416,9 @@ reason = "The service's test fixture starts a certified device holding given key
 words = ["host"]
 identifiers = ["test_host_holding"]
 paths = ["crates/server/tilo-workspace-service/src/workspaces/resources/tests.rs"]
+
+[[allow]]
+reason = "The `record` field of the write the workspace's followers are told of (`ResourceWrite::record`), the type's own name for the document written."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/resources/tests.rs"]

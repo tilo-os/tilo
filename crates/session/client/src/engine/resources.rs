@@ -40,20 +40,6 @@ type Publishing = Vec<(Written, Option<Vec<u8>>)>;
 /// The workspaces' stores.
 pub(super) type Stores = std::sync::Mutex<BTreeMap<WorkspaceId, Resources>>;
 
-/// Whether `name` names a document the store placed: `<readers>/<owner>#<n>` or
-/// `<readers>/<kind>/<id>~<n>`, where `<readers>` is `*` or a digest.
-fn is_store_document(name: &str) -> bool {
-    let Some((readers, rest)) = name.split_once('/') else {
-        return false;
-    };
-    let named = readers == "*"
-        || (readers.len() == 16 && readers.bytes().all(|byte| byte.is_ascii_hexdigit()));
-    let numbered = rest.rsplit_once(['#', '~']).is_some_and(|(_, number)| {
-        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
-    });
-    named && numbered
-}
-
 impl Engine {
     /// This device's person, as reader sets name people.
     fn reader(&self) -> String {
@@ -68,7 +54,7 @@ impl Engine {
         if !resources.filled {
             resources.filled = true;
             for (app, doc) in self.documents(&id).unwrap_or_default() {
-                if is_store_document(&doc) {
+                if tilo_resource_store::is_store_document(&doc) {
                     resources.read.insert(doc, (app, None));
                 }
             }
@@ -288,20 +274,5 @@ impl Engine {
             );
         }
         Ok(writes)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_store_document;
-
-    #[test]
-    fn a_store_document_is_told_from_an_apps_own_document_by_its_name() {
-        assert!(is_store_document("*/tasks.issue#0"));
-        assert!(is_store_document("0123456789abcdef/board-7#12"));
-        assert!(is_store_document("*/tasks.issue/i-1~0"));
-        assert!(!is_store_document("derived:default@tab:0"));
-        assert!(!is_store_document("notes/archive"));
-        assert!(!is_store_document("*/tasks.issue"));
     }
 }
