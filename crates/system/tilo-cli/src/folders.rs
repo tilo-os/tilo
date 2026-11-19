@@ -106,7 +106,7 @@ pub fn run(cmd: FoldersCmd, json: bool) -> Result<ExitCode> {
     match cmd {
         FoldersCmd::List | FoldersCmd::Status => Ok(list(&dir, json)),
         FoldersCmd::Start => {
-            let running = started()?;
+            let running = start()?;
             if !json {
                 println!("{}", running_said(&running));
             }
@@ -178,18 +178,16 @@ fn running_said(running: &crate::service::Running) -> &'static str {
             "Your folders are kept in sync by a user service, started again at every login."
         }
         crate::service::Running::Process => {
-            "Your folders are kept in sync by a process of its own until this computer restarts (no user service manager answers here)."
+            "Your folders are kept in sync by a process of its own: no user service keeps them here, so nothing starts it again after this computer restarts or after the program that started it ends."
         }
     }
 }
 
-/// Start the peer unless it runs.
+/// Start the peer when none is there; one that is there is waited for, never replaced for being
+/// slow.
 fn start() -> Result<crate::service::Running> {
     if !crate::login::logged_in() {
         bail!("{}", crate::login::NOT_LOGGED_IN);
-    }
-    if crate::mcp::ask_peer().is_some() {
-        return Ok(crate::service::Running::Service);
     }
     crate::login::trust_test_certificates()?;
     crate::service::start()
@@ -200,27 +198,17 @@ fn start() -> Result<crate::service::Running> {
 /// than asking the person to.
 ///
 /// # Errors
-/// This computer is not logged in, or its background sync did not start.
+/// This computer is not logged in, or its background sync did not start or
+/// did not answer.
 pub(crate) fn sync() -> Result<Value> {
     if let Some(status) = crate::mcp::ask_peer() {
         return Ok(status);
     }
-    started()?;
+    start()?;
     crate::mcp::ask_peer().ok_or_else(|| {
         anyhow!(
             "Tilo's background sync started but isn't answering yet: run `tilo status` again in \
              a minute."
-        )
-    })
-}
-
-/// [`start`], saying plainly when it did not.
-fn started() -> Result<crate::service::Running> {
-    start().map_err(|error| {
-        crate::login::debug_why("starting Tilo's background sync", &error);
-        anyhow!(
-            "Tilo's background sync didn't start on this computer. Run `tilo folders start` to \
-             try again."
         )
     })
 }
