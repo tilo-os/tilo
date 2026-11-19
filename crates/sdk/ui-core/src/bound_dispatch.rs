@@ -2266,36 +2266,68 @@ pub fn minted_items(
     };
     // Each item it stored, under the path of map keys down to it from the document's root: `issues`, or
     // `issues/<issue>/comments` for one inside an item.
+    // The document's own collections publish items. What a write that made one stored inside it
+    // (an issue's body blocks) is part of that item; one that made none made the item it added
+    // to a collection of an item (a comment in an issue's `comments`), named under it. Deeper
+    // keys (a text's blocks) are the item's content, not items. Whether a collection is the
+    // document's own is one step up from it, so the paths of the others are walked only when it
+    // made no item of the document's own.
+    let mut own: std::collections::HashMap<&automerge::ObjId, Option<String>> =
+        std::collections::HashMap::new();
+    let own_key = |obj: &automerge::ObjId| -> Option<String> {
+        let parent = automerge::ReadDoc::parents(&*doc, obj).ok()?.next()?;
+        match parent.prop {
+            automerge::Prop::Map(key)
+                if parent.obj == automerge::ROOT && key != tilo_resource::collection::VALUE =>
+            {
+                Some(key)
+            }
+            _ => None,
+        }
+    };
+    let made = |id: &str| -> bool {
+        stored.get(id).is_some_and(|obj| {
+            automerge::ReadDoc::get(&*doc, obj, id)
+                .ok()
+                .flatten()
+                .is_some()
+        })
+    };
+    let mut top = Vec::new();
+    for id in &ids {
+        let Some(obj) = stored.get(id.as_str()) else {
+            continue;
+        };
+        let key = own.entry(obj).or_insert_with(|| own_key(obj)).clone();
+        if let Some(key) = key
+            && made(id)
+        {
+            top.push((id.clone(), format!("{kind}/{key}/{id}")));
+        }
+    }
+    if !top.is_empty() {
+        return top;
+    }
     // Items made side by side share their collection, whose path is read once.
+    let depth = |path: &str| path.split('/').count();
     let mut paths: std::collections::HashMap<&automerge::ObjId, Option<String>> =
         std::collections::HashMap::new();
-    let made: Vec<(String, String)> = ids
-        .into_iter()
+    ids.into_iter()
         .filter_map(|id| {
             let obj = stored.get(id.as_str())?;
-            automerge::ReadDoc::get(&*doc, obj, id.as_str())
-                .ok()
-                .flatten()?;
+            if !made(&id) {
+                return None;
+            }
             let path = paths
                 .entry(obj)
                 .or_insert_with(|| {
                     tilo_resource::collection::path_to(&*doc, obj).map(|path| path.join("/"))
                 })
                 .clone()?;
-            Some((id, path))
-        })
-        .collect();
-    // The document's own collections publish items. What a write that made one stored inside it
-    // (an issue's body blocks) is part of that item; one that made none made the item it added
-    // to a collection of an item (a comment in an issue's `comments`), named under it. Deeper
-    // keys (a text's blocks) are the item's content, not items.
-    let depth = |path: &str| path.split('/').count();
-    let top = made.iter().any(|(_, path)| depth(path) == 1);
-    made.into_iter()
-        .filter(|(_, path)| depth(path) == 1 || (!top && depth(path) == 3))
-        .map(|(id, path)| {
-            let address = format!("{kind}/{path}/{id}");
-            (id, address)
+            (depth(&path) == 3).then(|| {
+                let address = format!("{kind}/{path}/{id}");
+                (id, address)
+            })
         })
         .collect()
 }

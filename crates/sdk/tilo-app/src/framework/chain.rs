@@ -94,7 +94,7 @@ use super::made::Made;
 use dispatching::detached_dispatch;
 pub(crate) use dispatching::dispatching;
 use listing::{Listing, Page};
-use part::{HeldPart, PartType, live_of};
+use part::{HeldPart, OnWritten, PartType, live_of};
 pub(crate) use reading::PastPart;
 use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, read_spec};
 use shares::Written;
@@ -994,7 +994,7 @@ impl ChainCore {
         self.hold_kept(edit.part)
             .map_err(|error| self.refused(error))?;
         let encoded = edit.encoded().map_err(ActionError::Refused)?;
-        self.write(edit.part, action, encoded, invoker, None, &mut |_, _| {})?;
+        self.write(edit.part, action, encoded, invoker, None, &mut |_, _, _| {})?;
         let now = self
             .workspace
             .store
@@ -1016,7 +1016,7 @@ impl ChainCore {
         encoded: tilo_actions::EncodedAction,
         invoker: &ActionInvoker,
         place: Option<String>,
-        written: &mut dyn FnMut(&mut ui_core::automerge::AutoCommit, &[ChangeHash]),
+        written: &mut OnWritten<'_>,
     ) -> Result<Made, ActionError> {
         let mut context = ActionContext::for_resource(&self.id, self.part.kind, self.part.label)
             .with_app(self.workspace.app_id, self.workspace.app_title)
@@ -1054,7 +1054,7 @@ impl ChainCore {
                     // part's items are worked out: whoever invoked the write answers what it made
                     // from the same list.
                     let minted = tilo_resource::take_minted();
-                    written(doc, &before);
+                    written(doc, &before, &minted);
                     let items = ui_core::bound_dispatch::minted_items(
                         doc,
                         self.part.kind,
@@ -2121,7 +2121,7 @@ impl ChainState {
     ) -> Result<Made, ActionError> {
         let created = self
             .core
-            .write(index, action, encoded, invoker, place, &mut |_, _| {})?;
+            .write(index, action, encoded, invoker, place, &mut |_, _, _| {})?;
         self.refresh();
         self.core.moved();
         Ok(created)
@@ -2139,17 +2139,9 @@ impl ChainState {
         place: Option<String>,
         answering: Option<&str>,
     ) -> Result<Made, ActionError> {
-        let answer = self.part().answer;
-        let mut answered = |doc: &mut ui_core::automerge::AutoCommit, before: &[ChangeHash]| {
-            let after = doc.get_heads();
-            let changes = doc.diff(before, &after);
-            let value = answering.and_then(|verb| answer(doc, verb, &changes));
-            // The answer names the text it wrote, whatever else the verb answers: where it landed
-            // is known here, even for a verb that named its item by what it says.
-            *self.answered.borrow_mut() = match ui_core::presence::written_by(doc, &changes) {
-                Some(wrote) => tilo_actions::ActionOutput::noting_wrote(value, &wrote),
-                None => value,
-            };
+        let part = self.part();
+        let mut answered = |doc: &mut _, before: &[ChangeHash], minted: &[String]| {
+            *self.answered.borrow_mut() = part.answered(answering, doc, before, minted);
         };
         let created = self
             .core

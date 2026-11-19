@@ -393,6 +393,12 @@ pub trait Resource: Sized + 'static {
         Err(format!("a {} states no facts", Self::LABEL))
     }
 
+    /// Whether [`Self::answer`] answers anything. Working out the changes it
+    /// reads costs as much as the change is large, so a resource whose
+    /// answer is the default's nothing is not asked. `#[resource]` sets it
+    /// with `answer = path`.
+    const ANSWERS: bool = false;
+
     /// What declared action `action` (one [`ActionDecl::answering`]) made,
     /// answered to its caller once it applied to `doc` as `changes`: the
     /// ids it minted, the area it selected, a warning that what it drew is
