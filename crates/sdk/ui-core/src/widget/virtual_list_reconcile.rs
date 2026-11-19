@@ -371,7 +371,7 @@ impl VirtualRows {
                             .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
                     {
                         // Every tree's rows read as an outline's, however the app built them.
-                        list_row.set_outline();
+                        list_row.set_outline(self.chevron_column);
                     }
                     self.row_builds = self.row_builds.wrapping_add(1);
                     MountedRow {

@@ -1465,7 +1465,7 @@ impl DescribedTreeView {
             list = list.with_accessible_name(name.clone());
         }
         list = if fill {
-            list.filling().in_column()
+            list.filling().in_column().overlay_scrollbar()
         } else {
             list.fitting_rows()
         };

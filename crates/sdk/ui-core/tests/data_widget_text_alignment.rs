@@ -36,8 +36,8 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::{
     Banner, Button, Chart, Column, DescribedTreeView, Element, ListRowFace, SearchResultsView,
-    Section, SectionHeader, Series, StatGroup, StatTile, TREE_ROW_HEIGHT, Text, TreeViewNodeProps,
-    TreeViewProps, Trend,
+    Section, SectionHeader, Series, StatGroup, StatTile, Text, TreeViewNodeProps, TreeViewProps,
+    Trend,
 };
 use vello::kurbo::Rect;
 
@@ -397,13 +397,11 @@ fn data_rows_centre_their_text_and_scale_once() {
             let cap = capture("tree_view", tree_view(), (320, 220), scale);
             let tree = rect(find(&cap.harness.inspection().root, "TreeView"));
             let theme = Theme::dark().with_text_scale(scale);
-            // The row a tree draws is a list row at the tree's own row token, shorter
-            // than a list's row of the same theme.
+            // The row a tree draws is an outline's row: the tree's own row token, shorter
+            // than a list's row of the same theme, holding a label-size title.
             // Measured the way the row measures itself: at the theme's own text scale.
             let row_h = tilo_ui::text_render::with_layout_renderer(&theme, |text| {
-                ListRowFace::new("crates")
-                    .row_height(TREE_ROW_HEIGHT)
-                    .height(text, &theme)
+                ListRowFace::new("crates").outline().height(text, &theme)
             });
             // The list leads every row one step, where the chevron that folds it hangs: the
             // top level's content starts on that column, and each depth a step further in.

@@ -179,6 +179,11 @@ impl Widget for NotesOutline {
                     flex_grow: 0.0,
                     flex_shrink: 0.0,
                     flex_basis: taffy::style_helpers::length(crate::num::f32_of_f64(height)),
+                    // A gap between the page tree's last row and the rule that ends it.
+                    margin: taffy::Rect {
+                        top: taffy::style_helpers::length(theme.tokens.spacing.rhythm.related),
+                        ..existing.margin
+                    },
                     ..existing
                 },
             );
@@ -198,6 +203,18 @@ impl Widget for NotesOutline {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // A rule across the column over the outline: the page tree scrolls under it and ends
+        // there, and the outline reads as a section of its own.
+        let gutter = ui::chrome::column_gutter(theme);
+        let rect = self.list.get_rect();
+        ui::widget::paint_rule(
+            scene,
+            transform,
+            theme,
+            Rect::new(rect.x0 + gutter, rect.y0, rect.x1 - gutter, rect.y1),
+            ui::widget::RuleEdge::Top,
+            Some(theme.tokens.colors.surfaces.sidebar),
+        );
         self.list
             .draw_child(scene, transform, text_renderer, theme, presence);
     }

@@ -62,6 +62,7 @@ pub const SCENARIOS: &[&str] = &[
     "scrolled",
     "sidebar_scroll",
     "page_tree",
+    "page_tree_flat",
     "migrated",
     "mention",
     "reactions",
@@ -121,6 +122,7 @@ pub fn shown_note(scenario: Option<&str>) -> Option<&'static str> {
         Some("formula") => Some("Formula notebook"),
         Some("import_success") => Some("Project brief"),
         Some("page_tree") => Some(HANDBOOK),
+        Some("page_tree_flat") => FLAT_NOTES.first().map(|(title, _)| *title),
         Some("migrated") => Some("Onboarding checklist"),
         _ if types_into_new_note(scenario) => Some(WRITING),
         _ => Some(LAUNCH),
@@ -336,7 +338,10 @@ pub fn fill(scene: &Scene, chain: &ui::framework::Chain<crate::note_list::NoteLi
 /// The tags `scenario` shows, written with the notebook's own actions.
 #[must_use]
 pub fn tag_actions(scenario: Option<&str>) -> Vec<TagAction> {
-    if matches!(scenario, Some("first_note" | "migrated" | "page_tree")) {
+    if matches!(
+        scenario,
+        Some("first_note" | "migrated" | "page_tree" | "page_tree_flat")
+    ) {
         return Vec::new();
     }
     // Tags are notebook metadata, not syntax hidden in the note body.
@@ -356,6 +361,9 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
     }
     if scenario == Some("page_tree") {
         return page_tree_actions();
+    }
+    if scenario == Some("page_tree_flat") {
+        return flat_tree_actions();
     }
     let (inbox, projects, launch, reading, recipes, formulas) =
         (page(1), page(2), page(3), page(4), page(5), page(6));
@@ -499,6 +507,75 @@ const WIKI_SECTIONS: &[(&str, &[&str])] = &[
     ("Legal", &["Terms", "Privacy", "Trademarks"]),
     ("Personal", &["Reading", "Groceries", "Trips", "Ideas"]),
 ];
+
+/// A notebook as an import from another wiki leaves it: most notes at the top level, some with
+/// titles too long for the sidebar, and a few holding a note or two.
+const FLAT_NOTES: &[(&str, &[&str])] = &[
+    ("Einkaufsliste", &[]),
+    ("Office Hours", &["09-31"]),
+    ("2026-11-07", &[]),
+    (
+        "Random Thoughts",
+        &[
+            "Why every sidebar ends up as a junk drawer of half-finished notes",
+            "Field notes on \"agentic engineering\" from the unconference",
+            "Help! I've been boiled and nobody told me the water was warm",
+        ],
+    ),
+    (
+        "unconference notes",
+        &["design stuff", "how to build faster", "taste"],
+    ),
+    ("agent companies", &["Maritime Talk"]),
+    ("happier prompt template", &[]),
+    (
+        "Ideas for applications that nobody has built yet but somebody should",
+        &[],
+    ),
+    ("Public releases", &["typography"]),
+    ("names", &[]),
+    ("Demo 21.09", &[]),
+    (
+        "Reading list for the long winter evenings, sorted by how much I want them",
+        &[],
+    ),
+    (
+        "Meeting with the accountant about the quarterly numbers",
+        &[],
+    ),
+    ("Trip planning", &["Lisbon", "Porto"]),
+    ("Recipes", &[]),
+    ("Interview questions", &[]),
+    ("Weekly review", &[]),
+    ("Pitch deck feedback", &[]),
+    ("Things to fix before launch", &[]),
+    ("Birthday gift ideas", &[]),
+    ("Podcast episode outlines", &[]),
+    ("Garden", &[]),
+    ("Book notes: The Design of Everyday Things", &[]),
+    ("Investor update draft", &[]),
+    ("Hiring plan", &[]),
+    (
+        "Old notes from the previous wiki that still need sorting",
+        &[],
+    ),
+];
+
+/// The notebook the flat page-tree scenario shows ([`FLAT_NOTES`]).
+fn flat_tree_actions() -> Vec<Action> {
+    let mut out = Vec::new();
+    let mut next = 1;
+    for (title, notes) in FLAT_NOTES {
+        let parent = page(next);
+        next += 1;
+        out.push(actions::create_page_action(parent, None, title));
+        for note in *notes {
+            out.push(actions::create_page_action(page(next), Some(parent), note));
+            next += 1;
+        }
+    }
+    out
+}
 
 /// The notebook the page-tree scenario shows: a handbook holding notes inside notes, three
 /// levels deep, as a workspace imported from another wiki keeps them.
