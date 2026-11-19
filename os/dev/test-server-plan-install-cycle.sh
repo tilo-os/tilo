@@ -231,7 +231,7 @@ mark_step 01-inputs ok
 phase=owner
 qemu-img create -f qcow2 -F qcow2 -b "$(cd "$(dirname "$owner_disk")" && pwd)/$(basename "$owner_disk")" \
   "$owner_dir/disk.qcow2" >/dev/null
-owner boot --2d --no-tpm || die 'the owner device did not start'
+owner boot --disk "$owner_dir/disk.qcow2" --2d --no-tpm || die 'the owner device did not start'
 wait_owner_ssh 240 || die 'the owner device did not accept SSH'
 owner ssh 'mkdir -p /var/tmp' >/dev/null
 owner ssh "mkdir -p $owner_root" >/dev/null
