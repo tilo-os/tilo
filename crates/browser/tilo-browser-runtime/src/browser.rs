@@ -466,6 +466,8 @@ pub(crate) struct Mount {
     /// at once.
     semantics: RefCell<crate::semantics_status::SemanticsPublisher>,
     window: Arc<Window>,
+    /// Per-mount window toolbar/embeds state so sibling mounts never overwrite each other's bar.
+    hosted_window: ui::hosted_window::HostedWindow,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
     /// How far following an agent brought the view inside its window.
@@ -1221,6 +1223,7 @@ fn with_mount_quietly<R>(
             // A window reads and acts through its desktop, whatever it does
             // in this call: an app's own action API is made on first use.
             let _served = mount.desktop.as_ref().map(Desktop::serve_windows);
+            let _window = ui::window_toolbar::enter(Some(&mount.hosted_window));
             run(mount)
         })
     })
@@ -1919,6 +1922,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             ui::time::Duration::from_millis(window_ms),
         )),
         window: Arc::clone(&window),
+        hosted_window: ui::hosted_window::HostedWindow::new(),
         canvas,
         frame,
         media,
