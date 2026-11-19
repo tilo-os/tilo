@@ -685,6 +685,35 @@ impl KeyDirectory for OwnerDirectory {
         )
     }
 
+    /// The devices of `people` among those that hold the workspace's keys at `now`, and this
+    /// device when it follows its groups as one of theirs.
+    fn reader_devices(
+        &self,
+        workspace: ModelWorkspaceId,
+        people: &BTreeSet<[u8; 32]>,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
+        let reader = self.reader;
+        let readers = self
+            .owner
+            .with_current(workspace, |view| {
+                let mut readers = view.reader_key_holders(people, at)?;
+                let device = view.device();
+                if reader && people.contains(&device.user_public_key) {
+                    readers.insert(device.device_public_key);
+                }
+                Ok(readers)
+            })
+            .ok()?;
+        Some(
+            readers
+                .into_iter()
+                .map(Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
+    }
+
     fn founds(&self, workspace: ModelWorkspaceId) -> bool {
         self.owner
             .with_current(workspace, |view| Ok(view.founded_here()))

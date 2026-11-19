@@ -296,6 +296,19 @@ impl NativeCommittedView {
         *self.holders.lock_recover() = Some((at_ns, holders.clone()));
         Ok(holders)
     }
+    /// The devices of `people` among [`Self::key_holders`] at `now`: who holds
+    /// the keys of a group only those people read
+    /// (as its governance's `reader_key_holders` decides it).
+    ///
+    /// # Errors
+    /// The view's governance cannot be read.
+    pub fn reader_key_holders(
+        &self,
+        people: &std::collections::BTreeSet<[u8; 32]>,
+        now: web_time::SystemTime,
+    ) -> Result<std::collections::BTreeSet<[u8; 32]>, String> {
+        self.peer.governance().reader_key_holders(people, now)
+    }
     /// The replica as the record published it.
     #[must_use]
     pub fn peer(&self) -> &StatePeer {

@@ -97,6 +97,15 @@ impl KeyDirectory for Directory {
         self.joined.key_holders(workspace, now)
     }
 
+    fn reader_devices(
+        &self,
+        workspace: WorkspaceId,
+        people: &BTreeSet<[u8; 32]>,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        self.joined.reader_key_holders(workspace, people, now)
+    }
+
     fn founds(&self, workspace: WorkspaceId) -> bool {
         self.joined.founded_here(workspace)
     }
