@@ -25,6 +25,8 @@ web = []
 apps = ["dep:futures", "dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-broker-core", "dep:tilo-identity", "dep:tilo-paths", "dep:tilo-rt", "dep:tilo-workspace-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
 
 [dependencies]
+# The device's one store, which apps write and read their resources in.
+tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }

@@ -1354,6 +1354,12 @@ fn broker_services(
             std::sync::Arc::new(hosting)
                 as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
         })),
+        // Apps write and read their resources in this device's one store, which holds every
+        // workspace's: no app keeps a store of its own.
+        resources: BrokerService::when(engine.clone().map(|engine| {
+            std::sync::Arc::new(crate::app_resources::AppResources(engine))
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::ResourceServices>
+        })),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
         // device, administering their identities and the devices trusted

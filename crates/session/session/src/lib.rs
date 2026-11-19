@@ -90,6 +90,8 @@ mod app_icons;
 mod app_liveness;
 mod app_names;
 #[cfg(target_os = "linux")]
+mod app_resources;
+#[cfg(target_os = "linux")]
 mod app_sheets;
 #[cfg(target_os = "linux")]
 pub mod app_tabs;

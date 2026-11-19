@@ -152,6 +152,7 @@ broker_services! {
     workspace_nodes: Arc<dyn WorkspaceNodeActions>,
     personal: tilo_peer_state::PersonalSync,
     hosted_workspaces: Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>,
+    resources: Arc<dyn tilo_workspace_service::apps::services::ResourceServices>,
 }
 
 /// The records this session reads outside their apps, from the engine that holds its workspaces.

@@ -462,6 +462,7 @@ impl AppBrokerState {
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
+            | CollabEvent::ResourceCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged

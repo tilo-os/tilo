@@ -161,6 +161,9 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::NearbyTransferCommand { command, .. } => {
             serialized_bytes(command, &mut meter);
         }
+        CollabRequest::ResourceCommand { command, .. } => {
+            serialized_bytes(command, &mut meter);
+        }
         CollabRequest::ReportHandoff { message } => {
             meter.bytes(message);
         }
@@ -614,6 +617,13 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             }
             meter.string_capacity(hash);
             "DocumentContentState"
+        }
+        CollabEvent::ResourceCommandResult { result, .. } => {
+            match result {
+                Ok(reply) => serialized_bytes(reply, &mut meter),
+                Err(error) => meter.string_capacity(error),
+            }
+            "ResourceCommandResult"
         }
         CollabEvent::RealtimeCommandResult { result, .. } => {
             match result {

@@ -330,6 +330,18 @@ impl ChannelSession {
                     let reply = channel.remote_action_dispatch(body);
                     Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
                 }
+                Service::Resources => {
+                    channel
+                        .resources_dispatch(body)
+                        .map_err(failed)
+                        .map(|reply| -> Answering {
+                            Box::pin(async move {
+                                let reply = reply.await?;
+                                serde_json::to_vec(&reply)
+                                    .map_err(|_| "the store's answer cannot be encoded".to_owned())
+                            })
+                        })
+                }
             };
         Box::pin(async move { Ok(Reply::Answer(answer?.await?)) })
     }

@@ -6918,6 +6918,18 @@ async fn dispatch_sdk_request(
             let _ =
                 inbound_tx.send_reply(CollabEvent::RealtimeCommandResult { request_id, result });
         }
+        CollabRequest::ResourceCommand {
+            request_id,
+            command,
+        } => {
+            let result = route
+                .channel
+                .resource_command(&command)
+                .await
+                .map_err(|error| error.to_string());
+            let _ =
+                inbound_tx.send_reply(CollabEvent::ResourceCommandResult { request_id, result });
+        }
         CollabRequest::NearbyTransferCommand {
             request_id,
             command,

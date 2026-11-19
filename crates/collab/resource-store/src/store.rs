@@ -106,7 +106,7 @@ impl From<automerge::AutomergeError> for StoreError {
 
 /// A resource as a write gives it: who may read it, where it is nested, its place, its indexed
 /// fields.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Resource {
     /// Its reader set: whatever names who may read it, which also picks the key of the
     /// document it is placed in.

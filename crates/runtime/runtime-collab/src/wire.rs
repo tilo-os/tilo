@@ -315,6 +315,9 @@ pub enum Service {
     /// A `tilo_actions::remote::RemoteActionFrame` the app sends another
     /// app's action -> the frame that answers it.
     RemoteAction,
+    /// A `tilo_resource_store::wire::Command` -> its `Reply`, JSON: the app's resources, written
+    /// and read in the device's one store.
+    Resources,
 }
 
 /// What an endpoint publishes into a channel.
