@@ -448,8 +448,9 @@ type ReplicaStore = (Rc<durable_store::MemoryStore>, crate::replication::Kept);
 #[serde(rename_all = "camelCase")]
 struct ConnectConfig {
     cert: DeviceCert,
+    #[serde(rename = "hostCert")]
     server_cert: DeviceCert,
-    /// Where the host's iroh endpoint is dialled: the session and its live sessions
+    /// Where the server's iroh endpoint is dialled: the session and its live sessions
     /// reach it there.
     address: PageHostAddress,
     /// The person's chosen name, for history and presence; empty for none.
@@ -482,8 +483,9 @@ fn install_identity(cert: &DeviceCert, display_name: String) {
 #[serde(rename_all = "camelCase")]
 struct Certified<'a> {
     cert: &'a DeviceCert,
+    #[serde(rename = "hostCert")]
     server_cert: &'a DeviceCert,
-    /// The name the host gave the device, which the page shows for it.
+    /// The name the server gave the device, which the page shows for it.
     label: &'a str,
 }
 
