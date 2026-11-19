@@ -13,14 +13,13 @@ use agent_provider_config::local::snapshot::HardwareFit;
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow};
 use ui::tilo_resource;
-use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, ButtonRole, ProgressBar, Row, Segment, Text, TextInput, ToggleGroup};
 
 use super::{
     AgentModelsEffect, AgentModelsModel, LocalModelControl, area, byte_size, fit_label, fit_tone,
     invoking,
 };
-use crate::effects::{SettingsEffect, effect};
+use crate::effects::effect;
 use crate::i18n::{t, t_args};
 use crate::panes::agent_sign_in::{self, SignInWait, Waited};
 use crate::resource::Settings;
@@ -43,7 +42,9 @@ pub(crate) struct HubResult;
 /// One variant of a Hugging Face model, as the pane publishes it: a row of
 /// the `settings.agent-hub-variant` type, offering to download it.
 #[derive(ui::tilo_resource::Row)]
-#[row(kind = "settings.agent-hub-variant", label = "Model variant")]
+#[row(kind = "settings.agent-hub-variant", label = "Model variant",
+    effects = AgentModelsEffect
+)]
 pub(crate) struct HubVariant;
 
 pub(crate) struct HubBrowser {
@@ -535,37 +536,41 @@ impl HubBrowser {
     }
 
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
-        let offer = |effect: AgentModelsEffect| SettingsEffect::from(effect).bound();
         let mut found = Vec::new();
         if let Some(Ok(results)) = &self.results {
             for result in results {
-                let mut row = LiveRow::typed::<HubResult>(
+                let bindings = ui::tilo_resource::RowBindings::new().bind(
+                    AgentModelsEffect::SHOW_HUB_MODEL,
+                    [("model", result.repo.clone().into())],
+                );
+                found.push(LiveRow::typed_with::<HubResult>(
                     format!("settings.agent-hub-result:{}", result.repo),
                     result.repo.clone(),
-                );
-                row = row.operation(offer(AgentModelsEffect::ShowHubModel {
-                    model: result.repo.clone(),
-                }));
-                found.push(row);
+                    &bindings,
+                ));
             }
         }
         if let Some(Ok(model)) = &self.offer {
             for variant in &model.variants {
-                let mut live = LiveRow::typed::<HubVariant>(
+                let mut bindings = ui::tilo_resource::RowBindings::new();
+                if variant.fit.fit != HardwareFit::Unsupported {
+                    bindings = bindings.bind(
+                        AgentModelsEffect::INSTALL_HUB_MODEL,
+                        [
+                            ("repo", model.repo.clone().into()),
+                            ("revision", model.revision.clone().into()),
+                            ("variant", variant.variant.name.clone().into()),
+                        ],
+                    );
+                }
+                found.push(LiveRow::typed_with::<HubVariant>(
                     format!(
                         "settings.agent-hub-variant:{}:{}",
                         model.repo, variant.variant.name
                     ),
                     format!("{} {}", model.repo, variant.variant.name),
-                );
-                if variant.fit.fit != HardwareFit::Unsupported {
-                    live = live.operation(offer(AgentModelsEffect::InstallHubModel {
-                        repo: model.repo.clone(),
-                        revision: model.revision.clone(),
-                        variant: variant.variant.name.clone(),
-                    }));
-                }
-                found.push(live);
+                    &bindings,
+                ));
             }
         }
         found

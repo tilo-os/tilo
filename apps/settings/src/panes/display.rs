@@ -21,9 +21,10 @@ use provider_settings_ui::bound::SettingRows as _;
 use tracing::warn;
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
-use ui::tilo_resource::{self, ActionRef, Effect};
+use ui::tilo_resource::{self, ActionRef};
 use ui::widget::{Dropdown, Slider, Toggle};
 
+use self::shared_displays::DeviceDisplay;
 use crate::area::AreaContext;
 use crate::dispatcher::dispatcher_or_real;
 use crate::effects::{SettingsEffect, effect};
@@ -105,11 +106,11 @@ pub enum DisplayEffect {
     #[effect(returns, idempotent)]
     SetBrightness { brightness: f64 },
     /// An external monitor's brightness, from 0 to 1.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     SetMonitorBrightness { display: String, brightness: f64 },
     /// Use a display, or turn it off. Staged until applied.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     UseDisplay { display: String, on: bool },
     /// Make a display the one panels and new windows open on.
@@ -117,24 +118,24 @@ pub enum DisplayEffect {
     #[effect(returns, row, idempotent)]
     SetPrimaryDisplay { display: String },
     /// A display's scale. Staged until applied.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     #[effect(keywords = "scaling, zoom, text size, dpi")]
     SetOutputScale { display: String, scale: String },
     /// Place a display beside another: `Right of …`, `Left of …`, `Above …`,
     /// `Below …`. Staged until applied.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row)]
     PlaceDisplay { display: String, position: String },
     /// Put a display's top-left corner at a point of the desktop, as
     /// dragging it does. Staged until applied.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row)]
     MoveDisplay { display: String, x: i32, y: i32 },
     /// Place a device's screens in the person's shared layout by where one of them goes: where
     /// they meet another device's screens is where the pointer crosses between the two, and a
     /// device placed apart from the others is out of its reach.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DeviceDisplay)]
     #[effect(returns, row)]
     MoveDeviceDisplay {
         display: String,
@@ -147,34 +148,34 @@ pub enum DisplayEffect {
     InspectSharedDisplays,
     /// Show another display's picture, or extend the workspace. Staged
     /// until applied.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row)]
     MirrorDisplay { display: String, mirror: String },
     /// A display's resolution and refresh rate. Staged until applied.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     #[effect(keywords = "resolution, refresh rate, hz, screen size")]
     SetDisplayMode { display: String, mode: String },
     /// A display's rotation. Staged until applied.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     #[effect(keywords = "rotate screen, portrait, landscape, orientation")]
     RotateDisplay { display: String, rotation: String },
     /// High dynamic range on a display that offers it. Staged until applied.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     SetHdr { display: String, on: bool },
     /// How bright SDR content is while a display runs in HDR, from 0 to 1.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     SetSdrBrightness { display: String, brightness: f64 },
     /// Variable refresh rate on a display that offers it. Staged until
     /// applied.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     SetVrr { display: String, on: bool },
     /// A display's colour profile, or `System default`. Staged until applied.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     SetColorProfile { display: String, profile: String },
     // The five below ask the device's display service when the displays
@@ -1402,100 +1403,103 @@ impl DisplayModel {
 
     fn output_row(&self, output: &DisplayOutput) -> LiveRow {
         let display = &output.connector;
-        let mut row = LiveRow::typed::<DisplayOutputRow>(
+        // Every effect a display's row offers names the display it is about;
+        // the row leaves what the person or an agent chooses asked.
+        let mut bindings = tilo_resource::RowBindings::new().bind(
+            DisplayEffect::USE_DISPLAY,
+            [("display", display.clone().into())],
+        );
+        bindings = bindings
+            .bind(
+                DisplayEffect::SET_OUTPUT_SCALE,
+                [("display", display.clone().into())],
+            )
+            .choices(
+                DisplayEffect::SET_OUTPUT_SCALE,
+                "scale",
+                DISPLAY_SCALES.iter().map(|(label, _)| (*label).to_owned()),
+            )
+            .bind(
+                DisplayEffect::PLACE_DISPLAY,
+                [("display", display.clone().into())],
+            )
+            .choices(
+                DisplayEffect::PLACE_DISPLAY,
+                "position",
+                self.relative_choices(output, false),
+            )
+            .bind(
+                DisplayEffect::MOVE_DISPLAY,
+                [("display", display.clone().into())],
+            )
+            .bind(
+                DisplayEffect::MIRROR_DISPLAY,
+                [("display", display.clone().into())],
+            )
+            .choices(
+                DisplayEffect::MIRROR_DISPLAY,
+                "mirror",
+                self.relative_choices(output, true),
+            )
+            .bind(
+                DisplayEffect::ROTATE_DISPLAY,
+                [("display", display.clone().into())],
+            )
+            .choices(
+                DisplayEffect::ROTATE_DISPLAY,
+                "rotation",
+                transform_options(),
+            )
+            .bind(
+                DisplayEffect::SET_PRIMARY_DISPLAY,
+                [("display", display.clone().into())],
+            );
+        if !output.modes.is_empty() {
+            bindings = bindings
+                .bind(
+                    DisplayEffect::SET_DISPLAY_MODE,
+                    [("display", display.clone().into())],
+                )
+                .choices(
+                    DisplayEffect::SET_DISPLAY_MODE,
+                    "mode",
+                    output.modes.iter().copied().map(OutputMode::label),
+                );
+        }
+        if self.output_brightness.contains_key(display) {
+            bindings = bindings.bind(
+                DisplayEffect::SET_MONITOR_BRIGHTNESS,
+                [("display", display.clone().into())],
+            );
+        }
+        if output.hdr {
+            bindings = bindings
+                .bind(
+                    DisplayEffect::SET_HDR,
+                    [("display", display.clone().into())],
+                )
+                .bind(
+                    DisplayEffect::SET_SDR_BRIGHTNESS,
+                    [("display", display.clone().into())],
+                );
+        }
+        if output.vrr {
+            bindings = bindings.bind(
+                DisplayEffect::SET_VRR,
+                [("display", display.clone().into())],
+            );
+        }
+        if !output.color_profiles.is_empty() {
+            bindings = bindings.bind(
+                DisplayEffect::SET_COLOR_PROFILE,
+                [("display", display.clone().into())],
+            );
+        }
+        LiveRow::typed_with::<DisplayOutputRow>(
             format!("settings.display-output:{display}"),
             output_title(output),
-        );
-        let target = || display.clone();
-        let operations = [
-            (
-                DisplayEffect::UseDisplay {
-                    display: target(),
-                    on: false,
-                },
-                vec!["on"],
-            ),
-            (
-                DisplayEffect::SetOutputScale {
-                    display: target(),
-                    scale: String::new(),
-                },
-                vec!["scale"],
-            ),
-            (
-                DisplayEffect::PlaceDisplay {
-                    display: target(),
-                    position: String::new(),
-                },
-                vec!["position"],
-            ),
-            (
-                DisplayEffect::MoveDisplay {
-                    display: target(),
-                    x: 0,
-                    y: 0,
-                },
-                vec!["x", "y"],
-            ),
-            (
-                DisplayEffect::MirrorDisplay {
-                    display: target(),
-                    mirror: String::new(),
-                },
-                vec!["mirror"],
-            ),
-            (
-                DisplayEffect::RotateDisplay {
-                    display: target(),
-                    rotation: String::new(),
-                },
-                vec!["rotation"],
-            ),
-        ];
-        for (effect, asking) in operations {
-            row = row.operation(self.output_operation(output, effect, &asking));
-        }
-        if !output.modes.is_empty() {
-            row = row.operation(self.output_operation(
-                output,
-                DisplayEffect::SetDisplayMode {
-                    display: target(),
-                    mode: String::new(),
-                },
-                &["mode"],
-            ));
-        }
-        self.output_capability_row(output, row)
-    }
-
-    fn output_operation(
-        &self,
-        output: &DisplayOutput,
-        effect: DisplayEffect,
-        asking: &[&str],
-    ) -> ui::tilo_actions::ActionSpec {
-        let choices = match &effect {
-            DisplayEffect::SetDisplayMode { .. } => output
-                .modes
-                .iter()
-                .copied()
-                .map(OutputMode::label)
-                .collect(),
-            DisplayEffect::SetOutputScale { .. } => DISPLAY_SCALES
-                .iter()
-                .map(|(label, _)| (*label).to_owned())
-                .collect(),
-            DisplayEffect::RotateDisplay { .. } => transform_options(),
-            DisplayEffect::PlaceDisplay { .. } => self.relative_choices(output, false),
-            DisplayEffect::MirrorDisplay { .. } => self.relative_choices(output, true),
-            _ => Vec::new(),
-        };
-        let effect = SettingsEffect::from(effect);
-        let mut params = effect.bound_asking(asking).params().to_vec();
-        if let Some(param) = params.first_mut() {
-            param.choices = choices.into_iter().map(Into::into).collect();
-        }
-        effect.bound_asking_params(params)
+            &bindings,
+        )
     }
 
     fn relative_choices(&self, output: &DisplayOutput, mirror: bool) -> Vec<String> {
@@ -1525,59 +1529,6 @@ impl DisplayModel {
             }
         }
         choices
-    }
-
-    fn output_capability_row(&self, output: &DisplayOutput, mut row: LiveRow) -> LiveRow {
-        let display = &output.connector;
-        let target = || display.clone();
-        let offer = |effect: DisplayEffect, asking: &[&str]| {
-            SettingsEffect::from(effect).bound_asking(asking)
-        };
-        if self.output_brightness.contains_key(display) {
-            row = row.operation(offer(
-                DisplayEffect::SetMonitorBrightness {
-                    display: target(),
-                    brightness: 0.0,
-                },
-                &["brightness"],
-            ));
-        }
-        if output.hdr {
-            row = row
-                .operation(offer(
-                    DisplayEffect::SetHdr {
-                        display: target(),
-                        on: false,
-                    },
-                    &["on"],
-                ))
-                .operation(offer(
-                    DisplayEffect::SetSdrBrightness {
-                        display: target(),
-                        brightness: 0.0,
-                    },
-                    &["brightness"],
-                ));
-        }
-        if output.vrr {
-            row = row.operation(offer(
-                DisplayEffect::SetVrr {
-                    display: target(),
-                    on: false,
-                },
-                &["on"],
-            ));
-        }
-        if !output.color_profiles.is_empty() {
-            row = row.operation(offer(
-                DisplayEffect::SetColorProfile {
-                    display: target(),
-                    profile: String::new(),
-                },
-                &["profile"],
-            ));
-        }
-        row
     }
 
     fn output_binding<I: 'static>(
@@ -1715,13 +1666,10 @@ impl DisplayModel {
                 }
                 Ok(())
             }),
-            DisplayEffect::SetPrimaryDisplay { display } => self.stage(
-                crate::effects::row_entity(display, "settings.display-output"),
-                |cfg, _, _| {
-                    cfg.primary = true;
-                    Ok(())
-                },
-            ),
+            DisplayEffect::SetPrimaryDisplay { display } => self.stage(display, |cfg, _, _| {
+                cfg.primary = true;
+                Ok(())
+            }),
             DisplayEffect::SetOutputScale { display, scale } => {
                 let factor =
                     scale_factor_of(scale).ok_or_else(|| format!("`{scale}` is not a scale"))?;
@@ -1856,9 +1804,6 @@ impl DisplayModel {
                     })
             }
             DisplayEffect::ForgetDisplayTool { tool } => {
-                // A tool's row binds the row's id; a control names its
-                // executable.
-                let tool = crate::effects::row_entity(tool, "settings.display-tool");
                 settings_store::display_tools::TrustedDisplayTools::forget(tool)
                     .map(|()| t("display-tools-forgotten"))
                     .map_err(|error| format!("The display tool was not forgotten: {error}"))

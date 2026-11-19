@@ -12,6 +12,8 @@ use ui::framework::{ActionControl, EffectAnswer, EffectCx, Effected, LiveRow, Vi
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Element, Row, RowMenu, Spacer, TextInput, TextInputKind, Widget};
 
+use self::calendar_selection::{CalendarChoiceRow, CalendarChoices};
+use self::thunderbird_import::{AccountImport, AccountImportChoice};
 use crate::accounts::{AccountDirectory, AccountKind, AccountRoot, AccountView};
 use crate::area::AreaContext;
 use crate::effects::SettingsEffect;
@@ -77,20 +79,26 @@ mod signin_tests;
 /// `settings.account` type, offering what its kind and state allow (edit,
 /// sync, recover, sign in again, test, remove).
 #[derive(tilo_resource::Row)]
-#[row(kind = "settings.account", label = "Account")]
+#[row(kind = "settings.account", label = "Account",
+    effects = AccountsEffect
+)]
 pub(crate) struct AccountRow;
 
 /// A browser identity the pane lists, as it publishes it: a row of the
 /// `settings.browser-identity` type, offering to turn it on or off and to
 /// remove it.
 #[derive(tilo_resource::Row)]
-#[row(kind = "settings.browser-identity", label = "Browser identity")]
+#[row(kind = "settings.browser-identity", label = "Browser identity",
+    effects = AccountsEffect
+)]
 pub(crate) struct BrowserIdentityRow;
 
 /// A browser session an account authorized, as the pane publishes it: a row
 /// of the `settings.browser-service-session` type, offering to remove it.
 #[derive(tilo_resource::Row)]
-#[row(kind = "settings.browser-service-session", label = "Browser session")]
+#[row(kind = "settings.browser-service-session", label = "Browser session",
+    effects = AccountsEffect
+)]
 pub(crate) struct BrowserServiceSessionRow;
 
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -98,19 +106,19 @@ pub(crate) struct BrowserServiceSessionRow;
 pub enum AccountsEffect {
     /// Forget one selected website account through the browser, including its local lease.
     #[effect(kind = "outside")]
-    #[effect(row, job, returns, destructive)]
+    #[effect(row, job, returns, destructive, on = BrowserServiceSessionRow)]
     RemoveBrowserServiceSession { session_id: String },
     /// Discover only ordinary account metadata from a granted prefs.js path.
     #[effect(job, returns, kind = "read")]
     DiscoverThunderbirdAccounts { prefs: String },
     /// Choose ordinary Thunderbird prefs through the existing file portal.
-    #[effect(attended, job, returns, kind = "read")]
+    #[effect(attended, job, returns, kind = "read", on = AccountImport)]
     ChooseThunderbirdMetadata,
     /// Read the current metadata review and its exact revision; no secrets.
-    #[effect(returns, kind = "read")]
+    #[effect(returns, kind = "read", on = AccountImport)]
     InspectThunderbirdImport,
     /// Select a reviewed identity and an explicit supported sign-in method.
-    #[effect(view)]
+    #[effect(view, on = AccountImportChoice)]
     SelectThunderbirdAccount {
         source: String,
         authentication: String,
@@ -118,19 +126,19 @@ pub enum AccountsEffect {
         revision: u64,
     },
     /// Import only selected configuration as pending sign-in metadata.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = AccountImport)]
     #[effect(job, returns, idempotent)]
     CommitThunderbirdImport { revision: u64 },
     /// Discard the metadata review and fence unfinished discovery callbacks.
-    #[effect(view)]
+    #[effect(view, on = AccountImport)]
     CancelThunderbirdImport,
     /// Show or hide public metadata in the browser identity picker.
     #[effect(kind = "outside")]
-    #[effect(row, idempotent)]
+    #[effect(row, idempotent, on = BrowserIdentityRow)]
     SetBrowserIdentityEnabled { account: String, enabled: bool },
     /// Remove browser picker metadata; this does not revoke sign-in or access.
     #[effect(kind = "outside")]
-    #[effect(row, destructive)]
+    #[effect(row, destructive, on = BrowserIdentityRow)]
     RemoveBrowserIdentity { account: String },
     /// Publish the signed-in Tilo identity's public browser connection metadata.
     #[effect(kind = "outside")]
@@ -177,30 +185,30 @@ pub enum AccountsEffect {
         identities: Option<Vec<String>>,
     },
     /// Edit an account's details.
-    #[effect(view, row)]
+    #[effect(view, row, on = AccountRow)]
     EditAccount {
         #[param("The account's id")]
         account: String,
     },
     /// Sign an account in again.
-    #[effect(view, row, label = "accounts-status-reauth")]
+    #[effect(view, row, label = "accounts-status-reauth", on = AccountRow)]
     SignInAgain {
         #[param("The account's id")]
         account: String,
     },
     /// Check and save the account form, or take the sign-in's next step.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = CalendarChoices)]
     #[effect(label = "accounts-save")]
     SaveAccountForm,
     /// Choose calendars on an existing Nextcloud account, reusing its sign-in.
     #[effect(kind = "outside")]
-    #[effect(row, label = "accounts-nextcloud-calendars")]
+    #[effect(row, label = "accounts-nextcloud-calendars", on = AccountRow)]
     ConnectNextcloudCalendars { account: String },
     /// Read the discovered, secret-free calendar choices for the current form.
-    #[effect(returns, kind = "read")]
+    #[effect(returns, kind = "read", on = CalendarChoices)]
     InspectCalendarChoices,
     /// Select a discovered collection before saving this account.
-    #[effect(view)]
+    #[effect(view, on = CalendarChoiceRow)]
     SelectCalendar { href: String, selected: bool },
     /// Select the services on the open provider connection form.
     #[effect(view)]
@@ -213,7 +221,7 @@ pub enum AccountsEffect {
     #[effect(kind = "outside")]
     ConnectGoogleMail,
     /// Close the account form or sign-in without saving.
-    #[effect(view)]
+    #[effect(view, on = CalendarChoices)]
     CancelAccountForm,
     #[effect(kind = "outside")]
     SaveNewPassword,
@@ -222,14 +230,14 @@ pub enum AccountsEffect {
     CancelNewPassword,
     /// Check that an account's server accepts its saved sign-in.
     #[effect(kind = "outside")]
-    #[effect(job, returns, row, idempotent)]
+    #[effect(job, returns, row, idempotent, on = AccountRow)]
     TestAccount {
         #[param("The account's id")]
         account: String,
     },
     /// Remove an account, its saved credential and its sync resource.
     #[effect(kind = "outside")]
-    #[effect(row, job, destructive)]
+    #[effect(row, job, destructive, on = AccountRow)]
     RemoveAccount {
         #[param("The account's id")]
         account: String,
@@ -237,28 +245,28 @@ pub enum AccountsEffect {
     /// Sync a mounted file account now; one that could not start is tried
     /// again.
     #[effect(kind = "outside")]
-    #[effect(row, job, idempotent, label = "accounts-sync-now")]
+    #[effect(row, job, idempotent, label = "accounts-sync-now", on = AccountRow)]
     SyncNow {
         #[param("The account's id")]
         account: String,
     },
     /// Pause a mounted file account's background sync and uploads.
     #[effect(kind = "outside")]
-    #[effect(row, job, idempotent, label = "accounts-pause-sync")]
+    #[effect(row, job, idempotent, label = "accounts-pause-sync", on = AccountRow)]
     PauseSync {
         #[param("The account's id")]
         account: String,
     },
     /// Resume a paused file account's sync.
     #[effect(kind = "outside")]
-    #[effect(row, job, idempotent, label = "accounts-resume-sync")]
+    #[effect(row, job, idempotent, label = "accounts-resume-sync", on = AccountRow)]
     ResumeSync {
         #[param("The account's id")]
         account: String,
     },
     /// Recover an interrupted Files mode change after closing the connection form.
     #[effect(kind = "outside")]
-    #[effect(row, job, idempotent, label = "accounts-recover-mode")]
+    #[effect(row, job, idempotent, label = "accounts-recover-mode", on = AccountRow)]
     RecoverCloudMode { account: String },
     #[effect(kind = "outside")]
     LinkService {
@@ -756,83 +764,86 @@ impl AccountsArea {
         if model.is_sample {
             return Vec::new();
         }
-        let offer = |effect: AccountsEffect| SettingsEffect::from(effect).bound();
         let store = model.account_root.store();
         let mut published: Vec<LiveRow> = AccountKind::ALL
             .into_iter()
             .flat_map(|kind| model.dir.views_of(kind))
             .map(|view| {
                 let id = view.id.clone();
-                let mut row = LiveRow::typed::<AccountRow>(
-                    format!("settings.account:{id}"),
-                    view.label.clone(),
-                );
+                let account = || serde_json::Value::from(id.clone());
+                let mut bindings = ui::tilo_resource::RowBindings::new();
                 if let Some(action) = model.files_handoff_in(&store, &view) {
-                    row = row.operation(action);
+                    bindings = bindings.spec(action);
                 }
                 if !view.kind.is_cloud_storage() {
-                    row = row.operation(offer(AccountsEffect::EditAccount {
-                        account: id.clone(),
-                    }));
+                    bindings =
+                        bindings.bind(AccountsEffect::EDIT_ACCOUNT, [("account", account())]);
                 }
                 if view.kind == AccountKind::Nextcloud {
-                    row = row.operation(offer(AccountsEffect::ConnectNextcloudCalendars {
-                        account: id.clone(),
-                    }));
+                    bindings = bindings.bind(
+                        AccountsEffect::CONNECT_NEXTCLOUD_CALENDARS,
+                        [("account", account())],
+                    );
                 }
                 if let Some(mount) = model.cloud.mount(&id) {
-                    row = row.operation(offer(AccountsEffect::SyncNow {
-                        account: id.clone(),
-                    }));
-                    row = row.operation(offer(if mount.paused {
-                        AccountsEffect::ResumeSync {
-                            account: id.clone(),
-                        }
-                    } else {
-                        AccountsEffect::PauseSync {
-                            account: id.clone(),
-                        }
-                    }));
+                    bindings = bindings
+                        .bind(AccountsEffect::SYNC_NOW, [("account", account())])
+                        .bind(
+                            if mount.paused {
+                                AccountsEffect::RESUME_SYNC
+                            } else {
+                                AccountsEffect::PAUSE_SYNC
+                            },
+                            [("account", account())],
+                        );
                 } else if model.can_recover_cloud_mode(&view) {
-                    row = row.operation(offer(AccountsEffect::RecoverCloudMode {
-                        account: id.clone(),
-                    }));
+                    bindings =
+                        bindings.bind(AccountsEffect::RECOVER_CLOUD_MODE, [("account", account())]);
                 }
-                row.operation(offer(AccountsEffect::SignInAgain {
-                    account: id.clone(),
-                }))
-                .operation(offer(AccountsEffect::TestAccount {
-                    account: id.clone(),
-                }))
-                .operation(offer(AccountsEffect::RemoveAccount { account: id }))
+                bindings = bindings
+                    .bind(AccountsEffect::SIGN_IN_AGAIN, [("account", account())])
+                    .bind(AccountsEffect::TEST_ACCOUNT, [("account", account())])
+                    .bind(AccountsEffect::REMOVE_ACCOUNT, [("account", account())]);
+                LiveRow::typed_with::<AccountRow>(
+                    format!("settings.account:{id}"),
+                    view.label,
+                    &bindings,
+                )
             })
             .collect();
         published.extend(model.thunderbird_import_rows());
         published.extend(model.calendar_choice_rows());
         for account in store.list(&accounts::person::TILO_IDENTITY_TYPE.into()) {
             let id = account.id.as_str().to_owned();
-            let mut row = LiveRow::typed::<BrowserIdentityRow>(
+            let bindings = ui::tilo_resource::RowBindings::new()
+                .bind(
+                    AccountsEffect::SET_BROWSER_IDENTITY_ENABLED,
+                    [
+                        ("account", id.clone().into()),
+                        ("enabled", (!account.enabled).into()),
+                    ],
+                )
+                .bind(
+                    AccountsEffect::REMOVE_BROWSER_IDENTITY,
+                    [("account", id.clone().into())],
+                );
+            published.push(LiveRow::typed_with::<BrowserIdentityRow>(
                 format!("settings.browser-identity:{id}"),
                 account.display_name.clone(),
-            );
-            row = row
-                .operation(offer(AccountsEffect::SetBrowserIdentityEnabled {
-                    account: id.clone(),
-                    enabled: !account.enabled,
-                }))
-                .operation(offer(AccountsEffect::RemoveBrowserIdentity { account: id }));
-            published.push(row);
+                &bindings,
+            ));
         }
         for account in model.browser_service_sessions() {
             let id = account.id.as_str().to_owned();
-            let mut row = LiveRow::typed::<BrowserServiceSessionRow>(
+            let bindings = ui::tilo_resource::RowBindings::new().bind(
+                AccountsEffect::REMOVE_BROWSER_SERVICE_SESSION,
+                [("session_id", id.clone().into())],
+            );
+            published.push(LiveRow::typed_with::<BrowserServiceSessionRow>(
                 format!("settings.browser-service-session:{id}"),
                 account.display_name,
-            );
-            row = row.operation(offer(AccountsEffect::RemoveBrowserServiceSession {
-                session_id: id,
-            }));
-            published.push(row);
+                &bindings,
+            ));
         }
         published
     }
@@ -1198,9 +1209,12 @@ impl AccountsPane {
             return cx.actions().effect(&SettingsEffect::from(effect));
         };
         let id = effect.id();
-        let mut live =
-            LiveRow::typed::<AccountRow>(format!("settings.account:{account}"), &account);
-        live = live.effect(&SettingsEffect::from(effect));
+        let bindings = ui::tilo_resource::RowBindings::new().spec(effect.bound());
+        let live = LiveRow::typed_with::<AccountRow>(
+            format!("settings.account:{account}"),
+            &account,
+            &bindings,
+        );
         let invocation = ui::tilo_resource::ActionRef::<SettingsEffect, ()>::new(
             id,
             &[],
@@ -2188,9 +2202,12 @@ impl AccountsPane {
     fn files_button(&self, view: &AccountView, details: &mut Vec<String>) -> Option<Button> {
         let spec = self.files_handoff(view)?;
         let label = spec.label.clone();
-        let mut live =
-            LiveRow::typed::<AccountRow>(format!("settings.account:{}", view.id), &view.label);
-        live = live.operation(spec);
+        let bindings = ui::tilo_resource::RowBindings::new().spec(spec);
+        let live = LiveRow::typed_with::<AccountRow>(
+            format!("settings.account:{}", view.id),
+            &view.label,
+            &bindings,
+        );
         let binding = ui::tilo_actions::ActionBinding::unit_for(&live, "open-files").ok()?;
         let store = self.account_root.store();
         if let Some(account) = store.get(&view.id.clone().into()) {

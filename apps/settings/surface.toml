@@ -17,10 +17,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "inspect-keyboard-map"
-kind = "read"
-
-[[resources.verbs]]
 id = "inspect-keyboard-sources"
 kind = "read"
 
@@ -59,13 +55,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "show-hub-model"
-kind = "read"
-params = [
-  { name = "model", type = "text", required = true },
-]
-
-[[resources.verbs]]
 id = "toggle-microphone-test"
 kind = "read"
 
@@ -75,18 +64,6 @@ kind = "read"
 params = [
   { name = "prefs", type = "text", required = true },
 ]
-
-[[resources.verbs]]
-id = "choose-thunderbird-metadata"
-kind = "read"
-
-[[resources.verbs]]
-id = "inspect-thunderbird-import"
-kind = "read"
-
-[[resources.verbs]]
-id = "inspect-calendar-choices"
-kind = "read"
 
 [[resources.verbs]]
 id = "inspect-display-configuration"

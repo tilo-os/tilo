@@ -474,11 +474,6 @@ pub const fn effect<E, A: serde::Serialize>(
     ActionRef::new(effect.id, effect.params, *effect.kind())
 }
 
-#[must_use]
-pub fn pane_row_id(category: Category) -> String {
-    format!("settings.section:{}", category.slug())
-}
-
 /// The entity a row id names: the part after the row kind's `:`, or the whole
 /// id when it already names the entity itself, as a control or a link does.
 /// An effect offered on a row is bound to the row's id; the area it reaches
@@ -495,6 +490,11 @@ pub(crate) fn row_entity<'a>(row: &'a str, kind: &str) -> &'a str {
     row.strip_prefix(kind)
         .and_then(|rest| rest.strip_prefix(':'))
         .unwrap_or(row)
+}
+
+#[must_use]
+pub fn pane_row_id(category: Category) -> String {
+    format!("settings.section:{}", category.slug())
 }
 
 #[must_use]
@@ -705,7 +705,12 @@ mod tests {
             let expected = reference.build_json(&args).unwrap();
             assert_eq!(actual.type_id, expected.type_id);
             assert_eq!(actual.payload, expected.payload);
-            assert_eq!(actual.payload, published.payload);
+            assert_eq!(published.type_id, actual.type_id);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&actual.payload).unwrap(),
+                serde_json::from_slice::<serde_json::Value>(&published.payload).unwrap(),
+                "the row publishes the invocation a direct caller builds, whichever order its arguments are written in"
+            );
             let asking: Vec<_> = spec.params().iter().map(|param| &*param.name).collect();
             assert_eq!(
                 surveyed(effect.bound_asking(&asking)),

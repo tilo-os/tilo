@@ -20,6 +20,7 @@ use ui::tilo_resource::{self, Binds, Effect};
 use ui::time::{Duration, Instant};
 use ui::widget::{Button, Element, ProgressBar, Row};
 
+use self::hub::{HubResult, HubVariant};
 use crate::area::AreaContext;
 use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
@@ -201,13 +202,13 @@ fn as_json(value: &impl serde::Serialize) -> Result<serde_json::Value, String> {
 /// A model installed on this device, as the pane publishes it: a row of the
 /// `settings.agent-model` type, whose actions depend on the model and fit.
 #[derive(tilo_resource::Row)]
-#[row(kind = "settings.agent-model", label = "Installed model")]
+#[row(kind = "settings.agent-model", label = "Installed model", effects = AgentModelsEffect)]
 pub(crate) struct InstalledModel;
 
 /// A model the apps load in their own process, as the pane publishes it: a
 /// row of the `settings.agent-model-in-process` type.
 #[derive(tilo_resource::Row)]
-#[row(kind = "settings.agent-model-in-process", label = "In-process model")]
+#[row(kind = "settings.agent-model-in-process", label = "In-process model", effects = AgentModelsEffect)]
 pub(crate) struct InProcessModel;
 
 /// The model the pane recommends for this device, as it publishes it: a row
@@ -215,7 +216,8 @@ pub(crate) struct InProcessModel;
 #[derive(tilo_resource::Row)]
 #[row(
     kind = "settings.agent-model-recommendation",
-    label = "Recommended model"
+    label = "Recommended model",
+    effects = AgentModelsEffect
 )]
 pub(crate) struct RecommendedModel;
 
@@ -245,7 +247,7 @@ pub enum AgentModelsEffect {
     },
     /// Download and install the recommended model or an in-process one,
     /// accepting its license.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = InProcessModel, on = RecommendedModel)]
     #[effect(job)]
     InstallModel {
         #[param("The model's id")]
@@ -254,21 +256,21 @@ pub enum AgentModelsEffect {
         revision: String,
     },
     /// Start serving an installed model.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = InstalledModel)]
     #[effect(job, row, idempotent)]
     StartModel {
         #[param("The model's id")]
         model: String,
     },
     /// Stop serving a model.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = InstalledModel)]
     #[effect(job, row, idempotent)]
     StopModel {
         #[param("The model's id")]
         model: String,
     },
     /// Install a model again after it failed.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = InstalledModel)]
     #[effect(job, row)]
     RetryModel {
         #[param("The model's id")]
@@ -277,7 +279,7 @@ pub enum AgentModelsEffect {
         revision: String,
     },
     /// Remove an installed model and its files.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = InstalledModel, on = InProcessModel)]
     #[effect(job, row, destructive)]
     RemoveModel {
         #[param("The model's id")]
@@ -301,7 +303,7 @@ pub enum AgentModelsEffect {
     },
     /// Show a Hugging Face model's variants with their size, fit for this
     /// device and licence. Answers with them; downloads nothing.
-    #[effect(job, returns, kind = "read")]
+    #[effect(job, returns, kind = "read", on = HubResult)]
     ShowHubModel {
         #[param("A model id such as owner/name, or its huggingface.co link")]
         model: String,
@@ -316,7 +318,7 @@ pub enum AgentModelsEffect {
     /// Download a variant of a Hugging Face model at the commit it was
     /// shown at, accepting its licence, and start it when a signed runtime
     /// here serves it.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = HubVariant)]
     #[effect(job, row)]
     InstallHubModel {
         #[param("The model id, owner/name")]
@@ -567,6 +569,8 @@ fn token(id: &str) -> String {
         .collect()
 }
 
+/// `bindings` with the effect `action` offers on the model's row, its id
+/// and revision bound as the model's own state knows them.
 fn model_effect(model: &InstalledLocalModel, action: ModelAction) -> AgentModelsEffect {
     let id = model.package.id.clone();
     match action {
@@ -577,6 +581,28 @@ fn model_effect(model: &InstalledLocalModel, action: ModelAction) -> AgentModels
             revision: model.package.revision.clone(),
         },
         ModelAction::Remove => AgentModelsEffect::RemoveModel { model: id },
+    }
+}
+
+fn model_bindings(
+    bindings: tilo_resource::RowBindings,
+    model: &InstalledLocalModel,
+    action: ModelAction,
+) -> tilo_resource::RowBindings {
+    let id = model.package.id.clone();
+    match action {
+        ModelAction::Start => bindings.bind(AgentModelsEffect::START_MODEL, [("model", id.into())]),
+        ModelAction::Stop => bindings.bind(AgentModelsEffect::STOP_MODEL, [("model", id.into())]),
+        ModelAction::Retry => bindings.bind(
+            AgentModelsEffect::RETRY_MODEL,
+            [
+                ("model", id.into()),
+                ("revision", model.package.revision.clone().into()),
+            ],
+        ),
+        ModelAction::Remove => {
+            bindings.bind(AgentModelsEffect::REMOVE_MODEL, [("model", id.into())])
+        }
     }
 }
 
@@ -998,51 +1024,60 @@ impl AgentModelsArea {
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         self.model().borrow_mut().poll_admin();
         let model = self.model().borrow();
-        let offer = |effect: AgentModelsEffect| SettingsEffect::from(effect).bound();
         let mut rows: Vec<LiveRow> = model
             .snapshot
             .models
             .iter()
             .map(|installed| {
-                model_actions(installed).into_iter().fold(
-                    LiveRow::typed::<InstalledModel>(
-                        format!("settings.agent-model:{}", installed.package.id),
-                        installed.package.name.clone(),
-                    ),
-                    |row, action| row.operation(offer(model_effect(installed, action))),
+                let mut bindings = tilo_resource::RowBindings::new();
+                for action in model_actions(installed) {
+                    bindings = model_bindings(bindings, installed, action);
+                }
+                LiveRow::typed_with::<InstalledModel>(
+                    format!("settings.agent-model:{}", installed.package.id),
+                    installed.package.name.clone(),
+                    &bindings,
                 )
             })
             .collect();
         // In-process models run inside the apps that use them on any CPU, so
         // neither the hardware fit nor accelerator setup blocks them.
         for local in &model.snapshot.in_process {
-            let mut row = LiveRow::typed::<InProcessModel>(
-                format!("settings.agent-model:{}", local.package.id),
-                local.package.name.clone(),
-            );
+            let mut bindings = tilo_resource::RowBindings::new();
             if local.installable() {
-                row = row.operation(offer(AgentModelsEffect::InstallModel {
-                    model: local.package.id.clone(),
-                    revision: local.package.revision.clone(),
-                }));
+                bindings = bindings.bind(
+                    AgentModelsEffect::INSTALL_MODEL,
+                    [
+                        ("model", local.package.id.clone().into()),
+                        ("revision", local.package.revision.clone().into()),
+                    ],
+                );
             }
             if local.removable() {
-                row = row.operation(offer(AgentModelsEffect::RemoveModel {
-                    model: local.package.id.clone(),
-                }));
+                bindings = bindings.bind(
+                    AgentModelsEffect::REMOVE_MODEL,
+                    [("model", local.package.id.clone().into())],
+                );
             }
-            rows.push(row);
+            rows.push(LiveRow::typed_with::<InProcessModel>(
+                format!("settings.agent-model:{}", local.package.id),
+                local.package.name.clone(),
+                &bindings,
+            ));
         }
         if let Some(package) = &model.snapshot.recommendation {
-            let mut row = LiveRow::typed::<RecommendedModel>(
+            let bindings = tilo_resource::RowBindings::new().bind(
+                AgentModelsEffect::INSTALL_MODEL,
+                [
+                    ("model", package.id.clone().into()),
+                    ("revision", package.revision.clone().into()),
+                ],
+            );
+            rows.push(LiveRow::typed_with::<RecommendedModel>(
                 format!("settings.agent-model-recommendation:{}", package.id),
                 package.name.clone(),
-            );
-            row = row.operation(offer(AgentModelsEffect::InstallModel {
-                model: package.id.clone(),
-                revision: package.revision.clone(),
-            }));
-            rows.push(row);
+                &bindings,
+            ));
         }
         rows.extend(model.hub.rows());
         rows.extend(model.panel.rows().into_iter().map(|row| {

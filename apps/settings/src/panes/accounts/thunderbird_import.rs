@@ -2,10 +2,11 @@ use std::path::Path;
 
 use accounts::thunderbird::{Candidate, DiscoveryError, Transport};
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
-use ui::tilo_resource::{self, Effect};
+use ui::tilo_resource;
 use ui::widget::Button;
 
 use super::{AccountsEffect, AccountsPane};
+#[cfg(test)]
 use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
@@ -18,7 +19,9 @@ use provider_settings_ui::widgets::{
 /// `settings.account-import` type, offering to inspect, choose, commit or
 /// cancel the import.
 #[derive(ui::tilo_resource::Row)]
-#[row(kind = "settings.account-import", label = "Account import")]
+#[row(kind = "settings.account-import", label = "Account import",
+    effects = AccountsEffect
+)]
 pub(super) struct AccountImport;
 
 /// One account a Thunderbird import found, as the pane publishes it: a row
@@ -26,7 +29,8 @@ pub(super) struct AccountImport;
 #[derive(ui::tilo_resource::Row)]
 #[row(
     kind = "settings.account-import-choice",
-    label = "Account import choice"
+    label = "Account import choice",
+    effects = AccountsEffect
 )]
 pub(super) struct AccountImportChoice;
 
@@ -120,26 +124,22 @@ fn finish(
 
 impl AccountsPane {
     pub(super) fn thunderbird_import_rows(&self) -> Vec<LiveRow> {
-        let mut root = LiveRow::typed::<AccountImport>(
+        let bindings = ui::tilo_resource::RowBindings::new()
+            .offer(AccountsEffect::INSPECT_THUNDERBIRD_IMPORT)
+            .offer(AccountsEffect::CHOOSE_THUNDERBIRD_METADATA)
+            .bind(
+                AccountsEffect::COMMIT_THUNDERBIRD_IMPORT,
+                [("revision", self.import_review.revision.into())],
+            )
+            .offer(AccountsEffect::CANCEL_THUNDERBIRD_IMPORT);
+        let mut root = LiveRow::typed_with::<AccountImport>(
             "settings.thunderbird-import",
             t("accounts-import-title"),
+            &bindings,
         );
-        root = root
-            .operation(SettingsEffect::from(AccountsEffect::InspectThunderbirdImport).bound())
-            .operation(SettingsEffect::from(AccountsEffect::ChooseThunderbirdMetadata).bound())
-            .operation(
-                SettingsEffect::from(AccountsEffect::CommitThunderbirdImport {
-                    revision: self.import_review.revision,
-                })
-                .bound(),
-            )
-            .operation(SettingsEffect::from(AccountsEffect::CancelThunderbirdImport).bound());
         for choice in &self.import_review.choices {
             let source = super::import_review::identity(&choice.candidate);
-            let mut row = LiveRow::typed::<AccountImportChoice>(
-                format!("settings.thunderbird-account:{source}"),
-                choice.candidate.email.clone(),
-            );
+            let mut bindings = ui::tilo_resource::RowBindings::new();
             for auth in ["password", "oauth"] {
                 let authentication = if auth == "oauth" {
                     accounts::email::AuthMethod::OAuth
@@ -147,18 +147,25 @@ impl AccountsPane {
                     accounts::email::AuthMethod::Password
                 };
                 if choice.candidate.reviewed_config(authentication).is_ok() {
-                    row = row.operation(
-                        SettingsEffect::from(AccountsEffect::SelectThunderbirdAccount {
-                            source: source.clone(),
-                            authentication: auth.into(),
-                            selected: !choice.selected,
-                            revision: self.import_review.revision,
-                        })
-                        .bound(),
+                    bindings = bindings.bind(
+                        AccountsEffect::SELECT_THUNDERBIRD_ACCOUNT,
+                        [
+                            ("source", source.clone().into()),
+                            ("authentication", auth.into()),
+                            ("selected", (!choice.selected).into()),
+                            (
+                                "revision",
+                                serde_json::Value::from(self.import_review.revision),
+                            ),
+                        ],
                     );
                 }
             }
-            root = root.row(row);
+            root = root.row(LiveRow::typed_with::<AccountImportChoice>(
+                format!("settings.thunderbird-account:{source}"),
+                choice.candidate.email.clone(),
+                &bindings,
+            ));
         }
         vec![root]
     }

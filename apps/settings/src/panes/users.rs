@@ -13,7 +13,9 @@ use tilo_identity_client::{IdentitySummary, KeyProtection};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;
-use ui::tilo_resource::{self, Effect};
+#[cfg(test)]
+use ui::tilo_resource::Effect;
+use ui::tilo_resource::{self, RowBindings};
 use ui::widget::{
     Button, ButtonRole, ChipStyle, Column, DisclosureRow, DisclosureState, Element, Row, RowMenu,
     TextInput, TextInputKind, Widget,
@@ -56,7 +58,7 @@ pub enum UsersEffect {
         full_name: String,
     },
     /// Make an account an administrator, or a standard account.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DeviceAccount)]
     #[effect(job, row, idempotent)]
     SetAdministrator {
         #[param("The account's login name")]
@@ -65,7 +67,7 @@ pub enum UsersEffect {
         admin: bool,
     },
     /// Sign an account in without its password when the device starts.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DeviceAccount)]
     #[effect(job, row, idempotent)]
     SetAutomaticLogin {
         #[param("The account's login name")]
@@ -73,7 +75,7 @@ pub enum UsersEffect {
         on: bool,
     },
     /// Remove an account, keeping its files or removing them too.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DeviceAccount)]
     #[effect(job, row, destructive)]
     RemoveUser {
         #[param("The account's login name")]
@@ -82,21 +84,21 @@ pub enum UsersEffect {
         keep_files: bool,
     },
     /// Sign new apps in as one of the person's identities.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DeviceIdentity)]
     #[effect(job, row, idempotent)]
     UseIdentity {
         #[param("The identity's id")]
         identity: String,
     },
     /// Remove an identity from this device.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DeviceIdentity)]
     #[effect(job, row, destructive, label = "settings-users-identity-remove")]
     RemoveIdentity {
         #[param("The identity's id")]
         identity: String,
     },
     /// Move an identity's key from a plain file into protected storage.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = DeviceIdentity)]
     #[effect(job, row, idempotent)]
     ProtectIdentity {
         #[param("The identity's id")]
@@ -480,70 +482,66 @@ impl UsersArea {
 /// `settings.user` type, offering to make it an administrator, log it in
 /// automatically or remove it.
 #[derive(tilo_resource::Row)]
-#[row(kind = "settings.user", label = "Device user")]
+#[row(kind = "settings.user", label = "Device user", effects = UsersEffect)]
 pub(crate) struct DeviceAccount;
 
 /// An identity this device keeps, as the pane publishes it: a row of the
 /// `settings.identity` type, offering to use, protect or remove it.
 #[derive(tilo_resource::Row)]
-#[row(kind = "settings.identity", label = "Identity")]
+#[row(kind = "settings.identity", label = "Identity", effects = UsersEffect)]
 pub(crate) struct DeviceIdentity;
 
 fn user_live_row(user: &DeviceUser) -> LiveRow {
     let name = user.username.clone();
-    let mut row =
-        LiveRow::typed::<DeviceAccount>(format!("settings.user:{name}"), user.full_name.clone());
-    row = row.operation(
-        SettingsEffect::from(UsersEffect::SetAdministrator {
-            user: name.clone(),
-            admin: !user.admin,
-        })
-        .bound(),
+    let mut bindings = RowBindings::new().bind(
+        UsersEffect::SET_ADMINISTRATOR,
+        [
+            ("user", name.clone().into()),
+            ("admin", (!user.admin).into()),
+        ],
     );
     if user.automatic_login_error.is_none() {
-        row = row.operation(
-            SettingsEffect::from(UsersEffect::SetAutomaticLogin {
-                user: name.clone(),
-                on: !user.automatic_login,
-            })
-            .bound(),
+        bindings = bindings.bind(
+            UsersEffect::SET_AUTOMATIC_LOGIN,
+            [
+                ("user", name.clone().into()),
+                ("on", (!user.automatic_login).into()),
+            ],
         );
     }
-    row.operation(
-        SettingsEffect::from(UsersEffect::RemoveUser {
-            user: name,
-            keep_files: true,
-        })
-        .bound(),
+    bindings = bindings.bind(
+        UsersEffect::REMOVE_USER,
+        [("user", name.clone().into()), ("keep_files", true.into())],
+    );
+    LiveRow::typed_with::<DeviceAccount>(
+        format!("settings.user:{name}"),
+        user.full_name.clone(),
+        &bindings,
     )
 }
 
 fn identity_live_row(identity: &IdentitySummary) -> LiveRow {
     let id = identity.id.clone();
-    let mut row = LiveRow::typed::<DeviceIdentity>(
-        format!("settings.identity:{id}"),
-        identity_name(identity).to_owned(),
-    );
+    let mut bindings = RowBindings::new();
     if !identity.active {
-        row = row
-            .operation(
-                SettingsEffect::from(UsersEffect::UseIdentity {
-                    identity: id.clone(),
-                })
-                .bound(),
-            )
-            .operation(
-                SettingsEffect::from(UsersEffect::RemoveIdentity {
-                    identity: id.clone(),
-                })
-                .bound(),
+        bindings = bindings
+            .bind(UsersEffect::USE_IDENTITY, [("identity", id.clone().into())])
+            .bind(
+                UsersEffect::REMOVE_IDENTITY,
+                [("identity", id.clone().into())],
             );
     }
     if identity.protection == KeyProtection::LegacyPlaintext {
-        row = row
-            .operation(SettingsEffect::from(UsersEffect::ProtectIdentity { identity: id }).bound());
+        bindings = bindings.bind(
+            UsersEffect::PROTECT_IDENTITY,
+            [("identity", id.clone().into())],
+        );
     }
-    row
+    LiveRow::typed_with::<DeviceIdentity>(
+        format!("settings.identity:{id}"),
+        identity_name(identity).to_owned(),
+        &bindings,
+    )
 }
 
 fn protection_label(protection: KeyProtection) -> String {

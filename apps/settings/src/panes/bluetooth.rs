@@ -105,35 +105,35 @@ pub enum BluetoothEffect {
     /// Pair with a nearby device; the device may ask to confirm a code.
     #[effect(kind = "outside")]
     #[effect(job, row)]
-    #[effect(keywords = "pair, connect headphones, add bluetooth device")]
+    #[effect(keywords = "pair, connect headphones, add bluetooth device", on = BluetoothDevice)]
     PairDevice {
         #[param("The device's object path")]
         device: String,
     },
     /// Stop pairing with a device.
     #[effect(kind = "outside")]
-    #[effect(job, row, label = "settings-bluetooth-cancel-pairing")]
+    #[effect(job, row, label = "settings-bluetooth-cancel-pairing", on = BluetoothDevice)]
     CancelPairing {
         #[param("The device's object path")]
         device: String,
     },
     /// Connect a paired device.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = BluetoothDevice)]
     ConnectDevice {
         #[param("The device's object path")]
         device: String,
     },
     /// Disconnect a device.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = BluetoothDevice)]
     DisconnectDevice {
         #[param("The device's object path")]
         device: String,
     },
     /// Let a paired device connect without asking.
     #[effect(kind = "outside")]
-    #[effect(job, row, idempotent)]
+    #[effect(job, row, idempotent, on = BluetoothDevice)]
     SetDeviceTrusted {
         #[param("The device's object path")]
         device: String,
@@ -141,7 +141,7 @@ pub enum BluetoothEffect {
     },
     /// Give a paired device another name on this device.
     #[effect(kind = "outside")]
-    #[effect(job, row)]
+    #[effect(job, row, on = BluetoothDevice)]
     RenamePairedDevice {
         #[param("The device's object path")]
         device: String,
@@ -150,7 +150,7 @@ pub enum BluetoothEffect {
     },
     /// Forget a paired device; it must pair again to connect.
     #[effect(kind = "outside")]
-    #[effect(job, row, destructive)]
+    #[effect(job, row, destructive, on = BluetoothDevice)]
     ForgetDevice {
         #[param("The device's object path")]
         device: String,
@@ -557,40 +557,56 @@ impl BluetoothArea {
 /// `settings.bluetooth-device` type, offering to pair, connect, trust,
 /// rename or forget it as it stands.
 #[derive(ui::tilo_resource::Row)]
-#[row(kind = "settings.bluetooth-device", label = "Bluetooth device")]
+#[row(kind = "settings.bluetooth-device", label = "Bluetooth device",
+    effects = BluetoothEffect
+)]
 pub(crate) struct BluetoothDevice;
 
 fn device_live_row(device: &DeviceInfo, pairing: Option<&str>) -> LiveRow {
     let path = device.path.clone();
-    let offer = |effect: BluetoothEffect| SettingsEffect::from(effect).bound();
-    let mut row = LiveRow::typed::<BluetoothDevice>(
+    let mut bindings = tilo_resource::RowBindings::new();
+    if pairing == Some(path.as_str()) {
+        bindings = bindings.bind(
+            BluetoothEffect::CANCEL_PAIRING,
+            [("device", path.clone().into())],
+        );
+    } else if !device.paired {
+        bindings = bindings.bind(
+            BluetoothEffect::PAIR_DEVICE,
+            [("device", path.clone().into())],
+        );
+    } else {
+        let switch = if device.connected {
+            BluetoothEffect::DISCONNECT_DEVICE
+        } else {
+            BluetoothEffect::CONNECT_DEVICE
+        };
+        bindings = bindings
+            .bind(switch, [("device", path.clone().into())])
+            .bind(
+                BluetoothEffect::SET_DEVICE_TRUSTED,
+                [
+                    ("device", path.clone().into()),
+                    ("trusted", (!device.trusted).into()),
+                ],
+            )
+            .bind(
+                BluetoothEffect::RENAME_PAIRED_DEVICE,
+                [
+                    ("device", path.clone().into()),
+                    ("name", device.name.clone().into()),
+                ],
+            )
+            .bind(
+                BluetoothEffect::FORGET_DEVICE,
+                [("device", path.clone().into())],
+            );
+    }
+    LiveRow::typed_with::<BluetoothDevice>(
         format!("settings.bluetooth-device:{path}"),
         device.name.clone(),
-    );
-    if pairing == Some(path.as_str()) {
-        return row.operation(offer(BluetoothEffect::CancelPairing { device: path }));
-    }
-    if !device.paired {
-        return row.operation(offer(BluetoothEffect::PairDevice { device: path }));
-    }
-    row = row.operation(offer(if device.connected {
-        BluetoothEffect::DisconnectDevice {
-            device: path.clone(),
-        }
-    } else {
-        BluetoothEffect::ConnectDevice {
-            device: path.clone(),
-        }
-    }));
-    row.operation(offer(BluetoothEffect::SetDeviceTrusted {
-        device: path.clone(),
-        trusted: !device.trusted,
-    }))
-    .operation(offer(BluetoothEffect::RenamePairedDevice {
-        device: path.clone(),
-        name: device.name.clone(),
-    }))
-    .operation(offer(BluetoothEffect::ForgetDevice { device: path }))
+        &bindings,
+    )
 }
 
 fn adapter_absent(radios: &crate::radios::Radios) -> bool {

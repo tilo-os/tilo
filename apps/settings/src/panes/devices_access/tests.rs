@@ -1201,7 +1201,8 @@ tilo_test_env::scenario! {
         let agent = published_row(&mut app, &agent_row_id()).unwrap();
         assert_eq!(
             verbs(&agent),
-            ["revoke-device", "rename-device", "stop-session"]
+            ["rename-device", "revoke-device", "stop-session"],
+            "a row shows its type's own verbs first, then the ones Settings declares for it"
         );
         assert_eq!(
             asks(offered(&agent, "stop-session")),
