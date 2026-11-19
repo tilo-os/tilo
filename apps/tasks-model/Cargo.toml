@@ -24,7 +24,6 @@ serde_json.workspace = true
 tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 tilo-actions = { path = "../../crates/collab/actions" }
-tilo-reference = { path = "../../crates/collab/reference" }
 tilo-app-id = { version = "0.1.0", path = "../../crates/platform/tilo-app-id" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

@@ -472,8 +472,6 @@ tempfile.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 # Paused-clock tests of the collaboration endpoints' deadlines.
 tokio = { workspace = true, features = ["test-util"] }
-tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony" }
-threshold-identity = { path = "../../collab/threshold-identity" }
 # The scoped chooser and URI fixtures the invocation-scope tests select.
 tilo-process-services = { path = "../tilo-process-services", features = ["test-support"] }
 # The settings capability the shell hands an app, served by the fake broker.

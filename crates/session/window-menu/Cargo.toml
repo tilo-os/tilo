@@ -14,11 +14,8 @@ path = "src/main.rs"
 # A framework app: the view's resource and surface, and the session's own
 # published resource read through it.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
-serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-vello.workspace = true
-winit.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

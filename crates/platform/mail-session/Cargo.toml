@@ -27,7 +27,6 @@ rustls.workspace = true
 # The sessions' own runtime has workers of its own: a session kept between
 # two requests lives on it, whichever thread asks.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
-tokio-rustls.workspace = true
 # The vocabulary a page's mail actions carry: what a folder read answers and
 # what a send is told.
 tilo-actions = { path = "../../collab/actions" }

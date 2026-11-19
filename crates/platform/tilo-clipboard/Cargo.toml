@@ -40,9 +40,6 @@ arboard = { workspace = true, features = ["image-data"] }
 arboard = { workspace = true, features = ["image-data"], optional = true }
 image = { workspace = true, features = ["png"] }
 libc.workspace = true
-# The worker attaches to the app's own `wl_display`, which needs the system
-# (libwayland) client backend.
-wayland-backend = { version = "0.3", default-features = false, features = ["client_system"] }
 # Without default features: `xkbcommon` makes sctk's build script demand the
 # libxkbcommon development package, and the clipboard never decodes keys.
 smithay-client-toolkit = { version = "0.20.0", default-features = false, features = ["calloop"] }

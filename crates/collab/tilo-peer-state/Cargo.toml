@@ -103,9 +103,6 @@ tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }
 tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
-futures = { workspace = true, default-features = true }
-# Membership replay is a property over operation sets, not one fixture.
-proptest.workspace = true
 # The surface a received workspace desktop is drawn on: every host
 # shows another device's windows through, reconciled from the tree that
 # arrived, not read as a document.

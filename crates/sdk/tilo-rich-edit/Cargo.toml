@@ -14,6 +14,10 @@ description = "Rich text edited in place: the block editor, rich text lines, the
 # that embed it.
 test-support = ["tilo-ui/test-support"]
 
+# `tilo-component-scan` is read by build.rs, which an unused-dependency scan does not read.
+[package.metadata.cargo-machete]
+ignored = ["tilo-component-scan"]
+
 [dependencies]
 tilo-ui = { version = "0.1.0", path = "../ui-core", default-features = false }
 jiff.workspace = true
@@ -43,7 +47,6 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 image.workspace = true
 vello_encoding.workspace = true
 serde_json.workspace = true
-cosmic-text.workspace = true
 
 [[test]]
 name = "it"

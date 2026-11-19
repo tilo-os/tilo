@@ -71,9 +71,6 @@ tilo-mcp = { path = "../../runtime/tilo-mcp" }
 # The API: its description (`tilo sdk gen --lang openapi`), the routes the hosted
 # commands call, and the same routes served in process as this computer's key.
 tilo-api = { path = "../../server/tilo-api" }
-# A workspace's answer goes through the API's own reply, which is a hyper body,
-# when it is served in process.
-http-body-util = "0.1.3"
 # A resource's path is percent-encoded a segment at a time (`notes/Q3%2F4`).
 percent-encoding.workspace = true
 collab-types = { path = "../../collab/collab-types" }

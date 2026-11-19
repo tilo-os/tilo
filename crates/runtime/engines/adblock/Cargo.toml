@@ -6,6 +6,13 @@ publish.workspace = true
 license.workspace = true
 description = "The WebView's filter-list compiler (adblock-rust) as an engine library beside the shared runtime: libtilo_adblock_engine.so, which the toolkit opens the first time an app compiles ad-block lists."
 
+# The toolkit is named for its `lazy-adblock` feature alone: `thin` turns it on
+# so the runtime built in that graph opens this library instead of linking the
+# compiler. Nothing here writes `tilo_ui::`, so an unused-dependency scan can
+# only see the dependency as unused.
+[package.metadata.cargo-machete]
+ignored = ["tilo-ui"]
+
 # A runtime engine the toolkit opens on first use rather than one an app
 # names DT_NEEDED: `ui::webview::adblock` loads it through tilo-engine-loader
 # the first time an app (the browser) compiles filter lists, so no app maps it

@@ -53,13 +53,11 @@ tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 anyhow.workspace = true
 automerge.workspace = true
-base64.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
 key-group = { path = "../../collab/key-group" }
 blake3.workspace = true
 # The bytes and content addresses a joined workspace's files hydrate with.
 bytes.workspace = true
-jiff.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 fs-protocol = { path = "../../system/fs-protocol" }
 ed25519-dalek.workspace = true
@@ -114,7 +112,6 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on.
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
 # The content store app surfaces are read from.
-tilo-content = { path = "../../system/content" }
 # The apps' store: the device content store when the launcher handed one over.
 tilo-content-device = { path = "../../system/content-device" }
 # The workspace store this device holds for the workspaces it belongs to, and
@@ -179,7 +176,6 @@ ed25519-dalek.workspace = true
 # The cluster of a person's own records, which their store's key is.
 collab-types = { path = "../../collab/collab-types" }
 tempfile.workspace = true
-tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
 # A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../dev/test-server" }

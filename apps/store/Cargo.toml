@@ -70,7 +70,6 @@ workspace-hack = { version = "0.1" }
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
 package-service = { path = "../../crates/packaging/package-service", default-features = false, features = ["test-support", "service"] }
-runtime-bundle = { path = "../../crates/packaging/runtime-bundle" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

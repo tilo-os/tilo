@@ -22,7 +22,6 @@ blake3 = "1.8.5"
 getrandom = { version = "0.4", features = ["sys_rng"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
-tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-resource = { path = "../tilo-resource" }
 uuid = { version = "1.23.1", default-features = false }

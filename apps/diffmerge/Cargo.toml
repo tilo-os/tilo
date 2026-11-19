@@ -24,7 +24,6 @@ samples = []
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-fnv.workspace = true
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -32,13 +31,10 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # shared with an agent that works the same comparison.
 diffmerge-model = { path = "../diffmerge-model" }
 automerge.workspace = true
-blake3.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-similar = "2.6"
 # Host-native file open through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on Tilo the compositor's portal backend renders Tilo's picker. The

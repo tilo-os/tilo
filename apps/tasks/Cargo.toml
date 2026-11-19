@@ -32,8 +32,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its types, verbs and typed action arguments,
 # shared with the agent that works its issues.
 tasks-model = { path = "../tasks-model" }
-# The parts the issues are kept in, and their typed action arguments.
-serde.workspace = true
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

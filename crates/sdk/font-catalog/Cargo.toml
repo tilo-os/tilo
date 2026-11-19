@@ -8,6 +8,10 @@ description = "Tilo's pinned font catalog: its manifest, where it is installed, 
 repository.workspace = true
 homepage.workspace = true
 
+# `toml` is read by build.rs, which an unused-dependency scan does not read.
+[package.metadata.cargo-machete]
+ignored = ["toml"]
+
 [dependencies]
 sha2.workspace = true
 hex.workspace = true

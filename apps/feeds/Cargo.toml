@@ -42,12 +42,6 @@ taffy.workspace = true
 feed-rs = "2.4"
 # HTTP everywhere, and the raw TLS socket gemini:// needs on the desktop.
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "sockets"] }
-# org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its own
-# file picker; OPML import goes through the host portal so the compositor's
-# picker + per-cluster sandbox prompt is the security boundary. The D-Bus call
-# runs off the UI thread on its own small Tokio runtime and the chosen path is
-# handed back over a channel.
-jiff.workspace = true
 
 [dev-dependencies]
 # Tests see this package's samples. The key must not be the package name:

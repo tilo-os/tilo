@@ -27,11 +27,9 @@ surface-decoder = ["unit-chain"]
 recording = ["dep:gstreamer-app"]
 
 [dependencies]
-tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # Encode and decode through the shared GStreamer media stack, which picks
 # hardware first, then royalty-free software, then Cisco's openh264 binary.
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
-thiserror.workspace = true
 tracing = "0.1"
 # Shared decoder admission and the wire colorimetry the surface decoder applies.
 neighbour-wire = { path = "../neighbour-wire", optional = true }

@@ -18,7 +18,6 @@ name = "poker_model"
 path = "src/lib.rs"
 
 [dependencies]
-serde_json.workspace = true
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 

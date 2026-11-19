@@ -21,7 +21,6 @@ presentation-feedback = ["tilo-ui/presentation-feedback"]
 tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
 # Scenarios used to live as [[example]] targets of tilo-ui and therefore
 # inherited its dependency graph. Keep the same direct crates they `use`.
-accesskit = "0.25.0"
 automerge.workspace = true
 jiff.workspace = true
 collab-types = { path = "../../collab/collab-types" }
@@ -29,7 +28,6 @@ image.workspace = true
 tilo-doc = { path = "../../doc/tilo-doc" }
 serde_json.workspace = true
 taffy = { workspace = true, features = ["content_size"] }
-tempfile.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-automerge.workspace = true
 # The dashboard benchmark runs the tree on a clock of its own events

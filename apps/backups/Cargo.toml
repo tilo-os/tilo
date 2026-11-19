@@ -26,7 +26,6 @@ backups-model = { path = "../backups-model" }
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
 tilo-actions = { path = "../../crates/collab/actions" }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

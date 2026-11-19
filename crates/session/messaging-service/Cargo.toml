@@ -25,7 +25,6 @@ service = [
     "dep:tilo-messaging-protocol",
     "dep:tilo-identity",
     "dep:collab-types",
-    "dep:tilo-server-protocol",
     "dep:tilo-files",
     "dep:tilo-paths",
     "dep:tilo-rt",
@@ -64,7 +63,6 @@ package-store = { path = "../../packaging/package-store", features = ["store"], 
 tilo-messaging-protocol = { path = "../../system/messaging-protocol", default-features = false, features = ["signal-broker", "whatsapp-sdk", "sms-dbus"], optional = true }
 tilo-identity = { path = "../../runtime/tilo-identity", optional = true }
 collab-types = { path = "../../collab/collab-types", optional = true }
-tilo-server-protocol = { path = "../../server/tilo-server-protocol", optional = true }
 tilo-files = { path = "../../platform/tilo-files", optional = true }
 tilo-paths = { workspace = true, optional = true }
 tilo-rt = { workspace = true, optional = true }

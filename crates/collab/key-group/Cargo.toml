@@ -10,6 +10,13 @@ repository.workspace = true
 homepage.workspace = true
 description = "A workspace's MLS group: its members, epochs and content keys."
 
+# `getrandom02` is named for its `js` feature alone: openmls reaches getrandom
+# 0.2 through ed25519-dalek, which has no wasm32-unknown-unknown backend unless
+# that feature selects the page's `crypto.getRandomValues`. Nothing here writes
+# `getrandom::`, so an unused-dependency scan can only see it as unused.
+[package.metadata.cargo-machete]
+ignored = ["getrandom02"]
+
 [lib]
 name = "key_group"
 path = "src/lib.rs"

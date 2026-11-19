@@ -33,7 +33,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resources the app draws: their types, verbs and typed action arguments.
 maps-model = { path = "../maps-model" }
 automerge.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 vello.workspace = true

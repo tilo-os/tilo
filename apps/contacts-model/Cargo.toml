@@ -16,7 +16,6 @@ name = "contacts_model"
 path = "src/lib.rs"
 
 [dependencies]
-jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tilo-resource = { path = "../../crates/sdk/tilo-resource" }

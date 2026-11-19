@@ -26,8 +26,6 @@ fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
 tilo-pdf = { version = "0.1.0", path = "../../platform/tilo-pdf" }
 # Which app opens what a file's bytes are, as a workspace lands a file.
 tilo-content-types = { version = "0.1.0", path = "../../system/content-types" }
-# Reading the tree record as the resource it is, to list and search it.
-tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 durable-store = { version = "0.1.0", path = "../../system/durable-store" }
 tilo-automerge.workspace = true
 settings-store = { version = "0.1.0", path = "../../system/settings-store" }

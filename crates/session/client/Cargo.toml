@@ -21,8 +21,6 @@ oneshot.workspace = true
 # people in.
 tilo-desktop-model = { path = "../desktop-model" }
 collab-types = { path = "../../collab/collab-types" }
-# What a file uploaded through the session is, and so the app it lands in.
-tilo-content-types = { path = "../../system/content-types" }
 # The workspace's live session: the board of who is here, and the tracks presence travels on,
 # over WebTransport or, to a server that takes none, over iroh through its packet relay (a page
 # too).
@@ -45,14 +43,10 @@ tilo-server-session = { path = "../../server/tilo-server-session" }
 tilo-actions = { path = "../../collab/actions" }
 # Another device's actions, asked through this session.
 tilo-session-actions = { path = "../session-actions" }
-# Sorts without a copy of std's sort per call site, which kept the web desktop's start module large.
-tilo-sort = { path = "../../platform/tilo-sort" }
 # The signed hint a workspace's governance keeps of its host's address.
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 # A live session's WebTransport session: the browser's own in a page.
 tilo-net = { path = "../../platform/tilo-net", features = ["webtransport"] }
-# `moq-lite` itself: a session's live session is a publisher and a subscriber.
-moq-net.workspace = true
 bytes.workspace = true
 n0-future = "0.3"
 web-time = "1"
@@ -95,8 +89,6 @@ postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
 # A resource's content as the store hands it to be edited.
 automerge.workspace = true
-# Each workspace's resources, written and read through the store that places them.
-tilo-resource-store = { path = "../../collab/resource-store" }
 tracing.workspace = true
 
 [features]
@@ -134,13 +126,8 @@ tilo-server = { path = "../../server/tilo-server", features = ["web", "test-supp
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
 # A server listener on loopback, as the live session's acceptance test drives it.
 tilo-live = { path = "../../collab/tilo-live", features = ["live_session", "relay", "iroh"] }
-# The call's native side sends and hears a real tone, as a call does.
-opus = "0.4"
 automerge.workspace = true
 tilo-automerge.workspace = true
-# A session's codec negotiation, run against the host's advert for its
-# browser members (no GStreamer: the pure negotiation only).
-tilo-media = { path = "../../platform/tilo-media" }
 iroh.workspace = true
 url.workspace = true
 hyper = { version = "1", features = ["client", "http1"] }
@@ -157,8 +144,6 @@ serde_json.workspace = true
 tilo-test-env = { path = "../../dev/test-env", features = ["tokio"] }
 # A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../dev/test-server" }
-# The broker's verdict, for the browser's to be checked against.
-tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
 # A call's voice channel is a real Chat channel, written by Chat's own model.
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 # A refused commit reaches the app that made it, mounted headlessly.
@@ -166,14 +151,8 @@ tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 uuid.workspace = true
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# A vault key an earlier build left with `secret-tool`, moved into the platform store.
-bounded-command = { path = "../../system/bounded-command" }
-
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 iroh.workspace = true
-# A login code is a Tilo link, read under the grammar the page writes it with.
-tilo-reference = { path = "../../collab/reference" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 

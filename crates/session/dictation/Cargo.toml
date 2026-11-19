@@ -21,7 +21,6 @@ tilo-accessibility-settings = { path = "../../platform/tilo-accessibility-settin
 tilo-actions = { path = "../../collab/actions" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-service = { path = "../service" }
-tracing.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

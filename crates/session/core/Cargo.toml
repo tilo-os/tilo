@@ -43,7 +43,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
-tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true

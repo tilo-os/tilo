@@ -2498,7 +2498,6 @@ doc = false
 "tilo-desktop-model" = { path = "../../../crates/session/desktop-model", default-features = false, features = [] }
 "tilo-device-identity" = { path = "../../../crates/collab/tilo-device-identity", default-features = false, features = [] }
 "tilo-device-mcp" = { path = "../../../crates/runtime/device-mcp", default-features = false, features = [] }
-"tilo-doc" = { path = "../../../crates/doc/tilo-doc", default-features = false, features = ["bulk-instrumentation"] }
 "tilo-documents" = { path = "../../../crates/system/documents", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../../crates/system/endpoint-reachability", default-features = false, features = [] }
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }

@@ -63,8 +63,6 @@ lazy-search-feed = []
 lazy-say-doing = []
 
 [dependencies]
-# The device's one store, which apps write and read their resources in.
-tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
 anyhow.workspace = true
 # A branch of a workspace takes an app's own copy of a record into the
 # workspace's, as every incoming change is taken in; a record read again takes
@@ -161,7 +159,6 @@ getrandom.workspace = true
 # with. Every host runs the engine; where its state is kept is the host's.
 tilo-workspace-keys = { path = "../../collab/workspace-keys" }
 key-group = { path = "../../collab/key-group" }
-rand_core.workspace = true
 # A schedule's fire time is claimed by one of the person's devices, ranked by
 # the same hash everywhere, and the vault derives its channel state key.
 sha2.workspace = true
@@ -225,9 +222,6 @@ tilo-dictation = { path = "../dictation" }
 # into it from their workspace (`crate::style_packages`), which needs the store's writer.
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
-# The filesystem daemon's content store, as this desktop session reaches it:
-# what names an agent as the cause of the writes Files made for a person.
-runtime-fs = { package = "tilo-fs-client", version = "0.1.0", path = "../../runtime/tilo-fs-client" }
 tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
 # The conversations this session's agents answer in: what Chat keeps of a
 # workspace, read here the way the app reads it, so this session runs an agent
@@ -318,7 +312,6 @@ tilolang-mail = { path = "../../platform/tilolang-mail", default-features = fals
 tilolang-youtube = { path = "../../platform/tilolang-youtube" }
 # The toolkit's words, which what a package the session runs publishes reads through.
 tilo-app-window = { path = "../../platform/tilo-app-window" }
-tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 # `tilolang check` and build as the session's own commands over a package in the person's
 # workspace: a style is written, checked and installed as any app is (`shell.md` §6).
 tilolang-cli = { path = "../../lang/tilolang-cli" }
@@ -364,9 +357,6 @@ tilo-device-mcp = { path = "../../runtime/device-mcp" }
 # The files daemon's link to the network: the session answers and dials for it
 # on the device's endpoint (`fs::net`).
 fs = { package = "tilo-fs", path = "../../system/fs", default-features = false, features = ["filesystem"] }
-# The host of an agent task's programs, which the server runs for each
-# connection that sends one, and the sealed memfd its modules come in.
-tilolang-process = { path = "../../platform/tilolang-process" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 # The render service an app hands its frames to, started by this session as
 # a mode of its own binary.

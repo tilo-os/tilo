@@ -10,14 +10,13 @@ license.workspace = true
 # The hooks the shell's tests reach the actor through: test membership
 # epochs, captured governance warnings, and no content-peer
 # registration with a filesystem daemon that is not running.
-test-support = ["dep:tracing-subscriber"]
+test-support = []
 
 [dependencies]
 blake3.workspace = true
 bytes.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
-futures-util = { workspace = true, features = ["io"] }
 getrandom.workspace = true
 hex.workspace = true
 libc.workspace = true
@@ -31,7 +30,6 @@ serde.workspace = true
 serde_json.workspace = true
 settings-store = { path = "../../system/settings-store" }
 thiserror.workspace = true
-tilo-actions = { path = "../../collab/actions" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
 tilo-desktop-surface = { path = "../desktop-surface" }
@@ -41,10 +39,8 @@ tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-tilo-messaging = { path = "../../platform/tilo-messaging" }
 tilo-nearby-service = { path = "../nearby-service" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-server-session = { path = "../../server/tilo-server-session" }
 tilo-workspace-service = { path = "../../server/tilo-workspace-service", features = ["apps"] }
@@ -53,14 +49,10 @@ tilo-seal = { path = "../../system/tilo-seal" }
 tilo-session-client = { path = "../client" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tilo-window-share = { path = "../window-share" }
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
 # Workspace sync states, as apps are told them.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
-uuid.workspace = true
-tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
-zeroize.workspace = true
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -71,15 +63,10 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 [dev-dependencies]
 p256 = { version = "0.14", features = ["ecdsa"] }
 fnv.workspace = true
-# The records a device's apps write: what a member's link carries and this
-# device's apps read.
-automerge.workspace = true
-tilo-automerge-isolate.workspace = true
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
 tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-support"] }
 tilo-test-env = { path = "../../dev/test-env" }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [lints]
 workspace = true

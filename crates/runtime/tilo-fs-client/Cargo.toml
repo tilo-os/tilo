@@ -12,15 +12,11 @@ description = "Capability clients and wire types for Tilo filesystem services."
 blake3.workspace = true
 runtime-portal = { version = "0.1.0", path = "../runtime-portal" }
 tokio = { workspace = true, features = ["rt", "io-util", "macros", "sync", "time"] }
-tokio-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-postcard = { workspace = true, features = ["use-std"] }
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 
 [target.'cfg(unix)'.dependencies]
-uuid.workspace = true
-fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }
 tilo-advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 tilo-paths.workspace = true
 libc.workspace = true

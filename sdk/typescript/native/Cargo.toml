@@ -9,6 +9,10 @@ license = "MIT OR Apache-2.0"
 [lib]
 crate-type = ["cdylib"]
 
+# `napi-build` is read by build.rs, which an unused-dependency scan does not read.
+[package.metadata.cargo-machete]
+ignored = ["napi-build"]
+
 [dependencies]
 napi = { version = "3", default-features = false, features = ["napi8", "async", "serde-json"] }
 napi-derive = "3"

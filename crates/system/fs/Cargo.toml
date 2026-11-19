@@ -35,7 +35,6 @@ filesystem = [
     "dep:automerge",
     "dep:tilo-automerge",
     "dep:tilo-automerge-isolate",
-    "dep:tilo-doc",
     "dep:tilo-content",
     "dep:collab-types",
     "dep:tilo-action-policy",
@@ -72,7 +71,6 @@ filesystem = [
     "dep:runtime-portal",
     "dep:tilo-identity-client",
     "dep:key-group",
-    "dep:tokio-util",
 ]
 
 [[bin]]
@@ -120,7 +118,6 @@ automerge = { workspace = true, optional = true }
 tilo-automerge = { workspace = true, optional = true }
 # Conflict members can come from peers: the tilo-doc merge decodes them only here.
 tilo-automerge-isolate = { version = "0.1.0", path = "../../doc/tilo-automerge-isolate", optional = true }
-tilo-doc = { version = "0.1.0", path = "../../doc/tilo-doc", optional = true }
 tilo-content = { version = "0.1.0", path = "../content", optional = true }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy", optional = true }
@@ -211,7 +208,6 @@ fuser = { workspace = true, optional = true }
 # pre-content placeholders. Linux-only kernel interfaces, which the daemon
 # that mounts the tree reads.
 [target.'cfg(target_os = "linux")'.dependencies]
-tokio-util = { workspace = true, features = ["compat"], optional = true }
 fs-native = { version = "0.1.0", path = "../fs-native", optional = true }
 
 # Shared filesystem and relay data remain available; no native mount provider.

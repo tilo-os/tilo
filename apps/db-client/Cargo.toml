@@ -31,7 +31,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # with an agent that works the same connections.
 db-client-model = { path = "../db-client-model" }
 automerge.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true

@@ -36,7 +36,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its types, verbs and typed action arguments.
 contacts-model = { path = "../contacts-model" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -44,10 +43,6 @@ tracing.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-# NFC makes a person or group's identity independent of whether an input
-# method produced a precomposed or decomposed spelling.  Keeping this local to
-# Contacts avoids widening the public SDK for an app-level matching policy.
-unicode-normalization = "0.1.25"
 # RFC 6350 content lines: folding, parameter quoting and TEXT escaping.
 pim-lines = { path = "../../crates/text/pim-lines" }
 

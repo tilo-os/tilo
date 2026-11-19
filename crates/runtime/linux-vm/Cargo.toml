@@ -27,11 +27,15 @@ required-features = ["supervisor"]
 name = "tilo-hosted-jail"
 path = "src/jail_main.rs"
 
+# `serde_bytes` is named only inside `#[serde(with = "serde_bytes")]`, an
+# attribute string an unused-dependency scan does not read.
+[package.metadata.cargo-machete]
+ignored = ["serde_bytes"]
+
 [dependencies]
 collab-types = { path = "../../collab/collab-types" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 blake3.workspace = true
-hex.workspace = true
 # A refusal carries the host contract's typed reason and next steps.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 fnv.workspace = true

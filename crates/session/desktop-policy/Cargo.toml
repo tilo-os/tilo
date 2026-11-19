@@ -24,7 +24,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
-serde_json.workspace = true
 
 [lints]
 workspace = true

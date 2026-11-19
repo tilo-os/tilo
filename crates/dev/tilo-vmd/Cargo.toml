@@ -44,7 +44,6 @@ onboarding-walk = { path = "../../session/onboarding-walk" }
 console-control = { path = "../../session/console-control" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
-tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 uuid.workspace = true
 zeroize.workspace = true
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }

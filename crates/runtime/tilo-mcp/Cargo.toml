@@ -37,7 +37,6 @@ tilo-content = { path = "../../system/content" }
 tilo-files = { path = "../../platform/tilo-files" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
-tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 tilo-resource = { path = "../../sdk/tilo-resource", optional = true }
 tilo-rt.workspace = true
 tilo-session-actions = { path = "../../session/session-actions" }

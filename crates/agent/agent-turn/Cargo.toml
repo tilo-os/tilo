@@ -15,7 +15,6 @@ tilo-session-actions = { path = "../../session/session-actions" }
 tilo-actions = { path = "../../collab/actions" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-lock = { path = "../../platform/tilo-lock" }
-serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
 tracing.workspace = true

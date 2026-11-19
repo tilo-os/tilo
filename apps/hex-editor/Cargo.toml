@@ -31,8 +31,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its types, verbs and typed action arguments.
 hex-editor-model = { path = "../hex-editor-model" }
 automerge.workspace = true
-hex.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true

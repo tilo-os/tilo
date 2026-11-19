@@ -25,7 +25,6 @@ iroh = ["live_session", "dep:iroh", "dep:bytes", "dep:serde_json"]
 # The scope of a track is a channel of an app's record.
 collab-types = { version = "0.1.0", path = "../collab-types" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-tilo-clock = { path = "../../platform/tilo-clock" }
 thiserror.workspace = true
 bytes = { workspace = true, optional = true }
 # The relay's copying and admission run on whatever executor the host drives them from, so the
@@ -58,7 +57,6 @@ iroh = { version = "1.0.3", default-features = false, features = ["tls-ring"], o
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 serde_json.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
-tempfile.workspace = true
 
 [[test]]
 name = "live_native"

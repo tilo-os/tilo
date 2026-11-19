@@ -28,8 +28,6 @@ default = ["desktop"]
 desktop = [
     "dep:accounts",
     "dep:automerge",
-    "dep:cap-fs-ext",
-    "dep:cap-std",
     "dep:cloud-source",
     "dep:ed25519-dalek",
     "dep:host-fs",
@@ -50,7 +48,6 @@ desktop = [
     "dep:tracing-subscriber",
     "dep:vello",
     "dep:winit",
-    "dep:wire-frame",
     "dep:zip",
 ]
 # The folders the screenshot scenarios browse: development runs, captures and
@@ -103,8 +100,6 @@ runtime-portal = { path = "../../crates/runtime/runtime-portal", optional = true
 # Credential-free cloud browsing and independent streamed imports.
 tilo-cloud-files = { path = "../../crates/platform/tilo-cloud-files", optional = true }
 tokio = { workspace = true, features = ["rt", "net", "io-util"], optional = true }
-# Share- and recipient-control frames.
-wire-frame = { path = "../../crates/system/wire-frame", features = ["tokio"], optional = true }
 sha2 = { workspace = true, optional = true }
 # Shared thumbnail generator and cache. PDF previews come from the PDF engine
 # (tilo-pdf), which Files hands to it; video remains a badge in this crate.
@@ -131,8 +126,6 @@ tracing-subscriber = { workspace = true, optional = true }
 # Needed by `FileExplorerWidget`'s `Widget` impl — matches the crate set
 # terminal pulls in for the same reason.
 automerge = { workspace = true, optional = true }
-cap-std = { version = "3.4.6", optional = true }
-cap-fs-ext = { version = "3.4.6", optional = true }
 vello = { workspace = true, optional = true }
 winit = { workspace = true, optional = true }
 taffy = { workspace = true, optional = true }
@@ -160,7 +153,6 @@ tilo-process = { path = "../../crates/platform/tilo-process" }
 tilo-fs = { path = "../../crates/system/fs" }
 iroh-blobs.workspace = true
 fuser.workspace = true
-iroh.workspace = true
 # Endpoints with no relay or directory at all, for tests whose peers are all this machine's.
 test-server = { path = "../../crates/dev/test-server" }
 

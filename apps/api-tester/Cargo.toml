@@ -22,7 +22,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The resource the app draws: its types, verbs and typed action arguments.
 api-tester-model = { path = "../api-tester-model" }
 automerge.workspace = true
-serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 uuid.workspace = true
 vello.workspace = true

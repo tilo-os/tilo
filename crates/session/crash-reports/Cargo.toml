@@ -23,7 +23,6 @@ tilo-service = { path = "../service" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # A report's time reads in the person's own date style.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
-serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 # A kept stop is known by the digest of its log, so reading the same ones at

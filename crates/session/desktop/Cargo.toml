@@ -52,7 +52,6 @@ serde_json.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-action-policy = { path = "../../collab/action-policy" }
-uuid.workspace = true
 tilo-app = { path = "../../sdk/tilo-app", default-features = false }
 tilo-desktop-model = { path = "../desktop-model" }
 tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
@@ -69,24 +68,16 @@ tilo-failure = { path = "../../platform/tilo-failure" }
 # The models an agent may plan with: the person's own provider settings.
 agent-provider-config = { path = "../../agent/provider-config" }
 ed25519-dalek.workspace = true
-durable-store = { path = "../../system/durable-store" }
-# The emoji picker's catalogue, search, skin tones and recents.
-emoji = { path = "../../text/emoji" }
 # The bar's clock reads the weekday of the local time.
 jiff.workspace = true
 # The system monitor widget shows the session's own readings of the machine.
 tilo-system-stats = { path = "../../system/system-stats" }
-# The same catalogue for the toolkit's shared picker, which the window bars'
-# reaction pickers open.
-tilo-emoji-catalogue = { path = "../../text/emoji-catalogue" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../dev/test-env" }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 word-processor = { path = "../../../apps/word-processor" }
-tilo-app-state = { path = "../../system/app-state" }
-tempfile.workspace = true
 notes = { path = "../../../apps/notes" }
 # The six windows the browser's launch demo opens, for the typing measurement
 # (`tests/typing_desktop`, `examples/typing_perf`): what a keystroke in one of

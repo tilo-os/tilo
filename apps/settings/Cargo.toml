@@ -185,7 +185,6 @@ launcher = { path = "../../crates/packaging/launcher" }
 provider-settings-ui = { version = "0.1.0", path = "../../crates/sdk/provider-settings-ui", features = ["test-support"] }
 zip.workspace = true
 tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount" }
-rcgen.workspace = true
 tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
 
 [[test]]

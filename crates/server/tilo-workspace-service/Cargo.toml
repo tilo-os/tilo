@@ -22,7 +22,7 @@ agents = ["web", "dep:tilo-agent-session", "dep:tilo-secrets", "dep:collaboratio
 web = []
 
 # A device serves its apps: their wire, launch, actions, invocation journal and consent.
-apps = ["dep:futures", "dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-broker-core", "dep:tilo-identity", "dep:tilo-paths", "dep:tilo-rt", "dep:tilo-workspace-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
+apps = ["dep:futures", "dep:launcher", "dep:parking_lot", "dep:registry-types", "dep:reqwest", "dep:runtime-collab", "dep:tilo-identity-client", "dep:runtime-portal", "dep:rustix", "dep:tilo-advisory-lock", "dep:tilo-app-package", "dep:tilo-broker-core", "dep:tilo-identity", "dep:tilo-rt", "dep:tilo-workspace-keys", "dep:collaboration", "dep:wire-frame", "postcard/alloc", "tilo-files/json"]
 
 [dependencies]
 # The device's one store, which apps write and read their resources in.
@@ -92,7 +92,6 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 # The apps a device serves ([features] apps).
 zeroize.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
-tilo-paths = { workspace = true, optional = true }
 tilo-advisory-lock = { path = "../../system/advisory-lock", optional = true }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"], optional = true }
 launcher = { path = "../../packaging/launcher", optional = true }
