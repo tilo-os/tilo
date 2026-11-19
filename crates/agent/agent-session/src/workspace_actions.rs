@@ -84,6 +84,8 @@ mod publish;
 mod reads;
 mod run_context;
 mod search_access;
+mod search_activity;
+use search_activity::SearchActivity;
 mod session_voice;
 mod share;
 mod terminal;
@@ -180,30 +182,8 @@ struct Shared {
     /// What search read of the documents, counted for the timing lines and for the tests that
     /// hold a query to the index instead of to what it is built from.
     search: SearchActivity,
-}
-
-/// What search read of the documents and the folder, counted for the timing lines and for the
-/// tests that hold a query to the index instead of to what it is built from.
-#[derive(Default)]
-struct SearchActivity {
-    /// Documents opened to read what their apps publish to search while a query waited.
-    opened: std::sync::atomic::AtomicU64,
-    /// Documents opened to read the same between requests, so that a query never has to.
-    warmed: std::sync::atomic::AtomicU64,
-    /// Folder chunks read while a find waited.
-    files_chunks: std::sync::atomic::AtomicU64,
-    /// Files whose words were read while a find waited, from a chunk or the content store.
-    files_read: std::sync::atomic::AtomicU64,
-    /// Files whose words were read between requests, so that a find never has to.
-    files_warmed: std::sync::atomic::AtomicU64,
-    /// Permission reads made for a find's caller while it waited.
-    permissions: std::sync::atomic::AtomicU64,
-    /// Requests served while the index was reading a document: what says the reading happens
-    /// beside the serving, not on the thread the requests arrive on, where a write's landing
-    /// held every request of the service's share for the seconds a notebook takes to read.
-    beside_reading: std::sync::atomic::AtomicU64,
-    /// Documents the index's thread is reading now.
-    reading: std::sync::atomic::AtomicU64,
+    /// The agents' sessions here, which sign a change an action made for each.
+    agent_sessions: OnceLock<crate::control::AgentSessions>,
 }
 
 /// The host's page actions over every record of its workspaces.
@@ -232,6 +212,7 @@ impl WorkspaceActions {
                 approvals: bounded::Approvals::default(),
                 in_conversation: std::sync::RwLock::default(),
                 renaming: Mutex::default(),
+                agent_sessions: OnceLock::new(),
                 search: SearchActivity::default(),
             }),
             catalogue,
@@ -1234,6 +1215,8 @@ struct Worker {
     /// Requests waiting for their workspace to be ready for them, oldest
     /// first, by workspace: the thread answers others meanwhile.
     joining: HashMap<WorkspaceId, VecDeque<Waiting>>,
+    /// The caller's device whose request it serves now ([`publish::Worker::writer`](publish)).
+    writing_as: Option<[u8; 32]>,
     clock: u64,
     /// What the apps call the records the host changes, read in a confined
     /// worker kept for the next ([`publish`]).
@@ -1398,6 +1381,7 @@ impl Worker {
             titles: crate::worker::ConfinedTitles::default(),
             said_directly: HashMap::new(),
             joining: HashMap::new(),
+            writing_as: None,
             clock: 0,
             handed: HashMap::new(),
             canonical: canonical::CanonicalReads::default(),
@@ -2289,7 +2273,10 @@ impl Worker {
         }
         let everything = timing_start();
         self.wrote.clear();
-        let (outcome, unsaved) = match self.invoke_or_ask(workspace_id, &caller, &request) {
+        self.writing_as = caller.device_public_key().copied();
+        let ran = self.invoke_or_ask(workspace_id, &caller, &request);
+        self.writing_as = None;
+        let (outcome, unsaved) = match ran {
             Ok(ran) => ran,
             Err(receipt) => {
                 self.log().running.remove(&invocation);
