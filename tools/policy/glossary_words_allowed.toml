@@ -1597,3 +1597,9 @@ paths = ["crates/session/session/tests/kept_apps.rs"]
 reason = "The session client's own-resource test starts a workspace server and holds the shared fixture's names for the device it runs workspaces on (`TestHost`, `start_workspace_host_relaying`, `host_device`)."
 words = ["host"]
 paths = ["crates/session/client/tests/own_record_open.rs"]
+
+[[allow]]
+reason = "An agent the workspace's governor works is the agent resource's own `on_host` field, set by its own action, and the test drives the workspace service through the fixture named `test_host`; none is prose."
+words = ["host"]
+identifiers = ["on_host", "SET_AGENT_ON_HOST", "SetAgentOnHost", "test_host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/removed_keeper_tests.rs"]

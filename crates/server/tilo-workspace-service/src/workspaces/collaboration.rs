@@ -18,6 +18,7 @@ use tilo_server_session::workspaces::{
     RemoveMemberRequest, SetMemberRoleRequest,
 };
 use tilo_user_identity::{AgentScope, DeviceCert};
+use tilo_workspace_agent::WorkspaceAgents;
 
 use tilo_action_policy::roles::governance;
 
@@ -935,6 +936,9 @@ impl Workspaces {
             people = people.len(),
             "idle members pruned"
         );
+        let identity = workspace.workspace().to_owned();
+        drop(workspace);
+        self.retire_kept_agents(&identity, people).await;
         Ok(completion)
     }
 
@@ -1084,7 +1088,56 @@ impl Workspaces {
             outcome = ?membership,
             "workspace membership change committed"
         );
+        drop(workspace);
+        if matches!(membership, Membership::Remove | Membership::Ban) {
+            self.retire_kept_agents(&identity, &std::collections::BTreeSet::from([target]))
+                .await;
+        }
         Ok(completion)
+    }
+
+    /// End the agents `people` kept in `workspace`: an agent acts for its keeper,
+    /// so one whose keeper stops being a member does not stay live. Chat's list of
+    /// the workspace's agents says what `retire-agent` makes it say, written by the
+    /// workspace's governance as it removes them rather than by a keeper who may
+    /// act here no more.
+    ///
+    /// A list this device cannot read or end leaves the removal done: the
+    /// keeper's devices are no longer admitted, so their agent gets no turn.
+    pub(super) async fn retire_kept_agents(
+        &self,
+        workspace: &str,
+        people: &std::collections::BTreeSet<[u8; 32]>,
+    ) {
+        if people.is_empty() {
+            return;
+        }
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        let app = tilo_app_id::apps::CHAT;
+        let keepers: Vec<String> = people.iter().map(hex::encode).collect();
+        let retired = self
+            .author_workspace_document(workspace, self.governor(), (app, &list), move |doc| {
+                let mut ended: usize = 0;
+                for keeper in &keepers {
+                    ended = ended.saturating_add(
+                        WorkspaceAgents::retire_kept_in(doc, keeper)
+                            .map_err(|error| error.to_string())?,
+                    );
+                }
+                Ok(ended)
+            })
+            .await;
+        match retired {
+            Ok(0) => {}
+            Ok(ended) => tracing::info!(
+                %workspace,
+                ended,
+                "a removed keeper's agents were ended"
+            ),
+            Err(error) => {
+                tracing::error!(%workspace, %error, "a removed keeper's agents were not ended");
+            }
+        }
     }
 
     /// Commit `command`, a membership change `device` makes itself, in
@@ -1102,10 +1155,6 @@ impl Workspaces {
     /// # Errors
     /// Refuses a device other than this host's own, a change the workspace's
     /// rules do not let `device` make, and a change that could not commit.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked until its change is committed and published"
-    )]
     pub async fn commit_own_membership(
         &self,
         workspace: &str,
@@ -1158,6 +1207,9 @@ impl Workspaces {
             .map_err(CollaborationError::new)?;
         self.settle(&mut workspace).await?;
         let added = workspace.peer().workspace_changes_since(&before);
+        let identity = workspace.workspace().to_owned();
+        drop(workspace);
+        self.retire_kept_agents(&identity, &removed).await;
         Ok((GovernanceCompletion { generation }, added))
     }
 
