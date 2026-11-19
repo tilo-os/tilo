@@ -90,6 +90,8 @@ test-chain-log-rename = Rename the log
 test-chain-log-part = Lines
 test-chain-log-part-write = Write a line
 test-chain-log-part-mark = Mark lines
+test-chain-thread-part = Thread
+test-chain-thread-part-post = Post something
 
 ## crates/sdk/tilo-app/tests/chain_write_cost.rs
 test-cost-board = Board
