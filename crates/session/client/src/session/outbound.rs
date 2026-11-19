@@ -357,38 +357,42 @@ impl Task {
             return true;
         };
         let author_device_public_key = self.config.cert.device_public_key;
-        let delivered = self
-            .sending
-            .entry(workspace)
-            .or_default()
-            .drive(
-                &self.replicas.owner(),
-                workspace,
-                |_| Ok(()),
-                |write| {
-                    let (channel, body) = (write.channel, write.bytes.to_vec());
-                    let payload = match write.retention {
-                        neighbour_wire::Retention::Checkpoint => {
-                            CoeditPayload::Checkpoint { channel, body }
-                        }
-                        neighbour_wire::Retention::Delta => {
-                            CoeditPayload::RetainedDelta { channel, body }
-                        }
-                    };
-                    let mut op = [0_u8; 16];
-                    op.copy_from_slice(&write.id[..16]);
-                    client
-                        .send(Envelope::Commit {
-                            workspace_id,
-                            op,
-                            author_device_public_key,
-                            authored_at_ns: tilo_clock::unix_now_ns(),
-                            delta: payload.encode().unwrap_or_default(),
-                        })
-                        .is_ok()
-                },
-            )
-            .unwrap_or(true);
+        let sending = self.sending.entry(workspace).or_default();
+        let delivered = match sending.drive(
+            &self.replicas.owner(),
+            workspace,
+            |_| Ok(()),
+            |write| {
+                let (channel, body) = (write.channel, write.bytes.to_vec());
+                let payload = match write.retention {
+                    neighbour_wire::Retention::Checkpoint => {
+                        CoeditPayload::Checkpoint { channel, body }
+                    }
+                    neighbour_wire::Retention::Delta => {
+                        CoeditPayload::RetainedDelta { channel, body }
+                    }
+                };
+                let mut op = [0_u8; 16];
+                op.copy_from_slice(&write.id[..16]);
+                client
+                    .send(Envelope::Commit {
+                        workspace_id,
+                        op,
+                        author_device_public_key,
+                        authored_at_ns: tilo_clock::unix_now_ns(),
+                        delta: payload.encode().unwrap_or_default(),
+                    })
+                    .is_ok()
+            },
+        ) {
+            Ok(delivered) => delivered,
+            // The ownership cannot be read, so nothing of it goes: say so rather than leave the
+            // writes waiting for an answer nobody was ever asked for.
+            Err(error) => {
+                tracing::warn!(%workspace, %error, "this device's ownership cannot be read");
+                true
+            }
+        };
         self.count_ownership();
         delivered
     }
