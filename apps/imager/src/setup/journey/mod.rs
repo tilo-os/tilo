@@ -39,7 +39,6 @@ mod pairing;
 #[cfg(test)]
 mod password_validation_tests;
 pub(in crate::setup) mod personal;
-mod plan_review;
 mod plan_view;
 #[path = "portable_source/presentation.rs"]
 pub(crate) mod portable_source;

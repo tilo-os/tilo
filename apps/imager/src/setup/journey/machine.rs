@@ -654,6 +654,37 @@ impl super::InstallerPreview {
 
     /// Follow the plan being written and the list of waiting computers once
     /// each, continuing the review that waited for the plan.
+    pub(super) fn machine_status(&self) -> serde_json::Value {
+        let created = self.machine.created.as_ref().map(|created| {
+            serde_json::json!({
+                "plan": created.plan.plan,
+                "destination": created.plan.destination,
+                "open": created.plan.open_choices(),
+                "token_file": created.token_file.display().to_string(),
+                "expires_at_ns": created.plan.token.expires_at_ns,
+                "medium": created.commands.medium,
+                "netboot": created.commands.netboot,
+                "alongside": created.commands.alongside,
+            })
+        });
+        serde_json::json!({
+            "created": created,
+            "error": self.machine.error,
+            "waiting": self.machine.waiting.iter().map(|waiting| serde_json::json!({
+                "plan": waiting.plan,
+                "name": waiting.name,
+                "destination": waiting.destination,
+                "expires_in_hours": waiting.expires_in_hours,
+                "questions": waiting.questions.iter()
+                    .map(|question| serde_json::json!({
+                        "choice": question.choice,
+                        "text": question.text,
+                    }))
+                    .collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        })
+    }
+
     pub(super) fn poll_plan(&mut self) -> bool {
         let mut changed = false;
         if let Some((created, call)) = self.machine.making.take() {

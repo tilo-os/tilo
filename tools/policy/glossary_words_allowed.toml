@@ -1302,6 +1302,9 @@ identifiers = ["host"]
 paths = ["crates/session/desktop/src/overview.rs"]
 
 [[allow]]
+
+
+
 reason = "The signed holder address's own `host` field (`TransportHint::host`), the device that answers for a workspace: the field is the type's name, and no new use of the word is meant."
 words = ["host"]
 paths = [
