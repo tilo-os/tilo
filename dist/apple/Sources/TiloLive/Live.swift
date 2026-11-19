@@ -405,7 +405,7 @@ public struct TiloLiveView: View {
                 resting
             }
         }
-        .modifier(PageShape(keeps: shaped, ratio: size == .compact && asked == nil ? 16.0 / 10.0 : nil))
+        .modifier(PageShape(keeps: shaped, ratio: size == .compact && asked == nil ? 6.0 / 5.0 : nil))
         .frame(height: shaped && size == .compact ? asked : nil)
         .clipShape(RoundedRectangle(cornerRadius: shaped && size == .compact ? 10 : 0, style: .continuous))
         .accessibilityElement(children: .contain)

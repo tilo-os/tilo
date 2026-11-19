@@ -179,9 +179,16 @@ impl SheetsApp {
         let min_grid = m.grid.col_header_h()
             + f64_of_usize(MIN_GRID_ROWS) * m.grid.default_row_h()
             + self.grid.scrollbar_thickness();
-        if cards.is_empty() || area.height() - dock_h < min_grid {
+        if cards.is_empty() {
             return (0.0, Vec::new(), 0.0);
         }
+        let max_dock_h = area.height() - min_grid;
+        let min_dock_h = m.plot_h() + 2.0 * pad + bar_width;
+        if max_dock_h < min_dock_h {
+            return (0.0, Vec::new(), 0.0);
+        }
+        let dock_h = dock_h.min(max_dock_h);
+        let card_h = (dock_h - 2.0 * pad - bar_width).min(card_h);
         let y0 = area.y1 - dock_h + pad;
         let mut x = area.x0 + pad;
         let placed = cards
