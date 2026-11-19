@@ -108,9 +108,9 @@ pub struct Splitter<'a> {
 
 /// What every emission's key starts from (`Splitter::emit_key_base`), and
 /// the bound module's function bodies, by defined index.
-struct KeyBase {
-    key: Key,
-    imported: usize,
+pub(crate) struct KeyBase {
+    pub(crate) key: Key,
+    pub(crate) imported: usize,
 }
 
 /// What one split module or shared chunk defines, imports and deletes (in
@@ -706,7 +706,7 @@ impl<'a> Splitter<'a> {
     /// its imports, its table's slots and the entries it fills are that
     /// module's as it was emitted. A start module whose code or static data
     /// changed alone is the same interface, and a module is read back for it.
-    fn emit_key_base(&self, main: &[u8]) -> Result<KeyBase> {
+    pub(crate) fn emit_key_base(&self, main: &[u8]) -> Result<KeyBase> {
         let mut key = Key::new();
         interface(&mut key, main)?;
         // What a module's emission reads that is not the code or the data:

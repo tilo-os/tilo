@@ -395,26 +395,68 @@ fn a_start_module_body_change_reads_the_modules_back() -> Result<()> {
     result
 }
 
-/// A split module is never paired with a start module it was not emitted
-/// beside: the start module's interface — an export added, a signature
-/// changed, a table slot moved — is part of every module's key, so a change
-/// to it writes every module again.
+/// A module's emission is keyed by the start module it is paired with: the
+/// same module beside a start module whose exports say something else is
+/// never read back as one emitted beside this start module.
 #[test]
-fn a_changed_start_interface_emits_the_modules_again() -> Result<()> {
-    let source = include_str!("../fixtures/data_split.rs");
-    // One export more, which the start module keeps.
-    let edited = source.replace(
-        "/// The start module's own reads:",
-        "#[unsafe(no_mangle)]\npub extern \"C\" fn start_more(i: u32) -> u32 {\n    i.wrapping_add(7)\n}\n\n/// The start module's own reads:",
+fn a_module_is_keyed_by_the_start_module_it_pairs_with() -> Result<()> {
+    let linked = build_fixture("start-pairing")?.linked;
+    let bound = without_link_sections(&linked)?;
+    let main = Splitter::new(&linked, &bound)?.emit_with(None)?.main.bytes;
+    let splitter = Splitter::new(&linked, &bound)?;
+    let key = |main: &[u8]| -> Result<String> { Ok(splitter.emit_key_base(main)?.key.finish()) };
+    let same = key(&main)?;
+    assert_eq!(key(&main)?, same, "the same start module gave another key");
+    // One byte of the start module's exports, which is what a module
+    // importing it is linked against.
+    let mut changed = main.clone();
+    let exports = start_exports(&main)?;
+    changed[exports.start] ^= 1;
+    assert_ne!(
+        key(&changed)?,
+        same,
+        "a start module's exports are no part of a module's key"
     );
-    assert_ne!(source, edited, "the fixture's start exports did not change");
-    let before = build_fixture("start-interface")?.linked;
-    let after = build_fixture_from("start-interface", &edited)?.linked;
+    Ok(())
+}
+
+/// The export section (7) of `module`, as a range of it.
+fn start_exports(module: &[u8]) -> Result<Range<usize>> {
+    let mut at = 8;
+    while at < module.len() {
+        let id = module[at];
+        let mut contents = at + 1;
+        let size = crate::split::read_leb(module, &mut contents)?;
+        if id == 7 {
+            return Ok(contents..contents + size);
+        }
+        at = contents + size;
+    }
+    anyhow::bail!("the module has no export section")
+}
+
+/// A split whose lazy exports moved to another module writes exactly what one
+/// that emits every module writes, the start module too: its table's slots
+/// are laid out from the split points, and a start module emitted for other
+/// slots is never paired with these modules.
+#[test]
+fn a_changed_split_point_emits_the_start_module_again() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    // `later_sum` answered by `reader`'s module instead of `later`'s: the
+    // entries and the slots they take move, and what the start module
+    // reaches does not (both are lazy exports before and after).
+    let edited = source.replace(
+        "static LAZY_EXPORTS: [u8; 33] = *b\"later later_*\\nreader reader_peek\\n\";",
+        "static LAZY_EXPORTS: [u8; 52] = *b\"later later_mix\\nreader reader_peek\\nreader later_sum\\n\";",
+    );
+    assert_ne!(source, edited, "the fixture's lazy exports did not change");
+    let before = build_fixture("split-point")?.linked;
+    let after = build_fixture_from("split-point", &edited)?.linked;
     let (before_bound, after_bound) = (
         without_link_sections(&before)?,
         without_link_sections(&after)?,
     );
-    let dir = scratch("start-interface-cache");
+    let dir = scratch("split-point-cache");
     std::fs::remove_dir_all(&dir).ok();
     let result = (|| -> Result<()> {
         let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
@@ -422,25 +464,25 @@ fn a_changed_start_interface_emits_the_modules_again() -> Result<()> {
                 Splitter::new(linked, bound)?.emit_with(None)?,
             ))
         };
-        let cached = |linked: &[u8], bound: &[u8]| -> Result<(_, usize)> {
-            let outputs = Splitter::new(linked, bound)?.emit_with(Some(&EmitCache::at(&dir)?))?;
-            let reused = outputs.reused;
-            Ok((written_modules(outputs), reused))
+        let cached = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            Ok(written_modules(
+                Splitter::new(linked, bound)?.emit_with(Some(&EmitCache::at(&dir)?))?,
+            ))
         };
-        let (first, reused) = cached(&before, &before_bound)?;
-        assert_eq!(reused, 0, "an empty cache holds no module");
+        let first = cached(&before, &before_bound)?;
         assert!(
             first == fresh(&before, &before_bound)?,
             "a split filling the cache wrote other modules"
         );
-        let (changed, reused) = cached(&after, &after_bound)?;
-        assert!(
-            changed == fresh(&after, &after_bound)?,
-            "after a start interface change, the cache gave other modules than emitting does"
+        let changed = cached(&after, &after_bound)?;
+        assert_ne!(
+            changed[0].2, first[0].2,
+            "the moved split point did not reach the start module"
         );
-        assert_eq!(
-            reused, 0,
-            "a changed start interface was paired with {reused} of the modules emitted beside the one before it"
+        let expected = fresh(&after, &after_bound)?;
+        assert!(
+            changed == expected,
+            "after a split point moved, the cache gave other modules than emitting does"
         );
         Ok(())
     })();
