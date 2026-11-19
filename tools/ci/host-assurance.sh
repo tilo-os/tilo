@@ -232,14 +232,18 @@ loud podman tag "$image" localhost/tilo-host:ci || die "cannot name the loaded i
 # os-release.sh sign-boot), its measurement signed as generation 0 — the
 # generation before the server's dense series starts. It is not installed; what
 # it proves is that the TPM will not unseal a generation below the floor.
+# Built over the sealed image, not the signed one: the seal reseals the image's
+# UKIs in one layer of its own, and the signed image already carries a second
+# UKI (/boot/tilo-target) that would make that two.
 say 'build an older signed image'
 older=localhost/tilo-host:older
 n=$(cat "$pub/generation")
 [[ $n =~ ^[1-9][0-9]*$ ]] || die "the sealed image carries no generation"
+load_archive "$sealed" localhost/tilo-host:sealed
 mkdir -p "$work/older"
-printf 'FROM localhost/tilo-host:ci\nRUN echo %s > /usr/lib/tilo/host-assurance-older\n' "$target" \
+printf 'FROM localhost/tilo-host:sealed\nRUN echo %s > /usr/lib/tilo/host-assurance-older\n' "$target" \
   > "$work/older/Containerfile"
-SOURCE_DATE_EPOCH=$(podman image inspect --format '{{.Created.Unix}}' localhost/tilo-host:ci) \
+SOURCE_DATE_EPOCH=$(podman image inspect --format '{{.Created.Unix}}' localhost/tilo-host:sealed) \
   podman build -q --pull=never -t "$older" -f "$work/older/Containerfile" "$work/older" >/dev/null \
   || die 'cannot build the older image'
 mkdir -p "$work/older-built"
