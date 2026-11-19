@@ -101,11 +101,11 @@ pub enum ChatEffect {
     OpenAgent { agent: String },
     /// Open the conversation with a certified person public key: it changes
     /// only whose view is showing what.
-    #[effect(view, audience = "agents", presence)]
+    #[effect(view, audience = "agents", presence, on = crate::rows::DirectConversation)]
     OpenDirectConversation { public_key: String },
     /// Send to the direct conversation with a certified person public key.
     #[effect(kind = "outside")]
-    #[effect(job, returns, audience = "agents")]
+    #[effect(job, returns, audience = "agents", on = crate::rows::DirectConversation)]
     SendDirectMessage { public_key: String, text: String },
     /// Send a message
     ///
@@ -185,53 +185,53 @@ pub enum ChatEffect {
     ///
     /// Joins the channel's call muted, listening: being in a workspace's call is
     /// for whoever may read the workspace, as the channel itself is.
-    #[effect(row, attended, kind = "read")]
+    #[effect(row, attended, kind = "read", on = crate::rows::Call)]
     JoinCall { channel: String },
     /// Leave call
-    #[effect(row, idempotent, attended, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read", on = crate::rows::Call)]
     LeaveCall { channel: String },
     /// Mute
-    #[effect(row, idempotent, attended, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read", on = crate::rows::Call)]
     Mute { channel: String },
     /// Unmute
     ///
     /// Speaks into the call: for whoever may write in the workspace. The
     /// microphone itself is asked for through the device's own prompt.
-    #[effect(row, kind = "undoable")]
+    #[effect(row, kind = "undoable", on = crate::rows::Call)]
     Unmute { channel: String },
     /// Deafen
     ///
     /// Hear nothing of the call, and be muted, until undeafened.
-    #[effect(row, idempotent, attended, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read", on = crate::rows::Call)]
     Deafen { channel: String },
     /// Undeafen
     ///
     /// Hear the call again; the microphone comes back as it was.
-    #[effect(row, idempotent, attended, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read", on = crate::rows::Call)]
     Undeafen { channel: String },
     /// Turn camera on
     ///
     /// Shows this person's camera to everyone in the call; asked for
     /// through the normal permission prompt.
-    #[effect(row, kind = "undoable")]
+    #[effect(row, kind = "undoable", on = crate::rows::Call)]
     CameraOn { channel: String },
     /// Turn camera off
-    #[effect(row, idempotent, attended, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read", on = crate::rows::Call)]
     CameraOff { channel: String },
     /// Share screen
     ///
     /// Shows this person's screen to everyone in the call; asked for
     /// through the normal permission prompt.
-    #[effect(row, kind = "undoable")]
+    #[effect(row, kind = "undoable", on = crate::rows::Call)]
     ShareScreen { channel: String },
     /// Stop sharing screen
-    #[effect(row, idempotent, attended, kind = "read")]
+    #[effect(row, idempotent, attended, kind = "read", on = crate::rows::Call)]
     StopSharingScreen { channel: String },
     /// Call status
     ///
     /// Requests a refresh and returns the last reported service state.
     /// The response is explicitly a cached report, never microphone consent.
-    #[effect(row, idempotent, returns, kind = "read", audience = "agents")]
+    #[effect(row, idempotent, returns, kind = "read", audience = "agents", on = crate::rows::Call)]
     CallStatus { channel: String },
     /// Start a call
     ///

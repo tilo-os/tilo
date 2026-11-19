@@ -18,6 +18,7 @@ pub mod effects;
 pub mod feedback;
 pub mod model;
 pub mod parts;
+pub mod rows;
 
 pub use chat::{
     CHAT_CHANNEL, Category, ChannelPlace, Chat, Conversation, PeopleNames, Summary, VOICE_CHANNEL,
