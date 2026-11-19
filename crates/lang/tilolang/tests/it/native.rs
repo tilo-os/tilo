@@ -424,6 +424,14 @@ type Notebook {
 
 default view note_cards for Notebook
 
+default view note_page for Note
+
+view note_page(n: Note) {
+    std.document(n) {
+        text(n.title)
+    }
+}
+
 view note_cards(nb: Notebook) {
     std.list(nb.notes) { (n, at) ->
         ui.ListItem(item: n, presence: at)
@@ -461,6 +469,14 @@ type Notebook {
 }
 
 default view note_cards for Notebook
+
+default view note_page for Note
+
+view note_page(n: Note) {
+    std.document(n) {
+        text(n.title)
+    }
+}
 
 view note_cards(nb: Notebook) {
     std.list(nb.notes) { (n, at) ->
@@ -1229,7 +1245,15 @@ type Notebook {
 
 default view notebook for Notebook
 
+default view note_page for Note
+
 place view all_notes for Notebook
+
+view note_page(n: Note) {
+    std.document(n) {
+        text(n.title)
+    }
+}
 
 view notebook(nb: Notebook) {
     std.page(nb) {
