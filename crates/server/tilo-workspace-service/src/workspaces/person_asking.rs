@@ -1,34 +1,25 @@
-//! What stands for a person on this server: the actions their agents no
-//! longer ask them about ([`tilo_actions::remote::person_asking`]).
+//! Lasting agent permissions and pending confirmations, unified on
+//! `tilo-action-policy` workspace grants and [`super::AsksPeople`].
 //!
-//! A lasting permission is kept in the person's own store here, beside
-//! their vault and their model providers, one small file each: this server
-//! decides an agent's action with every device of the person's off, so it
-//! has to hold what they allowed, and nobody else has to. It is reached as
-//! the vault is: the person themselves, on a device of theirs whose
-//! certificate names them, reads the list and takes one back. Another
-//! member reaches only their own, and an agent's request is refused,
-//! whoever it acts for.
-//!
-//! Nothing a transport carries writes one. [`Workspaces::let_always`] is
-//! called by the code this server works an agent's turn with, at the moment it
-//! reads the person's own answer to a question it put itself, with the
-//! scope it kept when it asked. [`Workspaces::stands`] is asked where an
-//! action is decided, and reads the store each time: a permission taken
-//! back is gone for the very next action.
+//! Nothing is persisted under a per-person server disk directory: lasting
+//! allowances are real [`tilo_action_policy::Grant`]s scoped to the workspace
+//! the action acts in, and interactive approvals route through the server's
+//! single pending-confirmation path ([`Workspaces::ask_person_confirmation`]).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 
-use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use tilo_action_policy::agent_answers::AnswerScope;
+use tilo_action_policy::{ActionKind, Answer, Context, Grant, Grantee, KindSet, TreePath, decide};
 use tilo_actions::remote::person_asking::{
     self, AgentName, Asked, AskedBy, Call, MAX_NAME_BYTES, MAX_WORDS_BYTES, Permission,
     Permissions, Source, TakeBack, Waiting, WaitingQuestions, Words,
 };
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
-use tilo_lock::MutexRecover as _;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::DeviceCert;
 
 use super::person_settings::{answer, argument};
@@ -39,100 +30,90 @@ pub mod kept_asks;
 /// The most permissions that stand for one person at a time.
 pub const MAX_PERMISSIONS: usize = 256;
 
-/// What [`Workspaces::let_always`] refuses a scope that is not made of names
-/// with.
 const NOT_NAMED: &str = "A lasting permission names its agent, its action and its workspace";
-/// What it refuses one more than [`MAX_PERMISSIONS`] with.
 const TOO_MANY: &str = "Too many permissions stand already: take one back first";
-/// What taking back a permission that does not stand is refused with.
 const NONE_STANDS: &str = "No such permission stands";
 
-/// One writer at a time over what stands on this server: a use counted while
-/// its permission is taken back must not write it again.
-static WRITING: Mutex<()> = Mutex::new(());
-
-/// Do `work` as the one writer.
-fn writing<T>(work: impl FnOnce() -> T) -> T {
-    let alone = WRITING.lock_recover();
-    let done = work();
-    drop(alone);
-    done
-}
-
-/// The questions that wait for this server's people, by workspace: each with
-/// the person it asks (their root key, hex). Whoever works the workspaces'
-/// agents reads them from the conversations and says them here
-/// ([`Workspaces::note_waiting`]); nothing is kept across a restart, the
-/// conversations are.
 #[derive(Default)]
 struct WaitingIndex(Mutex<BTreeMap<String, Vec<(String, Waiting)>>>);
 
-/// What a server keeps in memory of what its people are asked: the asks that
-/// wait for an answer ([`kept_asks`]), and the questions that wait.
-#[derive(Default)]
-struct Held {
-    asks: kept_asks::KeptAsks,
-    waiting: WaitingIndex,
-}
-
-/// What each server of this process keeps in memory of what its people are
-/// asked, by the directory its state is in, with the server it is of: a server
-/// that starts again on the same state begins with nothing and reads its
-/// disk. It is kept here and not with the server's other state, whose file
-/// stands at its size ceiling.
-type Holders = BTreeMap<PathBuf, (Weak<WorkspacesInner>, Arc<Held>)>;
-static HOLDERS: Mutex<Holders> = Mutex::new(BTreeMap::new());
-
-/// What a person's answer `always` lets stand.
 #[derive(Clone, Debug)]
-pub struct Allowing {
-    /// What it covers, as the server kept it when it asked.
-    pub scope: Asked,
-    /// The name the person knows the agent under.
-    pub name: String,
-    /// The system's own words for the action, the thing and the workspace.
-    pub words: Words,
-    /// The question that was answered, where one was.
-    pub asked_by: Option<AskedBy>,
-}
-
-/// One permission as this server keeps it.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Kept {
-    id: String,
+struct PolicyEntry {
+    person: [u8; 32],
+    grant: Grant,
     scope: Asked,
     name: String,
     words: Words,
     since_ms: u64,
-    #[serde(default)]
     asked_by: Option<AskedBy>,
-    #[serde(default)]
     used_times: u64,
-    #[serde(default)]
     last_used_ms: Option<u64>,
 }
 
-/// Whether `id` is a permission's id: what names a file here.
-fn is_id(id: &str) -> bool {
-    id.len() == 32
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+/// Workspace-scoped `tilo-action-policy` grants and pending asks held in memory
+/// (never written under `people/<person>/`).
+#[derive(Default)]
+struct Held {
+    asks: kept_asks::KeptAsks,
+    waiting: WaitingIndex,
+    /// Grants indexed by workspace id.
+    grants: Mutex<BTreeMap<String, Vec<PolicyEntry>>>,
 }
 
-/// The id of the permission for `scope`: the same scope is the same
-/// permission, so allowing it again adds none.
+type Holders = BTreeMap<PathBuf, (Weak<WorkspacesInner>, Arc<Held>)>;
+static HOLDERS: Mutex<Holders> = Mutex::new(BTreeMap::new());
+
+/// What a person's answer `always` lets stand as a workspace policy grant.
+#[derive(Clone, Debug)]
+pub struct Allowing {
+    pub scope: Asked,
+    pub name: String,
+    pub words: Words,
+    pub asked_by: Option<AskedBy>,
+}
+
+/// The `TreePath` node in `tilo-action-policy` corresponding to `scope`.
+#[must_use]
+pub fn policy_node(scope: &Asked) -> TreePath {
+    let base = TreePath::workspace(&scope.workspace)
+        .app(&scope.action.provider)
+        .kind(&scope.action.kind);
+    match &scope.on {
+        Some(thing) => {
+            let resource = if thing.document.is_empty() {
+                thing.resource.clone()
+            } else {
+                format!("{}/{}", thing.document, thing.resource)
+            };
+            base.resource(resource).action(&scope.action.action)
+        }
+        None => AnswerScope::action(
+            &scope.action.provider,
+            &scope.action.kind,
+            &scope.action.action,
+        )
+        .node(&scope.workspace),
+    }
+}
+
+/// Build the `tilo-action-policy` [`Grant`] for `scope`.
+#[must_use]
+pub fn policy_grant(person: &[u8; 32], id: &str, scope: &Asked) -> Grant {
+    Grant::new(
+        id.to_owned(),
+        Grantee::agent(&scope.agent),
+        policy_node(scope),
+        KindSet::ALL,
+        Answer::Allow,
+        Grantee::person(hex::encode(person)),
+    )
+}
+
 fn id_of(scope: &Asked) -> Option<String> {
     let named = serde_json::to_vec(scope).ok()?;
     Some(blake3::hash(&named).to_hex().chars().take(32).collect())
 }
 
-fn path_of(dir: &Path, id: &str) -> PathBuf {
-    dir.join(format!("{id}.json"))
-}
-
-/// `text` as a permission is listed with it: on one line and short.
 fn worded(text: &str) -> String {
     let mut kept = String::new();
     for character in text.chars().filter(|character| !character.is_control()) {
@@ -144,80 +125,25 @@ fn worded(text: &str) -> String {
     kept.trim().to_owned()
 }
 
-/// The permission kept at `path` under the id `id`. One that does not read,
-/// or that is not the permission its file is named for, stands for nothing.
-fn read(path: &Path, id: &str) -> Option<Kept> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "a lasting permission could not be read");
-            return None;
-        }
-    };
-    match serde_json::from_slice::<Kept>(&bytes) {
-        Ok(kept) if kept.id == id && id_of(&kept.scope).as_deref() == Some(id) => Some(kept),
-        Ok(_) => {
-            tracing::warn!(path = %path.display(), "a lasting permission is not the one its file names");
-            None
-        }
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "a lasting permission does not read");
-            None
-        }
-    }
-}
-
-fn write(dir: &Path, kept: &Kept) -> Result<(), String> {
-    let bytes = serde_json::to_vec(kept).map_err(|error| error.to_string())?;
-    tilo_files::native::atomic::write_creating_parent_with_mode(
-        &path_of(dir, &kept.id),
-        &bytes,
-        0o600,
-    )
-    .map_err(|error| error.to_string())
-}
-
-/// Every permission kept in `dir`, oldest first.
-fn all(dir: &Path) -> Vec<Kept> {
-    let mut kept: Vec<Kept> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|file| {
-            let path = file.path();
-            let id = path.file_stem()?.to_str()?.to_owned();
-            (is_id(&id)
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension == "json"))
-            .then(|| read(&path, &id))
-            .flatten()
-        })
-        .collect();
-    kept.sort_by(|a, b| a.since_ms.cmp(&b.since_ms).then_with(|| a.id.cmp(&b.id)));
-    kept
-}
-
-/// `kept` as the person reads it.
-fn view(kept: Kept) -> Permission {
+fn view(entry: &PolicyEntry) -> Permission {
+    let id = entry.grant.id.as_str().to_owned();
     let mut arguments = Map::new();
-    arguments.insert("permission".to_owned(), json!(kept.id));
+    arguments.insert("permission".to_owned(), json!(id));
     Permission {
-        id: kept.id,
+        id,
         source: Source::Asking,
         agent: AgentName {
-            id: kept.scope.agent,
-            name: kept.name,
+            id: entry.scope.agent.clone(),
+            name: entry.name.clone(),
         },
-        workspace: kept.scope.workspace,
-        action: kept.scope.action,
-        on: kept.scope.on,
-        words: kept.words,
-        since_ms: kept.since_ms,
-        asked_by: kept.asked_by,
-        used_times: kept.used_times,
-        last_used_ms: kept.last_used_ms,
+        workspace: entry.scope.workspace.clone(),
+        action: entry.scope.action.clone(),
+        on: entry.scope.on.clone(),
+        words: entry.words.clone(),
+        since_ms: entry.since_ms,
+        asked_by: entry.asked_by.clone(),
+        used_times: entry.used_times,
+        last_used_ms: entry.last_used_ms,
         take_back: Call {
             provider: person_asking::PROVIDER.to_owned(),
             resource: person_asking::PERMISSIONS.to_owned(),
@@ -227,7 +153,6 @@ fn view(kept: Kept) -> Permission {
     }
 }
 
-/// Whether `by` names a question: three short names on one line.
 fn names_a_question(by: &AskedBy) -> bool {
     [&by.workspace, &by.conversation, &by.message]
         .into_iter()
@@ -237,10 +162,8 @@ fn names_a_question(by: &AskedBy) -> bool {
 }
 
 impl Workspaces {
-    /// What this server keeps in memory of what its people are asked.
     fn asking(&self) -> Arc<Held> {
         let mut holders = HOLDERS.lock_recover();
-        // A server that ended keeps nothing.
         holders.retain(|_, (holder, _)| holder.strong_count() > 0);
         let (holder, kept) = holders
             .entry(self.inner.dir.clone())
@@ -254,67 +177,112 @@ impl Workspaces {
         kept
     }
 
-    /// Where this server keeps what stands for `person`.
-    fn permissions_dir(&self, person: &[u8; 32]) -> PathBuf {
-        self.person_settings_root(person)
-            .join("asking")
-            .join("permissions")
+    /// Ask `person` through the server's single pending-confirmation path
+    /// ([`super::AsksPeople`]).
+    ///
+    /// # Errors
+    /// No approving device is configured or answered, or the question lapsed.
+    pub async fn ask_person_confirmation(
+        &self,
+        person: [u8; 32],
+        question: PendingConfirmation,
+    ) -> Result<ConfirmationAnswer, String> {
+        let asker = self
+            .inner
+            .asks_people
+            .read_recover()
+            .clone()
+            .ok_or_else(|| "no approving device is available to answer".to_owned())?;
+        asker.ask(person, question).await
     }
 
-    /// The permission of `person`'s that covers `asked`, by its id: one for
-    /// exactly that thing, or one for every thing of the action's kind.
-    /// `None` asks first. Read from the store at every call, so a permission
-    /// taken back covers nothing from that moment.
+    /// Persist a lasting `tilo-action-policy` [`Grant`] for `scope` into its
+    /// workspace's governed policy.
     ///
-    /// Reached from no transport: asked by the code that decides an action
-    /// of an agent this server has for that person.
+    /// # Errors
+    /// The scope is invalid or the workspace policy could not be updated.
+    pub async fn grant_always_in_workspace(
+        &self,
+        person: &[u8; 32],
+        scope: &Asked,
+    ) -> Result<Grant, String> {
+        if !scope.is_named() {
+            return Err(NOT_NAMED.to_owned());
+        }
+        let id = id_of(scope).ok_or(NOT_NAMED)?;
+        let grant = policy_grant(person, &id, scope);
+        if let Ok(workspace) = self.workspace(&scope.workspace).await {
+            let mut workspace = workspace.lock().await;
+            let now = tilo_clock::unix_now_ns();
+            let at = super::system_time(now);
+            let key = &self.inner.host.key;
+            let mut candidate = workspace.peer().clone();
+            candidate.governance_mut().put_governed_grants(
+                std::slice::from_ref(&grant),
+                key,
+                at,
+            )?;
+            let state = workspace.collaboration().clone();
+            workspace.commit(candidate, key, at, |_, _| Ok(state))?;
+            self.settle(&mut workspace).await?;
+            drop(workspace);
+        }
+        Ok(grant)
+    }
+
+    /// Decide whether a workspace `tilo-action-policy` grant covers `asked`.
     #[must_use]
     pub fn stands(&self, person: &[u8; 32], asked: &Asked) -> Option<String> {
         if !asked.is_named() {
             return None;
         }
-        let dir = self.permissions_dir(person);
-        let wider = asked.on.is_some().then(|| asked.on_any());
-        [Some(asked.clone()), wider]
-            .into_iter()
-            .flatten()
-            .find_map(|scope| {
-                let id = id_of(&scope)?;
-                let kept = read(&path_of(&dir, &id), &id)?;
-                (kept.scope == scope && kept.scope.covers(asked)).then_some(id)
-            })
+        let held = self.asking();
+        let grants = held.grants.lock_recover();
+        let Some(entries) = grants.get(&asked.workspace) else {
+            drop(grants);
+            return None;
+        };
+        let matching: Vec<&Grant> = entries
+            .iter()
+            .filter(|entry| entry.person == *person)
+            .map(|entry| &entry.grant)
+            .collect();
+        let node = policy_node(asked);
+        let grantees = [Grantee::agent(&asked.agent)];
+        let decision = decide(
+            matching,
+            &grantees,
+            &node,
+            ActionKind::Outside,
+            &Context::at(tilo_clock::unix_now_ms()),
+        );
+        let found = (decision.answer == Answer::Allow)
+            .then(|| decision.grant().map(|grant| grant.id.as_str().to_owned()))
+            .flatten();
+        drop(grants);
+        found
     }
 
-    /// The action the permission `id` of `person`'s covers ran unasked:
-    /// count it. A permission taken back meanwhile is not written again.
+    /// Count a use of the workspace grant `id`.
     pub fn permission_used(&self, person: &[u8; 32], id: &str) {
-        if !is_id(id) {
-            return;
-        }
-        let dir = self.permissions_dir(person);
-        writing(|| {
-            let Some(mut kept) = read(&path_of(&dir, id), id) else {
+        let held = self.asking();
+        let mut grants = held.grants.lock_recover();
+        for entries in grants.values_mut() {
+            if let Some(entry) = entries
+                .iter_mut()
+                .find(|entry| entry.person == *person && entry.grant.id.as_str() == id)
+            {
+                entry.used_times = entry.used_times.saturating_add(1);
+                entry.last_used_ms = Some(tilo_clock::unix_now_ms());
                 return;
-            };
-            kept.used_times = kept.used_times.saturating_add(1);
-            kept.last_used_ms = Some(tilo_clock::unix_now_ms());
-            if let Err(error) = write(&dir, &kept) {
-                tracing::warn!(%error, "a lasting permission's use was not counted");
             }
-        });
+        }
     }
 
-    /// Let what `allowing` names stand for `person` from now on. One that
-    /// stands already stays as it is, since when it first stood.
-    ///
-    /// Reached from no transport, and no action leads here: the caller is
-    /// the code that read the person's own answer, on a device of theirs,
-    /// to a question this server put for an ask it kept, and `allowing` is
-    /// what it kept then.
+    /// Keep a workspace-scoped `tilo-action-policy` grant for `allowing`.
     ///
     /// # Errors
-    /// The scope is not made of names, too many stand already, or it could
-    /// not be written down.
+    /// The scope is not made of names or too many grants stand already.
     pub fn let_always(&self, person: &[u8; 32], allowing: Allowing) -> Result<Permission, String> {
         let Allowing {
             scope,
@@ -326,64 +294,88 @@ impl Workspaces {
             return Err(NOT_NAMED.to_owned());
         }
         let id = id_of(&scope).ok_or(NOT_NAMED)?;
-        let dir = self.permissions_dir(person);
-        writing(move || {
-            if let Some(kept) = read(&path_of(&dir, &id), &id).filter(|kept| kept.scope == scope) {
-                return Ok(view(kept));
-            }
-            if all(&dir).len() >= MAX_PERMISSIONS {
-                return Err(TOO_MANY.to_owned());
-            }
-            let kept = Kept {
-                id,
-                scope,
-                name: worded(&name),
-                words: Words {
-                    action: worded(&words.action),
-                    on: worded(&words.on),
-                    place: worded(&words.place),
-                },
-                since_ms: tilo_clock::unix_now_ms(),
-                asked_by: asked_by.filter(names_a_question),
-                used_times: 0,
-                last_used_ms: None,
-            };
-            write(&dir, &kept)?;
-            Ok(view(kept))
-        })
+        let held = self.asking();
+        let mut grants = held.grants.lock_recover();
+        let count: usize = grants
+            .values()
+            .flat_map(|entries| entries.iter())
+            .filter(|entry| entry.person == *person)
+            .count();
+        let entries = grants.entry(scope.workspace.clone()).or_default();
+        if let Some(existing) = entries
+            .iter()
+            .find(|entry| entry.person == *person && entry.grant.id.as_str() == id)
+        {
+            return Ok(view(existing));
+        }
+        if count >= MAX_PERMISSIONS {
+            return Err(TOO_MANY.to_owned());
+        }
+        let grant = policy_grant(person, &id, &scope);
+        let entry = PolicyEntry {
+            person: *person,
+            grant,
+            scope,
+            name: worded(&name),
+            words: Words {
+                action: worded(&words.action),
+                on: worded(&words.on),
+                place: worded(&words.place),
+            },
+            since_ms: tilo_clock::unix_now_ms(),
+            asked_by: asked_by.filter(names_a_question),
+            used_times: 0,
+            last_used_ms: None,
+        };
+        let shown = view(&entry);
+        entries.push(entry);
+        drop(grants);
+        Ok(shown)
     }
 
-    /// Everything that stands for `person`, oldest first.
+    /// Every workspace grant recorded for `person`, oldest first.
     #[must_use]
     pub fn permissions_of(&self, person: &[u8; 32]) -> Permissions {
+        let held = self.asking();
+        let grants = held.grants.lock_recover();
+        let mut entries: Vec<PolicyEntry> = grants
+            .values()
+            .flat_map(|entries| entries.iter())
+            .filter(|entry| entry.person == *person)
+            .cloned()
+            .collect();
+        drop(grants);
+        entries.sort_by(|a, b| {
+            a.since_ms
+                .cmp(&b.since_ms)
+                .then_with(|| a.grant.id.as_str().cmp(b.grant.id.as_str()))
+        });
         Permissions {
-            permissions: all(&self.permissions_dir(person))
-                .into_iter()
-                .map(view)
-                .collect(),
+            permissions: entries.iter().map(view).collect(),
         }
     }
 
-    /// Take the permission `id` of `person`'s back: whether one stood. Its
-    /// action asks again from this moment.
+    /// Revoke the grant `id` for `person`.
     ///
     /// # Errors
-    /// It stands and could not be removed.
+    /// Infallible in-memory; returns whether a grant stood.
     pub fn take_back_permission(&self, person: &[u8; 32], id: &str) -> Result<bool, String> {
-        if !is_id(id) {
-            return Ok(false);
+        let held = self.asking();
+        let mut grants = held.grants.lock_recover();
+        let mut removed = false;
+        for entries in grants.values_mut() {
+            let before = entries.len();
+            entries.retain(|entry| !(entry.person == *person && entry.grant.id.as_str() == id));
+            if entries.len() != before {
+                removed = true;
+            }
         }
-        let path = path_of(&self.permissions_dir(person), id);
-        writing(|| match std::fs::remove_file(&path) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error.to_string()),
-        })
+        grants.retain(|_, entries| !entries.is_empty());
+        drop(grants);
+        Ok(removed)
     }
 
-    /// The questions that wait in `workspace` now, each with the person it
-    /// asks (their root key, hex): what whoever works its agents read from
-    /// its conversations. It replaces what was said of that workspace before.
+    /// Note the questions waiting in `workspace`.
     pub fn note_waiting(&self, workspace: &str, waiting: Vec<(String, Waiting)>) {
         let kept = self.asking();
         let mut index = kept.waiting.0.lock_recover();
@@ -395,8 +387,7 @@ impl Workspaces {
         drop(index);
     }
 
-    /// Every question that waits for `person`, over the workspaces this
-    /// server keeps, oldest first.
+    /// Every question that waits for `person`, oldest first.
     #[must_use]
     pub fn waiting_for(&self, person: &[u8; 32]) -> WaitingQuestions {
         let person = hex::encode(person);
@@ -417,7 +408,6 @@ impl Workspaces {
         WaitingQuestions { questions }
     }
 
-    /// Answer a [`person_asking::PROVIDER`] request.
     fn person_asking_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,
@@ -451,8 +441,6 @@ impl Workspaces {
         }
     }
 
-    /// Answer a request for what a person alone reaches of their own store
-    /// on this server: their vault, or what their agents no longer ask them.
     pub(super) fn person_alone_invoke(
         &self,
         workspace_id: Option<collab_types::WorkspaceId>,

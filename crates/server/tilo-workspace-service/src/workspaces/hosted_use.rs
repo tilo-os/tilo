@@ -64,7 +64,7 @@
 //! site through, once.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
@@ -75,6 +75,7 @@ use tilo_actions::remote::ActionCallError::{
     self, InvalidRequest, NotPermitted, Refused, UnknownAction,
 };
 use tilo_actions::remote::person_accounts::{self, AddMailWithItem};
+use tilo_actions::remote::person_asking::{ActionName, Asked, Thing, Words};
 use tilo_actions::remote::person_models::{self, SetKeyFromItem};
 use tilo_actions::remote::person_vault::{self, FillPage, ItemRef};
 use tilo_actions::remote::{
@@ -82,6 +83,7 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 
+use super::person_asking::Allowing;
 use super::{WorkspaceId, Workspaces};
 
 mod web_call;
@@ -114,10 +116,7 @@ pub use super::person_settings::mail_connect::{
 #[cfg(feature = "agents")]
 pub use tilo_account_probe::mail_servers::{Found as MailFound, MailServers, Server as MailServer};
 
-/// Where a person's asks are kept, under their own root.
-const ASKS_DIR: &str = "vault-asks";
-/// The most asks that wait for one person at a time: an agent that goes on
-/// asking is told so instead of filling their conversation.
+/// The most asks that wait for one person at a time.
 const MAX_OPEN_ASKS: usize = 32;
 
 /// What [`Workspaces::answer_use`] refuses a second reader of one answer
@@ -235,7 +234,8 @@ pub struct OpenAsk {
 }
 
 impl OpenAsk {
-    fn target(&self) -> RemoteActionTarget {
+    #[must_use]
+    pub fn target(&self) -> RemoteActionTarget {
         RemoteActionTarget {
             provider: self.provider.clone(),
             address: tilo_actions::ActionAddress::new(self.resource.clone(), self.action.clone()),
@@ -659,89 +659,45 @@ fn arguments_of(request: &InvokeRequest) -> Map<String, Value> {
     }
 }
 
-/// Whether `ask` is an ask's id: what names a file here.
-fn is_ask_id(ask: &str) -> bool {
-    ask.len() == 32
-        && ask
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn ask_path(root: &Path, ask: &str) -> PathBuf {
-    root.join(ASKS_DIR).join(format!("{ask}.json"))
-}
-
-/// Keep `ask` under its person's `root`, readable by this server alone.
-fn keep(root: &Path, ask: &OpenAsk) -> Result<(), String> {
-    let bytes = serde_json::to_vec(ask).map_err(|error| error.to_string())?;
-    tilo_files::native::atomic::write_creating_parent_with_mode(
-        &ask_path(root, &ask.ask),
-        &bytes,
-        0o600,
-    )
-    .map_err(|error| error.to_string())
-}
-
-/// The ask kept at `path`. One that does not read is said and left out: it
-/// uses nothing, and its question is answered as no longer kept.
-fn read_kept(path: &Path) -> Option<OpenAsk> {
-    let read = std::fs::read(path)
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()));
-    match read {
-        Ok(ask) => Some(ask),
-        Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "a kept ask about a vault use does not read");
-            None
-        }
+/// Build the workspace `tilo-action-policy` scope for a vault use.
+fn vault_use_scope(
+    using: &KeepersTurn,
+    target: &RemoteActionTarget,
+    item: &ItemId,
+    places: &[Place],
+) -> Asked {
+    let mut sorted: Vec<&str> = places.iter().map(Place::as_str).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    Asked {
+        workspace: using.workspace.clone(),
+        agent: using.agent.clone(),
+        action: ActionName {
+            provider: target.provider.clone(),
+            kind: person_vault::use_word(target),
+            action: target.address.action.clone(),
+        },
+        on: Some(Thing {
+            document: item.as_str().to_owned(),
+            resource: sorted.join(","),
+        }),
     }
 }
 
-/// Every ask kept under the people's roots in `people`.
-fn kept_under(people: &Path) -> Vec<OpenAsk> {
-    let mut asks: Vec<OpenAsk> = std::fs::read_dir(people)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .flat_map(|person| {
-            std::fs::read_dir(person.path().join(ASKS_DIR))
-                .into_iter()
-                .flatten()
-        })
-        .flatten()
-        .filter_map(|file| read_kept(&file.path()))
-        .filter(|ask: &OpenAsk| is_ask_id(&ask.ask))
-        .map(|mut ask| {
-            ask.interrupted = ask.started;
-            ask
-        })
-        .collect();
-    asks.sort_by(|a, b| {
-        a.asked_at_ns
-            .cmp(&b.asked_at_ns)
-            .then_with(|| a.ask.cmp(&b.ask))
-    });
-    asks
-}
-
 impl Workspaces {
-    /// The asks this server keeps, read from its disk the first time.
+    /// In-memory vault asks, never persisted to per-person disk storage.
     fn hosted_asks(&self) -> MutexGuard<'_, Option<Vec<OpenAsk>>> {
         let mut asks = self.inner.vault_uses.asks.lock_recover();
         if asks.is_none() {
-            *asks = Some(kept_under(&self.inner.dir.join("people")));
+            *asks = Some(Vec::new());
         }
         asks
     }
 
     /// Forget the ask `ask` of `person`: nothing is carried out for it any more.
-    fn forget_use(&self, person: &str, ask: &str) {
+    fn forget_use(&self, _person: &str, ask: &str) {
         if let Some(asks) = self.hosted_asks().as_mut() {
             asks.retain(|kept| kept.ask != ask);
-        }
-        let mut root = [0; 32];
-        if is_ask_id(ask) && hex::decode_to_slice(person, &mut root).is_ok() {
-            let _ = std::fs::remove_file(ask_path(&self.person_settings_root(&root), ask));
         }
     }
 
@@ -905,16 +861,20 @@ impl Workspaces {
             return Err(refused(not_delegated()));
         }
         let word = person_vault::use_word(&request.target);
-        // What the use would be refused for is said before anyone is asked,
-        // in the vault's own words; the vault is closed again before
-        // anything is waited for.
-        let stands = {
+        // Validate the item and places in the vault, then check the workspace's
+        // `tilo-action-policy` grant instead of a bespoke per-item leave table.
+        {
             let items = VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
             items
                 .fits(&item, kind, &places)
-                .and_then(|_| items.stands(&item, &places, &using.agent, &word))
-                .map_err(|error| refused(error.to_string()))?
-        };
+                .map_err(|error| refused(error.to_string()))?;
+        }
+        let stands = self
+            .stands(
+                &using.person,
+                &vault_use_scope(&using, &request.target, &item, &places),
+            )
+            .is_some();
         wanted.sendable(self, &root).map_err(refused)?;
         // A leave that covers the use is what allowed it; else an allow its
         // person gave this very use, which is spent by being found.
@@ -1025,7 +985,7 @@ impl Workspaces {
             action: request.target.address.action.clone(),
             arguments,
         };
-        keep(root, &kept).map_err(refused)?;
+        let _ = root;
         open.push(kept.clone());
         Ok(TurnUse::Asks(Box::new(kept)))
     }
@@ -1101,29 +1061,18 @@ impl Workspaces {
         reason = "the claim is read and written under one lock, so two readers of one answer cannot both take it"
     )]
     pub fn claim_use(&self, ask: &str) -> Result<OpenAsk, ActionCallError> {
-        let claimed = {
-            let mut asks = self.hosted_asks();
-            let Some(kept) = asks
-                .as_mut()
-                .and_then(|asks| asks.iter_mut().find(|kept| kept.ask == ask))
-            else {
-                return Err(refused(NOTHING_WAITS));
-            };
-            if kept.started {
-                return Err(refused(CARRIED_OUT));
-            }
-            kept.started = true;
-            kept.clone()
+        let mut asks = self.hosted_asks();
+        let Some(kept) = asks
+            .as_mut()
+            .and_then(|asks| asks.iter_mut().find(|kept| kept.ask == ask))
+        else {
+            return Err(refused(NOTHING_WAITS));
         };
-        let mut person = [0; 32];
-        let said = hex::decode_to_slice(&claimed.person, &mut person)
-            .map_err(|error| error.to_string())
-            .and_then(|()| keep(&self.person_settings_root(&person), &claimed));
-        if let Err(error) = said {
-            self.forget_use(&claimed.person, &claimed.ask);
-            return Err(refused(error));
+        if kept.started {
+            return Err(refused(CARRIED_OUT));
         }
-        Ok(claimed)
+        kept.started = true;
+        Ok(kept.clone())
     }
 
     /// Carry out the answer to the ask `claimed` ([`Self::claim_use`]), as
@@ -1184,13 +1133,25 @@ impl Workspaces {
         }
         let always = answer == UseAnswer::Always && wanted.takes_leave();
         if always {
-            let mut items =
-                VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
-            // A leave is given only for a use the item allows.
+            let items = VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
             items
                 .fits(&item, kind, &places)
-                .and_then(|_| items.let_always(&item, &places, (&using.agent, &using.name), &word))
                 .map_err(|error| refused(error.to_string()))?;
+            let scope = vault_use_scope(&using, &target, &item, &places);
+            let _ = self.let_always(
+                &using.person,
+                Allowing {
+                    scope: scope.clone(),
+                    name: using.name.clone(),
+                    words: Words {
+                        action: word.clone(),
+                        on: String::new(),
+                        place: String::new(),
+                    },
+                    asked_by: None,
+                },
+            );
+            let _ = self.grant_always_in_workspace(&using.person, &scope).await;
         }
         if matches!(wanted, Use::Call(_)) {
             // What a call answers goes to whoever made it, so nothing is
@@ -1456,20 +1417,20 @@ impl Workspaces {
         if !using.may_use(item.as_str()) {
             return Err(refused(not_delegated()));
         }
-        let word = person_vault::use_word(&target);
-        // What the fill would be refused for is said before anyone is asked,
-        // and the vault is closed again before anything is waited for.
-        let (kind, stands) = {
+        let kind = {
             let items = VaultItems::open_in(&root).map_err(|error| refused(error.to_string()))?;
             let facts = items
                 .belongs_at(&item, &site)
                 .map_err(|error| refused(error.to_string()))?;
             page_field(facts.kind).map_err(refused)?;
-            let stands = items
-                .stands(&item, std::slice::from_ref(&site), &using.agent, &word)
-                .map_err(|error| refused(error.to_string()))?;
-            (facts.kind, stands)
+            facts.kind
         };
+        let stands = self
+            .stands(
+                &using.person,
+                &vault_use_scope(&using, &target, &item, std::slice::from_ref(&site)),
+            )
+            .is_some();
         if stands || self.once_allowed(&using, &item, &site) {
             return page_text(&root, &item, kind, &site, &using.name)
                 .map(TurnRelease::Released)
@@ -1523,20 +1484,27 @@ impl Workspaces {
         if !using.may_use(item.as_str()) {
             return Err(not_delegated().to_owned());
         }
-        let mut items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
+        let items = VaultItems::open_in(root).map_err(|error| error.to_string())?;
         let facts = items
             .belongs_at(&item, &site)
             .map_err(|error| error.to_string())?;
         page_field(facts.kind)?;
         let allowed = if answer == UseAnswer::Always {
-            items
-                .let_always(
-                    &item,
-                    std::slice::from_ref(&site),
-                    (&using.agent, &using.name),
-                    &person_vault::use_word(&kept.target()),
-                )
-                .map_err(|error| error.to_string())?;
+            let target = kept.target();
+            let scope = vault_use_scope(using, &target, &item, std::slice::from_ref(&site));
+            self.let_always(
+                &using.person,
+                Allowing {
+                    scope,
+                    name: using.name.clone(),
+                    words: Words {
+                        action: person_vault::use_word(&target),
+                        on: site.as_str().to_owned(),
+                        place: String::new(),
+                    },
+                    asked_by: None,
+                },
+            )?;
             "always"
         } else {
             self.allow_once(using, &item, &site);

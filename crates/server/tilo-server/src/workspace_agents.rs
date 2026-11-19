@@ -701,8 +701,6 @@ impl HostAgents {
         };
         // What a person answers about a connection of theirs is carried out from the start.
         agents.carries(connections::WORD, connections::answers(&agents.workspaces));
-        // What a turn asks its person is put to them in its conversation.
-        agents.ask_in_conversations();
         agents.carry_sends();
         agents
     }
@@ -800,9 +798,6 @@ impl HostAgents {
     /// # Errors
     /// The workspace's records could not be read.
     pub async fn look(&self, workspace: &str) -> Result<(), String> {
-        // What a person answered about a use of their vault is carried out
-        // whether or not anything asks an agent now.
-        Box::pin(self.settle_uses(workspace)).await;
         // Boxed, here and in `turns` and `answer`: whoever awaits a round or a turn holds a
         // pointer to it and carries none of it in a future of its own.
         Box::pin(self.look_past(workspace, None)).await
@@ -995,7 +990,6 @@ impl HostAgents {
     async fn asks_at(&self, workspace: &str, now_ms: i64) -> Result<Asks, String> {
         let agents = self.agents(workspace).await?;
         if agents.is_empty() {
-            self.workspaces.note_waiting(workspace, Vec::new());
             return Ok(Asks::default());
         }
         let mut routes = self
@@ -1052,14 +1046,10 @@ impl HostAgents {
         routes: &[(String, String)],
     ) -> Result<Asks, String> {
         let mut asks = Asks::default();
-        // The questions its agents asked that wait for their person, read
-        // from the same parts.
-        let mut waiting = Vec::new();
         // The answers that owe their askers a turn, and the wakes written already.
         let mut answered = Vec::new();
         let mut woken = std::collections::BTreeSet::new();
         let Some(chat) = self.read::<chat::chat::Chat>(workspace, CHAT, "").await? else {
-            self.workspaces.note_waiting(workspace, waiting);
             return Ok(asks);
         };
         let mut team = self.team(workspace, agents).await?;
@@ -1076,7 +1066,6 @@ impl HostAgents {
             else {
                 continue;
             };
-            waiting.extend(self::asks::waiting_in(workspace, record, &part, agents));
             answered.extend(answers::answered_in(&part, agents));
             woken.extend(answers::woken_in(&part));
             for summons in chat::summons::summonses(&chat, &part) {
@@ -1145,7 +1134,6 @@ impl HostAgents {
             }
             team.read(record, &chat, &part);
         }
-        self.workspaces.note_waiting(workspace, waiting);
         answered.retain(|wake| !woken.contains(&wake.key));
         asks.answered = answered;
         team.settle(&mut asks);

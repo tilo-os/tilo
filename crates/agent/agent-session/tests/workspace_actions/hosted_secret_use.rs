@@ -479,10 +479,11 @@ pub(super) async fn the_first_use_asks_and_always_signs_in(hosted: &Hosted, refe
         held.text, "You asked me to read your mail.",
         "why, in the agent's words"
     );
-    let item = asks
-        .uses_item()
-        .expect("the card says which item of the vault");
-    assert_eq!(item.belongs_to, [IMAP, SMTP]);
+    let kept = asks.kept().expect("question detail");
+    assert_eq!(
+        kept.pointer("/use/item/belongsTo"),
+        Some(&serde_json::json!([IMAP, SMTP]))
+    );
     let shown = format!("{:?} {}", asks.draft(), asks.detail.0);
     assert!(
         shown.contains("ada@example.test"),

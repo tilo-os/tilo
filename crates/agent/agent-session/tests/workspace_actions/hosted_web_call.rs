@@ -113,10 +113,11 @@ async fn the_assistant_calls_a_service_with_a_key_it_never_sees() {
         [chat::question::ALLOW, chat::question::DENY],
         "no Always is offered for a call"
     );
-    let item = asks
-        .uses_item()
-        .expect("the card says which item of the vault");
-    assert_eq!(item.belongs_to, [service.url()]);
+    let kept = asks.kept().expect("question detail");
+    assert_eq!(
+        kept.pointer("/use/item/belongsTo"),
+        Some(&serde_json::json!([service.url()]))
+    );
     let shown = format!("{:?} {}", asks.draft(), asks.detail.0);
     assert!(
         shown.contains("/v1/balance"),

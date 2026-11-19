@@ -240,7 +240,7 @@ fn asked(invocation: InvocationId, words: String) -> InvocationUpdate {
     InvocationUpdate::Failed {
         invocation,
         error: ActionFailure {
-            code: person_connections::ASKED_FIRST.to_owned(),
+            code: tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
             message: words,
             details: None,
             retryable: false,
