@@ -935,7 +935,16 @@ paths = [
 ]
 
 [[allow]]
-reason = "A call's failure names the host's own error beside its text (`Failure::host`): this file tells a policy refusal from a call the app cannot answer."
+reason = "A call's failure names the host's own error beside its text (`Failure::host`): these files tell a policy refusal from a call the app cannot answer."
 words = ["host"]
 identifiers = ["host"]
-paths = ["crates/runtime/tilo-mcp/src/mcp_agent.rs"]
+paths = [
+    "crates/runtime/tilo-mcp/src/mcp_agent.rs",
+    "crates/runtime/tilo-mcp/src/mcp_agent_unoffered.rs",
+]
+
+[[allow]]
+reason = "The model gateway's module of its wire types, named by the program it backs, not a Tilo concept."
+words = ["host"]
+identifiers = ["host_backend"]
+paths = ["crates/agent/agent-session/tests/harness/written_out.rs"]
