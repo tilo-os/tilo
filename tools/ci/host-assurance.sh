@@ -41,7 +41,6 @@ set -euo pipefail
 arch=x86_64
 work=/var/tmp/host-assurance
 out=${CARGO_TARGET_DIR:-/target}/host-assurance
-sealed=/target/publish/host-sealed
 update_ref=localhost/tilo-host:assurance-update
 
 # Where the disk's account comes from, and what the console runner signs in as
@@ -72,7 +71,8 @@ report_exit() {
 trap report_exit EXIT
 
 bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt
-rpm -q binutils >/dev/null 2>&1 || dnf install -y --setopt=install_weak_deps=False binutils >/dev/null
+rpm -q binutils openssl >/dev/null 2>&1 \
+  || dnf install -y --setopt=install_weak_deps=False binutils openssl >/dev/null
 command -v qemu-system-x86_64 qemu-img podman skopeo systemd-repart >/dev/null
 ./os/dev/assert-native-arch.sh "$arch"
 python3 os/dev/probe-kvm.py "$arch" || {
@@ -424,8 +424,8 @@ rm -f "$raw"
 # release machine enrols the release certificate): anything that certificate did
 # not sign is refused. The store's certificate check runs the image's own
 # tilo-crypto, as the signing steps do.
-rpm -q python3-virt-firmware openssl >/dev/null 2>&1 \
-  || dnf install -y --setopt=install_weak_deps=False python3-virt-firmware openssl >/dev/null
+rpm -q python3-virt-firmware >/dev/null 2>&1 \
+  || dnf install -y --setopt=install_weak_deps=False python3-virt-firmware >/dev/null
 mkdir -p "$work/bin"
 cat > "$work/bin/tilo-crypto" <<'EOF'
 #!/bin/sh
