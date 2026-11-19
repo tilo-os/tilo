@@ -1549,6 +1549,13 @@ impl ui::widget::Decorator for BackupsWindow {
         self.shell.update(state, path) || self.repo.borrow().dirty || progressed || jobs_moved
     }
 
+    /// A running job reports its progress through a shared line the window polls on a
+    /// deadline, so what the window shows fills in as the job works: until it ends the
+    /// window is not at rest, and a capture waits for its page to be final.
+    fn has_pending_visual_work(&self) -> bool {
+        self.repo.borrow().work == Work::Running
+    }
+
     /// A running job reports progress through a shared line; the app reads it a few times a
     /// second on a deadline.
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
