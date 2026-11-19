@@ -1106,8 +1106,10 @@ impl Api {
         found["hits"].as_array().cloned().unwrap_or_default()
     }
 
-    /// Run `program` in this program session: what it says, and whether it failed.
-    pub fn run(&mut self, session: &mut Session, program: &str) -> (String, bool) {
+    /// The session's whole answer to `program` in this program session: the lines the model
+    /// reads (`output`, a resource by the reference a later program names it by), the lines a
+    /// person reads (`text`), and whether it failed.
+    pub fn program_answer(&mut self, session: &mut Session, program: &str) -> Value {
         let mut body = json!({"program": program});
         if let Some(running) = &self.program_session {
             body["session"] = running.clone().into();
@@ -1119,6 +1121,13 @@ impl Api {
         if let Some(running) = answer["session"].as_str() {
             self.program_session = Some(running.to_owned());
         }
+        answer
+    }
+
+    /// `program` in this program session: what a person reads of its answer, and whether it
+    /// failed.
+    pub fn run(&mut self, session: &mut Session, program: &str) -> (String, bool) {
+        let answer = self.program_answer(session, program);
         (
             answer["text"].as_str().unwrap_or_default().to_owned(),
             answer["status"] == "failed",

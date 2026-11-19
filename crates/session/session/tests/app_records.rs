@@ -448,7 +448,8 @@ fn a_task_checked_in_the_apps_window_is_read_at_the_api() {
                 "find(tasks.Task).filter(t -> t.title == \"Book a haircut\")",
             );
             seen = found;
-            !failed && seen.contains("done: true")
+            // The person reads the task's title and its done value, in their words.
+            !failed && seen.contains("Book a haircut  true")
         });
         done.store(true, std::sync::atomic::Ordering::Release);
         let window = window.join().expect("the window's thread");
