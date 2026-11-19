@@ -113,16 +113,11 @@ pub fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
     out
 }
 
-pub fn content_files(store_root: &Path) -> Vec<PathBuf> {
-    let data = store_root.join("content/data");
-    let Ok(entries) = std::fs::read_dir(data) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "data"))
-        .collect()
+/// The file the content store keeps a whole blob longer than its inline
+/// limit in. Small blobs have no such file: they are rows of the store's
+/// index, so a test that wants to corrupt stored bytes needs one of these.
+pub fn stored_blob_file(store_root: &Path, blob: &tilo_app_package::BlobHash) -> PathBuf {
+    store_root.join("content/files/data").join(blob.to_hex())
 }
 
 const FS_IOC_FIEMAP: libc::c_ulong = 0xC020_660B;
