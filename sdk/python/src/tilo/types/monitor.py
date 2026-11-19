@@ -28,7 +28,7 @@ SortKey = Literal["pid", "name", "user", "cpu", "mem", "threads"]
 
 class Processes(Resource):
     """Processes — `monitor.processes`."""
-    __surface__ = "so.tilo.monitor@ede2747c2e3967d9"
+    __surface__ = "so.tilo.monitor@11f5396c1013910c"
     sort: SortKey
     ascending: bool
     flat: bool
@@ -48,16 +48,8 @@ class Processes(Resource):
             args["query"] = query
         return self.action("filter", **args)
 
-    def inspect(self, *, process: str) -> None:
-        """Runs the app's action."""
-        return self.action("inspect", process=process)
-
-    def copy_pid(self, *, process: str) -> None:
-        """Runs the app's action."""
-        return self.action("copy-pid", process=process)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"show_tab", "filter", "inspect", "copy_pid"})
+    __actions__ = frozenset({"show_tab", "filter"})
 
 

@@ -49,22 +49,8 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "refresh"
+id = "refresh-all"
 kind = "read"
-
-[[resources.verbs]]
-id = "refresh-location"
-kind = "read"
-params = [
-  { name = "location", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "open-location"
-kind = "read"
-params = [
-  { name = "location", type = "text", required = true },
-]
 
 [[resources.types]]
 name = "Place"

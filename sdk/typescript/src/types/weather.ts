@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.weather@3150b872b91bc7e1";
+export const SURFACE = "so.tilo.weather@d2252d1ae403d4ce";
 
 export interface Place {
   name: string;
@@ -81,18 +81,12 @@ export interface Locations extends tilo.Resource {
   /** Runs `move-to-top` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   moveToTopMany(items: MoveToTopArgs[]): Promise<tilo.ActionAnswer[]>;
   // the app's `remove` action is the SDK's own: run it with `action("remove")`.
-  // the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
-  refreshLocation(args: {
-    location: string;
-  }): Promise<void>;
-  openLocation(args: {
-    location: string;
-  }): Promise<void>;
+  refreshAll(): Promise<void>;
 }
 
 /** The actions `Locations` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LOCATIONS_ACTIONS = ["saveLocation", "saveLocationMany", "useAsDefault", "useAsDefaultMany", "moveToTop", "moveToTopMany", "refreshLocation", "openLocation"] as const;
+export const LOCATIONS_ACTIONS = ["saveLocation", "saveLocationMany", "useAsDefault", "useAsDefaultMany", "moveToTop", "moveToTopMany", "refreshAll"] as const;
 
 /** The `weather.locations` kind at `path`. */
 export function locations(ws: tilo.Workspace, path: string): Locations {

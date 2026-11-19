@@ -25,6 +25,28 @@ id = "inspect-keyboard-sources"
 kind = "read"
 
 [[resources.verbs]]
+id = "set-source-options-visible"
+kind = "read"
+params = [
+  { name = "visible", type = "bool", required = true },
+]
+
+[[resources.verbs]]
+id = "set-source-inspection-visible"
+kind = "read"
+params = [
+  { name = "visible", type = "bool", required = true },
+]
+
+[[resources.verbs]]
+id = "open-source-picker"
+kind = "read"
+
+[[resources.verbs]]
+id = "show-live-keyboard-map"
+kind = "read"
+
+[[resources.verbs]]
 id = "storage-summary"
 kind = "read"
 
@@ -42,6 +64,10 @@ kind = "read"
 params = [
   { name = "model", type = "text", required = true },
 ]
+
+[[resources.verbs]]
+id = "toggle-microphone-test"
+kind = "read"
 
 [[resources.verbs]]
 id = "discover-thunderbird-accounts"

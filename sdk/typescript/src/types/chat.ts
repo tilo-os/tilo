@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@60ac380bb785b66c";
+export const SURFACE = "so.tilo.chat@21cb18eb7dbfde6a";
 
 export interface Category {
   name: string;
@@ -342,6 +342,7 @@ export interface Message {
 }
 
 export interface NewMessage {
+  id: string | null;
   channel: string;
   text: string;
   parent: string | null;
@@ -764,6 +765,7 @@ export interface TriageArgs {
 export interface PostArgs {
   channel: string;
   text: string;
+  id?: string;
   parent?: string;
   quoted?: Quote;
   body?: ClipBlock[];
@@ -1270,6 +1272,7 @@ export interface Messages extends tilo.Resource {
   post(args: {
     channel: string;
     text: string;
+    id?: string;
     parent?: string;
     quoted?: Quote;
     body?: ClipBlock[];
