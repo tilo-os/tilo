@@ -517,3 +517,5 @@ chat-secret-saving = Adding it to your vault…
 chat-secret-not-kept = The vault did not keep it. Try again.
 chat-secret-answer-saved = It is in my vault now.
 chat-secret-answer-declined = I would rather not give that.
+
+chat-import-previous-drafts = Import earlier channel drafts

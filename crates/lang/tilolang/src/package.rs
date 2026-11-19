@@ -505,6 +505,7 @@ fn build_meta(
         category: module.app.category.clone(),
         previously: module.app.previously.clone(),
         own_resources: module.app.own_resources,
+        profile_resources: module.app.profile_resources,
         web: module.app.web.clone(),
         ..PackageMeta::default()
     };

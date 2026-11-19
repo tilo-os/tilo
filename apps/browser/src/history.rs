@@ -282,6 +282,8 @@ pub struct BrowsingHistory {
     pub import_receipts: BTreeMap<String, Atom>,
     #[model(readonly)]
     pub forgotten_imports: tilo_resource::Set<String>,
+    #[model(readonly, default = false)]
+    pub(crate) restored_previous: bool,
 }
 
 #[derive(Model, Clone, Debug, Default, PartialEq)]
@@ -358,6 +360,22 @@ impl BrowsingHistory {
     read_content = BrowsingHistory::read_document
 )]
 impl BrowsingHistory {
+    /// Restore the earlier profile data.
+    #[action(by_app, housekeeping, writes = visits, writes = imported, writes = import_receipts, writes = forgotten_imports, writes = restored_previous)]
+    pub fn restore_previous(&mut self, previous: serde_json::Value) -> Result<(), Refusal> {
+        if self != &Self::default() {
+            return Ok(());
+        }
+        let previous =
+            Self::from_json(&previous).map_err(|error| Refusal::new(error.to_string()))?;
+        previous.check()?;
+        *self = Self {
+            restored_previous: true,
+            ..previous
+        };
+        Ok(())
+    }
+
     pub fn entries(&self) -> Vec<HistoryEntry> {
         History::of(self).entries().to_vec()
     }
@@ -537,6 +555,7 @@ impl BrowsingHistory {
 
     #[action(keywords = "clear browsing data, delete history, forget history, privacy")]
     pub fn clear_history(&mut self) {
+        self.restored_previous = true;
         self.visits.clear();
         for key in self.imported.keys() {
             self.forgotten_imports.insert(key.clone());

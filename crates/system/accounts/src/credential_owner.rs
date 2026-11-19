@@ -43,7 +43,7 @@ impl CredentialOwner {
             }
             let mut occupied = false;
             for mut item in store.list() {
-                occupied |= item.fields.get("tilo.messaging.profile.scope") == Some(&encoded_scope);
+                occupied |= item.fields.get(super::MESSAGING_PROFILE_SCOPE) == Some(&encoded_scope);
                 item.password.zeroize();
             }
             if occupied {
@@ -62,7 +62,7 @@ impl CredentialOwner {
             item.kind = SecretItemKind::Other;
             item.origins.insert(origin);
             item.fields
-                .insert("tilo.messaging.profile.scope".into(), encoded_scope);
+                .insert(super::MESSAGING_PROFILE_SCOPE.into(), encoded_scope);
             let saved = store.put(&mut item);
             item.password.zeroize();
             saved?;

@@ -219,6 +219,15 @@ impl RouteKeys {
         }
     }
 
+    /// Keys retained for fields whose plaintext must stay out of the local document store.
+    pub(super) fn document_keys(&self) -> Option<key_group::ContentKeys> {
+        match &self.keys {
+            Keys::Content { keys, .. } => Some(keys.clone()),
+            Keys::Group(group) => group.content_keys().ok(),
+            Keys::Plain | Keys::Unsealable | Keys::Pending(_) => None,
+        }
+    }
+
     /// The state, once per change, for the app.
     pub(super) fn take_state_change(&mut self) -> Option<KeyAccessState> {
         let state = self.state();

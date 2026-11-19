@@ -860,7 +860,7 @@ impl Hosted {
         let in_scope = scope.enter();
         let used = used_apps(&spec, &bundle, &mut record);
         let personal = PersonalDocument::open(
-            record.route().cluster_id,
+            uuid::Uuid::parse_str(&spec.workspace).unwrap_or(record.route().cluster_id),
             &spec.app,
             &kept.documents,
             record.manager_mut(),
@@ -1053,6 +1053,8 @@ impl Hosted {
             return false;
         }
         *self.access.borrow_mut() = access;
+        self.published_from = None;
+        self.answers = Answers::default();
         self.person_changed();
         true
     }
@@ -1425,6 +1427,34 @@ impl Hosted {
         descriptor.shows(&offered);
     }
 
+    fn apply_document_grants(&self, descriptors: &mut [ActionDescriptor]) {
+        use tilo_action_policy::{Answer, Context, TreePath};
+
+        let route = self.record.route();
+        let document = route.document.as_deref().unwrap_or("");
+        if !collab_types::validator::requires_independent_document_keys(&route.app_id, document) {
+            return;
+        }
+        let access = self.access.borrow();
+        let Some(access) = &*access else {
+            return;
+        };
+        let app = TreePath::workspace(&route.cluster_id.to_string()).app(&route.app_id);
+        let context = Context::at_time(tilo_clock::wall());
+        for descriptor in descriptors {
+            let need = descriptor.contract.need();
+            let node = app
+                .clone()
+                .kind(&descriptor.resource_kind)
+                .resource(document)
+                .field(need.field.as_deref().unwrap_or(""))
+                .action(&descriptor.address.action);
+            if access.answer(&node, need.kind, &context) != Answer::Allow {
+                descriptor.contract.availability = tilo_actions::Availability::not_allowed(None);
+            }
+        }
+    }
+
     /// Where the publications stand now: what an answer is read at, and how far it stands
     /// without being read again.
     fn moved(&self) -> u64 {
@@ -1629,7 +1659,16 @@ impl Hosted {
             .and_then(MemberId::person_id)
             .or_else(|| invoker.acting.acted_for_person());
         let route = self.record.route();
-        if !tilolang_tilo::reaches(&route.app_id, route.document.as_deref(), person) {
+        let profile_record = route
+            .document
+            .as_deref()
+            .and_then(collab_types::person_document_context);
+        let reaches = if profile_record.is_some() {
+            person.and_then(collab_types::personal_cluster_of) == Some(route.cluster_id)
+        } else {
+            tilolang_tilo::reaches(&route.app_id, route.document.as_deref(), person)
+        };
+        if !reaches {
             let update = failed(
                 invocation,
                 Refused::new("permission_denied", "this is another member's own document"),
@@ -2126,6 +2165,7 @@ impl Hosted {
         self.refused.clear();
         let mut descriptors = tilo_actions::api::survey(&resources);
         self.answer_what_the_window_shows(&mut descriptors);
+        self.apply_document_grants(&mut descriptors);
         // The directory is built when a caller asks for it: what the surface holds is the
         // snapshot's input, not the answer to a question nobody asked.
         if self
@@ -2330,7 +2370,7 @@ struct Used {
 /// The other apps `bundle`'s app uses ([`Spec::installed`]), each joined on `document`'s connection
 /// and read through its own package.
 fn used_apps(spec: &Spec, bundle: &Bundle, document: &mut InstanceDocument) -> Vec<Used> {
-    let workspace = document.route().cluster_id;
+    let workspace = uuid::Uuid::parse_str(&spec.workspace).unwrap_or(document.route().cluster_id);
     bundle
         .imports
         .iter()

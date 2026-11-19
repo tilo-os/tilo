@@ -114,19 +114,3 @@ cases = [
   { name = "trusted" },
 ]
 
-[[resources]]
-kind = "firewall.applied"
-label = "Applied configuration"
-version = 1
-fields = [
-  { path = "devices", type = { map = "text" } },
-]
-
-[[resources.verbs]]
-id = "applied"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "config", type = "text", required = true, schema = { type = "string" } },
-]
-

@@ -219,6 +219,7 @@ impl Hosted {
                     permissions,
                     app_id,
                     app_title,
+                    device_queue: None,
                 }
             }),
         }
@@ -226,7 +227,10 @@ impl Hosted {
 }
 
 impl ViewStorage {
-    pub(crate) fn new(storage: AppStorage, hosted: Attached) -> Rc<Self> {
+    pub(crate) fn new(storage: AppStorage, mut hosted: Attached) -> Rc<Self> {
+        if let Some(records) = &mut hosted.records {
+            records.device_queue = Some(storage.settings::<super::chain::QueuedWrites>());
+        }
         Rc::new(Self {
             storage,
             followed: RefCell::default(),
@@ -339,11 +343,25 @@ impl ViewStorage {
         self.person.as_ref()?.open::<P>()
     }
 
+    /// Open the app's record of `P` in the person's profile.
+    pub(crate) fn profile_resource<P: tilo_resource::Resource>(
+        &self,
+    ) -> Option<super::person::PersonResource<P>> {
+        self.person.as_ref()?.open_profile::<P>()
+    }
+
     /// Open the record `P` every app of the workspace opens that this app
     /// keeps.
     pub(crate) fn workspace_resource<P: tilo_resource::Resource>(&self) {
         if let Some(workspace) = &self.workspace {
             let _ = workspace.open::<P>(workspace.app_id());
+        }
+    }
+
+    /// Open an additional workspace record owned by this app.
+    pub(crate) fn workspace_record<P: tilo_resource::Resource>(&self, id: &str) {
+        if let Some(workspace) = &self.workspace {
+            let _ = workspace.open_at::<P>(workspace.app_id(), id);
         }
     }
 
@@ -363,6 +381,36 @@ impl ViewStorage {
         id: &str,
     ) -> Option<super::workspace::WorkspaceResource<P>> {
         self.workspace.as_ref()?.open_at::<P>(owner, id)
+    }
+
+    pub(crate) fn legacy_member_state<P: tilo_resource::Resource>(
+        &self,
+        owner: &str,
+    ) -> Result<Option<Rc<P::State>>, String> {
+        if let Some(person) = &self.person {
+            return person.legacy_state::<P>(owner);
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn legacy_member_content<P: tilo_resource::Resource>(
+        &self,
+        owner: &str,
+    ) -> super::workspace::LegacyMemberContent<P> {
+        if let Some(person) = &self.person {
+            return person.legacy_content::<P>(owner);
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn legacy_member_parts<C: super::Chained>(
+        &self,
+        owner: &str,
+    ) -> super::workspace::LegacyMemberParts<C> {
+        if let (Some(person), Some(store)) = (&self.person, self.workspace_store()) {
+            return person.legacy_parts::<C>(owner, store);
+        }
+        Ok(None)
     }
 
     /// The shared record of the person's `P`.

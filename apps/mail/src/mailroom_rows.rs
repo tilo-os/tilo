@@ -12,13 +12,10 @@ use crate::actions::MailEffect;
 
 impl Mailroom {
     pub(crate) fn resource_message_row(&self, id: &str) -> Option<crate::actions::MessageRow> {
-        self.shared
-            .borrow()
-            .mailbox
-            .messages
-            .values()
-            .find(|message| message.id.to_string() == id)
-            .map(crate::actions::message_row)
+        let state = self.shared.borrow();
+        let id = id.parse().ok()?;
+        state.may_read_message(id).then_some(())?;
+        state.mailbox.get(id).map(crate::actions::message_row)
     }
 
     /// What the row `id`'s effects say of themselves right now: what opening
@@ -105,6 +102,13 @@ impl Mailroom {
             .threads_in(folder)
             .into_iter()
             .find(|thread| thread.id == anchor_raw)?;
+        if thread
+            .message_ids
+            .iter()
+            .any(|id| !state.may_read_message(*id))
+        {
+            return None;
+        }
         let subject = thread.subject;
         Some((
             subject,

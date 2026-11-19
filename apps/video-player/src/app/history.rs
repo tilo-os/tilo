@@ -1,7 +1,6 @@
 use super::{
     LocalMediaEntry, PlayerState, RESUME_END_MARGIN_MS, RESUME_WRITE_INTERVAL_MS, RecentMedia,
-    RecentVideos, ResumeWrite, Widget, configured_player, local_source_token, resume_key,
-    unix_now_ms,
+    ResumeWrite, Widget, configured_player, local_source_token, resume_key, unix_now_ms,
 };
 
 impl PlayerState {
@@ -31,13 +30,12 @@ impl PlayerState {
             .iter()
             .filter_map(|entry| self.saved_recent_row(entry))
             .collect();
-        let Some((record, device)) = &self.recents else {
+        let Some((settings, workspace)) = &self.recents else {
             return Ok(());
         };
-        let rows = serde_json::to_value(&entries).map_err(std::io::Error::other)?;
-        record
-            .invoke(&RecentVideos::KEEP.with((device.clone(), rows)))
-            .map_err(std::io::Error::other)
+        settings.update(|state| {
+            state.by_workspace.insert(workspace.clone(), entries);
+        })
     }
 
     /// The Recent row `entry` is kept as, or `None` when it cannot be: a page's `blob:`
@@ -65,27 +63,28 @@ impl PlayerState {
             .map_or(0, |(position_ms, _)| position_ms)
     }
 
-    /// Write where the videos stand into their Recent rows, one edit per moved row.
+    /// Update the resume positions of videos this device has kept.
     pub(super) fn persist_resume_position(&self) -> std::io::Result<()> {
-        let Some((record, device)) = &self.recents else {
+        let Some((settings, workspace)) = &self.recents else {
             return Ok(());
         };
-        let moved: Vec<(String, u64)> = record.with(|recent| {
-            recent
-                .on(device)
-                .iter()
-                .filter_map(|row| {
-                    let position_ms = self.position_of(&row.source);
-                    (position_ms != row.position_ms).then(|| (row.id.clone(), position_ms))
-                })
-                .collect()
-        });
-        for (id, position_ms) in moved {
-            record
-                .invoke(&RecentVideos::STOOD.with((device.clone(), id, position_ms)))
-                .map_err(std::io::Error::other)?;
+        let recent = settings.get();
+        let Some(rows) = recent.by_workspace.get(workspace) else {
+            return Ok(());
+        };
+        if rows
+            .iter()
+            .all(|row| self.position_of(&row.source) == row.position_ms)
+        {
+            return Ok(());
         }
-        Ok(())
+        settings.update(|state| {
+            if let Some(rows) = state.by_workspace.get_mut(workspace) {
+                for row in rows.iter_mut() {
+                    row.position_ms = self.position_of(&row.source);
+                }
+            }
+        })
     }
 
     /// Remember where the open video stands. A playing video writes every few seconds;

@@ -255,7 +255,7 @@ impl<P: Resource> PersonResource<P> {
 }
 
 /// An open record: the app that owns it, and its kind.
-type OpenKey = (&'static str, String);
+type OpenKey = (&'static str, String, bool);
 
 /// The person's records a root's views opened, shared by every scope of the
 /// root: one [`PersonResource`] per resource kind.
@@ -356,8 +356,18 @@ impl PersonKind {
     pub const fn shared<P: tilo_resource::SharedResource>() -> Self {
         Self {
             kind: P::KIND,
-            report: shared_surface::<P>,
+            report: profile_surface::<P>,
             open: open_shared::<P>,
+        }
+    }
+
+    /// A personal profile record opened by this app.
+    #[must_use]
+    pub const fn profile<P: Resource>() -> Self {
+        Self {
+            kind: P::KIND,
+            report: profile_surface::<P>,
+            open: open_profile::<P>,
         }
     }
 
@@ -380,7 +390,7 @@ impl PersonKind {
     }
 }
 
-fn shared_surface<P: tilo_resource::SharedResource>() -> tilo_resource::Surface {
+fn profile_surface<P: Resource>() -> tilo_resource::Surface {
     tilo_resource::Surface {
         person: true,
         ..P::surface()
@@ -389,6 +399,10 @@ fn shared_surface<P: tilo_resource::SharedResource>() -> tilo_resource::Surface 
 
 fn open_shared<P: tilo_resource::SharedResource>(storage: &super::settings::ViewStorage) {
     let _ = storage.shared_person::<P>();
+}
+
+fn open_profile<P: Resource>(storage: &super::settings::ViewStorage) {
+    let _ = storage.profile_resource::<P>();
 }
 
 fn history_spec(record: &str, label: &str, undo: bool) -> tilo_actions::ActionSpec {
@@ -499,6 +513,107 @@ impl PersonState {
         self.open_of::<P>(self.app_id, true, true, false)
     }
 
+    /// The app's own record in the person's profile.
+    pub(crate) fn open_profile<P: Resource>(&self) -> Option<PersonResource<P>> {
+        self.open_of::<P>(self.app_id, true, true, true)
+    }
+
+    /// Read a previous member record without creating it or publishing its actions.
+    pub(crate) fn legacy_state<P: Resource>(
+        &self,
+        owner: &str,
+    ) -> Result<Option<Rc<P::State>>, String> {
+        let Some(record) = self.legacy_record::<P>(owner)? else {
+            return Ok(None);
+        };
+        Self::read_legacy::<P>(&record).map(Some)
+    }
+
+    pub(crate) fn legacy_content<P: Resource>(
+        &self,
+        owner: &str,
+    ) -> super::workspace::LegacyMemberContent<P> {
+        let Some(record) = self.legacy_record::<P>(owner)? else {
+            return Ok(None);
+        };
+        let content = record
+            .content()
+            .ok_or("the previous record has no content store")?;
+        Ok(Some((
+            record.checkout().id.as_str().to_owned(),
+            Self::read_legacy::<P>(&record)?,
+            content,
+        )))
+    }
+
+    pub(crate) fn legacy_parts<C: super::Chained>(
+        &self,
+        owner: &str,
+        store: &ui_core::resource::ResourceStore,
+    ) -> super::workspace::LegacyMemberParts<C> {
+        let Some(record) = self.legacy_record::<C::Base>(owner)? else {
+            return Ok(None);
+        };
+        let checkout = record.checkout();
+        let content = record
+            .content()
+            .ok_or("the earlier record has no content store")?;
+        let chain = C::chain_beside(&checkout.id);
+        let kind = ResourceType::new(C::KIND);
+        let parts = store
+            .held_parts(&chain)
+            .into_iter()
+            .map(|index| {
+                let part =
+                    ui_core::resource::DocumentCheckout::new(chain.part(index), kind.clone());
+                store
+                    .open_if_held(&part)
+                    .map_err(|error| error.to_string())?;
+                let state = store
+                    .read(&part.id, C::read)
+                    .ok_or("an earlier part is busy")?
+                    .map_err(|error| error.to_string())?;
+                Ok((index, Rc::new(state)))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Some((checkout.id.as_str().to_owned(), parts, content)))
+    }
+
+    fn legacy_record<P: Resource>(&self, owner: &str) -> Result<Option<StoredResource>, String> {
+        if owner != self.app_id {
+            return Ok(None);
+        }
+        if ui_core::invocation_scope::current_invoker()
+            .is_some_and(|invoker| invoker.acting.by.member_id() != Some(&self.me))
+        {
+            return Err("the previous record is available only to its member".into());
+        }
+        let Some(records) = &self.own else {
+            return Ok(None);
+        };
+        records
+            .open_existing_resource(ResourceType::new(P::KIND))
+            .map_err(|error| error.to_string())
+    }
+
+    fn read_legacy<P: Resource>(record: &StoredResource) -> Result<Rc<P::State>, String> {
+        record
+            .read(|doc| {
+                let read = |doc: &tilo_resource::Doc| {
+                    tilo_resource::Reader::<P>::read(doc).map(|reader| Rc::clone(reader.state()))
+                };
+                if tilo_resource::evolution::needs_migrate::<P>(doc) {
+                    let mut migrated = doc.clone();
+                    tilo_resource::evolution::migrate::<P>(&mut migrated)?;
+                    read(&migrated)
+                } else {
+                    read(doc)
+                }
+            })
+            .ok_or("the previous record is busy")?
+            .map_err(|error| error.to_string())
+    }
+
     /// The shared record `P`, opened on first use: kept by its owner, a copy
     /// of it here in every other app, changed where `P` says.
     pub(crate) fn open_shared<P: tilo_resource::SharedResource>(
@@ -581,7 +696,7 @@ impl PersonState {
         (publish, shared): (bool, bool),
     ) -> Option<Rc<dyn Any>> {
         let (kind, label) = (of.kind, of.label);
-        let key = (owner, kind.to_owned());
+        let key = (owner, kind.to_owned(), shared);
         if let Some(open) = self.opened.borrow().get(&key) {
             return Some(Rc::clone(open));
         }
@@ -666,7 +781,7 @@ impl PersonState {
     /// The settings section `kind` held as a record, opened on first use and
     /// published with the undo and redo of each invoker's steps on it.
     pub(crate) fn open_section(&self, kind: Rc<SectionKind>) -> Rc<SectionApi> {
-        let key = (self.app_id, kind.kind.to_owned());
+        let key = (self.app_id, kind.kind.to_owned(), true);
         if let Some(api) = self
             .opened
             .borrow()

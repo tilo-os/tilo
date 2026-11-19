@@ -10,8 +10,7 @@ use crate::window::PasswordsWindow;
 #[path = "credential_owner_tests.rs"]
 mod credential_owner_tests;
 
-/// The vault's published document: its type lives in `passwords-model`, and it holds no
-/// secret material — the vault is this device's encrypted store.
+/// The vault's published document, with its entries sealed by the workspace document keys.
 pub use passwords_model::Passwords;
 
 pub struct DemoVault;
@@ -33,17 +32,40 @@ impl ResourceApp for PasswordsShell {
     };
 
     fn view(cx: &mut ViewCx<Passwords>) -> Element {
+        let workspace = cx
+            .document_id()
+            .is_some_and(|id| id.as_str() == crate::workspace_vault::WORKSPACE_VAULT_DOCUMENT)
+            || ui::process::environment()
+                .identity
+                .collab_service_configured;
+        let owner = cx
+            .mode()
+            .is_live()
+            .then(|| cx.take_lent::<accounts::CredentialOwner>())
+            .flatten();
+        let matches_device = |owner: &accounts::CredentialOwner| {
+            cx.me()
+                .and_then(ui::tilo_resource::MemberId::as_person)
+                .is_some_and(|me| me.as_str() == owner.actor())
+                && cx.device() == Some(owner.device())
+        };
+        let migration = owner
+            .as_ref()
+            .filter(|owner| workspace && matches_device(owner))
+            .cloned();
+        let can_import_local =
+            workspace && cx.mode().is_live() && !cx.is_embedded() && owner.is_none();
         let window = if cx.mode() == RunMode::Past {
             PasswordsWindow::new(crate::PasswordsModel::closed())
         } else if cx.fixture::<DemoVault>().is_some() {
             PasswordsWindow::demo()
-        } else if let Some(owner) = cx.take_lent::<accounts::CredentialOwner>() {
-            let model = if cx
-                .me()
-                .and_then(ui::tilo_resource::MemberId::as_person)
-                .is_some_and(|me| me.as_str() == owner.actor())
-                && cx.device() == Some(owner.device())
-            {
+        } else if workspace {
+            PasswordsWindow::new(crate::PasswordsModel::workspace(
+                cx.resource_opener(Self::ID),
+                migration.clone(),
+            ))
+        } else if let Some(owner) = owner {
+            let model = if matches_device(&owner) {
                 crate::PasswordsModel::shared(owner)
             } else {
                 crate::PasswordsModel::closed()
@@ -55,7 +77,7 @@ impl ResourceApp for PasswordsShell {
         cx.on_open(window.opener());
         cx.on_stage(window.stager());
         window.wake_through(cx.waker());
-        answer_effects(cx, &window.vault());
+        answer_effects(cx, &window.vault(), migration, can_import_local);
         window.vault().borrow_mut().jobs = Some(cx.window_jobs::<PasswordsWindow>());
         let vault = window.vault();
         let (rows, row, entries, unlocked) = (vault.clone(), vault.clone(), vault.clone(), vault);
@@ -63,7 +85,7 @@ impl ResourceApp for PasswordsShell {
             Publishes::new()
                 .live_rows(move || rows.borrow().item_rows())
                 .live_row(move |id| row.borrow().item_row(id))
-                .search_entries(move || crate::search::entries(&entries.borrow().items))
+                .search_entries(move || crate::search::entries(entries.borrow().published_items()))
                 .secrets_unlocked(move || unlocked.borrow().secrets_unlocked()),
             Box::new(window),
         )
@@ -82,9 +104,57 @@ impl ResourceApp for PasswordsShell {
 
 /// Answer what the palette, an agent, a script or a search hit asks of the vault; the
 /// window brings itself in step on its next sync.
-fn answer_effects(cx: &ViewCx<Passwords>, vault: &crate::vault::Shared) {
+fn answer_effects(
+    cx: &ViewCx<Passwords>,
+    vault: &crate::vault::Shared,
+    migration: Option<accounts::CredentialOwner>,
+    can_import_local: bool,
+) {
     let (answer, status) = (vault.clone(), vault.clone());
-    cx.effects(move |effect: PasswordsEffect, _| {
+    let import_available = migration.is_some() || can_import_local;
+    let opener = cx.resource_opener(PasswordsShell::ID);
+    let open_here = cx.opener().filter(|_| {
+        cx.workspace().is_some()
+            && cx
+                .document_id()
+                .is_some_and(|id| id.as_str() != crate::workspace_vault::WORKSPACE_VAULT_DOCUMENT)
+    });
+    let can_open = open_here.is_some();
+    let wake = cx.waker();
+    cx.effects(move |effect: PasswordsEffect, cx| {
+        if matches!(effect, PasswordsEffect::OpenWorkspaceVault) {
+            let open = open_here
+                .as_ref()
+                .ok_or("the workspace vault cannot open here")?;
+            let record = opener
+                .open(crate::workspace_vault::WORKSPACE_VAULT_DOCUMENT)
+                .ok_or("the workspace vault is unavailable")?;
+            if !record.may_read() {
+                return Err("you may not read this vault".into());
+            }
+            return Ok(cx.open_here(open, &[record.id().uri()], |_, result, _| {
+                result.map(|()| Effected::done())
+            }));
+        }
+        if matches!(effect, PasswordsEffect::ImportDeviceVault) {
+            if !import_available {
+                return Err("the device vault cannot be imported here".into());
+            }
+            if ui::storage::waiting::forbidden() {
+                if let Some(owner) = &migration {
+                    let wake = wake.clone();
+                    if !owner.open_without_waiting(move || wake.wake()) {
+                        return Err("the device vault is still opening".into());
+                    }
+                } else {
+                    return Err("the device vault cannot be opened here".into());
+                }
+            }
+            let vault = crate::workspace_vault::WorkspaceVault::new(opener.clone());
+            let imported = vault.import_device_vault(migration.as_ref(), cx.invoker())?;
+            answer.borrow_mut().refresh();
+            return Ok(Effected::value(serde_json::json!({ "imported": imported })));
+        }
         let listing = matches!(effect, PasswordsEffect::ListLogins);
         let mut vault = answer.borrow_mut();
         vault.perform(effect)?;
@@ -95,15 +165,30 @@ fn answer_effects(cx: &ViewCx<Passwords>, vault: &crate::vault::Shared) {
         })
     })
     .status(move || {
-        if status.borrow().is_editing() {
-            return Vec::new();
+        let mut unavailable = Vec::new();
+        if !can_open {
+            unavailable.push(EffectStatus::unavailable(
+                PasswordsEffect::OPEN_WORKSPACE_VAULT,
+                "no_other_vault",
+                "The workspace vault cannot open here",
+            ));
         }
-        let reason = "Open an item in the editor first";
-        vec![
-            EffectStatus::unavailable(PasswordsEffect::SAVE, "not_editing", reason),
-            EffectStatus::unavailable(PasswordsEffect::CANCEL, "not_editing", reason),
-            EffectStatus::unavailable(PasswordsEffect::GENERATE, "not_editing", reason),
-        ]
+        if !import_available {
+            unavailable.push(EffectStatus::unavailable(
+                PasswordsEffect::IMPORT_DEVICE_VAULT,
+                "no_device_vault",
+                "The device vault is unavailable here",
+            ));
+        }
+        if !status.borrow().is_editing() {
+            let reason = "Open an item in the editor first";
+            unavailable.extend([
+                EffectStatus::unavailable(PasswordsEffect::SAVE, "not_editing", reason),
+                EffectStatus::unavailable(PasswordsEffect::CANCEL, "not_editing", reason),
+                EffectStatus::unavailable(PasswordsEffect::GENERATE, "not_editing", reason),
+            ]);
+        }
+        unavailable
     });
 }
 

@@ -838,9 +838,7 @@ impl MessageReader {
                 .prepared(setting)
                 .map_or(0, |prepared| prepared.remote),
             message: state.remote_messages.contains(&head.id),
-            sender: state
-                .remote_senders
-                .contains(&head.from.email.to_ascii_lowercase()),
+            sender: state.sender_trusted(&head.from.email),
         })
     }
 
@@ -1101,10 +1099,19 @@ impl MessageReader {
             && let Some(id) = self.html_message
         {
             let mut state = self.shared.borrow_mut();
-            match choice {
-                RemoteChoice::Load => state.load_remote(id),
+            let changed = match choice {
+                RemoteChoice::Load => {
+                    state.load_remote(id);
+                    Ok(())
+                }
                 RemoteChoice::Always => state.always_load_remote(id),
                 RemoteChoice::Stop => state.stop_remote(id),
+            };
+            if let Err(error) = changed {
+                state.status = Some(crate::state::Notice::error(crate::i18n::t_args(
+                    "mail-status-trusted-senders-not-saved",
+                    &[("error", ui::i18n::ArgValue::Text(error))],
+                )));
             }
             state.dirty = true;
             drop(state);

@@ -506,6 +506,9 @@ impl Core {
         if !model.opens_vault() {
             return None;
         }
+        if model.in_workspace() {
+            return Some(model.recovery_error().is_none());
+        }
         Some(self.recovery_error.is_none())
     }
 
@@ -521,12 +524,12 @@ impl Core {
             "Your vault could not be unlocked. Restore access to its key, then reopen Passwords."
                 .to_owned()
         });
-        self.health = model.health();
         let full = model.items();
+        self.health = crate::analyze_health(&full);
         self.findings = crate::findings(&full);
         self.app_grants = model.app_grants();
         self.app_proposals = model.app_proposals();
-        self.backend = Some(model.backend().label());
+        self.backend = (!model.in_workspace()).then(|| model.backend().label());
         self.items = full
             .into_iter()
             .map(|mut item| {
@@ -1872,6 +1875,12 @@ impl Core {
                 self.set_favorite(&SecretId(item_of(&item).to_owned()), favorite)?;
             }
             PasswordsEffect::Import => self.request_import(),
+            PasswordsEffect::OpenWorkspaceVault => {
+                return Err("the workspace vault cannot open here".into());
+            }
+            PasswordsEffect::ImportDeviceVault => {
+                return Err("the device vault cannot be imported here".into());
+            }
             PasswordsEffect::Export => self.request_export(),
             PasswordsEffect::Filter { filter } => {
                 let parsed = VaultFilter::parse(&filter);
@@ -1925,7 +1934,7 @@ impl Core {
     /// answers.
     pub(crate) fn logins(&self) -> serde_json::Value {
         let logins: Vec<_> = self
-            .items
+            .published_items()
             .iter()
             .filter(|item| item.kind == SecretItemKind::Login)
             .map(|item| serde_json::json!({"item": item.id.0, "name": item.title}))
@@ -1935,7 +1944,7 @@ impl Core {
 
     /// Live vault rows, one per item: what agents, scripts and the palette may do with it.
     pub(crate) fn item_rows(&self) -> Vec<ui::framework::LiveRow> {
-        self.items
+        self.published_items()
             .iter()
             .map(crate::actions::item_row)
             .chain(self.app_grants.iter().map(crate::actions::grant_row))
@@ -1960,10 +1969,21 @@ impl Core {
                 .map(crate::actions::grant_row);
         }
         let id = id.strip_prefix(crate::actions::ITEM_PREFIX)?;
-        self.items
+        self.published_items()
             .iter()
             .find(|item| item.id.0 == id)
             .map(crate::actions::item_row)
+    }
+
+    pub(crate) fn published_items(&self) -> &[SecretItem] {
+        if self
+            .model
+            .as_ref()
+            .is_some_and(|model| model.in_workspace() && model.recovery_error().is_some())
+        {
+            return &[];
+        }
+        &self.items
     }
 }
 

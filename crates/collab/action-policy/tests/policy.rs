@@ -43,7 +43,7 @@ fn answer(grants: &[Grant], node: &TreePath, kind: ActionKind) -> Answer {
 fn vault_documents_require_explicit_access_even_for_editors() {
     let node = TreePath::workspace("r")
         .app(tilo_app_id::apps::PASSWORDS)
-        .resource("vault");
+        .resource(roles::WORKSPACE_VAULT_DOCUMENT);
     let mut grants = roles::workspace_role_grants("r", &alice());
     for role in [Role::Viewer, Role::Commenter, Role::Editor, Role::Moderator] {
         assert_eq!(
@@ -85,6 +85,8 @@ fn the_workspace_mailbox_starts_private_and_an_explicit_grant_opens_it() {
     let mailbox = TreePath::workspace("r")
         .app(tilo_app_id::apps::MAIL)
         .resource("");
+    let encoded = serde_json::to_string(&mailbox).unwrap();
+    assert_eq!(serde_json::from_str::<TreePath>(&encoded).unwrap(), mailbox);
     let mut grants = roles::workspace_role_grants("r", &alice());
     let editor = [Grantee::role(Role::Editor)];
     assert_eq!(
@@ -113,6 +115,49 @@ fn the_workspace_mailbox_starts_private_and_an_explicit_grant_opens_it() {
         tilo_app_id::apps::MAIL,
         "other"
     ));
+}
+
+#[test]
+fn changing_workspace_mail_requires_a_write_grant() {
+    let app = TreePath::workspace("r").app(tilo_app_id::apps::MAIL);
+    let editors = [Grantee::role(Role::Editor)];
+    for (record, kind, verb) in [
+        (
+            roles::WORKSPACE_MAIL_TRUST_DOCUMENT,
+            "mail.trusted-senders",
+            "trust",
+        ),
+        (
+            roles::WORKSPACE_MAIL_COPIES_DOCUMENT,
+            "mail.copies",
+            "keep-copies",
+        ),
+    ] {
+        let route = app.clone().resource(record);
+        let mail = app.clone().kind(kind).resource(record);
+        let mut grants = roles::workspace_role_grants("r", &alice());
+        let write = mail.clone().action(verb);
+        assert_eq!(
+            decide(&grants, &editors, &mail, ActionKind::Read, &cx()).answer,
+            Answer::Deny
+        );
+        grants.push(Grant::new(
+            "read-mail",
+            editors[0].clone(),
+            route,
+            KindSet::READ,
+            Answer::Allow,
+            alice(),
+        ));
+        assert_eq!(
+            decide(&grants, &editors, &mail, ActionKind::Read, &cx()).answer,
+            Answer::Allow
+        );
+        assert_eq!(
+            decide(&grants, &editors, &write, ActionKind::Undoable, &cx()).answer,
+            Answer::Deny
+        );
+    }
 }
 
 const ANSWERS: [Answer; 3] = [Answer::Deny, Answer::Ask, Answer::Allow];

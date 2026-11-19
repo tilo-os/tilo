@@ -97,3 +97,5 @@ osk-keyboard = Bildschirmtastatur
 
 ## What the app is called in a window and in the launcher
 osk-app-title = Bildschirmtastatur
+
+osk-learned-restore-previous = Frühere Tastaturlerndaten wiederherstellen

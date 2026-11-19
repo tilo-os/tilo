@@ -23,6 +23,7 @@ use tilo_sheets::workspace_settings as sheet;
 use crate::engine::Engine;
 use crate::engine::Holder;
 use crate::lists::AppLists;
+use crate::resource_index::DocumentSource as _;
 use crate::search::SessionSearch;
 use crate::workspaces::{DeviceChoice, Personal};
 

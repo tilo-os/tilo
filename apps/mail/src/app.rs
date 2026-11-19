@@ -249,7 +249,6 @@ pub struct MailApp {
     sender_pictures_seen: Option<(u64, Vec<String>)>,
     preferences: Option<ui::framework::Setting<crate::resource::MailPreferences>>,
     followed_preferences: crate::resource::MailPreferences,
-    pub(crate) trusted_senders: Option<crate::trusted_senders::Followed>,
     connect_requested: bool,
     background_poll_deadline: Cell<Option<ui::time::Instant>>,
     waker: Arc<std::sync::Mutex<Option<ui::WakeHandle>>>,
@@ -266,6 +265,7 @@ pub struct MailApp {
     kept_registered: bool,
     kept_loaded: std::collections::HashSet<String>,
     copies: Option<crate::copies::Copies>,
+    copies_opener: Option<ui::framework::ResourceOpener<crate::copies::MailCopies>>,
     activations: Arc<std::sync::Mutex<Vec<String>>>,
     notifier: Option<Arc<dyn ui::notify::Notifier>>,
 
@@ -440,6 +440,7 @@ impl MailApp {
     #[cfg(feature = "live")]
     pub(crate) fn for_window(
         storage: &ui::storage::AppStorage,
+        workspace: Option<&str>,
         content: Option<ContentStore>,
     ) -> Self {
         let persist = storage
@@ -462,26 +463,29 @@ impl MailApp {
         let mut app = Self::assemble(shared, content, Some(EngineHandle { tx, rx }), persist);
         app.waker = waker;
         app.ownership = ownership;
-        // Fetched mail is kept in the app's cache area; a host without one
-        // fetches every time.
-        let store = storage.files().paths().cache().native_path().map_or_else(
-            |_| crate::store::Store::nowhere(),
-            |cache| crate::store::Store::at(cache.join("mail")),
-        );
+        // The server cache is disposable and belongs to this workspace.
+        let store = workspace
+            .and_then(|workspace| uuid::Uuid::parse_str(workspace).ok())
+            .and_then(|workspace| {
+                let cache_scope = storage.files().paths().cache();
+                let cache = cache_scope.native_path().ok()?;
+                Some(crate::store::Store::at(
+                    cache.join("mail").join(workspace.to_string()),
+                ))
+            })
+            .unwrap_or_else(crate::store::Store::nowhere);
         app.shared.borrow_mut().kept = store.clone();
         app.state().store = store;
         app.open_kept_mail();
         app
     }
 
-    /// A window someone uses in a browser page: it shows the mail the
-    /// workspace holds (the person's accounts and kept copies, the mailbox
-    /// resource) and queues what needs a server in the mailbox's outboxes,
-    /// which a device holding the account carries out. A page opens no
-    /// sockets and no account vault, so it starts no engine.
+    /// A browser window reads the workspace mailbox and its retained mail.
+    /// Its host supplies the mail session for server operations.
     #[cfg(not(feature = "live"))]
     pub(crate) fn for_window(
         _storage: &ui::storage::AppStorage,
+        _workspace: Option<&str>,
         content: Option<ContentStore>,
     ) -> Self {
         let shared = MailState::shared(MailState::new_live(
@@ -625,7 +629,6 @@ impl MailApp {
             sender_pictures_seen: None,
             preferences: None,
             followed_preferences: crate::resource::MailPreferences::default(),
-            trusted_senders: None,
             connect_requested: false,
             background_poll_deadline: Cell::new(None),
             waker: Arc::default(),
@@ -639,6 +642,7 @@ impl MailApp {
             older_pending: HashMap::new(),
             kept_registered: true,
             copies: None,
+            copies_opener: None,
             kept_loaded: std::collections::HashSet::new(),
             activations: Arc::default(),
             notifier: None,
@@ -2296,7 +2300,11 @@ impl MailApp {
     fn keep_on_device(&self, st: &mut MailState, account_id: &str) {
         let kept = self.state().store.save(
             account_id,
-            st.mailbox.of_account(account_id).cloned().collect(),
+            st.mailbox
+                .of_account(account_id)
+                .filter(|message| !st.workspace_messages.contains(&message.id))
+                .cloned()
+                .collect(),
         );
         for (id, index) in kept {
             if let Some(attachment) = st
@@ -2335,12 +2343,15 @@ impl MailApp {
             // page from this device only; what its server reported removed
             // is gone for every device.
             if !synced.reset {
-                copies.forget(&gone);
+                copies.forget(account_id, &gone);
             }
             copies.keep(account_id, &synced.messages, &synced.originals);
         }
         if account_id == st.accounts.active_config().email {
             st.first_fetch = None;
+        }
+        for message in &synced.messages {
+            st.workspace_messages.remove(&message.id);
         }
         st.ingest_fetched(doc, account_id, &reflagged);
         st.ingest_fetched(doc, account_id, &synced.messages);
@@ -2423,6 +2434,7 @@ impl MailApp {
             }
             let mut st = self.shared.borrow_mut();
             for message in kept {
+                st.workspace_messages.remove(&message.id);
                 st.mailbox.insert(message);
             }
             self.kept_registered = false;
@@ -2435,14 +2447,15 @@ impl MailApp {
             return;
         }
         let mail = self.shared.borrow().messages();
-        let baselines: Vec<crate::actions::IngestBaseline> = self
-            .shared
-            .borrow()
+        let shared = self.shared.borrow();
+        let baselines: Vec<crate::actions::IngestBaseline> = shared
             .mailbox
             .messages
             .values()
+            .filter(|message| !shared.workspace_messages.contains(&message.id))
             .filter_map(|message| kept_baseline(&mail, message))
             .collect();
+        drop(shared);
         if !baselines.is_empty() {
             self.shared.borrow().ingest_baselines(doc, baselines);
         }
@@ -2813,14 +2826,15 @@ impl MailApp {
     }
 
     fn register_hydrated_messages(&self, doc: &mut ui::widget::Edits<'_>) {
-        let messages: Vec<_> = self
-            .shared
-            .borrow()
+        let shared = self.shared.borrow();
+        let messages: Vec<_> = shared
             .mailbox
             .messages
             .values()
+            .filter(|message| !shared.workspace_messages.contains(&message.id))
             .cloned()
             .collect();
+        drop(shared);
         self.shared.borrow_mut().ingest_messages(doc, &messages);
     }
 
@@ -3829,13 +3843,15 @@ impl Widget for MailApp {
         }
         self.persist_active_account_if_changed();
         self.sync_preferences();
-        self.sync_trusted_senders();
+        self.shared.borrow_mut().sync_trusted_senders();
         self.declare_window_toolbar();
         self.nav.sync(state, path);
         self.state().composing = self.compose.open;
     }
 
     fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        self.open_peer_copies();
+        self.take_peer_copies();
         let opens = std::mem::take(&mut *self.opens.borrow_mut());
         for target in opens {
             if let Err(error) = self.state().open_target(target) {
@@ -3847,7 +3863,6 @@ impl Widget for MailApp {
         self.open_activated();
         self.process_intents();
         self.drain_engine(state);
-        self.take_peer_copies(state);
         self.reveal_requested(state);
         self.state().deliver_effect_replies();
         self.take_back_sends(state);
@@ -4474,6 +4489,16 @@ impl Mailroom {
             | MailEffect::OpenAttachment { .. } => {
                 Err("messages are answered from what this device keeps and the mailbox".into())
             }
+            MailEffect::ImportMessageState => {
+                Err("messages are imported in a live workspace".into())
+            }
+            MailEffect::ImportMailbox => Err("a mailbox is imported in a live workspace".into()),
+            MailEffect::ImportSavedCopies => {
+                Err("saved mail is imported in a live workspace".into())
+            }
+            MailEffect::ImportSenderTrust => {
+                Err("sender trust is imported in a live workspace".into())
+            }
             effect @ (MailEffect::LoadRemoteContent { .. }
             | MailEffect::AlwaysLoadRemoteContent { .. }
             | MailEffect::OpenLink { .. }) => self.reader_effect(effect).map(|()| done),
@@ -4490,16 +4515,18 @@ impl Mailroom {
             }
             MailEffect::AlwaysLoadRemoteContent { message } => {
                 let id = self.html_message(&message)?;
-                self.shared.borrow_mut().always_load_remote(id);
+                self.shared.borrow_mut().always_load_remote(id)?;
                 self.dirty = true;
             }
             MailEffect::OpenLink { message, url } => {
                 let id = message
                     .parse::<MessageId>()
                     .map_err(|_| "invalid message id")?;
-                let links = self
-                    .shared
-                    .borrow()
+                let state = self.shared.borrow();
+                if !state.may_read_message(id) {
+                    return Err("message is no longer loaded".into());
+                }
+                let links = state
                     .mailbox
                     .get(id)
                     .map(crate::html_mail::message_links)
@@ -4518,7 +4545,11 @@ impl Mailroom {
         let id = message
             .parse::<MessageId>()
             .map_err(|_| "invalid message id")?;
-        match self.shared.borrow().mailbox.get(id) {
+        let state = self.shared.borrow();
+        if !state.may_read_message(id) {
+            return Err("message is no longer loaded".into());
+        }
+        match state.mailbox.get(id) {
             Some(found) if found.html_body.is_some() => Ok(id),
             Some(_) => Err("the message has no remote content".into()),
             None => Err("message is no longer loaded".into()),
@@ -4560,7 +4591,8 @@ impl Mailroom {
             }
             MailTarget::Message(id) => {
                 let id = id.parse::<MessageId>().map_err(|_| "invalid message id")?;
-                if self.shared.borrow().mailbox.get(id).is_none() {
+                let state = self.shared.borrow();
+                if !state.may_read_message(id) || state.mailbox.get(id).is_none() {
                     return Err("message is no longer loaded".into());
                 }
                 self.reveals.push(Reveal::Message(id));
@@ -4576,10 +4608,11 @@ impl Mailroom {
         let id = message
             .parse::<MessageId>()
             .map_err(|_| "invalid message id")?;
-        if self.shared.borrow().mailbox.get(id).is_none() {
+        let mut state = self.shared.borrow_mut();
+        if !state.may_read_message(id) || state.mailbox.get(id).is_none() {
             return Err("message is no longer loaded".into());
         }
-        self.shared.borrow_mut().push_intent(intent(id));
+        state.push_intent(intent(id));
         Ok(())
     }
 
@@ -4640,9 +4673,11 @@ impl Mailroom {
         let message_id = message
             .parse::<MessageId>()
             .map_err(|_| AttachmentUnavailable::UnknownMessage)?;
-        let attachment = self
-            .shared
-            .borrow()
+        let state = self.shared.borrow();
+        if !state.may_read_message(message_id) {
+            return Err(AttachmentUnavailable::NotLoaded);
+        }
+        let attachment = state
             .mailbox
             .get(message_id)
             .and_then(|message| message.attachments.get(index))

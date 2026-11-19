@@ -1,4 +1,4 @@
-//! Mail's mailbox: what the reader's devices share of their mail, its verbs, the places
+//! The workspace mailbox, its verbs, the places
 //! derived from it, and the app.
 //!
 //! The mail itself stays with the engine and the server. What the reader did with each
@@ -22,6 +22,7 @@ use crate::actions::{
     valid_calendar_invitation,
 };
 use crate::app::MailApp;
+use crate::mailbox_migration::{PreviousDraft, PreviousFolder};
 use crate::model::{Draft, DraftAttachment, DraftSender, Folder};
 #[cfg(feature = "samples")]
 use crate::sample::MailFixture;
@@ -47,7 +48,7 @@ const CHECKS_KEPT: usize = 8;
 /// the window's loaded rows.
 pub(crate) const OPEN_MESSAGE_LIMIT: usize = 100;
 
-/// What the reader's devices share of their mail, beside its messages.
+/// The workspace's folders, drafts and delivery queues.
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct Mail {
     /// The folders the reader made, under their ids.
@@ -72,6 +73,9 @@ pub struct Mail {
     /// fetch of it never brings it back.
     #[model(readonly)]
     pub retired: Collection<RetiredCopy>,
+    /// Which entries were recovered from earlier mailboxes.
+    #[model(readonly, default = Set::new())]
+    pub imported: Set<String>,
 }
 
 /// A copy of a draft its server no longer needs to keep.
@@ -335,6 +339,40 @@ impl DraftState {
     answer = crate::held::answer,
 )]
 impl Mail {
+    /// Import previous mailbox entries
+    ///
+    /// Restores folders and drafts in the workspace. A pending send is restored
+    /// as a draft so an in-flight delivery cannot be started twice.
+    #[action(external, writes = drafts, writes = folders, writes = imported)]
+    pub fn import_mailbox_entries(
+        &mut self,
+        folders: Vec<PreviousFolder>,
+        drafts: Vec<PreviousDraft>,
+    ) -> Result<(), Refusal> {
+        for PreviousFolder { id, name } in folders {
+            let folder = LocalFolder { name };
+            folder.valid()?;
+            if id.parse::<uuid::Uuid>().is_err() {
+                return Err(Refusal::new("an imported folder needs a UUID"));
+            }
+            if self.imported.insert(id.clone()) {
+                self.folders.push(Id::from_raw(id), folder);
+            }
+        }
+        for PreviousDraft {
+            id,
+            message,
+            in_reply_to,
+            notes,
+        } in drafts
+        {
+            if self.imported.insert(id.clone()) {
+                self.create_draft(id, message, in_reply_to, Some(notes))?;
+            }
+        }
+        Ok(())
+    }
+
     /// A mail server confirmed it holds what `update` asked of a draft's
     /// copy.
     #[action(external)]
@@ -1408,6 +1446,7 @@ impl ResourceApp for MailShell {
     const TITLE: &'static str = "Mail";
     const TITLE_KEY: &'static str = "mail-app-title";
     const ICON: Option<&'static str> = Some("mail");
+    const WORKSPACE_RESOURCE: bool = true;
 
     /// The person's accounts, kept by Settings, and the directory of their
     /// identities, kept by Contacts: both theirs, read here for the
@@ -1421,7 +1460,7 @@ impl ResourceApp for MailShell {
         COMMANDS
     }
 
-    /// The messages, kept in parts beside the person's mailbox.
+    /// The messages, kept in parts beside the mailbox.
     fn resources(resources: &mut ui::framework::Resources<'_>) {
         resources.chain::<crate::message_states::MessageStates>();
     }
@@ -1430,9 +1469,21 @@ impl ResourceApp for MailShell {
     /// shows what each past version of the document held, and a screenshot
     /// its scenario's fixture.
     fn view(cx: &mut ViewCx<Mail>) -> Element {
+        if cx.mode().is_live() {
+            let read =
+                cx.permission_state(tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Read));
+            return cx.switch(&read, |cx, allowed| {
+                if *allowed {
+                    let app =
+                        MailApp::for_window(cx.storage(), cx.workspace().as_deref(), cx.content());
+                    crate::app::window(cx, app)
+                } else {
+                    Box::new(ui::widget::EmptyState::new("mail-workspace-access-denied"))
+                }
+            });
+        }
         let app = match cx.mode() {
-            RunMode::Live => MailApp::for_window(cx.storage(), cx.content()),
-            RunMode::Past => MailApp::for_past_version(),
+            RunMode::Live | RunMode::Past => MailApp::for_past_version(),
             #[cfg(feature = "samples")]
             RunMode::Capture => {
                 let fixture = cx
@@ -2342,39 +2393,147 @@ ui::reach_tests!(
 );
 
 #[cfg(test)]
-mod own_resource_tests {
-    /// A window naming no resource opens the person's own mailbox, never the
-    /// workspace's: a reader of the workspace keeps their own mail like
-    /// anyone else, and no other member reads it.
+mod workspace_mailbox_tests {
+    use super::MailShell;
+    use ui::framework::testing::TestApp;
+
     #[test]
-    fn mail_opens_the_persons_own_resource() {
-        let definition = ui::framework::definition::<super::MailShell>();
+    fn mail_opens_the_workspace_mailbox() {
+        let definition = ui::framework::definition::<MailShell>();
         let person = ui::permissions::MemberId::person("ad".repeat(32));
-        let own = definition
-            .member_resource_of(&person)
-            .expect("each member keeps their own Mail resource");
-        assert_eq!(
-            own.id,
-            ui::resource::DocumentId::of_member(person.id(), "mail.mailbox").unwrap()
-        );
-        assert_eq!(own.kind.as_str(), "mail.mailbox");
+        assert!(definition.keeps_workspace_resource());
+        assert!(definition.member_resource_of(&person).is_none());
     }
 
-    /// A Viewer reads the workspace only, yet their own mailbox is theirs:
-    /// its window is not view-only and their edits of it apply.
     #[test]
-    fn a_viewer_writes_their_own_mailbox() {
-        let person = "ad".repeat(32);
-        let mut app = ui::framework::testing::TestApp::<super::MailShell>::for_person_with_role(
-            &person,
-            ui::permissions::Role::Viewer,
-        )
-        .unwrap();
-        app.call("start-draft-body", serde_json::json!({"text": "Only mine"}))
-            .expect("a viewer writes their own mailbox");
+    fn the_workspace_imports_the_previous_mailbox_without_starting_a_send() {
+        use super::{Mail, mailbox};
+        use crate::actions::{DraftData, MailEffect};
+
+        let person = "f7".repeat(32);
+        let mut app = TestApp::<MailShell>::for_person(&person).unwrap();
+        let previous = app.person::<Mail>().unwrap();
+        previous
+            .invoke(&Mail::CREATE_DRAFT.with(mailbox::CreateDraft {
+                id: uuid::Uuid::new_v4().to_string(),
+                message: DraftData {
+                    subject: "Earlier draft".into(),
+                    ..DraftData::default()
+                },
+                in_reply_to: None,
+                notes: Some("Check the details".into()),
+            }))
+            .unwrap();
+        previous
+            .invoke(&Mail::SEND_MESSAGE.with(mailbox::SendMessage {
+                account: "ada@x.example".into(),
+                message: DraftData {
+                    to: "bo@x.example".into(),
+                    subject: "Previously queued".into(),
+                    ..DraftData::default()
+                },
+                in_reply_to: None,
+                draft: None,
+            }))
+            .unwrap();
+
+        let imported = app
+            .effect_confirmed(&MailEffect::ImportMailbox)
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(imported["drafts"], 2);
         app.settle();
-        assert!(app.state().draft.rich_body.is_some());
-        let tree = app.harness().inspection_json().unwrap();
-        assert!(!tree.contains("view only"), "{tree}");
+        let workspace = app.state();
+        assert!(
+            workspace
+                .drafts
+                .values()
+                .any(|draft| draft.subject == "Earlier draft")
+        );
+        assert!(
+            workspace
+                .drafts
+                .values()
+                .any(|draft| draft.subject == "Previously queued")
+        );
+        assert_eq!(workspace.outbox.pending().count(), 0);
+        let retried = app
+            .effect_confirmed(&MailEffect::ImportMailbox)
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(retried["drafts"], 0);
+    }
+
+    #[test]
+    fn previous_message_flags_import_without_owing_server_operations() {
+        use super::Mail;
+        use crate::actions::{IngestBaseline, MailEffect};
+        use crate::message_states::{MessageStates, message_states, owed};
+
+        let person = "ae".repeat(32);
+        let mut app = TestApp::<MailShell>::for_person(&person).unwrap();
+        let previous = app.person::<Mail>().unwrap();
+        let id = previous.record().checkout().id.clone();
+        let message = "earlier-message".to_owned();
+        let written = app
+            .chain_invoke_beside(
+                &id,
+                &MessageStates::INGEST.with(message_states::Ingest {
+                    messages: vec![IngestBaseline {
+                        id: message.clone(),
+                        read: Some(false),
+                        starred: Some(true),
+                        folder: Some("inbox".into()),
+                        account: Some("owner@example.test".into()),
+                        locator: Some("earlier@example.test".into()),
+                        label: Some("Earlier message".into()),
+                    }],
+                }),
+            )
+            .unwrap();
+        assert!(written.is_some(), "the old chain has the message");
+        assert!(
+            app.chain_invoke_beside(&id, &MessageStates::mark(vec![message.clone()], true))
+                .unwrap()
+                .is_some(),
+            "the old chain has the updated flags"
+        );
+        previous.record().flush();
+        app.settle();
+
+        let imported = app
+            .effect_confirmed(&MailEffect::ImportMessageState)
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(imported["messages"], 1, "{imported}");
+        app.settle();
+        let parts = app.chain_parts::<MessageStates>();
+        let mailbox = MessageStates::of(&parts);
+        let flags = mailbox.message(&message).unwrap();
+        assert!(flags.read && flags.starred);
+        assert!(flags.server.is_none());
+        assert!(owed(&mailbox).is_empty());
+        let retried = app
+            .effect_confirmed(&MailEffect::ImportMessageState)
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(retried["messages"], 0);
+    }
+
+    #[test]
+    fn a_viewer_cannot_edit_the_workspace_mailbox() {
+        let person = "ad".repeat(32);
+        let mut app =
+            TestApp::<MailShell>::for_person_with_role(&person, ui::permissions::Role::Viewer)
+                .unwrap();
+        assert!(
+            app.call("start-draft-body", serde_json::json!({"text": "Denied"}))
+                .is_err()
+        );
+        assert!(app.state().draft.rich_body.is_none());
     }
 }

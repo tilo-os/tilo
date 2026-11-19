@@ -1080,19 +1080,7 @@ pub fn sync_resource_kinds(app_dir: &Path) -> Result<()> {
             kinds.push(kind);
         }
     }
-    let mut text = with_resource_kinds(&text, &kinds).unwrap_or(text);
-    // Each member's actions waiting for a chain's part are theirs alone.
-    if crate::resource_kinds::keeps_waiting_actions(app_dir)? {
-        let mut own: Vec<String> = toml::from_str::<toml::Table>(&text)
-            .ok()
-            .and_then(|table| table.get("resources")?.get("own")?.clone().try_into().ok())
-            .unwrap_or_default();
-        let unsent = tilo_actions::surface::CHAIN_UNSENT_KIND.to_owned();
-        if !own.contains(&unsent) {
-            own.push(unsent);
-            text = with_resources_list(&text, "own", &own).unwrap_or(text);
-        }
-    }
+    let text = with_resource_kinds(&text, &kinds).unwrap_or(text);
     if std::fs::read_to_string(&manifest).ok().as_deref() != Some(text.as_str()) {
         std::fs::write(&manifest, text)
             .with_context(|| format!("writing {}", manifest.display()))?;
@@ -1242,7 +1230,7 @@ mod tests {
     }
 
     #[test]
-    fn an_app_keeping_chains_declares_each_members_waiting_actions_their_own() {
+    fn an_app_keeping_chains_preserves_legacy_queue_compatibility() {
         let app = tempfile::tempdir().unwrap();
         std::fs::write(
             app.path().join("Cargo.toml"),
@@ -1264,7 +1252,7 @@ mod tests {
             "{manifest}"
         );
         assert!(
-            manifest.contains(&format!("own = [\"so.example.draft\", \"{unsent}\"]")),
+            manifest.contains("own = [\"so.example.draft\"]"),
             "{manifest}"
         );
         sync_resource_kinds(app.path()).unwrap();

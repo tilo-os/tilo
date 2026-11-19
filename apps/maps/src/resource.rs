@@ -290,24 +290,27 @@ mod tests {
 
     #[test]
     fn offline_areas_stay_on_this_device() {
-        let mut app = TestApp::<MapsShell>::new().unwrap();
+        let mut app = TestApp::<MapsShell>::for_person(&"e5".repeat(32)).unwrap();
         let area = crate::sample::regions().remove(0);
-        app.person::<OfflineAreas>()
-            .unwrap()
+        let previous = app.person::<OfflineAreas>().unwrap();
+        previous
             .invoke(&OfflineAreas::REMEMBER.with(("test-device".to_owned(), area.clone())))
             .unwrap();
-        app.harness().relayout();
+        previous.record().flush();
+        drop(previous);
+        let mut app = app.reopen().unwrap();
         let row = format!("maps.region:{}", area.id);
         assert_eq!(actions_on(&mut app, &row), ["delete-offline-area"]);
         app.effect_confirmed(&MapsEffect::DeleteOfflineArea { area: area.id })
             .unwrap();
         assert!(
-            app.person::<OfflineAreas>()
-                .unwrap()
-                .with(|areas| areas.on("test-device"))
+            app.settings::<crate::app::offline::DownloadedAreas>()
+                .get()
+                .in_workspace(ui::framework::testing::TEST_WORKSPACE)
                 .is_empty(),
             "deleting an area forgets it on this device"
         );
+        let mut app = app.reopen().unwrap();
         assert!(actions_on(&mut app, &row).is_empty());
         assert_eq!(
             app.state(),

@@ -867,38 +867,3 @@ fields = [
   { name = "cleaned", type = { option = { list = { list = "text" } } } },
 ]
 
-[[resources]]
-kind = "canvas.recent-artworks"
-label = "Recent artworks"
-version = 1
-fields = [
-  { path = "devices", type = { map = "any" } },
-]
-
-[[resources.verbs]]
-id = "remember"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "recent", type = { named = "Recent" }, required = true, schema = { type = "object", additionalProperties = false, properties = { path = { type = "string" }, at_ms = { type = "integer", minimum = 0 }, height = { type = "number" }, thumbnail = { type = ["string", "null"] }, title = { type = "string" }, width = { type = "number" } }, required = ["path", "title", "width", "height", "at_ms"] } },
-]
-
-[[resources.verbs]]
-id = "forget"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "path", required = true, schema = { type = "string" } },
-]
-
-[[resources.types]]
-name = "Recent"
-fields = [
-  { name = "path", type = "text" },
-  { name = "title", type = "text" },
-  { name = "width", type = "float" },
-  { name = "height", type = "float" },
-  { name = "at_ms", type = "int" },
-  { name = "thumbnail", type = { option = "text" } },
-]
-

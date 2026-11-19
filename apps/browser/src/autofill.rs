@@ -83,6 +83,8 @@ pub struct AddressBook {
     pub enabled: bool,
     /// Saved addresses, by id
     pub profiles: Keyed<AddressProfile>,
+    #[model(readonly, default = false)]
+    pub(crate) restored_previous: bool,
 }
 
 impl AddressBook {
@@ -99,7 +101,21 @@ impl AddressBook {
     kind = "browser.address-book",
     read_content = AddressBook::read_document
 )]
-impl AddressBook {}
+impl AddressBook {
+    /// Restore the previous autofill profiles.
+    #[action(by_app, housekeeping, writes = enabled, writes = profiles, writes = restored_previous)]
+    pub fn restore_previous(&mut self, book: serde_json::Value) -> Result<(), Refusal> {
+        if self.restored_previous || self.enabled || !self.profiles.is_empty() {
+            return Ok(());
+        }
+        let previous = Self::from_json(&book).map_err(|error| Refusal::new(error.to_string()))?;
+        previous.valid()?;
+        self.enabled = previous.enabled;
+        self.profiles = previous.profiles;
+        self.restored_previous = true;
+        Ok(())
+    }
+}
 
 impl AddressBook {
     fn valid(&self) -> Result<(), Refusal> {
@@ -223,7 +239,7 @@ pub mod tests {
         let mut app =
             ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
         let record = app
-            .person::<AddressBook>()
+            .profile_resource::<AddressBook>()
             .expect("a test profile keeps person resources");
         (app, record)
     }

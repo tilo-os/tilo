@@ -518,3 +518,5 @@ chat-secret-saving = Wird in deinen Tresor gelegt…
 chat-secret-not-kept = Der Tresor hat es nicht aufbewahrt. Versuch es noch einmal.
 chat-secret-answer-saved = Es ist jetzt in meinem Tresor.
 chat-secret-answer-declined = Das möchte ich lieber nicht angeben.
+
+chat-import-previous-drafts = Frühere Kanalentwürfe importieren

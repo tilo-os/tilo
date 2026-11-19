@@ -476,12 +476,35 @@ fn validate_authorized_op(
 #[must_use]
 pub fn document_node(workspace: &str, app: &str, document: &str) -> TreePath {
     use tilo_actions::document_sync::{DocumentSync, document_sync};
-    let app = TreePath::workspace(workspace).app(app);
+    let resource = |id| {
+        let path = TreePath::workspace(workspace).app(app);
+        let path = match tilo_action_policy::roles::protected_resource_kind(app, id) {
+            Some(kind) => path.kind(kind),
+            None => path,
+        };
+        path.resource(id)
+    };
     match document_sync(document) {
         DocumentSync::Part { base, .. }
         | DocumentSync::Chunk { base, .. }
-        | DocumentSync::ChainHead { base } => app.resource(base).item(document),
-        DocumentSync::Eager | DocumentSync::OnDemand => app.resource(document),
+        | DocumentSync::ChainHead { base } => resource(base).item(document),
+        DocumentSync::Eager | DocumentSync::OnDemand => resource(document),
+    }
+}
+
+#[cfg(test)]
+mod protected_document_tests {
+    use super::*;
+
+    #[test]
+    fn a_kind_grant_covers_the_protected_record_at_the_host() {
+        use tilo_action_policy::roles::WORKSPACE_MAIL_COPIES_DOCUMENT;
+        let node = document_node("workspace", "so.tilo.mail", WORKSPACE_MAIL_COPIES_DOCUMENT);
+        let kind = TreePath::workspace("workspace")
+            .app("so.tilo.mail")
+            .kind("mail.copies");
+        assert!(kind.covers(&node));
+        assert!(kind.resource(WORKSPACE_MAIL_COPIES_DOCUMENT).covers(&node));
     }
 }
 

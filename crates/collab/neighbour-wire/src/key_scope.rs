@@ -31,20 +31,7 @@ impl KeyScope {
                 workspace,
                 app,
                 document,
-            } => {
-                let mut hash = blake3::Hasher::new_derive_key("tilo document key group v1");
-                hash.update(workspace.as_uuid().as_bytes());
-                hash.update(&u64::try_from(app.len()).unwrap_or(u64::MAX).to_le_bytes());
-                hash.update(app.as_bytes());
-                hash.update(document.as_bytes());
-                let mut id = [0; 16];
-                hash.finalize_xof().fill(&mut id);
-                // Group ids share the MLS wire field with workspace UUIDs.
-                // Reserve a non-RFC variant so this cannot alias a workspace
-                // or the derived UUID of a personal store.
-                id[8] |= 0xe0;
-                WorkspaceId::from_u128(u128::from_be_bytes(id))
-            }
+            } => workspace.document_key_group(app, document),
         }
     }
 

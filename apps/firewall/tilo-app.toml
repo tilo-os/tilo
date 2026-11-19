@@ -29,8 +29,6 @@ optional = []
 
 [resources]
 kinds = ["firewall.config", "firewall.applied"]
-# Each member keeps one of each as their own; nobody else in the workspace receives it.
-own = ["firewall.applied"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

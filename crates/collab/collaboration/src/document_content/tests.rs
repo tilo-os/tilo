@@ -15,6 +15,57 @@ fn resource_store(record: &str) -> (ContentStore, Arc<ContentLink>) {
 }
 
 #[test]
+fn private_fields_need_document_keys_and_authenticate_the_field_address() {
+    use collab_types::WorkspaceId;
+
+    let spec = route(
+        "so.tilo.passwords",
+        "uuid:56daeee1-adbe-4b63-b0cc-5fd549e93077",
+    );
+    let window = Arc::new(ContentLink::default());
+    ContentLink::show_on_route(&spec, &window);
+    let link = ContentLink::of(&spec);
+    let group = |workspace| {
+        key_group::KeyGroup::create(
+            workspace,
+            key_group::MemberKey::generate("vault device").unwrap(),
+        )
+        .unwrap()
+    };
+    let secret = b"vault item plaintext";
+
+    let workspace = WorkspaceId::from_u128(spec.cluster_id.as_u128());
+    link.hold_document_keys(&spec, Some(group(workspace).content_keys().unwrap()));
+    assert!(window.seal_private_field("first", secret).is_err());
+
+    let unrelated = workspace.document_key_group(&spec.app_id, "another document");
+    link.hold_document_keys(&spec, Some(group(unrelated).content_keys().unwrap()));
+    assert!(window.seal_private_field("first", secret).is_err());
+
+    let document = workspace.document_key_group(&spec.app_id, spec.document.as_deref().unwrap());
+    link.hold_document_keys(&spec, Some(group(document).content_keys().unwrap()));
+    let sealed = window.seal_private_field("first", secret).unwrap();
+    assert!(
+        !hex::decode(&sealed)
+            .unwrap()
+            .windows(secret.len())
+            .any(|part| part == secret)
+    );
+    assert_eq!(
+        window
+            .open_private_field("first", &sealed)
+            .unwrap()
+            .as_slice(),
+        secret
+    );
+    assert!(window.open_private_field("second", &sealed).is_err());
+
+    link.hold_document_keys(&spec, None);
+    assert!(window.open_private_field("first", &sealed).is_err());
+    assert!(window.seal_private_field("first", secret).is_err());
+}
+
+#[test]
 fn a_window_reads_its_record_content_on_the_link_it_keeps() {
     let scope = crate::WakeScope::new();
     let _entry = scope.enter();

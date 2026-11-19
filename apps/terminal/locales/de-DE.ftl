@@ -115,3 +115,6 @@ terminal-commands-stop = Stoppen
 terminal-commands-send = Eingabe
 terminal-commands-placeholder = Befehl eingeben
 terminal-commands-on-a-computer = Die Shell dieser Sitzung läuft auf dem Computer von jemand anderem. Ihre Ausgabe kommt hier an; getippt wird dort.
+
+terminal-import-previous-history = Frühere Arbeitsbereichsbefehle importieren
+terminal-history-import-run = Einen früheren Arbeitsbereichsbefehl importieren

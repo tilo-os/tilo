@@ -8,31 +8,65 @@ use crate::{
     Verdict,
 };
 
-/// Whether this app keeps vault documents.
+/// The workspace vault's document id within Passwords.
+pub const WORKSPACE_VAULT_DOCUMENT: &str = "uuid:56daeee1-adbe-4b63-b0cc-5fd549e93077";
+/// The Mail workspace's shared sender trust.
+pub const WORKSPACE_MAIL_TRUST_DOCUMENT: &str = "uuid:9523105b-4fbb-4129-90b2-0d40b9f3758b";
+/// The Mail workspace's retained server messages.
+pub const WORKSPACE_MAIL_COPIES_DOCUMENT: &str = "uuid:600987c0-d575-42bf-8724-a12a9342ca63";
+
+/// The chain whose parts hold the workspace mailbox's message state.
+pub const WORKSPACE_MAIL_MESSAGES_DOCUMENT: &str =
+    "derived:mail-messages@derived:default@tab:0000000000000000";
+
+/// The workspace's unsent Messages drafts.
+pub const WORKSPACE_MESSAGE_DRAFTS_DOCUMENT: &str = "uuid:fe64cba3-45c6-4e34-a3ac-95b0038e889a";
+
+/// The workspace's unsent channel messages.
+pub const WORKSPACE_CHAT_DRAFTS_DOCUMENT: &str = "uuid:6cafe9f7-825f-4016-b040-a37578d3152f";
+
+/// The workspace's Terminal command history.
+pub const WORKSPACE_TERMINAL_HISTORY_DOCUMENT: &str = "uuid:8038f29a-fb3e-400a-adc5-f411efb63325";
+
+/// The workspace's Tube watch history.
+pub const WORKSPACE_TUBE_HISTORY_DOCUMENT: &str = "uuid:3bd2daf5-120b-469b-be38-d5203c58efb2";
+
+/// The resource kind of a record that always uses independent document keys.
 #[must_use]
-pub fn is_vault_app(app: &str) -> bool {
-    app == tilo_app_id::apps::PASSWORDS || app == "dev.tilo.passwords"
+pub fn protected_resource_kind(app: &str, document: &str) -> Option<&'static str> {
+    match (app, document) {
+        (tilo_app_id::apps::PASSWORDS | "dev.tilo.passwords", WORKSPACE_VAULT_DOCUMENT) => {
+            Some("passwords.vault")
+        }
+        (tilo_app_id::apps::CHAT | "dev.tilo.chat", WORKSPACE_CHAT_DRAFTS_DOCUMENT) => {
+            Some("chat.drafts")
+        }
+        (tilo_app_id::apps::MESSAGES | "dev.tilo.messages", WORKSPACE_MESSAGE_DRAFTS_DOCUMENT) => {
+            Some("messages.drafts")
+        }
+        (
+            tilo_app_id::apps::TERMINAL | "dev.tilo.terminal",
+            WORKSPACE_TERMINAL_HISTORY_DOCUMENT,
+        ) => Some("terminal.history"),
+        (tilo_app_id::apps::TUBE | "dev.tilo.tube", WORKSPACE_TUBE_HISTORY_DOCUMENT) => {
+            Some("tube.watch-history")
+        }
+        ("so.tilo.lang.mail", "") => Some("tl.so.tilo.lang.mail"),
+        (tilo_app_id::apps::MAIL | "dev.tilo.mail", document) => match document {
+            "" => Some("mail.mailbox"),
+            WORKSPACE_MAIL_COPIES_DOCUMENT => Some("mail.copies"),
+            WORKSPACE_MAIL_TRUST_DOCUMENT => Some("mail.trusted-senders"),
+            WORKSPACE_MAIL_MESSAGES_DOCUMENT => Some("mail.messages"),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
-/// Apps whose migrated contents must use independent document keys, even
-/// while only an owner has joined the workspace.
+/// Whether the document needs independent keys from its first write.
 #[must_use]
 pub fn requires_document_keys(app: &str, document: &str) -> bool {
-    is_vault_app(app)
-        || (matches!(app, tilo_app_id::apps::MAIL | "dev.tilo.mail") && document.is_empty())
-}
-
-fn private_by_default(workspace: &str) -> [Rule; 4] {
-    use tilo_app_id::apps::{MAIL, PASSWORDS};
-    [
-        TreePath::workspace(workspace).app(PASSWORDS),
-        TreePath::workspace(workspace).app("dev.tilo.passwords"),
-        TreePath::workspace(workspace).app(MAIL).resource(""),
-        TreePath::workspace(workspace)
-            .app("dev.tilo.mail")
-            .resource(""),
-    ]
-    .map(|node| Rule::new(node, KindSet::ALL, Answer::Deny))
+    protected_resource_kind(app, document).is_some()
 }
 
 /// The kind id of the workspace's own resource. Its actions are the workspace's
@@ -608,7 +642,7 @@ impl Preset {
 #[must_use]
 pub fn role_rules(role: Role, workspace: &str) -> Vec<Rule> {
     let workspace_node = TreePath::workspace(workspace);
-    let mut rules = match role {
+    match role {
         Role::Viewer => vec![Rule::new(workspace_node, KindSet::READ, Answer::Allow)],
         Role::Commenter => vec![
             Rule::new(workspace_node, KindSet::READ, Answer::Allow),
@@ -628,11 +662,7 @@ pub fn role_rules(role: Role, workspace: &str) -> Vec<Rule> {
             rules
         }
         Role::Owner => vec![Rule::new(workspace_node, KindSet::ALL, Answer::Allow)],
-    };
-    if role != Role::Owner {
-        rules.extend(private_by_default(workspace));
     }
-    rules
 }
 
 fn editor_rules(workspace: &str, moderation_answer: Answer) -> Vec<Rule> {

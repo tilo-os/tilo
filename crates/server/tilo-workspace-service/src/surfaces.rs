@@ -467,9 +467,27 @@ mod tests {
         let workspace = collab_types::WorkspaceId::from_u128(1);
         let context = tilo_action_policy::Context::at(0);
         for (app, document) in [
-            ("so.tilo.passwords", String::new()),
+            (
+                "so.tilo.passwords",
+                tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT.to_owned(),
+            ),
             ("so.tilo.mail", String::new()),
             ("so.tilo.mail", neighbour_wire::document_part("", 0)),
+            (
+                "so.tilo.mail",
+                neighbour_wire::document_part(
+                    tilo_action_policy::roles::WORKSPACE_MAIL_MESSAGES_DOCUMENT,
+                    0,
+                ),
+            ),
+            (
+                "so.tilo.mail",
+                tilo_action_policy::roles::WORKSPACE_MAIL_TRUST_DOCUMENT.to_owned(),
+            ),
+            (
+                "so.tilo.mail",
+                tilo_action_policy::roles::WORKSPACE_MAIL_COPIES_DOCUMENT.to_owned(),
+            ),
         ] {
             let route = crate::payloads::Route {
                 app_id: app.into(),

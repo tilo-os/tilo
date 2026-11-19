@@ -2,10 +2,8 @@
 //! commit after which words, the words they kept as typed when corrected,
 //! and where they tend to hit each letter.
 //!
-//! It is a resource of the keyboard's ([`ui::framework::PersonResource`]),
-//! kept in the workspace the keyboard is open in and synced with it.
-//! Nothing typed into a secret field, and nothing at all while
-//! personalization is off, is learned.
+//! Learning stays in the person's profile. The keyboard excludes secret fields
+//! and learns only while personalization is enabled.
 
 use std::collections::BTreeMap;
 
@@ -30,6 +28,8 @@ pub struct Learned {
     /// Where the person tends to hit each letter, by the letter.
     #[model(readonly)]
     pub touch: BTreeMap<String, KeyOffset>,
+    #[model(readonly, default = false)]
+    pub(crate) restored_previous: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -87,9 +87,28 @@ impl Learned {
         }
     }
 
+    /// Restore the former workspace's saved learning to the profile.
+    #[action(by_app, housekeeping, writes = transitions, writes = kept, writes = touch, writes = restored_previous)]
+    pub fn restore_previous(
+        &mut self,
+        learned: serde_json::Value,
+    ) -> Result<(), tilo_resource::Refusal> {
+        if self.restored_previous || !self.is_empty() {
+            return Ok(());
+        }
+        let previous = Self::from_json(&learned)
+            .map_err(|error| tilo_resource::Refusal::new(error.to_string()))?;
+        *self = previous;
+        self.restored_previous = true;
+        Ok(())
+    }
+
     #[action]
     pub fn forget(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            restored_previous: true,
+            ..Self::default()
+        };
     }
 }
 

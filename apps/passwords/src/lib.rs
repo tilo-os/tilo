@@ -13,6 +13,7 @@ mod search;
 mod transfer;
 mod vault;
 mod window;
+mod workspace_vault;
 pub use crate::vault::Screen;
 pub use actions::PasswordsEffect;
 pub use resource::{Passwords, PasswordsShell};
@@ -26,6 +27,7 @@ pub struct PasswordsModel {
 enum Vault {
     Local(SecretStore),
     Shared(CredentialOwner),
+    Workspace(workspace_vault::WorkspaceVault, Option<CredentialOwner>),
 }
 
 const CLOSED: &str = "the vault is not open in this window";
@@ -105,6 +107,20 @@ impl PasswordsModel {
             store: Some(Vault::Shared(owner)),
         }
     }
+    pub(crate) fn workspace(
+        opener: ui::framework::ResourceOpener<Passwords>,
+        device_owner: Option<CredentialOwner>,
+    ) -> Self {
+        Self {
+            store: Some(Vault::Workspace(
+                workspace_vault::WorkspaceVault::new(opener),
+                device_owner,
+            )),
+        }
+    }
+    pub(crate) fn in_workspace(&self) -> bool {
+        matches!(self.store, Some(Vault::Workspace(..)))
+    }
     pub fn closed() -> Self {
         Self { store: None }
     }
@@ -117,11 +133,17 @@ impl PasswordsModel {
     /// never waits on the disk, opens the person's vault on a thread of its own, which
     /// calls `ready` once it is open; anywhere else it is opened by the first read.
     pub fn open_without_waiting(&self, ready: impl FnOnce() + Send + 'static) -> bool {
+        if let Some(owner) = self.credential_owner()
+            && ui::storage::waiting::forbidden()
+        {
+            return owner.open_without_waiting(ready) || self.in_workspace();
+        }
+        true
+    }
+    fn credential_owner(&self) -> Option<&CredentialOwner> {
         match &self.store {
-            Some(Vault::Shared(owner)) if ui::storage::waiting::forbidden() => {
-                owner.open_without_waiting(ready)
-            }
-            _ => true,
+            Some(Vault::Shared(owner)) | Some(Vault::Workspace(_, Some(owner))) => Some(owner),
+            _ => None,
         }
     }
     /// Refuse to open the vault on a thread that must never wait on the disk: there it is
@@ -141,6 +163,7 @@ impl PasswordsModel {
             Vault::Shared(owner) => owner
                 .read(read)
                 .map_err(|error| format!("could not access vault: {error:?}")),
+            Vault::Workspace(..) => Err(CLOSED.into()),
         }
     }
     fn edit<T>(&mut self, edit: impl FnOnce(&mut SecretStore) -> T) -> Result<T, String> {
@@ -150,40 +173,52 @@ impl PasswordsModel {
             Vault::Shared(owner) => owner
                 .edit(edit)
                 .map_err(|error| format!("could not access vault: {error:?}")),
+            Vault::Workspace(..) => Err(CLOSED.into()),
         }
     }
     pub fn recovery_error(&self) -> Option<String> {
+        if let Some(Vault::Workspace(vault, _)) = &self.store {
+            return vault.check_read().err();
+        }
         self.store.as_ref()?;
         self.read(|store| store.recovery_error().map(str::to_owned))
             .unwrap_or_else(Some)
     }
     pub fn items(&self) -> Vec<SecretItem> {
+        if let Some(Vault::Workspace(vault, _)) = &self.store {
+            return vault.items().unwrap_or_default();
+        }
         self.read(SecretStore::list).unwrap_or_default()
     }
     pub fn app_grants(&self) -> Vec<CredentialGrant> {
         if self.opened().is_err() {
             return Vec::new();
         }
-        match &self.store {
-            Some(Vault::Shared(owner)) => owner.grants().unwrap_or_default(),
-            _ => self.read(SecretStore::grants).unwrap_or_default(),
+        if let Some(owner) = self.credential_owner() {
+            if !owner.is_open() && ui::storage::waiting::forbidden() {
+                return Vec::new();
+            }
+            return owner.grants().unwrap_or_default();
         }
+        self.read(SecretStore::grants).unwrap_or_default()
     }
     pub fn app_proposals(&self) -> Vec<accounts::CredentialProposal> {
         if self.opened().is_err() {
             return Vec::new();
         }
+        if let Some(owner) = self.credential_owner() {
+            return owner.proposals().unwrap_or_default();
+        }
         match &self.store {
-            Some(Vault::Shared(owner)) => owner.proposals().unwrap_or_default(),
-            Some(Vault::Local(_)) => tilo_messaging::service::proposals(),
-            None => Vec::new(),
+            Some(Vault::Local(_) | Vault::Workspace(_, None)) => {
+                tilo_messaging::service::proposals()
+            }
+            _ => Vec::new(),
         }
     }
     pub fn proposal_wake_after(&self) -> Option<std::time::Duration> {
-        match &self.store {
-            Some(Vault::Shared(owner)) => owner.proposal_wake_after(),
-            _ => None,
-        }
+        self.credential_owner()
+            .and_then(CredentialOwner::proposal_wake_after)
     }
     /// Decide a proposal an app made for access to an item.
     ///
@@ -195,14 +230,18 @@ impl PasswordsModel {
         id: &str,
         decision: accounts::AccessDecision,
     ) -> Result<(), String> {
-        match &self.store {
-            Some(Vault::Shared(owner)) => owner
+        if let Some(owner) = self.credential_owner() {
+            return owner
                 .decide_proposal(id, decision)
                 .map(drop)
-                .map_err(|_| CATALOG.t("passwords-request-expired")),
-            Some(Vault::Local(_)) => tilo_messaging::service::decide(id, decision)
-                .map_err(|_| CATALOG.t("passwords-request-expired")),
-            None => Err(CATALOG.t("passwords-request-expired")),
+                .map_err(|_| CATALOG.t("passwords-request-expired"));
+        }
+        match &self.store {
+            Some(Vault::Local(_) | Vault::Workspace(_, None)) => {
+                tilo_messaging::service::decide(id, decision)
+                    .map_err(|_| CATALOG.t("passwords-request-expired"))
+            }
+            _ => Err(CATALOG.t("passwords-request-expired")),
         }
     }
     pub fn reload(&mut self) {
@@ -214,6 +253,13 @@ impl PasswordsModel {
         match &self.store {
             Some(Vault::Shared(owner)) => owner.revision(),
             Some(Vault::Local(_)) => tilo_messaging::service::proposals_revision(),
+            Some(Vault::Workspace(vault, owner)) => Some(
+                vault.revision().rotate_left(13)
+                    ^ owner
+                        .as_ref()
+                        .and_then(CredentialOwner::revision)
+                        .unwrap_or(0),
+            ),
             None => None,
         }
     }
@@ -231,11 +277,12 @@ impl PasswordsModel {
     /// Why the vault cannot durably store the revocation.
     pub fn revoke_app_grant(&mut self, grant: &CredentialGrant) -> Result<bool, String> {
         self.opened()?;
-        match &mut self.store {
-            Some(Vault::Shared(owner)) => owner.revoke_grant(grant),
-            _ => self.edit(|store| store.revoke_grant(grant))?,
-        }
-        .map_err(|error| format!("could not revoke app access: {error:?}"))
+        let result = if let Some(owner) = self.credential_owner() {
+            owner.revoke_grant(grant)
+        } else {
+            self.edit(|store| store.revoke_grant(grant))?
+        };
+        result.map_err(|error| format!("could not revoke app access: {error:?}"))
     }
     pub fn search(&self, query: &str) -> Vec<SecretItem> {
         let query = query.trim().to_lowercase();
@@ -264,10 +311,8 @@ impl PasswordsModel {
         analyze_health(&self.items())
     }
     pub fn save_item(&mut self, item: &mut SecretItem) -> Result<SecretId, String> {
-        let id = item.id.clone();
-        self.edit(|store| store.put(item))?
-            .map_err(|error| format!("could not save item: {error:?}"))?;
-        Ok(id)
+        self.update(item)?;
+        Ok(item.id.clone())
     }
     /// Finish writing what [`Self::save_item`] and [`Self::remove`] left in flight:
     /// `Ok(false)` while a browser page or the frame loop's writer thread is still writing,
@@ -277,6 +322,9 @@ impl PasswordsModel {
     ///
     /// Why the store refused the write.
     pub fn flush(&mut self) -> Result<bool, String> {
+        if let Some(Vault::Workspace(vault, _)) = &self.store {
+            return vault.flush();
+        }
         if self.store.is_none() {
             return Ok(true);
         }
@@ -290,6 +338,9 @@ impl PasswordsModel {
     ///
     /// Why the secret store cannot complete the removal.
     pub fn remove(&mut self, id: &SecretId) -> Result<bool, String> {
+        if let Some(Vault::Workspace(vault, _)) = &self.store {
+            return vault.remove(id);
+        }
         self.edit(|store| store.remove(id))?
             .map_err(|e| format!("could not remove login: {e:?}"))
     }
@@ -299,6 +350,15 @@ impl PasswordsModel {
     ///
     /// Why the secret store cannot persist the update.
     pub fn update(&mut self, item: &mut SecretItem) -> Result<(), String> {
+        if let Some(Vault::Workspace(vault, _)) = &self.store {
+            let last_updated = item.updated_unix;
+            item.updated_unix = vault::now_unix();
+            if let Err(error) = vault.put(item) {
+                item.updated_unix = last_updated;
+                return Err(error);
+            }
+            return Ok(());
+        }
         self.edit(|store| store.put(item))?
             .map_err(|error| format!("could not update login: {error:?}"))
     }
@@ -308,13 +368,21 @@ impl PasswordsModel {
     ///
     /// Why the item is missing or the store cannot reveal it.
     pub fn reveal(&self, id: &SecretId) -> Result<zeroize::Zeroizing<String>, String> {
+        if let Some(Vault::Workspace(vault, _)) = &self.store {
+            return vault
+                .item(id)
+                .map(|item| zeroize::Zeroizing::new(item.password));
+        }
         self.read(|store| store.reveal_password(id))?
             .map_err(|error| format!("could not reveal login: {error:?}"))
     }
     pub fn reveal_value(&self, id: &SecretId) -> Result<zeroize::Zeroizing<String>, String> {
-        let item = self
-            .read(|store| store.get(id))?
-            .ok_or_else(|| "item no longer exists".to_string())?;
+        let item = match &self.store {
+            Some(Vault::Workspace(vault, _)) => vault.item(id)?,
+            _ => self
+                .read(|store| store.get(id))?
+                .ok_or_else(|| "item no longer exists".to_string())?,
+        };
         let value = if item.kind == accounts::SecretItemKind::SecureNote {
             item.notes
         } else {

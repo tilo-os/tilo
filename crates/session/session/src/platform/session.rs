@@ -721,6 +721,9 @@ impl Session {
             (beside, &device_agents),
             Some(peer_documents.clone()),
         );
+        if let Some(personal) = sync.as_ref().and_then(|sync| sync.personal()) {
+            conversations.use_personal_store(personal.sync().clone());
+        }
         // The records the session itself writes are the workspaces' own, and its writes reach this
         // device's apps as a member's do.
         if let Some(engine) = &engine {

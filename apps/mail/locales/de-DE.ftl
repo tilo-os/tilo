@@ -50,7 +50,7 @@ mail-move-messages = Nachrichten nach { $to } verschoben
 mail-purge = Nachrichten endgültig gelöscht
 mail-ingest = Post abgerufen
 mail-server-applied = Der Mailserver hat eine Änderung übernommen
-mail-keep-copies = Abgerufene Post für deine anderen Geräte behalten
+mail-keep-copies = Abgerufene Post für den Arbeitsbereich behalten
 mail-forget-copies = Post verworfen, die ihr Server nicht mehr hält
 mail-mail-copies-copies = Die für deine anderen Geräte behaltene Post geändert
 mail-start-draft-body = Angefangen, eine Nachricht zu schreiben
@@ -191,7 +191,9 @@ mail-status-deleted = { $count ->
     [one] Eine Nachricht gelöscht
    *[other] { $count } Nachrichten gelöscht
 }
-mail-status-trusted-senders-not-saved = Deine vertrauenswürdigen Absender ließen sich nicht speichern: { $error }
+mail-status-trusted-senders-not-saved = Die vertrauenswürdigen Absender des Arbeitsbereichs ließen sich nicht speichern: { $error }
+mail-import-sender-trust = Bisherige vertrauenswürdige Absender in diesen Arbeitsbereich importieren
+mail-trusted-senders-import-legacy = Bisherige vertrauenswürdige Absender importieren
 mail-status-account-not-saved = Konto ausgewählt, aber die Einstellung ließ sich nicht speichern: { $error }
 mail-status-purged = { $count ->
     [one] Eine Nachricht aus dem Papierkorb endgültig gelöscht
@@ -303,8 +305,9 @@ mail-trusted-senders-distrust = Diesem Absender nicht mehr vertrauen
 ## What the app is called in a window and in the launcher
 mail-app-title = Mail
 ## What the resources are called, and the actions on them
-mail-copies = Mail auf deinen Geräten
+mail-copies = E-Mails des Arbeitsbereichs
 mail-copies-keep-copies = Abgerufene Mails behalten
+mail-copies-import-copies = Abgerufene E-Mails importieren
 mail-copies-forget-copies = Abgerufene Mails vergessen
 
 ## Was Mail einmal sagt: was es getan hat, was nicht ging, und was jetzt hilft
@@ -366,3 +369,10 @@ mail-attachment-not-loaded = Dieser Anhang ist nicht mehr in diesem Postfach
 mail-attachment-not-kept = { $file } wird auf diesem Gerät nicht mehr aufbewahrt
 mail-attachment-too-large-save = { $file } ist zu groß, um sie hier zu speichern; öffne sie stattdessen in Dateien
 mail-attachment-changed = Dieser Anhang hat sich seit dem Herunterladen geändert
+mail-import-saved-copies = Gespeicherte E-Mails importieren
+mail-import-mailbox = Früheres Postfach importieren
+mail-mailbox-import-mailbox-entries = Früheres Postfach importieren
+mail-workspace-access-denied = Deine Rolle erlaubt keinen Zugriff auf die E-Mails dieses Arbeitsbereichs
+
+mail-messages-import-previous-message = Frühere Nachricht wiederherstellen
+mail-import-message-state = Früheren Nachrichtenstatus importieren

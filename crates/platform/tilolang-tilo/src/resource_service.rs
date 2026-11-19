@@ -240,6 +240,9 @@ impl ResourceService {
     pub fn kept_document(&self) -> Option<(String, String)> {
         let app = &self.kept_in_workspace.as_ref()?.app;
         let package = self.host.package(app)?;
+        if package.meta.profile_resources {
+            return None;
+        }
         let id = if package.meta.own_resources {
             crate::own_document(&package.meta, &self.person)?
         } else {
@@ -256,6 +259,10 @@ impl ResourceService {
         self.kept_in_workspace
             .as_ref()
             .is_none_or(|kept| kept.app == app)
+            && !self
+                .host
+                .package(app)
+                .is_some_and(|package| package.meta.profile_resources)
     }
 
     /// Keep the large parts of the document of `app`'s actions in `store`: the content store the

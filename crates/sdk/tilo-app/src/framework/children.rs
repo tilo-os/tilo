@@ -1383,6 +1383,7 @@ impl<C: ChildResource> Children<C> {
             permissions: None,
             app_id,
             app_title: app_id,
+            device_queue: None,
         };
         let state = Rc::new(ChildrenState::<C>::open(workspace, Rc::new(parent))?);
         Some(Self::new(state, me.clone()))

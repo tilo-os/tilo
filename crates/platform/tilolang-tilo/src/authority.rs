@@ -88,7 +88,7 @@ impl TiloAuthority {
         let mut state = self.state.borrow_mut();
         state.trusted.insert(module.clone());
         state.apps.insert(module.clone(), meta.app.clone());
-        if meta.own_resources {
+        if meta.own_resources || meta.profile_resources {
             state.own.insert(meta.app.clone());
         }
         if !meta.web.is_empty() {
@@ -265,6 +265,11 @@ impl Authority for TiloAuthority {
             });
         let node = match &own_document {
             Some((record, _)) => node.resource(record.clone()),
+            None if access.is_some()
+                && tilo_action_policy::roles::requires_document_keys(action.app.as_str(), "") =>
+            {
+                node.resource("")
+            }
             None => node,
         }
         .action(&action.action);

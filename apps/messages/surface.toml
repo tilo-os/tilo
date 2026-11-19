@@ -340,6 +340,7 @@ label = "Message drafts"
 version = 1
 fields = [
   { path = "drafts", type = { map = "text" } },
+  { path = "handled", type = { map = "bool" }, readonly = true },
 ]
 
 [[resources.verbs]]
@@ -355,5 +356,23 @@ id = "drop-draft"
 kind = "undoable"
 params = [
   { name = "conversation", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "import-previous"
+kind = "undoable"
+writes = ["record", "drafts", "handled"]
+params = [
+  { name = "conversation", type = "text", required = true, schema = { type = "string" } },
+  { name = "body", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "sent"
+kind = "undoable"
+writes = ["record", "drafts", "handled"]
+params = [
+  { name = "conversation", type = "text", required = true, schema = { type = "string" } },
+  { name = "delivered", type = "text", required = true, schema = { type = "string" } },
 ]
 

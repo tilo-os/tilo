@@ -542,6 +542,12 @@ impl<R: Resource> ResourceEnv<R> {
         self.storage.person::<P>()
     }
 
+    /// The app's record of `P` in the person's profile. Its route is in the
+    /// person's own cluster, independent of which workspace opened the app.
+    pub fn profile_resource<P: Resource>(&self) -> Option<super::PersonResource<P>> {
+        self.storage.profile_resource::<P>()
+    }
+
     /// The record `P` that `owner` keeps in the window's workspace and every app
     /// of the workspace opens (`collab_types::WORKSPACE_DOCUMENTS`): the
     /// workspace's emoji, which are Chat's. Changes to it are decided by the

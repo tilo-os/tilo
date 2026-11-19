@@ -1,8 +1,4 @@
-//! Mail is each member's own. Two members of one workspace each run Mail in a tilolang host:
-//! each instance keeps its documents in that person's own document of the workspace, on a route of
-//! its own, so what one member's mail holds never reaches the other's document, views, search or
-//! published actions, and the first member's instance refuses what the second asks of it
-//! through the API.
+//! Desktop TiloLang Mail uses one mailbox per workspace and applies workspace roles.
 
 #![allow(
     clippy::unwrap_used,
@@ -16,6 +12,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
+use tilo_action_policy::{
+    Acting, Answer, Grant, Grantee, KindSet, MemberAccess, Role, WorkspacePolicy,
+};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_render_protocol::patch::{self, Level, ToUi, Transport as _};
@@ -112,6 +111,12 @@ fn wake() -> tilolang_tilo::background::Waker {
     Arc::new(|| {})
 }
 
+fn policy(workspace: uuid::Uuid) -> WorkspacePolicy {
+    let mut policy = WorkspacePolicy::new(workspace.to_string(), ADA);
+    policy.members.insert(BO.to_owned(), Role::Viewer);
+    policy
+}
+
 fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundle>) -> Member {
     let route = tilolang_process::route_of(&bundle.meta, workspace, person);
     let broker = Broker::on(bus, route.clone(), person);
@@ -131,8 +136,18 @@ fn member(bus: &Rc<Bus>, workspace: uuid::Uuid, person: &str, bundle: &Arc<Bundl
     let kept = host.kept(MAIL).unwrap();
     let (ours, theirs) = Channel::pair().unwrap();
     let watched = ours.as_fd().try_clone_to_owned().unwrap();
+    let mut policy = policy(workspace);
+    policy.grants.push(Grant::new(
+        "read-mail",
+        Grantee::role(Role::Viewer),
+        policy.node().app(MAIL),
+        KindSet::READ,
+        Answer::Allow,
+        Grantee::person(ADA),
+    ));
     let hosted = Hosted::with_document(
-        Spec::new(MAIL, workspace.to_string(), 1, person),
+        Spec::new(MAIL, workspace.to_string(), 1, person)
+            .access(MemberAccess::new(policy, Acting::person(person))),
         record,
         Arc::clone(bundle),
         &kept,
@@ -215,81 +230,27 @@ impl Member {
 }
 
 /// None of `ada`'s mail reaches `bo`: not his document, his window, his search or his api.
-fn nothing_of_reaches(ada: &Member, bo: &Member) {
-    assert!(
-        bo.inbox.borrow().is_empty(),
-        "nothing of Ada's document was delivered to Bo"
-    );
-    let theirs: std::collections::HashSet<_> = ada
-        .hosted()
-        .record()
-        .doc()
-        .get_changes(&[])
-        .iter()
-        .map(automerge::Change::hash)
-        .collect();
-    assert!(
-        bo.hosted()
-            .record()
-            .doc()
-            .get_changes(&[])
-            .iter()
-            .all(|change| !theirs.contains(&change.hash())),
-        "Bo's document holds none of Ada's changes"
-    );
-    for what in ADAS {
-        assert!(
-            !bo.window.shows().contains(what),
-            "Bo's Mail does not show {what}"
-        );
-        assert!(
-            !bo.found().contains(what),
-            "Bo's search does not find {what}"
-        );
-    }
-    for what in ADAS.iter().chain(&ON_HER_MAIL) {
-        assert!(
-            !bo.published().contains(what),
-            "Bo's api does not offer {what}"
-        );
-    }
-}
-
 #[test]
-fn mail_is_each_members_own_document_of_the_workspace() {
+fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let bundle = Arc::new(mail());
-    assert!(bundle.meta.own_resources, "Mail declares `documents: .own`");
+    assert!(!bundle.meta.own_resources);
     let workspace = uuid::Uuid::new_v4();
     let bus = Rc::new(Bus::default());
     let mut ada = member(&bus, workspace, ADA, &bundle);
     let mut bo = member(&bus, workspace, BO, &bundle);
 
-    // Each member's Mail is on their own document of the workspace, which only their devices are
-    // admitted to; an app that shares its documents stays on the workspace's document of the app.
-    assert_eq!(
-        ada.route.document.as_deref(),
-        tilolang_tilo::member_document_of("so.tilo.lang.mail", ADA).as_deref()
-    );
-    assert_eq!(
-        bo.route.document.as_deref(),
-        tilolang_tilo::member_document_of("so.tilo.lang.mail", BO).as_deref()
-    );
-    let counter = compiled(
-        "counter",
-        include_str!("../../../../apps/tl/counter/app.tl"),
-        include_str!("../../../../apps/tl/counter/app.ids"),
-    );
-    assert_eq!(
-        tilolang_process::route_of(&counter.meta, workspace, ADA),
-        RouteSpec::app("so.tilo.lang.counter", workspace),
-        "a shared app's document is the workspace's"
-    );
-    assert_eq!(
-        tilolang_process::route_of(&bundle.meta, workspace, "ada"),
-        RouteSpec::app(MAIL, workspace),
-        "someone without a root identity is a member of no workspace: nobody else reads theirs"
-    );
+    assert_eq!(ada.route, RouteSpec::app(MAIL, workspace));
+    assert_eq!(bo.route, ada.route);
+    assert!(collab_types::validator::requires_independent_document_keys(
+        MAIL, ""
+    ));
+    assert!(collab_types::validator::requires_independent_document_keys(
+        MAIL,
+        &tilo_actions::document_sync::document_chunk("", 1),
+    ));
+    let old = tilolang_tilo::member_document_of(MAIL, ADA).unwrap();
+    assert!(!tilolang_tilo::reaches(MAIL, Some(&old), Some(BO)));
 
     // Ada's mail arrives: an inbox a week in.
     ada.settle();
@@ -313,11 +274,25 @@ fn mail_is_each_members_own_document_of_the_workspace() {
         );
     }
 
-    // None of it reaches Bo: not his document, his window, his search or his api.
-    nothing_of_reaches(&ada, &bo);
+    for what in ADAS {
+        assert!(bo.window.shows().contains(what), "Bo's Mail shows {what}");
+        assert!(bo.found().contains(what), "Bo's search finds {what}");
+    }
+    assert_eq!(
+        bo.hosted().record().doc().get_heads(),
+        ada.hosted().record().doc().get_heads(),
+        "both members have the same mailbox history"
+    );
+    assert!(
+        bo.hosted()
+            .published()
+            .iter()
+            .all(|action| action.action_label != "Archive"
+                || !action.contract.availability.is_available()),
+        "the viewer's command palette cannot archive a message"
+    );
 
-    // Through the API, Bo asks Ada's instance to archive her conversation: refused, and her
-    // mail is as it was. Ada may.
+    // View access lets Bo read the mailbox. Ada can archive the conversation.
     let archive = ada
         .hosted()
         .published()
@@ -339,7 +314,7 @@ fn mail_is_each_members_own_document_of_the_workspace() {
     ada.inbox.borrow_mut().push_back(invoke(1, BO));
     ada.settle();
     assert!(
-        ada.answer(1).contains("permission_denied"),
+        ada.answer(1).contains("the action is not allowed"),
         "Bo is refused: {}",
         ada.answer(1)
     );
@@ -352,7 +327,11 @@ fn mail_is_each_members_own_document_of_the_workspace() {
     ada.settle();
     assert!(
         ada.answer(2).contains("Succeeded"),
-        "Ada archives her own: {}",
+        "Ada archives the conversation: {}",
         ada.answer(2)
     );
+    let revoked = MemberAccess::new(policy(workspace), Acting::person(BO));
+    assert!(bo.host.set_access(MAIL, Some(&revoked)));
+    assert_eq!(bo.host.instances().count(), 0);
+    assert_eq!(bo.host.take_ended(), [1]);
 }

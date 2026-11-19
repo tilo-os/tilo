@@ -752,6 +752,16 @@ impl<'a> Resources<'a> {
         self
     }
 
+    /// An additional document `P` that this app keeps in the workspace.
+    pub fn workspace_record<P: Resource>(&mut self, id: &str) -> &mut Self {
+        if let Some(storage) = self.storage {
+            storage.workspace_record::<P>(id);
+        } else {
+            self.chains.push(tilo_resource::ResourceKind::of::<P>());
+        }
+        self
+    }
+
     /// The settings section `T`, a resource model ([`ResourceEnv::settings`](super::ResourceEnv::settings)).
     pub fn settings<T>(&mut self) -> &mut Self
     where

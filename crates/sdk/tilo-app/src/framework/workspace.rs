@@ -51,6 +51,25 @@ impl<P: Resource> Clone for ResourceOpener<P> {
     }
 }
 
+pub type LegacyMemberContent<P> = Result<
+    Option<(
+        String,
+        Rc<<P as Resource>::State>,
+        tilo_content::ContentStore,
+    )>,
+    String,
+>;
+
+/// A previous member record's id, locally held parts, and content store.
+pub type LegacyMemberParts<C> = Result<
+    Option<(
+        String,
+        Vec<(u64, Rc<<C as Resource>::State>)>,
+        tilo_content::ContentStore,
+    )>,
+    String,
+>;
+
 impl<P: Resource> ResourceOpener<P> {
     pub(crate) fn new(storage: Rc<super::settings::ViewStorage>, owner: &'static str) -> Self {
         Self {
@@ -65,6 +84,25 @@ impl<P: Resource> ResourceOpener<P> {
     /// record, or while the workspace has not delivered it.
     pub fn open(&self, id: &str) -> Option<WorkspaceResource<P>> {
         self.storage.shared_resource::<P>(self.owner, id)
+    }
+
+    /// Read the current member's previous record of this app's kind for import.
+    pub fn legacy_member_state(&self) -> Result<Option<Rc<P::State>>, String> {
+        self.storage.legacy_member_state::<P>(self.owner)
+    }
+
+    /// Read the current member's previous record id, state and content for import.
+    pub fn legacy_member_content(&self) -> LegacyMemberContent<P> {
+        self.storage.legacy_member_content::<P>(self.owner)
+    }
+
+    /// Read the parts kept beside the previous member record, for migration.
+    /// A part absent from this device is left for the device that holds it.
+    ///
+    /// # Errors
+    /// The previous record or one of its held parts cannot be read.
+    pub fn legacy_member_parts<C: super::Chained<Base = P>>(&self) -> LegacyMemberParts<C> {
+        self.storage.legacy_member_parts::<C>(self.owner)
     }
 }
 
@@ -428,26 +466,67 @@ impl<P: Resource> WorkspaceResource<P> {
         &self.shared.me
     }
 
+    /// Whether the workspace grants read access to this record.
+    #[must_use]
+    pub fn may_read(&self) -> bool {
+        let node = TreePath::root()
+            .app(self.shared.owner)
+            .kind(P::KIND)
+            .resource(self.id().route());
+        self.answer(&node, tilo_actions::ActionKind::Read) == tilo_actions::policy::Answer::Allow
+    }
+
+    fn answer(
+        &self,
+        node: &TreePath,
+        kind: tilo_actions::ActionKind,
+    ) -> tilo_actions::policy::Answer {
+        use tilo_actions::policy::Answer;
+        let invoker = ui_core::invocation_scope::current_invoker();
+        let Some(permissions) = &self.shared.permissions else {
+            return if invoker.is_none() {
+                Answer::Allow
+            } else {
+                Answer::Deny
+            };
+        };
+        let current = permissions.current();
+        let current = if let Some(invoker) = invoker {
+            let access = current.access().invoked_by(&invoker.acting);
+            current.with_access(access)
+        } else {
+            current
+        };
+        current.answer(node, kind)
+    }
+
+    fn independently_sealed(&self) -> bool {
+        tilo_actions::policy::roles::requires_document_keys(self.shared.owner, self.id().route())
+    }
+
     /// Whether the workspace's grants let the person invoke the verb `verb` of
     /// the record, as its owner publishes it. A window that knows nothing
     /// of the workspace's grants (a test host) lets the record decide.
     pub fn may(&self, verb: &str) -> bool {
-        let Some(permissions) = &self.shared.permissions else {
-            return true;
-        };
         let Some(declared) = P::declarations().into_iter().find(|decl| decl.id == verb) else {
-            return false;
+            return self.shared.permissions.is_none() && !self.independently_sealed();
         };
-        permissions.check(&PermissionScope::Action {
-            node: tilo_actions::action_node(
-                &TreePath::root(),
-                self.shared.owner,
-                P::KIND,
-                self.shared.record.checkout().id.as_str(),
-                declared.field,
-                verb,
-            ),
-            kind: declared.kind,
+        let node = tilo_actions::action_node(
+            &TreePath::root(),
+            self.shared.owner,
+            P::KIND,
+            self.id().route(),
+            declared.field,
+            verb,
+        );
+        if self.independently_sealed() {
+            return self.answer(&node, declared.kind) == tilo_actions::policy::Answer::Allow;
+        }
+        self.shared.permissions.as_ref().is_none_or(|permissions| {
+            permissions.check(&PermissionScope::Action {
+                node,
+                kind: declared.kind,
+            })
         })
     }
 
@@ -474,7 +553,11 @@ impl<P: Resource> WorkspaceResource<P> {
         invoker: &ActionInvoker,
         invoke: &Invoke<P>,
     ) -> Result<(), ActionError> {
+        let scope = self
+            .independently_sealed()
+            .then(|| ui_core::invocation_scope::InvokerScope::enter(invoker.clone()));
         let action = self.admit(invoke)?;
+        drop(scope);
         match self.shared.apply_as(&action, invoker) {
             Applied::Done(result) => {
                 self.shared.refresh();
@@ -486,13 +569,25 @@ impl<P: Resource> WorkspaceResource<P> {
         }
     }
 
+    /// Apply the typed action attributed to the current caller.
+    ///
+    /// # Errors
+    /// The current grants or the record refuse the change.
+    pub fn act(&self, action: &P::Action) -> Result<(), ActionError> {
+        self.act_as(&super::resources::acting(&self.shared.me), action)
+    }
+
     /// Apply the typed `action` as `invoker`, as [`Self::invoke_as`] applies the one its
     /// arguments build: the grants it was opened with decide it.
     ///
     /// # Errors
     /// The grants refuse it, the document does, or it cannot be changed right now.
     pub fn act_as(&self, invoker: &ActionInvoker, action: &P::Action) -> Result<(), ActionError> {
+        let scope = self
+            .independently_sealed()
+            .then(|| ui_core::invocation_scope::InvokerScope::enter(invoker.clone()));
         self.admitted(action)?;
+        drop(scope);
         match self.shared.apply_as(action, invoker) {
             Applied::Done(result) => {
                 self.shared.refresh();
@@ -598,24 +693,24 @@ impl<P: Resource> WorkspaceResource<P> {
                 Err(refused())
             };
         }
-        let Some(permissions) = &self.shared.permissions else {
-            return Ok(());
-        };
         let need = tilo_resource::need_of::<P>(action);
         let node = TreePath::root()
             .app(self.shared.owner)
             .kind(P::KIND)
-            .resource(self.id().as_str().to_owned())
+            .resource(self.id().route())
             .field(need.field.as_deref().unwrap_or_default())
             .action(tilo_resource::FIELD_EDIT);
-        if permissions.check(&PermissionScope::Action {
-            node,
-            kind: need.kind,
-        }) {
-            Ok(())
+        let allowed = if self.independently_sealed() {
+            self.answer(&node, need.kind) == tilo_actions::policy::Answer::Allow
         } else {
-            Err(refused())
-        }
+            self.shared.permissions.as_ref().is_none_or(|permissions| {
+                permissions.check(&PermissionScope::Action {
+                    node,
+                    kind: need.kind,
+                })
+            })
+        };
+        if allowed { Ok(()) } else { Err(refused()) }
     }
 
     /// The action `invoke` names, once the workspace's grants admit it.
@@ -623,7 +718,9 @@ impl<P: Resource> WorkspaceResource<P> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
-        if let Some(verb) = verb_of::<P>(&action)
+        if self.independently_sealed() {
+            self.admitted(&action)?;
+        } else if let Some(verb) = verb_of::<P>(&action)
             && !self.may(&verb)
         {
             return Err(ActionError::Refused(format!(
@@ -663,23 +760,16 @@ fn offered<P: Resource>(shared: &Rc<Shared<P>>) -> Held<P> {
             let shared = applying
                 .upgrade()
                 .ok_or_else(|| ActionError::Refused("the document is closed".into()))?;
-            let document = WorkspaceResource { shared };
-            document.admitted(action)?;
-            match document.shared.apply_as(action, invoker) {
-                Applied::Done(result) => {
-                    document.shared.refresh();
-                    result
-                }
-                Applied::Waits => Err(ActionError::Refused(
-                    ui_core::resource::HistoryUnavailable::StoreInUse.to_string(),
-                )),
-            }
+            WorkspaceResource { shared }.act_as(invoker, action)
         },
     )
     .decided_by_grants()
     .reading(move |read| {
         if let Some(shared) = reading.upgrade() {
-            WorkspaceResource { shared }.read(|doc| read(doc));
+            let document = WorkspaceResource { shared };
+            if !document.independently_sealed() || document.may_read() {
+                document.read(|doc| read(doc));
+            }
         }
     })
 }
@@ -713,6 +803,11 @@ pub(crate) enum Unopened {
 /// it opened.
 type AskAgain = Rc<dyn Fn(&WorkspaceState) -> bool>;
 
+struct PublishedWorkspaceResource {
+    api: Rc<dyn ResourceApi>,
+    readable: Box<dyn Fn() -> bool>,
+}
+
 /// The records every app of the workspace opens that a window's views opened:
 /// one [`WorkspaceResource`] per kind.
 pub(crate) struct WorkspaceState {
@@ -733,7 +828,7 @@ pub(crate) struct WorkspaceState {
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     /// What this app keeps for its whole workspace, as its window offers it to callers from
     /// outside ([`offered`]): none in a window of any other app.
-    published: RefCell<Vec<Rc<dyn ResourceApi>>>,
+    published: RefCell<Vec<PublishedWorkspaceResource>>,
     /// The parts of the window's views being built now, the innermost last
     /// ([`Self::building`]).
     building: RefCell<Vec<Weak<()>>>,
@@ -1021,9 +1116,17 @@ impl WorkspaceState {
         // The keeping app's own window offers it to callers from outside, beside its own
         // resource; every other app's window only opens it.
         if key.0 == self.app_id {
+            let resource = WorkspaceResource {
+                shared: Rc::clone(&shared),
+            };
             self.published
                 .borrow_mut()
-                .push(Rc::new(offered(&shared)) as Rc<dyn ResourceApi>);
+                .push(PublishedWorkspaceResource {
+                    api: Rc::new(offered(&shared)),
+                    readable: Box::new(move || {
+                        !resource.independently_sealed() || resource.may_read()
+                    }),
+                });
         }
         self.opened
             .borrow_mut()
@@ -1042,7 +1145,12 @@ impl WorkspaceState {
 
     /// What this app keeps for its whole workspace, as the API offers and changes it.
     pub(crate) fn apis(&self) -> Vec<Rc<dyn ResourceApi>> {
-        self.published.borrow().clone()
+        self.published
+            .borrow()
+            .iter()
+            .filter(|resource| (resource.readable)())
+            .map(|resource| Rc::clone(&resource.api))
+            .collect()
     }
 
     /// The routes of the open records, which the runtime syncs.

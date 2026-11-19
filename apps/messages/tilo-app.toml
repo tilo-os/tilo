@@ -38,8 +38,6 @@ splash-budget = 250
 
 [resources]
 kinds = ["tilo.messages", "tilo.contacts.identities", "messages.drafts"]
-# Each member keeps one of each as their own; nobody else in the workspace receives it.
-own = ["messages.drafts"]
 
 [providers]
 mime = []

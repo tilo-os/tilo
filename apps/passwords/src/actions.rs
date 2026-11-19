@@ -205,6 +205,16 @@ pub enum PasswordsEffect {
     #[effect(kind = "outside")]
     #[effect(attended)]
     Import,
+    #[effect(kind = "read", job, label = "passwords-open-workspace-vault")]
+    OpenWorkspaceVault,
+    #[effect(
+        kind = "outside",
+        attended,
+        privileged,
+        returns,
+        label = "passwords-import-device-vault"
+    )]
+    ImportDeviceVault,
     #[effect(kind = "outside")]
     #[effect(attended)]
     Export,

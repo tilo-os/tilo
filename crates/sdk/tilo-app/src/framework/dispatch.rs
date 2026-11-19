@@ -631,6 +631,9 @@ impl DispatchCore {
         // its person's whatever their role: its changes are decided on that
         // record, which the policy leaves to its person.
         let kind = self.applied_as.map_or(self.kind, |(kind, _)| kind);
+        if tilo_actions::policy::roles::requires_document_keys(self.app_id, &self.record) {
+            return app.kind(kind).resource(&*self.record);
+        }
         if !self.record.is_empty()
             && collab_types::own_kinds(self.app_id)
                 .iter()

@@ -420,7 +420,7 @@ impl Joined {
         Arc::clone(&self.governance_wake)
     }
 
-    /// The devices that hold `workspace`'s keys at `now` (Unix seconds), as
+    /// Whether a write to this document needs keys for its current readers.
     pub(super) fn requires_document_keys(
         &self,
         workspace: WorkspaceId,
@@ -435,6 +435,7 @@ impl Joined {
             .ok()
     }
 
+    /// The devices that hold `workspace`'s keys at `now` (Unix seconds), as
     /// its governance decides it; `None` while it cannot be read.
     pub(super) fn key_holders(
         &self,
@@ -470,9 +471,13 @@ impl Joined {
             .with_current(workspace, |view| {
                 view.peer().document_key_holders(app, document_id, at)
             })
-            .ok()?
             .ok()?;
-        Some(holders)
+        Some(
+            holders
+                .into_iter()
+                .map(collab_types::Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
     }
 
     /// The devices of `people` among [`Self::key_holders`]: who holds the keys

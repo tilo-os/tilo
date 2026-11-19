@@ -248,6 +248,49 @@ fn route_document(
     .map_err(|error| DocumentError::Open(error.to_string()))
 }
 
+type ProfileArchive = (Doc, Vec<(ChunkNo, Doc)>);
+
+/// Recover the complete local archive for the same person and workspace context.
+fn previous_profile_document(
+    documents: &Rc<dyn DurableStore>,
+    route: &RouteSpec,
+    person: &str,
+) -> Result<Option<ProfileArchive>, DocumentError> {
+    if collab_types::personal_cluster_of(person) != Some(route.cluster_id) {
+        return Ok(None);
+    }
+    let Some(context) = route
+        .document
+        .as_deref()
+        .and_then(collab_types::person_document_context)
+    else {
+        return Ok(None);
+    };
+    let Some(id) = crate::member_document_of(&route.app_id, person) else {
+        return Ok(None);
+    };
+    let previous = RouteSpec::document(route.app_id.clone(), context, id);
+    let document = route_document(documents, &previous)?
+        .load_complete()
+        .map_err(|error| DocumentError::Open(error.to_string()))?;
+    let Some(document) = document else {
+        return Ok(None);
+    };
+    let placement = Chunks::of(document.clone()).placement().chunks();
+    let mut parts = Vec::with_capacity(placement.len());
+    for index in placement {
+        let copy = copy_document(documents, &previous, index)
+            .and_then(|mut store| store.load_complete().ok().flatten())
+            .ok_or_else(|| {
+                DocumentError::Open(
+                    "the previous profile document has a part on another device".to_owned(),
+                )
+            })?;
+        parts.push((index, copy));
+    }
+    Ok(Some((document, parts)))
+}
+
 /// The document `doc` of `route`, kept by `writer`, with every chunk its manifest names that this
 /// device kept a copy of in `documents`: what was written into one here and not handed to the
 /// workspace yet is still there, and what comes next reaches it as any change does.
@@ -498,6 +541,7 @@ impl InstanceDocument {
             open_stored_adopting, open_with_committed_read, workspace_document,
         };
         use collaboration::native_initial::{self, NativeConstruction};
+        let person = person.into();
         let route = manager
             .primary_route()
             .map(|joined| joined.route().clone())
@@ -532,7 +576,7 @@ impl InstanceDocument {
                 _ => open_stored(store),
             }),
         };
-        let (doc, writer) = match opened {
+        let (mut doc, mut writer) = match opened {
             Ok(opened) => opened,
             Err(error) => {
                 native_initial::fail(&error);
@@ -543,17 +587,29 @@ impl InstanceDocument {
             .map_err(DocumentError::Open)?
             .ok_or_else(|| DocumentError::Open("the connection was not handed back".to_owned()))?;
         drop(construction);
-        let (chunks, writers) = held_chunks(documents, &route, doc, writer);
-        let mut record = Self::holding(
-            chunks,
-            Some(writers),
-            manager,
-            route,
-            kind.into(),
-            person.into(),
-        );
+        let previous = if doc.get_heads().is_empty() {
+            previous_profile_document(documents, &route, &person)?
+        } else {
+            None
+        };
+        let restored = previous.is_some();
+        let mut earlier_chunks = Vec::new();
+        if let Some((mut copy, parts)) = previous {
+            copy.set_actor(doc.get_actor().clone());
+            writer.request(&copy);
+            doc = copy;
+            earlier_chunks = parts;
+        }
+        let (mut chunks, mut writers) = held_chunks(documents, &route, doc, writer);
+        for (index, copy) in earlier_chunks {
+            if let Some(writer) = writers.start(&route, index) {
+                writer.request(&copy);
+            }
+            chunks.insert(index, copy);
+        }
+        let mut record = Self::holding(chunks, Some(writers), manager, route, kind.into(), person);
         record.governs = governs;
-        if handed_nothing {
+        if handed_nothing || restored {
             record.sent.clear();
         }
         // The chunks the document's manifest names are the ones this replica reads: it opens them
@@ -2179,5 +2235,47 @@ impl OwnSteps {
 impl Drop for OwnSteps {
     fn drop(&mut self) {
         tilo_actions::open_step(self.0);
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use automerge::{ReadDoc as _, transaction::Transactable as _};
+
+    use super::*;
+
+    #[test]
+    fn previous_workspace_views_are_recovered_for_their_profile_only() {
+        let documents: Rc<dyn DurableStore> = Rc::new(durable_store::MemoryStore::new());
+        let app = "so.tilo.lang.views";
+        let workspace = uuid::Uuid::from_u128(7);
+        let ada = "ad".repeat(32);
+        let bob = "b0".repeat(32);
+        let old = RouteSpec::document(
+            app,
+            workspace,
+            crate::member_document_of(app, &ada).unwrap(),
+        );
+        let mut store = route_document(&documents, &old).unwrap();
+        let mut doc = store.new_document();
+        doc.put(automerge::ROOT, "view", "my earlier view").unwrap();
+        store.save(&mut doc).unwrap();
+        let current = RouteSpec::document(
+            app,
+            collab_types::personal_cluster_of(&ada).unwrap(),
+            collab_types::person_document_for_workspace("tl.so.tilo.lang.views", workspace),
+        );
+        assert!(
+            previous_profile_document(&documents, &current, &bob)
+                .unwrap()
+                .is_none()
+        );
+        let (mut recovered, chunks) = previous_profile_document(&documents, &current, &ada)
+            .unwrap()
+            .unwrap();
+        assert!(chunks.is_empty());
+        assert_eq!(doc.get_heads(), recovered.get_heads());
+        let (value, _) = recovered.get(automerge::ROOT, "view").unwrap().unwrap();
+        assert_eq!(value.to_str(), Some("my earlier view"));
     }
 }

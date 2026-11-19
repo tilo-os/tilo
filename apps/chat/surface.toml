@@ -1334,6 +1334,7 @@ label = "Chat drafts"
 version = 1
 fields = [
   { path = "drafts", type = { map = "rich_text" } },
+  { path = "imported", type = { set = "text" }, readonly = true },
 ]
 
 [[resources.verbs]]
@@ -1343,49 +1344,14 @@ params = [
   { name = "key", type = "text", required = true, schema = { type = "string" } },
 ]
 
-[[resources]]
-kind = "chat.learned"
-label = "What your agents learned"
-version = 1
-fields = [
-  { path = "facts", type = { collection = { named = "Fact" } }, readonly = true, stored = "collection" },
-  { path = "facts.*.text", type = "text", label = true },
-  { path = "facts.*.source", type = "text" },
-  { path = "facts.*.at", type = "int" },
-  { path = "facts.*.by", type = { option = "text" } },
-]
-
 [[resources.verbs]]
-id = "learn"
+id = "import-previous"
 kind = "undoable"
+writes = ["record", "drafts", "imported"]
 params = [
-  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "source", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-]
-
-[[resources.verbs]]
-id = "correct"
-kind = "undoable"
-params = [
-  { name = "fact", type = "text", required = true, schema = { type = "string" } },
-  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-  { name = "source", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-]
-
-[[resources.verbs]]
-id = "forget"
-kind = "undoable"
-params = [
-  { name = "fact", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.types]]
-name = "Fact"
-fields = [
-  { name = "text", type = "text" },
-  { name = "source", type = "text" },
-  { name = "at", type = "int" },
-  { name = "by", type = { option = "text" } },
+  { name = "receipt", type = "text", required = true, schema = { type = "string" } },
+  { name = "key", type = "text", required = true, schema = { type = "string" } },
+  { name = "markdown", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources]]

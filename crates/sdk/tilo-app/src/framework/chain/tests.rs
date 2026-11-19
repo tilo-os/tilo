@@ -67,6 +67,27 @@ fn chain_in(store: &ResourceStore, me: &str) -> Chain<LogPart> {
     Chain::detached_in(store.clone(), APP, me, move || Rc::clone(&log)).unwrap()
 }
 
+fn chain_with_device_queue(store: &ResourceStore, profile: &std::path::Path) -> Chain<LogPart> {
+    use super::{ChainState, QueuedWrites, WorkspaceResources, detached_dispatch};
+    let author = MemberId::person("bo");
+    let workspace = WorkspaceResources {
+        store: store.clone(),
+        me: author.clone(),
+        permissions: None,
+        app_id: APP,
+        app_title: APP,
+        device_queue: Some(
+            ui_core::storage::Settings::<QueuedWrites>::for_app(APP).in_profile(profile),
+        ),
+    };
+    let log = Rc::new(Log::default());
+    let state = Rc::new(
+        ChainState::open::<LogPart>(workspace, move || Rc::clone(&log), LogPart::chain()).unwrap(),
+    );
+    let dispatch = detached_dispatch(APP, &state, &author);
+    Chain { state, dispatch }
+}
+
 /// A device whose workspace holds a part of the chain it has not sent yet:
 /// the workspace's newest part is asked for as a name, and its document has
 /// not arrived here.
@@ -139,6 +160,30 @@ impl Arriving {
         }
         assert!(!self.chain.head_arriving());
     }
+}
+
+#[test]
+fn a_device_queue_keeps_waiting_writes_out_of_the_workspace_store() {
+    let profile = tempfile::tempdir().unwrap();
+    let fixture = Arriving::new();
+    let written = LogPart::WRITE.with(log_part::Write { text: "two".into() });
+    let chain = chain_with_device_queue(&fixture.reader, profile.path());
+    assert_eq!(chain.invoke(&written).unwrap(), None);
+    assert!(chain.unwritten().is_some());
+    let legacy = super::unsent_checkout(&MemberId::person("bo"));
+    assert!(!fixture.reader.is_ready(&legacy.id));
+
+    drop(chain);
+    let reopened = chain_with_device_queue(&fixture.reader, profile.path());
+    assert!(reopened.unwritten().is_some());
+    fixture.arrives();
+    let lines: Vec<String> = reopened
+        .parts()
+        .iter()
+        .flat_map(|(_, part)| part.lines.values().map(|line| line.text.clone()))
+        .collect();
+    assert_eq!(lines, ["one", "two"]);
+    assert!(reopened.unwritten().is_none());
 }
 
 /// `write`'s line, as the API delivers it.

@@ -137,8 +137,8 @@ pub use op::{
 pub use own_resource::{OwnResource, own_kinds};
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use personal::{
-    is_personal_cluster, person_document_id, person_resource_type, personal_cluster,
-    personal_cluster_of,
+    is_personal_cluster, person_document_context, person_document_for_workspace,
+    person_document_id, person_resource_type, personal_cluster, personal_cluster_of,
 };
 pub use readers::{EVERY_MEMBER, Readers, app_document_id, content_artifact_id, reader_group};
 pub use receipt::{

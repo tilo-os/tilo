@@ -1,28 +1,60 @@
-//! The `passwords.vault` resource: an empty document, as the app that publishes it
-//! and an agent that reaches it both see it.
-//!
-//! The vault is this device's own encrypted store and nothing in it syncs, so
-//! the document holds no secret material: no login, key or code is in it, in the
-//! clear or otherwise.
+//! The Passwords resource carries encrypted workspace vault entries and their opaque ids.
 
-use tilo_resource::{self, Model, resource};
+use tilo_resource::{self, Atom, Collection, Id, Model, Refusal, Set, resource};
 
-/// The vault's published document: empty, because every secret stays in this device's
-/// store, sealed by the vault's own key.
+/// The vault's published document. The reader presents decrypted entries only while it has
+/// the independent document keys. Legacy documents have no entries.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Passwords {}
+pub struct Passwords {
+    #[model(readonly)]
+    pub sealed: Collection<Atom>,
+    #[model(readonly)]
+    pub imported: Collection<Atom>,
+    #[model(readonly)]
+    pub removed: Set<Id>,
+}
 
 impl Passwords {
-    /// What the resource holds: nothing — the vault is this device's encrypted store, and no
-    /// secret syncs.
-    ///
-    /// # Errors
-    /// When the fields cannot be read from the document.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
+    /// An explicit workspace write takes precedence over an imported value with the same id.
+    pub fn entry(&self, id: &Id) -> Option<&Atom> {
+        self.sealed.get(id).or_else(|| {
+            if self.removed.contains(id) {
+                None
+            } else {
+                self.imported.get(id)
+            }
+        })
+    }
+
+    /// The entries currently present in the vault.
+    pub fn entries(&self) -> impl Iterator<Item = (&Id, &Atom)> {
+        self.sealed.iter().chain(
+            self.imported
+                .iter()
+                .filter(|(id, _)| !self.sealed.contains(id) && !self.removed.contains(id)),
+        )
+    }
+
+    /// The semantic read exposes entries through the live vault, where each read can
+    /// check the current keys.
+    pub fn read_document(&self, _: Option<&Id>) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({}))
+    }
+
+    fn validate_sealed(id: &Id, ciphertext: &str) -> Result<(), Refusal> {
+        const MAX_HEX_BYTES: usize = 2 * 1024 * 1024;
+        if id.as_str().is_empty()
+            || id.as_str().len() > 128
+            || ciphertext.is_empty()
+            || ciphertext.len() > MAX_HEX_BYTES
+            || !ciphertext.len().is_multiple_of(2)
+            || !ciphertext.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(Refusal::new(
+                "a vault entry needs a valid id and ciphertext",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -30,4 +62,106 @@ impl Passwords {
     kind = "passwords.vault",
     read_content = Passwords::read_document
 )]
-impl Passwords {}
+impl Passwords {
+    /// Save sealed vault entry
+    ///
+    /// The vault window seals the item and its metadata under this document's keys.
+    #[action(writes = sealed)]
+    pub fn keep_sealed(
+        &mut self,
+        #[param("Opaque item identifier")] id: String,
+        #[param("Encrypted entry")] ciphertext: String,
+    ) -> Result<(), Refusal> {
+        let id = Id::from(id);
+        Self::validate_sealed(&id, &ciphertext)?;
+        if let Some(current) = self.sealed.get_mut(&id) {
+            *current = Atom(ciphertext);
+        } else {
+            self.sealed.push(id, Atom(ciphertext));
+        }
+        Ok(())
+    }
+
+    /// Keep an entry from an older vault
+    ///
+    /// Each identifier is imported once. An existing entry takes precedence and a
+    /// repeat import does not bring back an entry the workspace subsequently deleted.
+    #[action(writes = imported)]
+    pub fn import_sealed(
+        &mut self,
+        #[param("Opaque item identifier")] id: String,
+        #[param("Encrypted entry")] ciphertext: String,
+    ) -> Result<(), Refusal> {
+        let id = Id::from(id);
+        Self::validate_sealed(&id, &ciphertext)?;
+        if !self.removed.contains(&id) && self.entry(&id).is_none() {
+            self.imported.push(id, Atom(ciphertext));
+        }
+        Ok(())
+    }
+
+    /// Delete sealed vault entry
+    #[action(destructive, writes = sealed, writes = imported, writes = removed)]
+    pub fn remove_sealed(&mut self, #[param("Opaque item identifier")] id: String) {
+        let id = Id::from(id);
+        self.sealed.remove(&id);
+        self.imported.remove(&id);
+        self.removed.insert(id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_resource::Replica;
+
+    #[test]
+    fn an_import_preserves_workspace_edits_and_deletions() {
+        let key = "login".to_owned();
+        let id = Id::from(key.clone());
+        let mut vault = Replica::<Passwords>::new();
+        vault
+            .apply(Passwords::IMPORT_SEALED.with((key.clone(), "ab".to_owned())))
+            .unwrap();
+        vault
+            .apply(Passwords::KEEP_SEALED.with((key.clone(), "cd".to_owned())))
+            .unwrap();
+        vault
+            .apply(Passwords::IMPORT_SEALED.with((key.clone(), "ef".to_owned())))
+            .unwrap();
+        assert_eq!(
+            vault.state().unwrap().entry(&id),
+            Some(&Atom("cd".to_owned()))
+        );
+        vault
+            .apply_confirmed(Passwords::REMOVE_SEALED.with(key.clone()))
+            .unwrap();
+        vault
+            .apply(Passwords::IMPORT_SEALED.with((key, "ef".to_owned())))
+            .unwrap();
+        assert!(vault.state().unwrap().entry(&id).is_none());
+    }
+
+    #[test]
+    fn a_workspace_write_wins_over_a_concurrent_import() {
+        let key = "login".to_owned();
+        let id = Id::from(key.clone());
+        let mut workspace = Replica::<Passwords>::new();
+        let mut importer = workspace.fork();
+        workspace
+            .apply(Passwords::KEEP_SEALED.with((key.clone(), "ab".to_owned())))
+            .unwrap();
+        importer
+            .apply(Passwords::IMPORT_SEALED.with((key, "cd".to_owned())))
+            .unwrap();
+        workspace.sync_with(&mut importer).unwrap();
+        assert_eq!(
+            workspace.state().unwrap().entry(&id),
+            Some(&Atom("ab".to_owned()))
+        );
+        assert_eq!(
+            importer.state().unwrap().entry(&id),
+            Some(&Atom("ab".to_owned()))
+        );
+    }
+}

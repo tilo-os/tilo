@@ -155,7 +155,7 @@ fn a_selection_dragged_off_the_page_is_released_on_it() {
 fn a_narrow_window_bookmarks_into_the_persons_own_library() {
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let record = app
-        .person::<crate::personal_bookmarks::PersonalBookmarks>()
+        .profile_resource::<crate::personal_bookmarks::PersonalBookmarks>()
         .expect("a test profile keeps person resources");
     let mut page = BrowserWidget::new_headless();
     page.attach_personal_bookmarks(record);
@@ -446,7 +446,7 @@ fn an_engine_download_is_kept_where_the_library_search_and_agents_read() {
 fn a_page_a_web_app_moves_to_is_named_in_history_once_its_title_comes() {
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let record = app
-        .person::<crate::history::BrowsingHistory>()
+        .profile_resource::<crate::history::BrowsingHistory>()
         .expect("a test profile keeps person resources");
     let engine = TestEngine::new();
     let mut w = BrowserWidget::with_engine(engine.clone(), true);
@@ -778,7 +778,7 @@ fn typing_in_the_address_bar_suggests_saved_pages() {
 
     let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
     let personal = app
-        .person::<crate::personal_bookmarks::PersonalBookmarks>()
+        .profile_resource::<crate::personal_bookmarks::PersonalBookmarks>()
         .expect("a test profile keeps person resources");
     personal
         .invoke(

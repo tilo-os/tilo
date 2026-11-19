@@ -1,14 +1,11 @@
 //! What the agents on this server learned about a person, kept where the server reads and writes
 //! it with every device of theirs off.
 //!
-//! A person's own resource in a workspace (Chat's `chat.learned`) is written by their devices
-//! alone: a server is refused it like every other member, so an agent on a workspace's server cannot keep a
-//! fact there. What such an agent learns about its keeper is kept here instead, in the person's
-//! own store beside their vault and their model providers: the same resource
-//! ([`tilo_workspace_agent::learned::Learned`]), changed through its own three verbs, one
-//! document for each workspace the agent works in, as their own resource is one for each
-//! workspace. It is one person's apart from every other person's, readable on disk by the
-//! server's own user alone, and changed one change at a time.
+//! A workspace server keeps what its agents learn about their keeper in the person's
+//! private store beside their vault and model providers. The records use the same
+//! [`tilo_workspace_agent::learned::Learned`] resource as the person's devices, with
+//! one document per workspace context. Each person's store is separate and is readable
+//! on disk by the server's own user. Writes are serialized.
 //!
 //! Two callers reach it. Code linked into the server, which answers the turns of a person's agents and decides
 //! first whose turn it is ([`Workspaces::learned_about`], [`Workspaces::change_learned`]). And

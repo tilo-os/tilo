@@ -677,3 +677,11 @@ browser-page-record-set-down = Set down a page action
 browser-app-title = Browser
 browser-application-protection-off = Turn tracker protection off for this site
 browser-application-protection-on = Turn tracker protection on for this site
+
+browser-address-book-restore-previous = Restore previous autofill profiles
+
+browser-browsing-history-restore-previous = Restore the previous profile
+
+browser-page-record-restore-previous = Restore the previous profile
+
+browser-personal-bookmarks-restore-previous = Restore the previous profile

@@ -35,8 +35,6 @@ optional = ["clipboard", "files.paths", "app-files", "threads"]
 
 [resources]
 kinds = ["osk.keyboard", "osk.learned"]
-# Each member keeps one of each as their own; nobody else in the workspace receives it.
-own = ["osk.learned"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

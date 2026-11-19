@@ -157,13 +157,34 @@ mod tests {
         folder
     }
 
-    const DEVICE: &str = "test-device";
+    const WORKSPACE: &str = ui::framework::testing::TEST_WORKSPACE;
 
-    /// The folders this device remembers, in the resource.
+    /// The folders this device remembers for the workspace.
     fn recent(app: &mut TestApp<DiskUsageShell>) -> Vec<PathBuf> {
-        app.person::<RecentFolders>()
-            .map(|record| record.with(|recent| recent.on(DEVICE).to_vec()))
-            .unwrap_or_default()
+        app.settings::<crate::view::DiskUsageRecents>()
+            .get()
+            .in_workspace(WORKSPACE)
+            .to_vec()
+    }
+
+    #[test]
+    fn previous_analyzed_folders_move_to_device_settings() {
+        let person = "b6".repeat(32);
+        let mut app = TestApp::<DiskUsageShell>::for_person(&person).unwrap();
+        let previous = app.person::<RecentFolders>().unwrap();
+        let path = scratch_folder("legacy-device-recents");
+        previous
+            .invoke(
+                &RecentFolders::REMEMBER
+                    .with(("test-device".to_owned(), AbsolutePath::new(&path).unwrap())),
+            )
+            .unwrap();
+        previous.record().flush();
+        drop(previous);
+
+        let mut app = app.reopen().unwrap();
+        assert_eq!(recent(&mut app), [path.clone()]);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     /// Run frames until the scan a row started has shown and remembered `folder`.
@@ -389,12 +410,14 @@ mod tests {
             };
             assert_eq!(address.action, "analyze");
         }
-        app.person::<RecentFolders>()
-            .unwrap()
-            .invoke(
-                &RecentFolders::REMEMBER
-                    .with((DEVICE.to_owned(), AbsolutePath::new(&folder).unwrap())),
-            )
+        app.settings::<crate::view::DiskUsageRecents>()
+            .update(|state| {
+                state
+                    .analyzed_folders
+                    .entry(WORKSPACE.into())
+                    .or_default()
+                    .remember(folder.clone());
+            })
             .unwrap();
         app.settle();
         let id = format!("disk-usage.place:{}", folder.display());

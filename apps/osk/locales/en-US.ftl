@@ -97,3 +97,5 @@ osk-keyboard = On-screen keyboard
 
 ## What the app is called in a window and in the launcher
 osk-app-title = On-screen keyboard
+
+osk-learned-restore-previous = Restore previous keyboard learning

@@ -14,12 +14,14 @@ use tilo_resource::{self, Demand, Doc, Id, Model, ModelError, Refusal, SearchEnt
 
 use crate::chat::Chat;
 
-/// The person's unsent messages, by channel or thread.
+/// The workspace's unsent channel messages, by channel or thread.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct ChatDrafts {
     /// Each draft under its channel id, or `channel::t::message` for a reply
     /// in that message's thread.
     pub drafts: BTreeMap<String, RichText>,
+    #[model(readonly, default = tilo_resource::Set::new())]
+    pub imported: tilo_resource::Set<String>,
 }
 
 #[tilo_resource::resource(
@@ -45,12 +47,30 @@ impl ChatDrafts {
         Ok(())
     }
 
-    /// What search finds in the person's drafts: the words they have not
-    /// sent, opening the conversation they are writing in.
-    ///
-    /// The resource is theirs, not the workspace's, and it is read like any
-    /// other resource: a device that never opened Chat finds the draft in it,
-    /// and one they send stops being found with it.
+    /// Restore unsent text from an earlier channel draft.
+    #[action(external, writes = drafts, writes = imported)]
+    pub fn import_previous(
+        &mut self,
+        receipt: String,
+        key: String,
+        markdown: String,
+    ) -> Result<(), Refusal> {
+        let channel = key
+            .split_once("::t::")
+            .map_or(key.as_str(), |(channel, _)| channel);
+        if key.is_empty() || key.len() > 512 || Chat::is_direct(&Id::from_raw(channel)) {
+            return Err(Refusal::new("a workspace draft belongs to a channel"));
+        }
+        if self.imported.contains(&receipt) || self.drafts.contains_key(&key) {
+            return Ok(());
+        }
+        let draft = RichText::from_markdown(markdown);
+        self.drafts.insert(key, draft);
+        self.imported.insert(receipt);
+        Ok(())
+    }
+
+    /// Unsent text opens the channel where it was written.
     #[must_use]
     pub fn search(&self) -> Vec<SearchEntry> {
         self.drafts

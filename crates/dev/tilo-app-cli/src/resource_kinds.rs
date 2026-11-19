@@ -33,8 +33,8 @@ pub(crate) fn declared_with_metadata(app_dir: &Path, metadata: &Value) -> Result
 /// whose kinds are the framework's. They are what the app's manifest must
 /// list in `[resources] kinds`, so a governed workspace lets the app create
 /// its records.
-/// An app whose records are a chain's parts also keeps the record of each
-/// member's actions waiting for their part ([`keeps_waiting_actions`]).
+/// Keep the historical queue kind for apps with chain parts so earlier
+/// records can still drain after upgrading.
 pub fn owned_by_app(app_dir: &Path) -> Result<Vec<String>> {
     let mut kinds: BTreeSet<String> = declared_in(app_dir)?.into_iter().collect();
     for dependency in direct_path_dependencies(app_dir)? {
@@ -47,9 +47,8 @@ pub fn owned_by_app(app_dir: &Path) -> Result<Vec<String>> {
 }
 
 /// Whether the app's records are the parts of a chain (`impl Chained for`, in
-/// its sources or a local crate it depends on directly): the framework then
-/// keeps each member's actions waiting for their part in a record of
-/// [`tilo_actions::surface::CHAIN_UNSENT_KIND`], which is that member's own.
+/// its sources or a local crate it depends on directly). Earlier versions
+/// used [`tilo_actions::surface::CHAIN_UNSENT_KIND`] for waiting actions.
 pub fn keeps_waiting_actions(app_dir: &Path) -> Result<bool> {
     let mut dirs = vec![app_dir.to_path_buf()];
     dirs.extend(direct_path_dependencies(app_dir)?);
@@ -487,17 +486,8 @@ mod tests {
                         .cloned(),
                 );
             }
-            // An app keeping chains keeps each member's waiting actions in a
-            // record that is theirs alone.
             if super::keeps_waiting_actions(&app).unwrap() {
-                let unsent = tilo_actions::surface::CHAIN_UNSENT_KIND.to_owned();
-                if !manifest.resources.own.contains(&unsent) {
-                    missing.push(format!(
-                        "{}: {unsent} in `[resources] own`",
-                        app.file_name().unwrap().to_string_lossy()
-                    ));
-                }
-                kinds.push(unsent);
+                kinds.push(tilo_actions::surface::CHAIN_UNSENT_KIND.to_owned());
             }
             for kind in kinds {
                 if !manifest.resources.kinds.contains(&kind) {

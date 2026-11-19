@@ -436,6 +436,11 @@ impl StoredResource {
         &self.checkout
     }
 
+    /// Whether the record's current changes have reached its durable store.
+    pub fn save_status(&self) -> Result<super::ResourceSaveStatus, ResourceOpenError> {
+        self.store.save_status(&self.checkout.id)
+    }
+
     /// Read the record's document; `None` while its owner is busy.
     pub fn read<T>(&self, read: impl FnOnce(&AutoCommit) -> T) -> Option<T> {
         self.store.read_checked(&self.checkout.id, read).ok()
@@ -603,15 +608,13 @@ impl StoredResource {
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         let (package, home) = self.store.app_and_home();
         let workspace = uuid::Uuid::parse_str(&home).ok()?;
-        Some(
-            crate::collaboration::document_content::ContentLink::resource_store(
-                &crate::collaboration::RouteSpec::document(
-                    package,
-                    workspace,
-                    self.checkout.id.as_str(),
-                ),
-            ),
-        )
+        let id = &self.checkout.id;
+        let route = if id.is_package_primary() {
+            crate::collaboration::RouteSpec::app(package, workspace)
+        } else {
+            crate::collaboration::RouteSpec::document(package, workspace, id.as_str())
+        };
+        Some(crate::collaboration::document_content::ContentLink::resource_store(&route))
     }
 }
 

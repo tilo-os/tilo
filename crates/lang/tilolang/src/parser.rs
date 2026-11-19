@@ -200,6 +200,7 @@ struct AppOptions {
     category: Option<String>,
     previously: Vec<String>,
     own_resources: bool,
+    profile_resources: bool,
     web: Vec<String>,
 }
 
@@ -510,12 +511,12 @@ impl<'a> Parser<'a> {
                         &mut out.category
                     }
                     "resources" => {
-                        if !matches!(value.name.as_str(), "own" | "shared") {
+                        if !matches!(value.name.as_str(), "own" | "shared" | "profile") {
                             return self.fail(
                                 value.span,
                                 format!(
                                     "`.{}` is not where resources are kept; an app's resources are \
-                                     `.shared` with the workspace or each member's `.own`",
+                                     `.shared` with the workspace, in a person's `.profile`, or in a legacy `.own` document",
                                     value.name
                                 ),
                             );
@@ -544,6 +545,7 @@ impl<'a> Parser<'a> {
             }
         }
         out.own_resources = resources.as_deref() == Some("own");
+        out.profile_resources = resources.as_deref() == Some("profile");
         Ok(out)
     }
 
@@ -751,6 +753,7 @@ impl<'a> Parser<'a> {
                 category: options.category,
                 previously: options.previously,
                 own_resources: options.own_resources,
+                profile_resources: options.profile_resources,
                 web: options.web,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }
@@ -798,6 +801,7 @@ impl<'a> Parser<'a> {
                         category: options.category,
                         previously: options.previously,
                         own_resources: options.own_resources,
+                        profile_resources: options.profile_resources,
                         web: options.web,
                         span: start.to(Span::new(self.prev_end(), self.prev_end())),
                     });

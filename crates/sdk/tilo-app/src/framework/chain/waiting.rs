@@ -4,6 +4,7 @@
 //! what it is sending.
 
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilo_actions::{ActionError, ActionInvoker};
@@ -11,6 +12,24 @@ use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{ObjType, ROOT, ReadDoc as _, Value};
 
 use super::{ChainCore, ChainState, PART_ARRIVING, Write, answer};
+
+/// Workspace writes held by the device where they were requested.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct QueuedWrites {
+    #[serde(default)]
+    pub(super) workspaces: BTreeMap<String, BTreeMap<String, Vec<QueuedWrite>>>,
+}
+
+impl ui_core::storage::SettingsSchema for QueuedWrites {
+    const SCOPE: ui_core::storage::Scope = ui_core::storage::Scope::DeviceLocal;
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct QueuedWrite {
+    pub(super) id: String,
+    pub(super) action: serde_json::Value,
+    pub(super) invoker: ActionInvoker,
+}
 
 /// Actions that wait for the part they change to arrive, as the list of
 /// them keeps them: `id` names their entry there.
@@ -62,6 +81,25 @@ impl ChainCore {
         action: serde_json::Value,
         invoker: &ActionInvoker,
     ) -> Result<String, ActionError> {
+        if let Some(settings) = &self.workspace.device_queue {
+            let id = format!("local:{}", tilo_resource::action::fresh_uuid());
+            settings
+                .update(|queue| {
+                    queue
+                        .workspaces
+                        .entry(self.workspace_key.clone())
+                        .or_default()
+                        .entry(self.chain.as_str().to_owned())
+                        .or_default()
+                        .push(QueuedWrite {
+                            id: id.clone(),
+                            action,
+                            invoker: invoker.clone(),
+                        });
+                })
+                .map_err(|error| ActionError::Refused(error.to_string()))?;
+            return Ok(id);
+        }
         if !self.open_unsent(true) {
             return Err(ActionError::Refused(PART_ARRIVING.into()));
         }

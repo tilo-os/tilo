@@ -245,9 +245,10 @@ pub fn own_resource_types(app_id: &str) -> Vec<String> {
 
 #[must_use]
 pub fn keeps_person_resource(app_id: &str, kind: &str) -> bool {
-    person_resource_types(app_id)
-        .iter()
-        .any(|known| known == kind)
+    (app_id == "so.tilo.lang.views" && kind == "tl.so.tilo.lang.views")
+        || person_resource_types(app_id)
+            .iter()
+            .any(|known| known == kind)
 }
 
 /// Whether `reader`'s surface declares that it reads a resource kind of

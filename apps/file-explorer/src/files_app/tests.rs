@@ -662,9 +662,12 @@ mod open_with_tests {
             })
             .unwrap();
             let stored = app
-                .person::<crate::recent::RecentResource>()
-                .unwrap()
-                .with(|recent| recent.on("test-device"));
+                .settings::<crate::resource::DeviceRecentFiles>()
+                .get()
+                .by_workspace
+                .get(ui::framework::testing::TEST_WORKSPACE)
+                .cloned()
+                .unwrap_or_default();
             assert_eq!(
                 stored
                     .items()

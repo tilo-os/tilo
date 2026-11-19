@@ -1,12 +1,12 @@
-//! Playback preferences live in this device's settings, since two people reviewing the
-//! same clip may want different defaults. The recent videos and where each left off are
-//! a resource beside the library, one list per device.
+//! Playback preferences and recent videos on this device.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use ui::framework::{Setting, ViewCx};
 use ui::prelude::{Model, resource, tilo_resource};
+use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::Refusal;
 
 pub const RECENT_HISTORY_LIMIT: usize = 32;
@@ -118,6 +118,42 @@ impl RecentVideos {
             .get(device)
             .map(|kept| kept.rows.clone())
             .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct VideoRecents {
+    #[serde(default)]
+    pub(crate) by_workspace: BTreeMap<String, RecentHistory>,
+}
+
+impl SettingsSchema for VideoRecents {
+    const SCOPE: Scope = Scope::DeviceLocal;
+}
+
+impl VideoRecents {
+    pub(crate) fn open(cx: &ViewCx<crate::shared::Library>, workspace: &str) -> Setting<Self> {
+        let settings = cx.settings::<Self>();
+        if !settings.get().by_workspace.contains_key(workspace)
+            && let Some(device) = cx.device()
+        {
+            let opener = cx.resource_opener::<RecentVideos>(ui::apps::VIDEO_PLAYER);
+            match opener.legacy_member_state() {
+                Ok(Some(previous)) => {
+                    if let Err(error) = settings.update(|state| {
+                        state
+                            .by_workspace
+                            .entry(workspace.to_owned())
+                            .or_insert_with(|| previous.on(device));
+                    }) {
+                        tracing::warn!(%error, "could not restore recent videos");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read earlier recent videos"),
+            }
+        }
+        settings
     }
 }
 

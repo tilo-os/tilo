@@ -7,20 +7,3 @@ kind = "disk-usage"
 label = "Disk Usage Analyzer"
 version = 1
 shows = ["home"]
-
-[[resources]]
-kind = "disk-usage.recent-folders"
-label = "Recent folders"
-version = 1
-fields = [
-  { path = "devices", type = { map = "any" } },
-]
-
-[[resources.verbs]]
-id = "remember"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "folder", required = true, schema = { type = "string" } },
-]
-

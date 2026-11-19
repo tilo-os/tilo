@@ -19,7 +19,6 @@ aarch64 = "aarch64"
 optional = ["app-files"]
 
 [resources]
-own = ["tilo.chain-unsent"]
 kinds = ["tasks.tracker", "tilo.rich-text", "tasks.issues", "tilo.chain-unsent"]
 
 [publisher]

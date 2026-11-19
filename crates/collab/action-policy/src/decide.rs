@@ -56,8 +56,15 @@ pub fn decide<'g>(
 ) -> Decision<'g> {
     let mut best: Option<&'g Grant> = None;
     let governs = node.id_at(Level::Kind) == Some(crate::roles::WORKSPACE_KIND);
+    // A private destination can only inherit a grant explicitly scoped to its app.
+    let requires_app_grant = node
+        .id_at(Level::App)
+        .zip(node.id_at(Level::Resource))
+        .is_some_and(|(app, document)| crate::roles::requires_document_keys(app, document))
+        && !grantees.contains(&Grantee::role(crate::Role::Owner));
     for grant in grants {
-        if !grant.kinds.contains(kind)
+        if (requires_app_grant && grant.node.id_at(Level::App).is_none())
+            || !grant.kinds.contains(kind)
             || !names(grant, grantees, cx)
             || !cx.covers(&grant.node, node)
             || !grant.is_live(cx)
@@ -92,11 +99,11 @@ pub fn decide<'g>(
 fn compare_content_rules(candidate: &Grant, current: &Grant) -> Ordering {
     let priority = |rule: &Grant| {
         if rule.grantee.person_id().is_some() {
-            3
-        } else if matches!(rule.grantee, Grantee::CustomRole(_)) {
             2
+        } else if matches!(rule.grantee, Grantee::CustomRole(_)) {
+            1
         } else {
-            u8::from(!crate::roles::is_role_grant(rule))
+            0
         }
     };
     priority(candidate).cmp(&priority(current)).then_with(|| {

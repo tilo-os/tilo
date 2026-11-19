@@ -97,13 +97,7 @@ impl ResourceApp for ChatShell {
     /// The chat's messages, kept in parts beside the workspace's chat resource.
     fn resources(resources: &mut ui::framework::Resources<'_>) {
         resources.chain::<crate::parts::ChatMessages>();
-        // What the person is writing and has not sent: their own document in
-        // the workspace, so a window that shows Chat and a device that only
-        // reads its resources find the drafts alike.
-        resources.person::<crate::drafts::ChatDrafts>();
-        // What the person's agents learned about them: theirs alone here, as their drafts are,
-        // and Chat's to keep because it serves every agent they keep in the workspace.
-        resources.person::<ui::tilo_workspace_agent::learned::Learned>();
+        resources.workspace_record::<crate::drafts::ChatDrafts>(crate::drafts::DOCUMENT);
         // The workspace's emoji and its agents are Chat's: every app of the
         // workspace opens them, and their changes are decided against Chat's
         // surface.
@@ -143,8 +137,8 @@ impl ResourceApp for ChatShell {
         } else {
             ui::models::Models::default()
         };
-        // What the person is writing is theirs: kept in their own document.
-        let drafts = cx.person::<crate::drafts::ChatDrafts>();
+        let drafts =
+            cx.shared_resource::<crate::drafts::ChatDrafts>(Self::ID, crate::drafts::DOCUMENT);
         let app = ChatApp::new(identity, runtime, content)
             .with_models(models)
             .with_drafts(drafts)
@@ -178,6 +172,12 @@ impl ResourceApp for ChatShell {
         cx.on_stage(window.stager());
         let answering = Rc::clone(&chat);
         let statuses = Rc::clone(&chat);
+        if live {
+            let previous_drafts = cx.resource_opener::<crate::drafts::ChatDrafts>(Self::ID);
+            cx.effects(move |_: crate::drafts::ImportEffect, _| {
+                crate::drafts::import_previous(&previous_drafts).map(ui::framework::Effected::value)
+            });
+        }
         cx.effects(move |effect: ChatEffect, cx| answer(&answering, effect, cx))
             .status(move || statuses.borrow().effect_statuses());
         let rows = Rc::clone(&chat);

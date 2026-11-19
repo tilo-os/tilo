@@ -98,6 +98,9 @@ pub struct PackageMeta {
     /// person's devices read.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own_resources: bool,
+    /// The app keeps its data in the person's profile (`resources: .profile`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub profile_resources: bool,
     /// The hosts the app's `uses web` requests may reach (`web: ["example.com"]`). A request to any
     /// other host is refused as a value.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

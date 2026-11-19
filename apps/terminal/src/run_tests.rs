@@ -368,8 +368,8 @@ fn two_sessions_are_searchable_together() {
     settle_until(&mut app, |state| state.commands.len() == 1);
 
     let history = app
-        .person::<CommandHistory>()
-        .expect("the person's history");
+        .shared_resource::<CommandHistory>(ui::apps::TERMINAL, crate::history::DOCUMENT)
+        .expect("the workspace history");
     let history = history.get();
     let sessions: Vec<(&str, &str)> = history
         .remembered
@@ -874,8 +874,11 @@ fn a_background_job_has_its_own_run_and_fg_waits_for_it() {
         ]
     );
     let history = app
-        .person::<crate::history::CommandHistory>()
-        .expect("the person's history")
+        .shared_resource::<crate::history::CommandHistory>(
+            ui::apps::TERMINAL,
+            crate::history::DOCUMENT,
+        )
+        .expect("the workspace history")
         .get();
     let remembered: Vec<&str> = history
         .remembered

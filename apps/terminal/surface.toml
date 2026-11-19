@@ -233,6 +233,21 @@ params = [
   { name = "run", type = "text", required = true, schema = { type = "string" } },
 ]
 
+[[resources.verbs]]
+id = "import-run"
+kind = "undoable"
+writes = ["record", "remembered.*"]
+params = [
+  { name = "command", type = "text", required = true, schema = { type = "string" } },
+  { name = "cwd", type = "text", required = true, schema = { type = "string" } },
+  { name = "environment", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
+  { name = "exit", type = "int", required = true, schema = { type = "integer", maximum = 2147483647, minimum = -2147483648 } },
+  { name = "ended_ms", type = "int", required = true, schema = { type = "integer" } },
+  { name = "actor", type = { option = "any" }, required = false, schema = { oneOf = [{ type = "null" }, { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] }] } },
+  { name = "session", type = "text", required = true, schema = { type = "string" } },
+  { name = "run", type = "text", required = true, schema = { type = "string" } },
+]
+
 [[resources.types]]
 name = "Ran"
 fields = [
@@ -257,21 +272,5 @@ fields = [
   { name = "actor", type = { option = "actor" } },
   { name = "session", type = "text" },
   { name = "run", type = "text" },
-]
-
-[[resources]]
-kind = "terminal.recent-environments"
-label = "Recent environments"
-version = 1
-fields = [
-  { path = "devices", type = { map = "text" } },
-]
-
-[[resources.verbs]]
-id = "used"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "target", type = "text", required = true, schema = { type = "string" } },
 ]
 

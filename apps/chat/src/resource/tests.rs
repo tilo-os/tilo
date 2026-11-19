@@ -749,69 +749,77 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
     assert!(draft.contains("Enter sends"), "{draft:?}");
 }
 
-/// What one person types is theirs: it is in their own document on each of
-/// their devices, and never in another person's composer or in the workspace.
 #[test]
-fn a_draft_is_the_writers_own_and_follows_them_to_their_other_device() {
-    let ada = "ad".repeat(32);
-    let bob = "b0".repeat(32);
-    let mut laptop = TestApp::<ChatShell>::for_person(&ada).unwrap();
-    let mut phone = TestApp::<ChatShell>::for_person(&ada).unwrap();
-    let mut bobs = TestApp::<ChatShell>::for_person(&bob).unwrap();
-    let mut workspace = laptop.peer_document();
-    bobs.merge_peer(&mut workspace).unwrap();
-    phone.merge_peer(&mut workspace).unwrap();
-    let channel = laptop
-        .with_chat(|chat| chat.active_channel.clone())
-        .unwrap();
+fn channel_drafts_reach_members_with_read_access() {
+    use crate::drafts::{ChatDrafts, DOCUMENT};
 
-    laptop.with_chat(|chat| {
+    let mut ada = TestApp::<ChatShell>::for_person(&"ad".repeat(32)).unwrap();
+    let mut bob = TestApp::<ChatShell>::for_person(&"b0".repeat(32)).unwrap();
+    bob.merge_peer(&mut ada.peer_document()).unwrap();
+    let channel = ada.with_chat(|chat| chat.active_channel.clone()).unwrap();
+    ada.with_chat(|chat| {
         let mut doc = ui::automerge::AutoCommit::new();
         chat.composer_main.set_key(&channel);
         chat.composer_main.ensure_draft(&doc);
         chat.composer_main
             .insert_text(&mut ui::widget::Edits::lend(&mut doc), "hello from Ada");
     });
-    laptop.harness().relayout();
+    ada.harness().relayout();
 
-    // Bob shares the workspace and sees none of it.
-    let mut workspace = laptop.peer_document();
-    bobs.merge_peer(&mut workspace).unwrap();
-    bobs.harness().relayout();
-    let bobs_composer = bobs
-        .with_chat(|chat| {
-            chat.composer_main.set_key(&channel);
-            chat.composer_main.value()
-        })
+    let from = ada
+        .shared_resource::<ChatDrafts>(ui::apps::CHAT, DOCUMENT)
         .unwrap();
-    assert_eq!(
-        bobs_composer, "",
-        "Ada's typing never shows in Bob's composer"
-    );
-    assert!(
-        !workspace
-            .save()
-            .windows(b"hello from Ada".len())
-            .any(|w| w == b"hello from Ada"),
-        "the workspace's document carries none of it"
-    );
-
-    // Ada's phone has it, once her own document reaches it.
-    let adas = laptop.person::<crate::drafts::ChatDrafts>().unwrap();
-    let on_phone = phone.person::<crate::drafts::ChatDrafts>().unwrap();
-    on_phone
-        .record()
-        .merge_peer_document(adas.record().document().unwrap())
+    let to = bob
+        .shared_resource::<ChatDrafts>(ui::apps::CHAT, DOCUMENT)
         .unwrap();
-    phone.harness().relayout();
-    let phones_composer = phone
-        .with_chat(|chat| {
+    assert_eq!(from.record().route(), to.record().route());
+    to.record()
+        .merge_peer_document(from.record().document().unwrap())
+        .unwrap();
+    let shown = |app: &mut TestApp<ChatShell>| {
+        app.with_chat(|chat| {
             chat.composer_main.set_key(&channel);
             chat.composer_main.sync(&ui::automerge::AutoCommit::new());
             chat.composer_main.value()
         })
+        .unwrap()
+    };
+    assert_eq!(shown(&mut bob), "hello from Ada");
+    assert!(!ada.read_document(|doc| crate::projection::has_draft(doc, &channel)));
+    bob.set_role(ui::permissions::Role::Viewer);
+    assert!(!to.may_read());
+    assert_eq!(shown(&mut bob), "");
+}
+
+#[test]
+fn earlier_channel_drafts_import_with_their_rich_text() {
+    use crate::drafts::{ChatDrafts, DOCUMENT, ImportEffect};
+    let mut app = TestApp::<ChatShell>::for_person(&"ad".repeat(32)).unwrap();
+    let legacy = app.person::<ChatDrafts>().unwrap();
+    let edit = ChatDrafts::paths()
+        .drafts
+        .key("c_general")
+        .perform(&tilo_document::RichTextAction::AppendParagraph {
+            text: "previous draft".into(),
+        })
         .unwrap();
-    assert_eq!(phones_composer, "hello from Ada");
+    legacy
+        .invoke(&ui::tilo_resource::Invoke::edit(&edit).unwrap())
+        .unwrap();
+    legacy.record().flush();
+    drop(legacy);
+    app.effect_confirmed(&ImportEffect::ImportPreviousDrafts)
+        .unwrap();
+    let stored = app
+        .shared_resource::<ChatDrafts>(ui::apps::CHAT, DOCUMENT)
+        .unwrap();
+    assert_eq!(
+        stored
+            .read(|doc| crate::projection::draft_text(doc, "c_general"))
+            .unwrap()
+            .trim(),
+        "previous draft"
+    );
 }
 
 /// Filing feedback is commenting: a commenter files a report through the

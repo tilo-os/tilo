@@ -319,3 +319,5 @@ pdf-signature-profile-set-strokes = Draw signature
 
 ## What the app is called in a window and in the launcher
 pdf-viewer-app-title = PDF Viewer
+
+pdf-signature-profile-restore-previous = Restore previous signature

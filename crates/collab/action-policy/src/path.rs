@@ -381,6 +381,14 @@ fn covers(pattern: &[Segment], path: &[Segment]) -> bool {
     let Some((first, rest)) = pattern.split_first() else {
         return true;
     };
+    // A route names the resource directly, while the app can also name
+    // its kind. A grant on the route covers the same resource in the app.
+    if first.level() == Some(Level::Resource)
+        && let Some((kind, resource)) = path.split_first()
+        && kind.level() == Some(Level::Kind)
+    {
+        return covers(pattern, resource);
+    }
     match first {
         Segment::Rest => {
             let mut tail = path;
@@ -406,6 +414,11 @@ fn overlaps(left: &[Segment], right: &[Segment]) -> bool {
     else {
         return true;
     };
+    match (first.level(), second.level()) {
+        (Some(Level::Resource), Some(Level::Kind)) => return overlaps(left, right_rest),
+        (Some(Level::Kind), Some(Level::Resource)) => return overlaps(left_rest, right),
+        _ => {}
+    }
     match (first, second) {
         // Any depth either matches nothing or absorbs the other side's next
         // segment.
@@ -430,7 +443,8 @@ fn compatible(left: &Segment, right: &Segment) -> bool {
 impl fmt::Display for TreePath {
     /// The form a path is stored and sent in: `workspace:r/app:mail/
     /// kind:mail.message/resource:*/action:send`, `**` for any depth, `/` for
-    /// the root. Ids escape `%` and `/` as `%25` and `%2F`, and an id that is
+    /// the root. An empty resource id addresses the app's primary document.
+    /// Ids escape `%` and `/` as `%25` and `%2F`, and an id that is
     /// exactly `*` as `%2A`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.write_with(f)
@@ -469,7 +483,7 @@ impl FromStr for TreePath {
                 Level::from_tag(tag).ok_or_else(|| PathError(format!("unknown level `{tag}`")))?;
             if id == "*" {
                 path = path.any(level);
-            } else if id.is_empty() {
+            } else if id.is_empty() && level != Level::Resource {
                 return Err(PathError(format!("segment `{part}` has no id")));
             } else {
                 path = path.push(level, unescape(id)?);
