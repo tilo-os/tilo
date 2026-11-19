@@ -165,6 +165,7 @@ words = ["subject"]
 paths = [
     "apps/mail/*",
     "apps/tl/mail/*",
+    "crates/agent/agent-session/tests/mail_for_agents.rs",
     "crates/platform/mail-session/*",
     "crates/server/tilo-workspace-service/src/workspaces/mail_watch.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings.rs",
