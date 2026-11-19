@@ -1259,12 +1259,11 @@ impl Session {
         // workspace as an agent, and the person answers on their sheets. It
         // binds first, and is served from the broker the app wire starts, which
         // already decides against the shell the loop shows.
-        let questions = options.questions.clone().or_else(|| {
-            options
-                .desktop
-                .as_ref()
-                .map(|desktop| desktop.questions().clone())
-        });
+        // A headless session publishes the questions it asks too.
+        let (questions, own_questions) = crate::questions::for_session(
+            options.questions.clone(),
+            options.desktop.as_ref().map(|desktop| desktop.questions()),
+        );
         // What an agent's run asks its person before a step its grants leave to them is put on
         // the same sheets ([`crate::step_questions`]).
         if let (Some(questions), Some(broker)) = (
@@ -1395,6 +1394,7 @@ impl Session {
         let keyboard = crate::keyboard::Keyboard::default();
         let mut started = std::mem::take(&mut options.services);
         started.push(Box::new(shell_service));
+        started.extend(own_questions.map(|questions| Box::new(questions) as Box<dyn Service>));
         // The session's own document, which keeps the records of the package it runs itself: the
         // shell's, whether the store holds one or this build's copy stands in for it
         // (`docs/designs/app-language/shell.md` §6), so the package the shell shows is one a

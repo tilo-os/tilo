@@ -1835,8 +1835,16 @@ reason = "boots VMs (KVM) from a built installer image"
 workflow = "release-imager.yml"
 
 [[unrequired]]
+suite = "os/tests/native_atspi_smoke.sh"
+reason = "runs inside a booted guest: it drives the compositor's own surfaces over the AT-SPI bus, which only exists in a live session (os/dev/vm.sh test native-atspi-smoke.sh)"
+
+[[unrequired]]
 suite = "os/dev/test-internal-install-cycle.sh"
 reason = "boots VMs (KVM) from a built installer image"
+
+[[unrequired]]
+suite = "os/dev/test-server-plan-install-cycle.sh"
+reason = "boots two VMs (KVM): a retained Fedora that stages and installs Tilo Server unattended from a plan, and the dev disk's headless owner session that answers its enrolment and unlock"
 
 [[unrequired]]
 suite = "os/dev/test-measured-boot.sh"

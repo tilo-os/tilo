@@ -230,6 +230,22 @@ words = ["space"]
 identifiers = ["AvailableSpace"]
 
 [[allow]]
+reason = "The POSIX character class `[[:space:]]`, which names whitespace in the shell that drives the compositor's AT-SPI surfaces."
+words = ["space"]
+paths = ["os/tests/native_atspi_smoke.sh"]
+
+[[allow]]
+reason = "polkit's unix-session subject: the process identity a request is checked as."
+words = ["subject"]
+paths = ["os/tests/native_atspi_smoke.sh"]
+
+[[allow]]
+reason = "Names outside Tilo a VM harness passes through: the toolkit's `TILO_RUN` runtime directory, the ssh client's host key options, and podman's `run` verb with the host namespaces it shares."
+words = ["run", "host"]
+identifiers = ["TILO_RUN", "StrictHostKeyChecking", "UserKnownHostsFile", "run", "host"]
+paths = ["os/dev/test-server-plan-install-cycle.sh"]
+
+[[allow]]
 reason = "The constant the launcher names the app-process socket by: the service an app is handed, not Tilo's word for a machine."
 words = ["host"]
 identifiers = ["APP_HOST_SERVICE"]
