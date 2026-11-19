@@ -124,8 +124,12 @@ impl WorkspaceFiles {
 
     /// The tree's own record and the record of each chunk it lists, with each record's heads:
     /// every chunk is opened as the tree lists it, and a chunk still on its way here is asked
-    /// for again on a later frame.
-    fn opened(&self, read: &mut Read) -> Option<(StoredResource, Chunks, Heads)> {
+    /// for again on a later frame. `whole` asks for every chunk the tree lists, or none: what a
+    /// writer needs, since it places new nodes by what every chunk holds. A reader gets what
+    /// arrived, a chunk the workspace may never have got left out, rather than nothing at all:
+    /// a tree whose own document lists a chunk the workspace does not hold still shows every
+    /// file the chunks it holds name.
+    fn opened(&self, read: &mut Read, whole: bool) -> Option<(StoredResource, Chunks, Heads)> {
         let index = self.tree_document().ok()?;
         let listed = index.read(listed_chunks)?;
         let mut chunks = BTreeMap::new();
@@ -134,15 +138,17 @@ impl WorkspaceFiles {
             let record = if let Some(record) = read.chunks.get(&chunk) {
                 Rc::clone(record)
             } else {
-                let opened = self
-                    .records()
-                    .open_resource_at(
-                        FILES_APP,
-                        &chunk_document_id(chunk),
-                        TREE_KIND,
-                        &|_doc: &mut AutoCommit| Ok(()),
-                    )
-                    .ok()?;
+                let Ok(opened) = self.records().open_resource_at(
+                    FILES_APP,
+                    &chunk_document_id(chunk),
+                    TREE_KIND,
+                    &|_doc: &mut AutoCommit| Ok(()),
+                ) else {
+                    if whole {
+                        return None;
+                    }
+                    continue;
+                };
                 let record = Rc::new(opened);
                 read.chunks.insert(chunk, Rc::clone(&record));
                 record
@@ -167,7 +173,7 @@ impl WorkspaceFiles {
     /// holds nodes: for a caller that writes into it, as a drop does.
     pub(crate) fn tree_for_writing(&self) -> Option<(StoredResource, Chunks, Tree)> {
         let mut read = self.read.try_borrow_mut().ok()?;
-        let (index, chunks, _) = self.opened(&mut read)?;
+        let (index, chunks, _) = self.opened(&mut read, true)?;
         let tree = Self::tree_held(&index, &chunks)?;
         Some((index, chunks, tree))
     }
@@ -175,7 +181,7 @@ impl WorkspaceFiles {
     /// The workspace's tree as its records hold it now.
     pub(crate) fn tree_now(&self) -> Option<Tree> {
         let mut read = self.read.try_borrow_mut().ok()?;
-        let (index, chunks, _) = self.opened(&mut read)?;
+        let (index, chunks, _) = self.opened(&mut read, false)?;
         Self::tree_held(&index, &chunks)
     }
 
@@ -185,7 +191,7 @@ impl WorkspaceFiles {
         let Ok(mut read) = self.read.try_borrow_mut() else {
             return;
         };
-        let Some((index, chunks, heads)) = self.opened(&mut read) else {
+        let Some((index, chunks, heads)) = self.opened(&mut read, false) else {
             return;
         };
         if read.heads != heads {
