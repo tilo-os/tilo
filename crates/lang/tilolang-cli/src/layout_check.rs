@@ -2719,10 +2719,10 @@ mod board_list {
         f64::from(ui::Theme::light().tokens.metrics.board_list_width)
     }
 
-    /// A pane narrower than a board's lists scrolls them sideways instead of cutting them off: each
-    /// list keeps its measure and stands whole on the strip, the strip keeps the same gutter at
-    /// each end, every list the viewport shows is whole from its heading to its foot, and the last
-    /// list comes whole into view at the end of the scroll.
+    /// A pane too narrow for its lists even at a card's measure scrolls them sideways instead of
+    /// cutting them off: each list keeps its measure and stands whole on the strip, the strip keeps
+    /// the same gutter at each end, every list the viewport shows is whole from its heading to its
+    /// foot, and the last list comes whole into view at the end of the scroll.
     #[test]
     fn a_narrow_board_scrolls_its_lists_whole_across_the_pane() {
         tilo_app_window::i18n::ensure();
@@ -2731,7 +2731,7 @@ mod board_list {
             BOARD,
             &packages,
             "a board",
-            (864, 800),
+            (800, 800),
             ui::Theme::light(),
             None,
             &[],
@@ -2742,7 +2742,7 @@ mod board_list {
         assert_eq!(lists.len(), 3, "three lists: {lists:?}");
         assert!(
             pane.horizontal_overflows(),
-            "three lists of {measure} outrun the 864 pane, so it scrolls them: {strip:?} in {viewed:?}",
+            "three lists of {measure} cannot narrow into the 800 pane, so it scrolls them: {strip:?} in {viewed:?}",
             measure = list_measure()
         );
         for list in &lists {
