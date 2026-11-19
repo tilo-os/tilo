@@ -108,7 +108,8 @@ def entries(image: str) -> list[Entry]:
 
 
 def problems(found: list[Entry], base: str | None):
-    for entry in found:
+    # The image's own root is never merged: systemd-sysext takes its usr/ alone.
+    for entry in (entry for entry in found if entry.path != "/"):
         kind = stat.S_IFMT(entry.mode)
         if (entry.uid, entry.gid) != (0, 0):
             yield f"{entry.path} is owned by {entry.uid}:{entry.gid}, not root"
@@ -118,7 +119,7 @@ def problems(found: list[Entry], base: str | None):
             yield f"{entry.path} has no SELinux label"
         elif any(refused in entry.label for refused in REFUSED_LABELS):
             yield f"{entry.path} is labelled {entry.label}"
-        if base is None or entry.path == "/":
+        if base is None:
             continue
         try:
             there = os.lstat(os.path.join(base, entry.path.lstrip("/")))

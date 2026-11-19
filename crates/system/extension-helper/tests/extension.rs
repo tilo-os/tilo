@@ -1688,7 +1688,7 @@ tilo_test_env::scenario! {
             raw_status(&machine)["last_error"]
                 .as_str()
                 .unwrap()
-                .ends_with("/ is labelled system_u:object_r:unlabeled_t:s0")
+                .ends_with(": /usr is labelled system_u:object_r:unlabeled_t:s0")
         );
     }
 

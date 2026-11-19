@@ -100,10 +100,12 @@ pub fn refusal(inspection: &Inspection) -> Option<String> {
         .base
         .get("/usr")
         .is_some_and(|usr| usr.label.is_some());
-    inspection.image.iter().find_map(|(path, entry)| {
-        let base = (path != "/").then(|| inspection.base.get(path)).flatten();
-        problem(path, entry, base, labelled)
-    })
+    // The image's own root is never merged: systemd-sysext takes its usr/ alone.
+    inspection
+        .image
+        .iter()
+        .filter(|(path, _)| *path != "/")
+        .find_map(|(path, entry)| problem(path, entry, inspection.base.get(path), labelled))
 }
 
 /// Reads the image mounted read-only in a private mount namespace, where the
