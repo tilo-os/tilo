@@ -636,6 +636,7 @@ pub(crate) struct Layouts {
 }
 
 /// The layouts a session on `options` keeps, writing what its windows note of themselves (`notes`).
+#[cfg(target_os = "linux")]
 pub(crate) fn of_session(
     options: &crate::options::Options,
     notes: Arc<crate::continuations::Continuations>,
@@ -724,8 +725,15 @@ impl Layouts {
         if self.kept_pending.borrow().as_deref() == Some(bytes.as_slice()) {
             return;
         }
-        *self.kept_pending.borrow_mut() = Some(bytes.clone());
-        tilo_durable_writer::keep(at.clone(), bytes);
+        #[cfg(target_os = "linux")]
+        {
+            *self.kept_pending.borrow_mut() = Some(bytes.clone());
+            tilo_durable_writer::keep(at.clone(), bytes);
+        }
+        // A page's session has no device state to keep it in: the session after it reads the
+        // layout its workspace holds.
+        #[cfg(not(target_os = "linux"))]
+        let _ = at;
     }
 
     /// These records, of a session that hosts the windows that run only on this device:
