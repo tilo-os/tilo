@@ -108,8 +108,15 @@ async fn next(client: &ServerClient, who: &str) -> Envelope {
             .await
             .unwrap_or_else(|_| panic!("{who} timed out"))
             .unwrap_or_else(|| panic!("{who} connection closed"));
-        // A member's session also carries their workspace listing.
-        if !matches!(envelope, Envelope::PersonalList { .. }) {
+        // A member's session also carries their workspace listing, and the
+        // workspace's own changes, which are no answer to a frame.
+        if !matches!(
+            envelope,
+            Envelope::PersonalList { .. }
+                | Envelope::Delta { .. }
+                | Envelope::Ready { .. }
+                | Envelope::WorkspaceBootstrap { .. }
+        ) {
             return envelope;
         }
     }
