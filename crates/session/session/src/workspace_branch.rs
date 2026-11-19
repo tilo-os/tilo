@@ -214,6 +214,7 @@ async fn moved(events: &mut [tokio::sync::watch::Receiver<u64>], until: Instant)
 /// its copies run off the loop.
 pub(crate) async fn copy(
     engine: Option<&Engine>,
+    reads: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
     places: Places,
     from: WorkspaceId,
     to: WorkspaceId,
@@ -222,7 +223,7 @@ pub(crate) async fn copy(
     let mut branched = Branched::default();
     let sources = match engine {
         Some(engine) if engine.holds(from) && engine.holds(to) => {
-            read_resources(engine, from, until, &mut branched).await
+            read_resources(reads, from, &mut branched)
         }
         // The source's records are this device's to read, and the branch holds none: it could not
         // be founded here.
@@ -318,14 +319,13 @@ fn make_copies(
 }
 
 /// Every record of `from` this device reads, but those that stay behind.
-async fn read_resources(
-    engine: &Engine,
+fn read_resources(
+    reads: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
     from: WorkspaceId,
-    until: Instant,
     branched: &mut Branched,
 ) -> Sources {
     let mut sources = Sources::new();
-    let routes = match engine.documents(&from.to_string()) {
+    let routes = match reads.listing(&from.to_string()) {
         Ok(routes) => routes,
         Err(error) => {
             branched.missing.push(error);
@@ -337,21 +337,17 @@ async fn read_resources(
             branched.left = branched.left.saturating_add(1);
             continue;
         }
-        // A record the workspace's hosts send only once asked, or one whose keys are not here yet,
-        // reads as nothing until it is here.
-        let read = loop {
-            // Subscribed before the read, so what lands while it reads is not slept through.
-            let mut events = events(engine);
-            match engine.record(&from.to_string(), &app, &record) {
-                Ok(None) if Instant::now() < until => {
-                    if !moved(&mut events, until).await {
-                        break Ok(None);
-                    }
-                }
-                other => break other,
-            }
-        };
-        match read.map(|bytes| bytes.map(|bytes| AutoCommit::load(&bytes))) {
+        // The service holds the source's documents for this device: one whose keys are not here
+        // yet reads as nothing, and is named among what the branch left behind.
+        let read = reads
+            .read(&from.to_string(), &app, &record, None)
+            .map(|read| match read {
+                tilo_workspace_service::workspace_documents::DocumentRead::Whole {
+                    bytes, ..
+                } => Some(AutoCommit::load(&bytes)),
+                _ => None,
+            });
+        match read {
             Ok(Some(Ok(doc))) => {
                 sources.insert((app, record), doc);
             }
@@ -738,6 +734,7 @@ impl crate::Shared {
             return;
         };
         let engine = self.engine.clone();
+        let reads = std::sync::Arc::clone(&self.document_reads);
         let until = Instant::now()
             .checked_add(PATIENCE)
             .unwrap_or_else(Instant::now);
@@ -752,7 +749,15 @@ impl crate::Shared {
                     // is asked for again, and the person hears why.
                     tracing::warn!(%error, %workspace, "the branch's workspace was not founded");
                 }
-                copy(engine.as_deref(), Places::here(), from, workspace, until).await
+                copy(
+                    engine.as_deref(),
+                    &reads,
+                    Places::here(),
+                    from,
+                    workspace,
+                    until,
+                )
+                .await
             },
             || Branched {
                 missing: vec!["the branch's copy stopped before it answered".to_owned()],
@@ -1512,14 +1517,56 @@ mod tests {
         AutoCommit::load(&std::fs::read(path).unwrap()).unwrap()
     }
 
+    /// A device with no service open reads no document: what a branch of a session that keeps no
+    /// workspaces finds.
+    struct NoDocuments;
+
+    impl tilo_workspace_service::workspace_documents::DeviceDocuments for NoDocuments {
+        fn read(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: Option<&[[u8; 32]]>,
+        ) -> Result<tilo_workspace_service::workspace_documents::DocumentRead, String> {
+            Err("no workspace service is open".to_owned())
+        }
+
+        fn listing(&self, _: &str) -> Result<Vec<(String, String)>, String> {
+            Ok(Vec::new())
+        }
+
+        fn holds(&self, _: &str, _: &str, _: &str) -> bool {
+            false
+        }
+
+        fn workspaces(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
     /// `from` branched into `to` , with everything this device holds here.
     fn branch(
-        held: Option<&Engine>,
+        held: Option<&Arc<Engine>>,
         places: Places,
         from: WorkspaceId,
         to: WorkspaceId,
     ) -> Branched {
-        pollster::block_on(copy(held, places, from, to, Instant::now()))
+        let reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments> =
+            match held {
+                Some(engine) => {
+                    Arc::new(crate::records::testing::EngineDocuments(Arc::clone(engine)))
+                }
+                None => Arc::new(NoDocuments),
+            };
+        pollster::block_on(copy(
+            held.map(std::convert::AsRef::as_ref),
+            &reads,
+            places,
+            from,
+            to,
+            Instant::now(),
+        ))
     }
 
     /// A device of a person, certified for their root, that owns workspaces.

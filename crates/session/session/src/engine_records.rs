@@ -34,6 +34,9 @@ struct Inner {
     owners: ResourceOwners,
     /// The workspaces' copy, once the session holds one.
     engine: RefCell<Option<Arc<Engine>>>,
+    /// The documents of the workspaces this device's service holds, once the session opened it:
+    /// what the workspace holds of a record reads from there.
+    reads: RefCell<Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>>>,
     /// Where a write reaches this device's apps, as a member's write does.
     apps: RefCell<Option<crate::sync::PeerDocuments>>,
     /// The store of each app's records in each workspace, by workspace and app, as handed out.
@@ -108,6 +111,7 @@ impl EngineRecords {
                 ),
                 store,
                 engine: RefCell::default(),
+                reads: RefCell::default(),
                 apps: RefCell::default(),
                 stores: RefCell::default(),
                 replicas: RefCell::default(),
@@ -128,10 +132,12 @@ impl EngineRecords {
     pub(crate) fn attach(
         &self,
         engine: Arc<Engine>,
+        reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
         changes: &crate::platform::records::Changes,
         apps: Option<crate::sync::PeerDocuments>,
     ) {
         *self.0.engine.borrow_mut() = Some(engine);
+        *self.0.reads.borrow_mut() = Some(reads);
         *self.0.apps.borrow_mut() = apps;
         *self.0.moved.borrow_mut() = Some(changes.reader());
         *self.0.changes.borrow_mut() = Some(changes.clone());
@@ -146,10 +152,10 @@ impl EngineRecords {
     /// Whether the workspaces' copy is here and holds `workspace`: where a record kept in it is
     /// written and read.
     pub(crate) fn holds(&self, workspace: &str) -> bool {
-        let engine = self.0.engine.borrow();
-        engine.as_ref().is_some_and(|engine| {
-            WorkspaceId::parse(workspace).is_some_and(|workspace| engine.holds(workspace))
-        })
+        let reads = self.0.reads.borrow();
+        reads
+            .as_ref()
+            .is_some_and(|reads| reads.workspaces().iter().any(|held| held == workspace))
     }
 
     /// Keep `doc`, `app`'s `record` in `workspace` as a service of the session runs over it, in
@@ -329,7 +335,7 @@ impl Inner {
     /// Take in what the engine holds of `app`'s records in `workspace` : merged into a record a
     /// copy has open, and kept for whoever opens one that is not.
     fn read(&self, workspace: &str, app: &str) {
-        let Some(engine) = self.engine.borrow().clone() else {
+        let Some(reads) = self.reads.borrow().clone() else {
             return;
         };
         let Some(store) = self
@@ -340,7 +346,7 @@ impl Inner {
         else {
             return;
         };
-        let Ok(records) = engine.documents(workspace) else {
+        let Ok(records) = reads.listing(workspace) else {
             return;
         };
         let mut kept = false;
@@ -354,8 +360,12 @@ impl Inner {
                 .borrow()
                 .get(&key)
                 .and_then(|replica| replica.revision);
-            let bytes = match engine.record_since(workspace, app, &record, known) {
-                Ok(Some((bytes, revision))) => {
+            let bytes = match reads.read(workspace, app, &record, None) {
+                Ok(tilo_workspace_service::workspace_documents::DocumentRead::Whole {
+                    revision,
+                    bytes,
+                    ..
+                }) if known != Some(revision) => {
                     let mut replicas = self.replicas.borrow_mut();
                     let replica = replicas.entry(key.clone()).or_insert_with(|| Replica {
                         sync: DocumentSync::delivered(heads_of(&bytes)),
@@ -364,7 +374,7 @@ impl Inner {
                     replica.revision = Some(revision);
                     bytes
                 }
-                Ok(None) => {
+                Ok(_) => {
                     // Never read and still nothing to read: the keys to open it are on their way.
                     if known.is_none() {
                         self.unread
@@ -438,11 +448,11 @@ impl Inner {
     /// workspace holds takes the place of what the document was handed over with, while nothing
     /// was written in it since; anything else is merged.
     fn read_document(&self, key: &DocumentKey) {
-        let Some(engine) = self.engine.borrow().clone() else {
+        let Some(reads) = self.reads.borrow().clone() else {
             return;
         };
         let (workspace, app, record) = key;
-        if !engine.holds_resource(workspace, app, record) {
+        if !reads.holds(workspace, app, record) {
             return;
         }
         let known = self
@@ -450,16 +460,24 @@ impl Inner {
             .borrow()
             .get(key)
             .and_then(|document| document.revision);
-        let (bytes, revision) = match engine.record_since(workspace, app, record, known) {
-            Ok(Some(read)) => read,
+        let (bytes, revision) = match reads.read(workspace, app, record, None) {
+            Ok(tilo_workspace_service::workspace_documents::DocumentRead::Whole {
+                revision,
+                bytes,
+                ..
+            }) => (bytes, revision),
             // Unchanged, or not to be read yet (its keys are on their way): read again on a
             // later pass.
-            Ok(None) => return,
+            Ok(_) => return,
             Err(error) => {
                 tracing::warn!(%error, %workspace, %app, %record, "a record is not read");
                 return;
             }
         };
+        if known == Some(revision) {
+            // The service stands where this copy last read it.
+            return;
+        }
         let mut documents = self.documents.borrow_mut();
         let Some(document) = documents.get_mut(key) else {
             return;

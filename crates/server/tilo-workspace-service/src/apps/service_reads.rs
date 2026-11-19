@@ -241,6 +241,22 @@ impl DocumentBytes for Captured {
 /// replaces did.
 const MAX_DEVICE_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 
+/// Wait for `future` with this thread, or on a thread of its own where this one already drives a
+/// runtime: what a read that must not jam its caller's executor waits with.
+fn on_its_own<F>(future: F) -> F::Output
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_err() {
+        return block_on(future);
+    }
+    std::thread::scope(|scope| match scope.spawn(|| block_on(future)).join() {
+        Ok(output) => output,
+        Err(panic) => std::panic::resume_unwind(panic),
+    })
+}
+
 /// [`DeviceDocuments`] over the service's own copy of the workspaces it holds, resolved from
 /// [`ServiceSlot`] on every call: what this session's own roles read on this device.
 #[derive(Clone)]
@@ -255,7 +271,7 @@ impl ServiceDocuments {
     }
 
     /// The workspaces to answer from, once a service holds any.
-    fn workspaces(&self) -> Option<Workspaces> {
+    fn copies(&self) -> Option<Workspaces> {
         Some(self.0.service()?.workspaces().clone())
     }
 }
@@ -269,28 +285,46 @@ impl DeviceDocuments for ServiceDocuments {
         since: Option<&[[u8; 32]]>,
     ) -> Result<DocumentRead, String> {
         let workspaces = self
-            .workspaces()
+            .copies()
             .ok_or("this device's workspace service holds no workspaces")?;
-        block_on(workspaces.own_read(
-            workspace,
-            (app, resource),
-            since.unwrap_or_default(),
-            MAX_DEVICE_DOCUMENT_BYTES,
-        ))
+        let workspace = workspace.to_owned();
+        let app = app.to_owned();
+        let resource = resource.to_owned();
+        let since = since.map(<[[u8; 32]]>::to_vec);
+        on_its_own(async move {
+            workspaces
+                .own_read(
+                    &workspace,
+                    (&app, &resource),
+                    since.as_deref().unwrap_or_default(),
+                    MAX_DEVICE_DOCUMENT_BYTES,
+                )
+                .await
+        })
     }
 
     fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
         let workspaces = self
-            .workspaces()
+            .copies()
             .ok_or("this device's workspace service holds no workspaces")?;
-        block_on(workspaces.own_listing(workspace))
+        let workspace = workspace.to_owned();
+        on_its_own(async move { workspaces.own_listing(&workspace).await })
+    }
+
+    fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
+        let Some(workspaces) = self.copies() else {
+            return false;
+        };
+        let (workspace, app, resource) =
+            (workspace.to_owned(), app.to_owned(), resource.to_owned());
+        on_its_own(async move { workspaces.holds_resource(&workspace, &app, &resource).await })
     }
 
     fn workspaces(&self) -> Vec<String> {
-        let Some(workspaces) = self.workspaces() else {
+        let Some(workspaces) = self.copies() else {
             return Vec::new();
         };
-        block_on(workspaces.held_workspaces())
+        on_its_own(async move { workspaces.held_workspaces().await })
     }
 }
 

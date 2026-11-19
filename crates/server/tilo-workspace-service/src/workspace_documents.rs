@@ -101,6 +101,9 @@ pub trait DeviceDocuments: Send + Sync + 'static {
     /// The service is not open or holds no such workspace.
     fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String>;
 
+    /// Whether the service holds anything of `app`'s `resource` in `workspace`.
+    fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool;
+
     /// The workspaces the service holds, by their ids.
     fn workspaces(&self) -> Vec<String>;
 }

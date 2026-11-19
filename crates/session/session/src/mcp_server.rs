@@ -1400,9 +1400,14 @@ impl SessionServices {
         }
     }
 
-    /// Follow the changes of the workspaces' records in `engine`, the device's replica of them.
-    pub(crate) fn keep_records(&self, engine: Arc<tilo_session_client::engine::Engine>) {
-        self.changes.keep(engine);
+    /// Follow the changes of the workspaces' records in the device's workspace service `reads`,
+    /// woken by what `changes` notes.
+    pub(crate) fn keep_records(
+        &self,
+        reads: std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+        changes: crate::platform::records::Changes,
+    ) {
+        self.changes.keep(reads, changes);
     }
 
     /// Keep which of the shell's workspaces this device holds but its host has not taken it in

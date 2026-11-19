@@ -10,12 +10,12 @@
 //! records they may open.
 //!
 //! Search offers every index the workspaces on this device hold, as the worker last read them
-//! from where they are held (the engine on a computer, the page's replicated store on the web),
-//! so a record made elsewhere — another workspace's note, a file-backed document, one a peer
-//! brought into a workspace — is found by its name. Bringing it here is then one write, a
-//! reference into the workspace in front: no bytes move between the two workspaces' documents
-//! and no id is minted, because the id is the record. [`ui::resource::index::duplicate`] is the
-//! deliberate act of copying one instead.
+//! from where they are held (this device's workspace service on a computer, the page's replicated
+//! store on the web), so a record made elsewhere — another workspace's note, a file-backed
+//! document, one a peer brought into a workspace — is found by its name. Bringing it here is then
+//! one write, a reference into the workspace in front: no bytes move between the two workspaces'
+//! documents and no id is minted, because the id is the record.
+//! [`ui::resource::index::duplicate`] is the deliberate act of copying one instead.
 //!
 //! Reading happens away from the session's loop where the host has threads, and again whenever
 //! the change stream says a record of this device moved; the loop takes what it last read.
@@ -122,19 +122,18 @@ impl Records {
         }
     }
 
-    /// Read the workspaces' records from `engine` , where they are held, from now on, as the change
-    /// stream says they move, and name a
-    /// record brought here through the session's copies of them (`named` ) as `person` . The
-    /// session's index of what apps hold answers for their content ([`crate::resource_index`]):
-    /// the records are offered by name.
+    /// Read the workspaces' documents from this device's workspace service `reads` from now on,
+    /// as the change stream says they move, and name a record brought here through the session's
+    /// copies of them (`named` ) as `person` . The session's index of what apps hold answers for
+    /// their content ([`crate::resource_index`]): the records are offered by name.
     #[cfg(target_os = "linux")]
     pub(crate) fn read_from(
         &self,
-        engine: &Arc<crate::engine::Engine>,
+        reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
         named: crate::engine_records::EngineRecords,
         person: String,
     ) {
-        let held = crate::platform::records::Held::over(Arc::clone(engine), self.changes.clone());
+        let held = crate::platform::records::Held::over(reads, self.changes.clone());
         *self.reading.borrow_mut() = Some(reading(Arc::new(held), &self.changes, None));
         *self.bring.borrow_mut() = Some(Box::new(move |workspace, package, record| {
             named.reference(workspace, package, record, &person)
@@ -407,17 +406,72 @@ pub(crate) mod testing {
 
     use crate::engine::Engine;
     use crate::engine_records::EngineRecords;
-    use crate::platform::records::{Changes, Held, Records as _};
 
     /// Who writes the indexes and brings the records here.
     const PERSON: &str = "ada";
     /// The kind of every app's own record in these tests: the record that keeps its index.
     const OWN: &str = "notes.notebook";
 
+    /// A test's stand-in for this device's workspace service: the engine's own copy of its
+    /// workspaces, read as the service reads the documents it holds. The service itself holds
+    /// them in production; these tests have no endpoint to open it on.
+    pub(crate) struct EngineDocuments(pub(crate) Arc<Engine>);
+
+    impl tilo_workspace_service::workspace_documents::DeviceDocuments for EngineDocuments {
+        fn read(
+            &self,
+            workspace: &str,
+            app: &str,
+            resource: &str,
+            since: Option<&[[u8; 32]]>,
+        ) -> Result<tilo_workspace_service::workspace_documents::DocumentRead, String> {
+            use tilo_workspace_service::workspace_documents::DocumentRead;
+            match self.0.record_update(workspace, app, resource, since)? {
+                crate::engine::ResourceReading::Captured {
+                    revision,
+                    heads,
+                    bytes,
+                } => Ok(DocumentRead::Whole {
+                    revision,
+                    heads,
+                    bytes,
+                }),
+                crate::engine::ResourceReading::Changes {
+                    revision,
+                    heads,
+                    bytes,
+                } => Ok(DocumentRead::Changes {
+                    revision,
+                    heads,
+                    bytes,
+                }),
+                crate::engine::ResourceReading::Unchanged(revision) => {
+                    Ok(DocumentRead::Unchanged(revision))
+                }
+                crate::engine::ResourceReading::Pending => Ok(DocumentRead::Pending),
+            }
+        }
+
+        fn listing(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+            self.0.documents(workspace)
+        }
+
+        fn holds(&self, workspace: &str, app: &str, resource: &str) -> bool {
+            self.0.holds_resource(workspace, app, resource)
+        }
+
+        fn workspaces(&self) -> Vec<String> {
+            self.0
+                .workspaces()
+                .into_iter()
+                .map(|workspace| workspace.to_string())
+                .collect()
+        }
+    }
+
     pub(crate) struct Device {
         engine: Arc<Engine>,
         records: EngineRecords,
-        changes: Changes,
         /// Search's records of this device, until a test takes them.
         found: std::cell::RefCell<Option<super::Records>>,
         _state: tempfile::TempDir,
@@ -460,13 +514,13 @@ pub(crate) mod testing {
             }
             let found = super::Records::of(state.path().join("data"));
             let changes = found.changes();
+            let reads = Arc::new(EngineDocuments(Arc::clone(&engine)));
             let records = EngineRecords::new(Arc::new(|| {}));
-            records.attach(Arc::clone(&engine), &changes, None);
-            found.read_from(&engine, records.clone(), PERSON.to_owned());
+            records.attach(Arc::clone(&engine), reads.clone(), &changes, None);
+            found.read_from(reads, records.clone(), PERSON.to_owned());
             Self {
                 engine,
                 records,
-                changes,
                 found: std::cell::RefCell::new(Some(found)),
                 _state: state,
             }
@@ -520,9 +574,12 @@ pub(crate) mod testing {
 
         /// The records `app`'s index of `workspace` names, as the workspace holds it.
         pub(crate) fn names(&self, app: &str, workspace: &str) -> Vec<String> {
-            let held = Held::over(Arc::clone(&self.engine), self.changes.clone());
-            let mut named: Vec<String> = held
-                .document(app, workspace, "")
+            let Ok(crate::engine::ResourceReading::Captured { bytes, .. }) =
+                self.engine.record_update(workspace, app, "", None)
+            else {
+                return Vec::new();
+            };
+            let mut named: Vec<String> = automerge::AutoCommit::load(&bytes)
                 .map(|index| ui::resource::index::references(&index))
                 .unwrap_or_default()
                 .into_iter()

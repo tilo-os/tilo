@@ -313,11 +313,20 @@ impl Activity {
     /// Show where a workspace's writes were refused from `engine` .
     #[cfg(target_os = "linux")]
     fn attach_engine(&self, engine: Arc<crate::engine::Engine>) {
+        *self.0.engine.borrow_mut() = Some(engine);
+    }
+
+    /// Read what the workspaces hold through `reads`, the session's own read of its device's
+    /// workspace service.
+    #[cfg(target_os = "linux")]
+    fn attach_documents(
+        &self,
+        reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+    ) {
         *self.0.held.borrow_mut() = Some(Arc::new(crate::platform::records::Held::over(
-            Arc::clone(&engine),
+            reads,
             self.0.changes.clone(),
         )));
-        *self.0.engine.borrow_mut() = Some(engine);
     }
 
     /// Tell the person about the refusals waiting cannot change, once each until the verdict goes.
@@ -354,8 +363,10 @@ impl Activity {
         &self,
         options: &crate::Options,
         handle: &tilo_desktop_surface::DesktopHandle,
+        reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
     ) -> Option<Arc<crate::engine::Engine>> {
         let engine = crate::options::open_engine(options, handle)?;
+        self.attach_documents(reads);
         self.attach_engine(Arc::clone(&engine));
         Some(engine)
     }

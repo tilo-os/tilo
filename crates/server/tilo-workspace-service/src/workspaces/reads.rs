@@ -102,6 +102,10 @@ impl Workspaces {
     /// # Errors
     ///
     /// This service holds no such workspace.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the governor's guard lives only while its routes are copied out"
+    )]
     pub(crate) async fn own_listing(
         &self,
         workspace: &str,
@@ -110,13 +114,15 @@ impl Workspaces {
             .held_workspace(workspace)
             .await
             .ok_or("this service does not hold the workspace")?;
-        let held = held.lock().await;
-        let peer = held.peer();
-        Ok(peer
-            .plaintext_routes()
-            .into_iter()
-            .chain(peer.sealed_routes())
-            .collect())
+        let listing = {
+            let held = held.lock().await;
+            let peer = held.peer();
+            peer.plaintext_routes()
+                .into_iter()
+                .chain(peer.sealed_routes())
+                .collect()
+        };
+        Ok(listing)
     }
 
     /// The workspaces this service holds, by their ids.

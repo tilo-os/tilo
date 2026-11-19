@@ -28,8 +28,8 @@ use tilo_desktop_search::content_index::{AppContentIndex, SlotKey};
 use tilo_lock::MutexRecover as _;
 use ui::search::index_publication::{IndexEntry, IndexState, Publisher};
 
-/// What the indexer reads: the workspaces this device holds, and the records within them, as the
-/// owner last admitted them.
+/// What the indexer reads: the workspaces this device's service holds, and the documents within
+/// them, as the service last took them in.
 pub(crate) trait DocumentSource: Send + Sync + 'static {
     /// The workspaces this device holds.
     fn workspaces(&self) -> Vec<String>;
@@ -48,21 +48,45 @@ pub(crate) trait DocumentSource: Send + Sync + 'static {
     fn record(&self, workspace: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String>;
 }
 
-impl DocumentSource for crate::engine::Engine {
+/// [`DocumentSource`] over the documents of the workspaces this device's service holds: what
+/// search reads, with no app of theirs running.
+pub(crate) struct ServiceSource(
+    pub(crate) Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+);
+
+impl DocumentSource for ServiceSource {
     fn workspaces(&self) -> Vec<String> {
-        self.workspaces()
-            .into_iter()
-            .map(|workspace| workspace.to_string())
-            .collect()
+        self.0.workspaces()
     }
 
     fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        self.documents(workspace)
+        self.0.listing(workspace)
     }
 
     fn record(&self, workspace: &str, app: &str, record: &str) -> Result<Option<Vec<u8>>, String> {
-        self.record(workspace, app, record)
+        use tilo_workspace_service::workspace_documents::DocumentRead;
+        match self.0.read(workspace, app, record, None) {
+            Ok(DocumentRead::Whole { bytes, .. }) => Ok(Some(bytes)),
+            Ok(_) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
+}
+
+/// The indexer of the documents of the workspaces this device's service holds, reading content
+/// into `content` and taking what `changes` notes: what this device holds is found before
+/// anything changes, and every change after it.
+pub(crate) fn start(
+    reads: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
+    content: Arc<tilo_desktop_search::content_index::AppContentIndex>,
+    changes: crate::platform::records::Changes,
+) -> Arc<RecordIndex> {
+    RecordIndex::start(
+        Arc::new(ServiceSource(Arc::clone(reads))) as Arc<dyn DocumentSource>,
+        Arc::new(AppReader::of_device()),
+        Some(content),
+        changes,
+    )
 }
 
 /// What an app answers search about one of its records: the app's own model types, read from the

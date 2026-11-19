@@ -350,3 +350,20 @@ async fn a_device_reads_what_changed_since_its_heads() {
     );
     server.shutdown().await;
 }
+
+/// A session whose service was not opened reads nothing, and says so.
+#[test]
+fn a_session_with_no_service_open_reads_nothing() {
+    let reads = ServiceDocuments::on(ServiceSlot::default());
+    assert!(reads.read(APP, APP, RESOURCE, None).is_err());
+    assert!(reads.listing(APP).is_err());
+    assert!(!reads.holds(APP, APP, RESOURCE));
+    assert!(reads.workspaces().is_empty());
+}
+
+/// A read asked for from a thread already driving a runtime waits on a thread of its own, rather
+/// than blocking the runtime that drives it.
+#[tokio::test]
+async fn a_read_inside_a_runtime_waits_off_it() {
+    assert_eq!(on_its_own(async { 7_u8 }), 7);
+}
