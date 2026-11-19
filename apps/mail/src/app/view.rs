@@ -162,25 +162,26 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
     window.follow_delivery(delivery);
     carry_checks(cx, &mut window);
     cx.on_open(window.opener());
-    let room = window.room();
+    let shared = window.room();
     {
-        let (answer, status) = (Rc::clone(&room), Rc::clone(&room));
+        let (answer, status) = (Rc::clone(&shared), Rc::clone(&shared));
         cx.effects(move |effect: MailEffect, cx| answer_effect(&answer, effect, cx))
             .status(move || status.borrow().effect_statuses());
     }
     {
-        let room = Rc::clone(&room);
+        let staged = Rc::clone(&shared);
         cx.on_stage(move |scenario| {
             if let Some(scenario) = scenario {
-                room.borrow_mut().request_stage(scenario);
+                staged.borrow_mut().request_stage(scenario);
             }
         });
     }
-    let (rows, row, entries, query) = (
-        Rc::clone(&room),
-        Rc::clone(&room),
-        Rc::clone(&room),
-        Rc::clone(&room),
+    let (rows, row, entries, query, statuses) = (
+        Rc::clone(&shared),
+        Rc::clone(&shared),
+        Rc::clone(&shared),
+        Rc::clone(&shared),
+        Rc::clone(&shared),
     );
     let (listed, named) = (cx.live().clone(), cx.live().clone());
     cx.publishing(
@@ -198,13 +199,16 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
                 Some(draft) => draft_row(&named.get(), draft),
                 None => row.borrow().live_row(id),
             })
+            // What opening a row shows, and an attachment whose bytes are not
+            // here yet.
+            .row_status(move |id| statuses.borrow().row_status(id))
             .search_entries(move || entries.borrow().search_entries())
             // Someone searches: the servers are asked too, for mail older
             // than what this device keeps; what they find joins the entries.
             .search_query(move |asked| query.borrow_mut().search_servers(asked.text()))
             // The servers are still looking: a search showing waits for what
             // they find.
-            .search_pending(move || room.borrow().searching_servers()),
+            .search_pending(move || shared.borrow().searching_servers()),
         Box::new(window),
     )
 }

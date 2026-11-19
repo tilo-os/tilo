@@ -4,15 +4,24 @@
 
 use tilo_contact_directory::{ContactDirectory, EmailHint, canonical_email_hint};
 use tilo_sort::CompactSort as _;
-use ui::framework::LiveRow;
-use ui::tilo_resource::{Effect, SearchEntry};
+use ui::framework::{EffectStatus, LiveRow};
+use ui::tilo_resource::{self, RowBindings, SearchEntry};
 
 use super::{MailApp, Mailroom};
 use crate::actions::MailEffect;
 use crate::model::{Draft, DraftSender};
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-struct Choice {
+/// One exact recipient choice, published as a row of the `mail.contact-draft`
+/// type: every value the draft it prepares takes is the row's own.
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, ui::tilo_resource::Row,
+)]
+#[row(
+    kind = "mail.contact-draft",
+    label = "Contact",
+    effects = crate::actions::MailEffect
+)]
+pub(crate) struct Choice {
     person: String,
     label: String,
     email: String,
@@ -21,7 +30,7 @@ struct Choice {
 }
 
 impl Choice {
-    fn id(&self) -> String {
+    pub(crate) fn id(&self) -> String {
         // Include reviewed facts, not a name-derived identity or a hash. A
         // changed contact/account produces a different row and invalidates
         // an outstanding action rather than silently rebinding it.
@@ -55,11 +64,37 @@ impl Choice {
     }
 
     fn row(&self) -> LiveRow {
-        let mut action = self.effect().bound();
-        action.type_mut().label = crate::i18n::t("mail-contact-prepare");
-        action.type_mut().description = Some(self.label());
-        LiveRow::new(self.id(), "mail.contact-draft", self.label()).operation(action)
+        let bindings = RowBindings::new().bind(
+            MailEffect::PREPARE_CONTACT_DRAFT,
+            [
+                ("person", serde_json::Value::String(self.person.clone())),
+                ("label", serde_json::Value::String(self.label.clone())),
+                ("email", serde_json::Value::String(self.email.clone())),
+                (
+                    "sender_account",
+                    serde_json::Value::String(self.sender_account.clone()),
+                ),
+                (
+                    "sender_email",
+                    serde_json::Value::String(self.sender_email.clone()),
+                ),
+            ],
+        );
+        LiveRow::typed_with::<Choice>(self.id(), self.label(), &bindings)
     }
+}
+
+/// The status of the choice `choice`'s own row: preparing its draft is named
+/// for the action it takes, and says which recipient it is for.
+pub(crate) fn contact_draft_status(choice: &Choice, id: &str) -> Vec<EffectStatus> {
+    vec![
+        EffectStatus::labelled(
+            MailEffect::PREPARE_CONTACT_DRAFT,
+            crate::i18n::t("mail-contact-prepare"),
+        )
+        .on(id)
+        .with_description(choice.label()),
+    ]
 }
 
 fn choices(directory: &ContactDirectory, accounts: &[crate::account::Account]) -> Vec<Choice> {
@@ -82,7 +117,7 @@ fn choices(directory: &ContactDirectory, accounts: &[crate::account::Account]) -
 }
 
 impl Mailroom {
-    fn contact_choices(&self) -> Vec<Choice> {
+    pub(crate) fn contact_choices(&self) -> Vec<Choice> {
         self.contact_directory
             .as_ref()
             .map_or_else(Vec::new, |record| {
@@ -91,8 +126,7 @@ impl Mailroom {
     }
 
     pub(crate) fn contact_recipient_rows(&self) -> Vec<LiveRow> {
-        let mut collection = LiveRow::new(
-            "mail.contacts",
+        let mut collection = LiveRow::typed::<crate::actions::ContactsItem>(
             "mail.contacts",
             crate::i18n::t("mail-contact-recipients"),
         );
