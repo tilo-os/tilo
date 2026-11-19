@@ -2124,7 +2124,7 @@ tilo_test_env::scenario! {
             diagnostic
                 .actions
                 .iter()
-                .any(|action| action.id == "view-library")
+                .any(|action| action.id == "show-library")
         );
     }
 }

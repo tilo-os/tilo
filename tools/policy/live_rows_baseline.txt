@@ -69,7 +69,6 @@ row-operation 16 apps/music/src/actions.rs
 row-operation 12 apps/music/src/app.rs
 row-operation 17 apps/osk/src/actions.rs
 row-operation 2 apps/pdf-viewer/src/actions.rs
-row-operation 1 apps/photos/src/app.rs
 row-operation 2 apps/print-centre/src/surface.rs
 row-operation 3 apps/remote/src/actions.rs
 row-operation 5 apps/store/src/app.rs
@@ -111,7 +110,6 @@ untyped-live-row 9 apps/music/src/actions.rs
 untyped-live-row 2 apps/music/src/app.rs
 untyped-live-row 6 apps/osk/src/actions.rs
 untyped-live-row 3 apps/pdf-viewer/src/actions.rs
-untyped-live-row 2 apps/photos/src/app.rs
 untyped-live-row 4 apps/print-centre/src/surface.rs
 untyped-live-row 2 apps/remote/src/actions.rs
 untyped-live-row 13 apps/store/src/app.rs

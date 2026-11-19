@@ -17,6 +17,7 @@ use vello::peniko::ImageData;
 
 use ui::icons::Icon;
 use ui::theme::Theme;
+use ui::tilo_resource;
 use ui::widget::{
     Button, DateIndexMarker, DateIndexedScrollbar, ImageViewer, ModalLayout, ProgressBar,
     ScrollMetrics, ScrollRegion, TextInput, TextInputKind, Widget,
@@ -1762,21 +1763,29 @@ impl Photos {
     }
 }
 
+/// The search's own state, as a row: a refresh the index refused, with the
+/// library it would have shown one press away.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "photos.diagnostic", label = "Photo search status", effects = PhotosEffect)]
+pub struct PhotoSearchStatus;
+
+/// What the search's status row says beside its title.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "photos.status", label = "Status")]
+pub struct PhotoSearchMessage;
+
 impl Photos {
     pub(crate) fn search_status_row(&self) -> Option<ui::framework::LiveRow> {
         let message = self.search_refresh_error.as_deref()?;
         Some(
-            ui::framework::LiveRow::new(
+            ui::framework::LiveRow::typed::<PhotoSearchStatus>(
                 "photos.search-status",
-                "photos.diagnostic",
                 "Photo search status",
             )
-            .row(ui::framework::LiveRow::new(
+            .row(ui::framework::LiveRow::typed::<PhotoSearchMessage>(
                 "photos.search-status#message",
-                "photos.status",
                 message,
-            ))
-            .effect(&PhotosEffect::ViewLibrary),
+            )),
         )
     }
 }

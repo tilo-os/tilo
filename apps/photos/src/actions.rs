@@ -26,6 +26,11 @@ pub enum PhotosEffect {
     #[effect(view)]
     #[effect(label = "photos-search-library")]
     ViewLibrary,
+    /// Show the library from a search status row: what the index would have
+    /// shown, browsable while its refresh is refused.
+    #[effect(view, row, on = crate::app::PhotoSearchStatus)]
+    #[effect(label = "photos-search-library")]
+    ShowLibrary,
     /// Open the chronological timeline, optionally at one canonical calendar
     /// boundary. Capture metadata remains untouched.
     #[effect(view, row)]
