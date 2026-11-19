@@ -468,17 +468,17 @@ fn runner_attachment_retains_a_real_display_for_an_inflight_native_reader() {
                         .iter()
                         .filter(|device| device.is_alive())
                         .count()
-                        == 4
+                        == 1
                         && seat
                             .keyboards
                             .iter()
                             .filter(|keyboard| keyboard.is_alive())
                             .count()
-                            == 4
+                            == 1
                 })
             })
         },
-        "all production readers and publisher",
+        "the one production worker",
     );
     fixture.assert_attached_secret_copy();
     let clipboard = crate::system();
@@ -509,7 +509,7 @@ fn runner_attachment_retains_a_real_display_for_an_inflight_native_reader() {
         }
     });
     // A first call may race delivery of focus/selection. Retry only until the
-    // server has actually received a production smithay loader's pipe.
+    // server has actually received the worker's read pipe.
     fixture.wait(
         || {
             let _ = clipboard.text(crate::ClipboardTarget::Clipboard);
@@ -523,8 +523,8 @@ fn runner_attachment_retains_a_real_display_for_an_inflight_native_reader() {
         "parent backend and unrelated workers reaped",
     );
     assert!(
-        retained_display.upgrade().is_some(),
-        "loader lost its display owner"
+        retained_display.upgrade().is_none(),
+        "the stopped worker released the display it borrowed"
     );
     assert!(clipboard.text(crate::ClipboardTarget::Clipboard).is_none());
     assert!(!clipboard.set_text(crate::ClipboardTarget::Clipboard, "late copy"));
@@ -544,11 +544,6 @@ fn runner_attachment_retains_a_real_display_for_an_inflight_native_reader() {
     assert!(
         crate::attach_wayland_display(OwnedTestDisplay(fixture.connection.clone())).is_none(),
         "close must not reopen readers or increase the worker ceiling"
-    );
-    fixture.operation(|state, _| state.held.clear());
-    fixture.wait(
-        || retained_display.upgrade().is_none(),
-        "all display owners released",
     );
     crate::native::clear_wayland_for_test();
 }

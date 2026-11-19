@@ -219,7 +219,7 @@ clipboard_manifest = tomllib.loads(
 linux_clipboard_dependencies = clipboard_manifest["target"]['cfg(target_os = "linux")'][
     "dependencies"
 ]
-assert "smithay-clipboard" in linux_clipboard_dependencies
+assert "wayland-backend" in linux_clipboard_dependencies
 
 session_workflow = (ROOT / ".forgejo/workflows/release-desktop.yml").read_text()
 # The package jobs build the same immutable app store as releases. Exercise the job's own

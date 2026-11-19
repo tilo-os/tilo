@@ -18931,7 +18931,6 @@ dependencies = [
  "libc",
  "raw-window-handle",
  "smithay-client-toolkit",
- "smithay-clipboard",
  "tilo-clock",
  "tilo-mime",
  "tilo-platform-caps",
@@ -18939,6 +18938,7 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "wasm-bindgen",
+ "wayland-backend",
  "wayland-server",
  "workspace-hack",
 ]

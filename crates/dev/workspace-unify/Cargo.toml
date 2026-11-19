@@ -1072,7 +1072,6 @@ doc = false
 "smallvec-1_15_1" = { package = "smallvec", version = "^1.15.1", default-features = false, features = ["const_generics", "const_new", "serde", "union", "write"] }
 "smithay-0_7_0" = { package = "smithay", path = "../../../vendor/smithay", default-features = false, features = ["aliasable", "backend_drm", "backend_egl", "backend_gbm", "backend_libinput", "backend_session", "backend_session_libseat", "backend_udev", "backend_winit", "cc", "desktop", "drm", "drm-ffi", "encoding_rs", "gbm", "gl_generator", "input", "libloading", "libseat", "pixman", "pkg-config", "renderer_gl", "renderer_multi", "renderer_pixman", "scopeguard", "tempfile", "udev", "wayland-client", "wayland-cursor", "wayland-egl", "wayland-protocols", "wayland-protocols-misc", "wayland-protocols-wlr", "wayland-server", "wayland_frontend", "winit", "x11rb", "x11rb_event_source", "xwayland"] }
 "smithay-client-toolkit-0_20_0" = { package = "smithay-client-toolkit", version = "^0.20.0", default-features = false, features = ["bytemuck", "calloop", "calloop-wayland-source", "default", "pkg-config", "xkbcommon"] }
-"smithay-clipboard-0_7_3" = { package = "smithay-clipboard", version = "^0.7.3", default-features = false, features = ["default", "dlopen"] }
 "smol_str-0_1_24" = { package = "smol_str", version = "^0.1.24", default-features = false, features = [] }
 "smol_str-0_3_6" = { package = "smol_str", version = "^0.3.6", default-features = false, features = ["default", "serde", "std"] }
 "smoothutf8-0_2_3" = { package = "smoothutf8", version = "^0.2.3", default-features = false, features = ["simdutf8"] }
@@ -2530,6 +2529,7 @@ doc = false
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
 "tilo-resource" = { path = "../../../crates/sdk/tilo-resource", default-features = false, features = ["test-support"] }
 "tilo-resource-macros" = { path = "../../../crates/sdk/tilo-resource-macros", default-features = false, features = [] }
+"tilo-resource-store" = { path = "../../../crates/collab/resource-store", default-features = false, features = [] }
 "tilo-rt" = { path = "../../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-sandbox-core" = { path = "../../../crates/system/sandbox-core", default-features = false, features = ["test-support"] }
 "tilo-seal" = { path = "../../../crates/system/tilo-seal", default-features = false, features = [] }
