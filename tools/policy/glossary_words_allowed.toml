@@ -1575,3 +1575,9 @@ reason = "A test drives the workspace service through the fixture named `test_ho
 words = ["host"]
 identifiers = ["host", "test_host"]
 paths = ["crates/server/tilo-workspace-service/src/workspaces/device_rejoin_tests.rs"]
+
+[[allow]]
+reason = "The membership a page keeps is stored under the key `host`, and the entered-workspaces test drives the pairing through `pairViaHost` and the `hostDevice` field every entry carries; none is prose."
+words = ["host"]
+identifiers = ["host", "hostDevice", "pairViaHost", "HOST"]
+paths = ["crates/browser/tilo-browser-runtime/web/workspaces.mjs", "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs", "crates/session/client/src/entered.rs"]

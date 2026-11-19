@@ -638,6 +638,24 @@ test('a paired device is kept as its person and reconnects as them, never as a p
   assert.equal(calls.connected[1].workspace, 'WORKSPACE');
 });
 
+test('a browser that becomes another person here forgets the workspaces it entered as the other', async () => {
+  const person = '22'.repeat(32);
+  const {options, store} = harness({membership: {origin: 'https://workspaces.example', workspace: 'theirs', userPublicKey: '11'.repeat(32)}});
+  store.set('tilo-entered-workspaces', JSON.stringify([{origin: 'https://workspaces.example', workspace: 'theirs', hostDevice: 'ab'.repeat(32)}]));
+  const forgotten = [];
+  await pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: person, invite: '0f'.repeat(16), listed: commons,
+    memberships: options.memberships, findProfile: async () => null, agree: async () => true,
+    runtime: {forgetEnteredAt: (stored, origin) => {
+      forgotten.push(origin);
+      const kept = JSON.parse(stored).filter(entry => entry.origin !== origin);
+      return JSON.stringify({entered: kept, unchoose: []});
+    }},
+    pair: async () => ({workspace: 'WORKSPACE'})});
+  assert.deepEqual(forgotten, ['https://workspaces.example'],
+    'the workspaces it entered as the other person there are not this person\u2019s');
+  assert.deepEqual(JSON.parse(store.get('tilo-entered-workspaces')), []);
+});
+
 test('a pairing link that names no person is refused before anything is asked', async () => {
   const {calls, options} = harness();
   await assert.rejects(pairViaHost({origin: 'https://workspaces.example', workspace: 'WORKSPACE', userPublicKey: 'nobody', pair: options.connect,

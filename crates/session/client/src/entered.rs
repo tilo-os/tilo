@@ -114,6 +114,21 @@ pub fn forget_gone(list: Vec<Entered>, origin: &str, host_device_key: &str) -> C
     }
 }
 
+/// The browser becomes someone else's at `origin` than the person it was when it entered the
+/// workspaces remembered there: those were entered as the other person, so they are forgotten,
+/// and a bare entry reopens none of them. A page forgets them as a browser pairs to the
+/// person it becomes.
+#[must_use]
+pub fn forget_at(list: Vec<Entered>, origin: &str) -> Changed {
+    let (theirs, entered): (Vec<_>, Vec<_>) = kept(list)
+        .into_iter()
+        .partition(|entry| entry.origin == origin);
+    Changed {
+        entered,
+        unchoose: theirs.iter().map(Entered::place).collect(),
+    }
+}
+
 /// Remember that this device opened `entry` as a member, first in the list, under its name when
 /// one is known (an earlier name stays otherwise). Workspaces remembered at its origin under
 /// another host are gone with it, and forgotten.
@@ -262,6 +277,21 @@ mod tests {
             assert!(
                 again.unchoose.is_empty(),
                 "one not remembered changes nothing"
+            );
+        }
+
+        phase another_person_at_a_server_forgets_the_workspaces_entered_there;
+        {
+            let device = HOST;
+            let list = remember(Vec::new(), entry("https://a", "theirs", device)).entered;
+            let list = remember(list, entry("https://b", "elsewhere", device)).entered;
+            let changed = forget_at(list, "https://a");
+            assert_eq!(changed.unchoose, [place("https://a", "theirs")]);
+            assert_eq!(changed.entered.len(), 1);
+            assert_eq!(changed.entered[0].workspace, "elsewhere");
+            assert!(
+                forget_at(changed.entered, "https://a").unchoose.is_empty(),
+                "nothing entered there changes nothing"
             );
         }
 
