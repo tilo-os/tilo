@@ -209,7 +209,7 @@ impl ShellSurface for ShellPart {
             SwitcherKey::Commit => self.ask("commit-switcher", &[]),
             SwitcherKey::Close => {
                 let up = self.origin.borrow().link.surface();
-                self.ask("close-surface", &[("slot", up.into())]);
+                self.ask("close-surface", &[("part", up.into())]);
             }
         }
     }
