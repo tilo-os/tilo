@@ -87,9 +87,6 @@ pub enum HomePeerManagementRequest {
         /// Where the asking server is dialled.
         endpoint: iroh_base::EndpointAddr,
     },
-    /// No longer sent: operations are actions on the person's Servers
-    /// workspace. Kept so the variants after it keep their place in the bytes.
-    RetiredOperate(ServerOperation),
     /// Hand the asking device, another of the person's, their Servers
     /// workspace: it holds that workspace from then on like any other of
     /// theirs, and no device that is not a server ever makes one.

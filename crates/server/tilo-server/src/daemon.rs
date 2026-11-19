@@ -1628,11 +1628,6 @@ impl ProtocolHandler for ManagementProtocol {
         let mut decommissioned = false;
         match request {
             HomePeerManagementRequest::Status => {}
-            HomePeerManagementRequest::RetiredOperate(_) => {
-                return Err(AcceptError::from_err(std::io::Error::other(
-                    "a server is operated through its person's Servers workspace, as an action",
-                )));
-            }
             HomePeerManagementRequest::HoldAdmin { endpoint } => {
                 // A device of the person's holds their Servers workspace like
                 // any other workspace of theirs: it asks a server that holds

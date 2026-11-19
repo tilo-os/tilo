@@ -156,9 +156,6 @@ impl RetainedProjectionSession {
         hash.update([match mode {
             TargetProjectionMode::SelectedFile => 1,
             TargetProjectionMode::HomeDirectory => 2,
-            TargetProjectionMode::RetiredSelectedParent => return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Selected parent requires genuine root edit admission and filtered source composition")),
         }]);
         hash.update(input.binding().context_sha256.as_bytes());
         hash.update(source_view);

@@ -549,3 +549,63 @@ reason = "said whether this computer kept a provider key, which it no longer doe
 file = "crates/system/fs/src/eviction.rs"
 enum = "EvictionRequestState"
 reason = "the eviction queue's schema version moves to 3 in the same change: a file written by an older build is dropped at open rather than read, and no other bytes carry this state"
+
+[[break]]
+file = "crates/packaging/launcher/src/owned_service/target_projection.rs"
+enum = "TargetProjectionMode"
+reason = "the removed variant was the last one, so the two kept modes keep their positions; a projection record naming it was refused already and now fails to read"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/committed_document.rs"
+enum = "Reply"
+reason = "an app and its device's broker speak it over the runtime interface, whose version moves to 34 with this change: both ends are the same build, and nothing keeps its bytes"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/committed_document.rs"
+enum = "Request"
+reason = "the app's half of the same committed-document channel: runtime interface 34, same build at both ends, never stored"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/wire.rs"
+enum = "Publication"
+reason = "what an app publishes to its broker over the runtime interface, version 34 with this change: same build at both ends, never stored"
+
+[[break]]
+file = "crates/runtime/runtime-collab/src/wire.rs"
+enum = "Service"
+reason = "the service an app's command names over the runtime interface, version 34 with this change: same build at both ends, never stored"
+
+[[break]]
+file = "crates/runtime/tilo-fs-client/src/storage.rs"
+enum = "StorageRequest"
+reason = "the session and the file service of one device speak it over a local socket, both from the same image; nothing keeps its bytes"
+
+[[break]]
+file = "crates/runtime/tilo-fs-client/src/storage.rs"
+enum = "StorageResponse"
+reason = "the file service's half of the same local socket: one image at both ends, never stored"
+
+[[break]]
+file = "crates/runtime/tilo-fs-client/src/wire.rs"
+enum = "FsReply"
+reason = "an app's file calls over the runtime interface, version 34 with this change: same build at both ends, never stored"
+
+[[break]]
+file = "crates/runtime/tilo-fs-client/src/wire.rs"
+enum = "FsRequest"
+reason = "the app's half of the same file calls: runtime interface 34, same build at both ends, never stored"
+
+[[break]]
+file = "crates/server/tilo-server-protocol/src/transport.rs"
+enum = "HomePeerManagementRequest"
+reason = "a request a device sends a server of the same person's and the server answers at once, never kept; every device and server update together, so no build reads another's numbering"
+
+[[break]]
+file = "crates/session/core/src/layout/mod.rs"
+enum = "LayoutAction"
+reason = "tagged by name, not position: the remaining actions read as before, and an action written with the removed name was refused already and now fails to read"
+
+[[break]]
+file = "crates/session/network-actor/src/fabric/model.rs"
+enum = "PersonalFabricAction"
+reason = "sent between a person's devices as it happens and never kept; every device updates together, so no build reads another's numbering"

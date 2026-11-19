@@ -292,9 +292,6 @@ pub enum Service {
     AudioOutput,
     /// `native_media::Request` -> `native_media::Snapshot`, JSON.
     NativeMedia,
-    /// Retired: the private person-chat and draft commands. Kept in place so
-    /// every service after it keeps its position on the wire.
-    RetiredPersonChat,
     /// `SpeakerCommand` -> `SpeakerReply`, JSON; the Settings app's only.
     Speaker,
     /// A realtime command and its reply, JSON.
@@ -345,8 +342,6 @@ pub enum Publication {
     /// The app answers for its own action directory from now on: the host
     /// asks it with [`HostFrame::Ask`] for as long as the channel is held.
     Directory,
-    /// Retired: a whole surface is a [`Self::Surface`] change that resets.
-    RetiredActions(String),
     /// A change to the app's action surface, as `SurfaceDelta` JSON.
     Surface(String),
 }
@@ -543,15 +538,8 @@ pub enum ContextUpdate {
     /// The next step of a handoff addressed to this instance, as
     /// `collab_types::handoff::HandoffRequest` JSON.
     Handoff(Vec<u8>),
-    /// Retired: an app's history names whom the workspace's history names, as the session serves
-    /// it. It keeps the updates after it at their encoded positions.
-    RetiredHistoryAgents,
     /// Records of the application's trees a peer wrote and no window holds.
     ResourcesArrived(Vec<String>),
-    /// Retired: a conversation is an ordinary record of the workspace, which
-    /// every window of it opens like any other. It keeps the updates after it
-    /// at their encoded positions.
-    RetiredPersonPairs,
 }
 
 /// What the host sends an endpoint.

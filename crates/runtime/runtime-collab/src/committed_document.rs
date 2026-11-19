@@ -53,10 +53,6 @@ pub enum Request {
         capture: u64,
         token: [u8; 16],
     },
-    /// Retired: a record is made by its first write, never by an
-    /// initialization request. Kept in place so later requests keep their
-    /// tags.
-    RetiredInitialize,
     /// Read only the host-retained window instance for this live connection.
     PrivateWindowBinding,
     /// Hold until an `Open { known_revision }` would answer anything but
@@ -105,20 +101,10 @@ pub enum Reply {
         token: [u8; 16],
     },
     Cancelled,
-    /// Retired: the creation receipt of a record's first materialization,
-    /// whose first write makes it whole. Kept in place so later replies keep
-    /// their tags.
-    RetiredCreated,
-    /// Retired: the answer to an initialization request, which no record
-    /// takes. Kept in place so later replies keep their tags.
-    RetiredInitialized,
     /// No instance means this connection has no native private control binding.
     PrivateWindowBinding {
         instance: Option<u64>,
     },
-    /// Retired: an [`Request::Await`] answers with the read itself. Kept in
-    /// place so later variants keep their tags.
-    RetiredStale,
     /// The first piece of the changes that turn the document with heads
     /// `base` (the revision the caller asked from) into `revision`, as
     /// Automerge change bytes. Only an answer to [`Request::OpenChanges`].
@@ -184,7 +170,6 @@ impl Request {
             | Self::PrivateWindowBinding
             | Self::Await { .. }
             | Self::OpenChanges { .. }
-            | Self::RetiredInitialize
             | Self::Leave => true,
             Self::Next {
                 capture,
@@ -273,16 +258,16 @@ mod tests {
 
         phase busy_is_a_tag_of_its_own_after_every_earlier_reply;
         {
-            assert_eq!(Reply::Absent.encode().unwrap(), [11]);
-            assert_eq!(Reply::Busy.encode().unwrap(), [12]);
-            assert_eq!(Reply::decode(&[12]).unwrap(), Reply::Busy);
-            assert_eq!(Request::Leave.encode().unwrap(), [8]);
-            assert_eq!(Request::decode(&[8]).unwrap(), Request::Leave);
+            assert_eq!(Reply::Absent.encode().unwrap(), [8]);
+            assert_eq!(Reply::Busy.encode().unwrap(), [9]);
+            assert_eq!(Reply::decode(&[9]).unwrap(), Reply::Busy);
+            assert_eq!(Request::Leave.encode().unwrap(), [7]);
+            assert_eq!(Request::decode(&[7]).unwrap(), Request::Leave);
         }
 
         phase connection_snapshot_is_bounded_and_keeps_original_actor_and_route;
         {
-            assert_eq!(Request::ConnectionSnapshot.encode().unwrap(), [7]);
+            assert_eq!(Request::ConnectionSnapshot.encode().unwrap(), [6]);
             let snapshot = ConnectionSnapshot {
                 root: [1; 32],
                 device: [2; 32],
@@ -319,13 +304,13 @@ mod tests {
                 .unwrap(),
                 [0, 0]
             );
-            assert_eq!(Request::PrivateWindowBinding.encode().unwrap(), [4]);
+            assert_eq!(Request::PrivateWindowBinding.encode().unwrap(), [3]);
             assert_eq!(Reply::Legacy.encode().unwrap(), [0]);
             assert_eq!(
                 Reply::PrivateWindowBinding { instance: None }
                     .encode()
                     .unwrap(),
-                [7, 0]
+                [5, 0]
             );
             let reply = Reply::PrivateWindowBinding { instance: Some(42) };
             assert_eq!(Reply::decode(&reply.encode().unwrap()).unwrap(), reply);
@@ -335,19 +320,17 @@ mod tests {
                     .is_err()
             );
             // A caller cannot append an instance or identity selector to the unit request.
-            assert!(Request::decode(&[4, 42]).is_err());
-            assert!(Reply::decode(&[7, 1, 0]).is_err());
+            assert!(Request::decode(&[3, 42]).is_err());
+            assert!(Reply::decode(&[5, 1, 0]).is_err());
         }
 
-        phase await_and_stale_are_appended_and_carry_no_bytes;
+        phase await_carries_its_known_revision;
         {
-            // Appended after every existing variant: older peers' encodings keep
-            // their tags, and an older broker refuses the unknown request.
             let request = Request::Await {
                 known_revision: Some([5; 32]),
             };
             let encoded = request.encode().unwrap();
-            assert_eq!(encoded[0], 5);
+            assert_eq!(encoded[0], 4);
             assert_eq!(Request::decode(&encoded).unwrap(), request);
             assert_eq!(
                 Request::Await {
@@ -355,22 +338,17 @@ mod tests {
                 }
                 .encode()
                 .unwrap(),
-                [5, 0]
+                [4, 0]
             );
-            assert_eq!(Reply::RetiredStale.encode().unwrap(), [8]);
-            assert_eq!(Reply::decode(&[8]).unwrap(), Reply::RetiredStale);
-            assert!(Reply::decode(&[8, 0]).is_err());
         }
 
-        phase open_changes_and_changes_are_appended_and_bounded;
+        phase open_changes_and_changes_are_bounded;
         {
-            // Appended after every existing variant: older peers keep their
-            // tags, and an older broker refuses the unknown request.
             let request = Request::OpenChanges {
                 known_revision: [5; 32],
             };
             let encoded = request.encode().unwrap();
-            assert_eq!(encoded[0], 6);
+            assert_eq!(encoded[0], 5);
             assert_eq!(Request::decode(&encoded).unwrap(), request);
             let reply = |base: usize, first: usize, total: u32| Reply::Changes {
                 capture: 1,
@@ -386,7 +364,7 @@ mod tests {
                 u32::try_from(MAX_DOCUMENT_BYTES).unwrap(),
             );
             let encoded = largest.encode().unwrap();
-            assert_eq!(encoded[0], 9);
+            assert_eq!(encoded[0], 6);
             assert!(
                 encoded.len() <= MAX_WIRE_BYTES,
                 "the largest first piece fits the wire like a chunk: {} bytes",

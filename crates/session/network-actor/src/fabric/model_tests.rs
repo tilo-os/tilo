@@ -560,8 +560,6 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
     }
 
     fn new_action_variants_do_not_renumber_existing_wire_actions() {
-        let placement =
-            postcard::to_allocvec(&PersonalFabricAction::RetiredSetDisplayPlacement).unwrap();
         let input = postcard::to_allocvec(&PersonalFabricAction::Input {
             lease_nonce: [1; 16],
             event: FabricInputEvent::PointerMotion { x: 0, y: 0 },
@@ -572,9 +570,8 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
             name: "Headphones".into(),
         })
         .unwrap();
-        assert_eq!(placement.first(), Some(&2));
-        assert_eq!(input.first(), Some(&5));
-        assert_eq!(bluetooth.first(), Some(&6));
+        assert_eq!(input.first(), Some(&4));
+        assert_eq!(bluetooth.first(), Some(&5));
         let pairing =
             postcard::to_allocvec(&PersonalFabricAction::BluetoothHandoffPairingOffered {
                 request_id: [2; 16],
@@ -582,14 +579,14 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
                 authorization: [4; 16],
             })
             .unwrap();
-        assert_eq!(pairing.first(), Some(&11));
+        assert_eq!(pairing.first(), Some(&10));
         let nearby = postcard::to_allocvec(&PersonalFabricAction::NearbyDrop {
             file_name: "note.txt".into(),
             content_hash: *blake3::hash(b"hello").as_bytes(),
             bytes: b"hello".to_vec(),
         })
         .unwrap();
-        assert_eq!(nearby.first(), Some(&13));
+        assert_eq!(nearby.first(), Some(&12));
         let notification = postcard::to_allocvec(&PersonalFabricAction::NotificationRetire {
             id: crate::fabric::notification::ContinuityNotificationId {
                 epoch: [1; 16],
@@ -597,24 +594,7 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
             },
         })
         .unwrap();
-        assert_eq!(notification.first(), Some(&21));
-        for (action, index) in [
-            (PersonalFabricAction::RetiredRealtimeOffer, 24),
-            (PersonalFabricAction::RetiredRealtimeAccept, 25),
-            (PersonalFabricAction::RetiredRealtimeMediaReady, 26),
-            (PersonalFabricAction::RetiredRealtimeStopSource, 27),
-            (PersonalFabricAction::RetiredRealtimeCancel, 28),
-            (PersonalFabricAction::RetiredRemoteCaptureSignal, 38),
-            (PersonalFabricAction::RetiredRemoteCaptureChunk, 39),
-            (PersonalFabricAction::RetiredDeviceHealthProbe, 40),
-            (PersonalFabricAction::RetiredDeviceHealthReport, 41),
-            (PersonalFabricAction::RetiredTethering, 44),
-        ] {
-            assert_eq!(
-                postcard::to_allocvec(&action).unwrap().first(),
-                Some(&index)
-            );
-        }
+        assert_eq!(notification.first(), Some(&20));
         for (action, index) in [
             (
                 PersonalFabricAction::GamepadForwardRequest {
@@ -624,7 +604,7 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
                     session_id: "session".into(),
                     label: "Controller".into(),
                 },
-                29,
+                23,
             ),
             (
                 PersonalFabricAction::GamepadForwardGrant {
@@ -632,7 +612,7 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
                     accepted: true,
                     lease_nonce: [4; 16],
                 },
-                30,
+                24,
             ),
             (
                 PersonalFabricAction::GamepadForwardEvent {
@@ -641,14 +621,14 @@ fn wire_actions_are_fresh_source_bound_and_never_renumbered() {
                     sequence: 1,
                     event: os_actions::ForwardedGamepadEvent::Hat { x: 0, y: -1 },
                 },
-                31,
+                25,
             ),
             (
                 PersonalFabricAction::GamepadForwardStop {
                     forwarding_id: [3; 16],
                     lease_nonce: [4; 16],
                 },
-                32,
+                26,
             ),
         ] {
             assert_eq!(

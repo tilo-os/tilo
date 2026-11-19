@@ -79,10 +79,6 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                             Err(error) => StorageResponse::Error(error.to_string()),
                         }
                     }
-                    StorageRequest::RetiredBindExternalSource
-                    | StorageRequest::RetiredBindExternalReadSource => {
-                        StorageResponse::Error("no external source is served".into())
-                    }
                 };
                 if STORAGE_FRAMING
                     .write_value_async(&mut stream, &response)

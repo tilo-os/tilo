@@ -14,7 +14,6 @@ use crate::width::WindowWidth;
 /// another device — never a live foreign surface, whose id names a buffer
 /// only the compositor that mapped it owns.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(from = "TileRecord", into = "TileRecord")]
 pub enum TileContent {
     AppPlaceholder {
         kind: AppKind,
@@ -62,130 +61,6 @@ pub enum TileContent {
         #[serde(default)]
         host_label: String,
     },
-}
-
-/// How a [`TileContent`] is written: every variant it was ever written
-/// with, in its place, so bytes already held keep their meaning.
-#[derive(Clone, Serialize, Deserialize)]
-enum TileRecord {
-    /// The Activity window the shell once drew itself; it reads as a
-    /// window of the Activity app.
-    #[serde(rename = "WorkspaceActivity")]
-    RetiredWorkspaceActivity,
-    AppPlaceholder {
-        kind: AppKind,
-        label: String,
-    },
-    Stub {
-        kind: AppKind,
-        label: String,
-    },
-    Foreign {
-        app_id: String,
-        surface_id: u64,
-    },
-    LocalApp {
-        app_id: String,
-        label: String,
-        #[serde(default)]
-        note: String,
-    },
-    /// Another device's window, as this device held it before it opened its own instance of the
-    /// app: read as that app's window ([`TileContent::LocalApp`]), never written.
-    PeerWindow {
-        app_id: String,
-        label: String,
-        #[serde(default)]
-        note: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        missing: Option<RetiredMissingApp>,
-    },
-    HostedWindow {
-        app_id: String,
-        label: String,
-        host: String,
-        #[serde(default)]
-        host_label: String,
-    },
-}
-
-impl From<TileRecord> for TileContent {
-    fn from(record: TileRecord) -> Self {
-        match record {
-            TileRecord::RetiredWorkspaceActivity => Self::LocalApp {
-                app_id: tilo_actions::remote::workspace_activity::APP_ID.to_owned(),
-                label: "Activity".to_owned(),
-                note: String::new(),
-            },
-            TileRecord::AppPlaceholder { kind, label } => Self::AppPlaceholder { kind, label },
-            TileRecord::Stub { kind, label } => Self::Stub { kind, label },
-            TileRecord::Foreign { app_id, surface_id } => Self::Foreign { app_id, surface_id },
-            TileRecord::LocalApp {
-                app_id,
-                label,
-                note,
-            } => Self::LocalApp {
-                app_id,
-                label,
-                note,
-            },
-            // Another device's window, as this device once held it before opening its own
-            // instance of the app: the app opens it here like any other window.
-            TileRecord::PeerWindow { app_id, label, .. } => Self::LocalApp {
-                app_id,
-                label,
-                note: String::new(),
-            },
-            TileRecord::HostedWindow {
-                app_id,
-                label,
-                host,
-                host_label,
-            } => Self::HostedWindow {
-                app_id,
-                label,
-                host,
-                host_label,
-            },
-        }
-    }
-}
-
-impl From<TileContent> for TileRecord {
-    fn from(tile: TileContent) -> Self {
-        match tile {
-            TileContent::AppPlaceholder { kind, label } => Self::AppPlaceholder { kind, label },
-            TileContent::Stub { kind, label } => Self::Stub { kind, label },
-            TileContent::Foreign { app_id, surface_id } => Self::Foreign { app_id, surface_id },
-            TileContent::LocalApp {
-                app_id,
-                label,
-                note,
-            } => Self::LocalApp {
-                app_id,
-                label,
-                note,
-            },
-            TileContent::HostedWindow {
-                app_id,
-                label,
-                host,
-                host_label,
-            } => Self::HostedWindow {
-                app_id,
-                label,
-                host,
-                host_label,
-            },
-        }
-    }
-}
-
-/// Why a [`TileRecord::PeerWindow`] had no instance yet, as it was written.
-#[derive(Clone, Serialize, Deserialize)]
-enum RetiredMissingApp {
-    Installable { display_name: String },
-    Unavailable,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2274,19 +2149,6 @@ mod tile_record_tests {
 
     tilo_test_env::scenario! {
         fn tiles_read_back_as_written;
-
-        phase a_tile_written_as_the_shells_activity_window_reads_as_the_activity_apps;
-        {
-            let read: TileContent = serde_json::from_str("\"WorkspaceActivity\"").unwrap();
-            assert_eq!(
-                read,
-                TileContent::LocalApp {
-                    app_id: tilo_actions::remote::workspace_activity::APP_ID.into(),
-                    label: "Activity".into(),
-                    note: String::new(),
-                }
-            );
-        }
 
         phase every_tile_reads_back_as_written;
         {

@@ -512,7 +512,6 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             for service in [
                 Service::AudioOutput,
                 Service::NativeMedia,
-                Service::RetiredPersonChat,
                 Service::Speaker,
                 Service::Realtime,
                 Service::NearbyTransfer,
@@ -537,7 +536,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 endpoint
                     .call(Operation::Command {
                         channel: Handle(77),
-                        service: Service::RetiredPersonChat,
+                        service: Service::RemoteAction,
                         body: Vec::new(),
                         on_behalf_of: Vec::new(),
                     })
@@ -694,21 +693,16 @@ async fn an_app_publishes_its_action_surface_as_a_change() {
                     .await,
                 Ok(Reply::Done)
             );
-            for publication in [
-                Publication::RetiredActions("[]".into()),
-                Publication::Surface("{}".into()),
-            ] {
-                assert!(
-                    endpoint
-                        .call(Operation::Publish {
-                            channel,
-                            publication: publication.clone(),
-                        })
-                        .await
-                        .is_err(),
-                    "{publication:?} is refused"
-                );
-            }
+            assert!(
+                endpoint
+                    .call(Operation::Publish {
+                        channel,
+                        publication: Publication::Surface("{}".into()),
+                    })
+                    .await
+                    .is_err(),
+                "a surface change that does not read is refused"
+            );
         })
         .await;
 }

@@ -691,26 +691,10 @@ impl crate::Session {
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
             | PersonalFabricAction::BluetoothHandoffCancel { .. }
-            // What no build sends and the fabric refuses before it reaches here; the variants stay
-            // for the wire's numbering alone.
-            | PersonalFabricAction::RetiredRealtimeOffer
-            | PersonalFabricAction::RetiredRealtimeAccept
-            | PersonalFabricAction::RetiredRealtimeMediaReady
-            | PersonalFabricAction::RetiredRealtimeStopSource
-            | PersonalFabricAction::RetiredRealtimeCancel
-            | PersonalFabricAction::RetiredRemoteCaptureSignal
-            | PersonalFabricAction::RetiredRemoteCaptureChunk
             | PersonalFabricAction::GamepadForwardRequest { .. }
             | PersonalFabricAction::GamepadForwardGrant { .. }
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. }
-            | PersonalFabricAction::RetiredDeviceHealthProbe
-            | PersonalFabricAction::RetiredDeviceHealthReport
-            | PersonalFabricAction::RetiredTethering
-            | PersonalFabricAction::RetiredSetDisplayPlacement
-            | PersonalFabricAction::RetiredSetDisplayPlacementChecked
-            | PersonalFabricAction::RetiredSpatialInputProtocol
-            | PersonalFabricAction::RetiredSpatialInputSequenced
             // A clock probe is answered where its frame arrived and a report measured from there,
             // so nothing on this side routes one.
             | PersonalFabricAction::FabricClockProbe { .. }
@@ -720,7 +704,6 @@ impl crate::Session {
             | PersonalFabricAction::WakeProbe { .. }
             | PersonalFabricAction::WakeProbeReply { .. }
             | PersonalFabricAction::WindowViews { .. }
-            | PersonalFabricAction::RetiredShowTab
             // The device-certification exchange answered above, for the other API's preconditions.
             | PersonalFabricAction::CertifyAsk { .. }
             | PersonalFabricAction::CertifyAnswer { .. }

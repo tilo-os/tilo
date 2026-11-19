@@ -1780,9 +1780,6 @@ impl ContextStream {
             ContextUpdate::SnapshotRequested => context.snapshot_requested = true,
             ContextUpdate::Handoff(handoff) => context.handoff = Some(handoff),
             ContextUpdate::ResourcesArrived(records) => context.resources_arrived = records,
-            // Retired: a conversation is an ordinary record, carried by the
-            // workspace like any other and never named here.
-            ContextUpdate::RetiredPersonPairs | ContextUpdate::RetiredHistoryAgents => {}
         }
         Ok(context)
     }

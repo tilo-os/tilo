@@ -202,10 +202,6 @@ pub enum StorageRequest {
         workspace: String,
         keep: bool,
     },
-    /// Retired with the external source path. Kept at its place so a request from another build is
-    /// refused as unknown rather than read as another ask.
-    RetiredBindExternalSource,
-    RetiredBindExternalReadSource,
 }
 
 /// An answer on the storage socket; new variants go last, as in
@@ -218,12 +214,7 @@ pub enum StorageResponse {
     CachePolicy(CachePolicy),
     Residency(ResidencySummary),
     CacheFreed(CacheFreed),
-    Kept {
-        keep: bool,
-    },
-    /// Retired with the external source path; nothing asks for them now.
-    RetiredExternalSourceBinding,
-    RetiredExternalReadSourceBinding,
+    Kept { keep: bool },
 }
 
 #[cfg(unix)]

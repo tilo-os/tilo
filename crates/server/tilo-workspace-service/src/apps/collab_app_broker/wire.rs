@@ -330,10 +330,6 @@ impl ChannelSession {
                     let reply = channel.remote_action_dispatch(body);
                     Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
                 }
-                // Retired with the private person-chat store it served.
-                Service::RetiredPersonChat => {
-                    Err("the private conversation service is retired".to_owned())
-                }
             };
         Box::pin(async move { Ok(Reply::Answer(answer?.await?)) })
     }
@@ -2033,10 +2029,6 @@ impl WireConnection {
                 reported.map_err(Refusal::refusal)?;
                 Ok(Reply::Done)
             }
-            Operation::Publish {
-                publication: Publication::RetiredActions(_),
-                ..
-            } => Err("a whole surface is published as a reset change".into()),
             Operation::Publish {
                 channel,
                 publication: Publication::Surface(delta),
