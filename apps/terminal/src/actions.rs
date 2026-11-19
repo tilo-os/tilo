@@ -31,15 +31,15 @@ mod tests {
         fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
             Ok(Box::new(std::io::empty()))
         }
-        #[cfg(unix)]
+        #[cfg(feature = "desktop")]
         fn process_group_leader(&self) -> Option<i32> {
             None
         }
-        #[cfg(unix)]
+        #[cfg(feature = "desktop")]
         fn as_raw_fd(&self) -> Option<i32> {
             None
         }
-        #[cfg(unix)]
+        #[cfg(feature = "desktop")]
         fn tty_name(&self) -> Option<std::path::PathBuf> {
             None
         }
