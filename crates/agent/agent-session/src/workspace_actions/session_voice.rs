@@ -132,6 +132,11 @@ impl Sessions {
                 composing: 0,
             });
         let said = |voice: &mut Voice| {
+            // What a session does says the name it goes by: one named after it was first said
+            // present goes by that name from then on.
+            if let Some(name) = caller.agent_name() {
+                name.clone_into(&mut voice.label);
+            }
             voice.activity = Some(line);
             if record.is_some() {
                 voice.focus.clone_from(&record);
@@ -334,9 +339,11 @@ impl super::Worker {
         let Some((workspace, cluster)) = self.said_in(workspace_id) else {
             return;
         };
+        // The session goes by the name the request says it has, as its windows do.
+        let caller = caller.clone().in_session_of(request);
         workspace.sessions.acting(
             (&workspace.peer, &cluster),
-            caller,
+            &caller,
             (request.invocation, &request.target, Some(&args)),
             phase,
             left_at,

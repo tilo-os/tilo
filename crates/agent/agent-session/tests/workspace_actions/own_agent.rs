@@ -947,4 +947,22 @@ async fn a_logged_in_agents_session_name_reaches_its_server() {
         assert!(Instant::now() < deadline, "the agent's note never arrived");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // Among the people here it goes by that name too, as its windows do.
+    loop {
+        browser.pump();
+        let agents: Vec<String> = browser
+            .here()
+            .into_iter()
+            .filter(|member| member.agent)
+            .map(|member| member.label)
+            .collect();
+        if agents.iter().any(|label| label == "Release prep") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the agent is never here as its session: {agents:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
