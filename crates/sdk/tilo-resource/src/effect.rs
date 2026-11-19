@@ -578,7 +578,7 @@ fn bound_type(
             OperationKind::Effect,
             operation,
             Vec::new(),
-            build,
+            Arc::new(build),
         ),
     };
     Arc::clone(spec.action_type())
@@ -1197,6 +1197,17 @@ impl EffectDecl {
         operation: &'static str,
         params: Vec<ActionParam>,
         build: impl Fn(&Target, &tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> ActionSpec {
+        self.spec_with_boxed(operation, params, Arc::new(build))
+    }
+
+    /// [`Self::spec_with`] once the builder is boxed, so the toolkit compiles it
+    /// once rather than every app once per vocabulary.
+    fn spec_with_boxed(
+        &self,
+        operation: &'static str,
+        params: Vec<ActionParam>,
+        build: tilo_actions::resource::ArgsBuilder,
     ) -> ActionSpec {
         let view = self.kind == OperationKind::View;
         let label = self.label.read();

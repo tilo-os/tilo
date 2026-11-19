@@ -2081,6 +2081,9 @@ impl ActionSpec {
 
     /// [`typed_operation`](Self::typed_operation) for a type shared by many
     /// targets, as [`typed_on`](Self::typed_on) is for [`typed`](Self::typed).
+    ///
+    /// The builder is boxed where it is made, so the toolkit compiles this
+    /// once rather than every app once per vocabulary.
     #[doc(hidden)]
     pub fn typed_operation_on(
         id: impl Into<String>,
@@ -2089,7 +2092,7 @@ impl ActionSpec {
         kind: OperationKind,
         type_id: impl Into<String>,
         params: Vec<ActionParam>,
-        build: impl Fn(&Target, &ActionArgs) -> EncodedAction + Send + Sync + 'static,
+        build: ArgsBuilder,
     ) -> Self {
         debug_assert_ne!(kind, OperationKind::Document);
         Self::typed_with_kind(
@@ -2102,7 +2105,7 @@ impl ActionSpec {
                 operation_type: Some(type_id.into()),
                 params,
             },
-            Arc::new(build),
+            build,
             false,
         )
     }

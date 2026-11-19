@@ -131,21 +131,43 @@ impl<R: Resource> Choice<R> {
 /// The window's bar: the parts the app declares now, and what pressing each
 /// of them submits.
 pub struct WindowBar<R: Resource> {
+    chrome: BarChrome,
+    /// The actions and effects of the app's record, each submitted through
+    /// the window's dispatcher when pressed.
+    actions: BarActions<R>,
+}
+
+/// The bar's parts, entries and shell: no part of it names the type the window
+/// acts on, so one function builds them for every app.
+struct BarChrome {
     /// The shell's own parts, and the app's location, views and leading
     /// actions.
     parts: WindowToolbar,
     /// The app's own entries, in the order declared: the row's buttons and
     /// the overflow menu's.
     entries: Vec<ToolbarAction>,
-    /// The actions and effects of the app's record, each submitted through
-    /// the window's dispatcher when pressed.
-    actions: BarActions<R>,
-    /// The shell the bar starts from ([`Self::over`]): its parts' presses go
-    /// to it.
+    /// The shell the bar starts from ([`WindowBar::over`]): its parts' presses
+    /// go to it.
     shell: Option<WindowBarLink>,
     /// The entry the sidebar toggle presses, for a window whose app shows the
-    /// sidebar itself ([`Self::sidebar`]).
+    /// sidebar itself ([`WindowBar::sidebar`]).
     sidebar: Option<String>,
+}
+
+impl BarChrome {
+    /// [`WindowBar::parts`]: the shell's own, then the app's, in the row and
+    /// in the menu.
+    fn parts(&self) -> WindowToolbar {
+        let mut toolbar = self.parts.clone();
+        NavShell::push_window_actions(&mut toolbar, self.entries.clone());
+        toolbar
+    }
+
+    fn push(&mut self, entry: ToolbarAction) {
+        if self.entries.len() < MAX_ENTRIES {
+            self.entries.push(entry);
+        }
+    }
 }
 
 impl<R: Resource> WindowBar<R> {
@@ -154,11 +176,13 @@ impl<R: Resource> WindowBar<R> {
     #[must_use]
     pub fn new(dispatcher: Dispatcher<R>) -> Self {
         Self {
-            parts: WindowToolbar::default(),
-            entries: Vec::new(),
+            chrome: BarChrome {
+                parts: WindowToolbar::default(),
+                entries: Vec::new(),
+                shell: None,
+                sidebar: None,
+            },
             actions: BarActions::new(dispatcher),
-            shell: None,
-            sidebar: None,
         }
     }
 
@@ -174,8 +198,8 @@ impl<R: Resource> WindowBar<R> {
     /// no header row of its own ([`NavShell::with_window_toolbar`]).
     #[must_use]
     pub fn over(mut self, shell: &NavShell) -> Self {
-        self.parts = shell.window_toolbar();
-        self.shell = Some(shell.window_bar_link());
+        self.chrome.parts = shell.window_toolbar();
+        self.chrome.shell = Some(shell.window_bar_link());
         self
     }
 
@@ -183,15 +207,16 @@ impl<R: Resource> WindowBar<R> {
     /// painted inside the shell's content column.
     #[must_use]
     pub fn under(mut self, link: &WindowBarLink) -> Self {
-        self.parts = link.parts();
-        self.shell = Some(link.clone());
+        self.chrome.parts = link.parts();
+        self.chrome.shell = Some(link.clone());
         self
     }
 
     /// The window shows `label`: its mode, the open document, the place.
     #[must_use]
     pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.parts
+        self.chrome
+            .parts
             .location
             .get_or_insert_with(ToolbarLocation::default)
             .label = label.into();
@@ -202,7 +227,7 @@ impl<R: Resource> WindowBar<R> {
     /// opened: the shell names the window by its app ([`ToolbarLocation::section`]).
     #[must_use]
     pub fn section(mut self, section: bool) -> Self {
-        if let Some(location) = self.parts.location.as_mut() {
+        if let Some(location) = self.chrome.parts.location.as_mut() {
             location.section = section;
         }
         self
@@ -213,7 +238,7 @@ impl<R: Resource> WindowBar<R> {
     /// shows no location (its sidebar stands in front of the content).
     #[must_use]
     pub fn place(mut self, location: Option<ToolbarLocation>) -> Self {
-        self.parts.location = location;
+        self.chrome.parts.location = location;
         self
     }
 
@@ -221,9 +246,9 @@ impl<R: Resource> WindowBar<R> {
     /// app shows the sidebar itself: pressing it submits `binding`.
     #[must_use]
     pub fn sidebar(mut self, open: bool, binding: impl Binding<R>) -> Self {
-        self.parts.sidebar = Some(open);
+        self.chrome.parts.sidebar = Some(open);
         if let Some(invoke) = binding.bound() {
-            self.sidebar = Some(self.actions.action(invoke).id).filter(|id| !id.is_empty());
+            self.chrome.sidebar = Some(self.actions.action(invoke).id).filter(|id| !id.is_empty());
         }
         self
     }
@@ -251,14 +276,14 @@ impl<R: Resource> WindowBar<R> {
             });
         }
         let Some(last) = views.len().checked_sub(1) else {
-            self.parts.views = None;
+            self.chrome.parts.views = None;
             return self;
         };
         let Some(chosen) = views.get(chosen.min(last)).map(|view| view.id.clone()) else {
-            self.parts.views = None;
+            self.chrome.parts.views = None;
             return self;
         };
-        self.parts.views = Some(ToolbarViews {
+        self.chrome.parts.views = Some(ToolbarViews {
             name: name.into(),
             chosen,
             choices: views,
@@ -293,7 +318,7 @@ impl<R: Resource> WindowBar<R> {
     #[must_use]
     pub fn leading(mut self, submit: impl Submit<R>) -> Self {
         let entry = self.actions.action(submit);
-        self.parts.leading.push(entry);
+        self.chrome.parts.leading.push(entry);
         self
     }
 
@@ -322,7 +347,7 @@ impl<R: Resource> WindowBar<R> {
     /// as the state it sets.
     #[must_use]
     pub fn on(mut self, on: bool) -> Self {
-        if let Some(entry) = self.entries.last_mut() {
+        if let Some(entry) = self.chrome.entries.last_mut() {
             entry.toggles = true;
             entry.on = on;
         }
@@ -333,7 +358,7 @@ impl<R: Resource> WindowBar<R> {
     /// row: an occasional action (import, export, the app's settings).
     #[must_use]
     pub fn in_menu(mut self) -> Self {
-        if let Some(entry) = self.entries.last_mut() {
+        if let Some(entry) = self.chrome.entries.last_mut() {
             entry.menu = true;
         }
         self
@@ -344,7 +369,7 @@ impl<R: Resource> WindowBar<R> {
     /// itself, where the bar names it differently.
     #[must_use]
     pub fn named(mut self, icon: impl Into<String>, name: impl Into<String>) -> Self {
-        if let Some(entry) = self.entries.last_mut() {
+        if let Some(entry) = self.chrome.entries.last_mut() {
             entry.icon = icon.into();
             entry.name = name.into();
         }
@@ -356,7 +381,7 @@ impl<R: Resource> WindowBar<R> {
     /// before it applies), and never where the member may not take it.
     #[must_use]
     pub fn enabled(mut self, enabled: bool) -> Self {
-        if let Some(entry) = self.entries.last_mut() {
+        if let Some(entry) = self.chrome.entries.last_mut() {
             entry.enabled &= enabled;
         }
         self
@@ -366,14 +391,12 @@ impl<R: Resource> WindowBar<R> {
     /// in the row and in the menu.
     #[must_use]
     pub fn parts(&self) -> WindowToolbar {
-        let mut toolbar = self.parts.clone();
-        NavShell::push_window_actions(&mut toolbar, self.entries.clone());
-        toolbar
+        self.chrome.parts()
     }
 
     /// Declare these parts as the window's.
     pub fn declare(&self) {
-        ui_core::window_toolbar::declare(Some(self.parts()));
+        ui_core::window_toolbar::declare(Some(self.chrome.parts()));
     }
 
     /// Submit what the person pressed in the window's bar since the last
@@ -391,13 +414,13 @@ impl<R: Resource> WindowBar<R> {
     /// Submit one event the bar sent. Returns whether it was one of these
     /// parts (then it is handled, even where the part is gone).
     pub fn press(&self, event: &ToolbarEvent) -> bool {
-        if let Some(shell) = &self.shell
+        if let Some(shell) = &self.chrome.shell
             && shell.event(event)
         {
             return true;
         }
         if matches!(event, ToolbarEvent::ToggleSidebar)
-            && let Some(id) = &self.sidebar
+            && let Some(id) = &self.chrome.sidebar
         {
             return self.actions.press(&ToolbarEvent::Action { id: id.clone() });
         }
@@ -405,8 +428,6 @@ impl<R: Resource> WindowBar<R> {
     }
 
     fn push(&mut self, entry: ToolbarAction) {
-        if self.entries.len() < MAX_ENTRIES {
-            self.entries.push(entry);
-        }
+        self.chrome.push(entry);
     }
 }

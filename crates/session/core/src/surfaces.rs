@@ -573,7 +573,7 @@ mod tests {
                     tilo_actions::OperationKind::Effect,
                     "test.effects",
                     Vec::new(),
-                    move |_, _| encoded.clone(),
+                    std::sync::Arc::new(move |_, _| encoded.clone()),
                 );
                 let mut rows = ResourceSpec::new("rows", "test.rows", "Rows");
                 rows.children

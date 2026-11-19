@@ -301,16 +301,8 @@ impl LiveRow {
         label: impl Into<String>,
     ) -> Self {
         let id = id.into();
-        let mut row = Self {
-            resource: std::rc::Rc::new(
-                ResourceSpec::new(id.clone(), R::KIND, label).with_type(R::words()),
-            ),
-        };
-        let row_id = crate::Id::from_raw(id);
-        for operation in R::effects(&row_id) {
-            row = row.operation(operation);
-        }
-        row
+        let operations = R::effects(&crate::Id::from_raw(id.clone()));
+        Self::from_operations(id, label.into(), R::KIND, R::words(), operations)
     }
 
     /// A row of the declared type `R`, offering the effects `bindings`
@@ -326,17 +318,25 @@ impl LiveRow {
         bindings: &RowBindings,
     ) -> Self {
         let id = id.into();
+        let mut operations = R::effects_with(&crate::Id::from_raw(id.clone()), bindings);
+        operations.extend(bindings.declared().iter().cloned());
+        Self::from_operations(id, label.into(), R::KIND, R::words(), operations)
+    }
+
+    /// [`Self::typed_with`] once the type's words and effects are read, so the
+    /// row is built by one function rather than one per type every app uses.
+    fn from_operations(
+        id: String,
+        label: String,
+        kind: &'static str,
+        words: tilo_actions::ResourceType,
+        operations: Vec<tilo_actions::ActionSpec>,
+    ) -> Self {
         let mut row = Self {
-            resource: std::rc::Rc::new(
-                ResourceSpec::new(id.clone(), R::KIND, label).with_type(R::words()),
-            ),
+            resource: std::rc::Rc::new(ResourceSpec::new(id, kind, label).with_type(words)),
         };
-        let row_id = crate::Id::from_raw(id);
-        for operation in R::effects_with(&row_id, bindings) {
+        for operation in operations {
             row = row.operation(operation);
-        }
-        for operation in bindings.declared() {
-            row = row.operation(operation.clone());
         }
         row
     }

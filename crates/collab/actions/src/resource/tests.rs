@@ -327,7 +327,9 @@ tilo_test_env::scenario! {
             OperationKind::Effect,
             "notes.retitle",
             vec![ActionParam::required("title", ParamType::Text, "The title")],
-            move |target, args| encode(&item(target), args.text("title").unwrap_or("")),
+            Arc::new(move |target, args| {
+                encode(&item(target), args.text("title").unwrap_or(""))
+            }),
         )
         .with_description("Give the note a new title");
         let ty = Arc::clone(retitle.action_type());
@@ -349,7 +351,9 @@ tilo_test_env::scenario! {
             OperationKind::View,
             "notes.open",
             Vec::new(),
-            move |target, _| EncodedAction::encode_operation("notes.open", &item(target)).unwrap(),
+            Arc::new(move |target, _| {
+                EncodedAction::encode_operation("notes.open", &item(target)).unwrap()
+            }),
         );
         let open = Arc::clone(open.action_type());
         assert_eq!(

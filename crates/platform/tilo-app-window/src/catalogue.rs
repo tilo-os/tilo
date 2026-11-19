@@ -6,6 +6,8 @@
 //! action API it publishes. So a window offers the same palette whichever way its app runs, and neither
 //! side knows how the other works.
 
+use std::sync::Arc;
+
 use tilo_actions::{
     ActionAddress, ActionArgs, ActionDescriptor, ActionOutput, ActionParam, ActionSpec,
     EncodedAction, InputSpec, OperationKind, ParamType, ResourceSpec,
@@ -152,7 +154,7 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
         OperationKind::Effect,
         HOSTED_ACTION,
         params,
-        move |_target, args: &ActionArgs| {
+        Arc::new(move |_target, args: &ActionArgs| {
             let chosen = Chosen {
                 resource: address.resource.clone(),
                 action: address.action.clone(),
@@ -167,7 +169,7 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
                     payload: Vec::new(),
                 }
             })
-        },
+        }),
     );
     let ty = spec.type_mut();
     ty.state.clone_from(&descriptor.state);

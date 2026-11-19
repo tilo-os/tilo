@@ -83,12 +83,15 @@ impl EffectStatus {
         code: impl Into<String>,
         reason: impl Into<String>,
     ) -> Self {
+        Self::unavailable_id(effect.id, code.into(), reason.into())
+    }
+
+    /// [`Self::unavailable`] once the effect's id and its words are read, so
+    /// every vocabulary's status is built by one function.
+    fn unavailable_id(id: &'static str, code: String, reason: String) -> Self {
         Self {
-            id: effect.id,
-            availability: Some(Availability::Unavailable {
-                code: code.into(),
-                reason: reason.into(),
-            }),
+            id,
+            availability: Some(Availability::Unavailable { code, reason }),
             label: None,
             description: None,
             phrase: None,
@@ -101,11 +104,16 @@ impl EffectStatus {
     /// `effect` says of itself what `description` says on this entity, and is
     /// offered as declared otherwise.
     pub fn described<E, A>(effect: ActionRef<E, A>, description: impl Into<String>) -> Self {
+        Self::described_id(effect.id, description.into())
+    }
+
+    /// [`Self::described`] once the effect's id and its words are read.
+    fn described_id(id: &'static str, description: String) -> Self {
         Self {
-            id: effect.id,
+            id,
             availability: None,
             label: None,
-            description: Some(description.into()),
+            description: Some(description),
             phrase: None,
             params: Vec::new(),
             item: None,
@@ -115,8 +123,13 @@ impl EffectStatus {
 
     /// `effect` is `kind` on this entity, offered as declared otherwise.
     pub fn of_kind<E, A>(effect: ActionRef<E, A>, kind: ActionKind) -> Self {
+        Self::of_kind_id(effect.id, kind)
+    }
+
+    /// [`Self::of_kind`] once the effect's id is read.
+    fn of_kind_id(id: &'static str, kind: ActionKind) -> Self {
         Self {
-            id: effect.id,
+            id,
             availability: None,
             label: None,
             description: None,
@@ -129,10 +142,15 @@ impl EffectStatus {
 
     /// `effect` is offered as `label` now.
     pub fn labelled<E, A>(effect: ActionRef<E, A>, label: impl Into<String>) -> Self {
+        Self::labelled_id(effect.id, label.into())
+    }
+
+    /// [`Self::labelled`] once the effect's id and its words are read.
+    fn labelled_id(id: &'static str, label: String) -> Self {
         Self {
-            id: effect.id,
+            id,
             availability: None,
-            label: Some(label.into()),
+            label: Some(label),
             description: None,
             phrase: None,
             params: Vec::new(),

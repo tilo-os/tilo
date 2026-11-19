@@ -340,24 +340,12 @@ impl<P: Resource> WorkspaceResource<P> {
         wake: Option<WakeHandle>,
         me: tilo_resource::MemberId,
     ) -> Result<Self, Unopened> {
-        let record = match opened {
-            Ok(record) => record,
-            // Nothing is wrong: the store wakes the window once it is here.
-            Err(ui_core::resource::ResourceOpenError::Arriving) => return Err(Unopened::Arriving),
-            Err(error) => {
-                tracing::warn!(kind = P::KIND, %error, "workspace record unavailable");
-                return Err(Unopened::Failed);
-            }
-        };
-        if record
-            .read(tilo_resource::evolution::needs_migrate::<P>)
-            .ok_or(Unopened::Failed)?
-            && let Err(error) = record.edit(false, |doc| {
-                tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
-            })
-        {
-            tracing::warn!(kind = P::KIND, %error, "workspace record not migrated");
-        }
+        let record = opened_at_version(
+            opened,
+            P::KIND,
+            tilo_resource::evolution::needs_migrate::<P>,
+            tilo_resource::evolution::migrate::<P>,
+        )?;
         let reader = record
             .read(tilo_resource::Reader::<P>::read)
             .ok_or(Unopened::Failed)?
@@ -640,6 +628,33 @@ impl<P: Resource> WorkspaceResource<P> {
     pub fn record(&self) -> &StoredResource {
         &self.shared.record
     }
+}
+
+/// The stored resource `opened`, brought to the resource of `kind`'s
+/// stored version: what every kind does before it reads what it holds, so
+/// it is compiled once rather than once per kind.
+fn opened_at_version(
+    opened: Result<StoredResource, ui_core::resource::ResourceOpenError>,
+    kind: &'static str,
+    needs_migrate: fn(&tilo_resource::Doc) -> bool,
+    migrate: fn(&mut tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError>,
+) -> Result<StoredResource, Unopened> {
+    let stored = match opened {
+        Ok(stored) => stored,
+        // Nothing is wrong: the store wakes the window once it is here.
+        Err(ui_core::resource::ResourceOpenError::Arriving) => return Err(Unopened::Arriving),
+        Err(error) => {
+            tracing::warn!(kind, %error, "the workspace's resource is unavailable");
+            return Err(Unopened::Failed);
+        }
+    };
+    if stored.read(needs_migrate).ok_or(Unopened::Failed)?
+        && let Err(error) =
+            stored.edit(false, |doc| migrate(doc).map_err(|error| error.to_string()))
+    {
+        tracing::warn!(kind, %error, "the workspace's resource did not migrate");
+    }
+    Ok(stored)
 }
 
 /// What `shared` holds as the keeping app's window offers it to callers from outside, beside
