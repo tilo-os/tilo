@@ -3,7 +3,6 @@ use std::fs;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -560,29 +559,9 @@ impl CapsuleStore {
     pub fn save(&self, state: &CapsuleState) -> Result<(), CapsuleError> {
         state.validate()?;
         let directory = self.capsule_directory(&state.id, true)?;
-        let base = fd_path(&directory);
-        let temp = base.join(format!(
-            ".state.{}.{}.tmp",
-            std::process::id(),
-            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let path = base.join("state.json");
+        let path = fd_path(&directory).join("state.json");
         let bytes = serde_json::to_vec_pretty(state)?;
-        {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&temp)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-        }
-        if let Err(error) = fs::rename(&temp, &path) {
-            let _ = fs::remove_file(&temp);
-            return Err(error.into());
-        }
-        let _ = directory.sync_all();
+        tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600)?;
         Ok(())
     }
 

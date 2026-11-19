@@ -1350,13 +1350,6 @@ pub fn check_mounts_command(host: &dyn Host, handoff_path: &Path, disk: &str) ->
     check_mounts(&handoff, &partitions, root)
 }
 
-/// Replaces `path` with `data` at exactly `mode`, atomically and durably.
-fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
-    Ok(tilo_files::native::atomic::write_with_mode(
-        path, data, mode,
-    )?)
-}
-
 fn canonical(document: &Value) -> Vec<u8> {
     let mut text = Dumps::CANONICAL.dumps(document);
     text.push('\n');
@@ -1407,7 +1400,7 @@ pub fn detect(host: &dyn Host, out: &Path, error: &Path) -> Result<Printed> {
     match recognised {
         Ok(None) => Ok(Printed::default()),
         Err(Fail::Refusal(reason)) => {
-            write_atomic(
+            tilo_files::native::atomic::write_with_mode(
                 error,
                 format!("Staged installation was not recognised: {reason}\n").as_bytes(),
                 0o644,
@@ -1419,7 +1412,7 @@ pub fn detect(host: &dyn Host, out: &Path, error: &Path) -> Result<Printed> {
         }
         Err(other) => Err(other),
         Ok(Some(handoff)) => {
-            write_atomic(out, &canonical(&handoff.json()), 0o644)?;
+            tilo_files::native::atomic::write_with_mode(out, &canonical(&handoff.json()), 0o644)?;
             Ok(Printed {
                 stdout: format!(
                     "tilo-staging-handoff: staged installation for disk {} recognised\n",
@@ -1486,7 +1479,7 @@ pub fn write_reclaim_record(
         .recursive(true)
         .mode(0o755)
         .create(&directory)?;
-    write_atomic(
+    tilo_files::native::atomic::write_with_mode(
         &directory.join("staging-reclaim.json"),
         &canonical(&record),
         0o600,

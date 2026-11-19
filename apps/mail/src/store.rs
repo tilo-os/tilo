@@ -256,12 +256,7 @@ fn write_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if path.exists() {
         return Ok(());
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let partial = path.with_extension("partial");
-    std::fs::write(&partial, bytes)?;
-    std::fs::rename(&partial, path)
+    tilo_files::native::atomic::write_creating_parent(path, bytes)
 }
 
 #[cfg(feature = "live")]
@@ -287,12 +282,7 @@ fn write(path: &Path, messages: Vec<Message>) -> std::io::Result<()> {
         messages,
     })
     .map_err(std::io::Error::other)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let partial = path.with_extension("json.partial");
-    std::fs::write(&partial, bytes)?;
-    std::fs::rename(&partial, path)
+    tilo_files::native::atomic::write_creating_parent(path, &bytes)
 }
 
 #[cfg(feature = "live")]

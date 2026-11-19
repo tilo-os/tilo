@@ -316,20 +316,10 @@ fn read<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 
 /// Replace `path` with `value`, durably, readable only by this account.
 fn write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let dir = path.parent().context("a kept file has a directory")?;
-    std::fs::create_dir_all(dir)?;
-    let temporary = path.with_extension("tmp");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(&serde_json::to_vec_pretty(value)?)?;
-    file.sync_all()?;
-    std::fs::rename(&temporary, path)?;
-    std::fs::File::open(dir)?.sync_all()?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        path,
+        &serde_json::to_vec_pretty(value)?,
+        0o600,
+    )?;
     Ok(())
 }

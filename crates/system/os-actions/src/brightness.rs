@@ -345,15 +345,7 @@ impl Memory {
         let Ok(bytes) = serde_json::to_vec_pretty(self) else {
             return;
         };
-        let written = path
-            .parent()
-            .map_or(Ok(()), fs::create_dir_all)
-            .and_then(|()| {
-                // Written aside and renamed, so a reader in another process never sees half a file.
-                let partial = path.with_extension("json.partial");
-                fs::write(&partial, bytes)?;
-                fs::rename(&partial, path)
-            });
+        let written = tilo_files::native::atomic::write_creating_parent(path, &bytes);
         if let Err(error) = written {
             tracing::debug!(
                 target: "tilo::display",
