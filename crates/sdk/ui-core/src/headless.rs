@@ -2793,6 +2793,7 @@ impl FrameHarness {
     /// shows a frame as its composition instead sets this false: its frames
     /// skip the paint and keep every booking the paint makes.
     pub fn set_scene_drawn(&mut self, drawn: bool) {
+        self.invalidate_local();
         self.scene_drawn = drawn;
     }
 
