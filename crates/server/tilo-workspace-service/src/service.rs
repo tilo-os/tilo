@@ -83,6 +83,10 @@ pub struct ServiceConfig {
     /// where nobody is asked: each key is kept beside its sealed file and
     /// nothing is said.
     pub people_keys: Option<PathBuf>,
+    /// The device this service's member copies act as, when the embedder
+    /// keeps it on a device that serves the workspaces that device joined as
+    /// a member: `None` for a server, which joins none.
+    pub member: Option<Arc<crate::workspaces::MemberDevice>>,
 }
 
 impl ServiceConfig {
@@ -102,6 +106,7 @@ impl ServiceConfig {
             reaching: Reaching::ByRelay,
             reachability: Reachability::default(),
             people_keys: None,
+            member: None,
         }
     }
 }
@@ -160,6 +165,26 @@ pub struct ServiceSessions {
     /// a file changes, so a live session is audited when something changed
     /// rather than every second.
     membership_watch: Arc<crate::membership_watch::WatchTask>,
+}
+
+/// An app action server that answers nothing: what a service opened only for
+/// the member copies a device holds serves.
+struct NoActions;
+
+impl AppActionServer for NoActions {
+    fn serve(
+        &self,
+        _workspace_id: WorkspaceId,
+        _caller: &tilo_actions::remote::Caller,
+        _message: tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
+        None
+    }
+}
+
+/// The app action server such a service answers with.
+fn no_actions() -> Arc<dyn AppActionServer> {
+    Arc::new(NoActions)
 }
 
 /// A service's workspaces, when it governs them: the governance and the app action server
@@ -260,9 +285,12 @@ impl ServiceSessions {
             closing: Arc::new(tokio::sync::watch::channel(false).0),
             membership_watch: Arc::new(crate::membership_watch::WatchTask::spawn(&cfg.state_root)),
         };
-        let (Some(governance), Some(actions)) = (governance, own_server) else {
+        // A service that governs nothing still holds the member copies of a
+        // device that joined workspaces another device serves; with neither,
+        // there is nothing to open.
+        if governance.is_none() && cfg.member.is_none() {
             return Ok((sessions, None));
-        };
+        }
         if let Some(named) = &cfg.people_keys {
             // Decided and said before any person's store is opened: each key
             // is made, or found, where it is kept from then on.
@@ -279,24 +307,29 @@ impl ServiceSessions {
         // have to rename: the endpoint names where it is reached first, when it
         // will at all.
         cfg.reaching.awaited(&endpoint).await;
-        let workspaces = crate::workspaces::Workspaces::open(
+        let workspaces = Box::pin(crate::workspaces::Workspaces::open(
             sessions.workspace_services(&cfg, &identity, endpoint, revocations, channels),
             cfg.state_root.join("workspaces"),
             cfg.state_root.join("store"),
-        )
+        ))
         .await
         .map_err(ServiceError::Workspaces)?;
-        governance.attach(workspaces.clone());
-        // Sessions ask its governance what a device may do; the lock is set
-        // before the endpoint routes any session to a service that governs here.
-        let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
-        #[cfg(any(feature = "agents", feature = "web"))]
-        take_part(&sessions.handler.compactor, &workspaces);
+        if let Some(member) = cfg.member.clone() {
+            workspaces.set_member_device(member);
+        }
+        if let Some(governance) = governance {
+            governance.attach(workspaces.clone());
+            // Sessions ask its governance what a device may do; the lock is set
+            // before the endpoint routes any session to a service that governs here.
+            let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
+            #[cfg(any(feature = "agents", feature = "web"))]
+            take_part(&sessions.handler.compactor, &workspaces);
+        }
         Ok((
             sessions,
             Some(Governed {
                 workspaces,
-                actions,
+                actions: own_server.unwrap_or_else(no_actions),
             }),
         ))
     }
@@ -550,9 +583,15 @@ impl WorkspaceService {
                 "a service admitting anyone governs no workspaces".into(),
             ));
         }
-        let (sessions, governed) =
-            ServiceSessions::open(cfg, identity, endpoint, true, channels, |_, server| server)
-                .await?;
+        let (sessions, governed) = Box::pin(ServiceSessions::open(
+            cfg,
+            identity,
+            endpoint,
+            true,
+            channels,
+            |_, server| server,
+        ))
+        .await?;
         let Some(Governed {
             workspaces,
             actions,
@@ -560,6 +599,53 @@ impl WorkspaceService {
         else {
             return Err(ServiceError::Workspaces(
                 "the service governs no workspaces".into(),
+            ));
+        };
+        let handlers = service_handlers(&sessions, &workspaces);
+        Ok(Self {
+            sessions,
+            workspaces,
+            actions,
+            handlers,
+        })
+    }
+
+    /// Open the service on `endpoint` without governing the workspaces kept
+    /// there: the embedder serves them itself, and the service holds only the
+    /// member copies the device joined. Its sessions answer the join protocol
+    /// and the direct link, which member copies sync over.
+    ///
+    /// # Errors
+    ///
+    /// The identity is invalid or not able to serve; the state root cannot be
+    /// created; or the workspaces kept there cannot be opened.
+    pub async fn open_joining(
+        cfg: ServiceConfig,
+        identity: ServiceIdentity,
+        endpoint: Endpoint,
+        channels: Option<crate::workspaces::DeviceKeyGroups>,
+    ) -> Result<Self, ServiceError> {
+        if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
+            return Err(ServiceError::Identity(
+                "a service admitting anyone governs no workspaces".into(),
+            ));
+        }
+        let (sessions, governed) = Box::pin(ServiceSessions::open(
+            cfg,
+            identity,
+            endpoint,
+            false,
+            channels,
+            |_, server| server,
+        ))
+        .await?;
+        let Some(Governed {
+            workspaces,
+            actions,
+        }) = governed
+        else {
+            return Err(ServiceError::Workspaces(
+                "the service holds no member copies".into(),
             ));
         };
         let handlers = service_handlers(&sessions, &workspaces);

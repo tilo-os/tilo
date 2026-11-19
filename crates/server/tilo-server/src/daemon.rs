@@ -665,6 +665,9 @@ impl Server {
                         .map(PathBuf::from)
                         .unwrap_or_default(),
                 ),
+                // A server serves other people's workspaces; it joins none as
+                // a member.
+                member: None,
             },
             identity.clone(),
             endpoint.clone(),

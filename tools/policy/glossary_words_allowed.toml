@@ -1314,9 +1314,6 @@ identifiers = ["host"]
 paths = ["crates/session/desktop/src/overview.rs"]
 
 [[allow]]
-
-
-
 reason = "The signed holder address's own `host` field (`TransportHint::host`), the device that answers for a workspace: the field is the type's name, and no new use of the word is meant."
 words = ["host"]
 paths = [
@@ -1370,3 +1367,29 @@ paths = ["crates/session/session/tests/invitations.rs"]
 reason = "SSH's own host vocabulary: the network host a saved connection reaches, the host key it presents on first contact, and the decisions a session offers on that key."
 words = ["host"]
 paths = ["apps/remote/src/*"]
+
+[[allow]]
+reason = "The workspace service's own names a member copy is written with: the holder and device address fields (`bootstrap.host`, `WorkspaceServices.host`), the `HostCommit` it writes through, the `TestHost` fixture and its `host()` accessor, the join protocol's endpoint constant, `content_for_host`, the device's key groups field (`channels`), the retention channel each write carries, and `Dialed::run`, which keeps the link up."
+words = ["host", "channel", "run"]
+identifiers = [
+    "host",
+    "HostCommit",
+    "TestHost",
+    "test_host",
+    "content_for_host",
+    "TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1",
+    "channel",
+    "channels",
+    "run",
+]
+paths = [
+    "crates/server/tilo-workspace-service/src/workspaces/member.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/member_tests.rs",
+    "crates/server/tilo-workspace-service/src/service.rs",
+]
+
+[[allow]]
+reason = "The workspace service's own document store accessor (`WorkspaceServices::records`) and a governed workspace's `record` field, which a member copy reads and commits through."
+words = ["record"]
+identifiers = ["records", "record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/member.rs"]
