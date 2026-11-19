@@ -1711,4 +1711,66 @@ mod tests {
         assert_eq!(read([8; 32], u64::MAX), None);
         drop(store);
     }
+
+    /// A manual measurement that no check performs: `cargo test -p tilo-fs --lib \
+    /// store::tests::small_file_writes_and_a_large_read_timing -- --ignored --nocapture` prints the
+    /// small-file write throughput and the large-file read rate of this store on this machine.
+    #[ignore = "a manual throughput measurement, printed with --ignored --nocapture"]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn small_file_writes_and_a_large_read_timing() {
+        use std::time::Instant;
+
+        const FILES: usize = 2_000;
+        const SMALL: usize = 4 * 1024;
+        const LARGE: usize = 64 * 1024 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        let files: Vec<Vec<u8>> = (0..FILES)
+            .map(|index| {
+                (0..SMALL)
+                    .map(|offset| u8::try_from((index * 31 + offset) % 251).unwrap())
+                    .collect()
+            })
+            .collect();
+        let started = Instant::now();
+        {
+            let store = ContentStore::open(&root).await.unwrap();
+            store.defer_sync();
+            for data in &files {
+                store.write_content(data).await.unwrap().unwrap();
+            }
+            store.end_deferred_sync().await.unwrap();
+            store.close().await.unwrap();
+        }
+        let elapsed = started.elapsed();
+        eprintln!(
+            "PERF small-file writes: {FILES} files of {SMALL} B in {:.1} ms = {:.0} files/s, {:.1} MiB/s",
+            elapsed.as_secs_f64() * 1_000.0,
+            (FILES as f64) / elapsed.as_secs_f64(),
+            ((FILES * SMALL) as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
+        );
+
+        let large: Vec<u8> = (0..LARGE).map(|index| (index % 251) as u8).collect();
+        let content = {
+            let store = ContentStore::open(&root).await.unwrap();
+            let content = store.write_content(&large).await.unwrap().unwrap();
+            store.close().await.unwrap();
+            content
+        };
+        let store = ContentStore::open(&root).await.unwrap();
+        let manifest = store.manifest(content).await.unwrap();
+        let started = Instant::now();
+        let read = store
+            .read_local(content, &manifest, 0..LARGE as u64)
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(read.len(), LARGE);
+        eprintln!(
+            "PERF large-file read: {LARGE} B in {:.1} ms = {:.1} MiB/s",
+            elapsed.as_secs_f64() * 1_000.0,
+            (LARGE as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
+        );
+        store.close().await.unwrap();
+    }
 }
