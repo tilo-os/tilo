@@ -131,7 +131,7 @@ impl Poi {
         let Some(kind) = self.kind.as_deref().filter(|k| !k.trim().is_empty()) else {
             return self.category.label();
         };
-        capitalize_first(&kind.trim().replace(['_', ';'], " "))
+        kind.trim().replace(['_', ';'], " ")
     }
 }
 
@@ -496,15 +496,6 @@ impl MapModel {
         } else {
             self.places.push(p);
         }
-    }
-}
-
-/// `text` with its first character upper-cased, as a name or a kind reads.
-fn capitalize_first(text: &str) -> String {
-    let mut characters = text.chars();
-    match characters.next() {
-        Some(first) => first.to_uppercase().chain(characters).collect(),
-        None => String::new(),
     }
 }
 
