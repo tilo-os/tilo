@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use ui::tilo_resource::{self, Effect, JsonSchema};
+use ui::tilo_resource::{self, Effect, JsonSchema, RowBindings};
 
 use crate::model::{Address, Contact, ContactId, Labeled, group_names_equal, normalize_text};
 
@@ -100,19 +100,30 @@ pub enum ContactsEffect {
     },
     /// Keep existing contact.
     #[effect(kind = "outside")]
-    #[effect(row, idempotent)]
+    #[effect(row, idempotent, on = ImportConflictRow)]
     KeepExisting {
         #[param("The pending import review")]
         token: String,
     },
     /// Import as new contact.
     #[effect(kind = "outside")]
-    #[effect(row, destructive)]
+    #[effect(row, destructive, on = ImportConflictRow)]
     ImportAsNew {
         #[param("The pending import review")]
         token: String,
     },
 }
+
+/// A pending import review, as Contacts publishes it: a row of the
+/// `contacts.import-conflict` type whose effects decide on the token it
+/// carries.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "contacts.import-conflict",
+    label = "Import review",
+    effects = ContactsEffect
+)]
+pub struct ImportConflictRow;
 
 /// One field on which a duplicate review can deliberately keep the other
 /// contact's scalar value.  Repeated fields are always unioned by their
@@ -406,15 +417,13 @@ pub fn import_conflict_resource_id(token: &str) -> String {
 /// A pending import review, published while it waits: an untrusted card never
 /// enters the shared book before the person chooses.
 pub(crate) fn import_conflict_row(token: &str, incoming_name: &str) -> ui::framework::LiveRow {
-    ui::framework::LiveRow::new(
+    let value = serde_json::Value::String(token.to_owned());
+    let bindings = RowBindings::new()
+        .bind(ContactsEffect::KEEP_EXISTING, [("token", value.clone())])
+        .bind(ContactsEffect::IMPORT_AS_NEW, [("token", value)]);
+    ui::framework::LiveRow::typed_with::<ImportConflictRow>(
         import_conflict_resource_id(token),
-        "contacts.import-conflict",
         format!("Import review: {incoming_name}"),
+        &bindings,
     )
-    .effect(&ContactsEffect::KeepExisting {
-        token: token.to_owned(),
-    })
-    .effect(&ContactsEffect::ImportAsNew {
-        token: token.to_owned(),
-    })
 }

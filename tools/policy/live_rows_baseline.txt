@@ -40,8 +40,6 @@ row-operation 8 apps/chat/src/effects.rs
 row-operation 1 apps/code-editor/src/app/surface.rs
 row-operation 5 apps/console/src/agent_card.rs
 row-operation 1 apps/console/src/agents.rs
-row-operation 1 apps/contacts/src/account_editor.rs
-row-operation 2 apps/contacts/src/actions.rs
 row-operation 2 apps/ebook/src/search_provider.rs
 row-operation 10 apps/file-explorer/src/files_app.rs
 row-operation 2 apps/file-explorer/src/files_app/cloud_browse.rs
@@ -79,8 +77,6 @@ row-operation 4 apps/settings/src/panes/printers.rs
 row-operation 5 apps/settings/src/panes/users.rs
 row-operation 4 apps/tube/src/rows.rs
 untyped-live-row 4 apps/chat/src/effects.rs
-untyped-live-row 1 apps/contacts/src/account_editor.rs
-untyped-live-row 1 apps/contacts/src/actions.rs
 untyped-live-row 1 apps/imager/src/app.rs
 untyped-live-row 5 apps/imager/src/setup/actions.rs
 untyped-live-row 1 apps/imager/src/setup/desktop_journey.rs
