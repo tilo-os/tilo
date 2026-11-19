@@ -256,20 +256,24 @@ pub(crate) fn paint_series(
             colour
         }
     };
+    // The swatch and the name share the entry's centre line, as [`paint_entry`]'s do.
+    let cy = item.center().y;
     scene.fill(
         Fill::NonZero,
         transform,
         fade(colour, 65),
         None,
-        &Circle::new((item.x0 + 4.0, item.y0 + 6.0), 4.0),
+        &Circle::new((item.x0 + 4.0, cy), 4.0),
     );
+    let style = theme.text(TextRole::Caption);
+    let h = f64::from(text.measure_style(name, None, &style).1);
     text.draw_style(
         scene,
         name,
         fade(theme.tokens.colors.text_dim, 90),
-        transform * Affine::translate((item.x0 + 14.0, item.y0)),
+        transform * Affine::translate((item.x0 + 14.0, cy - h / 2.0)),
         Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
-        &theme.text(TextRole::Caption),
+        &style,
     );
 }
 
