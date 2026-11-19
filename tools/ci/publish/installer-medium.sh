@@ -53,14 +53,29 @@ case $rootfs in
   *) die "the live medium's root filesystem must be btrfs or ext4, not $rootfs" ;;
 esac
 
+# How long each part took, for finding what a medium spends its time on (as build-layer.sh's).
+phase_started=$SECONDS phase_name=start
+phase() {
+  printf 'TILO_MEDIUM_TIMING phase=%s seconds=%s\n' "$phase_name" "$((SECONDS - phase_started))"
+  phase_name=$1 phase_started=$SECONDS
+}
+trap 'phase end' EXIT
+
 # Root's tools in the guest: podman for the image and the installer layer, and what the
 # canonical disk step installs with (os-release.sh's list, plus mtools for the ESP fallback).
-dnf install -y --setopt=install_weak_deps=False podman skopeo fuse-overlayfs e2fsprogs \
-  util-linux jq python3 dosfstools btrfs-progs systemd mtools qemu-img sudo curl tar gzip zstd \
-  shadow-utils >/dev/null
+# Only what the image lacks: asking dnf for installed packages still fetches every repository's
+# metadata.
+phase tools
+tools=(podman skopeo fuse-overlayfs e2fsprogs util-linux jq python3 dosfstools btrfs-progs systemd
+  mtools qemu-img sudo curl tar gzip zstd shadow-utils)
+missing=()
+for tool in "${tools[@]}"; do rpm -q "$tool" >/dev/null 2>&1 || missing+=("$tool"); done
+((${#missing[@]} == 0)) \
+  || dnf install -y --setopt=install_weak_deps=False "${missing[@]}" >/dev/null
 modprobe fuse 2>/dev/null || true
 modprobe loop 2>/dev/null || true
 
+phase load-image
 id=$(podman pull -q "oci:$in/oci") || die "could not load $in/oci"
 actual_digest=$(podman image inspect --format '{{.Digest}}' "$id")
 [[ $actual_digest == "$expected_digest" ]] || die "$in/oci is not the image its digest names"
@@ -104,6 +119,7 @@ if [ -n "${TILO_INSTALLER_TARGET_OCI:-}" ]; then
   : "${TILO_INSTALLER_TARGET_ARCHITECTURE:?TILO_INSTALLER_TARGET_ARCHITECTURE is required with a target}"
   : "${TILO_INSTALLER_TARGET_PROFILE:?TILO_INSTALLER_TARGET_PROFILE is required with a target}"
   : "${TILO_INSTALLER_TARGET_UPDATE_ORIGIN:?TILO_INSTALLER_TARGET_UPDATE_ORIGIN is required with a target}"
+  phase stage-target
   target_dir="$out/target"
   rm -rf "$target_dir"
   mkdir -p "$target_dir"
@@ -147,8 +163,9 @@ export TILO_INSTALLER_OUTPUT=$installer_output
 export TILO_INSTALLER_DISK="$installer_output/qcow2/disk.qcow2"
 export TILO_INSTALLER_ROOTFS=$rootfs
 # The qcow2 is the artifact and WHPX may read it too: zstd clusters keep it small, and it stays
-# a normal qcow2 that QEMU and the WHPX transport can open directly.
-export TILO_QCOW2_COMPRESS=1
+# a normal qcow2 that QEMU and the WHPX transport can open directly. A medium only this run's
+# own steps read sets TILO_QCOW2_COMPRESS=0: compressing it takes longer than its install.
+export TILO_QCOW2_COMPRESS=${TILO_QCOW2_COMPRESS:-1}
 # The bootc helper the live installer uses is compiled from a pinned public source archive in
 # a nested podman build; the guest's own network is what reaches GitHub and Fedora.
 export TILO_PODMAN_BUILD_NETWORK="${TILO_PODMAN_BUILD_NETWORK:-host}"
@@ -164,7 +181,11 @@ export TMPDIR="$out/tmp"
 mkdir -p "$TMPDIR"
 podman tag "$id" "$TILO_IMAGE"
 
-if ! bash os/dev/build-custom-installer.sh --reuse-image-installer; then
+phase installer-and-disk
+# Its messages stamped with the seconds since this phase began: the disk step's parts (the
+# installer layer, the scratch registry, each install pass, the qcow2) are most of a medium.
+stamp() { local line; while IFS= read -r line; do printf '[+%ss] %s\n' "$((SECONDS - phase_started))" "$line"; done; }
+if ! bash os/dev/build-custom-installer.sh --reuse-image-installer 2>&1 | stamp; then
   # The disk step keeps bootc's own words in a log beside the disk, which t does not keep.
   log="$installer_output/qcow2/.install.log"
   [[ ! -s $log ]] || { echo "--- the last lines of $log:" >&2; tail -n 120 "$log" >&2; }
@@ -180,6 +201,7 @@ rm -rf "$installer_output" "$TILO_OUTPUT" "$TMPDIR"
 
 # The canonical provenance validator reads the finished qcow2 again and names its installer
 # image and update origin. It records build provenance, never a signature or boot proof.
+phase provenance
 python3 apps/imager/packaging/media-provenance.py validate "$medium" "$arch" generic >/dev/null \
   || die "the medium does not match the media provenance the disk step recorded"
 
