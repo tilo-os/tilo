@@ -32,7 +32,7 @@ pub mod store;
 mod value;
 
 pub use index::{Change, Commit, CommitHook, Index, Indexed, PARENT};
-pub use query::{Cursor, Filter, Order, Page, Query, Sort};
+pub use query::{Absent, Cursor, Filter, Order, Page, Query, Sort};
 pub use schema::{Field, FieldKind, Schema, Type};
 pub use store::{Resource, Source, Store, StoreError, Written};
 pub use value::{Cell, Value};

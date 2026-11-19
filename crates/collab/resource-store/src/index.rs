@@ -5,7 +5,7 @@ use std::ops::Bound;
 
 use automerge::ChangeHash;
 
-use crate::query::{Cursor, Filter, Page, Query, Sort, past};
+use crate::query::{Absent, Cursor, Filter, Order, Page, Query, Sort, past};
 use crate::ranked::Ranked;
 use crate::value::{Cell, Value};
 
@@ -112,6 +112,34 @@ pub trait CommitHook {
 
 /// One entry of an order: what it sorts by, the resource's place, the resource's id.
 type Entry = (Value, Value, String);
+
+/// Where a resource stands in a composite order: what it holds of each of its fields, its place,
+/// its id.
+#[derive(Clone, Debug)]
+struct Placed {
+    levels: Vec<Value>,
+    place: Value,
+    id: String,
+}
+
+impl Placed {
+    fn cmp_in(&self, order: &Order, other: &Self) -> std::cmp::Ordering {
+        let directions =
+            std::iter::once(order.descending).chain(order.then.iter().map(|(_, down)| *down));
+        for ((a, b), descending) in self.levels.iter().zip(&other.levels).zip(directions) {
+            let ordering = order.compare(a, b, descending);
+            if ordering.is_ne() {
+                return ordering;
+            }
+        }
+        let rest = (&self.place, &self.id).cmp(&(&other.place, &other.id));
+        if order.descending {
+            rest.reverse()
+        } else {
+            rest
+        }
+    }
+}
 
 /// The resources of one kind, wherever they are stored, and their orders.
 #[derive(Default)]
@@ -423,6 +451,114 @@ impl Table {
         keys
     }
 
+    /// Where `stored` stands in the composite `order`.
+    fn placed(order: &Order, id: &str, stored: &Indexed) -> Option<Placed> {
+        let (key, place) = stored.key(&order.by)?;
+        let mut levels = Vec::with_capacity(order.then.len().saturating_add(1));
+        levels.push(key);
+        levels.extend(order.then.iter().map(|(field, _)| stored.scalar(field)));
+        Some(Placed {
+            levels,
+            place,
+            id: id.to_owned(),
+        })
+    }
+
+    /// The first `query.limit + 1` resources this table shows of `query`, whose order sorts
+    /// further than one of the index's orders does: the index's order of its first field is
+    /// walked, from the cursor's value on, and each stretch of resources alike in it is sorted by
+    /// the rest. A page costs what it shows, what its filters skip and the stretch it ends in.
+    fn composite_keys(&self, query: &Query) -> Vec<Placed> {
+        let order = &query.order;
+        let wanted = query.limit.saturating_add(1);
+        let from: Option<Placed> = query.after.as_ref().map(|cursor| Placed {
+            levels: std::iter::once(cursor.key.clone())
+                .chain(cursor.rest.iter().cloned())
+                .collect(),
+            place: cursor.place.clone(),
+            id: cursor.id.clone(),
+        });
+        let entries = match &order.by {
+            Sort::Position => &self.by_position,
+            Sort::Field(field) => match self.by_field.get(field) {
+                Some(entries) if !self.sets.contains(field) => entries,
+                _ => return Vec::new(),
+            },
+        };
+        let descending = order.descending;
+        let nulls_first = match order.absent {
+            Some(Absent::First) => true,
+            Some(Absent::Last) => false,
+            None => !descending,
+        };
+        let nulls = entries.partition_point(|(held, _, _)| *held == Value::Null);
+        let none = (0, nulls);
+        let some = (nulls, entries.len());
+        let mut spans = if nulls_first {
+            vec![(none, true), (some, false)]
+        } else {
+            vec![(some, false), (none, true)]
+        };
+        // From the cursor's value on: the spans before it are passed, and its own starts there.
+        if let Some(from) = &from
+            && let Some(first) = from.levels.first()
+        {
+            let null = *first == Value::Null;
+            while spans.first().is_some_and(|(_, held)| *held != null) {
+                spans.remove(0);
+            }
+            if let Some(((lower, upper), _)) = spans.first_mut() {
+                if descending {
+                    *upper = (*upper).min(entries.partition_point(|(held, _, _)| held <= first));
+                } else {
+                    *lower = (*lower).max(entries.partition_point(|(held, _, _)| held < first));
+                }
+            }
+        }
+        let holds = |stored: &Indexed| query.filters.iter().all(|filter| filter.holds(stored));
+        let mut found: Vec<Placed> = Vec::new();
+        'spans: for ((lower, upper), _) in spans {
+            let span = entries.between(lower, upper.max(lower));
+            let span: Box<dyn Iterator<Item = &Entry>> = if descending {
+                Box::new(span.rev())
+            } else {
+                Box::new(span)
+            };
+            for (key, place, id) in span {
+                let Some(stored) = self.rows.get(id) else {
+                    continue;
+                };
+                if !holds(stored) {
+                    continue;
+                }
+                let Some(placed) = Self::placed(order, id, stored) else {
+                    continue;
+                };
+                // An entry listed for something other than the order's field.
+                if !matches!(order.by, Sort::Position)
+                    && (placed.levels.first() != Some(key) || placed.place != *place)
+                {
+                    continue;
+                }
+                if from
+                    .as_ref()
+                    .is_some_and(|from| placed.cmp_in(order, from) != std::cmp::Ordering::Greater)
+                {
+                    continue;
+                }
+                if found.len() >= wanted
+                    && found.last().map(|last| last.levels.first()) != Some(placed.levels.first())
+                {
+                    break 'spans;
+                }
+                found.push(placed);
+            }
+        }
+        found.sort_by(|a, b| a.cmp_in(order, b));
+        found.truncate(wanted);
+        found
+    }
+
     fn count(&self, filters: &[Filter]) -> usize {
         if let [Filter::Is(field, value)] = filters
             && *value != Value::Null
@@ -444,6 +580,9 @@ impl Table {
     /// span of it: the kind in an order, one value's resources in the kind's order, or a range
     /// of a field in that field's order. `None` for any other query.
     fn window(&self, query: &Query) -> Option<Window<'_>> {
+        if query.order.is_composite() {
+            return None;
+        }
         let scalar = |field: &str| !self.sets.contains(field);
         let span = |entries: &Ranked<Entry>,
                     lower: &dyn Fn(&Value) -> bool,
@@ -529,6 +668,7 @@ fn page_of(mut keys: Vec<(Entry, &Table)>, limit: usize) -> Page {
             key: key.clone(),
             place: place.clone(),
             id: id.clone(),
+            rest: Vec::new(),
         })
     } else {
         None
@@ -724,6 +864,9 @@ impl Index {
     /// listed, counted or skipped over.
     #[must_use]
     pub fn query(&self, query: &Query, may_read: &dyn Fn(&str) -> bool) -> Page {
+        if query.order.is_composite() {
+            return self.composite(query, may_read);
+        }
         let mut keys: Vec<(Entry, &Table)> = self
             .readable(&query.kind, may_read)
             .flat_map(|table| table.keys(query).into_iter().map(move |key| (key, table)))
@@ -734,6 +877,40 @@ impl Index {
             keys.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         }
         page_of(keys, query.limit)
+    }
+
+    /// A page of `query` whose order sorts further than one of the index's orders.
+    fn composite(&self, query: &Query, may_read: &dyn Fn(&str) -> bool) -> Page {
+        let order = &query.order;
+        let mut keys: Vec<(Placed, &Table)> = self
+            .readable(&query.kind, may_read)
+            .flat_map(|table| {
+                table
+                    .composite_keys(query)
+                    .into_iter()
+                    .map(move |key| (key, table))
+            })
+            .collect();
+        keys.sort_by(|a, b| a.0.cmp_in(order, &b.0));
+        let more = keys.len() > query.limit;
+        keys.truncate(query.limit);
+        let next = more.then(|| keys.last()).flatten().map(|(placed, _)| {
+            let mut levels = placed.levels.iter().cloned();
+            Cursor {
+                key: levels.next().unwrap_or(Value::Null),
+                rest: levels.collect(),
+                place: placed.place.clone(),
+                id: placed.id.clone(),
+            }
+        });
+        let resources = keys
+            .into_iter()
+            .filter_map(|(placed, table)| {
+                let stored = table.rows.get(&placed.id)?.clone();
+                Some((placed.id, stored))
+            })
+            .collect();
+        Page { resources, next }
     }
 
     /// How many resources of `kind` whose readers `may_read` admits hold to every filter.

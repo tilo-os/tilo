@@ -184,6 +184,154 @@ fn a_row_is_found_by_its_position_and_a_position_by_its_row() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    clippy::unreachable,
+    clippy::string_slice,
+    reason = "a full sort of every issue, written out beside the index it checks"
+)]
+fn an_order_by_several_fields_and_any_filter_pages_as_a_full_sort_would() {
+    use tilo_resource_store::Absent;
+    // Points repeat, so the order's later fields decide; a third of the issues hold no points.
+    let mut index = Index::new();
+    let mut all: Vec<(String, Value, String, String)> = Vec::new();
+    for (n, readers) in (0..240).zip(["everyone", "ada"].iter().cycle()) {
+        let id = format!("i{n:03}");
+        let state = ["open", "doing", "done"][n % 5 % 3];
+        let points = if n % 3 == 0 {
+            Value::Null
+        } else {
+            Value::from(i64::try_from(n % 4).unwrap())
+        };
+        let title = format!("{} issue {n}", ["fix", "add", "drop"][n % 7 % 3]);
+        let Change::Put {
+            kind,
+            parent,
+            order,
+            mut fields,
+            ..
+        } = issue(&id, "board", &format!("{n:04}"), &title, state, 0)
+        else {
+            unreachable!()
+        };
+        fields.insert("points".to_owned(), Cell::One(points.clone()));
+        index.committed(&Commit {
+            doc: readers,
+            readers,
+            heads: &[],
+            changes: &[Change::Put {
+                kind,
+                id: id.clone(),
+                parent,
+                order,
+                fields,
+            }],
+        });
+        all.push((id, points, state.to_owned(), title));
+    }
+    let orders = [
+        Order::by("points").then("state", false),
+        Order::by("points").descending().then("state", true),
+        Order::by("points")
+            .absent(Absent::Last)
+            .then("title", false),
+        Order::by("points").descending().absent(Absent::First),
+        Order::default().absent(Absent::Last).then("state", false),
+    ];
+    let filters = [
+        vec![],
+        vec![Filter::Any(vec![
+            Filter::Is("state".into(), "open".into()),
+            Filter::Like("title".into(), "drop*1*".into()),
+        ])],
+        vec![
+            Filter::Present("points".into()),
+            Filter::Not(Box::new(Filter::Is("state".into(), "done".into()))),
+        ],
+    ];
+    let rank = |order: &Order,
+                a: &(String, Value, String, String),
+                b: &(String, Value, String, String)| {
+        let field = |row: &(String, Value, String, String), name: &str| match name {
+            "points" => row.1.clone(),
+            "state" => Value::from(row.2.as_str()),
+            "title" => Value::from(row.3.as_str()),
+            _ => Value::Null,
+        };
+        let first = |row: &(String, Value, String, String)| match &order.by {
+            tilo_resource_store::Sort::Field(name) => field(row, name),
+            tilo_resource_store::Sort::Position => {
+                Value::from(format!("{:04}", row.0[1..].parse::<u32>().unwrap()))
+            }
+        };
+        let compare = |x: Value, y: Value, down: bool| match (&x, &y, order.absent) {
+            (Value::Null, Value::Null, Some(_)) => std::cmp::Ordering::Equal,
+            (Value::Null, _, Some(Absent::First)) | (_, Value::Null, Some(Absent::Last)) => {
+                std::cmp::Ordering::Less
+            }
+            (Value::Null, _, Some(Absent::Last)) | (_, Value::Null, Some(Absent::First)) => {
+                std::cmp::Ordering::Greater
+            }
+            _ if down => y.cmp(&x),
+            _ => x.cmp(&y),
+        };
+        let mut ordering = compare(first(a), first(b), order.descending);
+        for (name, down) in &order.then {
+            ordering = ordering.then_with(|| compare(field(a, name), field(b, name), *down));
+        }
+        // Then their place: the issue's number, as its order key.
+        let place = a.0.cmp(&b.0);
+        ordering.then(if order.descending {
+            place.reverse()
+        } else {
+            place
+        })
+    };
+    let holds = |filters: &[Filter], row: &(String, Value, String, String)| {
+        filters.iter().all(|filter| match filter {
+            Filter::Any(_) => {
+                row.2 == "open" || {
+                    let t = &row.3;
+                    t.starts_with("drop") && t["drop".len()..].contains('1')
+                }
+            }
+            Filter::Present(_) => row.1 != Value::Null,
+            Filter::Not(_) => row.2 != "done",
+            _ => true,
+        })
+    };
+    let not_ada = |readers: &str| readers != "ada";
+    for may_read in [&anyone as &dyn Fn(&str) -> bool, &not_ada] {
+        for order in &orders {
+            for filter in &filters {
+                let mut expected: Vec<&(String, Value, String, String)> = all
+                    .iter()
+                    .enumerate()
+                    .filter(|(n, row)| {
+                        (may_read(if n % 2 == 0 { "everyone" } else { "ada" }))
+                            && holds(filter, row)
+                    })
+                    .map(|(_, row)| row)
+                    .collect();
+                expected.sort_by(|a, b| rank(order, a, b));
+                let expected: Vec<String> = expected.into_iter().map(|row| row.0.clone()).collect();
+                let mut query = Query::of(ISSUE, 9).order(order.clone());
+                query.filters = filter.clone();
+                assert_eq!(
+                    listed(&index, &query, may_read),
+                    expected,
+                    "{order:?} {filter:?}"
+                );
+                assert_eq!(
+                    index.position(&query, &expected[expected.len() / 2], may_read),
+                    Some(expected.len() / 2)
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn pages_follow_the_kinds_order_and_resume_after_their_cursor() {
     let index = board();
     let first = query(&index, &Query::of(ISSUE, 4));

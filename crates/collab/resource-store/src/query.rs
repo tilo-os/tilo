@@ -69,6 +69,14 @@ pub enum Filter {
     },
     /// The text field holds the text, whatever its letters' case.
     Contains(String, String),
+    /// The scalar text field matches the pattern, where `*` stands for any letters.
+    Like(String, String),
+    /// The resource holds the field: a scalar other than [`Value::Null`], or a set.
+    Present(String),
+    /// The filter does not hold.
+    Not(Box<Filter>),
+    /// At least one of the filters holds; none for an empty list.
+    Any(Vec<Filter>),
 }
 
 impl Filter {
@@ -85,6 +93,17 @@ impl Filter {
                 .scalar(field)
                 .as_text()
                 .is_some_and(|held| contains_folded(held, text)),
+            Self::Like(field, pattern) => stored
+                .scalar(field)
+                .as_text()
+                .is_some_and(|held| like(held, pattern)),
+            Self::Present(field) => match stored.fields.get(field) {
+                Some(Cell::One(value)) => *value != Value::Null,
+                Some(Cell::Set(_)) => true,
+                None => field == crate::index::PARENT && stored.parent.is_some(),
+            },
+            Self::Not(filter) => !filter.holds(stored),
+            Self::Any(filters) => filters.iter().any(|filter| filter.holds(stored)),
         }
     }
 }
@@ -107,6 +126,32 @@ pub(crate) fn past(value: &Value, to: &Bound<Value>) -> bool {
     }
 }
 
+/// Whether `held` matches `pattern`, where each `*` stands for any letters, none too.
+fn like(held: &str, pattern: &str) -> bool {
+    let mut parts = pattern.split('*');
+    let Some(first) = parts.next() else {
+        return true;
+    };
+    let Some(mut rest) = held.strip_prefix(first) else {
+        return false;
+    };
+    let parts: Vec<&str> = parts.collect();
+    let Some((last, middle)) = parts.split_last() else {
+        return rest.is_empty();
+    };
+    for part in middle {
+        match rest.find(part) {
+            Some(at) => {
+                rest = rest
+                    .get(at.saturating_add(part.len())..)
+                    .unwrap_or_default();
+            }
+            None => return false,
+        }
+    }
+    rest.len() >= last.len() && rest.ends_with(last)
+}
+
 fn contains_folded(held: &str, text: &str) -> bool {
     if text.is_ascii() && held.is_ascii() {
         let text = text.as_bytes();
@@ -125,6 +170,19 @@ fn contains_folded(held: &str, text: &str) -> bool {
 pub struct Order {
     pub by: Sort,
     pub descending: bool,
+    /// Where resources that hold [`Value::Null`] in a field sorted by go: `None` sorts it as the
+    /// smallest value, so a descending order lists them last.
+    pub absent: Option<Absent>,
+    /// The fields resources sorting alike in `by` are sorted by next, in turn, each smallest
+    /// first unless it says descending.
+    pub then: Vec<(String, bool)>,
+}
+
+/// Where resources without a value in a field sorted by go, whichever way the order goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Absent {
+    First,
+    Last,
 }
 
 impl Order {
@@ -133,7 +191,43 @@ impl Order {
     pub fn by(field: impl Into<String>) -> Self {
         Self {
             by: Sort::Field(field.into()),
-            descending: false,
+            ..Self::default()
+        }
+    }
+
+    /// This order, then by `field` among resources it sorts alike.
+    #[must_use]
+    pub fn then(mut self, field: impl Into<String>, descending: bool) -> Self {
+        self.then.push((field.into(), descending));
+        self
+    }
+
+    /// This order, with resources holding nothing in a field it sorts by placed `absent`.
+    #[must_use]
+    pub const fn absent(mut self, absent: Absent) -> Self {
+        self.absent = Some(absent);
+        self
+    }
+
+    /// Whether only a sort of each stretch of resources alike in `by` answers this order, not one
+    /// of the index's orders as it stands.
+    pub(crate) fn is_composite(&self) -> bool {
+        self.absent.is_some() || !self.then.is_empty()
+    }
+
+    /// How `a` and `b`, two values of a field this order sorts by `descending` or not, compare.
+    pub(crate) fn compare(&self, a: &Value, b: &Value, descending: bool) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        let placed = |first: bool| match (self.absent, first) {
+            (Some(Absent::First), true) | (Some(Absent::Last), false) => Ordering::Less,
+            _ => Ordering::Greater,
+        };
+        match (a, b, self.absent) {
+            (Value::Null, Value::Null, Some(_)) => Ordering::Equal,
+            (Value::Null, _, Some(_)) => placed(true),
+            (_, Value::Null, Some(_)) => placed(false),
+            _ if descending => b.cmp(a),
+            _ => a.cmp(b),
         }
     }
 
@@ -162,6 +256,8 @@ pub struct Cursor {
     pub(crate) key: Value,
     pub(crate) place: Value,
     pub(crate) id: String,
+    /// What the resource holds of each field of the order's `then`.
+    pub(crate) rest: Vec<Value>,
 }
 
 /// One page of a [`Query`].
