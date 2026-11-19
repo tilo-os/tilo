@@ -1211,3 +1211,79 @@ fn seeking_and_skipping_a_segment_are_actions() {
         "a moment before the start is refused"
     );
 }
+
+#[test]
+fn a_setting_row_offers_its_own_effect_with_the_value_it_would_set() {
+    use ui::tilo_resource::Effect as _;
+
+    fn find<'a>(
+        rows: &'a [ui::tilo_actions::ResourceSpec],
+        id: &str,
+    ) -> Option<&'a ui::tilo_actions::ResourceSpec> {
+        rows.iter().find_map(|row| {
+            (row.id.as_str() == id)
+                .then_some(row)
+                .or_else(|| find(&row.children, id))
+        })
+    }
+
+    let app = TubeApp::sample();
+    let tube = app.tube();
+    let settings = tube.model.settings.clone();
+    let rows: Vec<_> = crate::rows::live_rows(&tube.model, tube.device_sync_view())
+        .into_iter()
+        .map(ui::framework::LiveRow::into_resource)
+        .collect();
+
+    let autoplay = crate::action::SettingFlag::Autoplay;
+    let switch = find(&rows, &format!("tube.setting:{}", autoplay.id()))
+        .expect("a switch's row is published");
+    let ids: Vec<&str> = switch
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    assert_eq!(ids, ["set-preference"], "the row offers the switch alone");
+    let flip = &switch.actions[0];
+    assert!(
+        flip.params().is_empty(),
+        "the row knows the state it flips to; nothing is asked"
+    );
+    let encoded = flip.build_json(&serde_json::Map::new()).unwrap();
+    assert_eq!(
+        TubeEffect::from_payload(&encoded.payload).unwrap(),
+        TubeEffect::SetPreference {
+            preference: autoplay.id().to_owned(),
+            enabled: !settings.autoplay,
+        }
+    );
+
+    let quality = find(&rows, "tube.setting:preferred-quality").expect("the quality row");
+    let encoded = quality.actions[0]
+        .build_json(&serde_json::Map::new())
+        .unwrap();
+    assert_eq!(
+        TubeEffect::from_payload(&encoded.payload).unwrap(),
+        TubeEffect::SetPreferredQuality {
+            quality: crate::actions::next_quality(&settings.preferred_quality),
+        }
+    );
+
+    let sponsor = find(&rows, "tube.setting:sponsor-category:sponsor")
+        .expect("a segment category's row is published");
+    let encoded = sponsor.actions[0]
+        .build_json(&serde_json::Map::new())
+        .unwrap();
+    let stored = settings
+        .categories
+        .get("sponsor")
+        .copied()
+        .unwrap_or(crate::model::SkipMode::Skip);
+    assert_eq!(
+        TubeEffect::from_payload(&encoded.payload).unwrap(),
+        TubeEffect::SetSegmentHandling {
+            category: "sponsor".to_owned(),
+            mode: stored.next().key().to_owned(),
+        }
+    );
+}

@@ -6,6 +6,7 @@
 
 use ui::framework::{EffectStatus, LiveRow};
 use ui::tilo_resource;
+use ui::tilo_resource::RowBindings;
 
 use crate::action::SettingFlag;
 use crate::actions::{TubeEffect, comment_key, next_quality, resource_label};
@@ -197,25 +198,35 @@ fn preferences(settings: &Settings) -> LiveRow {
 
 fn switch_row(settings: &Settings, flag: SettingFlag) -> LiveRow {
     let enabled = flag.get(settings);
-    LiveRow::typed::<Setting>(
+    // The row's press flips this switch, which it knows and the effect's
+    // caller does not.
+    let bindings = RowBindings::new().bind(
+        TubeEffect::SET_PREFERENCE,
+        [
+            ("preference", serde_json::Value::from(flag.id())),
+            ("enabled", serde_json::Value::from(!enabled)),
+        ],
+    );
+    LiveRow::typed_with::<Setting>(
         format!("tube.setting:{}", flag.id()),
         format!("{}: {}", flag.name(), if enabled { "on" } else { "off" }),
+        &bindings,
     )
-    // The row's press flips this switch, which it knows and the effect does not.
-    .effect(&TubeEffect::SetPreference {
-        preference: flag.id().to_owned(),
-        enabled: !enabled,
-    })
 }
 
 fn quality_row(settings: &Settings) -> LiveRow {
-    LiveRow::typed::<Setting>(
+    let bindings = RowBindings::new().bind(
+        TubeEffect::SET_PREFERRED_QUALITY,
+        [(
+            "quality",
+            serde_json::Value::from(next_quality(&settings.preferred_quality)),
+        )],
+    );
+    LiveRow::typed_with::<Setting>(
         "tube.setting:preferred-quality",
         format!("Preferred quality: {}", settings.preferred_quality),
+        &bindings,
     )
-    .effect(&TubeEffect::SetPreferredQuality {
-        quality: next_quality(&settings.preferred_quality),
-    })
 }
 
 fn segment_row(settings: &Settings, category: Category) -> LiveRow {
@@ -224,18 +235,22 @@ fn segment_row(settings: &Settings, category: Category) -> LiveRow {
         .get(category.api_key())
         .copied()
         .unwrap_or(SkipMode::Skip);
-    LiveRow::typed::<Setting>(
+    let bindings = RowBindings::new().bind(
+        TubeEffect::SET_SEGMENT_HANDLING,
+        [
+            ("category", serde_json::Value::from(category.api_key())),
+            ("mode", serde_json::Value::from(stored.next().key())),
+        ],
+    );
+    LiveRow::typed_with::<Setting>(
         format!("tube.setting:sponsor-category:{}", category.api_key()),
         format!(
             "SponsorBlock {}: {}",
             crate::i18n::t(category.message()),
             crate::i18n::t(stored.message())
         ),
+        &bindings,
     )
-    .effect(&TubeEffect::SetSegmentHandling {
-        category: category.api_key().to_owned(),
-        mode: stored.next().key().to_owned(),
-    })
 }
 
 fn devices(view: &SyncView) -> LiveRow {
@@ -245,14 +260,14 @@ fn devices(view: &SyncView) -> LiveRow {
     } else {
         "Grayjay device sync"
     };
-    let mut row = LiveRow::typed::<DeviceSync>("tube.device-sync", label);
+    let mut sync = LiveRow::typed::<DeviceSync>("tube.device-sync", label);
     if unavailable {
-        return row;
+        return sync;
     }
     for peer in view.peers.iter().filter(|peer| peer.revoked_at.is_none()) {
-        row = row.row(device_row(peer));
+        sync = sync.row(device_row(peer));
     }
-    row
+    sync
 }
 
 fn device_row(peer: &PeerEntry) -> LiveRow {

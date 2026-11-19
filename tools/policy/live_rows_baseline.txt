@@ -51,7 +51,7 @@ row-operation 1 apps/imager/src/setup/desktop_journey.rs
 row-operation 1 apps/imager/src/setup/destination/installer_app/surface.rs
 row-operation 10 apps/imager/src/setup/import_actions.rs
 row-operation 1 apps/monitor/src/app.rs
-row-operation 2 apps/music/src/app/local_files.rs
+row-operation 1 apps/music/src/app/local_files.rs
 row-operation 1 apps/music/src/app/spotify.rs
 row-operation 11 apps/settings/src/panes/accounts.rs
 row-operation 2 apps/settings/src/panes/accounts/calendar_selection.rs
@@ -73,7 +73,6 @@ row-operation 1 apps/settings/src/panes/network/vpn/devices.rs
 row-operation 1 apps/settings/src/panes/personal_apps.rs
 row-operation 4 apps/settings/src/panes/printers.rs
 row-operation 5 apps/settings/src/panes/users.rs
-row-operation 4 apps/tube/src/rows.rs
 untyped-live-row 4 apps/chat/src/effects.rs
 untyped-live-row 1 apps/imager/src/app.rs
 untyped-live-row 5 apps/imager/src/setup/actions.rs
