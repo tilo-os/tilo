@@ -692,21 +692,32 @@ fn target_specs_with(
                 .unwrap_or_default()
                 .iter()
                 .map(|given| {
+                    // A parameter the row offers with its own value as the
+                    // default is asked, not taken: the caller may give
+                    // another, and leaving it out takes the row's value.
+                    let asking = bindings.asks(decl.id);
+                    let asks = |name: &str| asking.contains(&name);
                     // An argument the row binds to null is the argument left
                     // unset, as a declaration's own binding leaves an optional
                     // one: it is taken, not asked, and travels as absent.
                     let mut bound = BoundArguments::new();
+                    let mut defaults: Vec<(&str, serde_json::Value)> = Vec::new();
                     let mut taken: Vec<&str> = Vec::new();
                     for (name, value) in given {
-                        if decl
+                        if !decl
                             .params
                             .iter()
                             .any(|param| param.name.as_ref() == name.as_str())
                         {
-                            taken.push(name.as_str());
-                            if !value.is_null() {
-                                bound.insert(name.clone(), value.clone());
-                            }
+                            continue;
+                        }
+                        if asks(name.as_str()) {
+                            defaults.push((name.as_str(), value.clone()));
+                            continue;
+                        }
+                        taken.push(name.as_str());
+                        if !value.is_null() {
+                            bound.insert(name.clone(), value.clone());
                         }
                     }
                     let mut asked = decl
@@ -715,26 +726,44 @@ fn target_specs_with(
                         .filter(|param| !taken.contains(&param.name.as_ref()))
                         .cloned()
                         .collect::<Vec<_>>();
-                    // The values the row's own state says this parameter
-                    // takes (a display's modes) stand where the
-                    // declaration's do.
                     for param in &mut asked {
+                        if let Some((_, value)) = defaults
+                            .iter()
+                            .find(|(name, _)| *name == param.name.as_ref())
+                            && !value.is_null()
+                        {
+                            *param = param.clone().with_default(value.clone());
+                        }
+                        // The values the row's own state says this parameter
+                        // takes (a display's modes) stand where the
+                        // declaration's do.
                         if let Some(choices) = bindings.chosen(decl.id, param.name.as_ref()) {
                             param.choices = choices.iter().cloned().map(Into::into).collect();
                         }
                     }
                     let asked = params_from(&asked);
-                    let build = encoder(check, operation, decl.id, Bound::OverCaller);
+                    let mode = if asking.is_empty() {
+                        Bound::OverCaller
+                    } else {
+                        Bound::UnderCaller
+                    };
+                    let build = encoder(check, operation, decl.id, mode);
                     let fixed: Vec<(String, serde_json::Value)> =
                         bound.clone().into_iter().collect();
+                    // The row's own values travel in the target too, so an
+                    // argument the caller leaves out takes them.
+                    let mut target = bound.clone();
+                    for (name, value) in &defaults {
+                        target.insert((*name).to_owned(), value.clone());
+                    }
                     let arguments: serde_json::Map<String, serde_json::Value> =
-                        fixed.iter().cloned().collect();
+                        target.clone().into_iter().collect();
                     let mut spec = decl.spec_with(operation, asked, build);
                     if let Some(phrase) = decl.phrase {
                         spec = asking_phrase(spec, phrase(&arguments));
                     }
                     spec.action_type()
-                        .bind(Target::new(bound))
+                        .bind(Target::new(target))
                         .with_bound(fixed)
                 })
                 .collect::<Vec<_>>()

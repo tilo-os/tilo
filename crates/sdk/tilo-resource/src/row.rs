@@ -28,6 +28,9 @@ use crate::Effect;
 #[derive(Clone, Default)]
 pub struct RowBindings {
     arguments: BTreeMap<&'static str, Vec<serde_json::Map<String, serde_json::Value>>>,
+    /// The parameters of each effect a caller may give another value than the
+    /// row's own: offered as asked, with the row's value as their default.
+    defaults: BTreeMap<&'static str, Vec<&'static str>>,
     choices: BTreeMap<(&'static str, &'static str), Vec<String>>,
     specs: Vec<ActionSpec>,
 }
@@ -37,6 +40,7 @@ impl std::fmt::Debug for RowBindings {
         formatter
             .debug_struct("RowBindings")
             .field("arguments", &self.arguments)
+            .field("defaults", &self.defaults)
             .field("choices", &self.choices)
             .field(
                 "specs",
@@ -68,7 +72,7 @@ impl RowBindings {
         self.bind_id(effect.id, arguments)
     }
 
-    /// [`Self::bind`] of an effect known only when it invokes, by the id it
+    /// [`Self::bind_id`] of an effect known only when it invokes, by the id it
     /// answers to: the arguments its declaration takes, named as it names
     /// them. Names the effect does not take are dropped.
     #[must_use]
@@ -83,6 +87,48 @@ impl RowBindings {
                 .map(|(name, value)| (name.into(), value))
                 .collect(),
         );
+        self
+    }
+
+    /// Offer `effect` on the row with `arguments` as the values it would act
+    /// with, still asking the parameters `asking` names: what the row's own
+    /// state knows the effect would act with unless its caller gives another
+    /// (the model agents use now, the protocol this provider speaks). The
+    /// arguments `asking` does not name are bound and not asked.
+    #[must_use]
+    pub fn bind_asking<R, A, I, K>(
+        self,
+        effect: crate::ActionRef<R, A>,
+        arguments: I,
+        asking: &[&'static str],
+    ) -> Self
+    where
+        I: IntoIterator<Item = (K, serde_json::Value)>,
+        K: Into<String>,
+    {
+        self.bind_asking_id(effect.id, arguments, asking)
+    }
+
+    /// [`Self::bind_asking`] of an effect known only when it invokes, by its
+    /// id.
+    #[must_use]
+    pub fn bind_asking_id<I, K>(
+        mut self,
+        effect: &'static str,
+        arguments: I,
+        asking: &[&'static str],
+    ) -> Self
+    where
+        I: IntoIterator<Item = (K, serde_json::Value)>,
+        K: Into<String>,
+    {
+        self = self.bind_id(effect, arguments);
+        let asked = self.defaults.entry(effect).or_default();
+        for name in asking {
+            if !asked.contains(name) {
+                asked.push(name);
+            }
+        }
         self
     }
 
@@ -112,6 +158,14 @@ impl RowBindings {
                 .entry(effect)
                 .or_default()
                 .extend(arguments.iter().cloned());
+        }
+        for (effect, asking) in &other.defaults {
+            let asked = self.defaults.entry(effect).or_default();
+            for name in asking {
+                if !asked.contains(name) {
+                    asked.push(*name);
+                }
+            }
         }
         self.choices.extend(other.choices.clone());
         self.specs.extend(other.specs.iter().cloned());
@@ -158,6 +212,13 @@ impl RowBindings {
             .iter()
             .find(|((id, name), _)| *id == effect && *name == param)
             .map(|(_, values)| values.as_slice())
+    }
+
+    /// The parameters `effect` is offered with the row's value as their
+    /// default, still asked ([`Self::bind_asking`]).
+    #[must_use]
+    pub(crate) fn asks(&self, effect: &str) -> &[&'static str] {
+        self.defaults.get(effect).map_or(&[], Vec::as_slice)
     }
 
     /// The actions of another resource the row offers

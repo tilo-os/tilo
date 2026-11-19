@@ -18,8 +18,8 @@ its app's name) and the type's declared effects (`#[effect(item = …)]`,
 declarations (`ResourceSpec::new` in the framework, `ActionSpec::typed` in
 `tilo-actions`), not from an app.
 
-This refuses, in production Rust under `apps/` and `crates/session/`, every
-occurrence:
+This refuses, in production Rust of every crate but the framework's own
+(`FRAMEWORK` below), every occurrence:
 
 * `untyped-live-row`: `LiveRow::new`, a row that names no declared type;
 * `row-operation`: `.operation(...)` or `.effect(...)` chained onto a
@@ -32,9 +32,9 @@ occurrence:
 * `hand-bound-action`: `ActionSpec::typed`, an action an app bound itself.
 
 There is no baseline: the migration is done, so the old builders are
-framework-internal (`#[doc(hidden)]`) and an app that reaches for one fails
-here rather than silently publishing an untyped row. Test code is not the
-app's publication and is not counted.
+framework-internal (`#[doc(hidden)]`) and an app or an SDK crate that reaches
+for one fails here rather than silently publishing an untyped row. Test code
+is not the app's publication and is not counted.
 """
 
 from __future__ import annotations
@@ -48,7 +48,26 @@ import rust_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 
-SCOPES = ("apps", "crates/session")
+# The framework's own crates build the specs and trees a declaration
+# publishes: the declaration machinery and the toolkit's generated controls,
+# the session and window runtimes, the publisher, and the agent and browser
+# services that place what an app declared. Every other crate — an app, and
+# the SDK crates it builds its surfaces with — declares.
+FRAMEWORK = (
+    "crates/agent/agent-session",
+    "crates/browser/tilo-browser-runtime",
+    "crates/collab/actions",
+    "crates/collab/automation",
+    "crates/collab/collaboration",
+    "crates/dev/tilo-vmd",
+    "crates/lang/tilolang",
+    "crates/platform/tilo-app-window",
+    "crates/platform/tilolang-tilo",
+    "crates/sdk/tilo-app",
+    "crates/sdk/tilo-resource",
+    "crates/sdk/ui-core",
+)
+SCOPES = ("apps", "crates")
 
 RULES = {
     "untyped-live-row": re.compile(r"\bLiveRow::new\s*\("),
@@ -105,7 +124,9 @@ def sources(root: Path) -> list[Path]:
             if ("target" in relative.parts or "src" not in relative.parts
                     or any(part.startswith(".") for part in relative.parts)
                     or rust_source.is_test_file(relative)
-                    or "examples" in relative.parts):
+                    or "examples" in relative.parts
+                    or any(relative.as_posix().startswith(f"{crate}/")
+                           for crate in FRAMEWORK)):
                 continue
             found.append(path)
     return sorted(found)
