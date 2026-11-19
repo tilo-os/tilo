@@ -89,7 +89,19 @@ impl DesktopSurface {
                         if let Some(group) = find_group(tree, ids.strip, ids.group) {
                             group.activate_tab(ids.tab);
                         }
+                        // Another window of the strip maximized would hide the one focused: it
+                        // stands beside it again.
+                        let covering = restore_covering(tree, ids.strip, ids.group);
+                        let restored = !covering.is_empty();
+                        ops.extend(
+                            covering
+                                .into_iter()
+                                .map(|group| RowOp::ToggleMaximized(ids.strip, group)),
+                        );
                         ops.push(RowOp::Show(ids.strip, ids.group, ids.tab));
+                        if restored {
+                            ops.push(RowOp::Reveal(ids.strip, ids.group));
+                        }
                     }
                     Admitted::Width(ids, permille) if live(&shared.tree, ids) => {
                         if let Some(group) = find_group(&mut shared.tree, ids.strip, ids.group) {
@@ -395,4 +407,30 @@ impl DesktopSurface {
         // had before, which peers and the next session read as the shell's.
         self.harvest();
     }
+}
+
+/// Restore every window of the strip `strip` maximized over the group `shown`, so `shown` stands
+/// in view; the groups restored.
+fn restore_covering(
+    tree: &mut Layout,
+    strip: tilo_desktop_model::StripId,
+    shown: tilo_desktop_model::GroupId,
+) -> Vec<tilo_desktop_model::GroupId> {
+    let Some(strip) = tree
+        .workspaces
+        .iter_mut()
+        .flat_map(|workspace| workspace.strips.iter_mut())
+        .find(|held| held.id == strip)
+    else {
+        return Vec::new();
+    };
+    strip
+        .window_groups
+        .iter_mut()
+        .filter(|group| group.maximized && group.id != shown)
+        .map(|group| {
+            group.maximized = false;
+            group.id
+        })
+        .collect()
 }

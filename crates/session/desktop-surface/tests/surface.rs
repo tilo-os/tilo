@@ -2577,6 +2577,48 @@ fn a_window_restored_from_maximized_is_in_view() {
     );
 }
 
+/// Focusing a window another one maximized over it hides, as opening what a notice is about does,
+/// restores the maximized one and brings the focused window into view.
+#[test]
+fn focusing_a_window_under_a_maximized_one_restores_it() {
+    let (mut driver, handle) = mount_wide();
+    let entries = handle.snapshot("g", vec![]).entries;
+    let (shown, covering) = (entries[0].route.clone(), entries[1].route.clone());
+    dispatch(
+        &mut driver,
+        &handle,
+        verb(
+            "maximize",
+            serde_json::json!({"group":covering.group,"on":true}),
+        ),
+    );
+    settle_still(&mut driver);
+    dispatch(
+        &mut driver,
+        &handle,
+        verb("focus", serde_json::json!({"tab":shown.tab})),
+    );
+    settle_still(&mut driver);
+    let maximized = handle.read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .any(|group| group.maximized)
+    });
+    assert!(!maximized, "no window stays maximized over the focused one");
+    let rect = handle
+        .shown_tabs()
+        .into_iter()
+        .find(|(tab, _)| tab.to_string() == shown.tab)
+        .map(|(_, rect)| rect)
+        .expect("the focused window is shown");
+    assert!(
+        rect.x0 >= -0.5 && rect.x1 <= 1200.5,
+        "the focused window is in view: {rect:?}"
+    );
+}
+
 /// One member's shell in a workspace whose layout is personal: a tree of its own (its own ids, its
 /// own strip) showing a Notes and a Chat window, on a screen `width` wide.
 fn personal_shell(seed: u16, width: u32) -> (ui::headless::FrameHarness, DesktopHandle) {
