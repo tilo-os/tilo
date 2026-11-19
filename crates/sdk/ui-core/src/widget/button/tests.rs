@@ -608,6 +608,27 @@ tilo_test_env::scenario! {
 
 #[test]
 fn disabled_faces_are_neutral_and_reject_input() {
+    /// The edge of a disabled face is drawn under the same group alpha as its face, so the
+    /// button reads as itself, disabled, not as an outlined button of another style.
+    fn a_disabled_face_dims_its_edge_with_it() {
+        use vello_encoding::DrawTag;
+        let mut tr = TextRenderer::new();
+        let theme = Theme::light();
+        let mut scene = Scene::new();
+        Button::paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &ButtonFace::new(Rect::new(10.0, 10.0, 110.0, 46.0), "Archived").disabled(true),
+        );
+        let tags = &scene.encoding().draw_tags;
+        assert!(
+            tags.last() == Some(&DrawTag::END_CLIP),
+            "the dimming layer closes over everything the face draws"
+        );
+    }
+
     fn disabled_faces_are_neutral_bordered_and_readable_in_every_theme() {
         use crate::a11y::contrast_ratio;
 
@@ -762,6 +783,7 @@ fn disabled_faces_are_neutral_and_reject_input() {
     }
 
     disabled_faces_are_neutral_bordered_and_readable_in_every_theme();
+    a_disabled_face_dims_its_edge_with_it();
     disabled_button_visual_audit();
     with_enabled_false_is_reported_by_is_enabled();
     disabled_button_rejects_input();
