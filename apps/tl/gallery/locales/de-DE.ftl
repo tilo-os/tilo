@@ -94,7 +94,7 @@ d-ii4dp5pl = Anzahl
 d-xnmw2f5g-filter-count = Anzahl
 
 d-4cntcc2v = Änderung
-    .doc = Eine Änderung des Dokuments: wer sie gemacht hat, wann und was sie getan hat.
+    .doc = Eine Änderung des Dokuments: was sie getan hat.
     .noun = { $count ->
         [one] Änderung
        *[other] Änderungen
@@ -102,13 +102,7 @@ d-4cntcc2v = Änderung
 
 d-dmejdwow = Titel
 
-d-twgxunl5 = Wer
-
 d-kbnmru3y = Zusammenfassung
-
-d-e4daczuq = Um
-
-d-4cntcc2v-filter-at = Um
 
 d-36wloal6 = Foto
     .doc = Ein Foto der Bibliothek: was es zeigt, wo, und sein Bild, in seiner Adresse getragen.
@@ -641,6 +635,11 @@ d-avk7hywt = Bild notiert
 d-yy2pow4p-last = Letzte
 
 d-yy2pow4p-x = X
+
+d-vifo6twu = Änderung notieren
+    .doc = Notiert eine Änderung des Dokuments, gemacht von dem, der darum bittet.
+
+d-vifo6twu-summary = Zusammenfassung
 
 d-o4oyc5hc-last = Letzte
 
