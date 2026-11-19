@@ -10,7 +10,7 @@
 //! the workspace for. Opening a file hands that content to the app the file's
 //! bytes say opens it, as a window on a computer does.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
@@ -88,29 +88,18 @@ struct Asked {
     name: String,
 }
 
-/// What a press in the window's rows asks of the window, taken on its next refresh.
-enum Ask {
-    /// Make a folder by this name in the open folder.
-    MakeFolder(String),
-    /// Let the new folder be.
-    StopNaming,
-}
-
-/// The asks the rows made since the window last took them.
+/// Whether the row a new folder is named in asked the window to let it be,
+/// taken on the window's next refresh.
 #[derive(Clone, Default)]
-struct Asks(Rc<RefCell<Vec<Ask>>>);
+struct StopNaming(Rc<Cell<bool>>);
 
-impl Asks {
-    fn make_folder(&self, name: &str) {
-        self.0.borrow_mut().push(Ask::MakeFolder(name.to_owned()));
+impl StopNaming {
+    fn ask(&self) {
+        self.0.set(true);
     }
 
-    fn stop_naming(&self) {
-        self.0.borrow_mut().push(Ask::StopNaming);
-    }
-
-    fn take(&self) -> Vec<Ask> {
-        std::mem::take(&mut *self.0.borrow_mut())
+    fn take(&self) -> bool {
+        self.0.replace(false)
     }
 }
 
@@ -444,8 +433,8 @@ pub struct TreeBrowser {
     notice: Option<Notice>,
     /// The window's bar: where it is, and New folder and Upload.
     bar: WindowBar<FilesWindow>,
-    /// What the rows asked of the window.
-    asks: Asks,
+    /// Whether the row a new folder is named in asked the window to let it be.
+    stops: StopNaming,
     /// What the workspace calls the people its nodes name.
     people: People,
     /// The window's own document, which the open folder is set in.
@@ -495,7 +484,7 @@ impl TreeBrowser {
             naming: None,
             notice: None,
             bar: cx.toolbar(),
-            asks: Asks::default(),
+            stops: StopNaming::default(),
             people,
             dispatch: cx.dispatcher(),
             read,
@@ -528,13 +517,8 @@ impl TreeBrowser {
     /// names moved; open what the person asked for once its bytes are here.
     fn refresh(&mut self) -> bool {
         self.open_what_arrived();
-        for ask in self.asks.take() {
-            match ask {
-                Ask::MakeFolder(name) => self
-                    .dispatch
-                    .effect(&FilesWindowEffect::NewFolder { name: Some(name) }),
-                Ask::StopNaming => self.naming = None,
-            }
+        if self.stops.take() {
+            self.naming = None;
         }
         // The tree is opened once the workspace delivered it: a window opened before that
         // waits for it rather than showing an empty folder.
@@ -827,19 +811,27 @@ impl TreeBrowser {
     /// The row a new folder is named in: its name, chosen and ready to type over, and the
     /// buttons that make it or let it be.
     fn naming_row(&self, name: &ui::LocalState<String>) -> Box<dyn ui::widget::Widget> {
-        let window = self.asks.clone();
-        let submitted = window.clone();
+        let dispatch = self.dispatch.clone();
+        let submitted = dispatch.clone();
         let mut field = TextInput::from_state(name)
             .with_id("files-tree-new-folder-name")
-            .on_submit(move |typed| submitted.make_folder(typed));
+            .on_submit_view(move |typed| {
+                submitted.effect(&FilesWindowEffect::NewFolder {
+                    name: Some(typed.to_owned()),
+                });
+            });
         field.request_focus();
         field.select_all();
-        let made = window.clone();
         let typed = name.clone();
         let create = Button::new("files-tree-new-folder-create", &t("files-tree-create"))
-            .on_click(move || made.make_folder(&typed.get()));
+            .on_effect(move || {
+                dispatch.effect(&FilesWindowEffect::NewFolder {
+                    name: Some(typed.get()),
+                });
+            });
+        let stops = self.stops.clone();
         let cancel = Button::new("files-tree-new-folder-cancel", &t("files-tree-cancel"))
-            .on_click(move || window.stop_naming());
+            .on_view(move || stops.ask());
         Box::new(
             Row::new()
                 .with_id("files-tree-new-folder")
