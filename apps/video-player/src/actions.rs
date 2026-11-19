@@ -4,7 +4,7 @@
 use ui::framework::LiveRow;
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource;
-use ui::tilo_resource::Effect;
+use ui::tilo_resource::{Effect, RowBindings};
 
 /// The player's effect `id`, while the kind is the one its vocabulary publishes under.
 pub fn reference(id: &'static str) -> tilo_resource::ActionRef<VideoEffect, ()> {
@@ -87,14 +87,14 @@ pub enum VideoEffect {
     /// Play this video.
     #[effect(row, job, kind = "read", on = QueueItem, on = HistoryItem)]
     PlayQueued {
-        #[param("The queue or recent video's row")]
+        #[param("The queue or recent video's item id")]
         item: String,
     },
     /// Remove from queue.
     #[effect(row, kind = "read", on = QueueItem)]
     #[effect(label = "video-remove-from-queue")]
     RemoveQueued {
-        #[param("The queued video's row")]
+        #[param("The queued video's item id")]
         item: String,
     },
     /// Clear recent videos.
@@ -296,13 +296,19 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
     if let Some(title) = rows.title {
         let mut media = LiveRow::typed::<OpenVideo>("video-player.media.current", title);
         if rows.source_id.is_some() {
-            let tracks = LiveRow::typed::<Tracks>(
-                TRACKS_ID,
+            // Turning subtitles off is offered while one is on.
+            let mut bindings = RowBindings::new();
+            if rows.subtitle_tracks.iter().any(|track| track.selected) {
+                bindings = bindings.offer(VideoEffect::SUBTITLES_OFF);
+            }
+            let tracks = LiveRow::typed_with::<Tracks>(
+                "video-player.tracks.current",
                 format!(
                     "{} audio tracks and {} subtitle tracks",
                     rows.audio_tracks.len(),
                     rows.subtitle_tracks.len()
                 ),
+                &bindings,
             );
             let tracks = audio_rows(rows)
                 .take(limit)
@@ -323,7 +329,7 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
     // here would be a private disclosure that keeps removing a queued video and clearing
     // the recents from agents.
     let queue = LiveRow::typed::<LocalQueue>(
-        QUEUE_ID,
+        "video-player.queue.local",
         format!(
             "{} session queue item{}",
             rows.queue.len(),
@@ -331,20 +337,19 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
         ),
     );
     published.push(queue_rows(rows).take(limit).fold(queue, LiveRow::row));
-    let recent = LiveRow::typed::<LocalHistory>(
-        HISTORY_ID,
+    // Clearing the recents is offered while there are any.
+    let mut bindings = RowBindings::new();
+    if !rows.recent.is_empty() {
+        bindings = bindings.offer(VideoEffect::CLEAR_RECENT);
+    }
+    let recent = LiveRow::typed_with::<LocalHistory>(
+        "video-player.history.local",
         format!("{} recent videos on this device", rows.recent.len()),
+        &bindings,
     );
     published.push(recent_rows(rows).take(limit).fold(recent, LiveRow::row));
     published
 }
-
-/// The row of the open video's tracks.
-pub(crate) const TRACKS_ID: &str = "video-player.tracks.current";
-/// The row of this device's queue.
-pub(crate) const QUEUE_ID: &str = "video-player.queue.local";
-/// The row of this device's recently played videos.
-pub(crate) const HISTORY_ID: &str = "video-player.history.local";
 
 /// The live row `id`: a collection, or a row the bounded tree leaves out.
 pub(crate) fn live_row(rows: &PlayerRows<'_>, id: &str) -> Option<LiveRow> {
@@ -403,6 +408,14 @@ fn chapter_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> +
         })
 }
 
+/// The entry `item` names, as the effects offered on its row act on it.
+fn entry_bindings(id: &str) -> RowBindings {
+    let item = serde_json::Value::from(id.to_owned());
+    RowBindings::new()
+        .bind(VideoEffect::PLAY_QUEUED, [("item", item.clone())])
+        .bind(VideoEffect::REMOVE_QUEUED, [("item", item)])
+}
+
 fn queue_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> + 'a {
     rows.queue.iter().map(|item| {
         let suffix = match (item.current, rows.playing) {
@@ -410,15 +423,23 @@ fn queue_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> + '
             (true, false) => " is paused",
             (false, _) => "",
         };
-        LiveRow::typed::<QueueItem>(
+        LiveRow::typed_with::<QueueItem>(
             queue_item_resource_id(&item.id),
             format!("{}{suffix}", item.title),
+            &entry_bindings(&item.id),
         )
     })
 }
 
 fn recent_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> + 'a {
     rows.recent.iter().map(|item| {
-        LiveRow::typed::<HistoryItem>(recent_item_resource_id(&item.id), item.title.clone())
+        let item_arguments = serde_json::Value::from(item.id.clone());
+        let bindings =
+            RowBindings::new().bind(VideoEffect::PLAY_QUEUED, [("item", item_arguments)]);
+        LiveRow::typed_with::<HistoryItem>(
+            recent_item_resource_id(&item.id),
+            item.title.clone(),
+            &bindings,
+        )
     })
 }

@@ -842,21 +842,6 @@ impl PlayerState {
         id
     }
 
-    /// The queue or recent entry the published row `row` names. A row keeps the
-    /// source's identity out of its id, so the effect it offers names its row,
-    /// and the entry is resolved here.
-    fn local_entry_id(&self, row: &str) -> Result<String, String> {
-        self.queue
-            .iter()
-            .chain(self.recent.iter())
-            .find(|entry| {
-                crate::actions::queue_item_resource_id(&entry.id) == row
-                    || crate::actions::recent_item_resource_id(&entry.id) == row
-            })
-            .map(|entry| entry.id.clone())
-            .ok_or_else(|| "that local queue item is no longer available".to_string())
-    }
-
     fn open_local_entry(&mut self, item_id: &str) -> Result<(), String> {
         let entry = self
             .queue
