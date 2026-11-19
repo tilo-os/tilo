@@ -254,16 +254,19 @@ impl CollabClient {
     /// [`runtime_portal::DescriptorStreamSource`] handed it: on a host
     /// without descriptors the descriptor stream is empty and the client stays as it was.
     #[must_use]
-    pub fn with_optional_descriptors(mut self, sender: runtime_portal::Descriptors) -> Self {
+    pub fn with_optional_descriptors(self, sender: runtime_portal::Descriptors) -> Self {
         #[cfg(unix)]
         {
-            self.descriptors = sender;
+            Self {
+                descriptors: sender,
+                ..self
+            }
         }
         #[cfg(not(unix))]
         {
             let _ = sender;
+            self
         }
-        self
     }
 
     /// Resolves once the connection has ended.
@@ -348,12 +351,18 @@ impl CollabClient {
     /// The channel `handle` this connection holds.
     #[must_use]
     pub fn channel(&self, handle: Handle) -> ChannelHandle {
+        // Descriptors travel over the one connection, which each of its handles shares; a
+        // page without descriptor streams has nothing to share, the empty value being `Copy`.
+        #[cfg(unix)]
+        let descriptors = self.descriptors.clone();
+        #[cfg(not(unix))]
+        let descriptors = self.descriptors;
         ChannelHandle {
             channel: Arc::new(Channel {
                 client: self.client.clone(),
                 handle,
             }),
-            descriptors: self.descriptors.clone(),
+            descriptors,
         }
     }
 
