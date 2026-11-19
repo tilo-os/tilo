@@ -755,27 +755,6 @@ impl ResourceSemanticIdentity {
 
 pub use crate::noun::{Noun, ResourceType, action_label, app_label, in_words, plural, singular};
 
-/// Whether `kind` names a control the window already draws, or an
-/// operation of the host it runs on: nodes published so a caller can
-/// address them, never something a person looks for in a list.
-#[must_use]
-pub fn kind_mirrors_a_control(kind: &str) -> bool {
-    kind == "tilo.control"
-        || kind == "tl.host"
-        || ["tilo.control.", "tilo.ui.", "tilo.host."]
-            .iter()
-            .any(|prefix| kind.starts_with(prefix))
-}
-
-/// Whether a resource of `kind` titled `label` is something a person looks
-/// for: titled, and the app's own rather than a mirror of one of its
-/// controls or an operation of the host it runs on. Those are published to
-/// be addressed, never listed.
-#[must_use]
-pub fn listed_for_people(kind: &str, label: &str) -> bool {
-    !label.trim().is_empty() && !kind_mirrors_a_control(kind)
-}
-
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](ResourceSpec::children).
 pub struct ResourceSpec {
@@ -2990,3 +2969,7 @@ mod effective_invocation_tests;
 #[cfg(test)]
 #[path = "resource/deferred_tests.rs"]
 mod deferred_tests;
+
+#[path = "resource/listed_kinds.rs"]
+mod listed_kinds;
+pub use listed_kinds::{kind_is_a_drawn_control, kind_mirrors_a_control, listed_for_people};

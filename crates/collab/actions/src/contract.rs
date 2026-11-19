@@ -61,11 +61,37 @@ impl Availability {
          this here; the person you work for can change what you may do under Workspace \
          settings → Agents";
 
-    /// The reason an action is listed as [`Self::not_allowed`], when it is.
+    /// The code of an action only the person at its device invokes
+    /// ([`Self::shown_here`]).
+    pub const PRIVATE_VIEW: &'static str = "private_view";
+
+    /// An action that only changes what the person at its device sees (a
+    /// form it opens, a place it shows), as it is listed to an agent: told
+    /// it is that person's alone, rather than left to read its absence as
+    /// the app having no such action.
     #[must_use]
-    pub fn refusal(&self) -> Option<&str> {
+    pub fn shown_here() -> Self {
+        Self::Unavailable {
+            code: Self::PRIVATE_VIEW.to_owned(),
+            reason: Self::SHOWN_HERE.to_owned(),
+        }
+    }
+
+    /// Why an action [`Self::shown_here`] is refused to anyone but the
+    /// person at its device.
+    pub const SHOWN_HERE: &'static str =
+        "only changes what the person at this device sees; only they invoke it";
+
+    /// The code and reason of an action listed to an agent as refused
+    /// ([`Self::not_allowed`], [`Self::shown_here`]), when it is.
+    #[must_use]
+    pub fn refusal(&self) -> Option<(&str, &str)> {
         match self {
-            Self::Unavailable { code, reason } if code == Self::NOT_ALLOWED => Some(reason),
+            Self::Unavailable { code, reason }
+                if code == Self::NOT_ALLOWED || code == Self::PRIVATE_VIEW =>
+            {
+                Some((code, reason))
+            }
             Self::Available | Self::Unavailable { .. } => None,
         }
     }
