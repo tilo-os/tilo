@@ -321,12 +321,12 @@ pub struct WorkspaceAgents {
 }
 
 impl WorkspaceAgents {
-    /// What search finds in the workspace's agents: each by the name people know it by,
-    /// opening it at its item of the record.
+    /// What search finds in the workspace's agents: each working agent by the name people know
+    /// it by, opening it in its app. A retired agent keeps its name for the conversations it
+    /// had, but is not offered: work goes to the agent that works.
     #[must_use]
     pub fn search(&self) -> Vec<SearchEntry> {
-        self.agents
-            .iter()
+        self.active()
             .filter_map(|agent| {
                 let name = agent.name.trim();
                 (!name.is_empty()).then(|| {

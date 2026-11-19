@@ -294,6 +294,28 @@ fn retiring_keeps_the_agent_and_happens_once() {
     assert!(refused.to_string().contains("already"), "{refused}");
 }
 
+#[test]
+fn search_offers_the_working_agent_not_the_retired_copy_of_its_name() {
+    let mut agents = as_person(ADA);
+    agents.apply(make("Video agent")).unwrap();
+    let stale = agents.state().unwrap().agents[0].id.0.clone();
+    agents.apply(retire(&stale)).unwrap();
+    agents.apply(make("Video agent")).unwrap();
+    let held = agents.state().unwrap();
+    assert_eq!(held.agents.len(), 2, "both copies stay");
+    let found: Vec<_> = held.search();
+    assert_eq!(found.len(), 1, "one working agent of that name is offered");
+    let anchor = tilo_resource::items::item_resource_id::<WorkspaceAgents>(
+        "agents",
+        &Id::from_raw(held.active().next().unwrap().id.0.clone()),
+    );
+    assert_eq!(
+        found[0].anchor.as_deref(),
+        Some(anchor.as_str()),
+        "the one that works"
+    );
+}
+
 /// What an agent may do is bounded, and an agent is retired, by its keeper in person: by no
 /// other member, and by no agent, the agent itself and its keeper's other agents included.
 #[test]

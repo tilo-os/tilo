@@ -187,12 +187,22 @@ impl Agents {
             };
             spend.retain(|(held, _), _| held != workspace);
             let mut named = Vec::new();
-            for agent in state.active() {
+            // Every agent the workspace's list names, retired ones too: a retired agent takes
+            // no work, but what it said before it retired is still read by its name.
+            for agent in state
+                .agents
+                .iter()
+                .filter(|agent| !agent.name.trim().is_empty())
+            {
                 every.push(Listed {
                     workspace: workspace.clone(),
                     id: agent.id.0.clone(),
                     name: agent.name.clone(),
+                    retired: !agent.is_active(),
                 });
+                if !agent.is_active() {
+                    continue;
+                }
                 named.push(tilo_broker_core::services::ListedAgent {
                     id: agent.id.0.clone(),
                     name: agent.name.clone(),

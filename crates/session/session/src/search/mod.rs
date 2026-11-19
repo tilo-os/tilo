@@ -551,7 +551,8 @@ impl SessionSearch {
         self.moved_recipients();
     }
 
-    /// What the workspaces' lists of agents call the agent `id`.
+    /// What the workspaces' lists of agents call the agent `id`, whether it works or was retired:
+    /// a conversation or a mention names it by the name its workspace knows.
     pub(crate) fn agent_name(&self, id: &str) -> Option<String> {
         self.listed_agents
             .borrow()
@@ -1085,7 +1086,7 @@ impl SessionSearch {
             .chain(
                 listed
                     .iter()
-                    .filter(|agent| agent.workspace == workspace)
+                    .filter(|agent| agent.workspace == workspace && !agent.retired)
                     .map(|agent| (true, agent.id.as_str(), agent.name.as_str())),
             )
             .map(|(agent, id, name)| {
@@ -2788,6 +2789,7 @@ mod tests {
             workspace,
             id: id.clone(),
             name: name.clone(),
+            retired: false,
         }]);
         let here = |id: &str, name: &str, agent| PersonHere {
             id: id.to_owned(),
@@ -2836,12 +2838,61 @@ mod tests {
             "nobody is offered to themselves"
         );
     }
+
+    /// A retired agent takes no new work, so no box offers it; what it said before it retired is
+    /// still named by the workspace's list, never by its id.
+    #[test]
+    fn a_retired_agent_is_named_but_not_offered() {
+        use ui::floating_surface::RecipientKind::Agent;
+        let ws = "garden".to_owned();
+        let search = SessionSearch::new(
+            SearchOptions::default(),
+            None,
+            &"ad".repeat(32),
+            None,
+            None,
+            None,
+        );
+        search.set_listed_agents(&[
+            ListedAgent {
+                workspace: ws.clone(),
+                id: "video-agent".to_owned(),
+                name: "Video agent".to_owned(),
+                retired: false,
+            },
+            ListedAgent {
+                workspace: ws.clone(),
+                id: "old-video".to_owned(),
+                name: "Old video".to_owned(),
+                retired: true,
+            },
+        ]);
+        assert_eq!(
+            search.agent_name("old-video").as_deref(),
+            Some("Old video"),
+            "a message it wrote is still under its name"
+        );
+        let offered: Vec<_> = search
+            .recipients(&ws)
+            .into_iter()
+            .filter(|recipient| recipient.kind == Agent)
+            .map(|recipient| recipient.id)
+            .collect();
+        assert_eq!(
+            offered,
+            ["video-agent"],
+            "only the working agent takes work"
+        );
+    }
 }
 
-/// An agent a workspace's record lists, as a box that sends a message addresses it.
+/// An agent a workspace's list names, as a box that sends a message addresses it and as the
+/// surfaces name it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ListedAgent {
     pub workspace: String,
     pub id: String,
     pub name: String,
+    /// It was retired: it takes no new work, and what it said before stays named by it.
+    pub retired: bool,
 }
