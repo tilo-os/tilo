@@ -51,7 +51,6 @@ row-operation 16 apps/music/src/actions.rs
 row-operation 12 apps/music/src/app.rs
 row-operation 2 apps/pdf-viewer/src/actions.rs
 row-operation 3 apps/remote/src/actions.rs
-row-operation 1 crates/session/activities/src/surface.rs
 row-operation 1 crates/session/notification-banners/src/surface.rs
 untyped-live-row 4 apps/chat/src/effects.rs
 untyped-live-row 1 apps/contacts/src/account_editor.rs
@@ -68,5 +67,4 @@ untyped-live-row 9 apps/music/src/actions.rs
 untyped-live-row 2 apps/music/src/app.rs
 untyped-live-row 3 apps/pdf-viewer/src/actions.rs
 untyped-live-row 2 apps/remote/src/actions.rs
-untyped-live-row 1 crates/session/activities/src/surface.rs
 untyped-live-row 1 crates/session/notification-banners/src/surface.rs
