@@ -70,6 +70,19 @@ impl PeerGovernance<'_> {
     pub fn held_heads(self) -> GovernanceHeads {
         GovernanceHeads(self.peer.core.workspace_doc.clone())
     }
+
+    /// The name the workspace keeps beside each device row and each person's root, as a test
+    /// reads who a device was admitted under.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn kept_names(self) -> std::collections::BTreeMap<String, String> {
+        self.peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .map(|doc| doc.policy().names.clone())
+            .unwrap_or_default()
+    }
     /// [`Self::access_of`] `devices` at `now`, with the governance it was read
     /// from ([`Self::held_heads`]).
     ///

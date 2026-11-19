@@ -194,11 +194,19 @@ pub(crate) fn admit_invited_member(
             automerge::ScalarValue::Bytes(identity.encode().map_err(|error| error.to_string())?),
         )
         .map_err(|error| error.to_string())?;
+    // The person a workspace already names keeps that name as a further device of theirs
+    // arrives: the label on the arriving device names the device, and the agent running in it, not
+    // its person.
+    let known = name
+        .map(str::to_owned)
+        .or_else(|| known_person_name(held, cert.user_public_key));
     candidate
         .put(
             &names,
             &id,
-            name.unwrap_or_else(|| member_display_name(&grant)),
+            known
+                .as_deref()
+                .unwrap_or_else(|| member_display_name(&grant)),
         )
         .map_err(|error| error.to_string())?;
     // The name the person gave as they joined is theirs on each of their
@@ -239,6 +247,45 @@ pub(crate) fn admit_invited_member(
 /// ([`tilo_user_identity::display_name`]): self-asserted text, never authority.
 fn bounded_display_name(value: &str) -> Option<&str> {
     tilo_user_identity::display_name(value).ok()
+}
+
+/// The name the workspace already knows `person` by: kept under their root, else the one their
+/// oldest admitted device that is theirs says — the same rule the member list names a person by
+/// ([`crate::state::governance::Naming`]). `None` for a person it has not named yet.
+fn known_person_name(
+    held: &crate::cached_document::CachedDocument,
+    person: [u8; 32],
+) -> Option<String> {
+    let policy = held.policy();
+    if let Some(name) = policy
+        .names
+        .get(&hex::encode(person))
+        .and_then(|name| tilo_user_identity::device_name(name))
+    {
+        return Some(name.to_owned());
+    }
+    held.identities()
+        .iter()
+        .filter_map(|(id, identity)| {
+            let identity = identity.as_ref().ok()?;
+            let cert = &identity.device_cert;
+            // A name of their own: not a delegate's name (an agent's or a bot's), and not the
+            // stand-in a device nobody named carries.
+            if cert.user_public_key != person
+                || identity.delegate.is_some()
+                || cert.capabilities.agent.is_some()
+                || cert.capabilities.stand_in
+            {
+                return None;
+            }
+            let name = policy
+                .names
+                .get(id)
+                .and_then(|name| tilo_user_identity::device_name(name))?;
+            Some((cert.issued_at_ns, cert.device_public_key, name.to_owned()))
+        })
+        .min()
+        .map(|(_, _, name)| name)
 }
 
 /// The name other members see when the person gave none as they joined: the one the issuer
@@ -397,6 +444,97 @@ mod display_name_tests {
                 .expect("admitted guest is a governed member");
             assert_eq!(member.name, "Guest Tester", "the invitation's name, never the device label");
             assert_eq!(member.role, Some(Role::Editor));
+        }
+
+        phase a_further_device_is_admitted_under_the_name_its_person_has;
+        // A computer signed in as someone's agent carries a label naming the agent and the
+        // computer ("Your agent on build-box"), never the person. Admitted as another device of
+        // theirs, it is named by what the workspace already calls them.
+        {
+            let (mut peer, authority_key, _, _, now) = crate::admission_tests::seeded();
+            let now_ns: u64 = now
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                .try_into()
+                .unwrap();
+            let guest_root = SigningKey::from_bytes(&[61; 32]);
+            let guest = |seed: u8, label: &str, issued_at_ns: u64| {
+                let key = SigningKey::from_bytes(&[seed; 32]);
+                let mut cert = DeviceCert {
+                    user_public_key: guest_root.verifying_key().to_bytes(),
+                    device_public_key: key.verifying_key().to_bytes(),
+                    device_label: label.to_owned(),
+                    capabilities: DeviceCapabilities::member(),
+                    issued_at_ns,
+                    expires_at_ns: None,
+                    signature: [0; 64],
+                    issuer: None,
+                };
+                sign_device_cert(&mut cert, &guest_root).unwrap();
+                (key, cert)
+            };
+            let admit = |peer: &mut crate::StatePeer,
+                         (key, cert): &(SigningKey, DeviceCert),
+                         (nonce, request, named): (u8, u8, Option<&str>)| {
+                let signed = issue_invitation(
+                    InviteGrant {
+                        workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
+                        issuer: peer.owner_certificates()[0].clone(),
+                        role: Role::Editor,
+                        nonce: [nonce; 16],
+                        recipient_user_public_key: None,
+                        invitee_name: named.map(Into::into),
+                        expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
+                        transport: vec![],
+                    },
+                    &authority_key,
+                )
+                .unwrap();
+                let join = crate::join::decode_and_verify_invitation(
+                    &signed,
+                    None,
+                    &RevocationList::new(),
+                    now_ns,
+                )
+                .unwrap();
+                let challenge = JoinChallenge::new(
+                    &join,
+                    cert,
+                    [request; 32],
+                    [request.wrapping_add(1); 32],
+                    now_ns.checked_add(1_000_000_000).unwrap(),
+                    now_ns,
+                )
+                .unwrap();
+                let proof = sign_join_proof(challenge.clone(), key).unwrap();
+                let redemption = verify_join_proof(
+                    &proof,
+                    &challenge,
+                    cert,
+                    &RevocationList::new(),
+                    now_ns,
+                )
+                .unwrap();
+                assert!(
+                    peer.governance_mut()
+                        .admit_invited_member(&redemption, &authority_key, now)
+                        .unwrap()
+                );
+            };
+            let first = guest(62, "Gina Guest", 1);
+            admit(&mut peer, &first, (63, 64, Some("Gina Guest")));
+            // The computer she signs in with names her agent and the computer, not her.
+            let agent_device = guest(65, "Your agent on build-box", 2);
+            admit(&mut peer, &agent_device, (66, 67, None));
+            let kept = peer.governance().kept_names();
+            let row = kept
+                .get(&hex::encode(agent_device.1.device_public_key))
+                .expect("the admitted device has a row");
+            assert_eq!(
+                row, "Gina Guest",
+                "a further device of a named person is admitted under their name"
+            );
         }
     }
 }

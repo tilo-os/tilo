@@ -1403,7 +1403,10 @@ impl Workspaces {
             request_id,
             proof_digest,
             redemption: &redemption,
-            name: Some(name),
+            // A device that names no person arrives as it is: the name the workspace already
+            // knows the person by stands, and one it does not know yet stays unnamed rather than
+            // taking a device's label for a person's name.
+            name: (!name.trim().is_empty()).then_some(name),
         };
         self.admit_redemptions(&mut workspace, &[join], now)
             .await?

@@ -149,10 +149,10 @@ impl Device {
         let entering = entry.and_then(Entry::workspace).map(|workspace| {
             tilo_server_protocol::entering::Entering {
                 workspace,
-                name: tilo_server_protocol::web::kept(
-                    &sign_in.agent,
-                    tilo_server_protocol::web::MAX_DISPLAY_NAME_CHARS,
-                ),
+                // Whom this device carries is an agent (`sign_in.agent`), and the name a person
+                // goes by is theirs, kept where they joined. A device never arrives claiming to
+                // be their name: a person this workspace has not named yet is told so honestly.
+                name: String::new(),
                 request_id: rand::random(),
                 through: tilo_server_protocol::entering::Through::Entry,
             }
