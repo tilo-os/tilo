@@ -52,7 +52,6 @@ row-operation 2 apps/chat/src/direct.rs
 row-operation 14 apps/chat/src/effects.rs
 row-operation 1 apps/contacts/src/account_editor.rs
 row-operation 2 apps/contacts/src/actions.rs
-row-operation 6 apps/containers/src/app.rs
 row-operation 2 apps/disks/src/resource.rs
 row-operation 7 apps/git-client/src/actions.rs
 row-operation 2 apps/imager/src/app.rs
@@ -78,7 +77,6 @@ untyped-live-row 1 apps/chat/src/direct.rs
 untyped-live-row 5 apps/chat/src/effects.rs
 untyped-live-row 1 apps/contacts/src/account_editor.rs
 untyped-live-row 1 apps/contacts/src/actions.rs
-untyped-live-row 6 apps/containers/src/app.rs
 untyped-live-row 1 apps/db-client/src/app.rs
 untyped-live-row 2 apps/disk-usage/src/resource.rs
 untyped-live-row 2 apps/disks/src/resource.rs

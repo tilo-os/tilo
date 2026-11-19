@@ -14,12 +14,12 @@ use automerge::AutoCommit;
 use automerge::ObjId;
 use taffy::prelude::*;
 use ui::a11y::{AccessNode, Role};
-use ui::framework::{Dispatcher, Effected, Live, LiveRow, Publishes, RunMode, ViewCx};
+use ui::framework::{
+    Dispatcher, EffectStatus, Effected, Live, LiveRow, Publishes, RunMode, ViewCx,
+};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::ActionSpec;
-use ui::tilo_resource::Effect as _;
 use ui::time::{Duration, Instant};
 use ui::tokens::TextRole;
 use ui::widget::DrawChild;
@@ -740,11 +740,19 @@ pub(crate) fn window(cx: &ViewCx<Containers>, mut window: ContainersApp) -> Elem
         let state = Rc::clone(&state);
         cx.on_stage(move |scenario| state.borrow_mut().stage_scene(scenario));
     }
-    let (rows, row, entries) = (Rc::clone(&state), Rc::clone(&state), state);
+    let (rows, row, entries, statuses) = (
+        Rc::clone(&state),
+        Rc::clone(&state),
+        Rc::clone(&state),
+        state,
+    );
     cx.publishing(
         Publishes::new()
             .live_rows(move || rows.borrow().engine_rows())
             .live_row(move |id| row.borrow().engine_row(id))
+            // A row offers the verbs its state takes, and reaches the engine only while
+            // it answers.
+            .row_status(move |id| statuses.borrow().row_status(id))
             // Containers with their recent logs, images, volumes and distroboxes: what the
             // engine holds, not the document.
             .search_entries(move || crate::search::engine_entries(&entries.borrow().engine)),
@@ -888,55 +896,39 @@ impl ContainersState {
     }
 
     pub(crate) fn engine_rows(&self) -> Vec<LiveRow> {
-        let live = self.engine.live;
         let mut rows: Vec<LiveRow> = self
             .engine
             .containers
             .iter()
-            .map(|container| container_row(container, live))
-            .chain(
-                self.engine
-                    .images
-                    .iter()
-                    .map(|image| image_row(image, live)),
-            )
-            .chain(
-                self.engine
-                    .volumes
-                    .iter()
-                    .map(|volume| volume_row(volume, live)),
-            )
+            .map(crate::rows::container_row)
+            .chain(self.engine.images.iter().map(crate::rows::image_row))
+            .chain(self.engine.volumes.iter().map(crate::rows::volume_row))
             .chain(
                 self.engine
                     .distroboxes
                     .iter()
-                    .map(|distrobox| distrobox_row(distrobox, live)),
+                    .map(crate::rows::distrobox_row),
             )
             .take(RESOURCE_SNAPSHOT_LIMIT)
             .collect();
         if let Some(pull) = &self.pull {
-            rows.push(LiveRow::new(
-                "containers.pull-job",
-                "containers.job",
-                format!("Pulling {}", pull.reference),
-            ));
+            rows.push(crate::rows::pull_row(&pull.reference));
         }
         rows
     }
 
     pub(crate) fn engine_row(&self, id: &str) -> Option<LiveRow> {
-        let live = self.engine.live;
         if let Some(container_id) = id
             .strip_prefix("container:")
             .and_then(|rest| rest.strip_suffix(":logs"))
         {
-            return self.engine.find(container_id).map(logs_row);
+            return self.engine.find(container_id).map(crate::rows::logs_row);
         }
         if let Some(container_id) = id.strip_prefix("container:") {
             return self
                 .engine
                 .find(container_id)
-                .map(|container| container_row(container, live));
+                .map(crate::rows::container_row);
         }
         if let Some(reference) = id.strip_prefix("image:") {
             return self
@@ -944,7 +936,7 @@ impl ContainersState {
                 .images
                 .iter()
                 .find(|item| item.reference() == reference)
-                .map(|item| image_row(item, live));
+                .map(crate::rows::image_row);
         }
         if let Some(name) = id.strip_prefix("volume:") {
             return self
@@ -952,7 +944,7 @@ impl ContainersState {
                 .volumes
                 .iter()
                 .find(|item| item.name == name)
-                .map(|item| volume_row(item, live));
+                .map(crate::rows::volume_row);
         }
         if let Some(name) = id.strip_prefix("distrobox:") {
             return self
@@ -960,9 +952,69 @@ impl ContainersState {
                 .distroboxes
                 .iter()
                 .find(|item| item.name == name)
-                .map(|item| distrobox_row(item, live));
+                .map(crate::rows::distrobox_row);
         }
         None
+    }
+
+    /// What an engine row offers right now: a container's open says whose row it
+    /// is, the verbs its state takes are the ones offered, and nothing reaches an
+    /// engine that does not answer.
+    pub(crate) fn row_status(&self, id: &str) -> Vec<EffectStatus> {
+        let mut statuses = Vec::new();
+        if !self.engine.live {
+            let reason = if id.starts_with("distrobox:") {
+                crate::resource::CATALOG.t("containers-demo-unavailable")
+            } else {
+                crate::resource::CATALOG.t(ENGINE_OFFLINE)
+            };
+            for effect in [
+                ContainersEffect::START,
+                ContainersEffect::STOP,
+                ContainersEffect::RESTART,
+                ContainersEffect::PAUSE,
+                ContainersEffect::UNPAUSE,
+                ContainersEffect::REMOVE_CONTAINER,
+                ContainersEffect::SHELL,
+                ContainersEffect::REMOVE_IMAGE,
+                ContainersEffect::REMOVE_VOLUME,
+                ContainersEffect::ENTER_DISTROBOX,
+            ] {
+                statuses.push(
+                    EffectStatus::unavailable(effect, "engine_offline", reason.clone()).on(id),
+                );
+            }
+        }
+        let Some(container) = id
+            .strip_prefix("container:")
+            .and_then(|container| self.engine.find(container))
+        else {
+            return statuses;
+        };
+        let status = container.status;
+        let running = status.is_running();
+        let paused = status == crate::model::ContainerStatus::Paused;
+        let reason = match status {
+            crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => {
+                "The container is running; stop it first"
+            }
+            crate::model::ContainerStatus::Paused => "The container is paused; resume it first",
+            _ => "The container is not running; start it first",
+        };
+        for (effect, offered) in [
+            (ContainersEffect::START, !running && !paused),
+            (ContainersEffect::STOP, running || paused),
+            (ContainersEffect::RESTART, running),
+            (ContainersEffect::PAUSE, running),
+            (ContainersEffect::UNPAUSE, paused),
+            (ContainersEffect::REMOVE_CONTAINER, !running),
+            (ContainersEffect::SHELL, running || paused),
+        ] {
+            if !offered {
+                statuses.push(EffectStatus::unavailable(effect, "state", reason).on(id));
+            }
+        }
+        statuses
     }
 
     /// The engine changed: the search index and the shell follow it.
@@ -2046,116 +2098,6 @@ impl ContainersApp {
 const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
 
 const ENGINE_OFFLINE: &str = "containers-engine-offline-message";
-
-/// `effect` as a row offers it: an engine effect only while the engine answers, and
-/// otherwise what it says instead.
-fn offered(effect: &ContainersEffect, engine_live: bool, message: &str) -> ActionSpec {
-    let spec = effect.bound();
-    if engine_live || effect.engine_operation().is_none() {
-        spec
-    } else {
-        spec.unavailable("engine_offline", crate::resource::CATALOG.t(message))
-    }
-}
-
-pub(crate) fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
-    let id = || container.id.clone();
-    let mut row = LiveRow::new(
-        format!("container:{}", container.id),
-        "containers.container",
-        container.name.clone(),
-    )
-    .operation(
-        ContainersEffect::ReadContainer { container: id() }
-            .bound()
-            .reads_document(),
-    )
-    .operation({
-        let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
-        open.type_mut().label = crate::resource::CATALOG.t_args(
-            "containers-action-open",
-            &[("name", ui::i18n::ArgValue::Text(container.name.clone()))],
-        );
-        open
-    });
-    let effects = match container.status {
-        crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => vec![
-            ContainersEffect::Stop { container: id() },
-            ContainersEffect::Restart { container: id() },
-            ContainersEffect::Pause { container: id() },
-            ContainersEffect::Shell { container: id() },
-        ],
-        crate::model::ContainerStatus::Paused => vec![
-            ContainersEffect::Unpause { container: id() },
-            ContainersEffect::Stop { container: id() },
-            ContainersEffect::RemoveContainer { container: id() },
-            ContainersEffect::Shell { container: id() },
-        ],
-        _ => vec![
-            ContainersEffect::Start { container: id() },
-            ContainersEffect::RemoveContainer { container: id() },
-        ],
-    };
-    for effect in &effects {
-        row = row.operation(offered(effect, engine_live, ENGINE_OFFLINE));
-    }
-    row.row(logs_row(container))
-}
-
-fn logs_row(container: &crate::model::Container) -> LiveRow {
-    LiveRow::new(
-        format!("container:{}:logs", container.id),
-        "containers.logs",
-        format!("{} logs", container.name),
-    )
-    .effect(&ContainersEffect::OpenLogs {
-        container: container.id.clone(),
-    })
-}
-
-fn image_row(image: &crate::model::Image, engine_live: bool) -> LiveRow {
-    let reference = image.reference();
-    LiveRow::new(
-        format!("image:{reference}"),
-        "containers.image",
-        reference.clone(),
-    )
-    .operation(offered(
-        &ContainersEffect::RemoveImage { image: reference },
-        engine_live,
-        ENGINE_OFFLINE,
-    ))
-}
-
-fn volume_row(volume: &crate::model::Volume, engine_live: bool) -> LiveRow {
-    LiveRow::new(
-        format!("volume:{}", volume.name),
-        "containers.volume",
-        volume.name.clone(),
-    )
-    .operation(offered(
-        &ContainersEffect::RemoveVolume {
-            volume: volume.name.clone(),
-        },
-        engine_live,
-        ENGINE_OFFLINE,
-    ))
-}
-
-fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> LiveRow {
-    LiveRow::new(
-        format!("distrobox:{}", distrobox.name),
-        "containers.distrobox",
-        distrobox.name.clone(),
-    )
-    .operation(offered(
-        &ContainersEffect::EnterDistrobox {
-            distrobox: distrobox.name.clone(),
-        },
-        engine_live,
-        "containers-demo-unavailable",
-    ))
-}
 
 impl ContainersState {
     /// Note that `verb` was asked on `target` and has not shown in the engine yet.

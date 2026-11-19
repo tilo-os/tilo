@@ -890,6 +890,54 @@ pub fn verify_bundle_metadata_with(
     verify_bundle_impl(root, opts, PayloadMode::Size).map(|(manifest, _, _)| manifest)
 }
 
+/// Verify a bundle's signed manifest on its own, with no payload file at hand:
+/// its file list is the one its root hash names, its version's ABI digest is
+/// that root's, and its signatures verify under `opts`. What it then vouches
+/// for is each listed file's BLAKE3, so a caller holding some of the files
+/// checks each against [`BundleManifest::files`]: what takes one directory
+/// of a bundle (the model runtime under `lib/app-model-runtime`) without the
+/// hundreds of megabytes beside it.
+///
+/// # Errors
+///
+/// The manifest, architecture and signature errors [`verify_bundle_with`]
+/// returns, and [`BundleError::InvalidPayloadPath`] for a listed path that
+/// leaves the bundle or is listed twice.
+pub fn verify_bundle_manifest(
+    manifest: &BundleManifest,
+    opts: &VerifyOptions,
+) -> Result<(), BundleError> {
+    if let Some(required) = opts.require_arch.as_deref()
+        && manifest.arch != required
+    {
+        return Err(BundleError::ArchMismatch {
+            actual: manifest.arch.clone(),
+            host: required.to_string(),
+        });
+    }
+    let mut listed = BTreeSet::new();
+    for file in &manifest.files {
+        if !valid_payload_path(&file.path) || !listed.insert(file.path.as_str()) {
+            return Err(BundleError::InvalidPayloadPath {
+                path: file.path.clone(),
+            });
+        }
+    }
+    let mut sorted = manifest.files.clone();
+    sorted.sort_by(|a, b| a.path.cmp(&b.path));
+    let computed = compute_root_hash(&sorted);
+    if computed != manifest.root_hash {
+        return Err(BundleError::HashMismatch {
+            expected: manifest.root_hash.clone(),
+            computed,
+        });
+    }
+    verify_abi_digest(manifest)?;
+    verify_manifest_signature(manifest, opts)?;
+    verify_verity_signature(manifest)?;
+    Ok(())
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PayloadMode<'a> {
     Hash,

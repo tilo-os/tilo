@@ -1651,13 +1651,23 @@ impl FacePaint<'_> {
         let hit = painted.and_then(|painted| painted.hit);
         let hint = hint_ink(theme, self.role, ink, fill);
         self.content.paint(ctx, self.rect, self.metrics, ink, hint);
-        if disabled {
-            ctx.scene.pop_layer();
-        }
-        // Rest edge and focus ring share one half-pixel-inset outline. The
-        // edge stays at full strength while disabled so the bounds of a
-        // disabled control stay visible on a light ground.
+        // Rest edge and focus ring share one half-pixel-inset outline. A disabled face's edge
+        // dims with the face under the one group alpha, so it reads as the same button,
+        // disabled, rather than as an outlined button of another style.
         let outline = crate::surface::edge_outline(face_rect, radius);
+        if disabled {
+            if let Some(edge) = edge {
+                ctx.scene.stroke(
+                    &vello::kurbo::Stroke::new(REST_BORDER_WIDTH),
+                    ctx.transform,
+                    edge,
+                    None,
+                    &outline,
+                );
+            }
+            ctx.scene.pop_layer();
+            return hit;
+        }
         if self.interact.focused && !disabled {
             let ring = theme.tokens.colors.intent.accent_ink;
             if let Some(hit) = &hit {

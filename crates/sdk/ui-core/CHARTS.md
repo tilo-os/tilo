@@ -342,15 +342,16 @@ hand-rolling paths:
 |---|---|
 | `Chart::draw_styled` | Rolling line/area series with grid, header/legend and axis labels |
 | `Sparkline::paint` | One trend of `f32` or `f64` samples; `Sparkline::points` returns where each sample lands |
-| `ProgressRingFace::paint` / `BarGauge::draw_styled` | A fraction as a ring or labelled bar |
+| `ProgressRingFace::paint` / `BarGauge::draw_at` | A fraction as a ring or labelled bar |
 | `BarGauge::draw_span` | A `from..=to` span on a track, e.g. a day's low–high on the week's range |
 | `FunctionPlane::paint_grid` | The pan/zoom grid, axes and 1-2-5 tick labels of a function plot; labels are `Caption`, culled on collision and kept whole inside the canvas |
 
 `TrendStyle` chooses line width, a flat or gradient fill, straight or
 Catmull-Rom joins, per-sample markers and a leading dot on the newest sample;
 `TrendRange` maps values onto the plot (`up_to(max)`, or `fit(&data)` for the
-data's own span). `ChartStyle` and `GaugeStyle` carry the grid, header and
-track choices. Colours still resolve from the `Theme` at paint time.
+data's own span). `ChartStyle` carries the grid and header
+choices; every gauge stands on the theme's one progress track
+(`intent.value_track`). Colours still resolve from the `Theme` at paint time.
 
 ## Customization and theming
 

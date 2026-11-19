@@ -276,13 +276,24 @@ pub(crate) fn reveal_label(kind: SecretItemKind) -> &'static str {
 
 pub fn item_row(item: &SecretItem) -> LiveRow {
     let id = item_resource_id(&item.id.0);
-    match item.kind {
+    let row = match item.kind {
         SecretItemKind::Login => LiveRow::typed::<Login>(id, "Saved login"),
         SecretItemKind::ApiKey => LiveRow::typed::<ApiKey>(id, "Saved API key"),
         SecretItemKind::SecureNote => LiveRow::typed::<SecureNote>(id, "Saved secure note"),
         SecretItemKind::Wifi => LiveRow::typed::<WifiNetwork>(id, "Saved Wi-Fi password"),
         SecretItemKind::Other => LiveRow::typed::<Secret>(id, "Saved secret"),
-    }
+    };
+    // The row names its kind's secret, and the favorite press the way it goes.
+    row.labelled(PasswordsEffect::COPY, copy_label(item.kind))
+        .labelled(PasswordsEffect::REVEAL, reveal_label(item.kind))
+        .labelled(
+            PasswordsEffect::TOGGLE_FAVORITE,
+            if crate::vault::is_favorite(item) {
+                "Remove from favorites"
+            } else {
+                "Add to favorites"
+            },
+        )
 }
 
 /// A control's binding to `action` of the item's published row ([`item_row`]): pressing it
@@ -331,12 +342,7 @@ mod tests {
                 "delete"
             ]
         );
-        assert!(public.contains("Reveal secret"));
-        assert_eq!(
-            reveal_label(item.kind),
-            "Reveal password for 10 seconds",
-            "the row says what a login's secret is"
-        );
+        assert!(public.contains("Reveal password"));
         let delete = resource.actions.iter().find(|a| a.id == "delete").unwrap();
         assert_eq!(
             delete.contract.risk,

@@ -2141,10 +2141,19 @@ impl crate::widget::ResourceOperations for Toolbar {
     }
 }
 
+/// The news dot at a tool's corner, cut out of the glyph under it by a ring of the toolbar's
+/// ground, so it reads as a mark on the tool rather than a blot merged into its icon.
 fn paint_dot(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     let d = f64::from(theme.tokens.spacing.s2);
     let inset = f64::from(theme.tokens.spacing.s1);
     let centre = Point::new(rect.x1 - inset - d / 2.0, rect.y0 + inset + d / 2.0);
+    scene.fill(
+        vello::peniko::Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &vello::kurbo::Circle::new(centre, d / 2.0 + DOT_CUT_OUT),
+    );
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
@@ -2153,6 +2162,9 @@ fn paint_dot(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
         &vello::kurbo::Circle::new(centre, d / 2.0),
     );
 }
+
+/// How wide the ring of ground around a tool's news dot is.
+const DOT_CUT_OUT: f64 = 1.5;
 
 impl Toolbar {
     fn resolve_theme(&mut self, theme: &Theme) {

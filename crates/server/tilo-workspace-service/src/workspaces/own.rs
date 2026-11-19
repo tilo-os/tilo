@@ -211,6 +211,22 @@ impl OwnWorkspaces {
             .unwrap_or_default()
     }
 
+    /// Whether `person` keeps any workspace of their own here.
+    pub(super) fn any_of(&self, person: &[u8; 32]) -> bool {
+        self.by_person
+            .lock_recover()
+            .get(&hex::encode(person))
+            .is_some_and(|mine| !mine.is_empty())
+    }
+
+    /// The first workspace of `person`'s own here, in the order they made them.
+    pub(super) fn first_of(&self, person: &[u8; 32]) -> Option<String> {
+        self.by_person
+            .lock_recover()
+            .get(&hex::encode(person))
+            .and_then(|mine| mine.first().cloned())
+    }
+
     /// Whether `workspace` is one of `person`'s own.
     pub(super) fn is_of(&self, person: &[u8; 32], workspace: &str) -> bool {
         self.by_person

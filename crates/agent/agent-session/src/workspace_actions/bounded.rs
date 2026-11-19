@@ -529,7 +529,7 @@ pub(super) fn policy_for(
                 agent_bound: Vec::new(),
             }
         }
-        Some(_) | None => return Err(ActionCallError::NotPermitted),
+        Some(_) | None => return Err(not_admitted(shared, workspace_id, who)),
     };
     // An agent a person's device handed its session to is held to the bound the workspace's
     // list of its agents keeps for it: the own person's agents as much as anyone's, so what
@@ -541,6 +541,31 @@ pub(super) fn policy_for(
         policy.agent_bound = link.workspace_agent(workspace_id, &who.caller);
     }
     Ok(policy)
+}
+
+/// The refusal of a caller the workspace's policy does not admit: a key the
+/// workspace keeps as revoked is told so, with the one command that approves
+/// another, so every caller knows what to do; anyone else is a plain refusal.
+fn not_admitted(
+    shared: &super::Shared,
+    workspace_id: WorkspaceId,
+    who: &Bounded,
+) -> ActionCallError {
+    let revoked = shared
+        .link
+        .get()
+        .is_some_and(|link| link.key_revoked(workspace_id, &who.person_caller));
+    if revoked {
+        ActionCallError::Refused {
+            reason: format!(
+                "{}: this key was revoked. {}",
+                tilo_actions::remote::KEY_REVOKED,
+                tilo_actions::remote::APPROVE_AGAIN
+            ),
+        }
+    } else {
+        ActionCallError::NotPermitted
+    }
 }
 
 /// Whether `caller` may do `kind` across the workspace `workspace_id`

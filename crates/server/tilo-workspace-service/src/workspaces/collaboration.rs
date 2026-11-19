@@ -1971,3 +1971,28 @@ fn refuse_revoked(
         )))
     })
 }
+
+/// The devices `workspace`'s governance keeps as keys its person revoked.
+pub(super) fn revoked_keys(workspace: &GovernedWorkspace) -> Vec<[u8; 32]> {
+    workspace
+        .peer()
+        .governance()
+        .workspace_grants()
+        .into_iter()
+        .filter(|grant| grant.revoked_ms.is_some())
+        .filter_map(|grant| {
+            let mut key = [0; 32];
+            match hex::decode_to_slice(&grant.device, &mut key) {
+                Ok(()) => Some(key),
+                Err(error) => {
+                    tracing::warn!(
+                        device = %grant.device,
+                        %error,
+                        "a grant's device is not a key"
+                    );
+                    None
+                }
+            }
+        })
+        .collect()
+}

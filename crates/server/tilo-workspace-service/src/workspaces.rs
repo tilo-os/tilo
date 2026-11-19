@@ -83,6 +83,8 @@ mod packaged_model;
 #[cfg(not(target_arch = "wasm32"))]
 pub use packaged_model::{PackagedAction, package_surface};
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod packaged_model_runtime_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod packaged_model_tests;
 mod pages;
 mod peer_parts;
@@ -1450,6 +1452,7 @@ impl Workspaces {
                     member_devices: Vec::new(),
                     member_user_roots: Vec::new(),
                 },
+                Vec::new(),
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -2819,9 +2822,12 @@ impl Workspaces {
             workspace.workspace(),
             access.member_user_roots.iter().copied(),
         );
+        // What the workspace keeps as keys its person revoked: refused with how to approve another,
+        // and dropped from its access, so every caller is told what to do.
+        let revoked = collaboration::revoked_keys(workspace);
         let dropped = host
             .access
-            .replace(workspace.workspace_id(), access)
+            .replace(workspace.workspace_id(), access, revoked)
             .await
             .map_err(|error| error.to_string())?;
         crate::timing::event("workspace.settle.access", accessing, 0);

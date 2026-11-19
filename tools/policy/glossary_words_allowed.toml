@@ -1255,3 +1255,9 @@ reason = "The bridge's own names for the program a task's programs run in (`Task
 words = ["host"]
 identifiers = ["TaskHosts", "with_task_hosts", "host"]
 paths = ["crates/runtime/tilo-mcp/src/mcp_task_program_tests.rs"]
+
+[[allow]]
+reason = "The runtime bundle's names for the machine it is built on and verified for (`host_arch`, `host_minimal_paths_for`, a mismatch's `host` field), the registry snapshot's `channel_authorization` field, and the service's test fixture (`test_host`) a test of a runtime from another release builds on."
+words = ["host", "channel"]
+identifiers = ["host_arch", "host_minimal_paths_for", "host", "channel_authorization", "test_host"]
+paths = ["crates/packaging/app-cli/src/model_runtime.rs", "crates/packaging/runtime-bundle/src/lib.rs", "crates/server/tilo-workspace-service/src/workspaces/packaged_model_runtime_tests.rs"]

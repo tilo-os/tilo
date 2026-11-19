@@ -4341,7 +4341,7 @@
         },
         {
           "name": "label",
-          "doc": "What is under way (\"Uploading\"); a named bar announces its progress without taking focus.",
+          "doc": "What is under way (\"Uploading\"), shown over the track; a named bar announces its progress without taking focus.",
           "type": {
             "option": "text"
           }

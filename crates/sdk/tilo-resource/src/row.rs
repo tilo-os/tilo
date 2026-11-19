@@ -237,6 +237,24 @@ impl LiveRow {
         self.operation(effect.bound())
     }
 
+    /// Offer the row's effect `effect` as `label` here, where the row can say
+    /// what it is more exactly than its type can (a container's row opens
+    /// *this* container by name). The effect's contract is its declaration's;
+    /// only what the row reads it by is the row's.
+    #[must_use]
+    pub fn labelled<E, A>(
+        mut self,
+        effect: crate::ActionRef<E, A>,
+        label: impl Into<String>,
+    ) -> Self {
+        let label = label.into();
+        let actions = &mut std::rc::Rc::make_mut(&mut self.resource).actions;
+        if let Some(spec) = actions.iter_mut().find(|spec| spec.id == effect.id) {
+            spec.type_mut().label = label;
+        }
+        self
+    }
+
     /// Offer `view` of the row's entity: a way to show it (a message in
     /// its conversation, a range of its text) that a link or an agent
     /// navigates to, opened by one of the row's own operations.

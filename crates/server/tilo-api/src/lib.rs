@@ -1770,9 +1770,9 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// What a key that no longer acts (revoked, expired, or no longer granted in
-/// its workspace) is told to do: the one command that approves a key again.
-pub(crate) const APPROVE_AGAIN: &str = "approve a new key: the person types `tilo keys create \"<name>\"` \
-     and approves it in their Tilo tab (on their own computer, `tilo login` again)";
+/// its workspace) is told to do: the one command that approves a key again,
+/// as every surface says it.
+pub(crate) const APPROVE_AGAIN: &str = tilo_actions::remote::APPROVE_AGAIN;
 
 /// Why a token the server was sent reaches nothing, as every refusal of the server is
 /// typed: `{"error": {code, message, next_steps}}`, with when it was revoked

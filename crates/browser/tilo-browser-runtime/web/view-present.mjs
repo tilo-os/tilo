@@ -784,10 +784,11 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       shown.push(detail);
     }
     if (option.dot) {
-      // Something new behind it: the accent dot at its corner, as painted.
+      // Something new behind it: the accent dot at its corner, cut out of the glyph by a
+      // ring of the ground, as painted.
       const dot = elementFor(`${path}:dot`, 'span', next);
       write(dot, '@aria-hidden', 'true');
-      write(dot, 'css', 'position:absolute;right:5px;top:5px;width:6px;height:6px;border-radius:50%;background:var(--tilo-accent,#2f6fed);');
+      write(dot, 'css', 'position:absolute;right:4px;top:4px;width:8px;height:8px;border-radius:50%;background:var(--tilo-accent,#2f6fed);box-shadow:0 0 0 1.5px var(--tilo-ground,#fff);');
       shown.push(dot);
     }
     place(item, shown);

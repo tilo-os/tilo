@@ -856,6 +856,14 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         )
     }
 
+    fn key_revoked(&self, workspace: WorkspaceId, caller: &tilo_actions::remote::Caller) -> bool {
+        let Some(workspaces) = self.workspaces.as_ref() else {
+            return false;
+        };
+        self.runtime
+            .block_on(workspaces.key_revoked(workspace, caller))
+    }
+
     fn view_document(
         &self,
         workspace: WorkspaceId,

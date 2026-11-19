@@ -851,6 +851,7 @@ impl GovernedAccessWriter {
         &self,
         workspace_id: WorkspaceId,
         access: tilo_peer_state::GovernedAccess,
+        revoked: Vec<[u8; 32]>,
     ) -> Result<Vec<[u8; 32]>, ServiceError> {
         if self.handshake_trust.allow_any {
             return Err(ServiceError::GovernedAccess(
@@ -890,6 +891,7 @@ impl GovernedAccessWriter {
                 member_user_roots,
                 governed: true,
             },
+            revoked,
         )
         .await;
         // Also after an I/O error the handshake union must reflect the

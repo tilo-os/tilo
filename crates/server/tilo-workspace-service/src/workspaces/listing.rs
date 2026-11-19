@@ -29,6 +29,7 @@
 mod entering;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use sha2::{Digest as _, Sha256};
 use tilo_action_policy::{EntryPolicy, ListingPolicy, Role, roles::governance};
@@ -38,7 +39,7 @@ use tilo_server_protocol::directory::{
     DirectoryEntry, EntryJoin, EntryReport, Face, Listing, MAX_FACES, entry_path,
 };
 use tilo_server_protocol::workspaces::{PreAdmission, WorkspaceNotice};
-use tilo_server_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
+use tilo_server_session::workspaces::{IssueInvitationRequest, IssuedInvitation, WorkspaceListing};
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
@@ -1769,5 +1770,29 @@ pub(crate) mod entry_tests {
             "the listing is the workspace's too"
         );
         server.shutdown().await;
+    }
+}
+
+impl Workspaces {
+    /// The listing of each of `wanted`'s workspaces this server governs, taken in one pass over
+    /// the registry: a person's whole list is built without a registry lock per workspace and
+    /// without reading any document but the ones named.
+    pub async fn listings_of(
+        &self,
+        wanted: &std::collections::HashSet<String>,
+    ) -> std::collections::HashMap<String, WorkspaceListing> {
+        let held = self.inner.workspaces.lock().await;
+        let named: Vec<(String, Arc<tokio::sync::Mutex<GovernedWorkspace>>)> = held
+            .iter()
+            .filter(|(workspace, _)| wanted.contains(*workspace))
+            .map(|(workspace, held)| (workspace.clone(), Arc::clone(held)))
+            .collect();
+        drop(held);
+        let mut listings = std::collections::HashMap::with_capacity(named.len());
+        for (workspace, held) in named {
+            let listing = held.lock().await.listing();
+            listings.insert(workspace, listing);
+        }
+        listings
     }
 }

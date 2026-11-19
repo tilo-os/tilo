@@ -244,6 +244,27 @@ fn a_row_offering_an_effect_asks_what_its_state_does_not_know() {
     );
 }
 
+#[test]
+fn a_row_may_name_its_press_the_way_only_it_can() {
+    let backup = LiveRow::typed::<Job>("job:1", "Backup")
+        .labelled(JobEffect::STOP, "Stop Backup")
+        .into_resource();
+    let index = LiveRow::typed::<Job>("job:2", "Index").into_resource();
+    let label = |row: &tilo_actions::ResourceSpec| {
+        row.actions
+            .iter()
+            .find(|action| action.id == "stop")
+            .map(|action| action.label.clone())
+            .unwrap()
+    };
+    assert_eq!(label(&backup), "Stop Backup");
+    assert_eq!(
+        label(&index),
+        "Stop this job",
+        "one row's label is not the type's, nor another row's"
+    );
+}
+
 struct RowPublishingApp;
 
 thread_local! {

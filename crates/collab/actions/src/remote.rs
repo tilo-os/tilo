@@ -640,6 +640,15 @@ pub const AWAITING_APPROVAL: &str = "awaiting_approval";
 /// them an owner, and no invitation of a workspace there brought them in.
 pub const NOT_ON_THIS_SERVER: &str = "not_on_this_server";
 
+/// The code a workspace refuses a key its person revoked with: nothing it asks is answered
+/// until they approve another.
+pub const KEY_REVOKED: &str = "key_revoked";
+
+/// What a key that no longer acts (revoked, expired, or no longer granted in its workspace) is
+/// told to do: the one command that approves a key again.
+pub const APPROVE_AGAIN: &str = "approve a new key: the person types `tilo keys create \"<name>\"` \
+     and approves it in their Tilo tab (on their own computer, `tilo login` again)";
+
 /// The refusal of a server that does not know `person` (their root key) yet, saying what to do:
 /// its operator declares them an owner, or they join with an invitation link.
 #[must_use]

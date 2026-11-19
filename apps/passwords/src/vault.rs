@@ -650,38 +650,6 @@ impl Core {
         Ok(())
     }
 
-    /// What an item's row says its copy, reveal and favorite effects are
-    /// called now: each names the item's kind, and the favorite the way its
-    /// press goes.
-    pub(crate) fn row_status(&self, id: &str) -> Vec<ui::framework::EffectStatus> {
-        let Some(item) = self
-            .items
-            .iter()
-            .find(|item| crate::actions::item_resource_id(&item.id.0) == id)
-        else {
-            return Vec::new();
-        };
-        let favorite = if is_favorite(item) {
-            CATALOG.t("passwords-remove-favorite")
-        } else {
-            CATALOG.t("passwords-add-favorite")
-        };
-        vec![
-            ui::framework::EffectStatus::labelled(
-                PasswordsEffect::COPY,
-                crate::actions::copy_label(item.kind),
-            )
-            .on(id),
-            ui::framework::EffectStatus::labelled(
-                PasswordsEffect::REVEAL,
-                crate::actions::reveal_label(item.kind),
-            )
-            .on(id),
-            ui::framework::EffectStatus::labelled(PasswordsEffect::TOGGLE_FAVORITE, favorite)
-                .on(id),
-        ]
-    }
-
     /// Make the item the effect `item` names the other way round: a favorite,
     /// or no longer one.
     fn flip_favorite(&mut self, item: &str) -> Result<(), String> {
