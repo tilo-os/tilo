@@ -784,6 +784,22 @@ tilo_test_env::scenario! {
     }
 }
 
+/// Reading a calendar is a document read: it is what discloses its row, so
+/// the operations bound to that row reach agents. A migration that moves the
+/// read onto the type keeps that tag, or every action on the row silently
+/// leaves the agents' survey (the agent-surface test below and the reach test
+/// ask the same thing).
+#[test]
+fn reading_a_calendar_discloses_its_row_to_agents() {
+    use ui::tilo_resource::Effect as _;
+    let read = CalendarEffect::spec(CalendarEffect::READ_CALENDAR.id)
+        .expect("reading a calendar is declared");
+    assert!(
+        read.contract.reads_document(),
+        "read-calendar is a document read, so its row is disclosed"
+    );
+}
+
 #[test]
 fn agents_reach_every_item_verb_and_the_calendars() {
     let mut app = TestApp::<CalendarShell>::capture(Some("month")).expect("capture");

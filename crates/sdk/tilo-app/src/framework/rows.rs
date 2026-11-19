@@ -83,10 +83,7 @@ pub(crate) fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec>
 /// statuses `statuses` say of it now laid over: a row's effect the live state
 /// makes unavailable stays off the palette, agents and the API with its
 /// reason.
-pub(crate) fn apply_statuses(
-    resource: &mut ResourceSpec,
-    statuses: &[crate::framework::EffectStatus],
-) {
+pub fn apply_statuses(resource: &mut ResourceSpec, statuses: &[crate::framework::EffectStatus]) {
     for status in statuses {
         for spec in resource
             .actions

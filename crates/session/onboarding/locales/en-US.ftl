@@ -301,3 +301,7 @@ so-tilo-onboarding-step-enter-secret = Enter a secret
 so-tilo-onboarding-step-pick = Pick a file
 so-tilo-onboarding-step-retry = Try again
 so-tilo-onboarding-step-skip = Skip
+
+## crates/session/onboarding/src/app.rs
+onboarding-setup-set-understood = Acknowledge how this computer's identity is protected
+onboarding-setup-set-backup-skip-acknowledged = Acknowledge skipping the backup

@@ -266,13 +266,28 @@ impl VirtualRows {
 
     pub(super) fn draw_keep(
         &self,
+        transform: vello::kurbo::Affine,
         opacity: f32,
         now: crate::time::Instant,
     ) -> Option<crate::draw_cull::Keep> {
-        self.shown
+        let keep = self
+            .shown
             .keep()
             .filter(|keep| keep.moving() && opacity >= 1.0 && self.row_motion.is_empty())
-            .filter(|_| !self.arrivals.needs_redraw(now))
+            .filter(|_| !self.arrivals.needs_redraw(now))?;
+        // A bar beside the rows stands in its own gutter, painted over the list's ground:
+        // rows show nothing there, so the pixels a copy keeps there are none of theirs.
+        let content = vello::kurbo::Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            if self.rows_beside_bar {
+                self.rect.x1 - self.gutter
+            } else {
+                self.rect.x1
+            },
+            self.rect.y1,
+        );
+        keep.visible_within(transform.transform_rect_bbox(content))
     }
 }
 

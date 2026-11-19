@@ -273,7 +273,8 @@ pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> E
                 .map_or_else(Vec::new, |page| page.bound.clone())
         });
     }
-    let (rows, row, edits, entries) = (
+    let (rows, row, edits, entries, statuses) = (
+        Rc::clone(&store),
         Rc::clone(&store),
         Rc::clone(&store),
         Rc::clone(&store),
@@ -293,6 +294,14 @@ pub(crate) fn browser_view(cx: &ViewCx<Browser>, mut window: BrowserWindow) -> E
                     .borrow()
                     .published()
                     .map_or_else(Vec::new, |page| page.row_edits(row))
+            })
+            // What each row can do now: the page back at its first visit, a
+            // page that is not the web, a history with nothing to clear.
+            .row_status(move |id| {
+                statuses
+                    .borrow()
+                    .published()
+                    .map_or_else(Vec::new, |page| page.row_status(id))
             })
             .search_entries(move || {
                 entries

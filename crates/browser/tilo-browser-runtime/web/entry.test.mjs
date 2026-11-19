@@ -377,6 +377,41 @@ test('an invitation whose server only it names admits there, and the address nam
   page.router.stop?.();
 });
 
+test('an address that names no server opens its workspace at the server the site names, not at the site', async () => {
+  // `#/w/<workspace>` names no server, which the link grammar reads as the page's own site. A site
+  // that names its home workspace's server elsewhere keeps no workspace itself: the person comes
+  // back to the workspace at that server, as the address the page writes from then on says.
+  const site = 'https://tilo.example';
+  const home = 'https://eu1.tilo.example';
+  const reconnected = [];
+  const formatted = [];
+  const runtime = runtimeFake({
+    parseLink: () => JSON.stringify({mode: 'desktop', target: {scope: {kind: 'workspace', host: site, workspace: 'W'}}}),
+    formatLink: route => { formatted.push(JSON.parse(route)); return `${site}/#/@eu1.tilo.example/w/W`; },
+    ...entering('reconnect'),
+  });
+  const navigation = {getSnapshot: () => ({generation: 'g', active: null, entries: []}), subscribe: () => () => {}, dispatch: async () => {}};
+  const peer = {workspace: 'W', origin: home, whenReady: async () => {},
+    mountDesktop: async (element, options) => { options.onNavigation?.(navigation); return {navigation}; }};
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: `${site}/#/w/W`, hash: '#/w/W'},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtime,
+    fetch: async url => ({ok: String(url) === `${site}/entry.json`, json: async () => ({home: {name: 'Lounge', host: {origin: home}}})}),
+    readAccounts: async () => [],
+    holdsPerson: async () => true,
+    reconnect: async ({origin, workspace}) => { reconnected.push([origin, workspace]); return peer; },
+  };
+  const page = await boot({mode: 'desktop', window, status: null, deps});
+  assert.deepEqual(reconnected, [[home, 'W']], 'the person comes back at the site’s server');
+  assert.equal(formatted.at(-1).target.scope.host, home);
+  page.router.stop?.();
+});
+
 test('a workspace no listing of the page names is mounted under the name it answered admission with', async () => {
   // The person's own workspace on a host, reached by a link that names no
   // workspace, on a site whose entry lists none: the shell the page starts has

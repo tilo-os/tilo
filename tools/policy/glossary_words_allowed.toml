@@ -634,7 +634,7 @@ paths = ["crates/runtime/device-mcp/src/lib.rs"]
 [[allow]]
 reason = "The helper that drives a test phase's async body on a current-thread runtime."
 words = ["run"]
-paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs", "crates/runtime/tilo-mcp/src/mcp_agent_tests.rs"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs", "crates/runtime/tilo-mcp/src/mcp_agent_tests.rs", "crates/runtime/tilo-mcp/src/mcp_agent_tool_list_tests.rs"]
 
 [[allow]]
 reason = "tokio's mpsc constructor, the queue a test's stand-in page answers through."
@@ -1227,6 +1227,19 @@ identifiers = ["host_cert", "hostCert"]
 paths = ["crates/server/tilo-server-protocol/src/web.rs"]
 
 [[allow]]
+reason = "The page's names for a workspace's server that it reads as they are: the link grammar's `scope.host`, entry.json's `home.host`, an invitation shelf's `host`, the server certificate's `hostCert`, and the module `site-host.mjs`."
+words = ["host"]
+identifiers = ["host", "hostCert"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/admission.mjs",
+    "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
+    "crates/browser/tilo-browser-runtime/web/entry.mjs",
+    "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
+    "crates/browser/tilo-browser-runtime/web/site-host.mjs",
+    "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
+]
+
+[[allow]]
 reason = "A registry address's host, the network name a registry is reached at, which the glossary keeps as a network host name."
 words = ["host"]
 identifiers = ["host", "host_str"]
@@ -1457,3 +1470,9 @@ reason = "The retained-change payload's own `channel` field, the stream of a rec
 words = ["channel"]
 identifiers = ["channel"]
 paths = ["crates/server/tilo-workspace-service/src/peer/private_transport_tests.rs"]
+
+[[allow]]
+reason = "The browser effect that reads what the tab did, which the window must offer and narrow: `record` is the public effect's own name (read-page-record)."
+words = ["record"]
+identifiers = ["ReadPageRecord", "READ_PAGE_RECORD"]
+paths = ["apps/browser/src/browser_widget.rs"]

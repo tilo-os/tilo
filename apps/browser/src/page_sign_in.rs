@@ -227,29 +227,32 @@ impl PageSignIn {
     /// itself, and its two answers, each bound to this sign-in so an answer
     /// meant for it never reaches the next. Nothing typed is part of it.
     pub fn resource(&self) -> Option<LiveRow> {
-        use ui::tilo_resource::Effect as _;
         let open = self.open.as_ref()?;
-        let sign_in = open.challenge.id;
-        let mut row = LiveRow::typed::<crate::row_types::PageSignIn>(ROW, open.title.clone())
-            .presentation(ResourcePresentation {
-                detail: None,
-                badge: None,
-                preview: Some(crate::page_dialogs::preview(&open.detail)),
-            });
+        let sign_in = serde_json::Value::from(open.challenge.id);
         // Both credentials are asked of whoever answers here: what the
         // prompt's fields hold is the person's, and no action sends it.
-        let mut answer = BrowserEffect::AnswerPageSignIn {
-            sign_in,
-            username: String::new(),
-            password: String::new(),
-        }
-        .bound_asking(&["username", "password"]);
-        answer.type_mut().label = CATALOG.t("browser-page-sign-in-submit");
-        row = row.operation(answer);
-        let mut cancel = BrowserEffect::CancelPageSignIn { sign_in }.bound();
-        cancel.type_mut().label = CATALOG.t("browser-page-dialog-cancel");
-        row = row.operation(cancel);
-        Some(row)
+        let bindings = ui::tilo_resource::RowBindings::new()
+            .bind(
+                BrowserEffect::ANSWER_PAGE_SIGN_IN,
+                [("sign_in", sign_in.clone())],
+            )
+            .bind(BrowserEffect::CANCEL_PAGE_SIGN_IN, [("sign_in", sign_in)]);
+        Some(
+            LiveRow::typed_with::<crate::row_types::PageSignIn>(ROW, open.title.clone(), &bindings)
+                .presentation(ResourcePresentation {
+                    detail: None,
+                    badge: None,
+                    preview: Some(crate::page_dialogs::preview(&open.detail)),
+                })
+                .labelled(
+                    BrowserEffect::ANSWER_PAGE_SIGN_IN,
+                    CATALOG.t("browser-page-sign-in-submit"),
+                )
+                .labelled(
+                    BrowserEffect::CANCEL_PAGE_SIGN_IN,
+                    CATALOG.t("browser-page-dialog-cancel"),
+                ),
+        )
     }
 }
 

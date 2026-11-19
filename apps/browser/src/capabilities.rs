@@ -501,31 +501,24 @@ impl Capabilities {
     /// two answers the person's prompt offers. Refused here, the request is denied as
     /// its Block button denies it.
     pub fn resource(&self) -> Option<ui::framework::LiveRow> {
-        use ui::tilo_resource::Effect as _;
-        let (request, origin, rights) = self.pending()?;
-        let mut row = ui::framework::LiveRow::typed::<crate::row_types::PagePermission>(
-            RESOURCE,
-            crate::CATALOG.t_args(
-                "browser-permission-request",
-                &[
-                    ("origin", ArgValue::Text(origin.to_owned())),
-                    ("rights", ArgValue::Text(rights.to_owned())),
-                    ("seconds", ArgValue::Number(f64::from(PERMISSION_SECONDS))),
-                ],
-            ),
-        );
-        for (key, allow) in [
-            ("browser-permission-allow", true),
-            ("browser-permission-deny", false),
-        ] {
-            let mut action =
-                crate::effects::BrowserEffect::AnswerPermission { request, allow }.bound();
-            action.type_mut().label = crate::CATALOG.t(key);
-            row = row.operation(action);
-        }
-        Some(row)
+        let (_, origin, rights) = self.pending()?;
+        Some(
+            ui::framework::LiveRow::typed::<crate::row_types::PagePermission>(
+                RESOURCE,
+                crate::CATALOG.t_args(
+                    "browser-permission-request",
+                    &[
+                        ("origin", ArgValue::Text(origin.to_owned())),
+                        ("rights", ArgValue::Text(rights.to_owned())),
+                        ("seconds", ArgValue::Number(f64::from(PERMISSION_SECONDS))),
+                    ],
+                ),
+            )
+            .specialized(self.permission_answers()),
+        )
     }
-    /// The answers to the site's waiting request, for the page whose outline names it.
+    /// The answers to the site's waiting request, for the page whose outline
+    /// names it and for the request's own row.
     #[must_use]
     pub fn permission_answers(&self) -> Vec<ui::tilo_actions::ActionSpec> {
         use ui::tilo_resource::Effect as _;

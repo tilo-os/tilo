@@ -12,11 +12,3 @@ run = "r3ac9a7d790"
 [apps."so.tilo.contacts"]
 x86_64 = 65536
 
-# Chat works in a shared window where the conversation shows it and asks
-# questions that wait (134c7754a31, fa92625a8f7: 4,376,576 to 4,523,520
-# bytes, runs r32fb406ca9, r589d1a8a27), and asks for a secret typed into a
-# protected field and kept in the person's vault (1bf11e3e5ee: 4,572,672,
-# run rf6e52a8c4b). This change's cuts took 79,360 bytes off; what landed
-# since (agents starting sub-agents, 70e04742b00) brings it to 4,562,944.
-[apps."so.tilo.chat"]
-x86_64 = 131072

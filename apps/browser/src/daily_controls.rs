@@ -274,25 +274,6 @@ impl DailyControls {
         self.act(Action::Zoom(step), engine);
         Ok(())
     }
-    pub fn zoom_actions(&self) -> Vec<ui::tilo_actions::ActionSpec> {
-        use crate::effects::BrowserEffect as E;
-        use ui::tilo_resource::Effect as _;
-        [
-            (E::ZoomIn, 1, "The page is at its largest"),
-            (E::ZoomOut, -1, "The page is at its smallest"),
-            (E::ResetZoom, 0, "The page is at its own size"),
-        ]
-        .into_iter()
-        .map(|(zoom, step, limit)| {
-            let zoom = zoom.bound();
-            if self.can_zoom(step) {
-                zoom
-            } else {
-                zoom.unavailable("zoom_limit", limit)
-            }
-        })
-        .collect()
-    }
     pub fn zoom_percent(&self) -> f64 {
         self.zoom_model().percent()
     }

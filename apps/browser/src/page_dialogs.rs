@@ -150,29 +150,37 @@ impl PageDialogs {
     /// The question as the window's row: who asks, the page's own words, and its answers,
     /// each bound to this question so an answer meant for it never reaches the next.
     pub fn resource(&self) -> Option<LiveRow> {
-        use ui::tilo_resource::Effect as _;
+        use ui::tilo_resource::RowBindings;
         let open = self.open.as_ref()?;
         let dialog = &open.dialog;
-        let mut row = LiveRow::typed::<crate::row_types::PageDialog>(ROW, open.title.clone())
-            .presentation(ResourcePresentation {
-                detail: None,
-                badge: None,
-                preview: Some(preview(&open.body())),
-            });
-        let prompt = dialog.kind == PageDialogKind::Prompt;
         // A prompt's answer is asked; absent, it is what the field holds, which starts as
         // the page's suggestion.
-        let mut accept = BrowserEffect::AcceptPageDialog {
-            dialog: dialog.id,
-            text: None,
+        let prompt = dialog.kind == PageDialogKind::Prompt;
+        let dialog_id = serde_json::Value::from(dialog.id);
+        let mut bindings = RowBindings::new().bind(
+            BrowserEffect::ACCEPT_PAGE_DIALOG,
+            if prompt {
+                vec![("dialog", dialog_id)]
+            } else {
+                vec![("dialog", dialog_id), ("text", serde_json::Value::Null)]
+            },
+        );
+        if open.decline.is_some() {
+            bindings = bindings.bind(
+                BrowserEffect::DISMISS_PAGE_DIALOG,
+                [("dialog", serde_json::Value::from(dialog.id))],
+            );
         }
-        .bound_asking(if prompt { &["text"] } else { &[] });
-        accept.type_mut().label.clone_from(&open.accept);
-        row = row.operation(accept);
+        let mut row =
+            LiveRow::typed_with::<crate::row_types::PageDialog>(ROW, open.title.clone(), &bindings)
+                .presentation(ResourcePresentation {
+                    detail: None,
+                    badge: None,
+                    preview: Some(preview(&open.body())),
+                })
+                .labelled(BrowserEffect::ACCEPT_PAGE_DIALOG, open.accept.clone());
         if let Some(label) = &open.decline {
-            let mut decline = BrowserEffect::DismissPageDialog { dialog: dialog.id }.bound();
-            decline.type_mut().label.clone_from(label);
-            row = row.operation(decline);
+            row = row.labelled(BrowserEffect::DISMISS_PAGE_DIALOG, label.clone());
         }
         Some(row)
     }

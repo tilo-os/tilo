@@ -137,7 +137,9 @@
 //! `#[param(decimal, "…")]` makes it an identity that travels as canonical
 //! decimal text and is refused otherwise; and `#[param("…", choices = EXPR)]`
 //! names the values it takes when they are a fixed list (`EXPR` yields
-//! strings: a constant table, an array of names).
+//! strings: a constant table, an array of names). `#[param(label = "key")]`
+//! takes the description from the vocabulary's catalogue instead, read in the
+//! person's language where the action is published.
 
 use std::sync::Arc;
 

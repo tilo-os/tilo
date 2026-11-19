@@ -252,6 +252,28 @@ test('an invitation whose server only it names is joined at that server, its off
   assert.equal(named.calls[3][1].origin, target.host);
 });
 
+test('a link a site hands over whose server has no web origin is dialled as its invitation says, nothing asked over HTTP', async () => {
+  // A server the shelf names by its iroh endpoint alone (`https://<endpoint>.iroh.invalid`) answers
+  // no HTTP: a browser that never saw it reads where it is, and what the invitation offers, from
+  // the invitation, as a long link's invitation is read.
+  const sealed = {kind: 'sealed', site: 'https://tilo.sh', handle: 'abcdefghijklmnop'};
+  const key = 'A'.repeat(43);
+  const offer = {workspaceName: '', role: 'editor', workspace: target.workspace, members: null};
+  const {calls, deps} = entries({
+    openInvitation: async () => ({invitation: 'the invitation', host: 'https://c994df568f862e6e89fdb7a39d60929e.iroh.invalid'}),
+    invitedServer: async (invitation, origin) => {
+      calls.push(['invitedServer', invitation, origin]);
+      return {origin: 'https://lounge.tilo.sh', offer};
+    },
+  });
+  assert.deepEqual(await admit({scope: sealed, secrets: {invite: key}, runtime: rules(['sealed-invitation']).runtime, deps}),
+    {peer: {joined: true}});
+  assert.deepEqual(calls.map(([name]) => name), ['invitedServer', 'confirmInvitation', 'joinWorkspace']);
+  assert.deepEqual(calls[0].slice(1), ['the invitation', 'https://tilo.sh'], 'asked at the site the link names');
+  assert.deepEqual(calls[1][1], offer, 'the card shows what the invitation itself offers');
+  assert.equal(calls[2][1].origin, 'https://lounge.tilo.sh', 'joined where the invitation says its server is');
+});
+
 test('a link a site hands over opens at the site, and asks the host the invitation names', async () => {
   const sealed = {kind: 'sealed', site: 'https://tilo.sh', handle: 'abcdefghijklmnop'};
   const key = 'A'.repeat(43);

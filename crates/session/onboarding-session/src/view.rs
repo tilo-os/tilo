@@ -478,22 +478,18 @@ enum AcknowledgementKind {
     SkipBackup,
 }
 
-#[derive(Debug, serde::Serialize)]
-struct AcknowledgementAction {
-    kind: AcknowledgementKind,
-    path: ObjId,
-    checked: bool,
-}
-
-impl tilo_actions::Action for AcknowledgementAction {
-    fn apply(&self, doc: &mut AutoCommit) -> Result<(), tilo_actions::ActionError> {
-        use automerge::transaction::Transactable as _;
-        let key = match self.kind {
-            AcknowledgementKind::IdentityProtection => KEY_UNDERSTOOD,
-            AcknowledgementKind::SkipBackup => KEY_BACKUP_SKIP_ACKNOWLEDGED,
-        };
-        doc.put(&self.path, key, self.checked)?;
-        Ok(())
+/// The declared action that says the person acknowledged `kind`.
+fn acknowledgement(kind: AcknowledgementKind, checked: bool) -> tilo_onboarding::OnboardingAction {
+    use tilo_onboarding::onboarding;
+    match kind {
+        AcknowledgementKind::IdentityProtection => {
+            tilo_onboarding::OnboardingAction::SetUnderstood(onboarding::SetUnderstood { checked })
+        }
+        AcknowledgementKind::SkipBackup => {
+            tilo_onboarding::OnboardingAction::SetBackupSkipAcknowledged(
+                onboarding::SetBackupSkipAcknowledged { checked },
+            )
+        }
     }
 }
 
@@ -2012,6 +2008,20 @@ fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
     )
 }
 
+/// The key of the document's backup step, and what it holds.
+const BACKUP: &str = "backup";
+const SKIP_ACKNOWLEDGED: &str = "skip_acknowledged";
+/// The document's key for the identity acknowledgement.
+const UNDERSTOOD: &str = "understood";
+
+/// [`read_bool`] of the key `key` in `root`'s nested map `map`.
+fn read_nested_bool(state: &AutoCommit, root: &ObjId, map: &str, key: &str) -> bool {
+    let Ok(Some((Value::Object(_), nested))) = state.get(root, map) else {
+        return false;
+    };
+    read_bool(state, &nested, key)
+}
+
 /// The passphrase typed into `buffer`, copied out to be cleared after its
 /// one use.
 fn typed_passphrase(buffer: &Arc<Mutex<String>>) -> Result<Zeroizing<Vec<u8>>, ()> {
@@ -2049,14 +2059,13 @@ impl Widget for OnboardingView {
             child.settle(edits, path);
         }
         for (kind, checked) in self.acknowledgements.take() {
-            let action = AcknowledgementAction {
-                kind,
-                path: path.clone(),
-                checked,
+            let action = tilo_resource::Stamped {
+                operation: acknowledgement(kind, checked),
+                now_ms: 0,
             };
             if let Err(error) = edits.apply(
                 &mut self.acknowledgement_actions,
-                "tilo.shell.onboarding.acknowledgement",
+                <tilo_onboarding::Onboarding as tilo_resource::Resource>::ACTION_TYPE,
                 &action,
                 tilo_actions::ActionContext::default(),
             ) {
@@ -2386,13 +2395,13 @@ impl Widget for OnboardingView {
         // The checkbox drives the check directly rather than being latched, so unticking really does close it again.
         // The acknowledgement a running mint was started with holds until
         // the mint reports.
-        let understood = read_bool(state, root, KEY_UNDERSTOOD);
+        let understood = read_bool(state, root, UNDERSTOOD);
         if understood != self.flow.acknowledged() && self.identity_idle() {
             self.flow.set_acknowledged(understood);
             self.invalidation.structure();
         }
 
-        let skip_acknowledged = read_bool(state, root, KEY_BACKUP_SKIP_ACKNOWLEDGED);
+        let skip_acknowledged = read_nested_bool(state, root, BACKUP, SKIP_ACKNOWLEDGED);
         if skip_acknowledged != self.backup_skip_acknowledged {
             self.backup_skip_acknowledged = skip_acknowledged;
             self.invalidation.structure();
@@ -3153,7 +3162,6 @@ mod tests {
 
     use super::*;
     use crate::view::tests::layout::LaidOut;
-    use automerge::transaction::Transactable as _;
     use os_actions::codec_pack::PackState;
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
@@ -3460,11 +3468,34 @@ mod tests {
         })
     }
 
+    /// Set `key`'s acknowledgement to `checked`, through the declared
+    /// action the shell applies.
+    pub(super) fn acknowledge(doc: &mut AutoCommit, key: &'static str, checked: bool) {
+        let kind = if key == KEY_UNDERSTOOD {
+            AcknowledgementKind::IdentityProtection
+        } else {
+            AcknowledgementKind::SkipBackup
+        };
+        let action = tilo_resource::Stamped {
+            operation: acknowledgement(kind, checked),
+            now_ms: 0,
+        };
+        let mut dispatch = ui::local_dispatch::LocalDispatch::new();
+        dispatch
+            .try_dispatch_with_context(
+                doc,
+                <tilo_onboarding::Onboarding as tilo_resource::Resource>::ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::default(),
+            )
+            .expect("an acknowledgement applies to the document");
+    }
+
     pub(super) fn press(view: &OnboardingView, doc: &mut AutoCommit, key: &'static str) {
         // Checkboxes are bound to the document; every other action is a
         // click on the view's button.
         if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
-            let _ = doc.put(&automerge::ROOT, key, ScalarValue::Boolean(true));
+            acknowledge(doc, key, true);
         } else {
             view.press(key);
         }
@@ -4193,11 +4224,7 @@ mod tests {
             v.sync(&doc, &automerge::ROOT);
             press(&v, &mut doc, KEY_UNDERSTOOD);
             v.sync(&doc, &automerge::ROOT);
-            let _ = doc.put(
-                &automerge::ROOT,
-                KEY_UNDERSTOOD,
-                ScalarValue::Boolean(false),
-            );
+            acknowledge(&mut doc, KEY_UNDERSTOOD, false);
             v.sync(&doc, &automerge::ROOT);
             assert!(!v.flow().can_create());
             press(&v, &mut doc, KEY_CREATE);
@@ -6488,7 +6515,7 @@ mod tests {
                 &mut ui::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             );
-            assert!(read_bool(&document, &automerge::ROOT, KEY_UNDERSTOOD));
+            assert!(read_bool(&document, &automerge::ROOT, UNDERSTOOD));
         }
 
         phase continue_without_backup_pointer_target_advances_to_ready_page;
@@ -6499,13 +6526,7 @@ mod tests {
                 press(&view, &mut document, key);
                 view.sync(&document, &automerge::ROOT);
             }
-            document
-                .put(
-                    &automerge::ROOT,
-                    KEY_BACKUP_SKIP_ACKNOWLEDGED,
-                    ScalarValue::Boolean(true),
-                )
-                .expect("acknowledge backup risk");
+            acknowledge(&mut document, KEY_BACKUP_SKIP_ACKNOWLEDGED, true);
             view.sync(&document, &automerge::ROOT);
 
             let theme = Theme::dark();

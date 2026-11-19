@@ -26,7 +26,10 @@ mod effect;
 mod page;
 mod state;
 
-pub use app::{APP_ID, Onboarding, OnboardingApp, definition};
+pub use app::{
+    APP_ID, BackupAcknowledgement, Onboarding, OnboardingAction, OnboardingApp, definition,
+    onboarding,
+};
 pub use effect::{CHOICES, FIELDS, OnboardingEffect, SECRET_FIELDS};
 pub use page::{
     Chooser, ChooserPurpose, Codecs, IdentityProblem, KeyCopy, Migration, Nearby,

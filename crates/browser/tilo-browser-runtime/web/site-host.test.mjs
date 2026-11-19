@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {forgetSiteServers, isInvitedServer, invitedOrigin, nameInvitedServer, siteServer} from './site-host.mjs';
+import {forgetSiteServers, isInvitedServer, invitedOrigin, nameInvitedServer, nameSiteServer, siteNames, siteServer} from './site-host.mjs';
 
 /** A browser's storage, as `localStorage` answers. */
 function storage() {
@@ -31,4 +31,19 @@ test('what is not a server’s address is not named', () => {
   nameInvitedServer(invitedOrigin('ab'), {hostCert: {}}, store);
   assert.equal(siteServer(invitedOrigin('ab'), store), null);
   assert.equal(invitedOrigin(''), null);
+});
+
+test('a server the site names is known by the origin the site names it at, whatever else names it', () => {
+  // An invitation names its server by its own signed address; when that is the server the site
+  // names (the Lounge's own server), the page dials it at the site's origin for it, never under a
+  // name only this browser would know.
+  const home = {...info, hostCert: {device_public_key: [9, 9, 9]}};
+  nameSiteServer({host: {origin: 'https://eu1.tilo.sh/', info: JSON.stringify(home)}});
+  const store = storage();
+  nameInvitedServer(invitedOrigin('f978'), info, store);
+  assert.equal(siteNames({...home, address: {endpointAddr: {id: 'other', addrs: []}}}), 'https://eu1.tilo.sh');
+  assert.equal(siteNames(info), null, 'a server only an invitation named is not one the site names');
+  assert.equal(siteNames({hostCert: {device_public_key: [4]}}), null);
+  assert.equal(siteNames(null), null);
+  forgetSiteServers();
 });

@@ -157,18 +157,26 @@ impl BrowserSearchIndex {
     /// The row a hit opens: the same row and effect the window publishes. `None` once the
     /// entry is gone.
     pub fn resource(&self, id: &str) -> Option<ui::framework::LiveRow> {
-        use ui::tilo_resource::Effect as _;
-        let action = self.opened(id)?.bound();
+        use crate::effects::BrowserEffect as E;
+        let open = self.opened(id)?;
         let row = self.state.read_recover().rows.get(id).cloned()?;
-        let row = if row.download.is_some() {
-            ui::framework::LiveRow::typed::<crate::row_types::Download>(
+        match (open, row.download.clone()) {
+            (E::ShowDownload { id }, Some(_)) => Some(ui::framework::LiveRow::typed_with::<
+                crate::row_types::Download,
+            >(
                 &row.resource_id,
                 &row.title,
-            )
-        } else {
-            ui::framework::LiveRow::typed::<crate::row_types::Visit>(&row.resource_id, &row.title)
-        };
-        Some(row.operation(action))
+                &ui::tilo_resource::RowBindings::new().bind(E::SHOW_DOWNLOAD, [("id", id.into())]),
+            )),
+            (E::Open { url }, None) => Some(ui::framework::LiveRow::typed_with::<
+                crate::row_types::Visit,
+            >(
+                &row.resource_id,
+                &row.title,
+                &ui::tilo_resource::RowBindings::new().bind(E::OPEN, [("url", url.into())]),
+            )),
+            _ => None,
+        }
     }
 
     /// The search source the framework builds over these entries, resolving hits the way

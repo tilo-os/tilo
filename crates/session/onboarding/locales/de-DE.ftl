@@ -301,3 +301,7 @@ so-tilo-onboarding-step-enter-secret = Ein Geheimnis eingeben
 so-tilo-onboarding-step-pick = Eine Datei auswählen
 so-tilo-onboarding-step-retry = Erneut versuchen
 so-tilo-onboarding-step-skip = Überspringen
+
+## crates/session/onboarding/src/app.rs
+onboarding-setup-set-understood = Bestätigen, wie die Identität dieses Rechners geschützt ist
+onboarding-setup-set-backup-skip-acknowledged = Bestätigen, dass die Sicherung übersprungen wird
