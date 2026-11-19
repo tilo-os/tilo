@@ -133,9 +133,11 @@ fn an_opened_window_lands_whole_beside_the_one_in_use_which_keeps_its_name() {
                 .map(|g| g.width)
                 .collect::<Vec<_>>()
         });
+        // The shell shares the strip between them: a share it gives is not a width the person
+        // chose, so the window in use takes the strip again wherever it is left alone.
         assert!(
-            widths.iter().any(|w| matches!(w, WindowWidth::Fraction(_))),
-            "{width}: {widths:?}"
+            widths.iter().all(|w| matches!(w, WindowWidth::Share(_))),
+            "{width}: the shell shares the strip: {widths:?}"
         );
     }
 }
