@@ -169,25 +169,21 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         "the note publishes its actions to the member"
     );
     // The note is a page of the record: it is listed where it stands, under
-    // the notebook the record publishes.
-    let Some(notebook) = page
-        .rows
-        .iter()
-        .find(|row| row.resource.id == "notes.notebook")
-        .map(|row| row.resource.id.clone())
-    else {
-        panic!("the host lists the notebook the note is in: {page:?}");
-    };
-    let beside = catalogue_under(&mut member, &provider, Some(&notebook))
-        .await
-        .expect("the host serves the record the member wrote");
-    let Some(kept) = beside
+    // the notes the record keeps, which the app publishes beside its notebook
+    // rather than under it.
+    assert!(
+        page.rows
+            .iter()
+            .any(|row| row.resource.id == "notes.notebook"),
+        "the host lists the notebook the note is in: {page:?}"
+    );
+    let Some(kept) = page
         .rows
         .iter()
         .find(|row| row.resource.kind == "notes.pages")
         .map(|row| row.resource.id.clone())
     else {
-        panic!("the host lists the notes the notebook keeps: {beside:?}");
+        panic!("the host lists the notes the record keeps: {page:?}");
     };
     let pages = catalogue_under(&mut member, &provider, Some(&kept))
         .await
