@@ -139,10 +139,10 @@ impl CodeApp {
                         .map(|buffer| buffer.node)
                         .ok_or_else(|| "no file is open".to_string())?,
                 };
-                if !self
+                if self
                     .session
                     .buffer_of(node)
-                    .is_some_and(|buffer| buffer.path.is_some())
+                    .is_none_or(|buffer| buffer.path.is_none())
                 {
                     return self.choose_save_as(node, cx);
                 }
