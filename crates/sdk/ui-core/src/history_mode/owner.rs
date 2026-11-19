@@ -491,6 +491,13 @@ impl HistoryOwner {
         }
     }
 
+    /// Whether this document cannot take a peer's changes yet, an unfinished edit or a restore in
+    /// flight ([`crate::bound_dispatch::defers_remote`]).
+    pub(crate) fn defers_remote(&self) -> bool {
+        let (store, checkout) = self.store_checkout();
+        crate::bound_dispatch::defers_remote(store, checkout)
+    }
+
     /// See [`crate::bound_dispatch::CallbackBinding::close_named_step`]: whether a step an open action
     /// names closed.
     pub(crate) fn close_named_step(&self, outer: &mut AutoCommit) -> bool {

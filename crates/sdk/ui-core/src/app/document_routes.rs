@@ -483,6 +483,12 @@ impl App {
     fn drain_document_routes_after_refresh(&mut self) {
         let mut changed = self.document_routes.merge_owned(&mut self.state.doc);
         while let Some(mutation) = self.document_routes.primary.front() {
+            // A window whose document cannot take a peer's document yet must not load — and, on
+            // bytes that do not load, quarantine — it now:
+            // [`State::defers_remote`] says so before the whole document is read.
+            if self.state.defers_remote() {
+                break;
+            }
             let state = &mut self.state;
             match crate::history_mode::routes::with_mutation(mutation, |incoming| {
                 state.merge_remote_committed(incoming)
@@ -936,6 +942,12 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                 continue;
             }
             while let Some(mutation) = entry.pending.front() {
+                // A document that cannot take a peer's changes yet must not load — and, on
+                // bytes that do not load, quarantine — them now: hold them queued, closing an
+                // unfinished named step when that is what holds it.
+                if owner.defers_remote() && !owner.close_named_step(outer) {
+                    break;
+                }
                 use automerge::transaction::Transactable as _;
                 let (store, checkout) = owner.store_checkout();
                 // A peer's whole document that this replica merges and is

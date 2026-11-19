@@ -437,13 +437,18 @@ impl State {
 }
 
 impl State {
+    /// Whether the window's document cannot take a peer's document yet: an unfinished edit, or
+    /// undo history over a different frontier.
+    pub(crate) fn defers_remote(&self) -> bool {
+        self.doc.pending_ops() != 0
+            || !same_frontier(self.undo.last_heads(), &self.doc.base_heads())
+    }
+
     pub(crate) fn merge_remote_committed(
         &mut self,
         incoming: crate::collaboration::Incoming<'_>,
     ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
-        if self.doc.pending_ops() != 0
-            || !same_frontier(self.undo.last_heads(), &self.doc.base_heads())
-        {
+        if self.defers_remote() {
             return Ok(None);
         }
         let before = self.doc.get_heads();

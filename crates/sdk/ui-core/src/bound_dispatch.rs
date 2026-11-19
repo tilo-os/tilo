@@ -5365,6 +5365,23 @@ mod bound_action_address_tests;
 #[path = "bound_dispatch/owned_restore_tests.rs"]
 mod owned_restore_tests;
 
+/// Whether a document cannot take a peer's changes yet: an unfinished edit, or a restore over a
+/// different frontier.
+pub(crate) fn defers_remote(store: &ResourceStore, checkout: &DocumentCheckout) -> bool {
+    store
+        .with_action_state(&checkout.id, |doc, _, state| {
+            defers_remote_state(doc, state)
+        })
+        .unwrap_or(false)
+}
+
+fn defers_remote_state(doc: &AutoCommit, state: &ResourceActionState) -> bool {
+    doc.pending_ops() != 0
+        || state.pending.as_ref().is_some_and(|pending| {
+            !crate::state::owned_restore::same_frontier(&pending.before, &doc.base_heads())
+        })
+}
+
 pub(crate) fn merge_remote_owned_document(
     store: &ResourceStore,
     checkout: &DocumentCheckout,
@@ -5380,11 +5397,7 @@ pub(crate) fn merge_remote_owned_document(
         .map_err(RemoteApplyError::Unavailable)?;
     let merged = store
         .with_action_state(&checkout.id, |doc, history, state| {
-            if doc.pending_ops() != 0
-                || state.pending.as_ref().is_some_and(|pending| {
-                    !crate::state::owned_restore::same_frontier(&pending.before, &doc.base_heads())
-                })
-            {
+            if defers_remote_state(doc, state) {
                 return Ok(MergedRemote::deferred());
             }
             let next = state
