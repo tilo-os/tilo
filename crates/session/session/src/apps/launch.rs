@@ -235,6 +235,11 @@ impl Apps {
             let asked = launch
                 .as_ref()
                 .map_or_else(|| event.app.clone(), |launch| launch.asked.clone());
+            // A Windows program is asked by its entry in the manager's list, which is no name a
+            // person reads, and one that never showed a window never had a place on the shell.
+            let windows_program = asked
+                .strip_prefix(crate::windows_compat::ASKED_PREFIX)
+                .is_some();
             if launch.is_none() {
                 tracing::warn!(app = %event.app, "a stopped app this session did not start");
             }
@@ -250,12 +255,19 @@ impl Apps {
                 // waiting on a window that is not coming.
                 let held = launch.as_ref().and_then(|launch| launch.instance);
                 if let Some(tab) = held.filter(|_| could_not_open) {
-                    self.could_not_open(Some(tab), &asked, &why);
+                    self.could_not_open(Some(tab), &asked, Some(&event.title), &why);
+                    continue;
+                }
+                // A Windows program with no window that ends at once never showed: the manager
+                // that started it says what became of it, and a tab for something that never
+                // showed is noise in the place the person is not looking.
+                if could_not_open && windows_program {
+                    tracing::info!(app = %event.app, "a Windows program that never showed a window leaves no tab");
                     continue;
                 }
                 let notice = desktop.with_policy(|policy| {
                     if could_not_open {
-                        let answer = not_opened(policy, &asked, &why);
+                        let answer = not_opened(policy, &asked, Some(&event.title), &why);
                         policy.not_opened(&asked, &event.title, answer)
                     } else {
                         // In the tab its last window was in, where the person left it.

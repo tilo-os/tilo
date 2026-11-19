@@ -24,13 +24,29 @@ pub fn serve_keeper() -> io::Result<()> {
     let Ok(args) = std::env::var(KEEPER_ARGS) else {
         return Ok(());
     };
+    // The harness around this keeper prints its own report on the stream a launch's output is read
+    // from. Its script gave the keeper that stream at descriptor 3 and left the harness's on
+    // nothing, so from here on what the app writes is passed on where the real keeper's is.
+    // SAFETY: `dup2` and `close` take plain descriptors, and descriptor 3 is this script's.
+    unsafe {
+        if libc::dup2(3, libc::STDOUT_FILENO) != -1 {
+            libc::close(3);
+        }
+    }
     let mut options = tilo_app_keeper::Options::from_args(args.lines().map(Into::into))
         .map_err(io::Error::other)?;
     // A keeper whose app ended waits this long for a session to hear it: a test's next run is
     // there in milliseconds, or never comes.
     options.grace = Duration::from_secs(5);
     options.aged_by = Some(options.dir.join(AGED));
-    tilo_app_keeper::Keeper::new(options).and_then(tilo_app_keeper::Keeper::run)
+    let ended = tilo_app_keeper::Keeper::new(options).and_then(tilo_app_keeper::Keeper::run);
+    // A keeper's process ends with its app, as the real one's does. This binary is a test harness
+    // around it, and the report the harness would print after the keeper returns would land on the
+    // stream a launch's output is read from — as no real keeper's own words ever do.
+    match ended {
+        Ok(()) => std::process::exit(0),
+        Err(error) => Err(error),
+    }
 }
 
 /// The file that makes a test keeper one of an older build ([`age`]).
@@ -56,7 +72,7 @@ pub fn keeper_program(path: &Path, test: &str) -> io::Result<()> {
     program(
         path,
         &format!(
-            "{KEEPER_ARGS}=\"$(printf '%s\\n' \"$@\")\" exec {} --exact {} --nocapture",
+            "{KEEPER_ARGS}=\"$(printf '%s\\n' \"$@\")\" exec {} --exact {} --nocapture 3>&1 1>/dev/null",
             quoted(&exe.to_string_lossy()),
             quoted(test),
         ),

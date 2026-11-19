@@ -49,12 +49,15 @@ const RELAY_LINES_MAX: u64 = 5_000;
 /// How many of an app's last stderr lines its end keeps for the report.
 pub const TAIL_LINES: usize = 12;
 
-/// What an app wrote that the log kept for its end: the last stderr lines, and
-/// how many lines were not relayed.
+/// What an app wrote that the log kept for its end: the last lines of each stream, and how many
+/// lines did not reach the log. A program that stopped with an error says why on its error stream when
+/// it says it anywhere; a console tool prints its usage on its normal output, so both are kept.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputTail {
     /// Its last stderr lines, oldest first.
     pub stderr: Vec<String>,
+    /// Its last stdout lines, oldest first.
+    pub stdout: Vec<String>,
     /// Lines of either stream the log did not relay.
     pub dropped: u64,
 }
@@ -76,6 +79,7 @@ pub struct AppOutput {
     /// reads it.
     file: Option<Mutex<std::fs::File>>,
     stderr_tail: Mutex<VecDeque<String>>,
+    stdout_tail: Mutex<VecDeque<String>>,
     /// The threads reading the app's streams, joined by [`Self::finish`].
     readers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     /// The keeper's directory, for a launch kept across a restart: what this desktop reads from
@@ -98,6 +102,7 @@ impl AppOutput {
             app,
             file: file.map(Mutex::new),
             stderr_tail: Mutex::new(VecDeque::with_capacity(TAIL_LINES)),
+            stdout_tail: Mutex::new(VecDeque::with_capacity(TAIL_LINES)),
             readers: Mutex::new(Vec::new()),
             #[cfg(target_os = "linux")]
             kept: Mutex::new(None),
@@ -146,24 +151,26 @@ impl AppOutput {
     /// log, while a crash report still says what the app wrote before it.
     #[cfg(target_os = "linux")]
     fn seed_tail(&self, dir: &std::path::Path) {
-        let path = tilo_app_keeper::output::path(dir, "stderr");
-        let stopping = Arc::new(AtomicBool::new(true));
-        let Ok(mut whole) = tilo_app_keeper::output::Follow::whole(&path, stopping) else {
-            return;
-        };
-        let mut kept = Vec::new();
-        if std::io::Read::read_to_end(&mut whole, &mut kept).is_err() {
-            return;
-        }
-        let text = String::from_utf8_lossy(&kept);
-        let lines = text.lines();
-        let skip = lines.clone().count().saturating_sub(TAIL_LINES);
-        let mut tail = self.stderr_tail.lock_recover();
-        for line in lines.skip(skip) {
-            if tail.len() == TAIL_LINES {
-                tail.pop_front();
+        for (stream, tail) in [("stderr", &self.stderr_tail), ("stdout", &self.stdout_tail)] {
+            let path = tilo_app_keeper::output::path(dir, stream);
+            let stopping = Arc::new(AtomicBool::new(true));
+            let Ok(mut whole) = tilo_app_keeper::output::Follow::whole(&path, stopping) else {
+                continue;
+            };
+            let mut kept = Vec::new();
+            if std::io::Read::read_to_end(&mut whole, &mut kept).is_err() {
+                continue;
             }
-            tail.push_back(line.to_owned());
+            let text = String::from_utf8_lossy(&kept);
+            let lines = text.lines();
+            let skip = lines.clone().count().saturating_sub(TAIL_LINES);
+            let mut tail = tail.lock_recover();
+            for line in lines.skip(skip) {
+                if tail.len() == TAIL_LINES {
+                    tail.pop_front();
+                }
+                tail.push_back(line.to_owned());
+            }
         }
     }
 
@@ -300,8 +307,13 @@ impl AppOutput {
         {
             let _ = writeln!(file, "{said}");
         }
-        if stream == "stderr" {
-            let mut tail = self.stderr_tail.lock_recover();
+        {
+            let tail = if stream == "stderr" {
+                &self.stderr_tail
+            } else {
+                &self.stdout_tail
+            };
+            let mut tail = tail.lock_recover();
             if tail.len() == TAIL_LINES {
                 tail.pop_front();
             }
@@ -351,6 +363,7 @@ impl AppOutput {
     pub fn tail(&self) -> OutputTail {
         OutputTail {
             stderr: self.stderr_tail.lock_recover().iter().cloned().collect(),
+            stdout: self.stdout_tail.lock_recover().iter().cloned().collect(),
             dropped: self.dropped.load(Ordering::Relaxed),
         }
     }
@@ -422,8 +435,13 @@ mod tests {
             let app = output();
             let long = "x".repeat(LINE_BYTES.saturating_mul(2));
             read(&app, &format!("{long}\n"), "stdout");
-            let kept = app.tail().stderr;
-            assert!(kept.is_empty(), "a stdout line is not the stderr tail");
+            let kept = app.tail();
+            assert!(kept.stderr.is_empty(), "a stdout line is not the stderr tail");
+            assert_eq!(
+                kept.stdout,
+                ["x".repeat(LINE_BYTES) + "… [truncated]"],
+                "and it is kept as its own stream's line, cut at the bound"
+            );
         }
 
         phase a_chatty_app_is_rate_limited_and_the_log_says_how_much_it_left_out;

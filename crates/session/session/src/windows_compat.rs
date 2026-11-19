@@ -385,9 +385,14 @@ fn outcome_of(event: &tilo_app_launch::Event) -> ExecutionOutcome {
             | tilo_app_launch::End::Failed(_)
             | tilo_app_launch::End::KeeperStopped => None,
         },
+        // Its error stream when it said anything there; a console program that prints its usage
+        // and stops says why on its normal output.
         said: end
             .crashed()
-            .then(|| compat_service::last_words(&event.said.stderr))
+            .then(|| {
+                compat_service::last_words(&event.said.stderr)
+                    .or_else(|| compat_service::last_words(&event.said.stdout))
+            })
             .flatten(),
     }
 }

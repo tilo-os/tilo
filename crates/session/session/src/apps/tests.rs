@@ -426,6 +426,7 @@ fn canvas_ended(apps: &Apps, id: u64, lived: std::time::Duration, end: End, said
         asked_to_end: false,
         said: OutputTail {
             stderr: vec![said.to_owned()],
+            stdout: Vec::new(),
             dropped: 0,
         },
     });
@@ -576,6 +577,87 @@ fn a_stop_the_person_asked_for_is_not_a_crash() {
             .iter()
             .any(|text| text.starts_with("Canvas stopped working")),
         "the same end the session did not ask for is still a crash: {crashed:?}"
+    );
+}
+
+/// A Windows program is asked by its entry in the manager's list, which is no name a person
+/// reads: the tab that answers for it names it as the manager does. One that never showed a
+/// window leaves no tab at all — the manager that started it says what became of it.
+#[test]
+fn a_windows_program_is_named_by_its_name_and_a_windowless_one_leaves_no_tab() {
+    const ENTRY: &str = "windows-1c8152bfbdd80870708389a79cf20728";
+    let started = |apps: &Apps, instance: Option<u64>| {
+        apps.state.borrow_mut().launched.insert(
+            1,
+            Launching {
+                asked: format!("{}{ENTRY}", crate::windows_compat::ASKED_PREFIX),
+                app: "app-1c8152bfbdd80870708389a79cf20728".to_owned(),
+                workspace: WORKSPACE.to_owned(),
+                pid: None,
+                instance,
+                window: None,
+                tab: None,
+                started: std::time::Instant::now(),
+                got: Got::Arriving,
+            },
+        );
+    };
+    let ended = |apps: &Apps| {
+        apps.state.borrow().spawner.report(Event {
+            id: 1,
+            app: "app-1c8152bfbdd80870708389a79cf20728".to_owned(),
+            title: "Plink".to_owned(),
+            end: End::exited(1),
+            killed: false,
+            asked_to_end: false,
+            said: OutputTail::default(),
+        });
+        apps.follow_ended();
+    };
+
+    // A program that never showed a window: no tab, and nothing that names an entry.
+    let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+    let desktop = shell();
+    apps.attach(desktop.clone());
+    started(&apps, None);
+    ended(&apps);
+    let shown = texts(&desktop);
+    assert!(
+        !shown.iter().any(|text| text.contains("could not open")),
+        "a Windows program that never showed leaves no tab: {shown:?}"
+    );
+
+    // A tab the shell held for it says it did not open, naming the program as its manager does.
+    let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
+    let desktop = shell();
+    apps.attach(desktop.clone());
+    desktop
+        .with_policy(|policy| {
+            policy
+                .handle()
+                .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
+                    app: "example.Canvas".into(),
+                    beside: None,
+                    background: None,
+                    float: None,
+                })
+        })
+        .unwrap();
+    desktop.with_widgets(WidgetSurface::relayout);
+    let asked = desktop.take_launches();
+    assert_eq!(asked.len(), 1, "a tab is held");
+    started(&apps, asked[0].tab);
+    ended(&apps);
+    let shown = texts(&desktop);
+    assert!(
+        shown
+            .iter()
+            .any(|text| text.contains("Plink") && text.contains("could not open")),
+        "the tab names Plink, as its manager does: {shown:?}"
+    );
+    assert!(
+        !shown.iter().any(|text| text.contains(ENTRY)),
+        "and never the entry it is asked by: {shown:?}"
     );
 }
 
