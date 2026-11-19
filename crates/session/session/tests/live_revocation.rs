@@ -17,8 +17,11 @@ use std::time::Duration;
 
 use tilo_session::Session;
 
-/// The private home the session runs in.
+/// The private home the session runs in. A session keeps the list where the environment it starts
+/// in names, and the shared device state every session is handed sets a home of its own: it is made
+/// first, so this home is the one the session starts in.
 fn session_env(root: &Path) -> tilo_test_env::ScopedEnv {
+    let _ = crate::common::device_state();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("HOME", root)
         .set("XDG_CONFIG_HOME", root.join("config"))
