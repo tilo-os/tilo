@@ -794,32 +794,6 @@ fn a_rows_own_row_offers_its_vocabularys_effects_unasked() {
     );
 }
 
-#[test]
-fn a_row_specializes_a_declared_effect_only_it_can_shape() {
-    let row = LiveRow::typed::<Plain>("plain:1", "Plain")
-        .specialized([JobEffect::Stop {
-            job: "plain:1".into(),
-            force: Some(true),
-        }
-        .bound()])
-        .into_resource();
-    assert_eq!(row.actions.len(), 1);
-    let stop = &row.actions[0];
-    assert_eq!(stop.id, "stop");
-    assert!(
-        stop.params().is_empty(),
-        "the row's own effect is bound whole"
-    );
-    let encoded = stop.build_json(&serde_json::Map::new()).unwrap();
-    assert_eq!(
-        JobEffect::from_payload(&encoded.payload).unwrap(),
-        JobEffect::Stop {
-            job: "plain:1".into(),
-            force: Some(true),
-        }
-    );
-}
-
 /// What a row's status says of an effect is what a caller of that row meets:
 /// the effect the status makes unavailable is refused with its reason, while
 /// the same effect on another row is invoked.

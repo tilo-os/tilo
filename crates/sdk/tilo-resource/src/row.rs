@@ -390,23 +390,6 @@ impl LiveRow {
         self
     }
 
-    /// Offer `operations` the row's type declares but only the row can shape,
-    /// each still the type's effect: a page's forms, one `answer-form` per
-    /// form, named after the form and asking its own questions. Everything a
-    /// type declares for its rows as they are goes through the declaration
-    /// (`#[derive(Row)]`'s `effects = E`), never through here.
-    ///
-    /// Framework-internal: an app's row offers effects through its type's
-    /// declaration and the bindings of [`Self::typed_with`].
-    #[doc(hidden)]
-    #[must_use]
-    pub fn specialized(mut self, operations: impl IntoIterator<Item = ActionSpec>) -> Self {
-        for operation in operations {
-            self = self.operation(operation);
-        }
-        self
-    }
-
     /// # Panics
     /// In a debug build, when `operation` is a document mutation; a release
     /// build drops it.
