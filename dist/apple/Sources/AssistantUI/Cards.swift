@@ -5,10 +5,21 @@ import SwiftUI
 // The pieces of a conversation that are more than words: a secret it needs, a service that
 // wants a sign-in, an event it set up, a brief.
 
+/// Visual weight of a card in the conversation.
+enum CardEmphasis: Equatable, Sendable {
+    /// Default balanced card surface.
+    case calm
+    /// Waiting on a person's decision: crisp accent focus without heavy borders.
+    case waiting
+    /// Completed or handled quietly: muted calm appearance.
+    case quiet
+}
+
 /// A card's body: `.box`, with its head `.hd`.
 struct CardBox<Content: View>: View {
     let name: String
     let note: String
+    var emphasis: CardEmphasis = .calm
     @ViewBuilder var content: Content
     @Environment(\.dynamicTypeSize) private var textSize
 
@@ -17,35 +28,105 @@ struct CardBox<Content: View>: View {
         let large = textSize.isAccessibilitySize
         let head = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
             : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
+        let shape = RoundedRectangle(cornerRadius: Measure.bubbleRadius, style: .continuous)
         VStack(alignment: .leading, spacing: 10) {
             head {
                 // A name is read whole: a secret that belongs to two servers names both, and
                 // a person reads both before they type it. It wraps and is never cut short.
-                Text(name).font(.tilo(14, .semibold)).foregroundStyle(Token.ink)
+                Text(name)
+                    .font(.tilo(14, emphasis == .quiet ? .medium : .semibold))
+                    .foregroundStyle(emphasis == .quiet ? Token.ink2 : Token.ink)
                     .fixedSize(horizontal: false, vertical: true)
                 if !large { Spacer(minLength: 0) }
-                Text(note).font(.small125).foregroundStyle(Token.ink2).accessibilityLabel(note.spoken)
+                if !note.isEmpty {
+                    Text(note)
+                        .font(.small125)
+                        .foregroundStyle(noteColor)
+                        .accessibilityLabel(note.spoken)
+                }
             }
             content
         }
-        .padding(.horizontal, 14)
+        .padding(.leading, emphasis == .waiting ? 16 : 14)
+        .padding(.trailing, 14)
         .padding(.vertical, 12)
-        .background(Token.raised, in: RoundedRectangle(cornerRadius: Measure.bubbleRadius))
+        .background(Token.raised, in: shape)
+        .overlay(alignment: .leading) {
+            if emphasis == .waiting {
+                Rectangle()
+                    .fill(Token.you)
+                    .frame(width: 3)
+                    .accessibilityHidden(true)
+            }
+        }
+        .clipShape(shape)
         .frame(maxWidth: Measure.bubbleWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    private var noteColor: Token {
+        switch emphasis {
+        case .waiting: .you
+        case .calm: .ink2
+        case .quiet: .ink3
+        }
+    }
 }
 
-/// How a settled card says where it stands.
-private struct Settled: View {
+/// How a settled card says where it stands in one calm line.
+struct Settled: View {
     let words: String
     var good = true
 
     var body: some View {
-        HStack(spacing: 8) {
-            if good { Glyph(.check).foregroundStyle(Token.on) }
-            Text(words).font(.body14).foregroundStyle(Token.ink2)
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            if good {
+                Glyph(.check, side: 14).foregroundStyle(Token.on)
+            } else {
+                Circle()
+                    .fill(Token.ink3.opacity(0.65))
+                    .frame(width: 5, height: 5)
+                    .accessibilityHidden(true)
+            }
+            Text(words)
+                .font(.tilo(13.5))
+                .foregroundStyle(Token.ink2)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A calm single-line summary of an autonomous outcome or quiet arrival.
+struct QuietOutcomeLine: View {
+    let words: String
+    var handledQuietly = true
+    var isImportant = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 7) {
+            if handledQuietly {
+                Glyph(.check, side: 12)
+                    .foregroundStyle(Token.on.opacity(0.85))
+            } else {
+                Circle()
+                    .fill(Token.ink3.opacity(0.6))
+                    .frame(width: 5, height: 5)
+                    .accessibilityHidden(true)
+            }
+            Text(words)
+                .font(.tilo(13))
+                .foregroundStyle(Token.ink2)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .multilineTextAlignment(.leading)
+            if isImportant {
+                ImportantMark()
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -62,7 +143,9 @@ struct SecretCard: View {
 
     var body: some View {
         Bubble { MarkdownText(text: request.text) }
-        CardBox(name: request.name, note: refused ? "" : AssistantWords.keptInVault.said) {
+        CardBox(name: request.name,
+                note: refused ? "" : AssistantWords.keptInVault.said,
+                emphasis: request.state == .waiting ? .waiting : .quiet) {
             switch request.state {
             case .waiting:
                 ProtectedField(typed: $typed, label: AssistantWords.secretField.said(["name": request.name]), submit: save)
@@ -249,7 +332,7 @@ struct ProviderCard: View {
         let provider = providers.first(where: { $0.id == picked }) ?? providers.first
         Bubble { MarkdownText(text: ProviderCard.says(of: provider, again: again)) }
         if let provider {
-            CardBox(name: provider.name, note: AssistantWords.keptInVault.said) {
+            CardBox(name: provider.name, note: AssistantWords.keptInVault.said, emphasis: .waiting) {
                 if providers.count > 1 {
                     Flow(spacing: 8, lineSpacing: 8) {
                         ForEach(providers) { choice in
@@ -329,7 +412,9 @@ struct ModelCard: View {
         // said once Tilo has taken it, so no two answers stand here at once.
         let named = answers ?? chosen?.name
         Bubble { MarkdownText(text: (answers == nil ? AssistantWords.needsModel : AssistantWords.keyTaken).said) }
-        CardBox(name: AssistantWords.model.said, note: ModelCard.note(chosen: chosen, among: models)) {
+        CardBox(name: AssistantWords.model.said,
+                note: ModelCard.note(chosen: chosen, among: models),
+                emphasis: named == nil ? .waiting : .quiet) {
             if let named { Settled(words: AssistantWords.answersOn.said(["model": named])) }
             Menu {
                 if providers.count > 1 {
@@ -369,7 +454,7 @@ struct ConnectionCard: View {
 
     var body: some View {
         Bubble { MarkdownText(text: offer.text) }
-        CardBox(name: offer.name, note: offer.note) {
+        CardBox(name: offer.name, note: offer.note, emphasis: offer.state == .waiting ? .waiting : .quiet) {
             switch offer.state {
             case .waiting:
                 Flow(spacing: 8, lineSpacing: 8) {
@@ -401,11 +486,12 @@ struct ConnectionCard: View {
 /// A small rounded word: `.tag`.
 struct Tag: View {
     let words: String
+    var surface: Token = .raised
 
     var body: some View {
         Text(words).font(.tag115).foregroundStyle(Token.ink2)
             .padding(.horizontal, 9).padding(.vertical, 2)
-            .background(Token.raised, in: Capsule())
+            .background(surface, in: Capsule())
     }
 }
 
@@ -415,29 +501,40 @@ struct EventCardView: View {
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
 
+    private var isWaiting: Bool {
+        card.settled == nil && card.answer == nil && !card.choices.isEmpty
+    }
+
     var body: some View {
         // A card that stands under the assistant's own answer says nothing above its box.
         if !card.text.isEmpty { Bubble { MarkdownText(text: card.text) } }
         CardBox(name: card.automation.title,
-                note: card.settled == .undone ? AssistantWords.eventRemoved.said : wording.state(card.automation)) {
+                note: card.settled == .undone ? CardActionCopy.removeAutomationNote : wording.state(card.automation),
+                emphasis: isWaiting ? .waiting : .quiet) {
             let tags = wording.cardTags(card.automation)
             if !tags.isEmpty {
                 Flow(spacing: 8, lineSpacing: 6) {
-                    ForEach(tags, id: \.self) { Tag(words: $0) }
+                    ForEach(tags, id: \.self) { Tag(words: $0, surface: .content) }
                 }
             }
             // What the event keeps, where its person asked to see it, and what became of a press.
             if let shown = card.shown { MarkdownText(text: shown) }
             if let settled = card.settled {
-                Fine(words: (settled == .undone ? AssistantWords.eventUndone : AssistantWords.asksEachTime).said)
+                Settled(words: CardActionCopy.eventSettledText(for: settled), good: settled != .undone)
             }
             if let chosen = card.answer, let choice = card.choices.first(where: { $0.id == chosen }) {
-                Fine(words: AssistantWords.youChose.said(["answer": choice.title]))
+                Settled(words: AssistantWords.youChose.said(["answer": CardActionCopy.eventChoiceTitle(for: choice)]))
             } else if !card.choices.isEmpty {
                 Flow(spacing: 8, lineSpacing: 8) {
                     ForEach(card.choices) { choice in
-                        Button(choice.title) { model.answer(card.question, with: choice.id) }
+                        let title = CardActionCopy.eventChoiceTitle(for: choice)
+                        let button = Button(title) { model.answer(card.question, with: choice.id) }
                             .buttonStyle(BoxButtonStyle(isMain: choice.isMain))
+                        if let hint = CardActionCopy.eventChoiceHint(for: choice) {
+                            button.accessibilityHint(hint)
+                        } else {
+                            button
+                        }
                     }
                 }
                 .accessibilityElement(children: .contain)

@@ -11,7 +11,7 @@ public struct SupervisionView: View {
     @State private var detail: Detail?
 
     enum Detail: String, Identifiable {
-        case logins, importance, learned, places, workspaces
+        case logins, importance, learned, mutedOffers, places, workspaces
 
         var id: String { rawValue }
     }
@@ -104,7 +104,20 @@ public struct SupervisionView: View {
                     }
                     FactLine(key: .logins, line: wording.logins(facts)) { link(.open) { detail = .logins } }
                     FactLine(key: .important, line: wording.importance(facts)) { link(.open) { detail = .importance } }
-                    FactLine(key: .hasLearned, line: wording.learned(facts)) { link(.open) { detail = .learned } }
+                    FactLine(key: .hasLearned, line: learnedLine(facts)) { link(.open) { detail = .learned } }
+                    if !facts.mutedOffers.isEmpty {
+                        FactLine(key: .mutedOffers, line: mutedOffersLine(facts.mutedOffers)) {
+                            link(.open) { detail = .mutedOffers }
+                        }
+                    }
+                    if let destination = facts.trimmedDestinationNote {
+                        FactLine(key: .dataDestination,
+                                 line: Wording.Line(first: destination, second: AssistantWords.dataDestinationNote.said)) {
+                            Glyph(.lock, side: 14)
+                                .foregroundStyle(Token.ink3)
+                                .accessibilityHidden(true)
+                        }
+                    }
                     FactLine(key: .whereItWorks, line: wording.places(facts)) { link(.open) { detail = .places } }
                     FactLine(key: .workspaces, line: wording.workspaces(facts), isLast: true) { link(.open) { detail = .workspaces } }
                 }
@@ -135,6 +148,32 @@ public struct SupervisionView: View {
                             second: "\(AssistantWords.subAgents.said), \(AssistantWords.tasks.said): \(subModel)")
     }
 
+    private func learnedLine(_ facts: Supervision) -> Wording.Line {
+        let base = wording.learned(facts)
+        if base.second == nil, let first = facts.learned.first {
+            var meta: [String] = []
+            if let window = first.window?.trimmingCharacters(in: .whitespacesAndNewlines), !window.isEmpty {
+                meta.append(window)
+            }
+            if first.confirmed {
+                meta.append(AssistantWords.confirmed.said)
+            }
+            if !meta.isEmpty {
+                return Wording.Line(first: base.first, second: meta.joined(separator: " · "))
+            }
+        }
+        return base
+    }
+
+    private func mutedOffersLine(_ offers: [String]) -> Wording.Line {
+        guard let first = offers.first else { return Wording.Line(first: AssistantWords.none.said) }
+        var rest = Array(offers.dropFirst().prefix(1))
+        if offers.count > 2 {
+            rest.append(AssistantWords.moreCount.said(["count": String(offers.count - 2)]))
+        }
+        return Wording.Line(first: first, second: rest.isEmpty ? nil : rest.joined(separator: " · "))
+    }
+
     private func link(_ words: AssistantWords, _ action: @escaping () -> Void) -> some View {
         Button(words.said, action: action).buttonStyle(LinkStyle()).font(.tilo(14, .medium))
     }
@@ -163,19 +202,70 @@ public struct SupervisionView: View {
         }
     }
 
-    /// Messages, tokens and money of the day: `.use`.
+    /// Messages, tokens and money of the day: `.use`, with an optional per-cause breakdown.
     private func usage(_ usage: Supervision.Usage) -> some View {
         let spent = wording.spent(usage)
+        let spentDisplay = usage.spentDisplay(formattedKnown: spent.first)
+        let spentCaption: String = {
+            let base = spent.second ?? AssistantWords.spentToday.said
+            if spentDisplay.isKnown && usage.hasUnknownPrice {
+                return "\(base) · \(AssistantWords.somePricesUnknown.said)"
+            }
+            return base
+        }()
         // At the largest text sizes each figure has a line of its own: three beside each other break in mid-word.
         let row = textSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
             : AnyLayout(HStackLayout(alignment: .lastTextBaseline, spacing: 10))
-        return row {
-            figure(wording.messages(usage), AssistantWords.messagesToday.said, counted: usage.messagesToday != nil)
-            figure(wording.tokens(usage), AssistantWords.tokensToday.said, counted: usage.tokensToday != nil)
-            figure(spent.first, spent.second ?? "")
+        return VStack(alignment: .leading, spacing: 8) {
+            row {
+                figure(wording.messages(usage), AssistantWords.messagesToday.said, counted: usage.messagesToday != nil)
+                figure(wording.tokens(usage), AssistantWords.tokensToday.said, counted: usage.tokensToday != nil)
+                figure(spentDisplay.text, spentCaption, counted: spentDisplay.isKnown)
+            }
+            if !usage.causes.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(usage.causes) { cause in
+                        causeRow(cause, currency: usage.currency)
+                    }
+                }
+                .padding(.top, 2)
+            }
         }
         .padding(.vertical, 10)
         .overlay(alignment: .bottom) { Rectangle().fill(Token.line).frame(height: 1) }
+    }
+
+    /// One compact row in today's per-cause breakdown (e.g., Main chat, Events, Look-round, Reflection).
+    private func causeRow(_ cause: Supervision.Usage.CauseSpend, currency: String) -> some View {
+        let tokensText = AssistantWords.tokensShort.said(["count": wording.tokens(cause.tokens)])
+        let costText = cause.costText(currency: currency)
+        let layout = textSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+        return layout {
+            Text(cause.label)
+                .font(.small125)
+                .foregroundStyle(Token.ink2)
+            if !textSize.isAccessibilitySize { Spacer(minLength: 8) }
+            HStack(spacing: 6) {
+                Text(tokensText)
+                    .font(.small12)
+                    .monospacedDigit()
+                    .foregroundStyle(Token.ink3)
+                Text("·")
+                    .font(.small12)
+                    .foregroundStyle(Token.ink3)
+                    .accessibilityHidden(true)
+                Text(costText)
+                    .font(.small125)
+                    .monospacedDigit()
+                    .foregroundStyle(cause.isUnknownPrice ? Token.ink2 : Token.ink)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Token.raised, in: RoundedRectangle(cornerRadius: Measure.rowRadius))
+        .accessibilityElement(children: .combine)
     }
 
     /// One figure of the day over what it counts. Where the person's server counts none, the
@@ -283,19 +373,24 @@ private struct DetailSheet: View {
             ForEach(facts.situations, id: \.name) { row("\($0.name): \($0.value)") }
         case .learned:
             ForEach(facts.learned) { fact in
-                row(fact.text) {
-                    Button(AssistantWords.forget.said) { model.forget(fact.id) }
-                        .buttonStyle(LinkStyle()).font(.tilo(13, .medium, relativeTo: .callout))
-                }
+                learnedRow(fact)
             }
             if facts.learnedCount > facts.learned.count {
                 Fine(words: AssistantWords.moreCount.said(["count": String(facts.learnedCount - facts.learned.count)]))
                     .padding(.top, 10)
             }
+        case .mutedOffers:
+            ForEach(facts.mutedOffers, id: \.self) { row($0) }
+            if !facts.mutedOffers.isEmpty {
+                Fine(words: AssistantWords.mutedOffersNote.said).padding(.top, 10)
+            }
         case .places:
             ForEach(facts.places, id: \.name) { row("\($0.name), \($0.detail)") }
         case .workspaces:
             ForEach(facts.workspaces, id: \.self) { row($0) }
+            if let destination = facts.trimmedDestinationNote {
+                Fine(words: "\(AssistantWords.dataDestination.said): \(destination)").padding(.top, 10)
+            }
             if facts.workspaces.count == 1 { Fine(words: AssistantWords.worksInThis.said).padding(.top, 10) }
         }
     }
@@ -305,6 +400,7 @@ private struct DetailSheet: View {
         case .logins: AssistantWords.logins.said
         case .importance: AssistantWords.important.said
         case .learned: AssistantWords.hasLearned.said
+        case .mutedOffers: AssistantWords.mutedOffers.said
         case .places: AssistantWords.whereItWorks.said
         case .workspaces: AssistantWords.workspaces.said
         }
@@ -315,9 +411,57 @@ private struct DetailSheet: View {
         case .logins: facts.logins.isEmpty && facts.manager == nil
         case .importance: facts.importance.isEmpty && facts.situations.isEmpty
         case .learned: facts.learned.isEmpty
+        case .mutedOffers: facts.mutedOffers.isEmpty
         case .places: facts.places.isEmpty
         case .workspaces: facts.workspaces.isEmpty
         }
+    }
+
+    private func learnedRow(_ fact: Supervision.Learned) -> some View {
+        let window = fact.window?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasWindow = window.map { !$0.isEmpty } ?? false
+        return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(fact.text)
+                    .font(.body14)
+                    .foregroundStyle(Token.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Flow(spacing: 6, lineSpacing: 4) {
+                    authorityTag(confirmed: fact.confirmed)
+                    if hasWindow, let window {
+                        HStack(spacing: 4) {
+                            Glyph(.clock, side: 11, grows: false)
+                                .foregroundStyle(Token.ink3)
+                                .accessibilityHidden(true)
+                            Text(window)
+                                .font(.small12)
+                                .foregroundStyle(Token.ink2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+            Button(AssistantWords.forget.said) { model.forget(fact.id) }
+                .buttonStyle(LinkStyle()).font(.tilo(13, .medium, relativeTo: .callout))
+        }
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) { Rectangle().fill(Token.line).frame(height: 1) }
+    }
+
+    private func authorityTag(confirmed: Bool) -> some View {
+        HStack(spacing: 4) {
+            if confirmed {
+                Glyph(.check, side: 11, grows: false)
+                    .accessibilityHidden(true)
+            }
+            Text((confirmed ? AssistantWords.confirmed : AssistantWords.inferred).said)
+                .font(.tag115)
+        }
+        .foregroundStyle(confirmed ? Token.on : Token.ink2)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
+        .background(confirmed ? Token.onTint : Token.raised, in: Capsule())
     }
 
     private func row(_ words: String) -> some View {

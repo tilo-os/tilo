@@ -247,14 +247,32 @@ public struct ConversationView: View {
     }
 
     /// The app starts empty: before anything was said, the conversation says so.
+    /// When an active sub-agent has just started and has no messages yet, show its live context.
+    @ViewBuilder
     private var empty: some View {
-        VStack(spacing: 6) {
-            Mark(side: 28)
-            Text(AssistantWords.nothingYet.said).font(.tilo(15, .semibold)).foregroundStyle(Token.ink)
-            Text(AssistantWords.nothingYetBody.said).font(.body14).foregroundStyle(Token.ink2)
+        if let agent = liveAgent, let guidance = model.steeringGuidance(for: chat) {
+            VStack(spacing: 8) {
+                SubAgentStatusPill(badge: SubAgentStatusBadge(state: agent.state), isWriting: model.isWriting(chat))
+                Text(agent.title)
+                    .font(.tilo(15, .semibold))
+                    .foregroundStyle(Token.ink)
+                    .multilineTextAlignment(.center)
+                Text(guidance)
+                    .font(.body14)
+                    .foregroundStyle(Token.ink2)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 40)
+        } else {
+            VStack(spacing: 6) {
+                Mark(side: 28)
+                Text(AssistantWords.nothingYet.said).font(.tilo(15, .semibold)).foregroundStyle(Token.ink)
+                Text(AssistantWords.nothingYetBody.said).font(.body14).foregroundStyle(Token.ink2)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 40)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.bottom, 40)
     }
 }
 

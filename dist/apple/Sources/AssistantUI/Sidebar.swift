@@ -204,7 +204,10 @@ private struct AgentRow: View {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(agent.title).font(.tilo(14, .medium)).foregroundStyle(Token.ink).lineLimit(lines)
                         .multilineTextAlignment(.leading)
-                    Text(wording.sidebarLine(agent)).font(.small12).foregroundStyle(Token.ink3).lineLimit(lines)
+                    Text(wording.sidebarLine(agent))
+                        .font(.small12)
+                        .foregroundStyle(agent.state == .needsYou ? Token.you : Token.ink3)
+                        .lineLimit(lines)
                         .multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 0)

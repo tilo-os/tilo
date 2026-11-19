@@ -531,6 +531,7 @@ public final class AssistantModel {
         switch change {
         case .answering(true): turnBegan(in: chat)
         case .added(let new) where !new.allSatisfy(AssistantModel.isOwnMessage): turnBegan(in: chat)
+        case .changed(let piece) where !AssistantModel.isOwnMessage(piece): turnBegan(in: chat)
         default: break
         }
         guard known else { return }
@@ -602,9 +603,96 @@ public final class AssistantModel {
         subAgents.first { $0.id == id }
     }
 
-    /// Sub-agents that are currently running or waiting for input.
+    /// Sub-agents that are currently working or waiting for input.
     public var activeSubAgents: [SubAgent] {
         subAgents.filter { $0.state == .working || $0.state == .needsYou }
+    }
+
+    /// Active sub-agents ordered with those needing the person's input first, then those working.
+    public var prioritizedActiveSubAgents: [SubAgent] {
+        let needsYou = activeSubAgents.filter { $0.state == .needsYou }
+        let working = activeSubAgents.filter { $0.state == .working }
+        return needsYou + working
+    }
+
+    /// How many active sub-agents currently need the person's input.
+    public var subAgentsNeedingYou: Int {
+        subAgents.filter { $0.state == .needsYou }.count
+    }
+
+    /// The next active sub-agent to jump to when cycling through parallel sub-agents.
+    public func nextActiveSubAgent(after current: SubAgent.ID? = nil) -> SubAgent? {
+        let list = prioritizedActiveSubAgents
+        guard !list.isEmpty else { return nil }
+        guard let current, let index = list.firstIndex(where: { $0.id == current }) else {
+            return list.first
+        }
+        guard list.count > 1 else { return nil }
+        return list[(index + 1) % list.count]
+    }
+
+    /// Live mid-flight steering guidance shown above the composer when viewing an active sub-agent.
+    public func steeringGuidance(for chat: Chat) -> String? {
+        guard case .subAgent(let id) = chat, let agent = subAgent(id) else { return nil }
+        switch agent.state {
+        case .working:
+            return "Steer this sub-agent while it works…"
+        case .needsYou:
+            return "Needs your input — reply below to guide this sub-agent…"
+        case .done, .failed, .stopped:
+            return nil
+        }
+    }
+
+    /// Whether sending a note in `chat` reaches an active sub-agent mid-flight without stopping it.
+    public func canSteerMidFlight(in chat: Chat) -> Bool {
+        guard case .subAgent(let id) = chat, let agent = subAgent(id) else { return false }
+        return agent.state == .working || agent.state == .needsYou
+    }
+
+    /// Give keyboard focus to the message composer.
+    public func focusComposer() {
+        fieldCalls += 1
+    }
+
+    /// Send a mid-flight steering note to a sub-agent without stopping or cancelling its work.
+    public func steer(subAgent id: SubAgent.ID, with note: String) {
+        let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let chat = Chat.subAgent(id)
+        var draft = drafts[chat] ?? Draft(text: "")
+        draft.text = note
+        drafts[chat] = draft
+        send(in: chat)
+    }
+
+    /// Build the Code Factory active sub-agent strip plan for the phone `Now` strip.
+    public func subAgentStripPlan(in chat: Chat) -> SubAgentStripPlan {
+        let current: SubAgent.ID? = if case .subAgent(let id) = chat { id } else { nil }
+        let ordered = prioritizedActiveSubAgents
+        let needsCount = ordered.filter { $0.state == .needsYou }.count
+        let workingCount = ordered.filter { $0.state == .working }.count
+        let groupPill: SubAgentStripPlan.GroupPill? = if ordered.count >= 2,
+            let target = nextActiveSubAgent(after: current) ?? ordered.first
+        {
+            SubAgentStripPlan.GroupPill(
+                count: ordered.count,
+                needsYouCount: needsCount,
+                workingCount: workingCount,
+                target: target.id
+            )
+        } else {
+            nil
+        }
+        let entries = ordered.map { agent in
+            SubAgentStripPlan.Entry(
+                agent: agent,
+                badge: SubAgentStatusBadge(state: agent.state),
+                isWriting: isWriting(.subAgent(agent.id)),
+                isSelected: current == agent.id
+            )
+        }
+        return SubAgentStripPlan(groupPill: groupPill, entries: entries)
     }
 
     /// Every live artifact shared in `chat`, newest first, deduplicated by id.
@@ -1367,4 +1455,123 @@ extension LiveThing {
     /// page writes words, Markdown and all, and nothing that names a view shows the signs of it.
     /// Its name as its page gave it stays for its source to find it by.
     public var called: String { Markdown.plainTitle(title) }
+}
+
+/// Compact classification of where a sub-agent works, shown in its header bar.
+public enum SubAgentLocation: Equatable, Sendable {
+    case server
+    case macFolder
+    case codingSandbox
+
+    public var label: String {
+        switch self {
+        case .server: "Server"
+        case .macFolder: "Mac folder"
+        case .codingSandbox: "Coding sandbox"
+        }
+    }
+
+    /// Distill a sub-agent's `runsOn` description into Server, Mac folder, or Coding sandbox.
+    public static func classify(_ runsOn: String) -> SubAgentLocation {
+        let lower = runsOn.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.isEmpty { return .server }
+        let words = lower.split { !$0.isLetter && !$0.isNumber }
+        if words.contains("mac") || words.contains("macbook") || words.contains("macos")
+            || words.contains("folder") || words.contains("local")
+            || lower.contains("/users/") || lower.hasPrefix("~/")
+        {
+            return .macFolder
+        }
+        if lower.contains("sandbox") || lower.contains("coding") || lower.contains("claude code")
+            || lower.contains("codex") || lower.contains("workspace's machine")
+            || lower.contains("workspace’s machine") || lower.contains("container") || words.contains("vm")
+        {
+            return .codingSandbox
+        }
+        return .server
+    }
+}
+
+/// Live status badge copy and action availability for a sub-agent's state.
+public struct SubAgentStatusBadge: Equatable, Sendable {
+    public let state: SubAgent.State
+    public let label: String
+    public let isActive: Bool
+    public let canStop: Bool
+    public let needsAttention: Bool
+
+    public init(state: SubAgent.State) {
+        self.state = state
+        switch state {
+        case .working:
+            label = "Working"
+            isActive = true
+            canStop = true
+            needsAttention = false
+        case .needsYou:
+            label = "Needs you"
+            isActive = true
+            canStop = true
+            needsAttention = true
+        case .done:
+            label = "Done"
+            isActive = false
+            canStop = false
+            needsAttention = false
+        case .failed:
+            label = "Failed"
+            isActive = false
+            canStop = false
+            needsAttention = false
+        case .stopped:
+            label = "Stopped"
+            isActive = false
+            canStop = false
+            needsAttention = false
+        }
+    }
+}
+
+/// Cross-platform layout plan for active sub-agent pills inside the phone `Now` strip.
+public struct SubAgentStripPlan: Equatable, Sendable {
+    public struct GroupPill: Equatable, Sendable {
+        public let count: Int
+        public let needsYouCount: Int
+        public let workingCount: Int
+        public let target: SubAgent.ID
+
+        public var label: String {
+            AssistantWords.subAgentsCount.said(["count": String(count)])
+        }
+
+        public var detailLabel: String? {
+            guard needsYouCount > 0 else { return nil }
+            return "\(needsYouCount) \(AssistantWords.needsYou.said)"
+        }
+
+        public var accessibilityLabel: String {
+            if needsYouCount > 0 {
+                return "\(label), \(needsYouCount) \(AssistantWords.needsYou.said)"
+            }
+            return label
+        }
+    }
+
+    public struct Entry: Identifiable, Equatable, Sendable {
+        public let agent: SubAgent
+        public let badge: SubAgentStatusBadge
+        public let isWriting: Bool
+        public let isSelected: Bool
+
+        public var id: SubAgent.ID { agent.id }
+
+        public var accessibilityLabel: String {
+            "\(agent.title), \(badge.label), \(AssistantWords.showSubAgent.said)"
+        }
+    }
+
+    public let groupPill: GroupPill?
+    public let entries: [Entry]
+
+    public var isEmpty: Bool { entries.isEmpty }
 }

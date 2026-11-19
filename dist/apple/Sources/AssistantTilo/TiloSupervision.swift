@@ -45,6 +45,8 @@ final class AssistantDay {
         usage.messagesToday = AssistantDay.count(spent?["messages"]).map { isTodays ? $0 : 0 }
         usage.tokensToday = AssistantDay.count(spent?["tokens"]).map { isTodays ? $0 : 0 }
         usage.dailyLimitMicros = AssistantDay.count(item["spend_limit_micros"])
+        usage.isUnknownPrice = isTodays && AssistantDay.unknownPrice(in: spent)
+        usage.causes = isTodays ? AssistantDay.causes(in: spent) : []
         return usage
     }
 
@@ -69,6 +71,203 @@ final class AssistantDay {
     private static func count(_ said: JSON?) -> Int? {
         guard let number = said?.number, number >= 0 else { return nil }
         return Int(exactly: number.rounded())
+    }
+
+    /// Whether a spent object reports calls whose model pricing is unknown.
+    private static func unknownPrice(in spent: JSON?) -> Bool {
+        if spent?["is_unknown_price"]?.bool == true || spent?["unknown_price"]?.bool == true {
+            return true
+        }
+        return (count(spent?["unknown_calls"]) ?? 0) > 0
+    }
+
+    /// Per-cause breakdown of today's usage, from either an array (`causes`) or a map (`by_cause`).
+    private static func causes(in spent: JSON?) -> [Supervision.Usage.CauseSpend] {
+        guard let raw = spent?["causes"] ?? spent?["by_cause"] else { return [] }
+        if let list = raw.array {
+            return list.compactMap { entry in
+                guard let kind = entry["kind"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !kind.isEmpty
+                else { return nil }
+                return causeSpend(kind: kind, entry: entry)
+            }
+        }
+        if let fields = raw.object {
+            let order = ["turn", "event", "look", "reflection", "shadow"]
+            let sortedKeys = fields.keys.sorted { lhs, rhs in
+                let leftRank = order.firstIndex(of: lhs.lowercased()) ?? order.count
+                let rightRank = order.firstIndex(of: rhs.lowercased()) ?? order.count
+                if leftRank != rightRank { return leftRank < rightRank }
+                return lhs < rhs
+            }
+            return sortedKeys.compactMap { key in
+                let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, let entry = fields[key] else { return nil }
+                return causeSpend(kind: trimmed, entry: entry)
+            }
+        }
+        return []
+    }
+
+    private static func causeSpend(kind: String, entry: JSON) -> Supervision.Usage.CauseSpend {
+        let tokens: Int
+        if let direct = count(entry["tokens"]) {
+            tokens = direct
+        } else {
+            let input = count(entry["input_tokens"]) ?? 0
+            let output = count(entry["output_tokens"]) ?? 0
+            tokens = input + output
+        }
+        let costCents: Int
+        if let cents = count(entry["cost_cents"]) {
+            costCents = cents
+        } else if let micros = count(entry["cost_micros"]) {
+            costCents = (micros + 5_000) / 10_000
+        } else {
+            costCents = 0
+        }
+        return Supervision.Usage.CauseSpend(
+            kind: kind,
+            tokens: tokens,
+            costCents: costCents,
+            isUnknownPrice: unknownPrice(in: entry)
+        )
+    }
+}
+
+/// Transparency details read from server JSON for the assistant view: dated learned facts with
+/// confirmation authority, muted activity offers, and workspace data-destination policies.
+enum AssistantTransparency {
+    /// Parse a learned fact item, including optional date window and confirmation authority.
+    static func learned(from fact: JSON, idPrefix: String = "") -> Supervision.Learned? {
+        guard let id = fact["id"]?.string, let text = fact["text"]?.string else { return nil }
+        let confirmed = fact["confirmed"]?.bool == true
+            || fact["authority"]?.string?.lowercased() == "person"
+        let window = factWindow(from: fact)
+        return Supervision.Learned(id: .init(idPrefix + id), text: text, window: window, confirmed: confirmed)
+    }
+
+    /// Parse muted offer kinds from a server list of strings or offer objects.
+    static func mutedOffers(from json: JSON?) -> [String] {
+        guard let items = json?.array else { return [] }
+        return items.compactMap { item -> String? in
+            if let text = item.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                return readableOffer(text)
+            }
+            for key in ["label", "prompt", "title", "kind_id", "kindId", "kind"] {
+                if let text = item[key]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                    return readableOffer(text)
+                }
+            }
+            return nil
+        }
+    }
+
+    /// Parse a workspace data-destination policy note from either a plain string or a serialized
+    /// `DestinationPolicy` JSON value. Returns nil when unrestricted (`Any` or absent).
+    static func destinationNote(from json: JSON?) -> String? {
+        guard let json, !json.isNull else { return nil }
+        typealias W = AssistantWords
+        if let raw = json.string?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            switch raw {
+            case "Any", "any": return nil
+            case "NoneOutsideServer", "none_outside_server": return W.destinationServerOnly.said
+            default: return raw
+            }
+        }
+        if let note = (json["note"]?.string ?? json["summary"]?.string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+            return note
+        }
+        if let allowed = (json["Only"] ?? json["only"])?.array {
+            let names = allowed.compactMap(describeDestination)
+            guard !names.isEmpty else { return W.destinationNoneAllowed.said }
+            return W.destinationOnly.said(["places": names.joined(separator: ", ")])
+        }
+        return nil
+    }
+
+    private static func factWindow(from fact: JSON) -> String? {
+        if let explicit = fact["window"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
+            return explicit
+        }
+        let relative = (fact["relative"]?.string ?? fact["relativeWindow"]?.string ?? fact["relative_window"]?.string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let startsOn = (fact["startsOn"]?.string ?? fact["starts_on"]?.string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let endsOn = (fact["endsOn"]?.string ?? fact["ends_on"]?.string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let range = formatDateRange(startsOn: startsOn, endsOn: endsOn)
+        let parts = [relative, range].compactMap { value -> String? in
+            guard let value, !value.isEmpty else { return nil }
+            return value
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private static func formatDateRange(startsOn: String?, endsOn: String?) -> String? {
+        let start = startsOn.flatMap(formatIsoDay)
+        let end = endsOn.flatMap(formatIsoDay)
+        switch (start, end) {
+        case let (first?, last?): return "\(first) – \(last)"
+        case let (first?, nil): return first
+        case let (nil, last?): return last
+        case (nil, nil): return nil
+        }
+    }
+
+    private static func formatIsoDay(_ iso: String) -> String? {
+        let parts = iso.split(separator: "-")
+        guard parts.count == 3,
+              let year = Int(parts[0]),
+              let month = Int(parts[1]), (1...12).contains(month),
+              let day = Int(parts[2]), (1...31).contains(day)
+        else { return iso.isEmpty ? nil : iso }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = day
+        guard let date = calendar.date(from: components) else { return iso }
+        let style = Date.FormatStyle(locale: AssistantWords.language, calendar: calendar, timeZone: calendar.timeZone)
+            .day(.defaultDigits).month(.abbreviated)
+        return date.formatted(style)
+    }
+
+    private static func readableOffer(_ value: String) -> String {
+        let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+        if value.contains("::"), parts.count >= 5 {
+            let pieces = value.components(separatedBy: "::")
+            if pieces.count == 3 {
+                let app = pieces[0].trimmingCharacters(in: .whitespacesAndNewlines)
+                let verb = pieces[1].trimmingCharacters(in: .whitespacesAndNewlines)
+                let target = pieces[2].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !app.isEmpty, !verb.isEmpty, !target.isEmpty {
+                    let cleanVerb = verb.replacingOccurrences(of: "_", with: " ")
+                    let cleanTarget = target.replacingOccurrences(of: "_", with: " ")
+                    return "\(cleanVerb.prefix(1).uppercased() + cleanVerb.dropFirst()) \(cleanTarget) in \(app)"
+                }
+            }
+        }
+        return value
+    }
+
+    private static func describeDestination(_ entry: JSON) -> String? {
+        typealias W = AssistantWords
+        if let raw = entry.string?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            switch raw {
+            case "ThisServer", "this_server": return W.destinationServerOnly.said
+            case "PrivateNetwork", "private_network": return W.destinationPrivateNetwork.said
+            default: return raw
+            }
+        }
+        for key in ["Provider", "provider", "Endpoint", "endpoint"] {
+            if let name = entry[key]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+                return name
+            }
+        }
+        return nil
     }
 }
 

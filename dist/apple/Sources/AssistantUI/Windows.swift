@@ -230,6 +230,256 @@ struct WayInOffer: View {
     }
 }
 
+/// Compact live status badge for a sub-agent's state (Working / Needs you / Done / Failed / Stopped).
+struct SubAgentStatusPill: View {
+    let badge: SubAgentStatusBadge
+    var isWriting = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if isWriting && badge.state == .working {
+                WritingDots(writes: true, dot: 2.0, pitch: 3.0, lift: 1.8)
+                    .frame(width: 9, height: 8)
+            } else {
+                Circle().fill(dot).frame(width: 6, height: 6)
+            }
+            Text(badge.label)
+                .font(.tilo(11.5, .semibold))
+                .foregroundStyle(ink)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(fill, in: Capsule())
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(badge.label)
+    }
+
+    private var dot: Token {
+        switch badge.state {
+        case .working: .asst
+        case .needsYou, .failed: .you
+        case .done: .on
+        case .stopped: .ink3
+        }
+    }
+
+    private var ink: Token {
+        switch badge.state {
+        case .working: .asst
+        case .needsYou, .failed: .you
+        case .done: .on
+        case .stopped: .ink2
+        }
+    }
+
+    private var fill: Token {
+        switch badge.state {
+        case .working: .asstTint
+        case .needsYou, .failed: .youTint
+        case .done: .onTint
+        case .stopped: .raised
+        }
+    }
+}
+
+/// Compact metadata pill for a sub-agent's role or work location.
+struct SubAgentMetaPill: View {
+    let label: String
+    var tipText: String?
+
+    var body: some View {
+        let pill = Text(label)
+            .font(.tilo(11.5, .medium))
+            .foregroundStyle(Token.ink2)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2.5)
+            .background(Token.raised, in: Capsule())
+            .overlay { Capsule().strokeBorder(Token.line, lineWidth: 1) }
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel(label)
+        if let tipText, !tipText.isEmpty {
+            pill.tip(tipText)
+        } else {
+            pill
+        }
+    }
+}
+
+/// 1-tap Stop button shown in the sub-agent header while the sub-agent is active.
+struct SubAgentStopButton: View {
+    let agent: SubAgent
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Glyph(.stop, side: 11, grows: false)
+                Text(AssistantWords.stop.said)
+                    .font(.tilo(12, .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Token.you)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Token.youTint, in: Capsule())
+            .contentShape(Capsule())
+            .fixedSize(horizontal: true, vertical: false)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(AssistantWords.stop.said)
+        .accessibilityHint("\(AssistantWords.stop.said) \(agent.title)")
+        .tip("\(AssistantWords.stop.said) \(agent.title)")
+    }
+}
+
+/// Crisp, compact top bar for any `.subAgent(id)` conversation: displays title, role,
+/// live status badge (Working / Needs you / Done / Failed / Stopped), where it works
+/// (Server / Mac folder / Coding sandbox), 1-tap Stop while active, and Back to main on iPhone.
+struct SubAgentHeaderBar: View {
+    let agent: SubAgent
+    var showsBackToMain = false
+    var showsStop = true
+    var showsChrome = false
+    @Environment(AssistantModel.self) private var model
+    @Environment(\.wording) private var wording
+    @Environment(\.dynamicTypeSize) private var textSize
+
+    var body: some View {
+        let badge = SubAgentStatusBadge(state: agent.state)
+        let location = SubAgentLocation.classify(agent.runsOn)
+        let writes = model.isWriting(.subAgent(agent.id))
+        let headText = wording.header(agent)
+        let content = VStack(alignment: .leading, spacing: showsBackToMain ? 6 : 3) {
+            if showsBackToMain {
+                HStack(spacing: 8) {
+                    Button {
+                        model.open(.main)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Glyph(.back, side: 12, grows: false)
+                            Text("Back to main")
+                                .font(.tilo(12.5, .medium))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Token.asst)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Token.asstTint, in: Capsule())
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Back to main")
+                    Spacer(minLength: 8)
+                    if showsStop && badge.canStop {
+                        SubAgentStopButton(agent: agent) { model.stop(agent.id) }
+                    }
+                }
+            }
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 7) {
+                        Text(agent.title)
+                            .font(.title15)
+                            .foregroundStyle(Token.ink)
+                            .lineLimit(textSize.isAccessibilitySize ? 2 : 1)
+                            .accessibilityLabel("\(agent.title), \(headText.spoken)")
+                            .accessibilityAddTraits(.isHeader)
+                        SubAgentStatusPill(badge: badge, isWriting: writes)
+                    }
+                    if textSize.isAccessibilitySize {
+                        Flow(spacing: 6, lineSpacing: 4) {
+                            if !agent.role.isEmpty {
+                                SubAgentMetaPill(label: agent.role)
+                            }
+                            SubAgentMetaPill(label: location.label, tipText: agent.runsOn)
+                        }
+                    } else {
+                        HStack(spacing: 6) {
+                            if !agent.role.isEmpty {
+                                SubAgentMetaPill(label: agent.role)
+                            }
+                            SubAgentMetaPill(label: location.label, tipText: agent.runsOn)
+                        }
+                    }
+                }
+                if !showsBackToMain && showsStop && badge.canStop {
+                    Spacer(minLength: 6)
+                    SubAgentStopButton(agent: agent) { model.stop(agent.id) }
+                }
+            }
+        }
+        if showsChrome {
+            VStack(spacing: 0) {
+                content
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, phoneEdge)
+                    .padding(.vertical, 8)
+                    .background(Token.content)
+                Rectangle().fill(Token.line).frame(height: 1)
+            }
+        } else {
+            content
+        }
+    }
+}
+
+/// Compact mid-flight steering bar above the composer while viewing an active sub-agent.
+/// Keeps the composer active and clarifies that notes reach the sub-agent without stopping it.
+struct SubAgentSteeringBar: View {
+    let chat: Chat
+    @Environment(AssistantModel.self) private var model
+
+    var body: some View {
+        if case .subAgent(let id) = chat,
+           let agent = model.subAgent(id),
+           let guidance = model.steeringGuidance(for: chat)
+        {
+            let needsYou = agent.state == .needsYou
+            let writes = model.isWriting(chat)
+            let hasDraft = !(model.drafts[chat]?.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            Button {
+                model.focusComposer()
+            } label: {
+                HStack(spacing: 8) {
+                    if writes && !needsYou {
+                        WritingDots(writes: true, dot: 2.0, pitch: 3.0, lift: 1.8)
+                            .frame(width: 9, height: 8)
+                    } else {
+                        Circle()
+                            .fill(needsYou ? Token.you : Token.asst)
+                            .frame(width: 6, height: 6)
+                    }
+                    Text(guidance)
+                        .font(.small12)
+                        .foregroundStyle(Token.ink2)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: 4)
+                    if hasDraft && !needsYou {
+                        Text("Sends mid-flight")
+                            .font(.tilo(11, .semibold))
+                            .foregroundStyle(Token.asst)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(needsYou ? Token.youTint : Token.asstTint, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(hasDraft && !needsYou ? "\(guidance), Sends mid-flight" : guidance)
+            .frame(maxWidth: Measure.column)
+            .padding(.horizontal, Measure.rowGutter)
+            .padding(.bottom, 6)
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
 #if os(macOS)
 /// The Mac's window: the sidebar, the conversation with its field, and the Tasks panel, as drawn.
 public struct MacWindow: View {
@@ -267,10 +517,14 @@ public struct MacWindow: View {
             }
             VStack(spacing: 0) {
                 topBar
+                if case .chat(.subAgent(let id)) = model.place, model.subAgent(id) != nil {
+                    Rectangle().fill(Token.line).frame(height: 1)
+                }
                 switch model.place {
                 case .chat(let chat):
                     ConversationView(chat: chat)
                     ReachLine()
+                    SubAgentSteeringBar(chat: chat)
                     Composer(chat: chat).layoutPriority(1)
                 case .assistantView:
                     SupervisionView(standsInTheWindow: true)
@@ -297,43 +551,44 @@ public struct MacWindow: View {
         }
     }
 
-    /// The bar over the conversation: `.main-top`, with a sub-agent's head when one is open.
+    /// The bar over the conversation: `.main-top`, with a rich sub-agent header when one is open.
     private var topBar: some View {
-        HStack(spacing: 4) {
+        let currentSubAgent: SubAgent? = if case .chat(.subAgent(let id)) = model.place { model.subAgent(id) } else { nil }
+        let activeList = model.prioritizedActiveSubAgents
+        let nextActive = model.nextActiveSubAgent(after: currentSubAgent?.id)
+        let anyNeedsYou = model.subAgentsNeedingYou > 0
+        return HStack(spacing: 6) {
             if !model.showsSidebar {
                 BarButton(sign: .side, label: AssistantWords.showSidebar.said) { model.showsSidebar = true }
             }
-            if case .chat(.subAgent(let id)) = model.place, let agent = model.subAgent(id) {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(agent.title).font(.title15).foregroundStyle(Token.ink).lineLimit(1)
-                    Text(wording.header(agent)).font(.small12).foregroundStyle(Token.ink3).lineLimit(2)
-                }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(agent.title), \(wording.header(agent).spoken)")
-                .accessibilityAddTraits(.isHeader)
+            if let agent = currentSubAgent {
+                SubAgentHeaderBar(agent: agent, showsBackToMain: false, showsStop: false)
             }
             Spacer(minLength: 8)
-            if let active = model.activeSubAgents.first {
+            if let agent = currentSubAgent, SubAgentStatusBadge(state: agent.state).canStop {
+                SubAgentStopButton(agent: agent) { model.stop(agent.id) }
+            }
+            if let target = nextActive {
                 Button {
-                    model.open(.subAgent(active.id))
+                    model.open(.subAgent(target.id))
                 } label: {
                     HStack(spacing: 6) {
-                        Circle().fill(Token.asst).frame(width: 6, height: 6)
+                        Circle().fill(anyNeedsYou ? Token.you : Token.asst).frame(width: 6, height: 6)
                         // The one at work is named; where more than one is, the count is said in the
                         // person's language, as every other count of the window is.
-                        Text(model.activeSubAgents.count == 1
-                            ? active.title
-                            : AssistantWords.subAgentsCount.said(["count": String(model.activeSubAgents.count)]))
+                        Text(activeList.count == 1
+                            ? target.title
+                            : AssistantWords.subAgentsCount.said(["count": String(activeList.count)]))
                             .font(.small12).foregroundStyle(Token.ink).lineLimit(1)
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(Token.raised, in: Capsule())
-                    .overlay { Capsule().strokeBorder(Token.line, lineWidth: 1) }
+                    .background(anyNeedsYou ? Token.youTint : Token.raised, in: Capsule())
+                    .overlay { Capsule().strokeBorder(anyNeedsYou ? Token.you : Token.line, lineWidth: 1) }
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(model.activeSubAgents.count == 1
-                        ? "\(active.title), \(AssistantWords.showSubAgent.said)"
-                        : AssistantWords.subAgentsCount.said(["count": String(model.activeSubAgents.count)]))
+                    .accessibilityLabel(activeList.count == 1
+                        ? "\(target.title), \(AssistantWords.showSubAgent.said)"
+                        : AssistantWords.subAgentsCount.said(["count": String(activeList.count)]))
                 }
                 .buttonStyle(.plain)
             }
@@ -567,23 +822,18 @@ public struct PhoneRoot: View {
         VStack(spacing: 0) {
             switch place {
             case .chat(let chat):
-                // Who a sub-agent is and where it runs stays in sight over its conversation; at the
-                // largest text sizes it would take the conversation's room, so it scrolls with it.
-                let head: String? = if case .subAgent(let id) = chat, let agent = model.subAgent(id) { wording.header(agent) } else { nil }
-                if let head, !textSize.isAccessibilitySize {
-                    Text(head).font(.small12).foregroundStyle(Token.ink3)
-                        .accessibilityLabel(head.spoken)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, phoneEdge).padding(.vertical, 6)
+                if case .subAgent(let id) = chat, let agent = model.subAgent(id) {
+                    SubAgentHeaderBar(agent: agent, showsBackToMain: true, showsStop: true, showsChrome: true)
                 }
                 // The strip and the conversation are one stretch: the strip's own hairline closes it,
                 // and the conversation's end fades over nothing but the pieces that scroll under it.
                 PhoneNowStrip(chat: chat)
                 let nothingUnder = model.liveThings(in: chat).isEmpty && model.activeSubAgents.isEmpty && model.waiting == 0
-                ConversationView(chat: chat, head: textSize.isAccessibilitySize ? head : nil, footFade: nothingUnder)
+                ConversationView(chat: chat, head: nil, footFade: nothingUnder)
                     // A touch on the conversation puts the keyboard away. What is touched still takes the touch.
                     .simultaneousGesture(TapGesture().onEnded { Self.putKeyboardAway() })
                 ReachLine()
+                SubAgentSteeringBar(chat: chat)
                 Composer(chat: chat).layoutPriority(1)
             case .assistantView:
                 SupervisionView()
@@ -632,20 +882,21 @@ public struct PhoneRoot: View {
     }
 }
 
-/// Phone 3 (Focus Feed + Now Strip): pinned strip for running sub-agents, waiting approvals, and latest live artifact.
+/// Phone 3 (Focus Feed + Now Strip): pinned strip for waiting decisions, active parallel
+/// sub-agents (Code Factory), and latest live views.
 private struct PhoneNowStrip: View {
     let chat: Chat
     @Environment(AssistantModel.self) private var model
 
     var body: some View {
-        let active = model.activeSubAgents
+        let plan = model.subAgentStripPlan(in: chat)
         let live = model.liveThings(in: chat)
         // Every live view open in this conversation stands in the strip, the one in the stage or
         // the sheet first, so that one put away opens again by one press: nothing is asked of
         // the assistant, and no view is read again.
         let staged = model.stagedLive.flatMap { $0.chat == chat ? $0 : nil }
         let lives = PhoneNowStrip.tabs(staged: staged, opened: model.openLiveTabs(in: chat), live: live)
-        if !active.isEmpty || model.waiting > 0 || !lives.isEmpty {
+        if !plan.isEmpty || model.waiting > 0 || !lives.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     if model.waiting > 0 {
@@ -666,19 +917,70 @@ private struct PhoneNowStrip: View {
                             ? AssistantWords.waitsForAnswer.said
                             : AssistantWords.showTasks.said)
                     }
-                    ForEach(active) { agent in
+                    if let group = plan.groupPill {
                         Button {
-                            model.open(.subAgent(agent.id))
+                            model.open(.subAgent(group.target))
                         } label: {
                             HStack(spacing: 6) {
-                                Circle().fill(Token.asst).frame(width: 6, height: 6)
-                                Text(agent.title).font(.tilo(12, .medium)).foregroundStyle(Token.ink).lineLimit(1)
+                                Circle()
+                                    .fill(group.needsYouCount > 0 ? Token.you : Token.asst)
+                                    .frame(width: 6, height: 6)
+                                Text(group.label)
+                                    .font(.tilo(12, .semibold))
+                                    .foregroundStyle(Token.ink)
+                                    .lineLimit(1)
+                                if let detail = group.detailLabel {
+                                    Text(detail)
+                                        .font(.tilo(11, .semibold))
+                                        .foregroundStyle(Token.you)
+                                        .lineLimit(1)
+                                }
                             }
                             .padding(.horizontal, 11).padding(.vertical, 8)
-                            .background(Token.asstTint, in: Capsule())
+                            .background(group.needsYouCount > 0 ? Token.youTint : Token.raised, in: Capsule())
+                            .overlay {
+                                Capsule().strokeBorder(group.needsYouCount > 0 ? Token.you : Token.line, lineWidth: 1)
+                            }
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("\(agent.title), \(AssistantWords.showSubAgent.said)")
+                        .accessibilityLabel(group.accessibilityLabel)
+                    }
+                    ForEach(plan.entries) { entry in
+                        let needsYou = entry.badge.needsAttention
+                        Button {
+                            model.open(.subAgent(entry.agent.id))
+                        } label: {
+                            HStack(spacing: 6) {
+                                if entry.isWriting && !needsYou {
+                                    WritingDots(writes: true, dot: 2.0, pitch: 3.0, lift: 1.8)
+                                        .frame(width: 9, height: 8)
+                                } else {
+                                    Circle()
+                                        .fill(needsYou ? Token.you : Token.asst)
+                                        .frame(width: 6, height: 6)
+                                }
+                                Text(entry.agent.title)
+                                    .font(.tilo(12, entry.isSelected || needsYou ? .semibold : .medium))
+                                    .foregroundStyle(Token.ink)
+                                    .lineLimit(1)
+                                if needsYou {
+                                    Text(entry.badge.label)
+                                        .font(.tilo(11, .semibold))
+                                        .foregroundStyle(Token.you)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .padding(.horizontal, 11).padding(.vertical, 8)
+                            .background(needsYou ? Token.youTint : Token.asstTint, in: Capsule())
+                            .overlay {
+                                if entry.isSelected {
+                                    Capsule().strokeBorder(needsYou ? Token.you : Token.asst, lineWidth: 1.2)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(entry.accessibilityLabel)
+                        .accessibilityAddTraits(entry.isSelected ? .isSelected : [])
                     }
                     ForEach(lives) { thing in
                         let shown = thing.id == staged?.id

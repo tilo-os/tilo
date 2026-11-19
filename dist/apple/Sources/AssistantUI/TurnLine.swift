@@ -92,8 +92,81 @@ struct TurnLine: View {
         switch turn?.now {
         case nil, .writing?: AssistantWords.answering.said
         case .thinking(let words)?: words.isEmpty ? AssistantWords.thinking.said : words
-        case .step(let words)?: words ?? AssistantWords.atWork.said
+        case .step(let words)?: words.map(TurnLine.humanize) ?? AssistantWords.atWork.said
         }
+    }
+
+    /// Known internal tool names mapped to calm, human-readable activity verbs.
+    private static let toolVerbs: [String: String] = [
+        "tilo_ls": "Looking through workspace",
+        "tilo_read": "Reading",
+        "tilo_do": "Taking action",
+        "tilo_find": "Searching",
+        "answer_with_view": "Building overview",
+    ]
+
+    /// Turns raw internal tool identifiers into calm human-readable activity text while
+    /// preserving real step labels untouched.
+    static func humanize(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return AssistantWords.atWork.said }
+
+        let head: String
+        let detail: String?
+        if let colon = trimmed.firstIndex(of: ":") {
+            head = String(trimmed[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let after = String(trimmed[trimmed.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            detail = cleanDetail(after)
+        } else if let blank = trimmed.firstIndex(where: \.isWhitespace) {
+            let first = String(trimmed[..<blank])
+            if let mapped = mappedToolVerb(for: first) {
+                let rest = String(trimmed[blank...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if let info = cleanDetail(rest) { return "\(mapped): \(info)" }
+                return mapped
+            }
+            return trimmed
+        } else {
+            head = trimmed
+            detail = nil
+        }
+
+        if let mapped = mappedToolVerb(for: head) {
+            if let detail { return "\(mapped): \(detail)" }
+            return mapped
+        }
+
+        if !looksLikeInternalTool(head) {
+            return trimmed
+        }
+
+        if let detail { return "\(AssistantWords.atWork.said): \(detail)" }
+        return AssistantWords.atWork.said
+    }
+
+    private static func mappedToolVerb(for token: String) -> String? {
+        let lowered = token.lowercased()
+        if let direct = toolVerbs[lowered] { return direct }
+        if !lowered.contains(where: \.isWhitespace) {
+            for (name, verb) in toolVerbs {
+                if lowered.hasSuffix(".\(name)") || lowered.hasSuffix("/\(name)") || lowered.hasSuffix("__\(name)") {
+                    return verb
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func looksLikeInternalTool(_ token: String) -> Bool {
+        guard !token.isEmpty, !token.contains(where: \.isWhitespace) else { return false }
+        return token.contains("_") || token.contains(".") || token.first?.isUppercase != true
+    }
+
+    private static func cleanDetail(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") { return nil }
+        if mappedToolVerb(for: trimmed) != nil { return nil }
+        return trimmed
     }
 }
 
@@ -170,15 +243,18 @@ struct TurnStepList: View {
 
     private func line(index: Int, step: Message.Turn.Step) -> some View {
         HStack(spacing: 5) {
-            Text("\(index + 1)").monospacedDigit().frame(minWidth: 18, alignment: .trailing)
-            Text(step.words).lineLimit(1).truncationMode(.tail)
+            Text("\(index + 1)").monospacedDigit().foregroundStyle(Token.ink3.opacity(0.75)).frame(minWidth: 18, alignment: .trailing)
+            Text(TurnLine.humanize(step.words))
+                .foregroundStyle(step.outcome == .going ? Token.ink2 : Token.ink3)
+                .lineLimit(1)
+                .truncationMode(.tail)
             if let took = step.took {
                 Text("·").accessibilityHidden(true)
                 Text(TurnStepList.said(took)).monospacedDigit().fixedSize()
             }
             if step.outcome == .failed {
                 Text("·").accessibilityHidden(true)
-                Text(AssistantWords.stepFailed.said).foregroundStyle(Token.ink2).fixedSize()
+                Text(AssistantWords.stepFailed.said).foregroundStyle(Token.you).fixedSize()
             }
         }
         .accessibilityElement(children: .combine)

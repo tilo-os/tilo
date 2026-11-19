@@ -789,11 +789,19 @@ public struct Supervision: Equatable, Sendable {
     public var learnedCount: Int
     public var places: [Place]
     public var workspaces: [String]
+    /// Activity offer kinds the person quieted (reversible), in the words they are named by.
+    public var mutedOffers: [String]
+    /// Where this workspace lets its content go when asking a model, when restricted.
+    /// Nil where the workspace sets no restriction of its own.
+    public var destinationNote: String?
+
+    public typealias CauseSpend = Usage.CauseSpend
 
     public init(isOn: Bool = true, model: String? = nil, usage: Usage = Usage(), connections: [Connection] = [],
                 logins: [Login] = [], manager: ManagerLogins? = nil, importance: [String] = [],
                 situations: [Situation] = [], learned: [Learned] = [], learnedCount: Int? = nil,
-                places: [Place] = [], workspaces: [String] = []) {
+                places: [Place] = [], workspaces: [String] = [],
+                mutedOffers: [String] = [], destinationNote: String? = nil) {
         self.isOn = isOn
         self.model = model
         self.usage = usage
@@ -806,9 +814,80 @@ public struct Supervision: Equatable, Sendable {
         self.learnedCount = learnedCount ?? learned.count
         self.places = places
         self.workspaces = workspaces
+        self.mutedOffers = mutedOffers
+        self.destinationNote = destinationNote
+    }
+
+    /// The workspace data-destination policy note with surrounding whitespace trimmed, or nil
+    /// when absent or blank.
+    public var trimmedDestinationNote: String? {
+        guard let trimmed = destinationNote?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else { return nil }
+        return trimmed
     }
 
     public struct Usage: Equatable, Sendable {
+        /// One cause's share of today's tokens and spend (main chat, events, look-round, reflection).
+        public struct CauseSpend: Identifiable, Equatable, Sendable {
+            public var id: String { kind }
+            /// What woke these calls: a server cause key (`turn`, `event`, `look`, `reflection`,
+            /// `shadow`) or a label already written for the person.
+            public var kind: String
+            /// Total tokens spent for this cause today.
+            public var tokens: Int
+            /// Known spend for this cause today, in hundredths of the currency (cents).
+            public var costCents: Int
+            /// True when a model answering for this cause has unknown pricing, so the view says
+            /// so instead of silently displaying zero.
+            public var isUnknownPrice: Bool
+
+            public init(kind: String, tokens: Int = 0, costCents: Int = 0, isUnknownPrice: Bool = false) {
+                self.kind = kind
+                self.tokens = tokens
+                self.costCents = costCents
+                self.isUnknownPrice = isUnknownPrice
+            }
+
+            /// The person-facing label for this cause.
+            public var label: String {
+                let normalized = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                switch normalized {
+                case "turn", "main", "main_chat", "main-chat":
+                    return AssistantWords.causeMainChat.said
+                case "event", "events":
+                    return AssistantWords.causeEvents.said
+                case "look", "look_round", "look-round":
+                    return AssistantWords.causeLookRound.said
+                case "reflection", "reflections":
+                    return AssistantWords.causeReflection.said
+                case "shadow":
+                    return AssistantWords.causeShadow.said
+                case "":
+                    return AssistantWords.causeOther.said
+                default:
+                    return kind.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            }
+
+            /// The cost text for this cause, honestly saying "Price unknown" whenever pricing is
+            /// unknown instead of displaying zero.
+            public func costText(currency: String) -> String {
+                if isUnknownPrice {
+                    guard costCents > 0 else { return AssistantWords.priceUnknown.said }
+                    return "\(Self.formatCents(costCents, currency: currency)) · \(AssistantWords.priceUnknown.said)"
+                }
+                return Self.formatCents(costCents, currency: currency)
+            }
+
+            private static func formatCents(_ cents: Int, currency: String) -> String {
+                let whole = cents % 100 == 0
+                let amount = (Double(cents) / 100.0).formatted(
+                    .number.precision(.fractionLength(whole ? 0 : 2)).grouping(.never).locale(Locale(identifier: "en_US_POSIX")))
+                return "\(amount) \(currency)"
+            }
+        }
+
         /// What the assistant wrote today, as the person's server counted it. Nil where their
         /// server keeps no such count: the view says so then, and shows no number.
         public var messagesToday: Int?
@@ -821,14 +900,36 @@ public struct Supervision: Equatable, Sendable {
         public var dailyLimitMicros: Int?
         /// The currency's sign as the person reads it: "$".
         public var currency: String
+        /// Per-cause breakdown of today's tokens and spend, when the server provides it.
+        public var causes: [CauseSpend]
+        /// True when a model called today had unknown pricing, so zero spend is never disguised
+        /// as free calls.
+        public var isUnknownPrice: Bool
 
         public init(messagesToday: Int? = nil, tokensToday: Int? = nil, spentTodayMicros: Int = 0,
-                    dailyLimitMicros: Int? = nil, currency: String = "$") {
+                    dailyLimitMicros: Int? = nil, currency: String = "$",
+                    causes: [CauseSpend] = [], isUnknownPrice: Bool = false) {
             self.messagesToday = messagesToday
             self.tokensToday = tokensToday
             self.spentTodayMicros = spentTodayMicros
             self.dailyLimitMicros = dailyLimitMicros
             self.currency = currency
+            self.causes = causes
+            self.isUnknownPrice = isUnknownPrice
+        }
+
+        /// Whether any spend today came from a model whose pricing is unknown.
+        public var hasUnknownPrice: Bool {
+            isUnknownPrice || causes.contains(where: \.isUnknownPrice)
+        }
+
+        /// What the Spent today figure shows: "Price unknown" when zero known spend accompanies
+        /// unknown-priced calls, otherwise the formatted known spend.
+        public func spentDisplay(formattedKnown: String) -> (text: String, isKnown: Bool) {
+            if spentTodayMicros == 0 && hasUnknownPrice {
+                return (AssistantWords.priceUnknown.said, false)
+            }
+            return (formattedKnown, true)
         }
     }
 
@@ -896,10 +997,18 @@ public struct Supervision: Equatable, Sendable {
         public typealias ID = Identifier<Learned>
         public var id: ID
         public var text: String
+        /// Optional dated window for a time-relative fact (for example,
+        /// "in 2 to 5 months · 17 Feb – 17 May"). Nil when undated.
+        public var window: String?
+        /// True when the person wrote or explicitly confirmed this fact (their word outranks
+        /// model inference).
+        public var confirmed: Bool
 
-        public init(id: ID, text: String) {
+        public init(id: ID, text: String, window: String? = nil, confirmed: Bool = false) {
             self.id = id
             self.text = text
+            self.window = window
+            self.confirmed = confirmed
         }
     }
 
