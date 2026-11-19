@@ -36,11 +36,20 @@ pub(super) async fn tree_kept(
     workspaces: &tilo_server::workspaces::Workspaces,
     workspace: &str,
 ) -> Tree {
+    tree_if_kept(workspaces, workspace)
+        .await
+        .expect("the workspace keeps a tree")
+}
+
+/// [`tree_kept`], `None` where the workspace holds no tree: none was written yet.
+pub(super) async fn tree_if_kept(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+) -> Option<Tree> {
     let index = workspaces
         .resource_document(workspace, FILES_APP, &tree_document())
         .await
-        .unwrap()
-        .expect("the host keeps the workspace's tree");
+        .unwrap()?;
     let index = automerge::AutoCommit::load(&index).expect("the tree's own record reads");
     let mut tree = fs_protocol::TreeChunks::default();
     tree.read_index(&index);
@@ -57,7 +66,7 @@ pub(super) async fn tree_kept(
         let doc = automerge::AutoCommit::load(&record).expect("a chunk of the tree reads");
         tree.read_chunk(chunk, &doc);
     }
-    tree.tree()
+    Some(tree.tree())
 }
 
 /// Write every record of `folder` to the workspace as a peer writes a tree: a
@@ -104,10 +113,15 @@ async fn tree_when(
     ready: impl Fn(&Tree) -> bool,
 ) -> Tree {
     let started = std::time::Instant::now();
+    let workspaces = hosted.server.workspaces().unwrap();
     loop {
-        let tree = tree_of(hosted, workspace).await;
-        if ready(&tree) || started.elapsed() > std::time::Duration::from_secs(10) {
+        if let Some(tree) = tree_if_kept(workspaces, workspace).await
+            && ready(&tree)
+        {
             return tree;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(10) {
+            return tree_of(hosted, workspace).await;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
