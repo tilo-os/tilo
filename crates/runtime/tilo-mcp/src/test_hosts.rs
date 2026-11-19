@@ -115,6 +115,7 @@ impl StubHost {
             descriptor.input = tilo_actions::api::InputSpec::None;
         }
         CatalogueRow {
+            offered: None,
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
             parent_resource: String::new(),

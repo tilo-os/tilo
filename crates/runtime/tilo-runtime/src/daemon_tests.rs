@@ -912,6 +912,7 @@ impl tilo_actions::remote::ActionProvider for PageHost {
         use tilo_actions::remote::{CatalogueProvider, CatalogueResource, CatalogueRow};
         let rows: Vec<CatalogueRow> = if self.offered.load(std::sync::atomic::Ordering::SeqCst) {
             vec![CatalogueRow {
+                offered: None,
                 provider: "7".into(),
                 app_id: "so.tilo.notes".into(),
                 parent_resource: String::new(),

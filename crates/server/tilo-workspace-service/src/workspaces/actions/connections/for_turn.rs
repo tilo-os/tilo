@@ -257,6 +257,7 @@ fn command_row(connection: &Connection, site: &str, command: &Command) -> Catalo
         );
     }
     CatalogueRow {
+        offered: None,
         provider: person_connections::PROVIDER.into(),
         app_id: person_connections::PROVIDER.into(),
         parent_resource: String::new(),

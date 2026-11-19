@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 
 fn row(id: &str) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: "7".into(),
         app_id: "so.tilo.example".into(),
         parent_resource: String::new(),

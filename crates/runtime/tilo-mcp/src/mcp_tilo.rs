@@ -2444,6 +2444,7 @@ mod tests {
     fn offers(app: &str) -> CatalogueRow {
         let id = format!("{}{app}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX);
         CatalogueRow {
+            offered: None,
             provider: String::new(),
             app_id: String::new(),
             parent_resource: String::new(),

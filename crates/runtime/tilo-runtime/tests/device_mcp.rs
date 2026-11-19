@@ -130,6 +130,7 @@ struct Host {
 
 fn notebook(action: Option<&str>) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: "1".into(),
         app_id: NOTES.into(),
         parent_resource: String::new(),

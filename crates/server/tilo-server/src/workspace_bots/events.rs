@@ -954,6 +954,7 @@ fn for_the_person_alone() -> Vec<Offered> {
 /// `offered` as a catalogue's row.
 fn row(offered: Offered) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: person_events::PROVIDER.to_owned(),
         app_id: person_events::PROVIDER.to_owned(),
         parent_resource: String::new(),

@@ -1471,6 +1471,7 @@ fn for_the_person_alone() -> Vec<Offered> {
 fn row(offered: Offered) -> CatalogueRow {
     let on = offered.on;
     CatalogueRow {
+        offered: None,
         provider: person_initiative::PROVIDER.to_owned(),
         app_id: person_initiative::PROVIDER.to_owned(),
         parent_resource: String::new(),

@@ -1513,6 +1513,7 @@ fn row(
     input: InputSpec,
 ) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: tilo_server_protocol::agents::AGENTS_PROVIDER.into(),
         app_id: tilo_server_protocol::agents::AGENTS_PROVIDER.into(),
         parent_resource: String::new(),

@@ -125,6 +125,7 @@ pub(crate) fn search(host: &Host) -> OsSearch {
 
 pub(crate) fn row(provider: &str, resource: &str, label: &str, action: &str) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: provider.into(),
         app_id: "so.tilo.notes".into(),
         parent_resource: String::new(),

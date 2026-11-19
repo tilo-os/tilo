@@ -788,6 +788,7 @@ impl Verb {
     fn row(&self, publisher: Publisher, resource: &str, label: &str) -> CatalogueRow {
         let params = (self.params)();
         CatalogueRow {
+            offered: None,
             provider: publisher.provider.into(),
             app_id: publisher.provider.into(),
             parent_resource: String::new(),

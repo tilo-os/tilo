@@ -41,6 +41,7 @@ fn row(
     result: ResultSpec,
 ) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: provider.into(),
         app_id: app.into(),
         parent_resource: String::new(),

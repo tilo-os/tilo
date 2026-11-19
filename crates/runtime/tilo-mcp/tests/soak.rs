@@ -101,6 +101,7 @@ fn row(index: usize) -> CatalogueRow {
     )];
     descriptor.input = tilo_actions::api::InputSpec::None;
     CatalogueRow {
+        offered: None,
         provider: "71".into(),
         app_id: "so.tilo.notes".into(),
         parent_resource: String::new(),

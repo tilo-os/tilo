@@ -710,6 +710,21 @@ impl Replica {
         query: &tilo_actions::remote::CatalogueQuery,
         window: (bool, (usize, usize)),
     ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
+        let (total, rows) = self.survey_page_rows(query, window);
+        // A listing taken a resource at a time leaves the app's worker so: a
+        // resource's few dozen actions travel as one row, not a row each.
+        if query.by_resource {
+            return (total, tilo_actions::remote::compact(rows));
+        }
+        (total, rows)
+    }
+
+    /// [`Self::survey_page`], a row per action.
+    fn survey_page_rows(
+        &self,
+        query: &tilo_actions::remote::CatalogueQuery,
+        window: (bool, (usize, usize)),
+    ) -> (usize, Vec<tilo_actions::remote::CatalogueRow>) {
         if let Some(found) = self.looked_up(query, window) {
             return found;
         }
@@ -1803,6 +1818,7 @@ fn container_row(
     app_id: &str,
 ) -> tilo_actions::remote::CatalogueRow {
     tilo_actions::remote::CatalogueRow {
+        offered: None,
         provider: String::new(),
         app_id: app_id.to_owned(),
         parent_resource: parent.to_owned(),

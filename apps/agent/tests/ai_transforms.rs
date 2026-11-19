@@ -94,6 +94,7 @@ impl AgentHost {
         let rows = transform::descriptors()
             .into_iter()
             .map(|descriptor| CatalogueRow {
+                offered: None,
                 provider: format!("{AGENT_APP_ID}#1"),
                 app_id: AGENT_APP_ID.into(),
                 parent_resource: String::new(),

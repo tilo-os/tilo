@@ -12,6 +12,7 @@ tilo_test_env::scenario! {
     {
         let contract = tilo_actions::ActionContract::view();
         let row = CatalogueRow {
+            offered: None,
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
             parent_resource: "root".into(),
@@ -48,6 +49,7 @@ tilo_test_env::scenario! {
             .find(|descriptor| descriptor.address.action == tilo_resource::APPLY)
             .unwrap();
         let row = CatalogueRow {
+            offered: None,
             provider: "71".into(),
             app_id: "so.tilo.test".into(),
             parent_resource: String::new(),
@@ -275,6 +277,7 @@ fn action_row(
     params: Vec<tilo_actions::ActionParam>,
 ) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: "71".into(),
         app_id: "so.tilo.writer".into(),
         parent_resource: String::new(),

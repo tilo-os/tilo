@@ -54,6 +54,7 @@ fn row(
     contract: ActionContract,
 ) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: format!("sample:{app}"),
         app_id: app.into(),
         parent_resource: String::new(),

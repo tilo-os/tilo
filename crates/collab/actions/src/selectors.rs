@@ -61,6 +61,7 @@ mod tests {
 
     fn row(kind: &str, label: &str, badge: Option<&str>) -> CatalogueRow {
         CatalogueRow {
+            offered: None,
             provider: "1".into(),
             app_id: "so.tilo.files".into(),
             parent_resource: String::new(),

@@ -12,6 +12,7 @@ use super::{
     record_provider,
 };
 use tilo_actions::remote::{Caller, CataloguePage};
+use tilo_actions::remote::{rows_weight, truncate_rows};
 use tilo_server_protocol::WorkspaceId;
 
 /// The fewest rows asked of a resource at a time where some of its rows are kept from the
@@ -53,12 +54,12 @@ impl Worker {
                 more.into_iter().filter(|row| query.admits(row)).collect();
             let passed = admitted.len().min(*skip);
             *skip = skip.saturating_sub(admitted.len());
-            let left = wanted.saturating_sub(rows.len());
+            let left = wanted.saturating_sub(rows_weight(rows));
             rows.extend(admitted.into_iter().skip(passed).take(left));
         };
         let mut failed: Option<(DocumentRoute, String)> = None;
         for route in routes {
-            if rows.len() >= wanted {
+            if rows_weight(&rows) >= wanted {
                 break;
             }
             let provider = record_provider(route);
@@ -72,7 +73,7 @@ impl Worker {
                 held.app_id.clone_from(&route.app_id);
                 held
             };
-            let window = (skip, wanted.saturating_sub(rows.len()));
+            let window = (skip, wanted.saturating_sub(rows_weight(&rows)));
             let withheld = self.kept_from(&person, route, state);
             let whose = (bounded, &withheld);
             match self.shown_page(workspace_id, whose, route, state, query, window) {
@@ -121,8 +122,10 @@ impl Worker {
                 format!("{} cannot be listed: {error}", named(&route)),
             );
         }
-        let more = rows.len() > size;
-        rows.truncate(size);
+        // Counted in the rows each stands for: a resource's actions sent as one
+        // row are as many rows of the listing.
+        let more = rows_weight(&rows) > size;
+        truncate_rows(&mut rows, size);
         CataloguePage::window(revision, rows, query, more)
     }
 
@@ -202,6 +205,23 @@ impl Worker {
     ) -> Result<(usize, Vec<tilo_actions::remote::CatalogueRow>), String> {
         if withheld.is_empty() {
             return self.listed_page(workspace_id, bounded, route, state, query, (skip, take));
+        }
+        // What is withheld is decided a row at a time: the rows are asked for one by one, and
+        // sent a resource at a time once decided.
+        if query.by_resource {
+            let each = CatalogueQuery {
+                by_resource: false,
+                ..query.clone()
+            };
+            let (shown, page) = self.shown_page(
+                workspace_id,
+                (bounded, withheld),
+                route,
+                state,
+                &each,
+                (skip, take),
+            )?;
+            return Ok((shown, tilo_actions::remote::compact(page)));
         }
         // Asked a stretch at a time from the first row on, until the window is full or the
         // listing ends: a stretch that comes back short was the last.

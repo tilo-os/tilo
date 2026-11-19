@@ -211,6 +211,7 @@ mod tests {
         let address = tilo_automation::shortcut_run_address(id);
         let resource = address.resource.clone();
         CatalogueRow {
+            offered: None,
             provider: "workspace:w1".into(),
             app_id: SHORTCUTS_APP_ID.into(),
             parent_resource: String::new(),

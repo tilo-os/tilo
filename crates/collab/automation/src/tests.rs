@@ -43,6 +43,7 @@ pub(crate) fn row(
     contract: ActionContract,
 ) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: format!("{app}#1"),
         app_id: app.into(),
         parent_resource: String::new(),

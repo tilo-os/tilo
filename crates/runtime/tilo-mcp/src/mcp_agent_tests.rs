@@ -456,6 +456,7 @@ impl Notes {
     ) -> CatalogueRow {
         let id = self.id(key);
         CatalogueRow {
+            offered: None,
             provider: "1".into(),
             app_id: APP.into(),
             parent_resource: if parent.is_empty() {
@@ -521,6 +522,7 @@ impl Notes {
         }
         if provider == WORKSPACE {
             let open = |app: &str, label: &str| CatalogueRow {
+                offered: None,
                 provider: WORKSPACE.into(),
                 app_id: "so.tilo.desktop".into(),
                 parent_resource: String::new(),

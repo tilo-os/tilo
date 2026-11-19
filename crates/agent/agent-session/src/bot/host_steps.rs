@@ -480,6 +480,7 @@ pub(crate) fn rows() -> Vec<CatalogueRow> {
         .map(|mut descriptor| {
             descriptor.locus = ExecutionLocus::ServerPreferred;
             CatalogueRow {
+                offered: None,
                 provider: PROVIDER.to_owned(),
                 app_id: AGENT_APP_ID.to_owned(),
                 parent_resource: String::new(),
@@ -545,6 +546,7 @@ pub(crate) fn kept_rows(installation: &str) -> Vec<CatalogueRow> {
         // What a program asks of itself, never a row a person picks.
         contract.set_audience(Audience::Agents);
         CatalogueRow {
+            offered: None,
             provider: PROVIDER.to_owned(),
             app_id: SHORTCUTS_APP_ID.to_owned(),
             parent_resource: String::new(),

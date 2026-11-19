@@ -18,6 +18,11 @@ use super::RemoteActionTarget;
 /// Largest page a provider returns, whatever a query asks for.
 pub const MAX_CATALOGUE_PAGE: u32 = 256;
 
+/// The most rows a page of a listing taken a resource at a time
+/// ([`CatalogueQuery::by_resource`]) answers: a resource's rows travel as one
+/// there, so a page this long still holds a couple of hundred resources.
+pub const MAX_BY_RESOURCE_PAGE: u32 = 16_384;
+
 const fn default_page() -> u32 {
     64
 }
@@ -122,6 +127,12 @@ pub struct CatalogueQuery {
     /// Optional upper bounds on the work a provider spends answering.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<CatalogueLimits>,
+    /// The rows each resource offers sent as one ([`CatalogueRow::offered`],
+    /// [`compact`]), and a page up to [`MAX_BY_RESOURCE_PAGE`] rows long:
+    /// what a listing of resources asks, which shows each resource's actions
+    /// by their ids. Cursors still count the rows each stands for.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_resource: bool,
 }
 
 impl Default for CatalogueQuery {
@@ -140,6 +151,7 @@ impl Default for CatalogueQuery {
             cursor: Vec::new(),
             max_results: default_page(),
             limits: None,
+            by_resource: false,
         }
     }
 }
@@ -160,7 +172,12 @@ impl CatalogueQuery {
     /// The page size a provider honours for this query.
     #[must_use]
     pub fn page_size(&self) -> usize {
-        usize::try_from(self.max_results.clamp(1, MAX_CATALOGUE_PAGE)).unwrap_or(1)
+        let most = if self.by_resource {
+            MAX_BY_RESOURCE_PAGE
+        } else {
+            MAX_CATALOGUE_PAGE
+        };
+        usize::try_from(self.max_results.clamp(1, most)).unwrap_or(1)
     }
 }
 
@@ -227,6 +244,160 @@ pub struct CatalogueRow {
     /// generates its typed client from, without the app having to open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,
+    /// The actions the resource offers, in place of a row each, on a page of
+    /// a listing taken a resource at a time ([`CatalogueQuery::by_resource`]);
+    /// `action` is then none. [`expand`] gives the rows back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offered: Option<Box<Offered>>,
+}
+
+/// What one resource offers, as a row of a listing taken a resource at a
+/// time carries it ([`CatalogueRow::offered`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Offered {
+    /// The ids of its actions, in the order its rows stood.
+    pub actions: Vec<String>,
+    /// The resource's semantic identity, as each of its actions carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_identity: Option<crate::ResourceSemanticIdentity>,
+    /// Its actions whole that no row before it on the page described for a
+    /// resource of its kind: the rows of that kind after it name them by id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub described: Vec<ActionDescriptor>,
+}
+
+impl CatalogueRow {
+    /// How many rows of its listing this row stands for: one, or each action
+    /// of a resource sent as one ([`compact`]). What a cursor counts.
+    #[must_use]
+    pub fn weight(&self) -> usize {
+        self.offered
+            .as_ref()
+            .map_or(1, |offered| offered.actions.len().max(1))
+    }
+}
+
+/// The rows `rows` stand for, each counted as its [`CatalogueRow::weight`].
+#[must_use]
+pub fn rows_weight(rows: &[CatalogueRow]) -> usize {
+    rows.iter().map(CatalogueRow::weight).sum()
+}
+
+/// `rows` cut to the first `count` rows they stand for: a resource sent as one
+/// row keeps the actions before the cut.
+pub fn truncate_rows(rows: &mut Vec<CatalogueRow>, count: usize) {
+    let mut kept = 0usize;
+    let mut cut = rows.len();
+    for (at, row) in rows.iter_mut().enumerate() {
+        let left = count.saturating_sub(kept);
+        if left == 0 {
+            cut = at;
+            break;
+        }
+        let weight = row.weight();
+        if weight > left
+            && let Some(offered) = row.offered.as_mut()
+        {
+            offered.actions.truncate(left);
+        }
+        kept = kept.saturating_add(weight.min(left));
+    }
+    rows.truncate(cut);
+}
+
+/// `rows` with each resource's consecutive action rows sent as one row
+/// ([`CatalogueRow::offered`]): an action is described whole the first time a
+/// resource of its kind offers it on the page, and by its id after that. A row
+/// naming no action is kept as it is. [`expand`] undoes it.
+#[must_use]
+pub fn compact(rows: Vec<CatalogueRow>) -> Vec<CatalogueRow> {
+    let mut described: std::collections::HashSet<(String, String, String)> =
+        std::collections::HashSet::new();
+    let mut out: Vec<CatalogueRow> = Vec::new();
+    for mut row in rows {
+        let Some(action) = row.action.take() else {
+            out.push(row);
+            continue;
+        };
+        let first = (action.resource_kind.clone(), action.address.action.clone());
+        let named = (row.provider.clone(), first.0, first.1);
+        let fresh = described.insert(named);
+        if let Some(last) = out.last_mut()
+            && let Some(offered) = last.offered.as_mut()
+            && last.resource.id == row.resource.id
+            && last.parent_resource == row.parent_resource
+            && last.provider == row.provider
+            && last.app_id == row.app_id
+        {
+            last.has_children |= row.has_children;
+            offered.actions.push(action.address.action.clone());
+            if fresh {
+                offered.described.push(action);
+            }
+            continue;
+        }
+        row.offered = Some(Box::new(Offered {
+            actions: vec![action.address.action.clone()],
+            semantic_identity: action.semantic_identity.clone(),
+            described: if fresh { vec![action] } else { Vec::new() },
+        }));
+        out.push(row);
+    }
+    out
+}
+
+/// The rows [`compact`] sent as one, a row per action again, each action
+/// described as the page first described it for a resource of its kind and
+/// placed on this one. A row whose action the page never described is kept
+/// as one row with no action, so nothing it lists is lost.
+#[must_use]
+pub fn expand(rows: Vec<CatalogueRow>) -> Vec<CatalogueRow> {
+    if rows.iter().all(|row| row.offered.is_none()) {
+        return rows;
+    }
+    let mut described: std::collections::HashMap<(String, String, String), ActionDescriptor> =
+        std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(rows.len());
+    for mut row in rows {
+        let Some(offered) = row.offered.take() else {
+            out.push(row);
+            continue;
+        };
+        let Offered {
+            actions,
+            semantic_identity,
+            described: whole,
+        } = *offered;
+        for action in whole {
+            described.insert(
+                (
+                    row.provider.clone(),
+                    action.resource_kind.clone(),
+                    action.address.action.clone(),
+                ),
+                action,
+            );
+        }
+        let mut any = false;
+        for id in actions {
+            let key = (row.provider.clone(), row.resource.kind.clone(), id);
+            let Some(like) = described.get(&key) else {
+                continue;
+            };
+            let mut action = like.clone();
+            action.address = ActionAddress::new(row.resource.id.as_str(), &key.2);
+            action.resource_label.clone_from(&row.resource.label);
+            action.semantic_identity.clone_from(&semantic_identity);
+            let mut each = row.clone();
+            each.action = Some(action);
+            out.push(each);
+            any = true;
+        }
+        if !any {
+            out.push(row);
+        }
+    }
+    out
 }
 
 impl CatalogueRow {
@@ -238,6 +409,7 @@ impl CatalogueRow {
         action: ActionDescriptor,
     ) -> Self {
         Self {
+            offered: None,
             provider: provider.into(),
             app_id: app_id.into(),
             parent_resource: String::new(),
@@ -437,7 +609,14 @@ impl CataloguePage {
         query: &CatalogueQuery,
         more: bool,
     ) -> Self {
-        let next = query.offset().saturating_add(rows.len());
+        let next = query.offset().saturating_add(rows_weight(&rows));
+        // A listing taken a resource at a time is sent so; its cursor still
+        // counts the rows each resource stands for.
+        let rows = if query.by_resource {
+            compact(rows)
+        } else {
+            rows
+        };
         Self {
             revision,
             rows,
@@ -512,6 +691,7 @@ mod tests {
 
     fn row(resource: &str, action: Option<&str>, parent: &str) -> CatalogueRow {
         CatalogueRow {
+            offered: None,
             provider: "7".into(),
             app_id: "notes".into(),
             parent_resource: parent.into(),
@@ -804,6 +984,55 @@ mod tests {
                     .collect();
                 assert_eq!(actions, ["format-cells"], "{needle}");
             }
+        }
+
+        phase a_listing_by_resource_sends_each_resource_once_and_counts_its_rows;
+        {
+            // Three notes of one kind, each offering the same two actions, and a
+            // folder that names none.
+            let mut rows = Vec::new();
+            for note in ["note:1", "note:2", "note:3"] {
+                rows.push(row(note, Some("rename"), ""));
+                rows.push(row(note, Some("archive"), ""));
+            }
+            rows.push(row("folder:a", None, ""));
+            let sent = compact(rows.clone());
+            assert_eq!(sent.len(), 4, "a row per resource");
+            assert_eq!(rows_weight(&sent), rows.len(), "counting every row");
+            let described: Vec<usize> = sent
+                .iter()
+                .map(|row| row.offered.as_ref().map_or(0, |offered| offered.described.len()))
+                .collect();
+            assert_eq!(described, [2, 0, 0, 0], "each action described once a page");
+            assert_eq!(expand(sent.clone()), rows, "the rows come back as they were");
+
+            // A page cut inside a resource keeps the actions before the cut.
+            let mut cut = sent;
+            truncate_rows(&mut cut, 3);
+            assert_eq!(rows_weight(&cut), 3);
+            assert_eq!(expand(cut), rows[..3].to_vec());
+
+            // A page asked a resource at a time is sent so, and its cursor
+            // counts the rows: the next page starts where these end.
+            let query = CatalogueQuery {
+                max_results: 4,
+                by_resource: true,
+                ..CatalogueQuery::default()
+            };
+            let page = CataloguePage::from_rows("r1".into(), rows.clone(), &query);
+            assert_eq!(page.rows.len(), 2);
+            let next = CataloguePage::from_rows(
+                "r1".into(),
+                rows.clone(),
+                &CatalogueQuery {
+                    cursor: page.next_cursor.clone(),
+                    revision: Some("r1".into()),
+                    ..query
+                },
+            );
+            let mut both = expand(page.rows);
+            both.extend(expand(next.rows));
+            assert_eq!(both, rows, "the two pages hold every row once");
         }
     }
 }

@@ -108,6 +108,34 @@ impl Level {
     }
 }
 
+/// How many rows to ask a provider for so a page reaches `reach` resources of
+/// the level under `parent`, from what `rows` already read: each resource
+/// offers its actions as rows, a few dozen on an item, which a listing taken a
+/// resource at a time sends as one ([`CatalogueQuery::by_resource`]). Asking
+/// a row per resource read three items a call, and a tracker of thousands a
+/// call per three.
+fn page_rows(rows: &[CatalogueRow], parent: &str, reach: usize) -> u32 {
+    /// The rows a resource is taken to offer before any was read.
+    const ROWS_EACH: usize = 48;
+    // A read of the whole level keeps to the pages it is bounded to.
+    if reach == usize::MAX {
+        return PAGE_ROWS;
+    }
+    let read = distinct_children(rows, parent);
+    let each = if read == 0 {
+        ROWS_EACH
+    } else {
+        rows.len().div_ceil(read).max(1)
+    };
+    let wanted = reach
+        .saturating_sub(read)
+        .saturating_add(1)
+        .saturating_mul(each);
+    u32::try_from(wanted)
+        .unwrap_or(u32::MAX)
+        .clamp(PAGE_ROWS, tilo_actions::remote::MAX_BY_RESOURCE_PAGE)
+}
+
 /// The row a provider's cursor names: how many rows of the directory it
 /// stands at.
 fn row_offset(cursor: &[u8]) -> usize {
@@ -365,12 +393,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     parent_resource: (!parent.is_empty()).then(|| parent.to_owned()),
                     cursor: std::mem::take(&mut cursor),
                     revision: revision.take(),
-                    max_results: PAGE_ROWS,
+                    max_results: page_rows(&rows, parent, reach),
                     limits: Some(CatalogueLimits {
                         max_bytes: Some(65536),
                         max_work: Some(512),
                         max_depth: Some(16),
                     }),
+                    by_resource: true,
                     ..CatalogueQuery::default()
                 })
                 .await?;
@@ -398,7 +427,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if cannot_be_read_now(&asked) {
                 return Ok(Err(Unread::CannotNow));
             }
-            rows.extend(asked.rows);
+            rows.extend(tilo_actions::remote::expand(asked.rows));
             read_at.clone_from(&asked.revision);
             if asked.exhausted || asked.next_cursor.is_empty() {
                 break;

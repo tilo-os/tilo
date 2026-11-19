@@ -50,6 +50,7 @@ fn descriptor(resource: &str, action: &str, kind: OperationKind) -> ActionDescri
 
 fn row(resource: &str, parent: &str, action: Option<ActionDescriptor>) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: PROVIDER.into(),
         app_id: APP.into(),
         parent_resource: parent.into(),

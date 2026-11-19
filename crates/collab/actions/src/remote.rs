@@ -108,8 +108,9 @@ pub use providers::{
 
 pub use catalogue::{
     CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, MAX_CATALOGUE_PAGE, ResourceViewLocator, RowVisibility,
-    ViewResourceQuery,
+    CatalogueResource, CatalogueRow, MAX_BY_RESOURCE_PAGE, MAX_CATALOGUE_PAGE, Offered,
+    ResourceViewLocator, RowVisibility, ViewResourceQuery, compact, expand, rows_weight,
+    truncate_rows,
 };
 pub use changes::{CHANGE_FEED_UNAVAILABLE, ChangeFeed, ChangePage, ResourceChanged};
 pub use content_get::{CONTENT_GETS_UNAVAILABLE, ContentGetAnswer, ContentGets, ContentPiece};
@@ -2162,6 +2163,7 @@ mod tests {
 
     fn catalogue_row(resource: &str, action: &str) -> CatalogueRow {
         CatalogueRow {
+            offered: None,
             provider: "7".into(),
             app_id: "notes".into(),
             parent_resource: String::new(),

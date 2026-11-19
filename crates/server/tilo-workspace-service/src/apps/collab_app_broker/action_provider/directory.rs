@@ -410,6 +410,7 @@ fn directory_row(
             ),
         })?;
     Ok(CatalogueRow {
+        offered: None,
         provider: root.peer_id.to_string(),
         app_id: root.app_id.clone(),
         parent_resource: row.parent_resource.clone(),

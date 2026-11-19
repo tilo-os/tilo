@@ -27,6 +27,7 @@ struct Workspace {
 
 fn row(provider: &str, app: &str, resource: &str, action: &str) -> CatalogueRow {
     CatalogueRow {
+        offered: None,
         provider: provider.into(),
         app_id: app.into(),
         parent_resource: String::new(),
