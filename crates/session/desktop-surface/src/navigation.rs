@@ -163,7 +163,7 @@ impl From<WidthPreset> for tilo_desktop_model::WindowWidth {
 #[effect(operation = "so.tilo.layout")]
 pub enum LayoutEffect {
     /// Bring its window to the front
-    #[effect(kind = "outside")]
+    #[effect(on = Window, kind = "outside")]
     #[effect(own_device, idempotent)]
     Focus {
         /// The tab to bring forward.
@@ -172,7 +172,7 @@ pub enum LayoutEffect {
     },
 
     /// Close its window
-    #[effect(kind = "outside")]
+    #[effect(on = Window, kind = "outside")]
     #[effect(own_device)]
     CloseTab {
         /// The tab's id.
@@ -191,7 +191,7 @@ pub enum LayoutEffect {
     },
 
     /// Focus a display
-    #[effect(kind = "outside")]
+    #[effect(on = Display, kind = "outside")]
     #[effect(own_device, idempotent)]
     FocusDisplay {
         /// The display's id.
@@ -220,7 +220,7 @@ pub enum LayoutEffect {
     },
 
     /// Choose a search row
-    #[effect(kind = "outside")]
+    #[effect(on = SearchRow, kind = "outside")]
     #[effect(own_device)]
     ChooseSearchRow {
         /// The row, counting from 0 as the reading lists them.
@@ -232,7 +232,7 @@ pub enum LayoutEffect {
     },
 
     /// Choose a launchpad card
-    #[effect(kind = "outside")]
+    #[effect(on = LaunchpadCard, kind = "outside", audience = "agents")]
     #[effect(own_device)]
     Launchpad {
         /// The card's slug, or `apps` for the applications.
@@ -243,7 +243,7 @@ pub enum LayoutEffect {
     /// Keep waiting for its app
     /// Give the app of a window that stopped answering its pings another period to answer before
     /// the window says so again.
-    #[effect(kind = "outside")]
+    #[effect(on = Window, kind = "outside")]
     #[effect(own_device, idempotent)]
     WaitWindow {
         /// The tab's id.
@@ -254,7 +254,7 @@ pub enum LayoutEffect {
     /// Force quit its app
     /// End the app of a window that stopped answering. Only that app's processes go; everything
     /// else stays as it was.
-    #[effect(kind = "outside")]
+    #[effect(on = Window, kind = "outside")]
     #[effect(own_device)]
     ForceQuitApp {
         /// The tab's id.
@@ -262,6 +262,50 @@ pub enum LayoutEffect {
         tab: String,
     },
 }
+
+/// A window the shell shows, as a declared type: what its own verbs act on.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.window", label = "Window", effects = LayoutEffect)]
+pub struct Window;
+
+/// A display the shell draws on, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.display", label = "Display", effects = LayoutEffect)]
+pub struct Display;
+
+/// A row of the desktop's open search, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.search-row", label = "Search result", effects = LayoutEffect)]
+pub struct SearchRow;
+
+/// A card of the empty shell's launchpad, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "desktop.launchpad-card",
+    label = "Launchpad card",
+    effects = LayoutEffect
+)]
+pub struct LaunchpadCard;
+
+/// The shell under the windows, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop", label = "Desktop")]
+pub struct Shell;
+
+/// The chrome above the windows, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop", label = "Desktop")]
+pub struct Chrome;
+
+/// The empty shell's launchpad, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop", label = "Launchpad")]
+pub struct Launchpad;
+
+/// The desktop's open search, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.search", label = "Search")]
+pub struct Search;
 
 /// What the surfaces over the shell can be asked to do: open and show apps,
 /// move a window, and the windows of a strip and where they stand, what

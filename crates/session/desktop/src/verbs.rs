@@ -1,14 +1,18 @@
 //! What the desktop publishes: one verb vocabulary per resource, the shell's and the chrome's, and
 //! the rows under the shell — its windows, its displays, the open search and the empty shell's
-//! launchpad — each offering its own verb of the same vocabulary, bound to the row it stands for.
-//! A person, the palette, an agent or a test reaches each the same way, by its address: the verbs
-//! are the shell's ([`LayoutEffect`]) and the chrome's ([`ChromeEffect`]), published through [`offer`]
-//! as every service's are.
+//! launchpad — each an item of a declared type offering its own verb of the same vocabulary, bound
+//! to what it stands for. A person, the palette, an agent or a test reaches each the same way, by
+//! its address: the verbs are the shell's ([`LayoutEffect`]) and the chrome's ([`ChromeEffect`]),
+//! published through [`offer`] as every service's are.
 
-use tilo_actions::{ActionSpec, Audience, ResourcePresentation, ResourceSpec};
-use tilo_desktop_surface::navigation::{ChromeEffect, LayoutEffect};
+use tilo_actions::{ResourcePresentation, ResourceSpec};
+use tilo_desktop_surface::navigation::{
+    Chrome, ChromeEffect, Display, Launchpad, LaunchpadCard, LayoutEffect, Search, SearchRow,
+    Shell, Window,
+};
 use tilo_desktop_surface::window;
-use tilo_resource::{Effect, offer};
+use tilo_resource::words::RowType;
+use tilo_resource::{LiveRow, RowBindings, offer, typed_resource};
 use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
 
 use crate::i18n::{t, t_args};
@@ -24,14 +28,14 @@ pub const LAUNCHPAD_RESOURCE: &str = "desktop:launchpad";
 /// The resource of the open search, a child of the shell's.
 pub const SEARCH_RESOURCE: &str = "desktop:search";
 /// The kind of the open search's resource, and of each of its rows.
-pub const SEARCH_KIND: &str = "desktop.search";
-pub const SEARCH_ROW_KIND: &str = "desktop.search-row";
+pub const SEARCH_KIND: &str = <Search as RowType>::KIND;
+pub const SEARCH_ROW_KIND: &str = <SearchRow as RowType>::KIND;
 
 /// The kind of a window's resource.
-pub const WINDOW_KIND: &str = "desktop.window";
+pub const WINDOW_KIND: &str = <Window as RowType>::KIND;
 
 /// The kind of a display's resource.
-pub const DISPLAY_KIND: &str = "desktop.display";
+pub const DISPLAY_KIND: &str = <Display as RowType>::KIND;
 
 /// The address of the open search's row `row` .
 #[must_use]
@@ -52,7 +56,7 @@ pub fn display_resource_id(display: u32) -> String {
 }
 
 /// The kind of a card of the empty shell's launchpad.
-pub const LAUNCHPAD_CARD_KIND: &str = "desktop.launchpad-card";
+pub const LAUNCHPAD_CARD_KIND: &str = <LaunchpadCard as RowType>::KIND;
 
 /// The address of the launchpad's card `slug` .
 #[must_use]
@@ -93,9 +97,8 @@ fn with_shortcuts(mut resource: ResourceSpec, shortcuts: &ShortcutConfig) -> Res
 #[must_use]
 pub fn chrome_resource(shortcuts: &ShortcutConfig) -> ResourceSpec {
     with_shortcuts(
-        offer::<ChromeEffect>(ResourceSpec::new(
+        offer::<ChromeEffect>(typed_resource::<Chrome>(
             CHROME_RESOURCE,
-            "desktop",
             t("desktop-actions-chrome"),
         )),
         shortcuts,
@@ -130,12 +133,10 @@ pub struct Shown {
     pub foreign: Option<String>,
 }
 
-/// The shell's resource: its own verbs, with each window of `windows` a
-/// resource of its own that can be focused and closed — and read, for a
-/// window this session does not run — and, for each tab of `not_responding`,
-/// waited for or force quit — across several displays each of `displays` (in
-/// reading order) one that can be focused, and the open search (its query and
-/// rows), when open.
+/// The shell's resource: its own verbs, with each window of `windows` a row of a declared type that
+/// can be focused and closed — and read, for a window of another desktop — and, for each tab
+/// of `not_responding`, waited for or force quit — across several displays each of `displays` (in
+/// reading order) one that can be focused, and the open search (its query and rows), when open.
 #[must_use]
 pub fn shell_resource(
     windows: &[Shown],
@@ -145,77 +146,75 @@ pub fn shell_resource(
 ) -> ResourceSpec {
     let screens = displays.iter().enumerate().map(|(index, display)| {
         let number = index.saturating_add(1).to_string();
-        let focus = bound(
-            &LayoutEffect::FocusDisplay {
-                display: display.to_string(),
-            },
-            None,
-        );
-        ResourceSpec::new(
+        LiveRow::typed_with::<Display>(
             display_resource_id(*display),
-            DISPLAY_KIND,
-            crate::i18n::t_args(
+            t_args(
                 "desktop-display-name",
                 &[("number", number.as_str().into())],
             ),
+            &RowBindings::new().bind(
+                LayoutEffect::FOCUS_DISPLAY,
+                [("display", display.to_string().into())],
+            ),
         )
-        .with_action(focus)
+        .into_resource()
     });
-    // Each window's verbs name the window they act on: an action row that says "Focus a window"
-    // makes the person find the window again in the next row.
-    let windows = windows.iter().map(|shown| {
-        let id = &shown.tab;
-        let names_the_window = &[("window", shown.title.as_str().into())];
-        let mut window = ResourceSpec::new(tab_resource_id(*id), WINDOW_KIND, shown.title.clone())
-            .with_action(bound(
-                &LayoutEffect::Focus {
-                    tab: id.to_string(),
-                },
-                Some(t_args("shell-focus-window", names_the_window)),
-            ))
-            .with_action(bound(
-                &LayoutEffect::CloseTab {
-                    tab: id.to_string(),
-                },
-                Some(t_args("shell-close-window", names_the_window)),
-            ));
-        // A window this session does not run has no surface of its own to ask what it shows: the
-        // shell answers both read actions for it, and neither acts on it
-        // (`tilo_desktop_surface::window`).
-        if shown.foreign.is_some() {
-            window = window
-                .with_action(window::look(t_args("shell-look-window", names_the_window)))
-                .with_action(window::read(t_args("shell-read-window", names_the_window)));
-        }
-        // Only a window whose app stopped answering offers the two ways out of it: quitting a
-        // healthy app is nobody's accident to make.
-        if !not_responding.contains(id) {
-            return window;
-        }
-        window
-            .with_action(bound(
-                &LayoutEffect::WaitWindow {
-                    tab: id.to_string(),
-                },
-                Some(t_args("shell-wait-window", names_the_window)),
-            ))
-            .with_action(bound(
-                &LayoutEffect::ForceQuitApp {
-                    tab: id.to_string(),
-                },
-                Some(t_args("shell-force-quit-window", names_the_window)),
-            ))
-    });
+    let windows = windows
+        .iter()
+        .map(|shown| window_row(shown, not_responding));
     let search = search.map(search_resource);
-    offer::<LayoutEffect>(ResourceSpec::new(
+    offer::<LayoutEffect>(typed_resource::<Shell>(
         SHELL_RESOURCE,
-        "desktop",
         t("desktop-actions-shell"),
     ))
     .with_children(windows.chain(screens).chain(search))
 }
 
-/// The launchpad's resource: each card `cards` offers a resource of its own that offers the shell's
+/// One window of the shell: focusing and closing it, and — a window of another desktop —
+/// reading it through the shell, and — one whose app stopped answering — waiting for it or force
+/// quitting its app. Its verbs name the window they act on, as its row does.
+///
+/// The bar's window bar, a page and an agent read the same verbs by the same address.
+fn window_row(shown: &Shown, not_responding: &[u64]) -> ResourceSpec {
+    let tab = shown.tab.to_string();
+    let names = &[("window", shown.title.as_str().into())];
+    let hung = not_responding.contains(&shown.tab);
+    let mut bindings = RowBindings::new()
+        .bind(LayoutEffect::FOCUS, [("tab", tab.clone().into())])
+        .bind(LayoutEffect::CLOSE_TAB, [("tab", tab.clone().into())]);
+    if hung {
+        bindings = bindings
+            .bind(LayoutEffect::WAIT_WINDOW, [("tab", tab.clone().into())])
+            .bind(LayoutEffect::FORCE_QUIT_APP, [("tab", tab.into())]);
+    }
+    let mut row =
+        LiveRow::typed_with::<Window>(tab_resource_id(shown.tab), shown.title.clone(), &bindings)
+            .labelled(LayoutEffect::FOCUS, t_args("shell-focus-window", names))
+            .labelled(LayoutEffect::CLOSE_TAB, t_args("shell-close-window", names));
+    if hung {
+        row = row
+            .labelled(
+                LayoutEffect::WAIT_WINDOW,
+                t_args("shell-wait-window", names),
+            )
+            .labelled(
+                LayoutEffect::FORCE_QUIT_APP,
+                t_args("shell-force-quit-window", names),
+            );
+    }
+    let mut window = row.into_resource();
+    // A window of another desktop has no surface of its own to ask what it shows: the shell
+    // answers both read actions for it, and neither acts on it
+    // (`tilo_desktop_surface::window`).
+    if shown.foreign.is_some() {
+        window = window
+            .with_action(window::look(t_args("shell-look-window", names)))
+            .with_action(window::read(t_args("shell-read-window", names)));
+    }
+    window
+}
+
+/// The launchpad's resource: each card `cards` is a row of a declared type offering the shell's
 /// launchpad verb, bound to the card it stands for.
 /// A card is one declaration ([`crate::launchpad::LaunchpadAction`]): the host publishes it as a
 /// host action, which is how the palette and the catalogue of actions name it, and this lists the
@@ -228,24 +227,25 @@ pub fn launchpad_resource(cards: &[crate::launchpad::LaunchpadAction]) -> Resour
         .map(|card| (card.slug(), card.label()))
         .chain([("apps", t("launchpad-open-app"))]);
     let rows = cards.map(|(slug, label)| {
-        let mut card = bound(
-            &LayoutEffect::Launchpad { card: slug.into() },
-            Some(label.clone()),
-        );
-        card.type_mut().contract.set_audience(Audience::Agents);
-        ResourceSpec::new(launchpad_card_id(slug), LAUNCHPAD_CARD_KIND, label).with_action(card)
+        LiveRow::typed_with::<LaunchpadCard>(
+            launchpad_card_id(slug),
+            label.clone(),
+            &RowBindings::new().bind(LayoutEffect::LAUNCHPAD, [("card", slug.into())]),
+        )
+        .labelled(LayoutEffect::LAUNCHPAD, label)
+        .into_resource()
     });
-    ResourceSpec::new(
-        LAUNCHPAD_RESOURCE,
-        "desktop",
-        t("desktop-actions-launchpad"),
-    )
-    .with_children(rows)
+    typed_resource::<Launchpad>(LAUNCHPAD_RESOURCE, t("desktop-actions-launchpad"))
+        .with_children(rows)
 }
 
 /// The open search: what is typed, and each row it shows, which can be chosen. Its detail says it
 /// is still searching until every source has answered and its rows are cut to the card: a reader of
 /// the shell (a script, an agent, assistive technology) knows the rows are final once it is gone.
+#[expect(
+    clippy::expect_used,
+    reason = "the search verb is one of the declared vocabulary's, so its spec publishes"
+)]
 fn search_resource(search: OpenSearch<'_>) -> ResourceSpec {
     let OpenSearch {
         query,
@@ -254,16 +254,16 @@ fn search_resource(search: OpenSearch<'_>) -> ResourceSpec {
     } = search;
     let rows = rows.iter().enumerate().map(|(at, row)| {
         let index = u64::try_from(at).unwrap_or(u64::MAX);
-        let choose = bound_asking(
-            &LayoutEffect::ChooseSearchRow {
-                row: index,
-                argument: None,
-            },
-            &["argument"],
-            Some(row.title.clone()),
+        // The row's own action is the one this row chooses; the line its action asks for stays the
+        // caller's.
+        let bindings = RowBindings::new().bind(
+            LayoutEffect::CHOOSE_SEARCH_ROW,
+            [("row", serde_json::Value::from(index))],
         );
-        let spec = ResourceSpec::new(search_row_id(at), SEARCH_ROW_KIND, row.title.clone())
-            .with_action(choose);
+        let spec =
+            LiveRow::typed_with::<SearchRow>(search_row_id(at), row.title.clone(), &bindings)
+                .labelled(LayoutEffect::CHOOSE_SEARCH_ROW, row.title.clone())
+                .into_resource();
         // What the row is sits under its name, as the row's second line.
         match &row.subtitle {
             Some(subtitle) => spec.with_presentation(ResourcePresentation {
@@ -278,8 +278,10 @@ fn search_resource(search: OpenSearch<'_>) -> ResourceSpec {
     } else {
         query.to_owned()
     };
-    let typed = bound_asking(&LayoutEffect::Search { query: None }, &["query"], None);
-    let resource = ResourceSpec::new(SEARCH_RESOURCE, SEARCH_KIND, label)
+    let typed = LayoutEffect::SEARCH
+        .spec()
+        .expect("the search verb is declared");
+    let resource = typed_resource::<Search>(SEARCH_RESOURCE, label)
         .with_action(typed)
         .with_children(rows);
     if searching {
@@ -289,23 +291,4 @@ fn search_resource(search: OpenSearch<'_>) -> ResourceSpec {
         });
     }
     resource
-}
-
-/// `verb` as the action its row offers, named `label` when one is given.
-fn bound(verb: &LayoutEffect, label: Option<String>) -> ActionSpec {
-    let mut spec = verb.bound();
-    if let Some(label) = label {
-        spec.type_mut().label = label;
-    }
-    spec
-}
-
-/// `verb` as the action its row offers, still asking its caller for the arguments named in `asking`
-/// , named `label` when one is given.
-fn bound_asking(verb: &LayoutEffect, asking: &[&str], label: Option<String>) -> ActionSpec {
-    let mut spec = verb.bound_asking(asking);
-    if let Some(label) = label {
-        spec.type_mut().label = label;
-    }
-    spec
 }

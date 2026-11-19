@@ -15,10 +15,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_actions::{
-    ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode, OperationKind,
-    ParamType, ResourceSpec, ResultSpec,
-};
+use tilo_actions::ResourceSpec;
+use tilo_resource::{Effect as _, offer, typed_resource};
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::motion::{Direction, MotionValue, Presence, Transient};
 use ui::presence::PresenceCtx;
@@ -34,9 +32,101 @@ use vello::peniko::Fill;
 use crate::i18n::{t, t_args};
 
 /// The operation type the readout's action carries.
-pub const OPERATION: &str = "tilo.desktop.osd";
+pub const OPERATION: &str = <OsdShow as tilo_resource::Effect>::OPERATION;
 /// The readout's resource.
 pub const OSD_RESOURCE: &str = "desktop:osd";
+
+/// The readout as the session publishes it, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop", label = "On-screen readout")]
+pub struct Readout;
+
+/// What shows a readout: one declared effect, answered by the slab that draws it.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(
+    operation = "tilo.desktop.osd",
+    catalogue = "../desktop-surface/locales"
+)]
+pub enum OsdShow {
+    /// Show a readout
+    #[effect(kind = "outside", label = "desktop-action-show-osd")]
+    Show {
+        /// What it is about: volume, brightness, a mode's new state
+        #[param(
+            "What it is about: volume, brightness, keyboard-backlight, microphone, airplane-mode, \
+             touchpad, play, pause, next-track, previous-track, stop, no-backlight, night-light, \
+             do-not-disturb, magnifier, captured-keys or pointer-released"
+        )]
+        kind: String,
+        /// The level, from 0 to 1
+        #[param("The level, from 0 to 1")]
+        level: Option<f64>,
+        /// Whether it is on
+        #[param("Whether it is on")]
+        on: Option<bool>,
+        /// The device it changed, as a person knows it
+        #[param("The device it changed, as a person knows it")]
+        device: Option<String>,
+        /// The device's glyph: speaker, headphones, display or keyboard
+        #[param(
+            name = "device-glyph",
+            "The device's glyph: speaker, headphones, display or keyboard"
+        )]
+        device_glyph: Option<String>,
+        /// The chord that asked for it
+        #[param("The chord that asked for it")]
+        chord: Option<String>,
+        /// The connector of the display it shows on
+        #[param("The connector of the display it shows on")]
+        display: Option<String>,
+    },
+}
+
+impl OsdShow {
+    /// The readout this effect raises.
+    fn osd(&self) -> Osd {
+        let Self::Show {
+            kind,
+            level,
+            on,
+            device,
+            device_glyph,
+            chord,
+            display: _,
+        } = self;
+        let kind = serde_json::from_value::<OsdKind>(serde_json::Value::String(kind.clone()))
+            .unwrap_or(OsdKind::Volume);
+        #[allow(clippy::cast_possible_truncation, reason = "a level between 0 and 1")]
+        let level = level.unwrap_or(0.0) as f32;
+        let on = on.unwrap_or(true);
+        if kind.has_level() {
+            Osd::from(Level {
+                kind,
+                level: level.clamp(0.0, 1.0),
+                on,
+                device: device.as_deref().map(|name| Device {
+                    name: name.into(),
+                    glyph: device_glyph
+                        .as_deref()
+                        .and_then(|glyph| {
+                            serde_json::from_value::<DeviceGlyph>(serde_json::Value::String(
+                                glyph.into(),
+                            ))
+                            .ok()
+                        })
+                        .unwrap_or_else(|| DeviceGlyph::of_sink(name)),
+                }),
+            })
+        } else {
+            Osd::from(Hint {
+                kind,
+                on,
+                chord: chord.as_deref().map(Into::into),
+                name: None,
+            })
+        }
+    }
+}
 
 /// How long the readout stays up after the last change, fade included: long enough to read after
 /// one tap, short enough that a burst of presses does not leave it hanging around.
@@ -941,92 +1031,11 @@ fn draw_value(
 }
 
 #[must_use]
-#[expect(clippy::expect_used, reason = "a readout always serializes to JSON")]
 pub fn osd_resource() -> ResourceSpec {
-    let mut spec = ActionSpec::typed_operation(
-        "show",
-        t("desktop-action-show-osd"),
-        String::new(),
-        OperationKind::Effect,
-        OPERATION,
-        vec![
-            ActionParam::required_owned(
-                "kind",
-                ParamType::Text,
-                t("desktop-action-param-osd-kind"),
-            ),
-            ActionParam::optional_owned(
-                "level",
-                ParamType::Number,
-                t("desktop-action-param-osd-level"),
-            ),
-            ActionParam::optional_owned("on", ParamType::Boolean, t("desktop-action-param-osd-on")),
-            ActionParam::optional_owned(
-                "device",
-                ParamType::Text,
-                t("desktop-action-param-osd-device"),
-            ),
-            ActionParam::optional_owned(
-                "device-glyph",
-                ParamType::Text,
-                t("desktop-action-param-osd-device-glyph"),
-            ),
-            ActionParam::optional_owned(
-                "chord",
-                ParamType::Text,
-                t("desktop-action-param-osd-chord"),
-            ),
-            ActionParam::optional_owned(
-                "display",
-                ParamType::Text,
-                t("desktop-action-param-osd-display"),
-            ),
-        ],
-        |args| {
-            let kind = args
-                .text("kind")
-                .and_then(|kind| {
-                    serde_json::from_value::<OsdKind>(serde_json::Value::String(kind.into())).ok()
-                })
-                .unwrap_or(OsdKind::Volume);
-            #[allow(clippy::cast_possible_truncation, reason = "a level between 0 and 1")]
-            let level = args.number("level").unwrap_or(0.0) as f32;
-            let on = args.boolean("on").unwrap_or(true);
-            let osd = if kind.has_level() {
-                Osd::from(Level {
-                    kind,
-                    level: level.clamp(0.0, 1.0),
-                    on,
-                    device: args.text("device").map(|name| Device {
-                        name: name.into(),
-                        glyph: args
-                            .text("device-glyph")
-                            .and_then(|glyph| {
-                                serde_json::from_value::<DeviceGlyph>(serde_json::Value::String(
-                                    glyph.into(),
-                                ))
-                                .ok()
-                            })
-                            .unwrap_or_else(|| DeviceGlyph::of_sink(name)),
-                    }),
-                })
-            } else {
-                Osd::from(Hint {
-                    kind,
-                    on,
-                    chord: args.text("chord").map(Into::into),
-                    name: args.text("name").map(Into::into),
-                })
-            };
-            EncodedAction::encode_operation(OPERATION, &osd).expect("a readout always serializes")
-        },
-    );
-    spec.type_mut().contract = ActionContract {
-        execution: ExecutionMode::Immediate,
-        result: ResultSpec::None,
-        ..ActionContract::default()
-    };
-    ResourceSpec::new(OSD_RESOURCE, "desktop", t("desktop-actions-osd")).with_action(spec)
+    offer::<OsdShow>(typed_resource::<Readout>(
+        OSD_RESOURCE,
+        t("desktop-actions-osd"),
+    ))
 }
 
 /// The readout up now: what it says, when it came, when it last changed, how open it is drawn and
@@ -1210,9 +1219,8 @@ impl ui::host_operation::ResourceOperations for OsdSlab {
         let Some(request) = op.unscoped().filter(|request| request.type_id == OPERATION) else {
             return Ok(None);
         };
-        let osd: Osd =
-            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
-        self.show(osd);
+        let show = OsdShow::from_payload(request.payload).map_err(|error| error.to_string())?;
+        self.show(show.osd());
         Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
@@ -1704,8 +1712,11 @@ mod tests {
         arguments.insert("level".into(), 0.3.into());
         arguments.insert("device".into(), "Built-in display".into());
         arguments.insert("device-glyph".into(), "display".into());
+        use tilo_resource::Effect as _;
         let encoded = show(&arguments);
-        let osd: Osd = serde_json::from_slice(&encoded.payload).unwrap();
+        let osd = OsdShow::from_payload(&encoded.payload)
+            .expect("the action carries the readout it declares")
+            .osd();
         assert_eq!(
             osd,
             brightness(0.3),
@@ -1726,7 +1737,9 @@ mod tests {
         arguments.insert("kind".into(), "night-light".into());
         arguments.insert("chord".into(), "⌃⌥N".into());
         let encoded = show(&arguments);
-        let osd: Osd = serde_json::from_slice(&encoded.payload).unwrap();
+        let osd = OsdShow::from_payload(&encoded.payload)
+            .expect("the action carries the readout it declares")
+            .osd();
         assert_eq!(osd, night_light(true));
         slab.show(osd);
         assert_eq!(
