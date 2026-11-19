@@ -705,3 +705,64 @@ fn a_row_status_and_an_items_presentation_reach_the_published_tree() {
          never the source text the declaration carries"
     );
 }
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "test.plain", label = "Plain")]
+struct Plain;
+
+#[test]
+fn a_rows_own_row_offers_its_vocabularys_effects_unasked() {
+    let row = LiveRow::typed::<Plain>("plain:1", "Plain")
+        .vocabulary::<JobEffect>()
+        .into_resource();
+    let ids: Vec<&str> = row
+        .actions
+        .iter()
+        .map(|action| action.id.as_str())
+        .collect();
+    for expected in ["play", "skip", "stop"] {
+        assert!(
+            ids.contains(&expected),
+            "the vocabulary's effects are offered on the row as the resource offers them: {ids:?}"
+        );
+    }
+    let stop = row
+        .actions
+        .iter()
+        .find(|action| action.id == "stop")
+        .unwrap();
+    assert_eq!(
+        stop.params()
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect::<Vec<_>>(),
+        ["job", "force"],
+        "nothing is bound: what the effect takes is asked"
+    );
+}
+
+#[test]
+fn a_row_specializes_a_declared_effect_only_it_can_shape() {
+    let row = LiveRow::typed::<Plain>("plain:1", "Plain")
+        .specialized([JobEffect::Stop {
+            job: "plain:1".into(),
+            force: Some(true),
+        }
+        .bound()])
+        .into_resource();
+    assert_eq!(row.actions.len(), 1);
+    let stop = &row.actions[0];
+    assert_eq!(stop.id, "stop");
+    assert!(
+        stop.params().is_empty(),
+        "the row's own effect is bound whole"
+    );
+    let encoded = stop.build_json(&serde_json::Map::new()).unwrap();
+    assert_eq!(
+        JobEffect::from_payload(&encoded.payload).unwrap(),
+        JobEffect::Stop {
+            job: "plain:1".into(),
+            force: Some(true),
+        }
+    );
+}

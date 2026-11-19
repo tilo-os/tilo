@@ -423,7 +423,7 @@ pub use query::{Query, ReadFailure};
 pub use reference::Call;
 pub use resources::{Declare, OtherResource, Resources};
 pub use root::{reserved_action_ids, with_surface};
-pub use rows::{Application, LiveRow};
+pub use rows::{Application, LiveRow, apply_statuses};
 pub use saves::Saves;
 pub use scenario::{Fixture, RunMode};
 pub use section::SettingsResources;
