@@ -339,12 +339,32 @@ impl Tree {
     }
 }
 
+/// Readdressed file versions retained from the workspace this branch came from.
+pub const FILE_VERSION_ALIASES_KEY: &str = "file_version_aliases";
+
+/// Validate the canonical form used for immutable content identifiers.
+#[must_use]
+pub fn is_file_content_hash(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// Read an authenticated replacement from the tree index.
+pub fn file_version_alias(doc: &impl ReadDoc, hash: &str) -> Option<String> {
+    let aliases = doc.obj_at(&ROOT, FILE_VERSION_ALIASES_KEY, ObjType::Map)?;
+    let replacement = doc.str_at(&aliases, hash)?;
+    is_file_content_hash(&replacement).then_some(replacement)
+}
+
 /// A workspace's tree as the records that hold it: its own record (the index) and its
 /// chunks, each read as it changes, so a change of one chunk costs that chunk.
 #[derive(Clone, Debug, Default)]
 pub struct TreeChunks {
     root_document_id: Option<FileDocumentId>,
     listed: BTreeSet<TreeChunk>,
+    aliases: BTreeMap<String, String>,
     chunks: BTreeMap<TreeChunk, BTreeMap<String, TreeEntry>>,
 }
 
@@ -354,6 +374,15 @@ impl TreeChunks {
         self.root_document_id =
             resource_of(doc, &ROOT, ROOT_DOCUMENT_ID_KEY).or(self.root_document_id);
         self.listed.extend(listed_chunks(doc));
+        self.aliases = doc
+            .obj_at(&ROOT, FILE_VERSION_ALIASES_KEY, ObjType::Map)
+            .into_iter()
+            .flat_map(|aliases| doc.keys(&aliases))
+            .filter_map(|hash| {
+                let replacement = file_version_alias(doc, &hash)?;
+                is_file_content_hash(&hash).then_some((hash, replacement))
+            })
+            .collect();
     }
 
     /// Take in chunk `chunk` as its record reads now, in place of what it read before.
@@ -407,6 +436,12 @@ impl TreeChunks {
         self.chunks.get(&chunk)
     }
 
+    /// The content of a version, in the current workspace's storage.
+    #[must_use]
+    pub fn file_hash<'a>(&'a self, hash: &'a str) -> &'a str {
+        self.aliases.get(hash).map_or(hash, String::as_str)
+    }
+
     /// The whole tree, every chunk read so far.
     #[must_use]
     pub fn tree(&self) -> Tree {
@@ -415,7 +450,17 @@ impl TreeChunks {
             nodes: self
                 .chunks
                 .values()
-                .flat_map(|nodes| nodes.iter().map(|(id, node)| (id.clone(), node.clone())))
+                .flat_map(|nodes| {
+                    nodes.iter().map(|(id, node)| {
+                        let mut node = node.clone();
+                        if let Some(hash) = &mut node.hash
+                            && let Some(replacement) = self.aliases.get(hash)
+                        {
+                            *hash = replacement.clone();
+                        }
+                        (id.clone(), node)
+                    })
+                })
                 .collect(),
         }
     }

@@ -1,22 +1,16 @@
-//! A branch of a workspace takes the content its records name
-//! ([`crate::workspaces::BranchContent`]): each item is copied from the source's
-//! store into the branch's as the bytes the source keeps under its address,
-//! sealed content as its ciphertext, so the reference a record holds (its
-//! address, and the key of sealed content) reads the same in the branch. What
-//! the branch takes is what a pass over its records keeps
-//! ([`super::collection::named_by`]): every address any version of them names,
-//! and the chunks of the files those are. The files the workspace's tree names
-//! now must all be here, each manifest and every chunk, or no branch is made: a
-//! file the host is still gathering would never reach the branch. What only an
-//! earlier version named is copied when it is here, and may be long collected.
+//! Copy the content a workspace's branch needs. Current Files payloads must be complete.
+//! Older versions go with the branch when they are still stored. Sealed Files versions are
+//! encrypted with the branch's keys, and the tree index maps their original addresses to the
+//! branch's addresses so history can bring them back.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ROOT, ReadDoc as _};
 use collab_types::{ContentRetention, EncryptionMetadata, WorkspaceId, file_content_artifact};
 use fs::content::Manifest;
+use fs_protocol::tree::chunk_of_record as tree_chunk;
 use key_group::ContentKeys;
 use tilo_content::{ContentStore, WorkspaceStores};
 
@@ -90,9 +84,9 @@ impl crate::workspaces::BranchContent for StoresBranches {
             return Ok(false);
         };
         let source = self.0.get(source)?;
-        Ok(crate::files_content::files_named(&tree).iter().any(|hash| {
+        Ok(file_versions(documents)?.iter().any(|hash| {
             source
-                .read(hash)
+                .read(tree.file_hash(hash))
                 .and_then(|bytes| Manifest::decode(&bytes).ok())
                 .is_some_and(|manifest| manifest.sealed().is_some())
         }))
@@ -112,24 +106,45 @@ impl crate::workspaces::BranchContent for StoresBranches {
         let from = WorkspaceId::parse(source).ok_or("invalid source workspace")?;
         let to = WorkspaceId::parse(branch).ok_or("invalid branch workspace")?;
         let store = self.0.get(branch)?;
+        let current: BTreeSet<_> = crate::files_content::files_named(&tree)
+            .into_iter()
+            .collect();
         let mut translated = BTreeMap::new();
-        for hash in crate::files_content::files_named(&tree) {
-            let Some(bytes) = store.read(&hash) else {
-                continue;
-            };
-            let Ok(manifest) = Manifest::decode(&bytes) else {
-                continue;
-            };
-            if manifest.sealed().is_some() {
+        let mut kept = BTreeMap::new();
+        for original in file_versions(documents)? {
+            let source_hash = tree.file_hash(&original);
+            if !kept.contains_key(source_hash) {
+                let Some(bytes) = store.read(source_hash) else {
+                    continue;
+                };
+                let Ok(manifest) = Manifest::decode(&bytes) else {
+                    continue;
+                };
+                if manifest.sealed().is_none()
+                    || (!current.contains(source_hash)
+                        && manifest
+                            .chunks()
+                            .iter()
+                            .any(|part| !store.has(&hex::encode(part.hash))))
+                {
+                    continue;
+                }
                 let replacement = rekey(&store, &manifest, (from, to), keys)?;
-                translated.insert(hash, replacement);
+                kept.insert(source_hash.to_owned(), replacement);
+            }
+            if let Some(replacement) = kept.get(source_hash) {
+                translated.insert(original, replacement.clone());
             }
         }
+        translated.extend(kept);
         for ((app, document), bytes) in documents {
-            if app == fs_protocol::tree::FILES_APP
-                && fs_protocol::tree::chunk_of_record(document).is_some()
-            {
-                replace_file_hashes(bytes, &translated)?;
+            if app != fs_protocol::tree::FILES_APP {
+                continue;
+            }
+            match tree_chunk(document) {
+                Some(0) => write_file_aliases(bytes, &translated)?,
+                Some(_) => replace_file_hashes(bytes, &translated)?,
+                None => {}
             }
         }
         Ok(())
@@ -138,6 +153,60 @@ impl crate::workspaces::BranchContent for StoresBranches {
     fn discard(&self, branch: &str) -> Result<(), String> {
         self.0.remove(branch)
     }
+}
+
+/// Every version address ever entered in a chunk of the Files tree.
+fn file_versions(documents: &[((String, String), Vec<u8>)]) -> Result<BTreeSet<String>, String> {
+    use automerge::legacy::{Key, OpType};
+    use fs_protocol::tree::{FILES_APP, HASH_KEY, is_file_content_hash};
+
+    let mut versions = BTreeSet::new();
+    for ((app, id), bytes) in documents {
+        if app != FILES_APP || !matches!(tree_chunk(id), Some(chunk) if chunk != 0) {
+            continue;
+        }
+        let mut document = AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+        for change in document.get_changes(&[]) {
+            for operation in change.decode().operations {
+                if matches!(&operation.key, Key::Map(key) if matches!(key.as_str(), HASH_KEY | "deleted_hash"))
+                    && let OpType::Put(automerge::ScalarValue::Str(hash)) = operation.action
+                    && is_file_content_hash(hash.as_str())
+                {
+                    versions.insert(hash.to_string());
+                }
+            }
+        }
+    }
+    Ok(versions)
+}
+
+fn write_file_aliases(
+    bytes: &mut Vec<u8>,
+    translated: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    use automerge::{ObjType, Value};
+    use fs_protocol::tree::FILE_VERSION_ALIASES_KEY;
+
+    if translated.is_empty() {
+        return Ok(());
+    }
+    let mut document = AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+    let aliases = match document
+        .get(&ROOT, FILE_VERSION_ALIASES_KEY)
+        .map_err(|error| error.to_string())?
+    {
+        Some((Value::Object(ObjType::Map), aliases)) => aliases,
+        _ => document
+            .put_object(&ROOT, FILE_VERSION_ALIASES_KEY, ObjType::Map)
+            .map_err(|error| error.to_string())?,
+    };
+    for (before, after) in translated {
+        document
+            .put(&aliases, before, after.as_str())
+            .map_err(|error| error.to_string())?;
+    }
+    *bytes = document.save();
+    Ok(())
 }
 
 fn rekey(
@@ -272,4 +341,124 @@ fn not_whole_yet(
 /// branch took no tree, or it does not read.
 fn tree_entries(records: &[((String, String), Vec<u8>)]) -> Option<usize> {
     tree_of(records).map(|tree| tree.tree().nodes.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspaces::BranchContent;
+    use fs::ROOT_INO;
+    use fs_protocol::tree::{FILES_APP, chunk_document_id};
+
+    fn snapshot(namespace: &mut fs::Namespace) -> Vec<((String, String), Vec<u8>)> {
+        namespace
+            .document_writes(&BTreeMap::new())
+            .into_iter()
+            .map(|write| {
+                let mut doc = AutoCommit::new();
+                doc.load_incremental(&write.changes).unwrap();
+                (
+                    (FILES_APP.to_owned(), chunk_document_id(write.chunk)),
+                    doc.save(),
+                )
+            })
+            .collect()
+    }
+
+    fn put_file(store: &ContentStore, keys: &ContentKeys, data: &[u8]) -> String {
+        let (plain, _) = fs::content::build(data, None);
+        let (_, payload) = keys
+            .seal_content(
+                file_content_artifact(keys.workspace()),
+                ContentRetention::Delta,
+                data,
+            )
+            .unwrap();
+        let stored = store.put_public(&payload).unwrap();
+        let mut chunk = plain.chunks()[0];
+        hex::decode_to_slice(stored, &mut chunk.hash).unwrap();
+        let manifest = Manifest::new_sealed(
+            plain.tier(),
+            vec![chunk],
+            fs::content::SealedChunks {
+                group: *keys.workspace().as_uuid().as_bytes(),
+                epoch: keys.epoch(),
+                overhead: u32::try_from(payload.len() - data.len()).unwrap(),
+            },
+        );
+        store
+            .put_public(&manifest.encode())
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_branch_opens_an_earlier_file_version_with_its_own_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let stores = Arc::new(WorkspaceStores::in_dir(
+            dir.path(),
+            tilo_content::ContentLimits::default(),
+        ));
+        let source = WorkspaceId::new();
+        let branch = WorkspaceId::new();
+        let keys_for = |id| {
+            key_group::KeyGroup::create(id, key_group::MemberKey::generate("member").unwrap())
+                .unwrap()
+                .content_keys()
+                .unwrap()
+        };
+        let (from, to) = (keys_for(source), keys_for(branch));
+        let source = source.to_string();
+        let branch = branch.to_string();
+        let store = stores.get(&source).unwrap();
+        let (earlier, later) = (b"earlier version", b"current version");
+        let old = put_file(&store, &from, earlier).parse().unwrap();
+        let new = put_file(&store, &from, later).parse().unwrap();
+
+        let mut namespace = fs::Namespace::new("source").unwrap();
+        let ino = namespace
+            .create_file(ROOT_INO, "report", Some(&old), earlier.len() as u64, 1)
+            .unwrap();
+        let before = snapshot(&mut namespace);
+        assert!(namespace.set_content(ino, Some(&new), later.len() as u64, 2));
+        let mut copied = snapshot(&mut namespace);
+
+        let copier = StoresBranches(stores.clone());
+        assert!(copier.has_sealed_files(&source, &copied).unwrap());
+        copier
+            .copy_rekeyed(&source, &branch, &mut copied, (&from, &to))
+            .unwrap();
+
+        // The branch's Files index is live when a reader brings back the earlier version.
+        let restored = copied
+            .into_iter()
+            .filter(|((_, id), _)| tree_chunk(id) == Some(0))
+            .chain(
+                before
+                    .into_iter()
+                    .filter(|((_, id), _)| tree_chunk(id) != Some(0)),
+            )
+            .map(|((_, id), bytes)| (tree_chunk(&id).unwrap(), bytes))
+            .collect();
+        let mut namespace = fs::Namespace::new("branch").unwrap();
+        namespace
+            .take_published_documents(restored, &BTreeMap::new())
+            .unwrap();
+        let ino = namespace.lookup(ROOT_INO, "report").unwrap().ino.0;
+        let hash = namespace.hash_for(ino).unwrap();
+        assert_ne!(hash, old);
+
+        let store = stores.get(&branch).unwrap();
+        let bytes = store.read(&hash.to_hex()).unwrap();
+        let manifest = Manifest::decode(&bytes).unwrap();
+        let metadata = EncryptionMetadata::content_key(to.epoch(), ContentRetention::Delta);
+        let payload = store.read(&hex::encode(manifest.chunks()[0].hash)).unwrap();
+        let artifact = file_content_artifact(to.workspace());
+        assert_eq!(
+            &*to.open_content(artifact, &metadata, &payload).unwrap(),
+            earlier
+        );
+        assert!(from.open_content(artifact, &metadata, &payload).is_err());
+    }
 }
