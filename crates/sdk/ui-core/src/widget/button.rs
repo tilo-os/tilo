@@ -1081,6 +1081,9 @@ struct FaceMetrics {
     /// Inset of the content from each side.
     pad_x: f64,
     icon: f64,
+    /// The side of a person's face leading a label: a step larger than an icon, so their
+    /// initials stay legible in a chip.
+    avatar: f64,
     icon_gap: f64,
     hint_gap: f64,
     label_style: TextStyle,
@@ -1102,10 +1105,15 @@ impl FaceMetrics {
         let icon = (f64::from(icon) * f64::from(theme.text_scale.max(1.0)))
             .min(height - 2.0 * f64::from(spacing.s1))
             .round();
+        let avatar = (f64::from(metrics.icon_md) * f64::from(theme.text_scale.max(1.0)))
+            .max(icon)
+            .min(height - 2.0 * f64::from(spacing.s1))
+            .round();
         Self {
             height,
             pad_x: f64::from(pad_x),
             icon,
+            avatar,
             icon_gap: f64::from(metrics.icon_label_gap),
             hint_gap: f64::from(spacing.s3),
             label_style: size.label_style(theme),
@@ -1238,7 +1246,9 @@ impl FaceContent<'_> {
         }
         let pad = if self.flush { 0.0 } else { metrics.pad_x };
         let mut width = 2.0 * pad;
-        if self.icon.is_some() || self.avatar.is_some() {
+        if self.avatar.is_some() {
+            width += metrics.avatar + metrics.icon_gap;
+        } else if self.icon.is_some() {
             width += metrics.icon + metrics.icon_gap;
         }
         if !self.faces.is_empty() {
@@ -1386,7 +1396,10 @@ impl FaceContent<'_> {
             return;
         }
         let style = &metrics.label_style;
-        let lead = if self.icon.is_some() || self.avatar.is_some() {
+        let avatar_px = metrics.avatar.min(rect.height());
+        let lead = if self.avatar.is_some() {
+            avatar_px + metrics.icon_gap
+        } else if self.icon.is_some() {
             icon_px + metrics.icon_gap
         } else {
             0.0
@@ -1419,8 +1432,8 @@ impl FaceContent<'_> {
                 );
             }
             if let Some(who) = self.avatar {
-                let iy = rect.center().y - icon_px / 2.0;
-                let face = Rect::new(leading, iy, leading + icon_px, iy + icon_px);
+                let iy = rect.center().y - avatar_px / 2.0;
+                let face = Rect::new(leading, iy, leading + avatar_px, iy + avatar_px);
                 crate::widget::AvatarFace::of(who).paint(ctx, face);
             }
             if !self.faces.is_empty() {
@@ -1465,8 +1478,8 @@ impl FaceContent<'_> {
             );
         }
         if let Some(who) = self.avatar {
-            let iy = rect.center().y - icon_px / 2.0;
-            let face = Rect::new(start_x, iy, start_x + icon_px, iy + icon_px);
+            let iy = rect.center().y - avatar_px / 2.0;
+            let face = Rect::new(start_x, iy, start_x + avatar_px, iy + avatar_px);
             crate::widget::AvatarFace::of(who).paint(ctx, face);
         }
         if !self.faces.is_empty() {

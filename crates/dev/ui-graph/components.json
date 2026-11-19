@@ -5314,7 +5314,7 @@
     },
     {
       "name": "TimePicker",
-      "doc": "A time of day, as three spinners for hours, minutes and seconds: the arrows step a spinner and so does the wheel over its cell. It is the time in the person's own zone today.",
+      "doc": "A time of day, as spinners for hours and minutes, and for seconds when the time holds some: the arrows step a spinner and so does the wheel over its cell. It is the time in the person's own zone today.",
       "props": [
         {
           "name": "label",

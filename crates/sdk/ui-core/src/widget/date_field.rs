@@ -254,7 +254,7 @@ pub(crate) fn with_time(text: &str, time: Option<Time>) -> String {
 }
 
 /// The instant `day` at `time` in the person's zone, as ISO-8601 UTC text.
-fn instant_text(day: Date, time: Time) -> String {
+pub(crate) fn instant_text(day: Date, time: Time) -> String {
     match crate::clock::instant_of(day.to_datetime(time)) {
         Some(at) => format!("{at:.0}"),
         None => tilo_failure::ignored!(

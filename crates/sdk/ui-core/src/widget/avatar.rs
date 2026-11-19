@@ -698,10 +698,13 @@ pub fn initial_ink(fill: Color, theme: &Theme) -> Color {
 /// Initials are sized by the disc they sit in, not by the reader's text
 /// scale: the theme's emphasised label face at 40 % of the side.
 pub(crate) fn initials_style(theme: &Theme, side: f64) -> TextStyle {
+    // A small face (a chip's, a row's) gives its initials a larger share of it, so a 20 px face
+    // still says who it is in letters a person reads.
+    let share = if side < 24.0 { 0.45 } else { 0.4 };
     theme
         .text(TextRole::Label)
         .strong()
-        .with_content_size(crate::num::f32_of_f64(side * 0.4))
+        .with_content_size(crate::num::f32_of_f64(side * share))
 }
 
 enum Picture {

@@ -155,11 +155,21 @@ impl ShortcutRecorder {
             text,
             theme,
         );
-        let prompt = f64::from(
-            text.measure_style(CAPTURE_PROMPT, None, &theme.text(TextRole::Label))
-                .0,
-        );
-        self.keys_width = if self.capturing { prompt } else { keys }.ceil();
+        let words = |text: &mut TextRenderer, key: &str| {
+            let said = crate::i18n::widget_format(key, &[]);
+            f64::from(
+                text.measure_style(&said, None, &theme.text(TextRole::Label))
+                    .0,
+            )
+        };
+        self.keys_width = if self.capturing {
+            words(text, "widget-shortcut-prompt")
+        } else if self.value.is_empty() {
+            words(text, "widget-shortcut-none")
+        } else {
+            keys
+        }
+        .ceil();
     }
 
     fn binding(&self) -> KeyboardBinding {
@@ -180,8 +190,6 @@ impl ShortcutRecorder {
     }
 }
 
-const CAPTURE_PROMPT: &str = "Type a shortcut";
-
 impl Widget for ShortcutRecorder {
     crate::described!();
     /// A recorded chord as a page's own button: its keycaps' words, and the
@@ -192,10 +200,14 @@ impl Widget for ShortcutRecorder {
         let theme = cx.theme();
         let colors = &theme.tokens.colors;
         let style = theme.text(crate::tokens::TextRole::Body);
-        let chord = if self.value.is_empty() {
-            "—".to_owned()
+        // No shortcut reads as the word for none, quietly, never as a keycap of a dash.
+        let (chord, ink) = if self.value.is_empty() {
+            (
+                crate::i18n::widget_format("widget-shortcut-none", &[]),
+                colors.text_dim,
+            )
         } else {
-            self.value.clone()
+            (self.value.clone(), colors.text_primary)
         };
         cx.face(Face {
             icon: crate::composition::glyph(
@@ -204,13 +216,8 @@ impl Widget for ShortcutRecorder {
                 colors.text_dim,
                 false,
             ),
-            label: Some(
-                TextLook::new(chord, &style, Some(colors.text_primary)).with_max_lines(Some(1)),
-            ),
-            detail: (self.value != self.default).then(|| {
-                TextLook::new(self.default.clone(), &style, Some(colors.text_dim))
-                    .with_max_lines(Some(1))
-            }),
+            label: Some(TextLook::new(chord, &style, Some(ink)).with_max_lines(Some(1))),
+            detail: None,
             trailing: None,
             fill: None,
             edge: None,
@@ -337,12 +344,21 @@ impl Widget for ShortcutRecorder {
                 &RoundedRect::from_rect(ring, f64::from(theme.tokens.radii.item)),
             );
         }
-        if self.capturing {
+        // While it listens it asks for the keys; with none set it says so, quietly.
+        let words = if self.capturing {
+            Some("widget-shortcut-prompt")
+        } else if self.value.is_empty() {
+            Some("widget-shortcut-none")
+        } else {
+            None
+        };
+        if let Some(key) = words {
+            let said = crate::i18n::widget_format(key, &[]);
             let style = theme.text(TextRole::Label);
-            let (_, h) = text.measure_style(CAPTURE_PROMPT, None, &style);
+            let (_, h) = text.measure_style(&said, None, &style);
             text.draw_style(
                 scene,
-                CAPTURE_PROMPT,
+                &said,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((chord.x0, chord.center().y - f64::from(h) / 2.0).into()),
                 None,
@@ -366,7 +382,7 @@ impl Widget for ShortcutRecorder {
                 &crate::widget::ButtonFace::icon_only(
                     reset,
                     crate::icons::Icon::RotateCcw,
-                    "Reset to default",
+                    &crate::i18n::widget_format("widget-shortcut-reset", &[]),
                 )
                 .control_size(crate::widget::ControlSize::Small)
                 .hovered(hovered),
@@ -629,6 +645,18 @@ mod tests {
                 ["⌘", "↓"]
             );
         }
+    }
+
+    #[test]
+    fn no_shortcut_reads_as_none_rather_than_a_keycap() {
+        let theme = crate::theme::Theme::light();
+        let mut text = TextRenderer::new();
+        let mut empty = recorder("", "Ctrl+K");
+        empty.measure_keys(&mut text, &theme);
+        let none = crate::i18n::widget_format("widget-shortcut-none", &[]);
+        let (width, _) = text.measure_style(&none, None, &theme.text(TextRole::Label));
+        assert_eq!(empty.keys_width, f64::from(width).ceil());
+        assert!(empty.reset_rect().is_some(), "the default is a press away");
     }
 
     #[test]

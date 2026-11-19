@@ -1970,3 +1970,20 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+#[test]
+fn a_persons_face_leads_a_chip_a_step_larger_than_an_icon() {
+    let theme = Theme::dark();
+    let ada = crate::component::Person::new(tilo_actions::MemberId::person("ada"), "Ada");
+    let with_icon = measured_button_rect(
+        Button::new("owner", "Ada").with_icon(crate::icons::Icon::User),
+        1.0,
+    );
+    let with_face = measured_button_rect(Button::new("owner", "Ada").with_avatar(ada), 1.0);
+    let step = f64::from(theme.tokens.metrics.icon_md - theme.tokens.metrics.icon_control);
+    assert!(step > 0.0);
+    assert!(
+        (with_face.width() - with_icon.width() - step).abs() < 0.5,
+        "the face is {step} px wider than an icon: {with_face:?} against {with_icon:?}"
+    );
+}
