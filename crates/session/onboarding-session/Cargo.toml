@@ -45,6 +45,8 @@ tilo-identity-ceremony = { path = "../../collab/tilo-identity-ceremony" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
 tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 tilo-onboarding = { path = "../onboarding" }
+# An acknowledgement is a declared action of setup's document.
+tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-paths.workspace = true
 tilo-server-protocol = { path = "../../server/tilo-server-protocol" }
 # The `tracing` target the session log keeps whatever `RUST_LOG` says: every
@@ -66,7 +68,6 @@ browser-continuity = { path = "../../browser/browser-continuity", features = ["n
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-test-env = { path = "../../dev/test-env" }
-tilo-resource = { path = "../../sdk/tilo-resource" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 
 [lints]
