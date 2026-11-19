@@ -305,7 +305,8 @@ pub enum ProfileChoice {
 impl ProfileChoice {
     /// Whether the card closes on it: a linked account's choice keeps it open to show what came of
     /// it.
-    fn closes(&self) -> bool {
+    #[must_use]
+    pub fn closes(&self) -> bool {
         matches!(
             self,
             Self::Action(_)

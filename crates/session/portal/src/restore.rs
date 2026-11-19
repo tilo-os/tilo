@@ -8,7 +8,9 @@
 //! (an app asking to be remembered until revoked gets no more) and holds
 //! only in the workspace it was given in: after a restart or from
 //! another workspace the person is asked again. Each grant is published
-//! so the person sees what is remembered and may forget it.
+//! so the person sees what is remembered and may forget it, and it stands
+//! only while the app may still use what it shares: taking back the app's
+//! screen or input answer forgets it too ([`crate::Portal::end_captures`]).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -28,11 +30,17 @@ const VENDOR: &str = "tilo";
 const VERSION: u32 = 1;
 const GRANT_PREFIX: &str = "portal:restore:";
 
+/// One remembered share, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal.restore", label = "Remembered share")]
+pub struct GrantRow;
+
 /// What a remembered share offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.portal.restore")]
 pub enum GrantEffect {
     /// Forget the remembered share
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Forget,
 }
@@ -96,6 +104,14 @@ impl Grants {
         before != grants.len()
     }
 
+    /// Forget every grant `ended` says no longer stands; whether any was.
+    pub fn forget_ended(&self, ended: impl Fn(&Grant) -> bool) -> bool {
+        let mut grants = self.grants.lock_recover();
+        let before = grants.len();
+        grants.retain(|grant| !ended(grant));
+        before != grants.len()
+    }
+
     /// Forget what an app kept: it quit.
     pub fn app_exited(&self, app_id: &str) {
         self.grants
@@ -121,9 +137,8 @@ impl crate::Published for Grants {
                     .map(|source| source.label.as_str())
                     .collect::<Vec<_>>()
                     .join(", ");
-                offer::<GrantEffect>(ResourceSpec::new(
+                offer::<GrantEffect>(tilo_resource::typed_resource::<GrantRow>(
                     format!("{GRANT_PREFIX}{}", grant.id),
-                    "portal.restore",
                     grant.app_id,
                 ))
                 .with_presentation(ResourcePresentation {

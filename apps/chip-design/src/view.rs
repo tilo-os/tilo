@@ -22,10 +22,12 @@ fn tr(key: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "chip_design.effect")]
 pub enum ChipEffect {
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     ImportFile,
     #[effect(view, kind = "read")]
     OperatorGraph,
+    #[effect(kind = "outside")]
     AddOperator {
         #[param("The operator's name, as the add menu lists it (e.g. Input, Multiply)")]
         kind: String,

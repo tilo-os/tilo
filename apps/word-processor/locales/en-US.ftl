@@ -317,6 +317,7 @@ word-processor-effects-comment-selection = Comment on selection
 word-processor-effects-place-image = Place image
 word-processor-effects-go-to = Go to
 word-processor-effects-go-to-anchor = Go to commented text
+word-processor-effects-go-to-hit = Show search result
 word-processor-document = Document
 word-processor-document-append-paragraph = Add paragraph
 word-processor-document-replace-body = Replace body

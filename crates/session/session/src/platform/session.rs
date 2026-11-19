@@ -735,6 +735,10 @@ impl Session {
                 &changes,
                 Some(peer_documents),
             );
+            // Search finds the records the workspaces hold, and brings one here, through them.
+            if let Some(found) = &options.search.records {
+                found.read_from(engine, records.clone(), options.person.clone());
+            }
         }
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
@@ -1577,7 +1581,7 @@ impl Session {
                 sync: sync.is_some(),
                 engine: engine.clone(),
                 services: Rc::clone(&services),
-                site: crate::platform::directory::community_site,
+                listed: Rc::default(),
             }),
             Rc::clone(&clipboard) as Rc<dyn crate::platform::clipboard::Clipboard>,
             Rc::clone(&directory_store),
@@ -2290,8 +2294,8 @@ impl Session {
     #[must_use]
     pub fn device_mcp(
         &self,
-        devices: std::sync::Arc<dyn tilo_mcp::devices::PersonsDevices>,
-    ) -> tilo_mcp::devices::DeviceServer {
+        devices: std::sync::Arc<dyn tilo_device_mcp::PersonsDevices>,
+    ) -> tilo_device_mcp::DeviceServer {
         self.shared.device_agents.server(devices)
     }
 

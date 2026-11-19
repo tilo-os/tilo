@@ -1,130 +1,29 @@
 //! Print Centre as a resource: the print and scan defaults a person keeps across their
-//! devices.
+//! devices, which `print-centre-model` keeps; the window's effects stay here, on the
+//! machine that prints.
 
 use ui::framework::{Effect, Fixture, ResourceApp, ViewCx};
 use ui::prelude::*;
-use ui::tilo_resource::{self, Atom, Invoke};
+use ui::tilo_resource::{self, Invoke};
 
-pub const SCAN_RESOLUTIONS: [u16; 3] = [150, 300, 600];
-pub const SCAN_COLORS: [&str; 3] = ["color", "grayscale", "line-art"];
-pub const SCAN_SOURCES: [&str; 3] = ["flatbed", "feeder", "feeder-duplex"];
-/// Text recognition languages offered (ISO 639-2), with their names.
-pub const OCR_LANGUAGES: [(&str, &str); 4] = [
-    ("eng", "English"),
-    ("deu", "German"),
-    ("fra", "French"),
-    ("spa", "Spanish"),
-];
-
-/// How a person prints and scans unless they choose otherwise for one document. Each
-/// default is edited at its path; a value that is not offered is refused however it is set.
-#[derive(Model, Clone, Debug, PartialEq)]
-#[model(check = PrintDefaults::offered)]
-pub struct PrintDefaults {
-    /// Print on both sides of the paper.
-    pub two_sided: bool,
-    /// Scan resolution, one of [`SCAN_RESOLUTIONS`].
-    pub scan_resolution: u16,
-    /// Scan appearance, one of [`SCAN_COLORS`].
-    pub scan_color: Atom,
-    /// Paper source, one of [`SCAN_SOURCES`].
-    pub scan_source: Atom,
-    /// Language text is recognized in, one of [`OCR_LANGUAGES`].
-    pub ocr_language: Atom,
-}
-
-impl Default for PrintDefaults {
-    fn default() -> Self {
-        Self {
-            two_sided: false,
-            scan_resolution: 300,
-            scan_color: Atom(SCAN_COLORS[0].to_owned()),
-            scan_source: Atom(SCAN_SOURCES[0].to_owned()),
-            ocr_language: Atom(OCR_LANGUAGES[0].0.to_owned()),
-        }
-    }
-}
-
-impl PrintDefaults {
-    /// What the resource holds: how the person prints and scans unless they choose otherwise
-    /// for one document.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "print-centre.defaults",
-    read_content = PrintDefaults::read_document
-)]
-impl PrintDefaults {}
-
-impl PrintDefaults {
-    /// Every default is one the scan and print controls offer.
-    fn offered(&self) -> Result<(), &'static str> {
-        if !SCAN_RESOLUTIONS.contains(&self.scan_resolution) {
-            return Err("scan at 150, 300 or 600 dpi");
-        }
-        if !SCAN_COLORS.contains(&self.scan_color.0.as_str()) {
-            return Err("scan in color, grayscale or line-art");
-        }
-        if !SCAN_SOURCES.contains(&self.scan_source.0.as_str()) {
-            return Err("scan from the flatbed, feeder or feeder-duplex");
-        }
-        if !OCR_LANGUAGES
-            .iter()
-            .any(|(code, _)| *code == self.ocr_language.0)
-        {
-            return Err("recognize eng, deu, fra or spa");
-        }
-        Ok(())
-    }
-
-    /// The offered resolution's index, as the scan controls show it.
-    pub fn resolution_index(&self) -> usize {
-        SCAN_RESOLUTIONS
-            .iter()
-            .position(|dpi| *dpi == self.scan_resolution)
-            .unwrap_or(1)
-    }
-
-    pub fn color_index(&self) -> usize {
-        SCAN_COLORS
-            .iter()
-            .position(|color| *color == self.scan_color.0)
-            .unwrap_or_default()
-    }
-
-    pub fn source_index(&self) -> usize {
-        SCAN_SOURCES
-            .iter()
-            .position(|source| *source == self.scan_source.0)
-            .unwrap_or_default()
-    }
-
-    pub fn language_index(&self) -> usize {
-        OCR_LANGUAGES
-            .iter()
-            .position(|(code, _)| *code == self.ocr_language.0)
-            .unwrap_or_default()
-    }
-}
+pub use print_centre_model::{
+    OCR_LANGUAGES, PrintDefaults, SCAN_COLORS, SCAN_RESOLUTIONS, SCAN_SOURCES,
+};
 
 /// What Print Centre does on this machine: the pages it shows, and the work it asks of CUPS
 /// and SANE.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "print-centre.effects")]
 pub enum PrintCentreEffect {
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Refresh,
+    #[effect(kind = "outside")]
     #[effect(job)]
     FindPrinters,
+    #[effect(kind = "outside", on = crate::rows::FoundPrinterRow)]
     #[effect(job)]
     AddPrinter {
-        #[param("The found printer's address")]
+        #[param("The found printer row's id, or its address")]
         printer: String,
     },
     #[effect(view)]
@@ -141,6 +40,7 @@ pub enum PrintCentreEffect {
     PrintDocument,
     #[effect(view)]
     ScanDocument,
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     NewScannedDocument,
     #[effect(view)]
@@ -148,32 +48,37 @@ pub enum PrintCentreEffect {
         #[param("The printer's queue name")]
         printer: String,
     },
+    #[effect(kind = "outside", on = crate::rows::PrinterRow)]
     #[effect(job)]
     SetDefaultPrinter {
-        #[param("The printer's queue name")]
+        #[param("The printer row's id, or its queue name")]
         printer: String,
     },
+    #[effect(kind = "outside", on = crate::rows::PrinterRow)]
     #[effect(job)]
     #[effect(label = "print-centre-pause-printer")]
     PausePrinter {
-        #[param("The printer's queue name")]
+        #[param("The printer row's id, or its queue name")]
         printer: String,
     },
+    #[effect(kind = "outside", on = crate::rows::PrinterRow)]
     #[effect(job)]
     #[effect(label = "print-centre-resume-printer")]
     ResumePrinter {
-        #[param("The printer's queue name")]
+        #[param("The printer row's id, or its queue name")]
         printer: String,
     },
+    #[effect(kind = "outside", on = crate::rows::JobRow)]
     #[effect(job)]
     CancelDocument {
-        #[param("The print job's id")]
+        #[param("The print job row's id, or the job's id")]
         job: String,
     },
+    #[effect(kind = "outside", on = crate::rows::JobRow)]
     #[effect(job)]
     #[effect(label = "print-centre-print-again")]
     RetryDocument {
-        #[param("The print job's id")]
+        #[param("The print job row's id, or the job's id")]
         job: String,
     },
     #[effect(view, audience = "agents")]
@@ -199,15 +104,17 @@ pub enum PrintCentreEffect {
         #[param("The value the printer reported")]
         value: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     SendToPrinter,
     #[effect(view)]
     ClosePrintSetup,
-    #[effect(view)]
+    #[effect(view, on = crate::rows::ScannerRow)]
     ScanWith {
-        #[param("The scanner's device name")]
+        #[param("The scanner row's id, or its device name")]
         scanner: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "print-centre-scan-page")]
     ScanPage,
@@ -218,16 +125,25 @@ pub enum PrintCentreEffect {
     PreviousScanPage,
     #[effect(view)]
     NextScanPage,
+    #[effect(kind = "outside")]
     MoveScanPageEarlier,
+    #[effect(kind = "outside")]
     MoveScanPageLater,
+    #[effect(kind = "outside")]
     RemoveScanPage,
+    #[effect(kind = "outside")]
     RotateScanPage,
+    #[effect(kind = "outside")]
     CropScanPage,
+    #[effect(kind = "outside")]
     #[effect(job)]
     RecognizeText,
+    #[effect(kind = "outside")]
     CopyRecognizedText,
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     SaveScannedPage,
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     SaveScannedDocument,
 }
@@ -301,6 +217,8 @@ impl ResourceApp for PrintCentreShell {
 
 #[cfg(test)]
 mod tests {
+    use ui::tilo_resource::Atom;
+
     use super::*;
 
     fn set(app: &mut TestApp<PrintCentreShell>, edit: &ui::tilo_resource::Edit<PrintDefaults>) {

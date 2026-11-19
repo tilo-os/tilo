@@ -97,6 +97,19 @@ fn refused(failure: &Failure, retry_safe: bool) -> Value {
         None => said,
         Some(_) => message,
     };
+    // A key its workspace keeps as revoked is told so by every surface, with the one command
+    // that approves another: the caller knows what to do, not only that it may not.
+    if let Some(at) = message.find("key_revoked:") {
+        let said = message
+            .get(at.saturating_add("key_revoked:".len())..)
+            .unwrap_or_default()
+            .trim();
+        return json!({"status":"failed","error":{
+            "code":"key_revoked",
+            "message":said,
+            "next_steps":[tilo_actions::remote::APPROVE_AGAIN],
+        }});
+    }
     let (code, next) = match &failure.host {
         Some(ActionCallError::NotReady) if retry_safe => (
             "not_ready",
@@ -197,7 +210,7 @@ pub(super) fn answer_of(value: &Value) -> Value {
                 }
             }
         }
-        "failed" => {
+        "failed" if !says_put(value) => {
             answer.insert("status".into(), "failed".into());
             let code = value
                 .pointer("/update/error/code")
@@ -235,9 +248,11 @@ pub(super) fn answer_of(value: &Value) -> Value {
             // Still running: the invocation id follows it, and the same call
             // with the same id asks again where it went.
             answer.insert("status".into(), "pending".into());
-            // What it waits on, when the host says: the person's answer, say.
+            // What it waits on, when the host says: the person's answer, say, also where
+            // the call ended as it asked them.
             if let Some(message) = value
                 .pointer("/update/message")
+                .or_else(|| value.pointer("/update/error/message"))
                 .and_then(Value::as_str)
                 .filter(|message| !message.trim().is_empty())
             {
@@ -304,12 +319,67 @@ pub(super) fn actions_named(actions: &[ActionDescriptor]) -> Vec<Value> {
     actions.iter().map(action_named).collect()
 }
 
+/// What an invocation whose person is asked says of it where its provider said no more.
+const PERSON_ASKED: &str = "Its person is asked to allow this. Nothing happened yet.";
+/// What whoever made such a call does meanwhile.
+const ASKED_MEANWHILE: &str = "Go on with what does not need it, tell them it waits for their \
+     answer, and do not make this call again.";
+
+/// What whoever made a call does meanwhile whose provider ended it where it asked.
+const ASKED_GO_ON: &str = "Go on with what does not need it.";
+
+/// Whether the answer `value` says that its invocation's person is asked to allow it: a
+/// progress whose phase is the protocol's own word for a confirmation that is required, or
+/// an end with nothing done that says a question was put to them ([`says_put`]).
+fn says_asked(value: &Value) -> bool {
+    (value.pointer("/update/state").and_then(Value::as_str) == Some("progress")
+        && value.pointer("/update/phase").and_then(Value::as_str)
+            == Some(tilo_actions::remote::CONFIRMATION_REQUIRED_CODE))
+        || says_put(value)
+}
+
+/// Whether the answer `value` is an invocation that ended with nothing done because its
+/// person is asked about it first and answers in their own time (in the conversation, say):
+/// its failure carries the detail for that, whatever its code.
+fn says_put(value: &Value) -> bool {
+    value.pointer("/update/state").and_then(Value::as_str) == Some("failed")
+        && tilo_actions::remote::person_asking::says_asked(value.pointer("/update/error/details"))
+}
+
+/// What an agent reads of an invocation whose person is asked to allow it: where they are
+/// asked, what to do meanwhile, and the id that says how it went.
+fn asked_words(value: &Value) -> String {
+    // Ended where it asked: its provider's own sentence says where its person is asked and
+    // what follows their answer, and nothing of it is under way to ask after.
+    if let Some(said) = value
+        .pointer("/update/error/message")
+        .and_then(Value::as_str)
+    {
+        return format!("asked: {} {ASKED_GO_ON}", said.trim());
+    }
+    let id = value
+        .get("invocation_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let said = value
+        .pointer("/update/message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|said| !said.is_empty())
+        .unwrap_or(PERSON_ASKED);
+    format!(
+        "asked: {said} {ASKED_MEANWHILE}\ntilo_status {{\"invocation_id\":\"{id}\"}} says how it \
+         went"
+    )
+}
+
 /// What an invocation's final update says, as an agent reads it.
 pub(super) fn outcome(value: &Value) -> Reply {
     let state = value
         .pointer("/update/state")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    let asked = says_asked(value);
     let mut text = match state {
         "succeeded" => {
             let mut text = String::from("ok");
@@ -339,6 +409,8 @@ pub(super) fn outcome(value: &Value) -> Reply {
             }
             text
         }
+        // Its person is asked to allow it, which is no failure and nothing to wait for.
+        "progress" | "failed" if asked => asked_words(value),
         "failed" => {
             let code = value
                 .pointer("/update/error/code")
@@ -400,7 +472,7 @@ pub(super) fn outcome(value: &Value) -> Reply {
         let _ = write!(text, "\n(adjusted: {adjusted})");
     }
     Reply {
-        failed: state != "succeeded",
+        failed: state != "succeeded" && !asked,
         text,
         structured: None,
         images: Vec::new(),

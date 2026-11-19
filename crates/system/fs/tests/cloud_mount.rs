@@ -525,6 +525,72 @@ fn a_remote_edit_during_a_local_edit_keeps_both_versions() {
     assert_eq!(read_all(&mount.volume, "Shared/budget.csv"), b"a,b\n9,9\n");
 }
 
+/// A reader and an appending writer opened while a conflict copy is made see the whole local file,
+/// not a version whose bytes are nowhere yet; the writer keeps appending to the copy afterwards.
+#[test]
+fn a_read_and_an_append_during_a_conflict_copy_see_complete_bytes() {
+    let server = FakeDav::nextcloud();
+    server.put("Shared/budget.csv", b"a,b\n1,2\n");
+    let dir = tempfile::tempdir().unwrap();
+    let source = DuringUpload::new(&server);
+    let volume = oauth_volume(Arc::clone(&source) as Arc<dyn CloudSource>, dir.path());
+    volume.sync_once().unwrap();
+
+    let local = b"a,b\n1,3\n";
+    let while_open = b"a,b\n1,4\n";
+    let after = b"a,b\n1,5\n";
+    write_file(&volume, "Shared/budget.csv", local);
+    server.put("Shared/budget.csv", b"a,b\n9,9\n");
+
+    let mounted = Arc::downgrade(&volume);
+    let open = Arc::new(Mutex::new(Vec::new()));
+    let fhs = Arc::clone(&open);
+    source.once_for(
+        |target| {
+            matches!(target, cloud_source::UploadTarget::Create { name, .. }
+                if name.contains(".sync-conflict-"))
+        },
+        move || {
+            let volume = mounted.upgrade().unwrap();
+            let ino = volume.resolve("Shared/budget.csv").unwrap();
+            let reader = volume.open_file(ino, false, false, false).unwrap();
+            let writer = volume.open_file(ino, true, false, true).unwrap();
+            assert_eq!(volume.read(reader, 0, 64).unwrap(), local);
+            assert_eq!(
+                volume.write(writer, 0, while_open).unwrap(),
+                while_open.len()
+            );
+            fhs.lock().unwrap().extend([reader, writer]);
+        },
+    );
+    assert_eq!(volume.upload_pending().unwrap(), 1);
+
+    assert_eq!(read_all(&volume, "Shared/budget.csv"), b"a,b\n9,9\n");
+    let [reader, writer] = open.lock().unwrap()[..] else {
+        panic!("the hook opened both descriptors");
+    };
+    let mut expected = local.to_vec();
+    expected.extend_from_slice(while_open);
+    assert_eq!(volume.read(reader, 0, 64).unwrap(), expected);
+    assert_eq!(volume.write(writer, 0, after).unwrap(), after.len());
+    expected.extend_from_slice(after);
+    assert_eq!(volume.read(reader, 0, 64).unwrap(), expected);
+
+    volume.release(writer).unwrap();
+    assert_eq!(volume.upload_pending().unwrap(), 1);
+    assert_eq!(volume.pending(), 0);
+    volume.release(reader).unwrap();
+
+    let paths = server.paths();
+    let copy = paths
+        .iter()
+        .find(|p| p.starts_with("Shared/budget.csv.sync-conflict-"))
+        .unwrap_or_else(|| panic!("no conflict copy in {paths:?}"));
+    assert_eq!(server.get(copy).unwrap(), expected);
+    let name = copy.rsplit('/').next().unwrap();
+    assert_eq!(read_all(&volume, &format!("Shared/{name}")), expected);
+}
+
 /// `>>` on the account folder: an `O_APPEND` descriptor writes at the end of
 /// the file, whatever offset the kernel sends from its cached size, and the
 /// other write modes keep their meaning.
@@ -900,9 +966,14 @@ fn wait_until(what: &str, done: impl Fn() -> bool) {
     }
 }
 
+type UploadHook = (
+    fn(&cloud_source::UploadTarget) -> bool,
+    Box<dyn FnOnce() + Send>,
+);
+
 struct DuringUpload {
     dav: DavSource,
-    hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    hook: Mutex<Option<UploadHook>>,
 }
 
 impl DuringUpload {
@@ -914,7 +985,15 @@ impl DuringUpload {
     }
 
     fn once(&self, hook: impl FnOnce() + Send + 'static) {
-        *self.hook.lock().unwrap() = Some(Box::new(hook));
+        self.once_for(|_| true, hook);
+    }
+
+    fn once_for(
+        &self,
+        wanted: fn(&cloud_source::UploadTarget) -> bool,
+        hook: impl FnOnce() + Send + 'static,
+    ) {
+        *self.hook.lock().unwrap() = Some((wanted, Box::new(hook)));
     }
 }
 
@@ -950,8 +1029,14 @@ impl CloudSource for DuringUpload {
         target: cloud_source::UploadTarget,
         size: u64,
     ) -> cloud_source::Result<Box<dyn cloud_source::UploadSession>> {
-        let hook = self.hook.lock().unwrap().take();
-        if let Some(hook) = hook {
+        let next = {
+            let mut armed = self.hook.lock().unwrap();
+            match armed.as_ref() {
+                Some((wanted, _)) if wanted(&target) => armed.take(),
+                _ => None,
+            }
+        };
+        if let Some((_, hook)) = next {
             hook();
         }
         self.dav.begin_upload(target, size)
@@ -1407,11 +1492,13 @@ fn posix_tools_see_the_account_through_the_kernel_mount() {
         std::fs::read_to_string(mount.join("Docs/new.txt")).unwrap(),
         "written by a POSIX tool and appended"
     );
-    assert_eq!(
-        tilo_test_env::wait_for("the appended file on the server", || server
-            .get("Docs/new.txt")),
-        b"written by a POSIX tool and appended"
-    );
+    // The upload is queued, so the file's arrival is what is waited on, never its bytes already
+    // being there.
+    wait_until("the appended file on the server", || {
+        server
+            .get("Docs/new.txt")
+            .is_some_and(|bytes| bytes == b"written by a POSIX tool and appended")
+    });
 
     let CloudResponse::Mounts(mounts) =
         service.request(CloudRequest::List, tilo_test_env::hang_bound())

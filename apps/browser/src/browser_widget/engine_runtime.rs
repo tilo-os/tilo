@@ -10,7 +10,7 @@ use crate::CATALOG;
 use ui::icons::Icon;
 use ui::widget::{Column, EmptyState, Widget};
 
-/// Live browsing runs the Chromium engine runtime ([`ui::webview::chromium::runtime`]);
+/// Live browsing runs the Chromium engine runtime ([`tilo_webview::chromium::runtime`]);
 /// `TILO_BROWSER_PAINT=1` draws its pages from the paint stream instead of its pixels.
 ///
 /// Returns the engine and whether it failed to start.
@@ -32,7 +32,7 @@ pub(super) fn default_engine(mode: BrowsingMode) -> (SharedEngine, bool) {
 }
 
 fn native_engine(mode: BrowsingMode) -> (SharedEngine, bool) {
-    if let Err(missing) = ui::webview::chromium::runtime::locate() {
+    if let Err(missing) = tilo_webview::chromium::runtime::locate() {
         // Browser requires the engine, and the launcher would not have started it without:
         // this is a broken install or a run outside the launcher.
         tracing::error!(
@@ -43,16 +43,16 @@ fn native_engine(mode: BrowsingMode) -> (SharedEngine, bool) {
     }
     let started = if mode.has_own_profile() {
         own_profile_root(mode)
-            .and_then(|root| ui::webview::chromium::ChromiumEngine::new_private(&root))
+            .and_then(|root| tilo_webview::chromium::ChromiumEngine::new_private(&root))
             .map(|engine| engine as SharedEngine)
     } else if let Some(root) = crate::storage::explicit_root() {
-        ui::webview::chromium::ChromiumEngine::with_profile_extensions(
+        tilo_webview::chromium::ChromiumEngine::with_profile_extensions(
             &root.join("chromium"),
             &crate::extensions::startup_paths(),
         )
         .map(|engine| engine as SharedEngine)
     } else {
-        ui::webview::chromium::ChromiumEngine::new_with_extensions(
+        tilo_webview::chromium::ChromiumEngine::new_with_extensions(
             &crate::extensions::startup_paths(),
         )
         .map(|engine| engine as SharedEngine)
@@ -85,8 +85,8 @@ pub(super) fn engine_or_error(result: Result<SharedEngine, String>) -> (SharedEn
 }
 
 fn failed_engine() -> SharedEngine {
-    ui::webview::chromium::UnavailableEngine::new(
-        ui::webview::chromium::runtime::FAILED_MESSAGE.to_owned(),
+    tilo_webview::chromium::UnavailableEngine::new(
+        tilo_webview::chromium::runtime::FAILED_MESSAGE.to_owned(),
     )
 }
 
@@ -96,13 +96,13 @@ pub(super) fn unavailable_engine(mode: BrowsingMode) -> SharedEngine {
     if mode.is_private()
         && let Some(root) = crate::storage::explicit_root()
     {
-        ui::webview::chromium::release_private_root(root);
+        tilo_webview::chromium::release_private_root(root);
     }
     failed_engine()
 }
 
 pub(super) fn engine_failed_state() -> Box<dyn Widget> {
-    let state = EmptyState::new(ui::webview::chromium::runtime::FAILED_MESSAGE)
+    let state = EmptyState::new(tilo_webview::chromium::runtime::FAILED_MESSAGE)
         .with_icon(Icon::Info)
         .with_message(CATALOG.t("browser-engine-failed"));
     Box::new(
@@ -120,7 +120,7 @@ pub(super) fn engine_failed_state() -> Box<dyn Widget> {
 pub(crate) mod test_window_engine {
     use std::cell::RefCell;
 
-    use ui::webview::SharedEngine;
+    use tilo_webview::SharedEngine;
 
     thread_local! {
         static NEXT: RefCell<Option<SharedEngine>> = const { RefCell::new(None) };
@@ -145,7 +145,7 @@ mod tests {
         let second = own_profile_root(BrowsingMode::Visitor).expect("another visitor's profile");
         for root in [&first, &second] {
             assert!(
-                ui::webview::chromium::is_owned_private_root(root),
+                tilo_webview::chromium::is_owned_private_root(root),
                 "{} is a root Browser owns and removes",
                 root.display()
             );
@@ -161,7 +161,7 @@ mod tests {
         assert_ne!(first, second, "each window has its own");
         assert!(own_profile_root(BrowsingMode::Normal).is_err());
         for root in [first, second] {
-            ui::webview::chromium::release_private_root(&root);
+            tilo_webview::chromium::release_private_root(&root);
             assert!(!root.exists(), "removed once no engine uses it");
         }
     }

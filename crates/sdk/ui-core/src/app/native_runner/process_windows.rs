@@ -53,6 +53,7 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         // The launch's window declared its bar before the loop ran it: it keeps that bar.
         let bar = crate::hosted_window::HostedWindow::new();
         bar.declare(crate::window_toolbar::declared());
+        crate::window_link::process_starts();
         Self {
             windows: vec![first],
             bars: vec![bar],
@@ -99,6 +100,9 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
             let bar = self.bars.remove(index);
             let _bar = crate::window_toolbar::enter(Some(&bar));
             closed.exiting(event_loop);
+            // The loop goes on for the other windows: the closed one's store commits what
+            // it was handed on a thread of its own.
+            let _started_only = durable_store::waiting::forbid_on_this_thread();
             drop(closed);
         }
     }
@@ -123,11 +127,16 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         handler.resumed(event_loop);
         drop(scope);
         self.windows.push(handler);
+        crate::window_link::window_takes_invocations();
         self.bars.push(bar);
         // The app ran with no window until now: the window serves what it
         // served, so it goes, and the process is a windowed one from here.
-        for unshown in self.windows.iter().filter(|handler| handler.windowless) {
-            unshown.closing.set(true);
+        // It goes as a window closes: it takes no more invocations and
+        // answers the ones it was handed first.
+        for unshown in self.windows.iter_mut().filter(|handler| handler.windowless) {
+            if unshown.app.admit_native_close_request() {
+                unshown.closing.set(true);
+            }
         }
     }
 }

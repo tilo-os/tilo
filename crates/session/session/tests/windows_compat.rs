@@ -47,6 +47,15 @@ fn ask(client: &mut SessionClient, request: &ProtocolRequest) -> Value {
     }
 }
 
+/// The answer to `request` with the open `file` it hands over, as JSON, or the error that ended
+/// the connection.
+fn ask_with(client: &mut SessionClient, request: &ProtocolRequest, file: &fs::File) -> Value {
+    match client.request_with_file(request, file) {
+        Ok(response) => serde_json::to_value(response).expect("a response serializes"),
+        Err(error) => json!({ "refused": error.to_string() }),
+    }
+}
+
 /// A connection to the compatibility service made by the launcher's own handoff code, for the
 /// manager in `workspace`.
 fn connect(workspace: &str) -> SessionClient {
@@ -188,7 +197,8 @@ impl LaunchResourceBroker for NetResources {
 struct Probe {
     dir: PathBuf,
     tell_display: bool,
-    planned: Arc<Mutex<Option<PathBuf>>>,
+    /// The display the last plan bound, and the plan's whole command line.
+    planned: Arc<Mutex<Option<(PathBuf, Vec<String>)>>>,
     /// Where each launch's private audio graph is prepared, when the program has sound: the
     /// sandbox then starts as the compatibility service starts one with sound, after its graph
     /// ([`audio_step`]).
@@ -209,7 +219,7 @@ impl SandboxExecutor for Probe {
             .find(|bind| bind[0] == "--ro-bind" && bind[2].ends_with("/wayland-0"))
             .map(|bind| PathBuf::from(&bind[1]))
             .expect("the plan binds a display");
-        *self.planned.lock().unwrap() = Some(display.clone());
+        *self.planned.lock().unwrap() = Some((display.clone(), plan.bwrap_argv.clone()));
         let mut args = vec![format!("{PROBE_DIR}={}", self.dir.display())];
         if self.tell_display {
             args.push(format!("WAYLAND_DISPLAY={}", display.display()));
@@ -695,7 +705,9 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
         .runtime()
         .join(session.compositor().listen().expect("the display binds"));
     apps.set_displays(display.clone(), None, None);
-    apps.set_render_node(Some(PathBuf::from("/dev/dri/renderD128")));
+    // A machine with no GPU: the compositor names its display's primary node, which is no render
+    // node, and the program still starts, drawing in software.
+    apps.set_render_node(Some(PathBuf::from("/dev/dri/card0")));
     let workspace = session
         .handle()
         .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
@@ -752,7 +764,12 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
         HANDED_DOWN,
         "the program inherits what its sandbox is handed"
     );
-    assert_eq!(planned.lock().unwrap().as_deref(), Some(display.as_path()));
+    let (bound, argv) = planned.lock().unwrap().clone().expect("a plan was made");
+    assert_eq!(bound, display);
+    assert!(
+        !argv.iter().any(|arg| arg.starts_with("/dev/dri/card")),
+        "a display's primary node is never given to a program: {argv:?}"
+    );
     // The same launch connecting again is refused: each launch hands off once.
     assert!(answers["again"]["refused"].is_string(), "{answers}");
 
@@ -773,8 +790,9 @@ fn the_windows_apps_manager_starts_a_program_on_the_session_display() {
 const STEPS_DIR: &str = "TILO_TEST_WINDOWS_STEPS";
 
 /// Not a test: a launcher of the Windows Apps manager that asks the service what `steps` in its
-/// directory says, one step a line (`list`, `launch`, `stop`, or `ended`: list until an end is
-/// told), and writes the answers, in order, to `answers`.
+/// directory says, one step a line (`list`, `launch`, `stop`, `ended`: list until an end is
+/// told, or `install`: the directory's `setup.exe` into a private capsule, two answers), and
+/// writes the answers, in order, to `answers`.
 #[test]
 fn manager_steps() {
     let Ok(dir) = std::env::var(STEPS_DIR) else {
@@ -782,7 +800,7 @@ fn manager_steps() {
     };
     let dir = PathBuf::from(dir);
     let workspace = fs::read_to_string(dir.join("workspace")).expect("the workspace");
-    let entry_id = fs::read_to_string(dir.join("entry")).expect("the entry");
+    let entry_id = fs::read_to_string(dir.join("entry")).unwrap_or_default();
     let mut client = connect(&workspace);
     let list = ProtocolRequest::List {
         version: PROTOCOL_VERSION,
@@ -792,7 +810,7 @@ fn manager_steps() {
         .expect("the steps")
         .lines()
     {
-        answers.push(match step {
+        let answer = match step {
             "list" => ask(&mut client, &list),
             "launch" => ask(
                 &mut client,
@@ -808,6 +826,28 @@ fn manager_steps() {
                     entry_id: entry_id.clone(),
                 },
             ),
+            "install" => {
+                // The installer the person chose, then the private capsule they approved for it,
+                // as Windows Apps asks: the same open file both times.
+                let installer = fs::File::open(dir.join("setup.exe")).expect("the installer");
+                let asked = ask_with(
+                    &mut client,
+                    &ProtocolRequest::Install {
+                        version: PROTOCOL_VERSION,
+                        source_name: "setup.exe".to_owned(),
+                    },
+                    &installer,
+                );
+                answers.push(asked);
+                ask_with(
+                    &mut client,
+                    &ProtocolRequest::InstallInCapsule {
+                        version: PROTOCOL_VERSION,
+                        source_name: "setup.exe".to_owned(),
+                    },
+                    &installer,
+                )
+            }
             "stop" => ask(
                 &mut client,
                 &ProtocolRequest::Stop {
@@ -830,7 +870,8 @@ fn manager_steps() {
                 }
             }
             other => panic!("no step {other}"),
-        });
+        };
+        answers.push(answer);
     }
     fs::write(dir.join("answers"), Value::from(answers).to_string()).expect("the answers");
 }
@@ -1163,7 +1204,7 @@ fn real_launcher_keeper(handed: &[String]) -> (String, Vec<String>) {
     args.insert(separator, "--print-keeper".to_owned());
     let planned = std::process::Command::new(&launcher)
         .args(&args)
-        .output()
+        .output_locked()
         .expect("the launcher answers");
     let said = String::from_utf8_lossy(&planned.stdout);
     assert!(
@@ -2201,5 +2242,127 @@ fn a_remote_app_window_stays_open_through_an_in_place_restart() {
     assert!(
         tilo_app_launch::kept::testing::described(&rig.root).is_empty(),
         "no keeper is left"
+    );
+}
+
+/// Stands in for Bubblewrap and Wine running a setup: in the prefix of the capsule the plan names
+/// (in the store at `store`) it does what Wine and a real installer do there, Wine's own
+/// placeholder programs beside the one installed.
+struct SetUp {
+    store: PathBuf,
+}
+
+impl SandboxExecutor for SetUp {
+    fn command(&self, plan: &CapsuleCommandPlan) -> Result<SandboxCommand, ExecutionError> {
+        let prefix = CapsuleStore::new(&self.store)
+            .expect("the capsule store")
+            .prefix_path(&plan.capsule_id);
+        let program_files = prefix.join("drive_c/Program Files");
+        let mut placeholder = b"MZ".to_vec();
+        placeholder.resize(0x40, 0);
+        placeholder.extend_from_slice(b"Wine builtin DLL");
+        for (folder, name, bytes) in [
+            ("Internet Explorer", "iexplore.exe", placeholder.clone()),
+            ("Windows Media Player", "wmplayer.exe", placeholder),
+            (
+                "Example",
+                "example.exe",
+                b"MZ the installed program".to_vec(),
+            ),
+        ] {
+            fs::create_dir_all(program_files.join(folder))?;
+            fs::write(program_files.join(folder).join(name), bytes)?;
+        }
+        Ok(SandboxCommand::new(
+            PathBuf::from("/usr/bin/true"),
+            Vec::<String>::new(),
+        ))
+    }
+}
+
+/// An installer the person chose and approved for a private capsule sets up there, and the
+/// program it installed is listed, alone: not the placeholders Wine writes into every prefix.
+#[test]
+fn an_installer_approved_for_a_private_capsule_lists_what_it_installed() {
+    let home = tilo_test_env::TestHome::new().expect("a home");
+    // The catalogue knows the probe alone; the installer is routed as any unknown one is.
+    let (catalogue, _, _) = set_up_probe(&home.home().join("elsewhere"));
+    let store = home.data().join("tilo/windows-compat");
+    let assembly = Assembly::with(move |side| {
+        compat_service::serve(
+            side,
+            catalogue,
+            SystemRuntimeRegistry::assuming_provider(),
+            NoResources,
+            SetUp { store },
+            LazyVmDelegate::new(|| Err("no appliance is set up here".to_owned())),
+        )
+    });
+    let apps = Rc::new(Apps::with_launcher(
+        tilo_app_launch::SessionEnvironment::from_process(),
+        None,
+        Some(std::env::current_exe().expect("this test binary")),
+    ));
+    let launches = Arc::new(Launches::default());
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        launch: Some(Rc::clone(&apps)),
+        launches: Arc::clone(&launches),
+        app_socket: AppSocket::At(home.runtime().join("app_wire.sock")),
+        windows: assembly,
+        ..Options::default()
+    });
+    let display = home
+        .runtime()
+        .join(session.compositor().listen().expect("the display binds"));
+    apps.set_displays(display, None, None);
+    apps.set_render_node(Some(PathBuf::from("/dev/dri/renderD128")));
+    let workspace = session
+        .handle()
+        .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+        .expect("a workspace in front");
+    let socket = launcher::services::socket_for(launcher::services::COMPAT_SERVICE);
+    crate::common::wait_for(&mut session, "the compatibility service", |_| {
+        socket.exists().then_some(())
+    });
+
+    let dir = home.home().join("manager");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("workspace"), &workspace).unwrap();
+    fs::write(dir.join("steps"), "install\nlist").unwrap();
+    let mut installer = vec![0_u8; 0x200];
+    installer[..2].copy_from_slice(b"MZ");
+    installer[0x3c..0x40].copy_from_slice(&0x80_u32.to_le_bytes());
+    installer[0x80..0x84].copy_from_slice(b"PE\0\0");
+    installer[0x84..0x86].copy_from_slice(&0x8664_u16.to_le_bytes());
+    fs::write(dir.join("setup.exe"), installer).unwrap();
+    let mut manager = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "windows_compat::manager_steps", "--nocapture"])
+        .env(STEPS_DIR, &dir)
+        .spawn_locked()
+        .expect("the manager's launcher starts");
+    launches.started(manager.id(), MANAGER, &workspace, true);
+    let answers = crate::common::wait_for(&mut session, "the manager's answers", |_| {
+        fs::read_to_string(dir.join("answers")).ok()
+    });
+    manager.wait().expect("the launcher ends");
+    let answers: Vec<Value> = serde_json::from_str(&answers).expect("answers");
+
+    assert_eq!(
+        answers[0]["result"], "vm_install_confirmation",
+        "the service asks where the installer goes: {answers:?}"
+    );
+    assert_eq!(answers[1]["result"], "installed", "{answers:?}");
+    assert_eq!(answers[1]["receipt"]["status"], "installed", "{answers:?}");
+    let names: Vec<&str> = answers[2]["applications"]
+        .as_array()
+        .expect("the list")
+        .iter()
+        .filter_map(|application| application["display_name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        ["Example"],
+        "only the installed program: {answers:?}"
     );
 }

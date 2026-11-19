@@ -186,7 +186,8 @@ fn independent_storage(_: &Path, _: &crate::media_model::TargetDrive) -> io::Res
     Err(io::ErrorKind::Unsupported.into())
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
 

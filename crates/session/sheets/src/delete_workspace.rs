@@ -42,6 +42,7 @@ pub struct Asked {
 #[effect(operation = "so.tilo.delete-workspace.answer")]
 pub enum DeleteWorkspaceEffect {
     /// Delete it, and everything in it
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "trash",

@@ -288,6 +288,7 @@ impl Fixture {
                 policy_digest: &digest,
             },
             preds,
+            None,
         )
     }
 
@@ -335,6 +336,7 @@ fn unpinned(
         floor,
         predictions,
         pin: None,
+        anchors: None,
     }
 }
 
@@ -1304,6 +1306,7 @@ fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
             floor,
             predictions: &shipped[..1],
             pin: Some(pin),
+            anchors: None,
         },
         recovery,
     )
@@ -1318,6 +1321,7 @@ fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
             floor,
             predictions: &shipped[1..],
             pin: Some(pin),
+            anchors: None,
         },
         recovery,
     )

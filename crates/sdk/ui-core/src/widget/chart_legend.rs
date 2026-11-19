@@ -190,34 +190,17 @@ impl SeriesToggles {
         theme: &Theme,
         entries: impl IntoIterator<Item = (&'a str, &'a str, Color)>,
     ) {
-        let ink = theme.tokens.colors.text_dim;
         for (id, name, colour) in entries {
-            let Some(item) = self.entry(id) else {
-                continue;
-            };
-            let hidden = self.is_hidden(id);
-            let fade = |colour: Color, alpha: u8| {
-                if hidden {
-                    crate::paint::with_alpha(colour, alpha)
-                } else {
-                    colour
-                }
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                fade(colour, 65),
-                None,
-                &Circle::new((item.x0 + 4.0, item.y0 + 6.0), 4.0),
-            );
-            text.draw_style(
-                scene,
-                name,
-                fade(ink, 90),
-                transform * Affine::translate((item.x0 + 14.0, item.y0)),
-                Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
-                &theme.text(TextRole::Caption),
-            );
+            if let Some(item) = self.entry(id) {
+                paint_series(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    item,
+                    (name, colour, self.is_hidden(id)),
+                );
+            }
         }
     }
 
@@ -254,6 +237,44 @@ impl SeriesToggles {
 
 fn target(id: &str) -> String {
     format!("legend:{id}")
+}
+
+/// One series' entry in a legend [`layout`] placed at `item`: the `(name, colour, hidden)` of
+/// the series, as its swatch and its name, faded while the series is hidden.
+pub(crate) fn paint_series(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    item: Rect,
+    (name, colour, hidden): (&str, Color, bool),
+) {
+    let fade = |colour: Color, alpha: u8| {
+        if hidden {
+            crate::paint::with_alpha(colour, alpha)
+        } else {
+            colour
+        }
+    };
+    // The swatch and the name share the entry's centre line, as [`paint_entry`]'s do.
+    let cy = item.center().y;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        fade(colour, 65),
+        None,
+        &Circle::new((item.x0 + 4.0, cy), 4.0),
+    );
+    let style = theme.text(TextRole::Caption);
+    let h = f64::from(text.measure_style(name, None, &style).1);
+    text.draw_style(
+        scene,
+        name,
+        fade(theme.tokens.colors.text_dim, 90),
+        transform * Affine::translate((item.x0 + 14.0, cy - h / 2.0)),
+        Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
+        &style,
+    );
 }
 
 pub const ROW_HEIGHT: f64 = 24.0;

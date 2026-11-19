@@ -73,7 +73,8 @@ impl ListPane {
                 .avatar(&row.title, id)
                 .square()
                 .secondary(&row.summary);
-            if let Some(favorite) = crate::actions::item_binding(&row.published, "favorite") {
+            if let Some(favorite) = crate::actions::item_binding(&row.published, "toggle-favorite")
+            {
                 let label = if row.favorite {
                     &CATALOG.t("passwords-remove-favorite")
                 } else {

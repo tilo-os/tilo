@@ -2,15 +2,17 @@
 
 use std::collections::HashMap;
 
+use tilo_wasm_host::wasmi as shared;
+use tilo_wasm_host::{Failure, ImportPolicy};
 use wasmi::errors::HostError;
 use wasmi::{
-    Caller, CompilationMode, Config, Extern, Func, FuncType, Instance, Linker, Module, Store,
-    StoreLimits, StoreLimitsBuilder, TrapCode, Val, ValType,
+    Caller, Extern, Func, FuncType, Instance, Linker, Memory, Module, ResourceLimiter, Store,
+    StoreLimits, Val, ValType,
 };
 
 use super::{
-    Backend, CallError, Cx, EngineLimits, GROWTH_LIMITED, HostFail, Imports, OUT_OF_FUEL,
-    Translation, Unwind, Wasm, guest_answer, guest_import, import, trap_text,
+    Backend, CallError, Cx, EngineLimits, HostFail, Imports, Translation, Unwind, Wasm,
+    guest_answer, guest_import, import,
 };
 use crate::abi::{self, IMPORTS};
 
@@ -20,14 +22,8 @@ pub(super) struct Wasmi {
 
 impl Wasmi {
     pub(super) fn new(translation: Translation) -> Self {
-        let mut cfg = Config::default();
-        cfg.consume_fuel(true);
-        cfg.compilation_mode(match translation {
-            Translation::Lazy => CompilationMode::LazyTranslation,
-            Translation::Eager => CompilationMode::Eager,
-        });
         Self {
-            engine: wasmi::Engine::new(&cfg),
+            engine: shared::engine(translation),
         }
     }
 }
@@ -35,11 +31,22 @@ impl Wasmi {
 pub(super) struct Slot {
     cx: Option<Cx>,
     limits: StoreLimits,
+    /// The first module's exported memory, once it is made: what an import answers in. In a
+    /// linked set the calling code may be a later module's, which exports no memory of its
+    /// own but shares this one.
+    memory: Option<Memory>,
+}
+
+impl shared::Limited for Slot {
+    fn limits(&mut self) -> &mut dyn ResourceLimiter {
+        &mut self.limits
+    }
 }
 
 pub(super) struct Pooled {
     store: Store<Slot>,
-    instance: Instance,
+    /// The module's instance, or a linked set's, in the order they were made.
+    instances: Vec<Instance>,
     /// Export handles and result types, resolved on first use.
     funcs: HashMap<String, (Func, Vec<ValType>)>,
 }
@@ -78,7 +85,10 @@ fn run_import(
     results: &mut [Val],
 ) -> Result<(), wasmi::Error> {
     let args = params.iter().map(to_wasm).collect::<Result<Vec<_>, _>>()?;
-    let memory = caller.get_export("memory").and_then(Extern::into_memory);
+    let memory = caller
+        .data()
+        .memory
+        .or_else(|| caller.get_export("memory").and_then(Extern::into_memory));
     let bytes: &[u8] = memory.as_ref().map_or(&[][..], |m| m.data(caller));
     match import(caller.data().cx.as_ref(), id, bytes, &args) {
         Ok(out) => {
@@ -99,7 +109,10 @@ fn run_guest_import(
     results: &mut [Val],
 ) -> Result<(), wasmi::Error> {
     let args = params.iter().map(to_wasm).collect::<Result<Vec<_>, _>>()?;
-    let memory = caller.get_export("memory").and_then(Extern::into_memory);
+    let memory = caller
+        .data()
+        .memory
+        .or_else(|| caller.get_export("memory").and_then(Extern::into_memory));
     let answer = {
         let bytes: &[u8] = memory.as_ref().map_or(&[][..], |m| m.data(&caller));
         guest_import(caller.data().cx.as_ref(), module, name, bytes, &args)
@@ -136,12 +149,7 @@ fn classify(e: &wasmi::Error) -> CallError {
     if let Some(unwind) = e.downcast_ref::<Unwind>() {
         return unwind.into();
     }
-    match e.as_trap_code() {
-        Some(TrapCode::OutOfFuel) => CallError::OutOfFuel(OUT_OF_FUEL.into()),
-        Some(TrapCode::GrowthOperationLimited) => CallError::MemoryLimit(GROWTH_LIMITED.into()),
-        Some(code) => CallError::Trap(trap_text(code.trap_message())),
-        None => CallError::Trap(e.to_string()),
-    }
+    shared::classify(e).into()
 }
 
 impl Backend for Wasmi {
@@ -149,8 +157,8 @@ impl Backend for Wasmi {
     type Linker = Linker<Slot>;
     type Instance = Pooled;
 
-    fn compile(&self, bytes: &[u8]) -> Result<Module, String> {
-        Module::new(&self.engine, bytes).map_err(|e| e.to_string())
+    fn compile(&self, bytes: &[u8]) -> Result<Module, Failure> {
+        shared::compile(&self.engine, bytes, ImportPolicy::Any)
     }
 
     fn exports(module: &Module) -> Vec<String> {
@@ -191,30 +199,50 @@ impl Backend for Wasmi {
     fn instantiate(
         &self,
         linker: &Linker<Slot>,
-        module: &Module,
+        modules: &[Module],
         limits: &EngineLimits,
-    ) -> Result<Pooled, CallError> {
-        let store_limits = StoreLimitsBuilder::new()
-            .memory_size(limits.max_memory_bytes)
-            .trap_on_grow_failure(true)
-            .build();
-        let mut store = Store::new(
+    ) -> Result<Pooled, Failure> {
+        let mut store = shared::store(
             &self.engine,
             Slot {
                 cx: None,
-                limits: store_limits,
+                limits: shared::store_limits(limits),
+                memory: None,
             },
-        );
-        store.limiter(|slot| &mut slot.limits);
-        store
-            .set_fuel(limits.fuel_per_call)
-            .map_err(|e| CallError::Link(e.to_string()))?;
-        let instance = linker
-            .instantiate_and_start(&mut store, module)
-            .map_err(|e| CallError::Link(e.to_string()))?;
+            limits,
+        )?;
+        let (first, rest) = modules
+            .split_first()
+            .ok_or_else(|| Failure::Link("no module to instantiate".into()))?;
+        let first = linker
+            .instantiate_and_start(&mut store, first)
+            .map_err(|error| shared::classify(&error))?;
+        store.data_mut().memory = first.get_memory(&store, "memory");
+        let mut instances = vec![first];
+        for module in rest {
+            let imports = module
+                .imports()
+                .map(|import| {
+                    instances
+                        .iter()
+                        .rev()
+                        .find_map(|instance| instance.get_export(&store, import.name()))
+                        .ok_or_else(|| {
+                            Failure::Link(format!(
+                                "no module before it exports {}::{}",
+                                import.module(),
+                                import.name()
+                            ))
+                        })
+                })
+                .collect::<Result<Vec<Extern>, _>>()?;
+            let instance = Instance::new(&mut store, module, &imports)
+                .map_err(|error| shared::classify(&error))?;
+            instances.push(instance);
+        }
         Ok(Pooled {
             store,
-            instance,
+            instances,
             funcs: HashMap::new(),
         })
     }
@@ -223,14 +251,16 @@ impl Backend for Wasmi {
         pooled: &mut Pooled,
         export: &str,
         args: &[Wasm],
-        fuel: u64,
+        limits: &EngineLimits,
         cx: Cx,
     ) -> Result<Option<Wasm>, CallError> {
         pooled.store.data_mut().cx = Some(cx);
-        let outcome = run(pooled, export, args, fuel);
+        let outcome = call_export(pooled, export, args, limits);
         // What the call spent, charged to the unit that made it: a call that ran out spent it
         // all.
-        let spent = fuel.saturating_sub(pooled.store.get_fuel().unwrap_or(0));
+        let spent = limits
+            .fuel_per_call
+            .saturating_sub(pooled.store.get_fuel().unwrap_or(0));
         let cx = pooled.store.data_mut().cx.take();
         if let Some(costs) = cx.and_then(|cx| cx.costs) {
             costs.fuel(spent);
@@ -239,23 +269,22 @@ impl Backend for Wasmi {
     }
 }
 
-fn run(
+fn call_export(
     pooled: &mut Pooled,
     export: &str,
     args: &[Wasm],
-    fuel: u64,
+    limits: &EngineLimits,
 ) -> Result<Option<Wasm>, CallError> {
-    pooled
-        .store
-        .set_fuel(fuel)
-        .map_err(|e| CallError::Link(e.to_string()))?;
+    shared::begin(&mut pooled.store, limits)?;
     let (func, results) = if let Some(found) = pooled.funcs.get(export) {
         found.clone()
     } else {
         let func = pooled
-            .instance
-            .get_func(&pooled.store, export)
-            .ok_or_else(|| CallError::NoExport(export.to_owned()))?;
+            .instances
+            .iter()
+            .rev()
+            .find_map(|instance| instance.get_func(&pooled.store, export))
+            .ok_or_else(|| Failure::NoExport(export.to_owned()))?;
         let results = func.ty(&pooled.store).results().to_vec();
         pooled
             .funcs
@@ -270,5 +299,5 @@ fn run(
         .first()
         .map(to_wasm)
         .transpose()
-        .map_err(|e| CallError::Trap(e.to_string()))
+        .map_err(|e| CallError::from(Failure::Trap(e.to_string())))
 }

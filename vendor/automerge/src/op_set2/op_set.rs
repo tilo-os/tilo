@@ -67,6 +67,40 @@ pub(crate) struct OpSet {
     id_index: op_id_index::OpIdIndex,
 }
 
+/// TILO(run-delete): what one deleted element's successors are, without a
+/// vector of its own for the usual single op: a paste's mebibyte is over a
+/// million elements, and a vector each is more than the deletion.
+#[derive(Clone, Debug)]
+pub(crate) enum DeleteSuccs {
+    /// One live op, as fresh text's elements have: the run's common case.
+    One(SuccInsert),
+    /// Several, as an element written by two people at once has.
+    Many(Vec<SuccInsert>),
+}
+
+impl DeleteSuccs {
+    pub(crate) fn as_slice(&self) -> &[SuccInsert] {
+        match self {
+            Self::One(succ) => std::slice::from_ref(succ),
+            Self::Many(succs) => succs,
+        }
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut SuccInsert> {
+        match self {
+            Self::One(succ) => std::slice::from_mut(succ).iter_mut(),
+            Self::Many(succs) => succs.iter_mut(),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Many(succs) => succs.len(),
+        }
+    }
+}
+
 impl OpSet {
     #[cfg(test)]
     pub(crate) fn debug_cmp(&self, other: &Self) {
@@ -96,6 +130,12 @@ impl OpSet {
         self.cols.dump();
     }
 
+    #[cfg(tilo_model_guest)]
+    pub(crate) fn parents(&self, _: ObjId, _: Option<Clock>) -> Parents<'_> {
+        crate::model_device::outside_device("an op set")
+    }
+
+    #[cfg(not(tilo_model_guest))]
     pub(crate) fn parents(&self, obj: ObjId, clock: Option<Clock>) -> Parents<'_> {
         Parents {
             obj,
@@ -363,11 +403,14 @@ impl OpSet {
     /// alone would have held.
     pub(crate) fn add_succ_run_with_undo(
         &mut self,
-        elements: &[Vec<SuccInsert>],
+        elements: &[DeleteSuccs],
     ) -> Vec<Vec<SuccUndo>> {
-        let single = |element: &Vec<SuccInsert>| match element.as_slice() {
-            [succ] if succ.len == 0 && succ.inc.is_none() => Some(*succ),
-            _ => None,
+        let single = |element: &DeleteSuccs| match element {
+            DeleteSuccs::One(succ) => (succ.len == 0 && succ.inc.is_none()).then_some(*succ),
+            DeleteSuccs::Many(succs) => match succs.as_slice() {
+                [succ] if succ.len == 0 && succ.inc.is_none() => Some(*succ),
+                _ => None,
+            },
         };
         let mut out = Vec::with_capacity(elements.len());
         let mut at = 0;
@@ -383,7 +426,7 @@ impl OpSet {
                 run.push(next);
             }
             let Some(first) = run.first().copied().filter(|_| run.len() > 1) else {
-                out.push(self.add_succ_with_undo(element));
+                out.push(self.add_succ_with_undo(element.as_slice()));
                 at += 1;
                 continue;
             };
@@ -756,43 +799,45 @@ impl OpSet {
     }
 
     /// TILO(run-delete): the elements a deletion of `units` index units from
-    /// `index` takes, in order: the first found as [`Self::seek_ops_by_index`]
-    /// finds it, every later one by walking on from there, so a deletion of
-    /// many elements reads the object once rather than once an element. The
-    /// first may start before `index` (inside a multi-unit element): the
-    /// `units` are then counted from the element after it, as the caller
-    /// skips it.
-    pub(crate) fn seek_run_by_index<'a>(
+    /// `index` takes, one at a time: the first found as
+    /// [`Self::seek_ops_by_index`] finds it, every later one by walking on
+    /// from there. A deletion of many elements reads each as it deletes it,
+    /// instead of holding every one it found first: a paste's mebibyte is
+    /// over a million elements, and a vector of them costs more than the
+    /// deletion. The first may start before `index` (inside a multi-unit
+    /// element): the `units` are then counted from the element after it, as
+    /// the caller skips it.
+    pub(crate) fn seek_run_by_index_iter<'a>(
         &'a self,
         obj: &ObjId,
         index: usize,
         units: usize,
         seq_type: SequenceType,
         clock: Option<&Clock>,
-    ) -> Vec<OpsFound<'a>> {
+    ) -> Box<dyn Iterator<Item = OpsFound<'a>> + 'a> {
         let first = self.seek_ops_by_index(obj, index, seq_type, clock);
         if first.ops.is_empty() {
-            return Vec::new();
+            return Box::new(std::iter::empty());
         }
         let end = self.scope_to_obj(obj).end;
-        let mut covered = first.index.saturating_add(first.width(seq_type, self.text_encoding));
+        let encoding = self.text_encoding;
+        let mut covered = first.index.saturating_add(first.width(seq_type, encoding));
         // A deletion that starts inside the first element starts after it.
         let start = if first.index < index { covered } else { index };
         let wanted = start.saturating_add(units);
         let after = first.end_pos..end.max(first.end_pos);
-        let mut out = vec![first];
-        if covered >= wanted {
-            return out;
-        }
-        for mut found in OpsFoundIter::new(self.iter_range(&after).no_marks(), clock.cloned()) {
-            found.index = covered;
-            covered = covered.saturating_add(found.width(seq_type, self.text_encoding));
-            out.push(found);
-            if covered >= wanted {
-                break;
-            }
-        }
-        out
+        let mut done = covered >= wanted;
+        let rest = OpsFoundIter::new(self.iter_range(&after).no_marks(), clock.cloned())
+            .map_while(move |mut found| {
+                if done {
+                    return None;
+                }
+                found.index = covered;
+                covered = covered.saturating_add(found.width(seq_type, encoding));
+                done = covered >= wanted;
+                Some(found)
+            });
+        Box::new(std::iter::once(first).chain(rest))
     }
 
     pub(crate) fn seek_ops_by_index_slow<'a>(

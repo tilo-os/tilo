@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@d2b35f5c7421bf62";
+export const SURFACE = "so.tilo.chat@21cb18eb7dbfde6a";
 
 export interface Category {
   name: string;
@@ -342,6 +342,7 @@ export interface Message {
 }
 
 export interface NewMessage {
+  id: string | null;
   channel: string;
   text: string;
   parent: string | null;
@@ -764,6 +765,7 @@ export interface TriageArgs {
 export interface PostArgs {
   channel: string;
   text: string;
+  id?: string;
   parent?: string;
   quoted?: Quote;
   body?: ClipBlock[];
@@ -899,6 +901,7 @@ export interface AskAgentArgs {
   channel: string;
   cause: Starting;
   members?: unknown[];
+  message?: string;
 }
 
 /** The arguments of `stop-agent`. */
@@ -1269,6 +1272,7 @@ export interface Messages extends tilo.Resource {
   post(args: {
     channel: string;
     text: string;
+    id?: string;
     parent?: string;
     quoted?: Quote;
     body?: ClipBlock[];
@@ -1404,6 +1408,7 @@ export interface Messages extends tilo.Resource {
     channel: string;
     cause: Starting;
     members?: unknown[];
+    message?: string;
   }): Promise<void>;
   /** Runs `ask-agent` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   askAgentMany(items: AskAgentArgs[]): Promise<tilo.ActionAnswer[]>;

@@ -136,8 +136,9 @@ impl Workspaces {
     /// keeping another person's workspace names nothing: its holders are
     /// that person's to name, and the address it signed is the one they
     /// named. Nor does a holder its owners have not named yet, other than the
-    /// device the workspace was founded on: whoever hands it the workspace
-    /// names it, in the role they chose for it.
+    /// device the workspace was founded on, or the device of the person whose
+    /// own workspace it is: whoever hands it the workspace names it, in the
+    /// role they chose for it.
     pub(super) async fn name_own_host(
         &self,
         governed: &mut GovernedWorkspace,
@@ -146,10 +147,12 @@ impl Workspaces {
         let own = host.cert.device_public_key;
         let (others, unnamed) = {
             let peer = governed.peer();
+            // A workspace founded in its person's name is one of their own
+            // devices to name itself in, whichever of them opened it first.
             (
                 peer.owner() != host.cert.user_public_key,
                 peer.governance().holder_role(&own).is_none()
-                    && peer.governance().founder() != Some(own),
+                    && peer.governance().founder() != Some(host.cert.user_public_key),
             )
         };
         if others || unnamed {
@@ -159,14 +162,18 @@ impl Workspaces {
             .transport_hint(governed)
             .map_err(|error| error.to_string())?;
         let now = tilo_clock::wall();
-        let mut candidate = governed.peer().clone();
-        if candidate
-            .governance_mut()
-            .author_keeping_device(&hint, &host.key, now)?
-        {
-            governed.commit(candidate, &host.key, now, |record, _| {
-                Ok(record.collaboration.clone())
-            })?;
+        let named = governed.change_held(
+            &host.key,
+            now,
+            |_, candidate| {
+                let named = candidate
+                    .governance_mut()
+                    .author_keeping_device(&hint, &host.key, now)?;
+                Ok((named, named))
+            },
+            |record, _| Ok(record.collaboration.clone()),
+        )?;
+        if named {
             self.settle(governed).await?;
         }
         Ok(())
@@ -241,11 +248,16 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         let mut governed = state.lock().await;
         let now = tilo_clock::wall();
-        let mut candidate = governed.peer().clone();
-        if change(candidate.governance_mut(), &host.key, now)? {
-            governed.commit(candidate, &host.key, now, |record, _| {
-                Ok(record.collaboration.clone())
-            })?;
+        let changed = governed.change_held(
+            &host.key,
+            now,
+            |_, candidate| {
+                let changed = change(candidate.governance_mut(), &host.key, now)?;
+                Ok((changed, changed))
+            },
+            |record, _| Ok(record.collaboration.clone()),
+        )?;
+        if changed {
             self.settle(&mut governed).await?;
         }
         Ok(())
@@ -509,8 +521,10 @@ impl Workspaces {
     /// holder answers it alike.
     pub(super) fn chooses_servers(governed: &GovernedWorkspace, caller: &DeviceCert) -> bool {
         let person = caller.user_public_key;
-        let speaks_for_person =
-            caller.capabilities.agent.is_none() || caller.capabilities.server_key;
+        let speaks_for_person = caller.capabilities.agent.is_none()
+            || caller
+                .capabilities
+                .own_key_in(governed.peer().workspace_id());
         speaks_for_person
             && (person == governed.peer().owner()
                 || governed
@@ -892,7 +906,7 @@ async fn host_at(
             Ok((status, answer))
         })
     });
-    let info = tilo_server_client::https::host_info(&asked)
+    let info = tilo_server_client::https::server_info(&asked)
         .await
         .map_err(|error| match error {
             // What a site answers a refusal with stays with it: an owner
@@ -903,7 +917,7 @@ async fn host_at(
     let address = info
         .address
         .ok_or_else(|| format!("{origin} names no address to reach its host at"))?;
-    Ok((info.host_cert.device_public_key, address.endpoint_addr))
+    Ok((info.server_cert.device_public_key, address.endpoint_addr))
 }
 
 impl Workspaces {
@@ -917,12 +931,36 @@ impl Workspaces {
         &self,
         workspace: &GovernedWorkspace,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
-        let role = workspace
+        self.transport_hint_as(workspace, self.own_role(workspace))
+    }
+
+    /// The role this device's governance names it in `workspace`, a key
+    /// holder until it names one.
+    fn own_role(&self, workspace: &GovernedWorkspace) -> CopyRole {
+        workspace
             .peer()
             .governance()
             .holder_role(&self.inner.host.cert.device_public_key)
-            .unwrap_or(CopyRole::KeyHolder);
-        self.transport_hint_as(workspace, role)
+            .unwrap_or(CopyRole::KeyHolder)
+    }
+
+    /// The hint an invitation of `workspace` carries: the address this device answers at once
+    /// its relays are up. They wake for it and the answer waits for one, because a link signed
+    /// before this device reached a relay names only the network it stands in and reaches
+    /// nobody the link is handed to. Nothing held back names the address the endpoint has.
+    pub(super) async fn invitation_hint(
+        &self,
+        workspace: &GovernedWorkspace,
+    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+        let role = self.own_role(workspace);
+        let waking = self
+            .reachability()
+            .reached_addr("an invitation names this device's address");
+        let addr = match waking {
+            Some(reached) => reached.await,
+            None => self.endpoint_addr(),
+        };
+        self.signed_hint(workspace, role, &addr)
     }
 
     /// [`Self::transport_hint`], saying this device holds `workspace` as
@@ -932,12 +970,22 @@ impl Workspaces {
         workspace: &GovernedWorkspace,
         role: CopyRole,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+        let addr = self.endpoint_addr();
+        self.signed_hint(workspace, role, &addr)
+    }
+
+    /// Sign `workspace`'s answer for this device holding it `role`, answering at `addr`.
+    fn signed_hint(
+        &self,
+        workspace: &GovernedWorkspace,
+        role: CopyRole,
+        addr: &EndpointAddr,
+    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
         let holds_keys = role == CopyRole::KeyHolder;
         let host = &self.inner.host;
         // An invitation is handed to whoever the link reaches, so what this
         // host answers at inside its own network stays out of it.
-        let endpoint_addr =
-            tilo_delivery_protocol::workspace_join::reachable(&host.endpoint.addr());
+        let endpoint_addr = tilo_delivery_protocol::workspace_join::reachable(addr);
         let packet_relay_url = endpoint_addr
             .relay_urls()
             .next()
@@ -949,6 +997,7 @@ impl Workspaces {
             runs_work: holds_keys && !host.work.takes_nothing(),
             label: claim.label,
             cloud: claim.cloud,
+            moderates: claim.moderates.contains(workspace.workspace()),
             workspace_id: workspace.workspace_id(),
             endpoint_addr,
             user_public_key: host.cert.user_public_key,
@@ -965,13 +1014,34 @@ impl Workspaces {
     /// it goes by now.
     pub async fn name_holder(&self, label: &str) {
         let label = label.trim();
-        {
-            let mut claim = self.inner.host.holder.write_recover();
+        self.claim(|claim| {
             if claim.label == label {
-                return;
+                return false;
             }
             claim.label.clear();
             claim.label.push_str(label);
+            true
+        })
+        .await;
+    }
+
+    /// Say among `workspace`'s holders that this keeper has a moderation
+    /// agent for it, which its signed address carries from now on: what lets
+    /// a person who governs the workspace turn it on.
+    pub async fn offer_moderation(&self, workspace: &str) {
+        self.claim(|claim| claim.moderates.insert(workspace.to_owned()))
+            .await;
+    }
+
+    /// Change what this keeper says of itself among the holders with
+    /// `change`, and sign its address anew in every workspace it serves when
+    /// that changed anything.
+    async fn claim(&self, change: impl FnOnce(&mut crate::workspaces::HolderClaim) -> bool) {
+        {
+            let mut claim = self.inner.host.holder.write_recover();
+            if !change(&mut claim) {
+                return;
+            }
         }
         self.name_own_hosts().await;
     }

@@ -2,9 +2,11 @@
 //! and what that root lets this computer do without a browser: approve the
 //! key `tilo keys create` asks for, as the person's Tilo on the web does.
 //!
-//! The identity is kept in Tilo's own layout ([`IdentityPaths`]) under
-//! `$XDG_STATE_HOME/tilo/identity`: the user root, this computer's device
-//! key, and the member certificate the root signed for it. `tilo-enroll
+//! The identity is kept under `$XDG_STATE_HOME/tilo/identity`: the person's
+//! root in an identity store of its own (`person/`, its secret where the
+//! session keeps identity secrets), and in Tilo's own layout ([`IdentityPaths`])
+//! this computer's device key and the member certificate the root signed for it.
+//! With `--identity-dir` naming that store, `tilo-enroll
 //! certify --identity-root` reads the same files. A host lets the person in
 //! once its operator declares their user public key an owner (the local
 //! stack's `stack.sh owner KEY`), or it joins with an invitation.
@@ -20,8 +22,10 @@ use tilo_device_identity::persist::{
     read_device_cert, read_public_key, read_signing_key, write_device_cert, write_public_key,
     write_signing_key,
 };
+use tilo_identity::certification_ceremony::PersonSigner;
 use tilo_server_client::https::{self, Origin};
 use tilo_session_client::device::{self, Entering, Held};
+use tilo_user_identity::StatementSigner as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, SignInProof};
 
 use crate::login;
@@ -35,7 +39,8 @@ const ENTRY_WAIT: Duration = Duration::from_secs(60);
 
 /// The person this computer holds the root of.
 pub struct Person {
-    pub root: SigningKey,
+    /// Their root, from the identity store it is kept in.
+    pub root: PersonSigner,
     pub device: SigningKey,
     /// The member certificate the root signed for [`Self::device`].
     pub cert: DeviceCert,
@@ -46,36 +51,58 @@ pub struct Person {
 impl Person {
     /// Their user public key, hex.
     pub fn user(&self) -> String {
-        hex::encode(self.root.verifying_key().to_bytes())
+        hex::encode(self.public_key())
+    }
+
+    /// Their user public key.
+    pub fn public_key(&self) -> [u8; 32] {
+        self.root.public_key()
     }
 }
 
-/// Where the identity is kept: [`DIR_ENV`], else
-/// `$XDG_STATE_HOME/tilo/identity`.
+/// Where the identity is kept: [`DIR_ENV`], else this account's own device
+/// identity when it holds one — the one their session is, in the
+/// profile's `tilo/identity` — else `$XDG_STATE_HOME/tilo/identity`, where
+/// `tilo login --new-identity` keeps one a computer has not signed in with.
 pub fn dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os(DIR_ENV).filter(|dir| !dir.is_empty()) {
         return Ok(PathBuf::from(dir));
+    }
+    if let Some(config) = tilo_paths::xdg::config_home().filter(|dir| dir.is_absolute()) {
+        let dir = config.join("tilo").join("identity");
+        // The session's own device key is what makes it this account's
+        // identity: a profile without one never signed in.
+        if IdentityPaths::under(&dir).device_privkey.exists() {
+            return Ok(dir);
+        }
     }
     Ok(tilo_paths::state_dir()
         .context("this account has no state directory (no HOME)")?
         .join("tilo/identity"))
 }
 
+/// The identity store the person's root is kept in, under [`dir`].
+fn store(dir: &std::path::Path) -> PathBuf {
+    dir.join("person")
+}
+
 /// Whether this computer keeps a person's root, without reading it: a process
 /// that reads it makes itself undumpable ([`held`]).
 pub fn holds_root() -> bool {
-    dir().is_ok_and(|dir| IdentityPaths::under(&dir).user_privkey.exists())
+    dir().is_ok_and(|dir| tilo_identity_client::resolve_active_identity(&store(&dir)).is_some())
 }
 
 /// The person kept here, if this computer holds one.
 pub fn held() -> Result<Option<Person>> {
     let dir = dir()?;
     let paths = IdentityPaths::under(&dir);
-    if !paths.user_privkey.exists() {
+    let Some(active) = tilo_identity_client::resolve_active_identity(&store(&dir)) else {
         return Ok(None);
-    }
-    let root = read_signing_key(&paths.user_privkey)?;
-    if read_public_key(&paths.user_pubkey)? != root.verifying_key().to_bytes() {
+    };
+    let identity = tilo_identity::store::load_from_path(active)
+        .map_err(|error| anyhow!("{} cannot be opened: {error}", dir.display()))?;
+    let root = PersonSigner::new(Box::new(identity));
+    if read_public_key(&paths.user_pubkey)? != root.public_key() {
         bail!("{} is damaged: its keys disagree", dir.display());
     }
     Ok(Some(Person {
@@ -123,16 +150,15 @@ pub fn ensure(name: Option<&str>) -> Result<(Person, bool)> {
     write_device_cert(&paths.device_cert, &cert)?;
     write_public_key(&paths.user_pubkey, &root.verifying_key().to_bytes())?;
     // Last: the identity is there once its root is.
-    write_signing_key(&paths.user_privkey, &root)?;
-    Ok((
-        Person {
-            root,
-            device,
-            cert,
-            name,
-        },
-        true,
-    ))
+    tilo_identity::provisioning::import_single_device_root(
+        &store(&dir),
+        &root,
+        &name,
+        tilo_identity::provisioning::IdentityStorage::for_session(),
+    )
+    .with_context(|| format!("keep the root in {}", store(&dir).display()))?;
+    let person = held()?.context("the identity just made is not there")?;
+    Ok((person, true))
 }
 
 /// Name the person kept here `name`, when they go by none yet: how a person who joins a
@@ -243,10 +269,10 @@ pub fn asked(location: &str) -> Result<Asked> {
 }
 
 /// The proof and the grant certificate `person` answers `asked` with, as
-/// the page posts them back: `pending`, `proof` and `grant`. A key for all of
-/// the person's workspaces is a server key; one for a single workspace is an
-/// agent's grant for that workspace, as their Tilo certifies it on its sign-in
-/// card: narrower than what this computer approves already.
+/// the page posts them back: `pending`, `proof` and `grant`. A key the person
+/// makes is a server key, theirs, for all their workspaces or one; an agent's
+/// grant for one workspace is certified as their Tilo certifies it on its
+/// sign-in card: narrower than what this computer approves already.
 ///
 /// # Errors
 /// A scope that is neither `all` nor a workspace id, a key for one workspace
@@ -259,12 +285,7 @@ pub fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, Strin
         )
     })?;
     let capabilities = match scope {
-        tilo_user_identity::AgentScope::AllWorkspaces if asked.server_key => {
-            DeviceCapabilities::server_key_grant()
-        }
-        tilo_user_identity::AgentScope::Workspace(_) if asked.server_key => {
-            bail!("a server key reaches all your workspaces")
-        }
+        scope if asked.server_key => DeviceCapabilities::own_key_grant(scope),
         scope => {
             if asked.expires_at_ns.is_none() {
                 bail!(
@@ -276,7 +297,7 @@ pub fn answer(person: &Person, asked: &Asked) -> Result<Vec<(&'static str, Strin
     }
     .with_browser_pages(asked.pages);
     let mut grant = DeviceCert {
-        user_public_key: person.root.verifying_key().to_bytes(),
+        user_public_key: person.public_key(),
         device_public_key: asked.grant_key,
         device_label: tilo_server_client::sign_in::grant_label(&asked.client, &asked.audience),
         capabilities,
@@ -321,19 +342,19 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
     else {
         return Ok(());
     };
-    let info = https::host_info(&Origin::new(&http, host)).await?;
+    let info = https::server_info(&Origin::new(&http, host)).await?;
     let address = info
         .address
         .as_ref()
         .context("the host takes no device connections")?;
     let held = Held {
         cert: person.cert.clone(),
-        host_cert: Some(info.host_cert.clone()),
+        server_cert: Some(info.server_cert.clone()),
     };
     let began = std::time::Instant::now();
     loop {
         let (cert, entry) = device::entry_request(
-            &info.host_cert,
+            &info.server_cert,
             &workspace,
             &person.device,
             Entering {
@@ -348,9 +369,9 @@ async fn through_entry(person: &Person, site: &str) -> Result<()> {
         .map_err(|refused| anyhow!(refused.message))?;
         let session = tilo_session_client::start_session(
             tilo_session_client::PeerConfig {
-                host: tilo_server_client::Host::published(address),
+                host: tilo_server_client::ServerAddress::published(address),
                 cert,
-                host_cert: info.host_cert.clone(),
+                server_cert: info.server_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
                 entering: Some(entry),
             },
@@ -425,6 +446,33 @@ mod tests {
     }
 
     #[test]
+    fn a_signed_in_accounts_own_identity_is_the_one_the_command_uses() {
+        let home = tempfile::tempdir().unwrap();
+        let profile = home.path().join("config/tilo/identity");
+        std::fs::create_dir_all(&profile).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join("config"))
+            .set("XDG_STATE_HOME", home.path().join("state"))
+            .remove(DIR_ENV);
+        assert_eq!(
+            dir().unwrap(),
+            home.path().join("state/tilo/identity"),
+            "a computer with no device identity keeps one under its state"
+        );
+        let paths = IdentityPaths::under(&profile);
+        paths.ensure_directories().unwrap();
+        tilo_device_identity::persist::write_device_key(
+            &paths.device_privkey,
+            &SigningKey::from_bytes(&[3; 32]),
+        )
+        .unwrap();
+        assert_eq!(dir().unwrap(), profile);
+        env.set(DIR_ENV, profile.join("named"));
+        assert_eq!(dir().unwrap(), profile.join("named"));
+    }
+
+    #[test]
     fn the_sign_in_is_answered_as_the_page_answers_it() {
         let root = SigningKey::from_bytes(&[1; 32]);
         let device_key = SigningKey::from_bytes(&[2; 32]);
@@ -439,8 +487,18 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let kept = tilo_identity::provisioning::import_single_device_root(
+            store.path(),
+            &root,
+            "Ada",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
         let person = Person {
-            root,
+            root: PersonSigner::new(Box::new(
+                tilo_identity::store::load_from_path(kept).unwrap(),
+            )),
             device: device_key,
             cert,
             name: "Ada".into(),
@@ -469,7 +527,7 @@ mod tests {
                 &tilo_user_identity::RevocationList::new(),
                 tilo_clock::unix_now_ns()
             ),
-            Ok(person.root.verifying_key().to_bytes())
+            Ok(person.public_key())
         );
         let grant: DeviceCert = decoded(&form[2].1);
         tilo_user_identity::verify_device_cert(&grant).unwrap();
@@ -499,11 +557,15 @@ mod tests {
             .with_browser_pages(true)
         );
         assert_eq!(grant.expires_at_ns, Some(until_ms * 1_000_000));
-        // A server key reaches all workspaces, never one; a key for one lasts until a time.
+        // A key the person makes for one workspace is theirs, as one for all
+        // of them is; an agent's for one lasts until a time.
         let narrowed =
             asked(&location.replace("grant_scope=all", &format!("grant_scope={workspace}")))
                 .unwrap();
-        assert!(answer(&person, &narrowed).is_err());
+        let form = answer(&person, &narrowed).unwrap();
+        let own: DeviceCert = decoded(&form[2].1);
+        tilo_user_identity::verify_device_cert(&own).unwrap();
+        assert!(own.capabilities.server_key);
         let endless = asked(
             &location
                 .replace("&grant_kind=server_key", "")

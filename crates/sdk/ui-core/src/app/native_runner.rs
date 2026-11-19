@@ -2467,9 +2467,6 @@ impl AppHandler {
         // is the window's bar, the header draws no second one. Only the Linux
         // header asks: elsewhere the host draws the frame.
         let _shown = self.part_bar.refresh(&mut self.app, window);
-        // What the window shows names it: the shell reads the title, so its tab, the switcher
-        // and assistive technology say the page or record the window is at.
-        self.app.refresh_window_title(window);
         #[cfg(target_os = "linux")]
         self.decorations.refresh(&mut self.app, window, _shown);
         let app = &mut self.app;
@@ -2564,6 +2561,11 @@ impl AppHandler {
         }
         drop(sync_phase);
         mark_first_frame("first-frame-sync-done");
+        // What the window shows names it: the shell reads the title, so its tab, the switcher
+        // and assistive technology say the page or record the window is at. Named after the
+        // frame took in its changes: a page that came with them names the window in the frame
+        // that draws it, not in a next frame an idle window never draws.
+        app.refresh_window_title(window);
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
         }
@@ -2703,7 +2705,7 @@ impl AppHandler {
         // pre-seeded scenes are empty too.
 
         let t_draw_start = if perf { Some(crate::time::now()) } else { None };
-        crate::webview::frame_trace::begin_scene();
+        tilo_webview::frame_trace::begin_scene();
         // Floating chrome (menus, popovers, sheets, the palette, tooltips)
         // records what lies below it, and the render worker blurs that
         // backdrop under the material before the frame renders.
@@ -2822,7 +2824,7 @@ impl AppHandler {
         } else {
             record_main_stage(&mut native_main_stages, MainStage::AfterProfilerCommit);
         }
-        crate::webview::frame_trace::finish_scene(
+        tilo_webview::frame_trace::finish_scene(
             app.profiler
                 .as_ref()
                 .and_then(|p| p.history().back())
@@ -3865,9 +3867,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         let _entry = self.app.enter_wake_scope();
         self.surface_suspended = true;
-        for error in self.app.checkpoint_before_close() {
-            tracing::error!(%error, "could not save state on suspend");
-        }
+        self.app.autosave_flush();
         if let Some(mut render) = self.render.take() {
             self.suspended_renderer = render.shutdown_keeping_renderer();
         }
@@ -3941,9 +3941,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // the launch opens the app in it.
         if !self.handing_over && crate::launch::window_gives_place() {
             self.handing_over = true;
-            for error in self.app.checkpoint_before_close() {
-                tracing::error!(%error, "could not save before opening the workspace");
-            }
+            self.app.autosave_flush();
             self.closing.set(true);
             return;
         }
@@ -5159,6 +5157,7 @@ impl App {
         // The app and its state are dropped (and saved) before the process
         // reports how its window ended, and so are the settings it changed.
         drop(handler);
+        app_state::finish_writes();
         crate::storage::flush_settings_writes();
         if !handing_over && let Some(reason) = take_abnormal_stop() {
             report_window_lost_and_exit(&reason);

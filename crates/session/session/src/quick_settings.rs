@@ -556,14 +556,17 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
 /// published as an action so that a press in the panel, an agent and a script change it the same
 /// way, whether the panel is drawn or not.
 pub const QUICK_SETTINGS: &str = "session:quick-settings";
-/// The resource the panel publishes, for a reader that names none.
-const KIND: &str = "session.quick-settings";
+/// The panel's layout as the session publishes it: which controls it shows and in what order.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.quick-settings", label = "Quick settings", effects = LayoutAction)]
+pub(crate) struct QuickSettings;
 
 /// What the Quick Settings resource offers: the controls the panel shows.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "so.tilo.session.quick-settings")]
 pub(crate) enum LayoutAction {
     /// Show a control on the panel
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     ShowControl {
         /// The control's name, as the panel lists it
@@ -573,6 +576,7 @@ pub(crate) enum LayoutAction {
         control: String,
     },
     /// Take a control off the panel. Wi-Fi stays: it is how a desktop without a network gets online
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     HideControl {
         /// The control's name, as the panel lists it
@@ -580,6 +584,7 @@ pub(crate) enum LayoutAction {
         control: String,
     },
     /// Move a control to another place on the panel
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     MoveControl {
         /// The control's name, as the panel lists it
@@ -590,6 +595,7 @@ pub(crate) enum LayoutAction {
         before: Option<String>,
     },
     /// Put the panel's controls back as they were at first
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ResetControls,
 }
@@ -598,11 +604,11 @@ pub(crate) enum LayoutAction {
 /// who asks.
 fn quick_settings_resource() -> tilo_actions::ResourceSpec {
     tilo_service::offer::<LayoutAction>(
-        tilo_actions::ResourceSpec::new(
+        tilo_resource::LiveRow::typed::<QuickSettings>(
             QUICK_SETTINGS,
-            KIND,
             crate::i18n::t("session-quick-settings"),
         )
+        .into_resource()
         .with_personal_reading(),
     )
 }

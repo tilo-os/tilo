@@ -77,6 +77,8 @@ mod activity_models;
 #[cfg(target_os = "linux")]
 mod agent_sessions;
 #[cfg(target_os = "linux")]
+mod agent_tools;
+#[cfg(target_os = "linux")]
 mod agents;
 #[cfg(target_os = "linux")]
 mod ambient_brightness;
@@ -87,6 +89,8 @@ mod app_icons;
 #[cfg(target_os = "linux")]
 mod app_liveness;
 mod app_names;
+#[cfg(target_os = "linux")]
+mod app_resources;
 #[cfg(target_os = "linux")]
 mod app_sheets;
 #[cfg(target_os = "linux")]
@@ -259,6 +263,8 @@ mod keys;
     )
 )]
 mod landing;
+// The machines a person planned to install, whose plans are entries in their Servers workspace:
+// the same steps the command and the installer's window name, answered from this session.
 #[cfg(target_os = "linux")]
 mod launches;
 mod layout;
@@ -272,6 +278,8 @@ mod lock_screen;
 mod lock_service;
 #[cfg(target_os = "linux")]
 mod look;
+#[cfg(target_os = "linux")]
+mod machine_steps;
 #[cfg(target_os = "linux")]
 pub mod mcp_server;
 pub mod mentions;

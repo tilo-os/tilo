@@ -16,7 +16,6 @@ use super::Session;
 use crate::account::{Outcome, answer, failed, refused};
 use serde_json::{Value, json};
 use std::fmt::Write as _;
-use tilo_actions::remote::ActionProvider as _;
 use tilo_actions::remote::workspace_invocations::{self, Invocations, InvocationsQuery};
 use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, ReceiptStatus};
 

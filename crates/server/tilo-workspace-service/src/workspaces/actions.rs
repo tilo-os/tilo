@@ -1127,7 +1127,7 @@ type Governed = Arc<AsyncMutex<GovernedWorkspace>>;
 /// account. An agent the person connected through consent does not.
 fn reaches_every_workspace(caller: &Caller, certificate: &DeviceCert) -> bool {
     certificate.capabilities.agent == Some(tilo_user_identity::AgentScope::AllWorkspaces)
-        && agents::is_the_person(caller, certificate)
+        && agents::is_the_person(caller, certificate, None)
         && caller.user_public_key() == Some(&certificate.user_public_key)
 }
 
@@ -1240,7 +1240,7 @@ impl Workspaces {
                 .await;
             if let Some((governed, device)) = self.governed_by(workspace_id, caller).await {
                 // What an agent's grants here refuse it is not offered to it.
-                let person = agents::is_the_person(caller, &device);
+                let person = agents::is_the_person(caller, &device, Some(workspace_id));
                 let grants = if person {
                     None
                 } else {
@@ -1510,7 +1510,7 @@ impl Workspaces {
                 .server_operation_invoke(workspace_id, caller, certificate, verb, request)
                 .await;
         }
-        let check = check_of(&address.action).ok_or(ActionCallError::UnknownAction)?;
+        let check = server::check_of(&address.action).ok_or(ActionCallError::UnknownAction)?;
         // A key's own record is read by the key itself, whatever its grant may
         // govern: the workspace lists the grants of its person's, and only the
         // key or the key that minted it revokes one.
@@ -1641,6 +1641,7 @@ impl Workspaces {
             SERVERS | ADD_SERVER | REMOVE_SERVER | MOVE_SERVER | SET_COPIES => {
                 self.governance_hosts(action, call).await
             }
+            server::MACHINE_ADMIT => Box::pin(self.machine_admit(call)).await,
             WAIT_LIST | UNLIST | MAIL_INVITATION => self.governance_wait_list(action, call).await,
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
@@ -1663,9 +1664,10 @@ impl Workspaces {
         Ok(json!({"grants": grants}))
     }
 
-    /// Revoke the key `grant` names, the caller's own or one it minted: the
-    /// workspace records its person's revocation, and every holder and API
-    /// server refuses it from then on.
+    /// Revoke the key `grant` names: the caller's own or one it minted, or, for a device of the
+    /// person's or a server key of theirs, any key of the person's. The workspace keeps its
+    /// person's revocation, and every holder and API server refuses it from then on. An agent's
+    /// grant takes back no key but its own and the ones it minted.
     async fn governance_revoke_key(
         &self,
         call: GovernanceCall<'_>,
@@ -1677,10 +1679,12 @@ impl Workspaces {
             .grants_of(call.workspace, &call.device.user_public_key)
             .await
             .map_err(|error| refused(&error))?;
+        let persons_own =
+            call.device.capabilities.agent.is_none() || call.device.capabilities.server_key;
         let own = id == mine
-            || grants
-                .iter()
-                .any(|grant| grant.id == id && grant.parent.as_deref() == Some(mine.as_str()));
+            || grants.iter().any(|grant| {
+                grant.id == id && (persons_own || grant.parent.as_deref() == Some(mine.as_str()))
+            });
         if !own {
             return Err(ActionCallError::UnknownAction);
         }
@@ -2230,10 +2234,10 @@ struct GovernanceCall<'a> {
 /// The workspaces' governance as an action host, attached once the workspaces open.
 #[derive(Clone)]
 pub(crate) struct ServiceWorkspaceActions {
-    shared: Arc<Shared>,
+    pub(crate) shared: Arc<Shared>,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     workspaces: OnceLock<Workspaces>,
     runtime: tokio::runtime::Handle,
     /// What each admitted invocation came to.
@@ -2267,8 +2271,10 @@ impl ServiceWorkspaceActions {
         }
     }
 
-    /// Serve `workspaces`; only the first workspaces attached are served.
+    /// Serve `workspaces`; only the first workspaces attached are served. Their members' devices
+    /// ask this governance on the device action service too.
     pub(crate) fn attach(&self, workspaces: Workspaces) {
+        workspaces.govern_device_actions_with(Arc::downgrade(&self.shared));
         let _ = self.shared.workspaces.set(workspaces);
     }
 

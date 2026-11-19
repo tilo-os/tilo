@@ -73,26 +73,45 @@ impl Pool {
         dependencies: Dependencies,
     ) -> Result<Applied, Rejected> {
         let key = Key::of(doc);
-        let slot = self.route(&key);
-        let mut worker = (self.slots.get(slot).ok_or(Rejected::Crashed)?).lock_recover();
+        let (applied, worker_at) = self.check(&key, doc, incoming, dependencies)?;
+        if applied == Applied::MissingDependencies {
+            return Ok(applied);
+        }
+        let applied = engine::apply_trusted(doc, incoming, dependencies)?;
+        self.remember(Key::of(doc), worker_at);
+        Ok(applied)
+    }
+
+    /// Apply `incoming` in a worker to the state `key` names, which `base`
+    /// is asked for only when the worker does not hold that state: what it
+    /// did, and the worker that did it, which now holds the state after.
+    pub(crate) fn check(
+        &self,
+        key: &Key,
+        base: &mut dyn Base,
+        incoming: &[u8],
+        dependencies: Dependencies,
+    ) -> Result<(Applied, usize), Rejected> {
+        let worker_at = self.route(key);
+        let mut worker = (self.slots.get(worker_at).ok_or(Rejected::Crashed)?).lock_recover();
         let mut next = if key.complete_heads().is_some() {
-            Base::Cached
+            Next::Cached
         } else {
             #[cfg(test)]
             self.full_rebuilds.fetch_add(1, Ordering::Relaxed);
-            Base::Full(full_save(doc))
+            Next::Full(full_save(base.base()?))
         };
         loop {
             let (prepare, trusted) = match &next {
-                Base::Cached => (Prepare::Cached, 0),
-                Base::After(from, delta) => (
+                Next::Cached => (Prepare::Cached, 0),
+                Next::After(from, delta) => (
                     Prepare::After {
                         from: from.clone(),
                         delta,
                     },
                     delta.len(),
                 ),
-                Base::Full(saved) => (Prepare::Full(saved), saved.len()),
+                Next::Full(saved) => (Prepare::Full(saved), saved.len()),
             };
             let request = Request::Apply {
                 key: key.clone(),
@@ -103,34 +122,33 @@ impl Pool {
             match self.call(&mut worker, &request, trusted, incoming.len())? {
                 Reply::Uncached(cached) => {
                     next = match next {
-                        Base::Cached => catch_up(doc, &cached).map_or_else(
-                            || {
+                        Next::Cached => {
+                            if let Some((from, delta)) = catch_up(base.base()?, &cached) {
+                                Next::After(from, delta)
+                            } else {
                                 #[cfg(test)]
                                 self.full_rebuilds.fetch_add(1, Ordering::Relaxed);
-                                Base::Full(full_save(doc))
-                            },
-                            |(from, delta)| Base::After(from, delta),
-                        ),
-                        Base::After(..) => {
+                                Next::Full(full_save(base.base()?))
+                            }
+                        }
+                        Next::After(..) => {
                             #[cfg(test)]
                             self.full_rebuilds.fetch_add(1, Ordering::Relaxed);
-                            Base::Full(full_save(doc))
+                            Next::Full(full_save(base.base()?))
                         }
-                        Base::Full(_) => return Err(Rejected::Crashed),
+                        Next::Full(_) => return Err(Rejected::Crashed),
                     };
                 }
                 Reply::Invalid(message) => return Err(Rejected::Invalid(message)),
                 // Only a load is answered with this.
                 Reply::Loaded(_) => return Err(Rejected::Crashed),
                 Reply::Applied(Applied::MissingDependencies) => {
-                    return Ok(Applied::MissingDependencies);
+                    return Ok((Applied::MissingDependencies, worker_at));
                 }
-                Reply::Applied(Applied::Changed(_)) => {
+                Reply::Applied(applied) => {
                     drop(worker);
-                    self.remember(key, slot);
-                    let applied = engine::apply_trusted(doc, incoming, dependencies)?;
-                    self.remember(Key::of(doc), slot);
-                    return Ok(applied);
+                    self.remember(key.clone(), worker_at);
+                    return Ok((applied, worker_at));
                 }
             }
         }
@@ -171,9 +189,9 @@ impl Pool {
             .unwrap_or(0)
     }
 
-    fn remember(&self, key: Key, slot: usize) {
+    pub(crate) fn remember(&self, key: Key, worker_at: usize) {
         if key.complete_heads().is_some() {
-            self.routes.lock_recover().insert(key, slot);
+            self.routes.lock_recover().insert(key, worker_at);
         }
     }
 
@@ -257,10 +275,23 @@ impl Routes {
     }
 }
 
-enum Base {
+/// What a worker that lacks the caller's state is sent next.
+enum Next {
     Cached,
     After(Key, Vec<u8>),
     Full(Vec<u8>),
+}
+
+/// The caller's document at the state a request names, asked for only when
+/// the worker does not hold that state.
+pub(crate) trait Base {
+    fn base(&mut self) -> Result<&mut AutoCommit, Rejected>;
+}
+
+impl Base for AutoCommit {
+    fn base(&mut self) -> Result<&mut AutoCommit, Rejected> {
+        Ok(self)
+    }
 }
 
 fn full_save(doc: &mut AutoCommit) -> Vec<u8> {

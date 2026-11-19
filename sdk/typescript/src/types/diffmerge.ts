@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.diffmerge@6e3e0e40ba1c3ff2";
+export const SURFACE = "so.tilo.diffmerge@8f11459453d0565d";
 
 export interface Comparison {
   left_label: string;

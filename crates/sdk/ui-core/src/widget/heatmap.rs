@@ -13,7 +13,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct HeatmapCell {
@@ -109,27 +109,19 @@ impl Heatmap {
 
 impl HeatmapMarks {
     fn grid_rect(&self) -> Rect {
-        let left = if self.style.show_axis_labels {
-            92.0
-        } else {
-            12.0
-        };
-        let top =
-            18.0 + if self.frame.title.is_empty() {
-                0.0
-            } else {
-                34.0
-            } + if self.style.show_axis_labels {
-                26.0
-            } else {
-                0.0
-            };
-        Rect::new(
-            self.frame.rect.x0 + left,
-            self.frame.rect.y0 + top,
-            self.frame.rect.x1 - 12.0,
-            self.frame.rect.y1 - 14.0,
-        )
+        self.frame.inside()
+    }
+    /// The column labels' line over the grid and the row labels' column before it, a step from
+    /// the cells.
+    fn measure_margins(&self, tr: &mut TextRenderer, theme: &Theme) -> Margins {
+        let mut margins = Margins::header(theme, &self.frame.title, 0);
+        if self.style.show_axis_labels {
+            let step = crate::widget::plot::step(theme);
+            margins.top += crate::widget::plot::caption_line(theme) + step;
+            let rows = crate::widget::plot::widest(tr, theme, &self.rows);
+            margins.left = (rows + step).min(self.frame.rect.width() / 3.0);
+        }
+        margins
     }
     fn cell_rect(&self, cell: &HeatmapCell) -> Option<Rect> {
         if self.rows.is_empty()
@@ -226,6 +218,10 @@ impl PlotMarks for HeatmapMarks {
             .collect()
     }
 
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.frame.margins = self.measure_margins(tr, theme);
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "matrix cells, axes and inspector share one retained paint pass"
@@ -261,6 +257,8 @@ impl PlotMarks for HeatmapMarks {
         );
         if self.style.show_axis_labels {
             let grid = self.grid_rect();
+            let step = crate::widget::plot::step(theme);
+            let line = crate::widget::plot::caption_line(theme);
             let column_width = grid.width()
                 / f64::from(u32::try_from(self.columns.len().max(1)).unwrap_or(u32::MAX));
             let row_height = grid.height()
@@ -273,7 +271,8 @@ impl PlotMarks for HeatmapMarks {
                     scene,
                     label,
                     theme.tokens.colors.text_dim,
-                    transform * Affine::translate((x - f64::from(width) / 2.0, grid.y0 - 22.0)),
+                    transform
+                        * Affine::translate((x - f64::from(width) / 2.0, grid.y0 - step - line)),
                     Some(crate::num::f32_of_f64(column_width.max(0.0))),
                     &theme.text(TextRole::Caption),
                 );
@@ -285,8 +284,10 @@ impl PlotMarks for HeatmapMarks {
                     scene,
                     label,
                     theme.tokens.colors.text_dim,
-                    transform * Affine::translate((self.frame.rect.x0 + 12.0, y - 6.0)),
-                    Some(70.0),
+                    transform * Affine::translate((self.frame.rect.x0, y - line / 2.0)),
+                    Some(crate::num::f32_of_f64(
+                        (grid.x0 - self.frame.rect.x0 - step).max(1.0),
+                    )),
                     &theme.text(TextRole::Caption),
                 );
             }

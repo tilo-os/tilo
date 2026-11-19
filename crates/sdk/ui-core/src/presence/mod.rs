@@ -12,7 +12,7 @@ pub mod frame;
 mod geom;
 mod interaction;
 mod written;
-pub use written::written_by;
+pub use tilo_doc::written::written_by;
 mod key;
 mod labels;
 mod layer;
@@ -32,8 +32,7 @@ pub use draft::DraftSaid;
 pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
-    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement, MarkerPlace,
-    TERMINAL_INTERACTION_DWELL, interaction_card_slots,
+    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, MarkerPlace, TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 pub use labels::{MemberLabels, guest_label, name_key, shown_name, unnamed_label};

@@ -8,6 +8,7 @@
 //! the windows are checked at the same time, one per core.
 
 mod audit;
+mod reach;
 mod source;
 pub(crate) mod stage;
 mod ux;
@@ -24,6 +25,10 @@ pub use audit::Kind;
 pub use stage::Work;
 use tilo_render_protocol::patch::ResourceRef;
 use ui::interaction::InteractionEnvironment;
+
+use reach::{
+    back_chip, destinations, reachable, sidebar_toggle, surface_presses, tappable_row, unchosen_row,
+};
 
 /// A window size people use, in logical pixels, and whether it is held in the hand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -212,6 +217,9 @@ pub struct Options {
     /// Take the shots as a maximized window stands at rest: its bar hidden over the window's top
     /// edge until the person reaches for it, the app's frame filling the window.
     pub bar_at_rest: bool,
+    /// Take the shots in a window this tall at the `dump` size's width, so the lower part of a
+    /// long page shows; the check still reads the window at its own size.
+    pub shot_height: Option<u32>,
     /// The themes `shots` are taken in: a shipped theme by name
     /// (`glass`, `block`), in its light and dark variant, or a theme
     /// bundle's directory (`ui::theme_bundle`); none takes the stock
@@ -251,6 +259,7 @@ impl Default for Options {
             dump: None,
             shots: None,
             bar_at_rest: false,
+            shot_height: None,
             themes: Vec::new(),
             root: None,
             states: Vec::new(),
@@ -809,6 +818,12 @@ impl Scene {
                         .is_some_and(|param| meta.types.iter().any(|t| t.name == param.ty))
                     && view.params.len() == 1
             })
+            // A page behind the window's own list of destinations is reached only by choosing it,
+            // so the check chooses each while a view of the package still stands unshown.
+            || (app.sources.navigates()
+                && meta
+                    .offered_views()
+                    .any(|view| !shows(shown, &meta.app, &view.name)))
     }
 }
 
@@ -836,7 +851,8 @@ enum What {
     },
     Press,
     /// The scenario at every size it is held in the hand, with the row it opened tapped as a finger
-    /// taps it: the window a person comes to after choosing what to read.
+    /// taps it, or the surface it draws on tapped where nothing stands: the window a person comes to
+    /// after choosing what to read, or after pointing at a place of their own.
     Push,
 }
 
@@ -855,7 +871,7 @@ impl Unit {
             What::Scenario => "staged",
             What::Opens { .. } => "with the views no layout showed opened on it",
             What::Press => "with each primary action pressed",
-            What::Push => "held in the hand, the row it opened tapped",
+            What::Push => "held in the hand, the row or the surface tapped",
         };
         let window = on_layer(&self.scene.scenario, self.scene.root.as_deref());
         format!("{app}: the scenario `{window}` {what}")
@@ -881,7 +897,7 @@ impl Unit {
                     .saturating_add((pressed.saturating_add(1)).saturating_mul(STAGING))
                     .saturating_add(pressed)
             }
-            // A window at each size held in the hand, the row it opened tapped, and the sizes'
+            // A window at each size held in the hand, the row or surface tapped, and the sizes'
             // layouts read after the tap and after the window's way back.
             What::Push => {
                 let touch = SIZES.iter().filter(|size| size.touch).count();
@@ -1242,6 +1258,7 @@ impl Worker<'_> {
             dump: self.options.dump,
             shots: self.options.shots.as_deref(),
             bar_at_rest: self.options.bar_at_rest,
+            shot_height: self.options.shot_height,
             themes: &self.options.themes,
             states: &self.options.states,
             keys: &self.options.keys,
@@ -1445,6 +1462,29 @@ fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<Stri
         .find_map(|child| button_named(child, label))
 }
 
+/// Where the drawn row `label` of a list or a tree stands under `node`, when the row names no
+/// control of its own to press: a sidebar's place, which a press at where it stands chooses.
+fn drawn_row_named(node: &ui::headless::InspectionNode, label: &str) -> Option<ui::kurbo::Rect> {
+    let row = node.semantics.as_ref().is_some_and(|access| {
+        matches!(
+            access.role,
+            ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
+        ) && !access.state.disabled
+            && access.name.as_deref() == Some(label)
+    });
+    if row && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
+        return Some(ui::kurbo::Rect::new(
+            node.rect[0],
+            node.rect[1],
+            node.rect[0] + node.rect[2],
+            node.rect[1] + node.rect[3],
+        ));
+    }
+    node.children
+        .iter()
+        .find_map(|child| drawn_row_named(child, label))
+}
+
 /// How a press by its words reaches a window: the control of that name, the box a widget publishes
 /// of its own, or where a menu row of that name stands — a row is painted by the menu that shows
 /// it, so only a press at where it stands reaches it.
@@ -1502,13 +1542,23 @@ fn painted_row_named(node: &ui::headless::InspectionNode, label: &str) -> Option
 
 /// The box of the row `label` among what `access`
 /// publishes, a menu's rows being its children's
-/// children.
+/// children: a menu row by its name, a table row by its name or the words of its first cell.
 fn row_named(access: &ui::a11y::AccessNode, label: &str) -> Option<ui::kurbo::Rect> {
     for child in &access.children {
         if child.role == ui::a11y::Role::MenuItem
             && !child.state.disabled
             && child.name.as_deref() == Some(label)
             && let Some(bounds) = child.bounds
+        {
+            return Some(bounds.to_rect());
+        }
+        if child.role == ui::a11y::Role::Row
+            && !child.state.disabled
+            && let Some(bounds) = child.bounds
+            && (child.name.as_deref() == Some(label)
+                || child.children.first().is_some_and(|cell| {
+                    cell.value.as_deref() == Some(label) || cell.name.as_deref() == Some(label)
+                }))
         {
             return Some(bounds.to_rect());
         }
@@ -1539,114 +1589,6 @@ fn painted_button_named(node: &ui::headless::InspectionNode, label: &str) -> Opt
         .find_map(|child| painted_button_named(child, label))
 }
 
-/// Whether `node` stands where a finger on the window
-/// reaches it: drawn, and at least partly inside the
-/// window.
-fn reachable(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
-    node.rect[2] > 0.0
-        && node.rect[3] > 0.0
-        && node.rect[0] + node.rect[2] > 0.0
-        && node.rect[1] + node.rect[3] > 0.0
-        && node.rect[0] < f64::from(viewport.0)
-        && node.rect[1] < f64::from(viewport.1)
-}
-
-/// Where a finger taps to open a row of a list: the middle of
-/// it, drawn where the person holding the window can reach it.
-fn row_centre(node: &ui::headless::InspectionNode) -> (f64, f64) {
-    (
-        node.rect[0] + node.rect[2] / 2.0,
-        node.rect[1] + node.rect[3] / 2.0,
-    )
-}
-
-/// Whether the window draws `node` as a row of a list: a
-/// list item, or a destination of the tree a sidebar's list
-/// is.
-fn is_row(node: &ui::headless::InspectionNode) -> bool {
-    node.semantics.as_ref().is_some_and(|access| {
-        matches!(
-            access.role,
-            ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
-        ) && !access.state.disabled
-    })
-}
-
-/// Where a finger taps to open what the window shows after its list: the middle of the row the
-/// window selects for it, drawn where the person holding the window can reach it.
-fn row_opened(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Option<(f64, f64)> {
-    let selected = node
-        .semantics
-        .as_ref()
-        .is_some_and(|access| access.state.selected);
-    if selected && is_row(node) && reachable(node, viewport) {
-        return Some(row_centre(node));
-    }
-    node.children
-        .iter()
-        .find_map(|child| row_opened(child, viewport))
-}
-
-/// Where a finger taps to open a row when the window keeps none chosen: the middle of the first row
-/// of its list, drawn where the person holding the window can reach it.
-fn first_row(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Option<(f64, f64)> {
-    if is_row(node) && reachable(node, viewport) {
-        return Some(row_centre(node));
-    }
-    node.children
-        .iter()
-        .find_map(|child| first_row(child, viewport))
-}
-
-/// Whether the window shows its way back where a finger reaches it: how a person holding a narrow
-/// window comes back to the list it opened something from: the chip the shell's header row holds.
-fn back_chip(staged: &stage::Staged, viewport: (u32, u32)) -> bool {
-    fn in_frame(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
-        (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_BACK))
-            || node.children.iter().any(|child| in_frame(child, viewport))
-    }
-    in_frame(&staged.harness().inspection().root, viewport)
-}
-
-/// Whether the window's header row carries its sidebar toggle where a finger reaches it: how a
-/// person holding a window whose list stands over what it shows as a drawer brings that list
-/// forward.
-fn sidebar_toggle(staged: &stage::Staged, viewport: (u32, u32)) -> bool {
-    fn in_frame(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
-        (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_SIDEBAR))
-            || node.children.iter().any(|child| in_frame(child, viewport))
-    }
-    in_frame(&staged.harness().inspection().root, viewport)
-}
-
-/// Where a finger taps to open a row of the list the window shows now: the row it keeps chosen, or
-/// else the first of the list.
-fn tappable_row(staged: &stage::Staged, viewport: (u32, u32)) -> Option<(f64, f64)> {
-    let root = &staged.harness().inspection().root;
-    row_opened(root, viewport).or_else(|| first_row(root, viewport))
-}
-
-/// Where a finger taps to open a row of the list in front of
-/// what the window shows: the first row the list does not keep chosen,
-/// which opens what the window is not already showing, or else the chosen
-/// one.
-fn unchosen_row(staged: &stage::Staged, viewport: (u32, u32)) -> Option<(f64, f64)> {
-    fn unchosen(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Option<(f64, f64)> {
-        let selected = node
-            .semantics
-            .as_ref()
-            .is_some_and(|access| access.state.selected);
-        if !selected && is_row(node) && reachable(node, viewport) {
-            return Some(row_centre(node));
-        }
-        node.children
-            .iter()
-            .find_map(|child| unchosen(child, viewport))
-    }
-    unchosen(&staged.harness().inspection().root, viewport)
-        .or_else(|| tappable_row(staged, viewport))
-}
-
 struct AppCheck<'a> {
     dir: &'a Path,
     short: &'a str,
@@ -1656,6 +1598,8 @@ struct AppCheck<'a> {
     shots: Option<&'a Path>,
     /// Take the shots with the window's bar at rest ([`Options::bar_at_rest`]).
     bar_at_rest: bool,
+    /// The height the shots are taken at ([`Options::shot_height`]).
+    shot_height: Option<u32>,
     themes: &'a [String],
     states: &'a [String],
     keys: &'a [String],
@@ -1679,11 +1623,12 @@ impl AppCheck<'_> {
         match unit.what {
             What::Scenario => {
                 let mut staged = self.stage(packages, unit)?;
-                self.run(&mut staged, &title)
+                self.read(&mut staged, &title)
             }
             What::Opens { .. } => {
                 let mut staged = self.stage(packages, unit)?;
-                self.open_views(&mut staged, &title)
+                self.open_views(&mut staged, &title)?;
+                self.choose_destinations(packages, unit, &title)
             }
             What::Press => self.press(packages, unit),
             What::Push => self.push(packages, unit),
@@ -1694,11 +1639,21 @@ impl AppCheck<'_> {
     /// drawn before its layouts are read.
     fn stage(&self, packages: &Rc<stage::Packages>, unit: &Unit) -> Result<stage::Staged, String> {
         let first = layouts().first().copied().ok_or("no layouts")?;
+        self.stage_at(packages, unit, (first.size.width, first.size.height))
+    }
+
+    /// The scenario as staged, drawn at `viewport` rather than at the smallest window.
+    fn stage_at(
+        &self,
+        packages: &Rc<stage::Packages>,
+        unit: &Unit,
+        viewport: (u32, u32),
+    ) -> Result<stage::Staged, String> {
         stage::Staged::over(
             &self.meta.app,
             packages,
             &unit.scene.scenario,
-            (first.size.width, first.size.height),
+            viewport,
             ui::Theme::light(),
             unit.scene.root.as_deref(),
             self.states,
@@ -1727,13 +1682,13 @@ impl AppCheck<'_> {
                 continue;
             };
             staged.open(resource.clone());
-            self.run(staged, &format!("{title}, then a {} opened", view.name))?;
+            self.read(staged, &format!("{title}, then a {} opened", view.name))?;
             // An app whose rows open where they stand (a task opened in its list) answers the
             // record's own action API with its place: its page is still a view the app draws, from the
             // row's menu, so the run opens it by its name as that menu row does.
             if !shows(&self.shown, &self.meta.app, &view.name) {
                 staged.open_with(&resource, &view.id);
-                self.run(
+                self.read(
                     staged,
                     &format!("{title}, then a {} opened on its own", view.name),
                 )?;
@@ -1757,7 +1712,7 @@ impl AppCheck<'_> {
             // window showing another item stages a screen nobody reaches.
             staged.open(resource.clone());
             staged.open_with(&resource, &view.id);
-            self.run(staged, &format!("{title}, then {} shown", view.name))?;
+            self.read(staged, &format!("{title}, then {} shown", view.name))?;
         }
         // The views a type's bar switches to beside the one it opens on: a project laid out as a
         // board as well as the list it opens on.
@@ -1772,9 +1727,100 @@ impl AppCheck<'_> {
             // The same: the item first, then the named view over it.
             staged.open(resource.clone());
             staged.open_with(&resource, &view.id);
-            self.run(staged, &format!("{title}, then {} shown", view.name))?;
+            self.read(staged, &format!("{title}, then {} shown", view.name))?;
         }
         Ok(())
+    }
+
+    /// The pages the window's own list of destinations leads to, each chosen the way a person
+    /// chooses it: a window shows one page of its list, so the views behind the others are reached
+    /// only by picking one (`ui.NavItem` in a sidebar). Each is read from the scenario as staged,
+    /// against the whole list drawn at the widest window, and laid out every way once it shows a
+    /// view no layout showed: a destination that shows what the window already stands on adds
+    /// nothing.
+    fn choose_destinations(
+        &mut self,
+        packages: &Rc<stage::Packages>,
+        unit: &Unit,
+        title: &str,
+    ) -> Result<(), String> {
+        let Some(widest) = layouts().last().copied() else {
+            return Ok(());
+        };
+        let viewport = (widest.size.width, widest.size.height);
+        let mut staged = self.stage_at(packages, unit, viewport)?;
+        staged.lay_out(
+            viewport,
+            widest.theme(),
+            widest.input(),
+            widest.display_scale,
+        )?;
+        let choices = destinations(&staged.harness().inspection().root, viewport);
+        for (label, at) in choices {
+            let mut chosen = self.stage_at(packages, unit, viewport)?;
+            chosen.lay_out(
+                viewport,
+                widest.theme(),
+                widest.input(),
+                widest.display_scale,
+            )?;
+            chosen.press_at(at.0, at.1)?;
+            chosen.lay_out(
+                viewport,
+                widest.theme(),
+                widest.input(),
+                widest.display_scale,
+            )?;
+            if !self.shows_unseen(&mut chosen) {
+                continue;
+            }
+            self.read(&mut chosen, &format!("{title}, then {label} chosen"))?;
+        }
+        Ok(())
+    }
+
+    /// Whether the window shows a view no layout has shown yet: a widget's, or one the app sent that
+    /// drew nothing, which only its key names.
+    fn shows_unseen(&self, staged: &mut stage::Staged) -> bool {
+        fn unseen(key: &str, sources: &source::SourceMap, shown: &Shown) -> bool {
+            sources
+                .views_in(key)
+                .any(|(app, view)| !shows(shown, app, view))
+        }
+        fn inspecting(
+            node: &ui::headless::InspectionNode,
+            sources: &source::SourceMap,
+            shown: &Shown,
+        ) -> bool {
+            node.test_id
+                .as_deref()
+                .is_some_and(|key| unseen(key, sources, shown))
+                || node
+                    .children
+                    .iter()
+                    .any(|child| inspecting(child, sources, shown))
+        }
+        fn composing(
+            node: &tilo_app_window::UiNode,
+            sources: &source::SourceMap,
+            shown: &Shown,
+        ) -> bool {
+            unseen(&node.key, sources, shown)
+                || node
+                    .children
+                    .iter()
+                    .any(|child| composing(child, sources, shown))
+        }
+        if inspecting(
+            &staged.harness().inspection().root,
+            self.sources,
+            &self.shown,
+        ) {
+            return true;
+        }
+        staged
+            .composed()
+            .is_some_and(|composed| composing(&composed, self.sources, &self.shown))
     }
 
     /// What the window shows once a person pressed one of its primary actions (a new note opened
@@ -1962,6 +2008,7 @@ impl AppCheck<'_> {
             // The row the window keeps chosen, or else the first of the list: what a person reaches
             // for, which opens in front of the list as the app declares.
             let Some(tapped) = tapped else {
+                self.tap_surface(&mut staged, viewport, &layer, &of_size)?;
                 continue;
             };
             let before = staged.front_target();
@@ -1984,6 +2031,40 @@ impl AppCheck<'_> {
                 )?;
                 self.audit(&mut staged, layout, &label)?;
             }
+        }
+        Ok(())
+    }
+
+    /// What a window that lists nothing to open shows when a person points into it instead: a finger
+    /// taps the surface its places stand on, where nothing drawn on it stands, and the page the
+    /// window shows at that point is read as the tap's page.
+    fn tap_surface(
+        &mut self,
+        staged: &mut stage::Staged,
+        viewport: (u32, u32),
+        layer: &str,
+        of_size: &[Layout],
+    ) -> Result<(), String> {
+        let mut tapped = None;
+        for (name, at) in surface_presses(staged, viewport) {
+            staged.tap_at(at)?;
+            if self.shows_unseen(staged) {
+                tapped = Some(name);
+                break;
+            }
+        }
+        let Some(name) = tapped else {
+            return Ok(());
+        };
+        let label = format!("{layer}, then {name} tapped");
+        for layout in of_size.iter().copied() {
+            staged.lay_out(
+                (layout.size.width, layout.size.height),
+                layout.theme(),
+                layout.input(),
+                layout.display_scale,
+            )?;
+            self.audit(staged, layout, &label)?;
         }
         Ok(())
     }
@@ -2024,7 +2105,7 @@ impl AppCheck<'_> {
     }
 
     /// Lay `staged` out at every layout and gather what is wrong, as staged by `label`.
-    fn run(&mut self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
+    fn read(&mut self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
         // The keys reach the window at the size it is read at, where a shot shows them; a check
         // taken without a dump size reads them at its first layout.
         let read_at = self.dump.map(Dump::size).or_else(|| {
@@ -2069,6 +2150,7 @@ impl AppCheck<'_> {
                                 checked_control_named(root, press)
                                     .map(|(id, target)| Pressing::Child(id, target))
                             })
+                            .or_else(|| drawn_row_named(root, press).map(Pressing::At))
                             .or_else(|| painted_row_named(root, press).map(Pressing::At))
                     };
                     let Some(pressing) = found else {
@@ -2353,6 +2435,11 @@ impl AppCheck<'_> {
                 }
             })
             .collect();
+        let shot = (
+            layout.size.width,
+            self.shot_height
+                .map_or(layout.size.height, |tall| tall.max(layout.size.height)),
+        );
         let viewport = (layout.size.width, layout.size.height);
         let stock = [String::new()];
         let themes = if self.themes.is_empty() {
@@ -2367,7 +2454,7 @@ impl AppCheck<'_> {
                 theme_pair(family)?
             };
             for (name, theme) in pair {
-                staged.lay_out(viewport, theme, layout.input(), 1.0)?;
+                staged.lay_out(shot, theme, layout.input(), 1.0)?;
                 if self.bar_at_rest {
                     staged.harness_mut().present_window_bar_at_rest();
                 }
@@ -2856,5 +2943,72 @@ mod board_list {
                 "every list stands whole in a pane wide enough for it: {list:?} in {viewed:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod row_press {
+    use super::{drawn_row_named, row_named};
+    use ui::a11y::{AccessNode, Role};
+    use ui::headless::InspectionNode;
+    use ui::kurbo::Rect;
+
+    /// A table row is pressed by the words of its first cell, where it stands.
+    #[test]
+    fn a_table_row_is_found_by_its_first_cell() {
+        let at = Rect::new(0.0, 40.0, 300.0, 68.0);
+        let row = AccessNode::new(Role::Row)
+            .with_bounds(at)
+            .with_children(vec![
+                AccessNode::new(Role::Cell).with_value("release.toml"),
+                AccessNode::new(Role::Cell).with_value("New"),
+            ]);
+        let table = AccessNode::new(Role::Table).with_children(vec![row]);
+        assert_eq!(row_named(&table, "release.toml"), Some(at));
+        assert_eq!(
+            row_named(&table, "New"),
+            None,
+            "only the row's own first words name it"
+        );
+    }
+
+    fn drawn(
+        rect: [f64; 4],
+        semantics: AccessNode,
+        children: Vec<InspectionNode>,
+    ) -> InspectionNode {
+        InspectionNode {
+            path: String::new(),
+            widget: String::new(),
+            test_id: None,
+            focusable: false,
+            rect,
+            child_clip: None,
+            page_title: None,
+            layout: None,
+            paint_key: None,
+            semantics: Some(semantics),
+            children,
+        }
+    }
+
+    /// A sidebar's place names no control of its own: a press reaches it where it stands.
+    #[test]
+    fn a_place_of_a_sidebar_is_found_where_it_stands() {
+        let place = drawn(
+            [8.0, 300.0, 264.0, 30.0],
+            AccessNode::new(Role::TreeItem).with_name("Data"),
+            Vec::new(),
+        );
+        let tree = drawn(
+            [0.0, 0.0, 280.0, 800.0],
+            AccessNode::new(Role::Tree),
+            vec![place],
+        );
+        assert_eq!(
+            drawn_row_named(&tree, "Data"),
+            Some(Rect::new(8.0, 300.0, 272.0, 330.0))
+        );
+        assert_eq!(drawn_row_named(&tree, "Media"), None);
     }
 }

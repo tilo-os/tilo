@@ -1509,6 +1509,11 @@ impl<'a> Splitter<'a> {
             }
         }
 
+        // A split module fills its entries of the start module's table, which
+        // it imports below; a module that calls nothing indirectly was linked
+        // with no table, so one is made here to be imported.
+        self.load_funcref_table(out);
+
         // We're going to import the funcref table, so wipe it altogether
         for table in out.tables.iter_mut() {
             table.elem_segments.clear();
@@ -1640,14 +1645,13 @@ impl<'a> Splitter<'a> {
         num_ifuncs: usize,
     ) -> Option<usize> {
         let ifunc_table_ = out.tables.get_mut(table);
-
-        if let Some(max) = ifunc_table_.maximum {
-            ifunc_table_.maximum = Some(max + num_ifuncs as u64);
-            ifunc_table_.initial += num_ifuncs as u64;
-            return Some(max as usize);
-        }
-
-        None
+        // A module that calls nothing indirectly has no table, and the one
+        // made for it ([`Self::load_funcref_table`]) has no maximum: it holds
+        // its initial size.
+        let max = ifunc_table_.maximum.unwrap_or(ifunc_table_.initial);
+        ifunc_table_.maximum = Some(max + num_ifuncs as u64);
+        ifunc_table_.initial += num_ifuncs as u64;
+        usize::try_from(max).ok()
     }
 
     // only keep the target-features and names section so wasm-opt can use it to optimize the output
@@ -2022,32 +2026,39 @@ impl<'a> Splitter<'a> {
             }
         }
 
-        // We're going to attach the recovered children to the main function
-        // A library module (`cdylib`) has no `main`: its wasm-bindgen start
-        // export is always in the main module's graph, so it anchors them.
-        let main_fn = self
-            .source_module
-            .funcs
-            .by_name("main")
-            .or_else(|| self.source_module.exports.get_func("__wbindgen_start").ok())
-            .context("Failed to find `main` or `__wbindgen_start` - was this built with LTO, --emit-relocs, and symbols?")?;
-        let main_fn_entry = new_call_graph.entry(Node::Function(main_fn)).or_default();
-        main_fn_entry.extend(recovered_children);
-
-        // Also attach the truly new symbols the table holds to the main
-        // function: wasm-bindgen's shims, which no code calls by name. A new
-        // function the code calls or exports is reached from its caller or
-        // as an export (the walk below), so a lazy export's shims go with its
+        // We're going to attach the recovered children to the main function.
+        // Also attach the truly new symbols the table holds to it:
+        // wasm-bindgen's shims, which no code calls by name. A new function
+        // the code calls or exports is reached from its caller or as an
+        // export (the walk below), so a lazy export's shims go with its
         // module.
+        let mut attached = recovered_children;
         let in_table: HashSet<FunctionId> = new_slots.values().copied().collect();
         for (name, new) in new_names.iter() {
             if !old_names.contains_key(name) {
-                main_fn_entry.extend(
+                attached.extend(
                     new.iter()
                         .filter(|id| in_table.contains(id))
                         .map(|id| Node::Function(*id)),
                 );
             }
+        }
+        // A library module (`cdylib`) has no `main`: its wasm-bindgen start
+        // export is always in the main module's graph, so it anchors them. A
+        // module wasm-bindgen never saw (the app models, `crate::models`)
+        // loses and gains nothing between its two parses, so it needs no
+        // anchor and has none.
+        if !attached.is_empty() {
+            let main_fn = self
+                .source_module
+                .funcs
+                .by_name("main")
+                .or_else(|| self.source_module.exports.get_func("__wbindgen_start").ok())
+                .context("Failed to find `main` or `__wbindgen_start` - was this built with LTO, --emit-relocs, and symbols?")?;
+            new_call_graph
+                .entry(Node::Function(main_fn))
+                .or_default()
+                .extend(attached);
         }
         for (node, children) in new_call_graph {
             self.call_graph.entry(node).or_default().extend(children);
@@ -2384,7 +2395,7 @@ struct Entry {
 pub const LAZY_EXPORTS: &str = "tilo_split_exports";
 
 /// The lines of the linked module's [`LAZY_EXPORTS`] sections.
-fn lazy_exports(original: &[u8]) -> Result<Vec<(String, String)>> {
+pub(crate) fn lazy_exports(original: &[u8]) -> Result<Vec<(String, String)>> {
     let mut found = Vec::new();
     for payload in wasmparser::Parser::new(0).parse_all(original) {
         if let Payload::CustomSection(section) = payload? {

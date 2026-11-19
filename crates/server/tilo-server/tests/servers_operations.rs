@@ -209,21 +209,26 @@ async fn person_with_a_server() -> Fixture {
         None,
         state.path().to_path_buf(),
     )];
-    servers::found(server.host.workspaces(), &server.host.node_addr())
-        .await
-        .unwrap();
-    // The laptop holds the Servers workspace like any other workspace of the
-    // person's: a server that holds it is asked to take it in, and it never
-    // makes one itself.
-    servers::take_in(
-        server.host.workspaces(),
-        &laptop.cert,
-        &desktop.host.node_addr(),
+    // The person's own device makes the Servers workspace when it is first
+    // needed, enters the server among their servers there, and hands it the
+    // workspace as it hands a server any workspace its entry names.
+    servers::founded(desktop.host.workspaces()).await.unwrap();
+    servers::admit(
+        desktop.host.workspaces(),
+        &nas.cert,
+        &server.host.node_addr(),
     )
     .await
     .unwrap();
-    tilo_test_env::within("the laptop to hold the Servers workspace", async {
-        while !servers::holds_admin(desktop.host.workspaces()).await {
+    servers::take_in(
+        desktop.host.workspaces(),
+        &nas.cert,
+        &server.host.node_addr(),
+    )
+    .await
+    .unwrap();
+    tilo_test_env::within("the server to hold the Servers workspace", async {
+        while !servers::holds_admin(server.host.workspaces()).await {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -288,6 +293,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
         ("server.reboot", "reboot", false),
         ("server.rollback", "rollback", false),
         ("server.drain", "drain", true),
+        ("server.set-default-start", "set-default-start", true),
     ] {
         let argument = if action == "server.restart" || action == "server.logs" {
             serde_json::json!({"service": "tilo-server.service", "lines": 5})
@@ -323,6 +329,7 @@ async fn a_persons_device_does_every_operation_on_its_server_as_an_action() {
         "reboot",
         "rollback",
         "drain",
+        "set-default-start",
     ] {
         assert!(asked.iter().any(|asked| asked == operation), "{asked:?}");
     }

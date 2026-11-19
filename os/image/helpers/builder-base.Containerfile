@@ -36,7 +36,7 @@ ARG RPMS_REF
 # static archives, plus the LLVM tools and clang-tools-extra; nothing here links
 # or runs them, and the dev image installs this list (os/scripts/builder-packages.txt).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        rust cargo sccache capnproto \
+        rust cargo rust-std-static-wasm32-unknown-unknown binaryen sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang pkgconf-pkg-config \
         bash-devel readline-devel \

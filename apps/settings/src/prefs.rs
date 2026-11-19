@@ -30,7 +30,8 @@ pub fn mute_shown(english: &str) -> String {
 /// or mutate the developer's (or a Tilo user's) live settings, accounts or
 /// identity, and two tests must never see each other's files.
 ///
-/// The guard points `XDG_CONFIG_HOME` at a fresh directory through
+/// The guard points `XDG_CONFIG_HOME`, and `XDG_DATA_HOME` where this device's
+/// settings documents are kept, at a fresh directory through
 /// [`tilo_test_env::ScopedEnv`], which serialises on the process-wide
 /// environment lock and restores the prior value on drop, also while
 /// unwinding from a failed assertion. `HOME` and the cache directory stay put
@@ -52,7 +53,8 @@ pub mod test_env {
                 .tempdir()
                 .expect("create test config dir");
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_CONFIG_HOME", dir.path());
+            env.set("XDG_CONFIG_HOME", dir.path().join("config"))
+                .set("XDG_DATA_HOME", dir.path().join("data"));
             Self {
                 _env: env,
                 _dir: dir,

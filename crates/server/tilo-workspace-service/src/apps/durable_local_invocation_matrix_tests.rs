@@ -308,7 +308,7 @@ mod durable_local_matrix {
         }
         /// Stop this broker and open the host's journal again in a new one.
         async fn restarted(self, env: &Environment) -> Self {
-            let gone = Arc::downgrade(&self.state);
+            let gone = self.state.gone();
             self.stop().await;
             super::broker_gone(gone).await;
             Self::new(env).await

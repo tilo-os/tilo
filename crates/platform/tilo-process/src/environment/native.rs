@@ -40,7 +40,6 @@ pub fn process_environment() -> super::ProcessEnvironment {
             development_app_id: text("QUICK_APP_ID"),
             app_name: text("TILO_APP_NAME"),
             workspace_id: text("TILO_WORKSPACE_ID"),
-            user_id: text("TILO_USER_ID"),
             account_name: text("USER"),
             continuity_resume,
             continuity_instance: text("TILO_CONTINUITY_INSTANCE"),
@@ -56,7 +55,6 @@ pub fn process_environment() -> super::ProcessEnvironment {
             font_index: path(super::FONT_INDEX_ENV),
             font_catalog: path("TILO_FONT_CATALOG"),
             font_artifact_cache: path("TILO_FONT_ASSET_CACHE"),
-            public_identity_record: path("TILO_USER_IDENTITY"),
         },
         accessibility: super::AccessibilityInputs {
             screen_reader: flag(&["TILO_A11Y_SCREEN_READER", "TILO_SCREEN_READER"]),

@@ -282,6 +282,25 @@ impl<I> ActionBinding<I> {
 }
 
 impl ActionBinding<()> {
+    /// Bind a nullary control to the action `spec` its declaration publishes
+    /// on `resource`, which no row carries: an effect the resource offers.
+    /// # Errors
+    /// [`ActionBindingError::InvalidArguments`] when `spec` requires an argument.
+    pub fn declared(
+        resource: impl Into<String>,
+        spec: ActionSpec,
+    ) -> Result<Self, ActionBindingError> {
+        let binding = Self {
+            address: ActionAddress::new(resource, spec.id.clone()),
+            kind: String::new(),
+            shared_by: None,
+            spec,
+            arguments: std::sync::Arc::new(|()| Ok(serde_json::Map::new())),
+        };
+        binding.spec.validate_json(&serde_json::Map::new())?;
+        Ok(binding)
+    }
+
     /// Bind a nullary control to a nullary exported action.
     pub fn unit(
         resource: &(impl Exports + ?Sized),
@@ -755,6 +774,40 @@ impl ResourceSemanticIdentity {
 
 pub use crate::noun::{Noun, ResourceType, action_label, app_label, in_words, plural, singular};
 
+/// Whether `kind` names a control the window already draws, or an
+/// operation of the host it runs on: nodes published so a caller can
+/// address them, never something a person looks for in a list.
+#[must_use]
+pub fn kind_mirrors_a_control(kind: &str) -> bool {
+    kind == "tilo.control"
+        || kind == "tl.host"
+        || ["tilo.control.", "tilo.ui.", "tilo.host."]
+            .iter()
+            .any(|prefix| kind.starts_with(prefix))
+}
+
+/// Whether `kind` names a control the window draws: its press, drag, focus
+/// or value stands in for the pointer and keyboard of the person at the
+/// device. Only that person invokes an action on it; anyone else, an agent
+/// above all, is refused it and never offered it. What a control does that
+/// others need, the app offers as an action of its own.
+#[must_use]
+pub fn kind_is_a_drawn_control(kind: &str) -> bool {
+    kind == "tilo.control"
+        || ["tilo.control.", "tilo.ui."]
+            .iter()
+            .any(|prefix| kind.starts_with(prefix))
+}
+
+/// Whether a resource of `kind` titled `label` is something a person looks
+/// for: titled, and the app's own rather than a mirror of one of its
+/// controls or an operation of the host it runs on. Those are published to
+/// be addressed, never listed.
+#[must_use]
+pub fn listed_for_people(kind: &str, label: &str) -> bool {
+    !label.trim().is_empty() && !kind_mirrors_a_control(kind)
+}
+
 /// One open/presented resource and the actions it exports. Resources
 /// nest via [`children`](ResourceSpec::children).
 pub struct ResourceSpec {
@@ -1191,7 +1244,7 @@ pub struct ActionType {
     /// The typed argument surface an external caller invokes against. Private
     /// because it must stay in step with `build` — the two are always set
     /// together by a constructor, never independently.
-    params: Vec<ActionParam>,
+    pub(crate) params: Vec<ActionParam>,
     /// Builds the encoded action from arguments bound against `params`. The
     /// palette's input mode uses the same closure, which is what makes the palette
     /// path and the external path provably one function.
@@ -2379,10 +2432,14 @@ impl ActionSpec {
 
     /// Declare that this action carries the resource's other actions (a
     /// generic typed edit, a group of edits): history records the actions
-    /// it carried, never this one.
+    /// it carried, never this one. The contract advertises
+    /// [`CARRIER_TAG`](crate::CARRIER_TAG), so whoever decides for it or words
+    /// it for a person reads what it carries. Call after
+    /// [`with_contract`](Self::with_contract), which replaces the tags.
     #[must_use]
     pub fn carrying(mut self) -> Self {
         self.type_mut().carrier = true;
+        push_tag(&mut self.type_mut().contract, crate::contract::CARRIER_TAG);
         self
     }
 
@@ -2708,36 +2765,6 @@ impl ActionSpec {
         &self.params
     }
 
-    /// Take the actions `refused` names out of what this action says it carries
-    /// ([`Self::carrying`]): out of the ids the schemas of its parameters name. Whoever
-    /// lists a resource to a caller calls it with the actions it drops for them, or lists
-    /// to them as not allowed, so a carrier names to that caller only what their own call
-    /// of it is not refused for. An action that carries none, or names none of them, stays
-    /// as it is and keeps the schema it shares.
-    pub fn without_carried(&mut self, refused: &[&str]) {
-        if !self.carrier {
-            return;
-        }
-        let cut: Vec<(usize, serde_json::Value)> = self
-            .params
-            .iter()
-            .enumerate()
-            .filter_map(|(at, param)| {
-                let schema = param.schema.as_deref()?;
-                Some((at, crate::params::without_named(schema, refused)?))
-            })
-            .collect();
-        if cut.is_empty() {
-            return;
-        }
-        let params = &mut self.type_mut().params;
-        for (at, schema) in cut {
-            if let Some(param) = params.get_mut(at) {
-                param.schema = Some(Arc::new(schema));
-            }
-        }
-    }
-
     /// Bind `supplied` against [`params`](Self::params) and build the action.
     ///
     /// Strict: a missing, unknown, wrong-typed or out-of-choice argument is
@@ -2954,6 +2981,12 @@ fn flatten_into<'a>(resource: &'a ResourceSpec, depth: usize, out: &mut Vec<Flat
     }
 }
 
+#[path = "resource/choices.rs"]
+mod choices;
+
+#[path = "resource/carried.rs"]
+mod carried;
+
 #[cfg(test)]
 #[path = "resource/tests.rs"]
 mod tests;
@@ -2969,7 +3002,3 @@ mod effective_invocation_tests;
 #[cfg(test)]
 #[path = "resource/deferred_tests.rs"]
 mod deferred_tests;
-
-#[path = "resource/listed_kinds.rs"]
-mod listed_kinds;
-pub use listed_kinds::{kind_is_a_drawn_control, kind_mirrors_a_control, listed_for_people};

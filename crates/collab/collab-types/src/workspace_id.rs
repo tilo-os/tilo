@@ -25,6 +25,11 @@ impl WorkspaceId {
         Self(uuid::Uuid::nil())
     }
 
+    /// The id a derivation of this crate's arrives at.
+    pub(crate) const fn from_uuid(uuid: uuid::Uuid) -> Self {
+        Self(uuid)
+    }
+
     #[must_use]
     pub fn is_nil(&self) -> bool {
         self.0.is_nil()

@@ -162,7 +162,7 @@ fn pending() -> Arrival<(), WorkspaceUnreachable> {
         None => Arrival::Ready(()),
         Some(sync) => match sync.state {
             WorkspaceSyncState::Connecting => Arrival::Pending {
-                from: Source::host(sync.workspace.trim()),
+                from: Source::Remote,
             },
             WorkspaceSyncState::Unreachable | WorkspaceSyncState::Synced => Arrival::Ready(()),
             WorkspaceSyncState::HostNeedsUpdate => {
@@ -185,17 +185,6 @@ fn settle_holdings() -> bool {
         holdings.stand(next);
     }
     moved
-}
-
-/// Where what this window's workspace holds and this device lacks comes from: the
-/// workspace's host, by the workspace's name, when the workspace has one; otherwise the
-/// workspace's other devices, which no one names here.
-#[must_use]
-pub fn source() -> Source {
-    match current() {
-        Some(sync) => Source::host(sync.workspace.trim()),
-        None => Source::peer(""),
-    }
 }
 
 fn tell(sync: Option<WorkspaceSync>) -> bool {
@@ -487,7 +476,7 @@ mod tests {
         assert_eq!(
             held.get(),
             Arrival::Pending {
-                from: Source::host("Lounge")
+                from: Source::Remote
             },
             "then waits on the workspace's host"
         );
@@ -546,7 +535,6 @@ mod tests {
     #[test]
     fn a_window_no_shell_hosts_has_what_this_device_has() {
         assert_eq!(holdings().get(), Arrival::Ready(()));
-        assert_eq!(source(), Source::peer(""), "no host to name");
     }
 
     #[test]

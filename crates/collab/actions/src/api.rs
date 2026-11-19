@@ -292,9 +292,9 @@ impl ResourceViewDescriptor {
     }
 }
 
-/// Why an address could not be performed. `Unknown` deliberately covers
-/// both "no such address" and "not offered to you", so a caller can't
-/// map what it may not reach by probing for a different error.
+/// Why an address could not be performed. `Unknown` is "nothing publishes this address"; an action
+/// published there that the caller's permissions keep from them is refused as `permission_denied`
+/// ([`ApiError::Unavailable`]), saying why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ApiError {
     /// Nothing in the tree carries this address.

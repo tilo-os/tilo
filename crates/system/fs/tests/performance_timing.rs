@@ -234,7 +234,7 @@ async fn document_media_cold_range_performance_check() {
             .store(&photos, data)
             .await
             .expect("store media fixture");
-        store.store().shutdown().await.expect("close media store");
+        store.shutdown().await.expect("close media store");
         hash
     };
     let mut status_time = Duration::MAX;
@@ -276,7 +276,7 @@ async fn document_media_cold_range_performance_check() {
         let whole = store.local(hash).await.expect("whole media blob");
         whole_time = whole_time.min(started.elapsed());
         assert_eq!(whole.len(), len);
-        store.store().shutdown().await.expect("close media store");
+        store.shutdown().await.expect("close media store");
     }
     eprintln!(
         "PERF document-media-whole-blob-load-64m: {:.3} ms (before ranged reads)",

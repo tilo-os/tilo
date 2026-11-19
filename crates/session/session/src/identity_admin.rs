@@ -393,23 +393,23 @@ fn identity_id(args: &ActionArgs) -> Result<&str, String> {
 /// The person's identities, without secrets.
 pub(crate) fn list(store: &Store) -> Answer {
     let identities =
-        runtime_identity::list_identities(&store.dir).map_err(|error| error.to_string())?;
+        tilo_identity::store::list_identities(&store.dir).map_err(|error| error.to_string())?;
     serde_json::to_value(identities).map_err(|error| error.to_string())
 }
 
 fn activate(store: &Store, id: &str) -> Answer {
-    runtime_identity::set_active_identity(&store.dir, id).map_err(|error| error.to_string())?;
+    tilo_identity::store::set_active_identity(&store.dir, id).map_err(|error| error.to_string())?;
     Ok(serde_json::json!({ "id": id, "active": true }))
 }
 
 fn remove(store: &Store, id: &str) -> Answer {
-    runtime_identity::remove_identity(&store.dir, id).map_err(|error| error.to_string())?;
+    tilo_identity::store::remove_identity(&store.dir, id).map_err(|error| error.to_string())?;
     Ok(serde_json::json!({ "id": id, "removed": true }))
 }
 
 fn protect(store: &Store, id: &str) -> Answer {
     let protection =
-        runtime_identity::secure_identity(&store.dir, id).map_err(|error| error.to_string())?;
+        tilo_identity::store::secure_identity(&store.dir, id).map_err(|error| error.to_string())?;
     Ok(serde_json::json!({ "id": id, "protection": protection }))
 }
 
@@ -779,7 +779,7 @@ mod tests {
         let entry = &entries[0];
         assert_eq!(entry["active"], true);
         assert_eq!(entry["public_key"], hex::encode(identity.user_public_key));
-        let summary: runtime_identity::IdentitySummary =
+        let summary: tilo_identity_client::IdentitySummary =
             serde_json::from_value(entry.clone()).expect("Settings reads the answer back");
         let text = listed.to_string();
         assert!(
@@ -862,7 +862,7 @@ mod tests {
             "the active, final identity stays"
         );
         assert_eq!(
-            runtime_identity::list_identities(&store.dir)
+            tilo_identity::store::list_identities(&store.dir)
                 .expect("listed")
                 .len(),
             1

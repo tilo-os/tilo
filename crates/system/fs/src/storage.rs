@@ -79,10 +79,6 @@ pub async fn serve(listener: tokio::net::UnixListener, authority: StorageAuthori
                             Err(error) => StorageResponse::Error(error.to_string()),
                         }
                     }
-                    StorageRequest::RetiredBindExternalSource
-                    | StorageRequest::RetiredBindExternalReadSource => {
-                        StorageResponse::Error("no external source is served".into())
-                    }
                 };
                 if STORAGE_FRAMING
                     .write_value_async(&mut stream, &response)
@@ -523,7 +519,7 @@ impl StorageAuthority {
                 move |plan, existing_request, queue, registry, catalog, now_ms| {
                     // `write` establishes dirtiness before it can publish a replacement
                     // namespace revision, so holding both guards keeps local and remote
-                    // mutation out between token validation and backend GC.
+                    // mutation out between token validation and removal.
                     let dirty = dirty.lock_recover();
                     let mut namespace = namespace.lock_recover();
                     validate_live_eviction_token(
@@ -538,7 +534,7 @@ impl StorageAuthority {
                         Some(request_id) => request_id,
                         None => queue.enqueue(plan, now_ms)?.id,
                     };
-                    runtime.block_on(store.release_eviction_to_backend_gc(
+                    runtime.block_on(store.evict_request(
                         queue,
                         request_id,
                         registry,

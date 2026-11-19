@@ -1189,9 +1189,9 @@ impl Drop for Receiver {
 
 fn preflight_identity(handoff: &PublicHandoff, identity: &ReceiverIdentity) -> io::Result<()> {
     configured_identity_root(&identity.identity_root)?;
-    let active = runtime_identity::resolve_active_identity(&identity.identity_dir)
+    let active = tilo_identity_client::resolve_active_identity(&identity.identity_dir)
         .ok_or_else(|| invalid("The receiving computer has no real identity yet"))?;
-    let metadata = runtime_identity::load_metadata_from_path(&active)
+    let metadata = tilo_identity_client::load_metadata_from_path(&active)
         .map_err(|_| invalid("The receiving computer has no real identity yet"))?;
     if metadata.group_public_key != handoff.identity_public_key {
         return Err(invalid("This transfer belongs to another identity"));
@@ -1204,20 +1204,20 @@ fn preflight_join_identity(identity: &ReceiverIdentity) -> io::Result<()> {
         return Err(invalid("The receiving identity location is invalid"));
     }
     configured_identity_root(&identity.identity_root)?;
-    if runtime_identity::resolve_active_identity(&identity.identity_dir).is_some()
+    if tilo_identity_client::resolve_active_identity(&identity.identity_dir).is_some()
         || !identity_dir_empty(&identity.identity_dir)?
     {
         return Err(invalid("This computer already has an identity"));
     }
     let paths = tilo_device_identity::IdentityPaths::under(&identity.identity_root);
-    if paths.user_privkey.exists() || paths.user_pubkey.exists() || paths.device_cert.exists() {
+    if paths.user_pubkey.exists() || paths.device_cert.exists() {
         return Err(invalid("This computer already has an identity"));
     }
     Ok(())
 }
 
 fn identity_dir_empty(directory: &Path) -> io::Result<bool> {
-    match runtime_identity::list_identities(directory) {
+    match tilo_identity::store::list_identities(directory) {
         Ok(identities) => Ok(identities.is_empty()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
         Err(error) => Err(error),
@@ -1756,9 +1756,9 @@ fn load_identity(
     if !directory.is_dir() || directory.uid() != current_uid() || directory.mode() & 0o077 != 0 {
         return Err(invalid("The receiving identity directory is not private"));
     }
-    let active = runtime_identity::resolve_active_identity(&identity.identity_dir)
+    let active = tilo_identity_client::resolve_active_identity(&identity.identity_dir)
         .unwrap_or_else(|| identity.identity_dir.join("primary.json"));
-    let signer = runtime_identity::load_from_path(active)
+    let signer = tilo_identity::store::load_from_path(active)
         .map_err(|_| invalid("The receiving computer has no real identity yet"))?;
     let person = signer.group_public_key();
     let paths = tilo_device_identity::persist::IdentityPaths::under(&identity.identity_root);

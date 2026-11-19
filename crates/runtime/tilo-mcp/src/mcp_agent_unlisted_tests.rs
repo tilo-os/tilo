@@ -48,7 +48,7 @@ impl Unlisted {
             };
             action.address.action = UNLISTED.into();
             if !self.permitted {
-                action.contract.availability = tilo_actions::Availability::not_allowed(None);
+                action.contract.availability = Availability::not_allowed(None);
             }
             rows.push(row);
         }

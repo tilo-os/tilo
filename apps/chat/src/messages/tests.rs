@@ -1,3 +1,4 @@
+use crate::projection::ChatProjection as _;
 use std::rc::Rc;
 use ui::tilo_resource::MemberId;
 
@@ -346,13 +347,24 @@ impl TwoDevices {
             .unwrap()
     }
 
-    /// The poster's first post, its part kept in the guest's store as the
-    /// workspace's replication keeps a resource no window there has open.
-    fn first_post_reaches_the_guest(&self) {
-        use durable_store::DurableStore as _;
+    /// The poster's first post, written: what the guest has not been handed yet.
+    fn write_first_post(&self) {
         self.poster
             .invoke(&crate::demo::post("c_general", "the first post", None))
             .unwrap();
+    }
+
+    /// The poster's part kept in the guest's store, as the workspace's
+    /// replication keeps a resource no window there has open.
+    fn first_post_reaches_the_guest(&self) {
+        self.write_first_post();
+        self.deliver_first_post();
+    }
+
+    /// [`Self::first_post_reaches_the_guest`] for a post [`Self::write_first_post`] wrote before
+    /// something else was written here.
+    fn deliver_first_post(&self) {
+        use durable_store::DurableStore as _;
         self.guest_backend
             .write(
                 &durable_store::StorageKey::document(
@@ -454,13 +466,11 @@ tilo_test_env::scenario! {
     /// The order messages are read and counted in, and the place a post resources.
     /// Each case was a test of its own, on a fixture of its own; a failure
     /// names the cases that failed.
-    fn the_timeline_and_unread_counts_follow_the_order_the_parts_hold;
+    fn the_timeline_and_unread_counts_follow_the_order_the_messages_were_written_in;
 
-    phase unread_messages_are_counted_in_the_order_the_part_holds_them;
-    // A direct conversation's unread count follows the chain, as the read mark
-    // does, though a message written elsewhere carries an earlier time than the
-    // message before it: a clock behind another device's does not make a message
-    // read.
+    phase unread_messages_are_counted_where_they_were_written;
+    // The part holds these in the order they were placed in it; the conversation reads them by
+    // when each was written, and a read mark is a place in that order.
     {
         let channel = Id::from_raw("c_direct");
         let mut part = ChatMessages::default();
@@ -480,13 +490,21 @@ tilo_test_env::scenario! {
             );
         }
         let held = Messages::single(part);
+        let order: Vec<&str> = held.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(order, ["m_two", "m_one", "m_three"], "oldest written first");
+        let read = crate::parts::ReadMark { part: 0, seen: 1 };
         assert_eq!(
-            held.unread_by_others(&channel, crate::parts::ReadMark { part: 0, seen: 1 }, &MemberId::person("ada")),
-            2,
-            "the two after the mark, though one was written earlier"
+            held.first_unread(&channel, read)
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("m_one"),
+            "the first one written after the mark"
         );
-        let first = held.first_unread(&channel, crate::parts::ReadMark { part: 0, seen: 1 });
-        assert_eq!(first.map(ToString::to_string).as_deref(), Some("m_two"));
+        assert_eq!(
+            held.unread_by_others(&channel, read, &MemberId::person("ada")),
+            1,
+            "the one after the mark that Bo wrote"
+        );
         assert_eq!(
             held.unread_by_others(&channel, crate::parts::ReadMark { part: 0, seen: 3 }, &MemberId::person("ada")),
             0
@@ -496,20 +514,20 @@ tilo_test_env::scenario! {
     phase replicas_taking_the_same_posts_in_opposite_orders_read_one_timeline;
     // Two devices write offline from the same part, take each other's changes
     // in the opposite order, and write again: both read one timeline, in the
-    // same order. The order is the one the part resources hold
-    // ([`Messages::iter`]), which every replica computes from the same resources,
-    // so it stays the same whether a change arrives before or after another.
+    // same order. The order is when each message was written ([`Messages::iter`]),
+    // which every replica reads from the messages themselves, so it stays the
+    // same whether a change arrives before or after another.
     {
         let chat = crate::demo::demo();
-        // A part holding one message written with a time after every post that
-        // follows: a read that ordered by a clock would show it last.
+        // A part holding one message written before every post that follows it: it
+        // reads first, whichever order the posts reached this replica.
         let mut seeded = ChatMessages::default();
         seeded.messages.push(
             Id::from_raw("m_seeded"),
             crate::chat::Message::new(
                 Id::from_raw("c_general"),
                 MemberId::person("u_aria"),
-                4_000_000_000,
+                1_000,
                 "seeded".to_owned(),
             ),
         );
@@ -536,7 +554,6 @@ tilo_test_env::scenario! {
             let changes = theirs.get_changes(&mine.get_heads());
             tilo_automerge::ApplyIncoming::apply_incoming(mine, changes).unwrap();
         };
-        // The same second, so the wall clock cannot tell these apart.
         say(&mut ada, "u_aria", "Ada one");
         say(&mut bob, "u_milo", "Bob one");
         // Each takes the other's change before writing again: what Ada has read
@@ -555,12 +572,11 @@ tilo_test_env::scenario! {
         };
         let ours = timeline(&ada);
         assert_eq!(timeline(&bob), ours, "both devices read one order");
-        let in_resource: Vec<String> = read_part(&ada)
-            .messages
-            .ids()
-            .map(ToString::to_string)
-            .collect();
-        assert_eq!(ours, in_resource, "in the order the resources hold them");
+        assert_eq!(
+            ours.first().map(String::as_str),
+            Some("m_seeded"),
+            "the message written first reads first: {ours:?}"
+        );
         let unique: std::collections::BTreeSet<&String> = ours.iter().collect();
         assert_eq!(unique.len(), ours.len(), "each message once: {ours:?}");
         let texts: std::collections::BTreeSet<String> = chat
@@ -576,6 +592,16 @@ tilo_test_env::scenario! {
         say(&mut ada, "u_aria", "Ada three");
         take(&mut bob, &mut ada);
         assert_eq!(timeline(&ada), timeline(&bob), "and after a write over it");
+        let last = chat
+            .message_rows(&Messages::single(read_part(&ada)), "c_general")
+            .into_iter()
+            .next_back()
+            .map(|message| message.text);
+        assert_eq!(
+            last.as_deref(),
+            Some("Ada three"),
+            "the message written last reads last"
+        );
     }
 
     phase a_post_records_the_channel_it_went_to;
@@ -605,6 +631,76 @@ tilo_test_env::scenario! {
     }
 }
 
+/// Two devices whose clocks are ten minutes apart read one order: a reply
+/// written on the device whose clock is behind reads after the message it
+/// answers, because that device had seen it when it wrote.
+#[test]
+fn a_reply_written_on_a_clock_behind_reads_after_the_message_it_answers() {
+    let chat = crate::demo::demo();
+    let mut workspace = Workspace::default();
+    workspace.write_part(0, &ChatMessages::default()).unwrap();
+    let base = workspace.part_bytes(0).unwrap();
+    let replica = |actor: u8| {
+        let mut doc = ui::automerge::AutoCommit::load(&base).unwrap();
+        doc.set_actor(ui::automerge::ActorId::from(vec![actor; 16]));
+        doc
+    };
+    let mut ada = replica(1);
+    let mut bob = replica(2);
+    let behind = 1_800_000_000_000;
+    let ahead = behind + 10 * 60 * 1_000;
+    crate::demo::apply_part_doc_as(
+        &mut ada,
+        &chat,
+        |replica| replica.as_invoker("u_aria"),
+        Some(ahead),
+        crate::demo::post("c_general", "what Ada wrote", None),
+    )
+    .unwrap();
+    let written = read_part(&ada)
+        .messages
+        .iter()
+        .find(|(_, message)| message.text == "what Ada wrote")
+        .map(|(id, _)| id.clone())
+        .unwrap();
+    // Bob takes Ada's message, then answers it on a clock ten minutes behind hers.
+    let changes = ada.get_changes(&bob.get_heads());
+    tilo_automerge::ApplyIncoming::apply_incoming(&mut bob, changes).unwrap();
+    crate::demo::apply_part_doc_as(
+        &mut bob,
+        &chat,
+        |replica| replica.as_invoker("u_milo"),
+        Some(behind),
+        crate::demo::post("c_general", "Bob's answer", Some(written.as_str())),
+    )
+    .unwrap();
+    let changes = bob.get_changes(&ada.get_heads());
+    tilo_automerge::ApplyIncoming::apply_incoming(&mut ada, changes).unwrap();
+    let order = |doc: &ui::automerge::AutoCommit| -> Vec<String> {
+        Messages::single(read_part(doc))
+            .iter()
+            .map(|(_, message)| message.text.clone())
+            .collect()
+    };
+    for device in [&ada, &bob] {
+        assert_eq!(
+            order(device),
+            ["what Ada wrote", "Bob's answer"],
+            "the answer reads after the message it answers"
+        );
+    }
+    let answer = read_part(&bob)
+        .messages
+        .iter()
+        .find(|(_, message)| message.text == "Bob's answer")
+        .map(|(_, message)| message.ts)
+        .unwrap();
+    assert!(
+        answer > ahead,
+        "the answer carries a time after what it had seen"
+    );
+}
+
 /// A device back from away shows a conversation before the part its messages
 /// go to arrived from the workspace. A message sent from the conversation's
 /// box meanwhile is not refused: it shows at once, as being sent, and is
@@ -614,6 +710,9 @@ fn a_message_sent_while_its_part_arrives_shows_as_sending_and_lands_after_it() {
     use crate::app::{Focus, Hit};
 
     let devices = TwoDevices::back_from_away();
+    // The poster wrote while the guest's window was away: that message was written before the
+    // one the guest sends, though it reaches the guest's part after it.
+    devices.write_first_post();
     let mut doc = crate::testing::demo_doc();
     let mut app = crate::app::ChatApp::new_ephemeral();
     app.attach_chain(
@@ -644,7 +743,7 @@ fn a_message_sent_while_its_part_arrives_shows_as_sending_and_lands_after_it() {
         "shown as being sent"
     );
 
-    devices.first_post_reaches_the_guest();
+    devices.deliver_first_post();
     devices.guest_store.note_kept();
     app.reload(&doc);
     let shown: Vec<(String, bool)> = app

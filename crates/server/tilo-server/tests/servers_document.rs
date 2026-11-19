@@ -71,11 +71,9 @@ async fn a_server_holds_and_releases_the_workspaces_its_entry_names() {
     )
     .await
     .unwrap();
-    let applied = applied::reconcile(workspaces).await.unwrap();
-    assert!(
-        applied.held.contains(&workspace.workspace),
-        "the owner's device handed it the workspace: {applied:?}"
-    );
+    // Every holder of the Servers workspace applies its document, so the
+    // owner's device hands it over as the change is written.
+    applied::reconcile(workspaces).await.unwrap();
     tilo_test_env::within("the server to hold the workspace", async {
         while retained().await.is_none() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -107,11 +105,7 @@ async fn a_server_holds_and_releases_the_workspaces_its_entry_names() {
         None,
         "the release took: {nas_entry:?}"
     );
-    let applied = applied::reconcile(workspaces).await.unwrap();
-    assert!(
-        applied.released.contains(&workspace.workspace),
-        "the workspace left its hosts: {applied:?}"
-    );
+    applied::reconcile(workspaces).await.unwrap();
     tilo_test_env::within("the server to let go of the workspace", async {
         while retained().await.is_some() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -368,12 +362,26 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
     let admin = admin_workspace_id(&alice.user_pk);
     let [first, second, third] = [&hosts[0], &hosts[1], &hosts[2]];
 
-    servers::found(first.host.workspaces(), &first.host.node_addr())
-        .await
-        .unwrap();
+    // One of the person's own devices makes it when it is first needed, and
+    // the first server is entered in it: no server founds it.
+    servers::founded(first.host.workspaces()).await.unwrap();
+    servers::apply(
+        first.host.workspaces(),
+        Servers::ENROLL_SERVER.with((
+            hex::encode(devices[0].device_pubkey()),
+            devices[0].cert.device_label.clone(),
+            serde_json::to_string(&first.host.node_addr()).unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
     // The second asks the first, the third the second: any server holding the
     // workspace takes a later one in.
-    for (asked, asking, device) in [(first, second, &devices[1]), (second, third, &devices[2])] {
+    for (enrolled, (asked, asking, device)) in
+        [(first, second, &devices[1]), (second, third, &devices[2])]
+            .into_iter()
+            .enumerate()
+    {
         servers::admit(
             asked.host.workspaces(),
             &device.cert,
@@ -381,11 +389,26 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
         )
         .await
         .unwrap();
-        tilo_test_env::within("the later server to hold the admin workspace", async {
-            while !servers::holds_admin(asking.host.workspaces()).await {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
+        // Holding the workspace is its governance alone: the document that
+        // names its servers reaches the new holder over the replication after
+        // it. The next admission is written by this holder, so it waits for
+        // that document too; founding one of its own would diverge from the
+        // copy the servers hold.
+        let enrolled = enrolled + 2;
+        tilo_test_env::within(
+            "the later server to hold the admin workspace and read its document",
+            async {
+                loop {
+                    let named = servers::read(asking.host.workspaces())
+                        .await
+                        .map_or(0, |servers| servers.servers.len());
+                    if servers::holds_admin(asking.host.workspaces()).await && named == enrolled {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            },
+        )
         .await;
     }
     tilo_test_env::within(
@@ -451,4 +474,151 @@ async fn servers_enrolled_one_after_another_share_one_admin_workspace() {
         3,
         "one document names every server"
     );
+}
+
+/// A device that was handed the Servers workspace writes its own entry before
+/// the document reached it. Both writes start from the same genesis, so the
+/// two copies merge into one document holding both entries, rather than one
+/// device's copy winning and taking the other's entry with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_that_writes_before_the_document_arrives_keeps_every_entry() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let desktop = alice.enrol("desktop", DeviceCapabilities::member());
+    let holder = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
+    let late = serve_on(&alice, &desktop, WorkSetting::own_person()).await;
+
+    // The person's own device makes the workspace when it is first needed, and
+    // the first machine is planned in it.
+    servers::founded(holder.host.workspaces()).await.unwrap();
+    servers::apply(
+        holder.host.workspaces(),
+        Servers::ENROLL_SERVER.with((
+            hex::encode(laptop.device_pubkey()),
+            "laptop".into(),
+            serde_json::to_string(&holder.host.node_addr()).unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
+
+    // The other device is handed the workspace: its governance first, and the
+    // document over the replication after it.
+    servers::take_in(
+        holder.host.workspaces(),
+        &desktop.cert,
+        &late.host.node_addr(),
+    )
+    .await
+    .unwrap();
+    tilo_test_env::within("the other device to hold the workspace", async {
+        while !servers::holds_admin(late.host.workspaces()).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    // It writes its own server there at once, before the document it knows
+    // nothing of has arrived.
+    servers::apply(
+        late.host.workspaces(),
+        Servers::ENROLL_SERVER.with((
+            hex::encode(desktop.device_pubkey()),
+            "desktop".into(),
+            serde_json::to_string(&late.host.node_addr()).unwrap(),
+        )),
+    )
+    .await
+    .unwrap();
+
+    // Once the copies meet, both devices read one document naming both.
+    tilo_test_env::within("both entries to reach both devices", async {
+        loop {
+            let mut counted = Vec::new();
+            for hosted in [&holder, &late] {
+                counted.push(
+                    servers::read(hosted.host.workspaces())
+                        .await
+                        .map_or(0, |servers| servers.servers.len()),
+                );
+            }
+            if counted == [2, 2] {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+}
+
+/// Two of a person's own devices found their Servers workspace before they see
+/// one another. They found one workspace — the same history, in the person's
+/// name — and each names itself among its holders; the hand-over then merges
+/// the two copies into the one workspace, which names both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_devices_that_found_the_servers_workspace_before_they_meet_hold_one() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let desktop = alice.enrol("desktop", DeviceCapabilities::primary());
+    let first = serve_on(&alice, &laptop, WorkSetting::own_person()).await;
+    let second = serve_on(&alice, &desktop, WorkSetting::own_person()).await;
+    let admin = admin_workspace_id(&alice.user_pk);
+
+    // Each founds it on its own, before it hears of the other.
+    servers::founded(first.host.workspaces()).await.unwrap();
+    servers::founded(second.host.workspaces()).await.unwrap();
+    for (hosted, device) in [(&first, &laptop), (&second, &desktop)] {
+        let named = hosted.host.workspaces().hosts(&admin).await.unwrap();
+        assert!(
+            named
+                .iter()
+                .any(|hint| hint.host.device_public_key == device.device_pubkey()),
+            "a founding device names itself among the workspace's holders"
+        );
+    }
+
+    // One hands it to the other: the two foundings are one workspace.
+    servers::take_in(
+        first.host.workspaces(),
+        &desktop.cert,
+        &second.host.node_addr(),
+    )
+    .await
+    .unwrap();
+    tilo_test_env::within(
+        "both devices to name both holders of the one workspace",
+        async {
+            loop {
+                let mut named = Vec::new();
+                for hosted in [&first, &second] {
+                    named.push(
+                        hosted
+                            .host
+                            .workspaces()
+                            .hosts(&admin)
+                            .await
+                            .map_or(0, |hosts| hosts.len()),
+                    );
+                }
+                if named == [2, 2] {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    for hosted in [&first, &second] {
+        assert_eq!(
+            hosted
+                .host
+                .workspaces()
+                .summary(&admin)
+                .await
+                .unwrap()
+                .workspace,
+            admin,
+            "both devices hold the one workspace"
+        );
+    }
 }

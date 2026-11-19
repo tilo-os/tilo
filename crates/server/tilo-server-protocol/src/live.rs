@@ -7,14 +7,14 @@
 //! once the record's durable change lands.
 //!
 //! A live frame travels only as a [`SealedLiveFrame`]: the frame sealed with
-//! its workspace's content keys and bound to the record it names. Its kind,
+//! its workspace's content keys, scoped as every document is
+//! ([`collab_types::content_artifact_id`]) to the resource it names, its
+//! kind and its sequence. Its kind,
 //! sequence and record digest are in the clear so a carrier can rate-limit
 //! and route a record's previews; the content never is. A frame that names
 //! no record is never sent.
 
-use collab_types::{
-    ArtifactId, ContentRetention, EncryptionMetadata, EncryptionScheme, live_artifact_id,
-};
+use collab_types::{ArtifactId, ContentRetention, EncryptionMetadata, EncryptionScheme};
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 mod layout;
@@ -135,6 +135,18 @@ impl LiveResource {
         hash.update(self.app.as_bytes());
         hash.update(self.record.as_bytes());
         *hash.finalize().as_bytes()
+    }
+
+    /// What a live frame of `kind` and sequence `seq` on this resource in
+    /// `workspace` is sealed for: a document of the resource's own, read by
+    /// every member, so no frame opens as another sequence, resource or kind.
+    fn live_artifact(&self, workspace: &str, kind: LiveKind, seq: u64) -> ArtifactId {
+        let document = collab_types::app_document_id(&self.app, &self.record);
+        collab_types::content_artifact_id(
+            workspace,
+            collab_types::EVERY_MEMBER,
+            &format!("{document}#live/{}/{seq}", kind.tag()),
+        )
     }
 
     fn validate(&self) -> Result<()> {
@@ -466,37 +478,15 @@ impl LiveFrame {
 }
 
 impl SealedLiveFrame {
-    /// Open only for an explicitly observed record. Publisher identity and
-    /// current membership remain the caller's responsibility; decryption alone
-    /// does not authenticate semantic work.
-    ///
-    /// # Errors
-    ///
-    /// Refuses a different record digest before opening, and any
-    /// authentication or canonical-frame failure from [`Self::open`].
-    pub fn open_in_record<E: std::fmt::Display>(
-        &self,
-        record: &LiveResource,
-        open: impl FnOnce(ArtifactId, &EncryptionMetadata, &[u8]) -> std::result::Result<Vec<u8>, E>,
-    ) -> std::result::Result<LiveFrame, LiveSealError> {
-        if self.record != record.digest() {
-            return Err(LiveSealError::Mismatch);
-        }
-        self.open(open)
-    }
-
-    fn artifact(&self) -> ArtifactId {
-        live_artifact_id(&self.record, self.kind.tag(), self.seq)
-    }
-
-    /// Seal `frame` with `seal`, the workspace's content cipher, and encode
-    /// the sealed form.
+    /// Seal `frame` of `workspace` with `seal`, the workspace's content
+    /// cipher, and encode the sealed form.
     ///
     /// # Errors
     ///
     /// Wire or sealing failures.
     pub fn seal<E: std::fmt::Display>(
         frame: &LiveFrame,
+        workspace: &str,
         seal: impl FnOnce(
             ArtifactId,
             ContentRetention,
@@ -505,13 +495,10 @@ impl SealedLiveFrame {
     ) -> std::result::Result<Vec<u8>, LiveSealError> {
         let (kind, seq, record) = frame.seal_tags();
         let cleartext = frame.encode()?;
+        let artifact = record.live_artifact(workspace, kind, seq);
         let record = record.digest();
-        let (metadata, payload) = seal(
-            live_artifact_id(&record, kind.tag(), seq),
-            ContentRetention::Delta,
-            &cleartext,
-        )
-        .map_err(|error| LiveSealError::Crypto(error.to_string()))?;
+        let (metadata, payload) = seal(artifact, ContentRetention::Delta, &cleartext)
+            .map_err(|error| LiveSealError::Crypto(error.to_string()))?;
         if metadata.scheme
             != (EncryptionScheme::ContentKey {
                 retention: ContentRetention::Delta,
@@ -531,18 +518,27 @@ impl SealedLiveFrame {
         .encode()?)
     }
 
-    /// Open the frame with `open`, the workspace's content cipher, and check
-    /// that it is the frame its tags name.
+    /// Open the frame, one of `resource` in `workspace`, with `open`, the
+    /// workspace's content cipher, and check that it is the frame its tags
+    /// name. Publisher identity and current membership remain the caller's
+    /// responsibility; decryption alone does not authenticate semantic work.
     ///
     /// # Errors
     ///
-    /// Opening failures, a malformed frame, and tags that disagree with it.
+    /// A frame of another resource is refused before opening; opening
+    /// failures, a malformed frame, and tags that disagree with it.
     pub fn open<E: std::fmt::Display>(
         &self,
+        workspace: &str,
+        resource: &LiveResource,
         open: impl FnOnce(ArtifactId, &EncryptionMetadata, &[u8]) -> std::result::Result<Vec<u8>, E>,
     ) -> std::result::Result<LiveFrame, LiveSealError> {
+        if self.record != resource.digest() {
+            return Err(LiveSealError::Mismatch);
+        }
         let metadata = EncryptionMetadata::content_key(self.epoch, ContentRetention::Delta);
-        let cleartext = open(self.artifact(), &metadata, &self.payload)
+        let artifact = resource.live_artifact(workspace, self.kind, self.seq);
+        let cleartext = open(artifact, &metadata, &self.payload)
             .map_err(|error| LiveSealError::Crypto(error.to_string()))?;
         let frame = LiveFrame::decode(&cleartext)?;
         let (kind, seq, record) = frame.seal_tags();
@@ -630,7 +626,9 @@ mod object_bytes {
 mod tests {
     use super::*;
 
-    fn record() -> LiveResource {
+    const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+
+    fn resource() -> LiveResource {
         LiveResource {
             app: "so.tilo.notes".into(),
             record: "r1".into(),
@@ -639,7 +637,7 @@ mod tests {
 
     fn semantic() -> LiveFrame {
         LiveFrame::Ops(OpsFrame::Semantic {
-            record: record(),
+            record: resource(),
             event: SemanticFrame {
                 version: 1,
                 seq: 42,
@@ -658,11 +656,11 @@ mod tests {
         phase semantic_events_are_versioned_bounded_record_ops_not_pointers;
         {
             let frame = semantic();
-            assert_eq!(frame.seal_tags(), (LiveKind::Ops, 42, &record()));
+            assert_eq!(frame.seal_tags(), (LiveKind::Ops, 42, &resource()));
             assert_eq!(LiveFrame::decode(&frame.encode().unwrap()).unwrap(), frame);
-            let bytes = SealedLiveFrame::seal(&frame, seal).unwrap();
+            let bytes = SealedLiveFrame::seal(&frame, WORKSPACE, seal).unwrap();
             assert_eq!(
-                SealedLiveFrame::decode(&bytes).unwrap().open(open).unwrap(),
+                SealedLiveFrame::decode(&bytes).unwrap().open(WORKSPACE, &resource(), open).unwrap(),
                 frame
             );
             let LiveFrame::Ops(OpsFrame::Semantic { mut event, .. }) = frame else {
@@ -679,7 +677,7 @@ mod tests {
             event.interaction_json = " ".repeat(MAX_SEMANTIC_INTERACTION_BYTES + 1);
             assert!(event.validate().is_err());
             assert_eq!(
-                LiveFrame::Ops(OpsFrame::End { record: record() })
+                LiveFrame::Ops(OpsFrame::End { record: resource() })
                     .encode()
                     .unwrap(),
                 b"\x00\x01\x0dso.tilo.notes\x02r1"
@@ -692,7 +690,7 @@ mod tests {
                 named(),
                 LiveFrame::Ops(OpsFrame::Preview {
                     seq: 1,
-                    record: record(),
+                    record: resource(),
                     ops: vec![PreviewOp::Insert {
                         at: LiveAnchor { cursor: vec![1] },
                         text: "hi".into(),
@@ -708,7 +706,7 @@ mod tests {
         {
             let empty = LiveFrame::Ops(OpsFrame::Preview {
                 seq: 1,
-                record: record(),
+                record: resource(),
                 ops: Vec::new(),
             });
             assert_eq!(empty.encode(), Err(LiveWireError::Invalid));
@@ -724,8 +722,8 @@ mod tests {
 
         phase opening_for_a_mounted_record_refuses_a_different_record;
         {
-            let expected = record();
-            let bytes = SealedLiveFrame::seal(&semantic(), |_, retention, cleartext: &[u8]| {
+            let expected = resource();
+            let bytes = SealedLiveFrame::seal(&semantic(), WORKSPACE, |_, retention, cleartext: &[u8]| {
                 Ok::<_, String>((
                     EncryptionMetadata::content_key(3, retention),
                     cleartext.to_vec(),
@@ -734,14 +732,14 @@ mod tests {
             .unwrap();
             let sealed = SealedLiveFrame::decode(&bytes).unwrap();
             let opened =
-                sealed.open_in_record(&expected, |_, _, bytes| Ok::<_, String>(bytes.to_vec()));
+                sealed.open(WORKSPACE, &expected, |_, _, bytes| Ok::<_, String>(bytes.to_vec()));
             assert_eq!(opened.unwrap(), semantic());
             let other = LiveResource {
                 record: "other".into(),
                 ..expected
             };
             assert!(matches!(
-                sealed.open_in_record(&other, |_, _, _| -> std::result::Result<Vec<u8>, String> {
+                sealed.open(WORKSPACE, &other, |_, _, _| -> std::result::Result<Vec<u8>, String> {
                     panic!("a different mounted record must be refused before opening")
                 }),
                 Err(LiveSealError::Mismatch)
@@ -764,7 +762,7 @@ mod tests {
                     text: "hi".into(),
                 }],
             });
-            let bytes = SealedLiveFrame::seal(&frame, |_, retention, cleartext: &[u8]| {
+            let bytes = SealedLiveFrame::seal(&frame, WORKSPACE, |_, retention, cleartext: &[u8]| {
                 Ok::<_, String>((
                     EncryptionMetadata::content_key(3, retention),
                     cleartext.to_vec(),
@@ -774,7 +772,7 @@ mod tests {
             let sealed = SealedLiveFrame::decode(&bytes).unwrap();
             assert_eq!(
                 sealed
-                    .open_in_record(&primary, |_, _, bytes| {
+                    .open(WORKSPACE, &primary, |_, _, bytes| {
                         Ok::<_, String>(bytes.to_vec())
                     })
                     .unwrap(),
@@ -785,7 +783,7 @@ mod tests {
                 ..primary
             };
             assert!(matches!(
-                sealed.open_in_record(
+                sealed.open(WORKSPACE,
                     &named,
                     |_, _, _| -> std::result::Result<Vec<u8>, String> {
                         panic!("a different record must be refused before opening")
@@ -807,11 +805,11 @@ mod tests {
         {
             let frame = named();
             let cleartext = frame.encode().unwrap();
-            let bytes = SealedLiveFrame::seal(&frame, seal).unwrap();
+            let bytes = SealedLiveFrame::seal(&frame, WORKSPACE, seal).unwrap();
             let sealed = SealedLiveFrame::decode(&bytes).unwrap();
             assert_eq!(
                 (sealed.kind, sealed.seq, sealed.record),
-                (LiveKind::Ops, 0, record().digest())
+                (LiveKind::Ops, 0, resource().digest())
             );
             assert!(
                 !bytes
@@ -819,7 +817,13 @@ mod tests {
                     .any(|window| window == cleartext),
                 "the frame's content is never in the clear"
             );
-            assert_eq!(sealed.open(open).unwrap(), frame);
+            assert_eq!(sealed.open(WORKSPACE, &resource(), open).unwrap(), frame);
+            // Nor does it open as the same resource of another workspace.
+            assert!(
+                sealed
+                    .open("7c9e6679-7425-40de-944b-e07fc1f90ae7", &resource(), open)
+                    .is_err()
+            );
 
             // Tags are bound into the seal: another sequence or record does
             // not open.
@@ -833,17 +837,17 @@ mod tests {
                     ..sealed
                 },
             ] {
-                assert!(tampered.open(open).is_err());
+                assert!(tampered.open(WORKSPACE, &resource(), open).is_err());
             }
         }
 
         phase a_live_frame_without_a_cipher_is_never_sealed;
         {
-            let refused = SealedLiveFrame::seal(&named(), |_, _, _| {
+            let refused = SealedLiveFrame::seal(&named(), WORKSPACE, |_, _, _| {
                 Err::<(EncryptionMetadata, Vec<u8>), _>("no key")
             });
             assert!(matches!(refused, Err(LiveSealError::Crypto(_))));
-            let mls = SealedLiveFrame::seal(&named(), |_, _, cleartext: &[u8]| {
+            let mls = SealedLiveFrame::seal(&named(), WORKSPACE, |_, _, cleartext: &[u8]| {
                 Ok::<_, String>((
                     EncryptionMetadata::mls_application(1),
                     cleartext.to_vec(),
@@ -888,6 +892,6 @@ mod tests {
 
     /// A frame that names [`record`], the way a preview does.
     fn named() -> LiveFrame {
-        LiveFrame::Ops(OpsFrame::End { record: record() })
+        LiveFrame::Ops(OpsFrame::End { record: resource() })
     }
 }

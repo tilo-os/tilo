@@ -63,11 +63,8 @@ use tokio::sync::mpsc;
 
 use crate::apps::route::CrdtRoute;
 
-/// Largest content one reference names. Bigger content belongs in a file
-/// record.
-pub const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
-/// Bytes one piece carries on the network.
-pub const PIECE_BYTES: usize = 192 * 1024;
+pub use neighbour_wire::content::{MAX_CONTENT_BYTES, PIECE_BYTES};
+
 /// Requests this device keeps open at once; past it, the oldest go.
 const MAX_OPEN_WANTS: usize = 256;
 

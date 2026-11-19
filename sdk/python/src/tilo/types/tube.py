@@ -76,7 +76,7 @@ ClearArgs = TypedDict("ClearArgs", {
 
 class Library(Resource):
     """Tube — `tube.library`."""
-    __surface__ = "so.tilo.tube@352bce080225ba43"
+    __surface__ = "so.tilo.tube@a76b54e24761b7aa"
     likes: list[str]
     queue: list[str]
     subscriptions: list[str]
@@ -103,18 +103,6 @@ class Library(Resource):
         """Runs `retract` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("retract", items)
 
-    def open_video(self, *, video: str) -> None:
-        """Runs the app's action."""
-        return self.action("open-video", video=video)
-
-    def open_creator(self, *, creator: str) -> None:
-        """Runs the app's action."""
-        return self.action("open-creator", creator=creator)
-
-    def open_playlist(self, *, playlist: str) -> None:
-        """Runs the app's action."""
-        return self.action("open-playlist", playlist=playlist)
-
     def search(self, *, query: str) -> None:
         """Runs the app's action."""
         return self.action("search", query=query)
@@ -130,22 +118,6 @@ class Library(Resource):
     def skip_segment(self) -> None:
         """Runs the app's action."""
         return self.action("skip-segment")
-
-    def share(self, *, video: str) -> None:
-        """Runs the app's action."""
-        return self.action("share", video=video)
-
-    def mark_watched(self, *, video: str) -> None:
-        """Runs the app's action."""
-        return self.action("mark-watched", video=video)
-
-    def forget_watched(self, *, video: str) -> None:
-        """Runs the app's action."""
-        return self.action("forget-watched", video=video)
-
-    def clear_history(self) -> None:
-        """Runs the app's action."""
-        return self.action("clear-history")
 
     def set_preference(self,
         *,
@@ -169,12 +141,12 @@ class Library(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"reply_to_comment", "reply_to_comment_many", "retract", "retract_many", "open_video", "open_creator", "open_playlist", "search", "toggle_playback", "seek", "skip_segment", "share", "mark_watched", "forget_watched", "clear_history", "set_preference", "set_preferred_quality", "set_segment_handling"})
+    __actions__ = frozenset({"reply_to_comment", "reply_to_comment_many", "retract", "retract_many", "search", "toggle_playback", "seek", "skip_segment", "set_preference", "set_preferred_quality", "set_segment_handling"})
 
 
 class WatchHistory(Resource):
     """Watch history — `tube.watch-history`."""
-    __surface__ = "so.tilo.tube@352bce080225ba43"
+    __surface__ = "so.tilo.tube@a76b54e24761b7aa"
     watched: dict[str, int]
     positions: dict[str, int]
 

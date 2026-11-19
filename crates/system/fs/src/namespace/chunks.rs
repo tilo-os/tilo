@@ -235,6 +235,16 @@ impl Chunks {
             fs_protocol::FileAction::Create { document_id, .. } => {
                 let chunk = document_id.chunk();
                 self.chunk_or_new(chunk, true)?;
+                if self.index.pending_ops() > 0 {
+                    // The chunk was listed for this node: that is part of making it.
+                    let described = action.described();
+                    self.index.name_as(
+                        &fs_protocol::tree::document_id(),
+                        described.what,
+                        node,
+                        ambient,
+                    );
+                }
                 chunk
             }
             _ => *self.located.get(node).ok_or_else(|| {

@@ -21,7 +21,8 @@ pub struct Connector {
     pub(super) credential_store: CredentialStore,
     #[cfg(any(test, feature = "test-support"))]
     pub(super) spotify_api: Option<String>,
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    #[cfg(target_os = "linux")]
     pub(super) goa_api: Option<String>,
 }
 
@@ -33,7 +34,8 @@ impl Connector {
             credential_store,
             #[cfg(any(test, feature = "test-support"))]
             spotify_api: None,
-            #[cfg(all(test, target_os = "linux"))]
+            #[cfg(test)]
+            #[cfg(target_os = "linux")]
             goa_api: None,
         }
     }
@@ -44,7 +46,8 @@ impl Connector {
             credential_store,
             #[cfg(any(test, feature = "test-support"))]
             spotify_api: None,
-            #[cfg(all(test, target_os = "linux"))]
+            #[cfg(test)]
+            #[cfg(target_os = "linux")]
             goa_api: None,
         }
     }

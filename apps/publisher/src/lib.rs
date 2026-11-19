@@ -12,57 +12,9 @@ use ui::prelude::*;
 use ui::secrets::SecretStore;
 use ui::widget::{BannerKind, Field};
 
-/// What to apply for, and where. Each field is edited at its path; the registry must stay
-/// an address the client accepts, however it is changed.
-#[derive(Model, Debug, Clone, PartialEq)]
-#[model(check = Publisher::valid)]
-pub struct Publisher {
-    /// The registry the key publishes to.
-    pub registry: String,
-    /// A domain whose namespace to claim, such as `example.com`.
-    pub domain: String,
-    /// A forge account whose namespace to claim, such as `github:ada`.
-    pub forge_account: String,
-    /// How the registry's owner can reach you about the application.
-    pub contact: String,
-}
-
-impl Default for Publisher {
-    fn default() -> Self {
-        Self {
-            registry: app_registry::publisher::DEFAULT_REGISTRY.to_owned(),
-            domain: String::new(),
-            forge_account: String::new(),
-            contact: String::new(),
-        }
-    }
-}
-
-impl Publisher {
-    /// What the resource holds: the registry the key publishes to, and the namespaces claimed
-    /// on it.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<tilo_resource::__private::serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "publisher.profile",
-    read_content = Publisher::read_document
-)]
-impl Publisher {}
-
-impl Publisher {
-    /// The registry is HTTPS or this machine.
-    fn valid(&self) -> Result<(), Refusal> {
-        RegistryClient::validate_url(&self.registry)
-            .map(drop)
-            .map_err(|error| Refusal::new(error.to_string()))
-    }
-}
+/// The registry and namespace application the workspace keeps: its type and its
+/// check live in `publisher-model`.
+pub use publisher_model::Publisher;
 
 /// The key on this machine, read from the app's secrets.
 #[derive(Clone, Debug, PartialEq)]
@@ -149,15 +101,21 @@ struct Pane {
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.publisher.key")]
 pub enum KeyEffect {
+    #[effect(kind = "outside")]
     #[effect(privileged, label = "publisher-create-key")]
     CreateKey,
+    #[effect(kind = "outside")]
     CopyProof,
+    #[effect(kind = "outside")]
     #[effect(job, attended, privileged, label = "publisher-copy-secret")]
     CopySecret,
+    #[effect(kind = "outside")]
     #[effect(job, attended, privileged)]
     ExportKey,
+    #[effect(kind = "outside")]
     #[effect(job)]
     ApplyForNamespaces,
+    #[effect(kind = "outside")]
     #[effect(job)]
     CheckStatus,
 }

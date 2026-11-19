@@ -63,7 +63,7 @@ pub struct Args {
     /// `--device NAME [--workspace ID]`, for `--connect` only: carry the
     /// client to that device's MCP server instead of this one's
     /// ([`crate::device_mcp`]).
-    pub forward: Option<tilo_mcp::devices::Forward>,
+    pub forward: Option<tilo_device_mcp::Forward>,
     /// `--workspace ID` without `--device`, for `--connect` only: the
     /// workspace the client asks this desktop's MCP server to let it work in,
     /// rather than the one in front of the person. The person decides; it is
@@ -210,13 +210,13 @@ fn forward_of(
     mode: &Mode,
     device: Option<String>,
     workspace: Option<String>,
-) -> io::Result<Option<tilo_mcp::devices::Forward>> {
+) -> io::Result<Option<tilo_device_mcp::Forward>> {
     if (device.is_some() || workspace.is_some()) && *mode != Mode::Connect {
         return Err(invalid(
             "--device and --workspace choose where --connect goes: use them with --connect",
         ));
     }
-    Ok(device.map(|device| tilo_mcp::devices::Forward { device, workspace }))
+    Ok(device.map(|device| tilo_device_mcp::Forward { device, workspace }))
 }
 
 /// The device `--device` names, by its name or its endpoint id.
@@ -846,7 +846,7 @@ struct Endpoint<H> {
     /// Where answers read the content actions produced.
     media: Option<Arc<dyn tilo_mcp::MediaReader>>,
     /// The person's other devices' MCP servers, as this runtime reaches them.
-    other_devices: Option<Arc<tilo_mcp::devices::OtherDevices>>,
+    other_devices: Option<Arc<tilo_device_mcp::OtherDevices>>,
 }
 
 /// The longest first line a native connection is read for before it is
@@ -917,7 +917,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
                     }
                     if let Some(forward) = first
                         .strip_suffix(b"\n")
-                        .and_then(tilo_mcp::devices::forward_request)
+                        .and_then(tilo_device_mcp::forward_request)
                     {
                         match &other_devices {
                             // A client asks for nothing more before it is told
@@ -925,11 +925,11 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
                             Some(other_devices) if reader.buffer().is_empty() => {
                                 other_devices.serve_forward(stream, &forward);
                             }
-                            Some(_) => tilo_mcp::devices::refuse_forward(
+                            Some(_) => tilo_device_mcp::refuse_forward(
                                 stream,
                                 "a forward is the only line before its answer".into(),
                             ),
-                            None => tilo_mcp::devices::refuse_forward(
+                            None => tilo_device_mcp::refuse_forward(
                                 stream,
                                 "this runtime reaches none of your other devices".into(),
                             ),
@@ -1099,13 +1099,13 @@ pub fn join(profile: &Path, invitation: &str) -> io::Result<()> {
 ///
 /// With `forward`, the host this process belongs to carries the connection on
 /// to the MCP server of the device it names, and this process's stdio is that
-/// server's once it opened ([`tilo_mcp::devices::ask_forward`]). `workspace` is
+/// server's once it opened ([`tilo_device_mcp::ask_forward`]). `workspace` is
 /// the workspace the client asks this desktop's MCP server for, written into
 /// its `initialize`.
 pub fn connect(
     profile: &Path,
     standalone: bool,
-    forward: Option<&tilo_mcp::devices::Forward>,
+    forward: Option<&tilo_device_mcp::Forward>,
     workspace: Option<&str>,
 ) -> io::Result<()> {
     let route = tilo_mcp::session_api::route(
@@ -1134,13 +1134,16 @@ pub fn connect(
         }
     };
     if let Some(forward) = forward {
-        tilo_mcp::devices::ask_forward(&mut stream, forward)?;
+        tilo_device_mcp::ask_forward(&mut stream, forward)?;
     }
     bridge_stdio(
         stream,
         Asking {
             workspace: workspace.map(str::to_owned),
             key: tilo_mcp::session_api::agent_key()?,
+            // A client started by an agent is that agent's session, shown by its name there when
+            // the agent's harness gives it one.
+            session_name: tilo_mcp::session_api::session_name(),
         },
     )
 }

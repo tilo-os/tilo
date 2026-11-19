@@ -4,9 +4,10 @@
 //! session as one of the person's devices.
 use super::*;
 use serde_json::{Value, json};
+use tilo_agent_session::ModelChoice;
 use tilo_mcp::McpServer;
+use tilo_session_actions::SessionActions;
 use tilo_session_client::Outbox;
-use tilo_session_client::remote::SessionActions;
 
 /// The app the agent writes in.
 const WRITER: &str = "so.tilo.word-processor";
@@ -146,9 +147,12 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         let phases: Vec<tilo_actions::InteractionPhase> = browser
             .narrated
             .iter()
+            // The work is its member's: the agent the serving device speaks
+            // for, as the board names it, not the device key that says it.
             .filter(|(_, work)| {
                 run.as_ref()
-                    .is_some_and(|run| work.actor.agent_id() == Some(run.publisher.as_str()))
+                    .and_then(collab_types::presence::Shown::member_id)
+                    .is_some_and(|member| work.actor.agent_id() == member.agent_id())
             })
             .filter(|(record, work)| {
                 work.action.id == "new-sheet"
@@ -174,9 +178,8 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
                     })
                     .unwrap();
                 assert!(
-                    groups
-                        .iter()
-                        .any(|run| run.id.starts_with("agent-session:") && run.label.is_none()),
+                    groups.iter().any(|run| run.id.starts_with("agent-session:")
+                        && run.label.as_deref() == Some("Claude Code")),
                     "the change names the agent's session: {groups:?}"
                 );
                 edited = true;
@@ -664,9 +667,8 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
                 })
                 .collect();
             assert!(
-                groups
-                    .iter()
-                    .any(|run| run.id.starts_with("agent-session:") && run.label.is_none()),
+                groups.iter().any(|run| run.id.starts_with("agent-session:")
+                    && run.label.as_deref() == Some("Claude Code")),
                 "History keeps the runs as the agent's: {groups:?}"
             );
             assert!(commands.iter().any(
@@ -974,7 +976,7 @@ async fn a_stopped_agent_leaves_who_is_here() {
 /// [`LEAVES_WITHIN`], so the page can say the agent finished; a stopped
 /// agent's session connects no more.
 async fn leaves_who_is_here(ending: Ending) {
-    use tilo_actions::remote::{ActionProvider as _, Caller, InvokeRequest, mcp_server};
+    use tilo_actions::remote::{Caller, InvokeRequest, mcp_server};
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());

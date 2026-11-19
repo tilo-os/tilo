@@ -188,7 +188,7 @@ pub mod fixtures {
                 metadata_bytes: 64 * 1024,
             },
         };
-        let signer = runtime_identity::load_from_path(identity.join("primary.json")).unwrap();
+        let signer = tilo_identity::store::load_from_path(identity.join("primary.json")).unwrap();
         prepared
             .acknowledge(
                 signer.group_public_key(),

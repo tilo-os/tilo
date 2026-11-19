@@ -18,7 +18,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use super::OverviewPanel;
 use super::layout::{Picture, SHARES_MAX_ROWS};
 use crate::i18n::{t, t_args};
-use crate::overview::{ShownPerson, WorkspaceCard, WorkspacePerson, WorkspaceShare};
+use crate::overview::{HolderKind, ShownPerson, WorkspaceCard, WorkspacePerson, WorkspaceShare};
 use crate::overview_picture::{Tile, draw_empty_strip, draw_strip_name, draw_tile_title};
 use crate::window_flight::WindowPicture;
 use crate::window_switcher::{PreviewWell, WindowApp, draw_preview_well};
@@ -360,52 +360,53 @@ impl OverviewPanel {
         .paint(scene, transform, text, theme);
 
         let access_y = here_rect.y0 + f64::from(name_h) + m.s1;
+        let body = tokens.typography.style(TextRole::Body);
+        let body_line = f64::from(body.line_height_px_at(text.text_scale()));
+        let access_line = Rect::new(content.x0, access_y, content.x1, access_y + body_line);
         let who = card.others().cloned().collect::<Vec<WorkspacePerson>>();
         // A site workspace is named by its site, and stays words. Any other says who it is shared
         // with as people: each their own chip, a face and the name they go by, never a key and
         // never one sentence of names. Where it is hosted, once that means something, follows as
         // words in what the chips leave.
         if let Some(site) = self.shell.sites.get(&card.id).cloned() {
-            let site = text.elide_to_width_style(
-                &site,
-                f32_of_f64(content.width()),
-                &tokens.typography.style(TextRole::Body),
-            );
-            text.draw_style(
-                scene,
-                &site,
-                colors.text_dim,
-                transform.pre_translate((content.x0, access_y).into()),
-                None,
-                &tokens.typography.style(TextRole::Body),
-            );
+            ui::widget::TextLineFace::styled(&site, &body, TextRole::Body)
+                .start()
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                    access_line,
+                    colors.text_dim,
+                );
         } else if who.is_empty() {
             let alone = t("overview-access-only-you");
-            text.draw_style(
-                scene,
-                &alone,
-                colors.text_dim,
-                transform.pre_translate((content.x0, access_y).into()),
-                None,
-                &tokens.typography.style(TextRole::Body),
-            );
+            ui::widget::TextLineFace::styled(&alone, &body, TextRole::Body)
+                .start()
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                    access_line,
+                    colors.text_dim,
+                );
         } else {
-            let style = tokens.typography.style(TextRole::Body);
+            let style = body;
             let lead = t("overview-access-lead");
             let (lead_w, lead_h) = text.measure_style(&lead, None, &style);
-            text.draw_style(
-                scene,
-                &lead,
-                colors.text_dim,
-                transform.pre_translate((content.x0, access_y).into()),
-                None,
-                &style,
-            );
+            ui::widget::TextLineFace::styled(&lead, &style, TextRole::Body)
+                .start()
+                .paint(
+                    &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                    Rect::new(
+                        content.x0,
+                        access_y,
+                        content.x0 + f64::from(lead_w),
+                        access_y + f64::from(lead_h),
+                    ),
+                    colors.text_dim,
+                );
             let people: Vec<ShownPerson> = who
                 .iter()
                 .map(|person| ShownPerson {
                     id: person.id.clone(),
                     name: person.name.clone(),
+                    kind: HolderKind::Person,
                 })
                 .collect();
             let x = content.x0 + f64::from(lead_w) + m.s2;
@@ -426,16 +427,13 @@ impl OverviewPanel {
                 let after = chips_right + m.s3;
                 let left_width = (content.x1 - after).max(0.0);
                 if left_width > 40.0 {
-                    let hosting =
-                        text.elide_to_width_style(hosting, f32_of_f64(left_width), &style);
-                    text.draw_style(
-                        scene,
-                        &hosting,
-                        colors.text_dim,
-                        transform.pre_translate((after, access_y).into()),
-                        None,
-                        &style,
-                    );
+                    ui::widget::TextLineFace::styled(hosting, &style, TextRole::Body)
+                        .start()
+                        .paint(
+                            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
+                            Rect::new(after, access_y, after + left_width, access_y + body_line),
+                            colors.text_dim,
+                        );
                 }
             }
         }
@@ -785,32 +783,54 @@ impl OverviewPanel {
             }
         }
         if let Some(lifted) = self.carried_picture(&picture) {
-            if !self.shell.pictured.contains(&lifted.tab)
-                && let Some((_, _, window)) = picture.find(lifted.tab)
-            {
-                ui::surface::shadow(
-                    scene,
-                    transform,
-                    lifted.rect,
-                    lifted.radius,
-                    &theme.tokens.elevation.floating,
-                );
-                draw_preview_well(
-                    scene,
-                    transform,
-                    theme,
-                    PreviewWell {
-                        rect: lifted.rect,
-                        radius: lifted.radius,
-                        icon: self.metrics.icon_lg,
-                    },
-                    Some(&window.app),
-                );
-            }
+            self.paint_carried(scene, transform, theme, &picture, &lifted);
             pictures.push(lifted);
         }
         scene.pop_layer();
         pictures
+    }
+
+    /// The window being carried, held up under the pointer or finger with a shadow, where the
+    /// compositor draws no picture of it.
+    fn paint_carried(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        picture: &Picture,
+        lifted: &WindowPicture,
+    ) {
+        if self.shell.pictured.contains(&lifted.tab) {
+            return;
+        }
+        let Some((_, _, window)) = picture.find(lifted.tab) else {
+            return;
+        };
+        ui::surface::shadow(
+            scene,
+            transform,
+            lifted.rect,
+            lifted.radius,
+            &theme.tokens.elevation.floating,
+        );
+        draw_preview_well(
+            scene,
+            transform,
+            theme,
+            PreviewWell {
+                rect: lifted.rect,
+                radius: lifted.radius,
+                icon: self.metrics.icon_lg,
+            },
+            Some(&window.app),
+        );
+        draw_window_picture(
+            scene,
+            transform,
+            window.address.group,
+            lifted.rect,
+            lifted.radius,
+        );
     }
 
     /// Where the window being carried is drawn: centred under the pointer or finger, its picture's
@@ -928,6 +948,7 @@ impl OverviewPanel {
                 },
                 Some(&tile.window.app),
             );
+            draw_window_picture(scene, transform, tile.window.address.group, rect, radius);
         }
         if chrome > 0.0 {
             draw_tile_title(
@@ -1147,6 +1168,34 @@ fn paint_app_marks(
 }
 
 /// One "shared out of here" row: an icon, who holds it, and what.
+/// The window group `group` as it was last drawn, filling the well at `rect` (rounded by
+/// `radius`): scaled to cover it, centred, clipped to it. The well's app mark stays where the
+/// window has no picture: one never drawn, or one that showed a secret.
+fn draw_window_picture(scene: &mut Scene, transform: Affine, group: u64, rect: Rect, radius: f64) {
+    ui::window_pictures::with_picture(group, |picture| {
+        let drawn = picture.rect;
+        if drawn.width() <= 0.0 || drawn.height() <= 0.0 || rect.is_zero_area() {
+            return;
+        }
+        let scale = (rect.width() / drawn.width()).max(rect.height() / drawn.height());
+        let offset = (
+            rect.x0 + (rect.width() - drawn.width() * scale) / 2.0,
+            rect.y0 + (rect.height() - drawn.height() * scale) / 2.0,
+        );
+        let placed = transform
+            .pre_translate(offset.into())
+            .pre_scale(scale)
+            .pre_translate((-drawn.x0, -drawn.y0).into());
+        scene.push_clip_layer(
+            Fill::NonZero,
+            transform,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        scene.append(&picture.scene, Some(placed));
+        scene.pop_layer();
+    });
+}
+
 fn paint_share_row(
     ctx: &mut ui::paint::PaintCtx<'_>,
     row: Rect,
@@ -1191,34 +1240,33 @@ fn paint_share_row(
     let what = ctx
         .text
         .elide_to_width_style(&share.what, f32_of_f64(what_avail), &body);
-    let (what_w, _) = ctx.text.measure_style(&what, None, &body);
-    ctx.text.draw_style(
-        ctx.scene,
-        &what,
-        palette.text_primary,
-        ctx.transform.pre_translate((what_x, body_top).into()),
-        None,
-        &body,
-    );
+    let (what_w, what_h) = ctx.text.measure_style(&what, None, &body);
+    ui::widget::TextLineFace::styled(&what, &body, TextRole::Body)
+        .start()
+        .paint(
+            ctx,
+            Rect::new(
+                what_x,
+                body_top,
+                what_x + what_avail,
+                body_top + f64::from(what_h),
+            ),
+            palette.text_primary,
+        );
     if share.writable {
         let can_edit = t("overview-share-writable");
         let after = what_x + f64::from(what_w) + s2;
         if after + s3 < holders_left {
             let left_width = holders_left - s3 - after;
-            let can_edit =
-                ctx.text
-                    .elide_to_width_style(&can_edit, f32_of_f64(left_width), &caption);
             let (_, can_h) = ctx.text.measure_style(&can_edit, None, &caption);
-            ctx.text.draw_style(
-                ctx.scene,
-                &can_edit,
-                palette.text_tertiary,
-                ctx.transform.pre_translate(
-                    (after, row.y0 + (row.height() - f64::from(can_h)) / 2.0).into(),
-                ),
-                None,
-                &caption,
-            );
+            let top = row.y0 + (row.height() - f64::from(can_h)) / 2.0;
+            ui::widget::TextLineFace::styled(&can_edit, &caption, TextRole::Caption)
+                .start()
+                .paint(
+                    ctx,
+                    Rect::new(after, top, after + left_width, top + f64::from(can_h)),
+                    palette.text_tertiary,
+                );
         }
     }
 }
@@ -1365,12 +1413,18 @@ fn paint_chips(
     let mut left = x;
     for person in people.iter().take(shown) {
         let fill = face_colour(look.colours, &person.id);
-        ui::widget::AvatarFace::new(&person.name, &person.id)
-            .presence(fill)
-            .paint(
-                ctx,
-                Rect::new(left, mid - face / 2.0, left + face, mid + face / 2.0),
-            );
+        // An agent wears its mark and a bot its square, as they do on every other row.
+        let avatar = ui::widget::AvatarFace::new(&person.name, &person.id);
+        match person.kind {
+            HolderKind::Person => avatar,
+            HolderKind::Agent => avatar.agent(),
+            HolderKind::Bot => avatar.square(),
+        }
+        .presence(fill)
+        .paint(
+            ctx,
+            Rect::new(left, mid - face / 2.0, left + face, mid + face / 2.0),
+        );
         let name = ctx
             .text
             .elide_to_width_style(&person.name, f32_of_f64(name_width), &style);

@@ -7,8 +7,8 @@ use std::fmt::Write as _;
 use serde_json::{Value as Json, json};
 use tilolang_runtime::abi::IMPORTS;
 use tilolang_runtime::{
-    ActionInfo, Actor, AmStore, Authority, Decision, EngineLimits, Meta, ModuleHash, PackageId,
-    Runtime, SimpleAuthority, Value,
+    ActionInfo, Actor, AmStore, Authority, DEFAULT_LIMITS, Decision, EngineLimits, Meta,
+    ModuleHash, PackageId, Runtime, SimpleAuthority, Value,
 };
 
 /// The Tasks package (`apps/tl/tasks`): its app and the scenarios staged beside it.
@@ -363,7 +363,7 @@ pub struct World {
 
 impl World {
     pub fn new() -> Self {
-        Self::with(&AmStore::new(), EngineLimits::default())
+        Self::with(&AmStore::new(), DEFAULT_LIMITS)
     }
 
     pub fn with(store: &AmStore, limits: EngineLimits) -> Self {
@@ -705,14 +705,7 @@ pub fn of_kind<'a>(
     node: &'a tilolang_runtime::UiNode,
     kind: &str,
 ) -> Vec<&'a tilolang_runtime::UiNode> {
-    let mut out = Vec::new();
-    if node.kind == kind {
-        out.push(node);
-    }
-    for c in &node.children {
-        out.extend(of_kind(c, kind));
-    }
-    out
+    node.of_kind(kind)
 }
 
 /// The resource an action returned.

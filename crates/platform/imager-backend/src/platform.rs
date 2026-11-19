@@ -103,6 +103,34 @@ pub trait Platform {
         buf: &mut [u8],
     ) -> IoResult<()>;
     fn sync_disk(&mut self, disk: &Disk) -> IoResult<()>;
+    /// Place a root-only file at `path` inside the filesystem the given staged
+    /// partition holds: the single-use enrollment token a plan's machine
+    /// spends must never travel in the ESP handoff the firmware can read.
+    ///
+    /// Unsupported on a platform that cannot mount the staged filesystem; the
+    /// helper then refuses rather than staging a plan without its token.
+    fn write_staging_file(
+        &mut self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+        contents: &[u8],
+        mode: u32,
+    ) -> IoResult<()> {
+        let _ = (disk, partition_guid, path, contents, mode);
+        Err("writing a file into a staging root is unavailable".into())
+    }
+    /// Read back what [`Self::write_staging_file`] placed, to prove a resumed
+    /// staging still holds it.
+    fn read_staging_file(
+        &self,
+        disk: &Disk,
+        partition_guid: &str,
+        path: &str,
+    ) -> IoResult<Option<Vec<u8>>> {
+        let _ = (disk, partition_guid, path);
+        Err("reading a file from a staging root is unavailable".into())
+    }
     /// Existing EFI adapters implement this surface; Linux also observes a missing efivarfs when
     /// reviewing geometry before boot eligibility.
     fn has_uefi(&self) -> bool {

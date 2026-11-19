@@ -3,10 +3,11 @@
 //! Each operation a server is asked for is one action here (`server.status`,
 //! `server.logs`, `server.restart`, `server.reboot`, `server.update`,
 //! `server.pause-updates`, `server.resume-updates`, `server.rollback`,
-//! `server.drain`). An action keeps the request in that server's entry in
-//! the workspace's document; the server the entry names carries it out and
-//! keeps what it found or did; and the action answers with that, read live
-//! for the operations that read (its health and a service's journal).
+//! `server.drain`, `server.set-default-start`). An action keeps the request in
+//! that server's entry in the workspace's document; the server the entry names
+//! carries it out and keeps what it found or did; and the action answers with
+//! that, read live for the operations that read (its health and a service's
+//! journal).
 //!
 //! Every device of the person holds that workspace and asks these, and so does
 //! the agent at that device: what a person may ask of their own servers is
@@ -41,7 +42,7 @@ const ANSWER_TICK: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// What a person asks of a server, in catalogue order: each is one operation
 /// on that server's entry in the workspace.
-pub(super) const SERVER_VERBS: [ServerVerb; 9] = [
+pub(super) const SERVER_VERBS: [ServerVerb; 10] = [
     asking(
         "server.status",
         "status",
@@ -102,6 +103,13 @@ pub(super) const SERVER_VERBS: [ServerVerb; 9] = [
         "server.drain",
         "drain",
         "Drain a server before taking it out of service",
+        roles::GOVERNANCE_KIND,
+        status_params,
+    ),
+    asking(
+        "server.set-default-start",
+        "set-default-start",
+        "Have Tilo start by default on a server",
         roles::GOVERNANCE_KIND,
         status_params,
     ),
@@ -301,4 +309,50 @@ impl Workspaces {
                 ))
             })
     }
+}
+
+/// Take a machine that enrolled with a plan's token into its entry, under its
+/// device key: what the person's device that approves the machine does, so the
+/// holders hand it their Servers workspace and it reads its plan there. The
+/// drives and questions it reported ride along when the caller has them; the
+/// machine's own report updates the same entry once it holds the workspace.
+pub(super) const MACHINE_ADMIT: &str = "machine.admit";
+
+impl Workspaces {
+    /// [`MACHINE_ADMIT`]: one of the person's own devices admits a machine it
+    /// approved into the machine's waiting entry in their Servers workspace.
+    pub(super) async fn machine_admit(
+        &self,
+        call: super::GovernanceCall<'_>,
+    ) -> Result<serde_json::Value, ActionCallError> {
+        // The Servers workspace is the person's own: no other member admits a
+        // machine into it.
+        if call.device.user_public_key != self.inner.host.cert.user_public_key {
+            return Err(ActionCallError::UnknownAction);
+        }
+        let device = call.args.required_text("device")?.to_owned();
+        let nonce = call.args.required_text("nonce")?.to_owned();
+        let drives = call.args.text("drives")?.unwrap_or("[]").to_owned();
+        let ask = call
+            .args
+            .text("ask")?
+            .map_or_else(String::new, str::to_owned);
+        Box::pin(servers::apply_on(
+            self,
+            call.workspace,
+            servers::Servers::BEGIN_INSTALL.with((device, nonce, drives, ask)),
+        ))
+        .await
+        .map_err(|error| refused(&error))?;
+        Ok(serde_json::json!({ "admitted": true }))
+    }
+}
+
+/// The governance check `action` is held to, when it is one this file serves:
+/// taking a planned machine in is the person's own devices' own, decided in
+/// its handler, so it is no verb the catalogue offers.
+pub(super) fn check_of(action: &str) -> Option<&'static str> {
+    (action == MACHINE_ADMIT)
+        .then_some("")
+        .or_else(|| super::check_of(action))
 }

@@ -181,7 +181,7 @@ impl TopBarChrome {
         let _ = self.strip_chip(name, *label_width).paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.ws_strip_rect,
-            theme.tokens.colors.surfaces.base,
+            super::bar_ground(theme),
         );
     }
 

@@ -114,7 +114,11 @@ async fn the_servers_person_creates_and_lists_workspaces_as_actions() {
             LIST_REVOCATIONS,
             ENTER_WORKSPACE,
             HOST_WORKSPACE,
-            UNHOST_WORKSPACE
+            UNHOST_WORKSPACE,
+            super::PLAN_MACHINE,
+            super::LIST_MACHINES,
+            super::SHOW_MACHINE,
+            super::ADMIT_MACHINE
         ]
         .map(str::to_owned)
     );

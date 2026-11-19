@@ -40,6 +40,8 @@ struct Writing {
     paused: tokio::sync::Semaphore,
     /// How many times it came to wait.
     waited: AtomicUsize,
+    /// How many calls it was asked to answer.
+    asked: AtomicUsize,
     /// How many of its calls whoever asked let go of before they ended.
     let_go: AtomicUsize,
 }
@@ -48,6 +50,11 @@ impl Writing {
     /// Let the call that waits go on.
     fn go_on(&self) {
         self.paused.add_permits(1);
+    }
+
+    /// How many calls it was asked to answer.
+    fn asked(&self) -> usize {
+        self.asked.load(Ordering::SeqCst)
     }
 }
 
@@ -67,6 +74,7 @@ impl Drop for Call<'_> {
 
 impl ModelProvider for Writing {
     fn answer<'a>(&'a self, _: ProviderCall<'a>, events: Events<'a>) -> ProviderFuture<'a> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
         let steps = self.calls.lock().unwrap().pop_front();
         Box::pin(async move {
             let mut call = Call {
@@ -148,6 +156,7 @@ fn writing(
         calls: Mutex::new(calls.into_iter().collect()),
         paused: tokio::sync::Semaphore::new(0),
         waited: AtomicUsize::new(0),
+        asked: AtomicUsize::new(0),
         let_go: AtomicUsize::new(0),
     });
     workspaces.answer_models_with(theirs.clone());
@@ -625,5 +634,128 @@ async fn a_sub_agents_reply_grows_in_its_own_conversation() {
     assert_eq!(whole.text, "Two drafts are left. I file them next.");
     assert_eq!(end_of(&whole), Some(AgentFinish::Complete));
     assert_eq!(written(&whole).1, Some(AgentFinish::Complete));
+    page.peer.close();
+}
+
+/// The guest `guest` holds `role` in `workspace` from now on, as its administrator puts them
+/// there: what the server may write for them is decided by it.
+async fn guest_holds(
+    workspaces: &Workspaces,
+    workspace: &str,
+    server: &Device,
+    guest: &SigningKey,
+    role: tilo_peer_state::join::Role,
+) {
+    workspaces
+        .add_member(
+            workspace,
+            &server.cert,
+            tilo_server::workspaces::AddMemberRequest {
+                request_id: *blake3::hash(
+                    format!(
+                        "{} {role:?} {}",
+                        hex::encode(guest.verifying_key().to_bytes()),
+                        tilo_clock::unix_now_ns()
+                    )
+                    .as_bytes(),
+                )
+                .as_bytes(),
+                user_public_key: guest.verifying_key().to_bytes(),
+                place: tilo_server::workspaces::MemberPlace::Role(role),
+                name: Some("Eve".into()),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+/// Chat refuses the end of the answer: the turn ends with the error that nobody kept it, and its
+/// reply is not taken for one its person read as answered. What the model wrote stays where they
+/// read it, and once the workspace lets them write again, the answer stands below those words
+/// and the reply ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reply_whose_end_chat_refused_is_not_taken_for_answered() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served, device
+    );
+    // A guest of the workspace asks the agent, and the workspace decides what the server may
+    // write for them: an editor, until the answer is on its way.
+    let (guest, _) = tilo_user_identity::UserIdentity::generate("Eve", 2);
+    let guest_device = enrol(&guest, "eve-browser", DeviceCapabilities::member());
+    let editor = tilo_peer_state::join::Role::Editor;
+    guest_holds(&workspaces, &workspace, &device, &guest, editor).await;
+    // The guest's own device is the one the server acts as for them.
+    let _guest =
+        resource_support::open_admitted_at(&served, &guest_device, &device, &workspace).await;
+    let asked = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&guest, &guest_device),
+        "plan the launch",
+    )
+    .await;
+    let (theirs, _lets_go) = writing(
+        &workspaces,
+        &root,
+        [
+            vec![Writes("The plan is ready."), Waits],
+            vec![Writes("The plan is ready. The cake is ordered.")],
+        ],
+    );
+    let agents = worked(&workspaces, &actions, never_asked(Arc::default()));
+    let going = begin!(agents, workspace);
+    let grown = reads(&workspaces, &workspace, &asked, "The plan is ready.").await;
+    assert!(
+        chat::summons::unanswered(Some(&grown)),
+        "its end is not recorded yet: {:?}",
+        grown.work
+    );
+
+    // The guest may read the workspace from now on and change nothing in it: Chat refuses the
+    // end of the answer the server writes for them.
+    guest_holds(
+        &workspaces,
+        &workspace,
+        &device,
+        &guest,
+        tilo_peer_state::join::Role::Viewer,
+    )
+    .await;
+    theirs.go_on();
+    let refused = going.await.unwrap();
+    assert!(
+        refused.is_err(),
+        "the end Chat did not take is not taken for one: {refused:?}"
+    );
+    let part = conversation_part(&workspaces, &workspace).await;
+    let reply = part
+        .messages
+        .get(&chat::chat::reply_id(&asked, &MemberId::agent(SCOUT)))
+        .expect("the reply stands where its person read it")
+        .clone();
+    assert_eq!(reply.text, "The plan is ready.");
+    assert!(
+        chat::summons::unanswered(Some(&reply)),
+        "no end was kept, and the reply says nothing it did not: {:?}",
+        reply.work
+    );
+
+    // The workspace lets the guest write for themselves again. The next look ends the turn, and
+    // the answer the model wrote now stands below the words its person already read.
+    guest_holds(&workspaces, &workspace, &device, &guest, editor).await;
+    agents.look(&workspace).await.unwrap();
+    let finished = ended(&workspaces, &workspace, &asked).await;
+    assert_eq!(end_of(&finished), Some(AgentFinish::Complete));
+    assert_eq!(
+        finished.text,
+        "The plan is ready.\n\nThe plan is ready. The cake is ordered."
+    );
+    assert_eq!(theirs.asked(), 2, "the answer is continued, not lost");
+    assert!(
+        agents.turns(&workspace).await.unwrap().is_empty(),
+        "and it is not owed a turn again"
+    );
+    let _ = person;
     page.peer.close();
 }

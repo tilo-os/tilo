@@ -490,16 +490,31 @@ not_answered() { # WHAT WHY
 
 # The server answers /mode from its start: "starting" while it opens every
 # workspace its state holds (a minute, for one that holds a repository's
-# files, as the image's does), then "up" once people get in. It is waited for
-# while it says it is starting and runs; one that stopped, or that does not
-# answer at all, fails at once.
+# files, as the image's does), then "up" once people get in. It has a few
+# runtime workers, and while its start keeps them busy a probe can go
+# unanswered for seconds, more so on a build server other builds load: an
+# unanswered probe is waited out like "starting", for as long as the server
+# is alive, up to TILO_SH_SERVER_START_SECONDS (600). One that stopped fails
+# at once; one still not up at the limit fails with what it last said.
 wait_server_up() {
   local what='server (its readiness probe, /mode)' url="http://127.0.0.1:$routes_port/mode"
-  local said deadline=$((SECONDS + 30))
-  until said=$(curl -sS --max-time 2 "$url" 2>/dev/null) && [[ $said == *'"server":"up"'* ]]; do
+  local limit=${TILO_SH_SERVER_START_SECONDS:-600} began=$SECONDS told=$SECONDS said='' last=''
+  until said=$(curl -sS --max-time 5 "$url" 2>/dev/null) && [[ $said == *'"server":"up"'* ]]; do
     running server || not_answered "$what" 'stopped before it served'
-    [[ $said == *'"server":"starting"'* ]] || ((SECONDS < deadline)) \
-      || not_answered "$what" "did not answer at $url within 30s"
+    case $said in
+      *'"server":"starting"'*) last='it was still opening its workspaces' ;;
+      *) [[ -n $last ]] || last='it never answered' ;;
+    esac
+    ((SECONDS - began < limit)) \
+      || not_answered "$what" "was not up at $url within ${limit}s ($last; TILO_SH_SERVER_START_SECONDS waits longer)"
+    if ((SECONDS - told >= 15)); then
+      told=$SECONDS
+      if [[ $said == *'"server":"starting"'* ]]; then
+        say "waiting for the server to open its workspaces ($((SECONDS - began))s; $url says starting)"
+      else
+        say "waiting for the server to answer at $url ($((SECONDS - began))s; it is alive, its probe goes unanswered yet)"
+      fi
+    fi
     sleep 0.5
   done
 }
@@ -624,10 +639,13 @@ api_env() {
     "TILO_API_WEB_ENTRY=$site_origin" \
     "TILO_API_HOST=$server_origin" \
     "TILO_API_STATE=$api_state/api.json"
-  # A server reached through another packet relay has no page anyone else
-  # opens: its invitations carry themselves, under tilo.sh's page.
+  # An invitation's link carries itself under the page whoever follows it
+  # opens: this stack's own site, or tilo.sh's when the stack is reached
+  # through another packet relay and its own page opens nowhere else.
   if [[ -n $(cat "$state/reached-through" 2>/dev/null || true) ]]; then
     printf '%s\n' "TILO_API_INVITE_ENTRY=${TILO_SH_INVITE_ENTRY:-https://tilo.sh}"
+  else
+    printf '%s\n' "TILO_API_INVITE_ENTRY=$site_origin"
   fi
 }
 
@@ -798,9 +816,22 @@ stack_person() {
 # The API key the stack's own person approved for themself, approved the
 # first time it is asked for.
 owner_api_key() {
-  local answer api_key
+  local answer api_key said=$state/owner/keys-create.err status=0
   if [[ ! -s $state/owner/api-key ]]; then
-    answer=$(as_owner keys create 'Local stack' --json) || die "the owner's key was not approved: $answer"
+    mkdir -p "$state/owner"
+    answer=$(as_owner keys create 'Local stack' --json 2>"$said") || status=$?
+    if ((status != 0)); then
+      # Why, in tilo's own words (it says them on stderr), and whether the
+      # API server it asked answers at all: a bring-up that stopped early
+      # leaves none to approve the key.
+      local why
+      why=$(cat "$said" 2>/dev/null)
+      why=${why:-${answer:-tilo keys create exited $status and said nothing}}
+      curl -fsS --max-time 5 "$api_origin/health" >/dev/null 2>&1 \
+        || why+=$'\n'"the API server does not answer at $api_origin/health: stack.sh up did not finish (stack.sh status, stack.sh logs api)"
+      die "the owner's key was not approved: $why"
+    fi
+    rm -f "$said"
     api_key=$(python3 -c 'import json,sys
 answer = json.loads(sys.argv[1])
 print(next(answer[field] for field in ("key", "token", "api_key") if answer.get(field)))' "$answer") \
@@ -2229,6 +2260,9 @@ remote_env() {
       TILO_SH_*) printf '%s\n' "$line" ;;
     esac
   done < <(env | grep '^TILO_SH_' || true)
+  # The services' log filters (private_env), which a restart gives them there.
+  [[ -z ${RUST_LOG:-} ]] || printf 'RUST_LOG=%s\n' "$RUST_LOG"
+  [[ -z ${TILO_SERVER_LOG:-} ]] || printf 'TILO_SERVER_LOG=%s\n' "$TILO_SERVER_LOG"
   printf 'TILO_SH_STATE=%s\n' "$remote_state"
   printf 'TILO_SH_PORT_BASE=%s\n' "$base"
   printf 'TILO_SH_REMOTE=0\n'
@@ -2293,7 +2327,11 @@ up_remote() {
 # check, then the API server's. A bring-up that died says why, with its log.
 wait_remote_up() {
   local pid deadline=$((SECONDS + ${TILO_SH_REMOTE_TIMEOUT:-1800})) said=$SECONDS
-  pid=$(supervisor_pid || true)
+  # The process start_supervisor just started, as it wrote it: supervisor_pid
+  # knows it by the environment the drop-in starts with, which it may not have
+  # exec'd into yet, and a bring-up that died must not be waited on for the
+  # whole timeout.
+  pid=$(cat "$state/supervisor.pid" 2>/dev/null || true)
   say "waiting for the stack through the forward (log: $state/logs/remote.log)"
   until curl -fsS --max-time 2 -H "$site_host_header" "$site_health" >/dev/null 2>&1; do
     if [[ -n $pid ]] && ! kill -0 "$pid" 2>/dev/null; then

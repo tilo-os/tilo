@@ -22,25 +22,26 @@ pub(crate) mod tree;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_session::workspaces::PersonalList;
 use tilo_session_client::device::Device as Entered;
 
+use crate::mcp::held::UNMOUNTING;
+use tree::FileBytes;
+
 /// One workspace, as this peer shows it.
 struct Held {
     workspace: WorkspaceId,
     name: String,
-    read_only: bool,
+    /// What the workspace takes from this device's writes ([`tilo_fs::admission`]).
+    admission: Arc<tilo_fs::admission::FileAdmission>,
     showing: mount::Showing,
     replica: tree::TreeReplica,
     _content: Arc<content::SessionContent>,
 }
-
-/// A file of a folder: its content's hash, `None` for a text document whose
-/// content the tree holds itself, and its size.
-type FileBytes = (Option<iroh_blobs::Hash>, u64);
 
 /// What `tilo status` and `tilo folders` say of one workspace's folder.
 #[derive(Clone, Debug, Serialize)]
@@ -52,6 +53,9 @@ pub(crate) struct Mounted {
     pub(crate) read_only: bool,
     /// Bytes of its files this computer holds.
     pub(crate) local_bytes: u64,
+    /// The device's session with the workspace is live: what the folder's status says of what was
+    /// sent holds only while it is, and a folder with none is not in sync, whatever it last sent.
+    pub(crate) connected: bool,
     #[serde(flatten)]
     pub(crate) status: tree::TreeStatus,
 }
@@ -293,11 +297,7 @@ impl Peer {
                 self.fail(entry.workspace, &format!("not entered: {refusal}"));
                 continue;
             }
-            let read_only = entry
-                .role
-                .as_deref()
-                .is_some_and(|role| matches!(role, "viewer" | "commenter"));
-            match self.hold(device, entry, (&folder.name, &folder.path), read_only) {
+            match self.hold(device, entry, (&folder.name, &folder.path)).await {
                 Ok(shown) => {
                     shown.replica.set_paused(folder.paused);
                     self.held.lock().await.push(shown);
@@ -315,19 +315,29 @@ impl Peer {
     }
 
     /// Hold `entry`'s files at `at`.
-    fn hold(
+    async fn hold(
         &self,
         device: &Entered,
         entry: &Listed,
         (folder_name, at): (&str, &Path),
-        read_only: bool,
     ) -> anyhow::Result<Held> {
         let workspace = entry.workspace;
         let link = device.session().clone();
+        // Every write is the workspace's to take, as its policy reads on this device now: a
+        // role changed or a grant taken back answers at the next write, never at mount time.
+        let engine = Arc::clone(link.engine());
+        let admission = Arc::new(
+            tilo_fs::admission::FileAdmission::new(
+                &hex::encode(device.cert().user_public_key),
+                Box::new(move || engine.policy(&workspace.to_string()).ok()),
+            )
+            .ok_or_else(|| anyhow::anyhow!("this device's person has no valid key"))?,
+        );
         let key = device.cert().device_public_key;
         let content = content::SessionContent::new(workspace, key, &link, Arc::clone(&self.store));
         let state = self.state.join(workspace.to_string());
-        let replica = tree::TreeReplica::start(link, workspace, &state, key, Arc::clone(&content))?;
+        let replica =
+            tree::TreeReplica::start(link, workspace, &state, key, Arc::clone(&content)).await?;
         let actor = fs_protocol::FileActor {
             person: collab_types::Ed25519PublicKey(device.cert().user_public_key),
             device: collab_types::Ed25519PublicKey(key),
@@ -339,6 +349,7 @@ impl Peer {
             content: Arc::clone(&content),
             actor,
             writers: Arc::clone(&self.writers),
+            admission: Arc::clone(&admission),
             state: &state,
         };
         let showing = mount::show(
@@ -346,12 +357,11 @@ impl Peer {
             at,
             &state.join("folder"),
             self.mount,
-            read_only,
         )?;
         Ok(Held {
             workspace,
             name: folder_name.to_owned(),
-            read_only,
+            admission,
             showing,
             replica,
             _content: content,
@@ -359,6 +369,10 @@ impl Peer {
     }
 
     /// What this peer shows, and where each stands.
+    ///
+    /// Answered from what the sync last counted, never by reading the tree: a folder being
+    /// written into in bulk has a step over its whole tree under the tree's lock, and a status
+    /// ask waits behind nothing.
     pub(crate) async fn mounted(&self) -> Vec<Mounted> {
         let shown: Vec<(Mounted, Vec<FileBytes>)> = self
             .held
@@ -366,30 +380,21 @@ impl Peer {
             .await
             .iter()
             .map(|shown| {
-                let namespace = shown
-                    .replica
-                    .namespace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                // A text document's content is the tree's own, so always here.
-                let hashes = namespace
-                    .live_node_ids()
-                    .iter()
-                    .filter_map(|id| namespace.entry_for_node(id))
-                    .filter(|entry| entry.kind == tilo_fs::namespace::NodeKind::File)
-                    .map(|entry| (entry.hash, entry.size))
-                    .collect();
-                drop(namespace);
                 let mounted = Mounted {
                     workspace: shown.workspace.to_string(),
                     name: shown.name.clone(),
                     at: shown.showing.at.clone(),
                     shown: shown.showing.shown,
-                    read_only: shown.read_only,
+                    read_only: !shown.admission.admits(
+                        None,
+                        None,
+                        fs_protocol::file_action::verbs::WRITE,
+                    ),
                     local_bytes: 0,
+                    connected: true,
                     status: shown.replica.status(),
                 };
-                (mounted, hashes)
+                (mounted, shown.replica.files())
             })
             .collect();
         let mut mounted = Vec::with_capacity(shown.len());
@@ -441,14 +446,61 @@ impl Peer {
         self.held.lock().await.clear();
     }
 
-    /// Let go of the files' store, so the next holder opens it as soon as this process lets its
-    /// lock go rather than when this process ends: the databases the store holds are locked until
-    /// then, and that outlasts the holder's own lock.
-    pub(crate) async fn shutdown(&self) {
+    /// Stop showing the folders and keep their trees on disk: called when the holder stops, so
+    /// no write lands after the session ends and nothing made here is lost with the process.
+    /// Each step is bounded, and all of them together by `within`: a step still walking a tree
+    /// cannot be interrupted, and a stop ends inside the service's timeout whether or not one
+    /// is running.
+    pub(crate) async fn stop(&self, within: Duration) {
+        let held: Vec<Held> = std::mem::take(&mut *self.held.lock().await);
+        let deadline = Instant::now()
+            .checked_add(within)
+            .unwrap_or_else(Instant::now);
+        for shown in held {
+            let Held {
+                showing, replica, ..
+            } = shown;
+            // Unmount first, so no write lands after the session ends; a mount whose thread is
+            // inside a step on the tree is given up on rather than waited for.
+            let unmounting = deadline
+                .saturating_duration_since(Instant::now())
+                .min(UNMOUNTING);
+            if !drop_within(showing, unmounting).await {
+                tracing::warn!(
+                    "a folder did not unmount in time; the mounts are cleared when next shown"
+                );
+            }
+            let keeping = deadline.saturating_duration_since(Instant::now());
+            replica.stop(keeping).await;
+        }
+    }
+
+    /// Let go of the files' store and this device's endpoint, so the next holder opens the store
+    /// as soon as this process lets its lock go rather than when this process ends: the
+    /// databases the store holds are locked until then, and that outlasts the holder's own
+    /// lock. The endpoint says it is going rather than being dropped mid-flight: iroh aborts
+    /// every connection of an endpoint dropped without this, which leaves the server waiting out
+    /// a silence.
+    pub(crate) async fn shutdown(&self, within: Duration) {
         if let Err(error) = self.store.shutdown().await {
             tracing::warn!(%error, "the workspaces' files did not close cleanly");
         }
+        if tokio::time::timeout(within, self.endpoint.close())
+            .await
+            .is_err()
+        {
+            tracing::warn!("the device's endpoint did not close in time");
+        }
     }
+}
+
+/// Drop `what` on the blocking pool, waiting at most `within` for it: unmounting a folder
+/// waits on steps that cannot be interrupted, and a stop must end inside the service's timeout
+/// whether or not one is still under way.
+async fn drop_within<T: Send + 'static>(what: T, within: Duration) -> bool {
+    tokio::time::timeout(within, tokio::task::spawn_blocking(move || drop(what)))
+        .await
+        .is_ok()
 }
 
 /// `n` bytes as a person reads them: one decimal in the largest unit that
@@ -541,8 +593,15 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
         .get("name")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("?");
+    // A peer that does not say is one that answers for its session itself.
+    let connected = workspace
+        .get("connected")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
     let state = if field("paused") {
         "paused"
+    } else if !connected {
+        "not connected to the workspace; changes made here wait to go out"
     } else if !field("opened") {
         "waiting for the workspace's files"
     } else if field("sent") && field("durable") {
@@ -567,6 +626,20 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use tilo_server_session::workspaces::{KeepingDeviceAddress, PersonalWorkspace};
+
+    /// A folder whose device has no live session with the workspace is never "in sync": what it
+    /// last sent says nothing of what is written there since.
+    #[test]
+    fn a_folder_without_a_session_is_not_in_sync() {
+        let folder = |connected: bool| {
+            serde_json::json!({"name": "Tilo", "at": "/home/ada/Tilo", "opened": true,
+                "sent": true, "durable": true, "files": 1, "bytes": 1, "connected": connected})
+        };
+        assert!(describe_folder(&folder(true)).contains("(in sync;"));
+        let offline = describe_folder(&folder(false));
+        assert!(!offline.contains("in sync"), "{offline}");
+        assert!(offline.contains("not connected"), "{offline}");
+    }
 
     /// The host's list names each folder after its workspace, and the folder
     /// of the workspace this device entered exists before any list names it.
@@ -595,5 +668,36 @@ mod tests {
         assert_eq!(listed[1].workspace, WorkspaceId::parse(second).unwrap());
         assert_eq!(listed[1].name.as_deref(), Some("Second"));
         assert_eq!(listed[1].role.as_deref(), Some("owner"));
+    }
+
+    /// A stop does not wait for a step that cannot be interrupted: unmounting a folder or
+    /// keeping a tree whose step is still under way is given its budget and no more, rather
+    /// than hanging until a repository's tree is walked and the holder being killed for it.
+    #[test]
+    fn a_stop_does_not_wait_for_a_step_that_cannot_be_interrupted() {
+        /// What a mount or a tree is like to drop while one of its steps is under way.
+        struct Walking;
+
+        impl Drop for Walking {
+            fn drop(&mut self) {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let started = Instant::now();
+        assert!(!runtime.block_on(drop_within(Walking, Duration::from_millis(100))));
+        assert!(
+            started.elapsed() < Duration::from_millis(800),
+            "the stop waited {:?} for a step",
+            started.elapsed()
+        );
+        assert!(
+            runtime.block_on(drop_within((), Duration::from_secs(1))),
+            "a step that ends is waited for"
+        );
     }
 }

@@ -67,6 +67,9 @@ public final class AssistantModel {
     /// When this device was approved, where it then stopped before it got in: the way in goes
     /// on from there, and nothing is paired a second time. Nil where no approved join waits.
     public private(set) var joinApproved: Date?
+    /// Which look the person's Tilo draws in, light or dark: the frame draws in the same
+    /// (`AssistantRoot`). Nil while nothing is known of it, and the system's look stands in.
+    public private(set) var look: Look?
     public private(set) var subAgents: [SubAgent] = []
     public private(set) var tasks: [AssistantTask] = []
     public private(set) var automations: [Automation] = []
@@ -120,10 +123,16 @@ public final class AssistantModel {
     /// The piece whose words are laid out for the person to mark a part of them: Select text in
     /// a piece's menu. Nil: none are.
     public var selecting: PieceWords?
+    /// A live artifact open in the Mac Split Studio stage or iPhone full-screen sheet.
+    public var stagedLive: LiveThing?
     #if os(macOS)
     /// Where Copy in a piece's menu puts the words: the system's pasteboard. A test hands it one
     /// of its own.
     @ObservationIgnored public var pasteboard = NSPasteboard.general
+    #else
+    /// Where Copy in a piece's menu puts the words: the system's pasteboard. Whoever checks Copy
+    /// hands it one of its own.
+    @ObservationIgnored public var pasteboard = UIPasteboard.general
     #endif
     /// A piece the conversation should bring into view.
     public var shownItem: Item.ID?
@@ -178,6 +187,7 @@ public final class AssistantModel {
         follow(source.sinceLeft()) { $0.sinceLeft = $1 }
         follow(source.joinStops()) { $0.joinStops = $1 }
         follow(source.joinApproved()) { $0.joinApproved = $1 }
+        follow(source.pageLook()) { $0.look = $1 }
         listen(.main)
     }
 
@@ -200,6 +210,7 @@ public final class AssistantModel {
         sinceLeft = await first(source.sinceLeft()) ?? nil
         joinStops = await first(source.joinStops()) ?? false
         joinApproved = await first(source.joinApproved()) ?? nil
+        look = await first(source.pageLook()) ?? nil
         for chat in [Chat.main] + subAgents.map({ Chat.subAgent($0.id) }) {
             guard let change = await first(source.conversation(chat)) else { continue }
             var conversation = Conversation()
@@ -346,6 +357,25 @@ public final class AssistantModel {
 
     public func subAgent(_ id: SubAgent.ID) -> SubAgent? {
         subAgents.first { $0.id == id }
+    }
+
+    /// Sub-agents that are currently running or waiting for input.
+    public var activeSubAgents: [SubAgent] {
+        subAgents.filter { $0.state == .working || $0.state == .needsYou }
+    }
+
+    /// Every live artifact shared in `chat`, newest first, deduplicated by id.
+    public func liveThings(in chat: Chat) -> [LiveThing] {
+        var seen: Set<LiveThing.ID> = []
+        var result: [LiveThing] = []
+        for item in conversation(chat).items.reversed() {
+            if case .message(let message) = item.content {
+                for thing in message.live.reversed() where seen.insert(thing.id).inserted {
+                    result.append(thing)
+                }
+            }
+        }
+        return result
     }
 
     public func tasks(_ state: AssistantTask.State) -> [AssistantTask] {
@@ -737,6 +767,8 @@ extension EnvironmentValues {
     /// The view that draws a live Tilo thing. Whoever implements `AssistantSource` supplies it;
     /// the frame draws an empty place where there is none.
     @Entry public var liveThingView: (@MainActor (LiveThing) -> AnyView)?
+    /// The full-size interactive live view for the Mac Split Studio stage and iPhone full-screen sheet.
+    @Entry public var liveStageView: (@MainActor (LiveThing) -> AnyView)?
     /// Whether what stands in a protected field is put out of sight: while the app is not in
     /// front, when the system keeps a picture of its window.
     @Entry public var coversSecrets = false

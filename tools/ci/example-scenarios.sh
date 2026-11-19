@@ -8,10 +8,10 @@
 #
 #   tools/ci/example-scenarios.sh -p example-counter -p tilo-app ...
 #
-# Run it under tools/test-env.sh. An example with no saved scenario fails: every example
-# ships one.
+# An example with no saved scenario fails: every example ships one.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+repo=$PWD
 
 selected=" $* "
 apps=()
@@ -28,15 +28,28 @@ if [[ ${#apps[@]} -eq 0 ]]; then
   exit 0
 fi
 
-cargo build --locked --quiet -p tilo-app-cli --bin tilo-app
-tilo_app=${CARGO_TARGET_DIR:-$PWD/target}/debug/tilo-app
-# Examples share the same dependency feature set. Link the selected binaries
-# in one Cargo graph instead of serializing ten independent builds. Each
-# scenario still performs its normal Cargo freshness check and native audit.
-# A single selected example keeps the original path without an extra check.
-if [[ ${#apps[@]} -gt 1 ]]; then
-  cargo build --locked --bins "${packages[@]}"
+# The builds get the caller's environment and the inputs every job's build shares
+# (tools/test-env.sh --build); the scenarios get the test environment (a fresh HOME, lavapipe, the
+# fonts, a private audio endpoint). A variable in a build's environment keys every build script's
+# and proc macro's cache entry by it, and the test environment's differ per job, so a build that
+# carried one would share no cache with any other job's. The second start names the pass the
+# builds made as an argument, so the environment holds no marker that would key the scenario
+# runner's own app builds apart from the builds.
+if [[ ${1:-} != --built ]]; then
+  build=(bash "$repo/tools/test-env.sh" --build)
+  "${build[@]}" cargo build --locked --quiet -p tilo-app-cli --bin tilo-app
+  # Examples share the same dependency feature set. Link the selected binaries
+  # in one Cargo graph instead of serializing ten independent builds. Each
+  # scenario still performs its normal Cargo freshness check and native audit.
+  # A single selected example keeps the original path without an extra check.
+  if [[ ${#apps[@]} -gt 1 ]]; then
+    "${build[@]}" cargo build --locked --bins "${packages[@]}"
+  fi
+  exec bash "$repo/tools/test-env.sh" bash "$repo/tools/ci/example-scenarios.sh" --built "$@"
 fi
+shift
+
+tilo_app=${CARGO_TARGET_DIR:-$PWD/target}/debug/tilo-app
 failed=()
 for app in "${apps[@]}"; do
   echo "== ${app}"

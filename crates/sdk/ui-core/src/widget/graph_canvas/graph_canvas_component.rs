@@ -64,10 +64,11 @@ pub fn connection_description() -> EnumDescription {
 /// Nodes that are views of their own, placed where each says (or in rows when none says), and
 /// the connections between them drawn under them: a pipeline, a flow, the parts of a system.
 #[derive(Component, Default)]
-#[component(name = "GraphCanvas", role = "Group", label = "name")]
+#[component(name = "GraphCanvas", role = "Group", label = "title")]
 pub struct GraphCanvasProps {
-    /// What the graph is, for assistive technology.
-    pub name: Option<String>,
+    /// What the graph is called: shown over it, as every chart's title is, and its name for
+    /// assistive technology.
+    pub title: Option<String>,
     /// The nodes, in order.
     #[component(part(default))]
     pub nodes: Vec<GraphNodeProps>,
@@ -128,7 +129,7 @@ impl Described for GraphCanvas {
                 .take()
                 .unwrap_or_else(|| Box::new(Spacer::token(crate::tokens::SpacingStep::S0)))
         };
-        let mut canvas = if placed && !props.nodes.is_empty() {
+        let canvas = if placed && !props.nodes.is_empty() {
             GraphCanvas::new(
                 props
                     .nodes
@@ -154,17 +155,17 @@ impl Described for GraphCanvas {
                 u16::try_from(props.columns.unwrap_or(3).clamp(1, 64)).unwrap_or(3),
             )
         };
+        let mut canvas = canvas.with_title(props.title);
         canvas.node_ids = ids;
-        canvas.name = props.name;
         canvas.layout = layout;
         canvas
     }
 
-    /// New connections and a new name are taken where the graph stands; nodes that are not the
-    /// ones it holds, or that stand elsewhere now, build it again.
+    /// New connections are taken where the graph stands; nodes that are not the ones it holds,
+    /// that stand elsewhere now, or a new title build it again.
     fn set_props(&mut self, props: GraphCanvasProps) -> bool {
         let ids: Vec<String> = props.nodes.iter().map(|node| node.id.clone()).collect();
-        if ids != self.node_ids || layout_of(&props) != self.layout {
+        if ids != self.node_ids || layout_of(&props) != self.layout || props.title != self.title {
             return false;
         }
         self.connections = props
@@ -175,7 +176,6 @@ impl Described for GraphCanvas {
                 to: c.to,
             })
             .collect();
-        self.name = props.name;
         true
     }
 }

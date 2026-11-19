@@ -40,6 +40,8 @@ use crate::workspaces::authority::WorkspaceOp;
 use crate::workspaces::{IssueInvitationRequest, WorkspaceSummary, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
+mod machine;
+
 /// The host's own operations.
 pub(super) const ACCOUNT: Publisher = Publisher {
     provider: HOST_ACTIONS_PROVIDER,
@@ -59,7 +61,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`ServiceOperation`] it is.
-pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 12] = [
+pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 16] = [
     (
         Verb {
             id: CREATE_WORKSPACE,
@@ -180,7 +182,117 @@ pub(super) const ACCOUNT_VERBS: [(Verb, ServiceOperation); 12] = [
         },
         ServiceOperation::UnhostWorkspace,
     ),
+    (
+        Verb {
+            id: PLAN_MACHINE,
+            label: "Plan a machine",
+            check: PLAN_MACHINE,
+            kind: roles::GOVERNANCE_KIND,
+            params: plan_machine_params,
+        },
+        ServiceOperation::PlanMachine,
+    ),
+    (
+        Verb {
+            id: LIST_MACHINES,
+            label: "List the machines you planned",
+            check: LIST_MACHINES,
+            kind: ActionKind::Read,
+            params: Vec::new,
+        },
+        ServiceOperation::ListMachines,
+    ),
+    (
+        Verb {
+            id: SHOW_MACHINE,
+            label: "Show a machine you planned",
+            check: SHOW_MACHINE,
+            kind: ActionKind::Read,
+            params: machine_params,
+        },
+        ServiceOperation::ShowMachine,
+    ),
+    (
+        Verb {
+            id: ADMIT_MACHINE,
+            label: "Take a planned machine in",
+            check: ADMIT_MACHINE,
+            kind: roles::GOVERNANCE_KIND,
+            params: admit_machine_params,
+        },
+        ServiceOperation::AdmitMachine,
+    ),
 ];
+
+/// Plan a machine: the plan document the person's window or command wrote,
+/// under the name the person sees it by, and where the token file it names is
+/// written, for the command it answers.
+pub(super) const PLAN_MACHINE: &str = "machine.plan";
+/// The machines the person planned and has not installed.
+pub(super) const LIST_MACHINES: &str = "machine.list";
+/// One of them, by its plan.
+pub(super) const SHOW_MACHINE: &str = "machine.show";
+/// Take a machine that enrolled with a plan's token into its entry under its
+/// device key.
+pub(super) const ADMIT_MACHINE: &str = "machine.admit";
+
+fn plan_machine_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "plan",
+            ParamType::Text,
+            "The plan document, as the command or the window wrote it (JSON).",
+        ),
+        ActionParam::required(
+            "label",
+            ParamType::Text,
+            "The name you see the machine by, 1 to 80 bytes.",
+        ),
+        ActionParam::required(
+            "token_file",
+            ParamType::Text,
+            "Where the token file the medium carries is, which the answer names.",
+        ),
+        ActionParam::optional(
+            "installer_url",
+            ParamType::Text,
+            "Where the installer is served, for the command the answer prints.",
+        ),
+    ]
+}
+
+fn machine_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "plan",
+        ParamType::Text,
+        "The plan's id, as listing the machines prints it.",
+    )]
+}
+
+fn admit_machine_params() -> Vec<ActionParam> {
+    vec![
+        ActionParam::required(
+            "device",
+            ParamType::Text,
+            "The machine's device key, 64 lowercase hex characters.",
+        ),
+        ActionParam::required(
+            "nonce",
+            ParamType::Text,
+            "The token's nonce, 32 lowercase hex characters.",
+        ),
+        ActionParam::optional(
+            "drives",
+            ParamType::Text,
+            "The drives the machine reported, as JSON; none when it has not reported.",
+        ),
+        ActionParam::optional(
+            "ask",
+            ParamType::Text,
+            "The choices the machine asks about, choice to reason, as JSON.",
+        ),
+    ]
+}
 
 fn workspace_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
@@ -429,7 +541,7 @@ impl Workspaces {
     ) -> Vec<CatalogueRow> {
         let now = tilo_clock::unix_now_ns();
         let person = device.user_public_key == self.inner.host.cert.user_public_key;
-        let grants = if agents::is_the_person(caller, device) {
+        let grants = if agents::is_the_person(caller, device, workspace_id) {
             None
         } else {
             Some(self.agent_grants(workspace_id, caller).await)
@@ -540,6 +652,14 @@ impl Workspaces {
             ServiceOperation::HostWorkspace | ServiceOperation::UnhostWorkspace => {
                 self.serving_invoke(device, operation, &args, now).await
             }
+            ServiceOperation::PlanMachine
+            | ServiceOperation::ListMachines
+            | ServiceOperation::ShowMachine
+            | ServiceOperation::AdmitMachine => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                Box::pin(machine::invoke(self, operation, &args)).await
+            }
             _ => Err(ActionCallError::UnknownAction),
         }
     }
@@ -620,12 +740,10 @@ impl Workspaces {
                 let named = args.text("name")?.is_some();
                 makes
                     && self.own().is_some_and(|own| {
-                        let mine = own.of(&person);
-                        let theirs = |moving: &str| mine.iter().any(|own| own == moving);
                         if named {
-                            !moving.is_some_and(theirs)
+                            !moving.is_some_and(|moving| own.is_of(&person, moving))
                         } else {
-                            moving.is_none() && mine.is_empty()
+                            moving.is_none() && !own.any_of(&person)
                         }
                     })
             }
@@ -777,17 +895,34 @@ impl Workspaces {
         let person = device.user_public_key;
         if person != self.inner.host.cert.user_public_key {
             let own = self.own().map(|own| own.of(&person)).unwrap_or_default();
+            let now = tilo_clock::unix_now_ns();
+            // A workspace they were invited into carries none of their labels. Every one the
+            // list may name is read in one pass over the registry, however many they keep: the
+            // list is built as often as it changes, and a lock per workspace would cost more
+            // the more workspaces they have.
+            let mut invited = if labels.is_empty() {
+                self.inner.memberships.of(&person)
+            } else {
+                Vec::new()
+            };
+            invited.retain(|workspace| !own.contains(workspace));
+            let wanted: std::collections::HashSet<String> = own
+                .iter()
+                .chain(&invited)
+                .filter(|workspace| only.names(workspace) && self.lists_to(device, workspace))
+                .cloned()
+                .collect();
+            let mut kept = self.listings_of(&wanted).await;
             let mut listed: Vec<WorkspaceListing> = Vec::new();
             for workspace in &own {
-                if !only.names(workspace)
-                    || !self.lists_to(device, workspace)
+                if !wanted.contains(workspace)
                     || !self
                         .own()
                         .is_some_and(|own| labelled(&own.labels_of(workspace), labels))
                 {
                     continue;
                 }
-                if let Ok(mut one) = self.listing_of(workspace).await {
+                if let Some(mut one) = kept.remove(workspace) {
                     one.role = Some(OWNER_ROLE.to_owned());
                     if let Some(own) = self.own() {
                         one.labels = own.labels_of(workspace);
@@ -796,24 +931,14 @@ impl Workspaces {
                     listed.push(one);
                 }
             }
-            let now = tilo_clock::unix_now_ns();
-            // A workspace they were invited into carries none of their labels.
-            let invited = if labels.is_empty() {
-                self.inner.memberships.of(&person)
-            } else {
-                Vec::new()
-            };
             for workspace in invited {
-                if own.contains(&workspace)
-                    || !only.names(&workspace)
-                    || !self.lists_to(device, &workspace)
-                {
+                if !wanted.contains(&workspace) {
                     continue;
                 }
                 let Some(role) = self.role_of(&workspace, person, now).await else {
                     continue;
                 };
-                if let Ok(mut one) = self.listing_of(&workspace).await {
+                if let Some(mut one) = kept.remove(&workspace) {
                     one.role = Some(role.key().to_owned());
                     listed.push(one);
                 }
@@ -900,8 +1025,15 @@ impl Workspaces {
             (None, None) => Some(own.making(hex::encode(person)).await),
             (None, Some(_)) => None,
         };
-        let mine = own.of(&person);
-        let theirs = moving.filter(|moving| mine.iter().any(|own| own == moving));
+        let theirs = moving.filter(|moving| own.is_of(&person, moving));
+        // A key the workspace keeps as revoked is told so, and invited no more.
+        if device.capabilities.agent.is_some()
+            && let Some(moving) = moving
+        {
+            self.refuse_revoked_key(moving, device)
+                .await
+                .map_err(|error| refused(&error))?;
+        }
         let summary = if let Some(moving) = theirs {
             // One of theirs: a device of theirs entering it, or a grant's
             // parent asking for the invitation into it.
@@ -928,10 +1060,12 @@ impl Workspaces {
             // and it is never read as some other workspace they have.
             return Err(refused(&Refusal::NotYourOwn.to_reason()));
         } else if name.is_none()
-            && let Some(first) = mine.first()
+            && let Some(first) = own.first_of(&person)
         {
             // A plain ask for "my workspace" answers the first they made.
-            self.summary(first).await.map_err(|error| refused(&error))?
+            self.summary(&first)
+                .await
+                .map_err(|error| refused(&error))?
         } else if !makes {
             return Err(refused(&Refusal::NotYourOwn.to_reason()));
         } else {
@@ -1070,8 +1204,9 @@ impl Workspaces {
             return Ok(None);
         }
         let mut refusal = None;
-        // Its own person's workspace is the work setting's to take: for them,
-        // this host is one of their devices, not a host that let them in.
+        // A workspace its own person governs was taken above, whatever the work
+        // setting; this host keeps another's only for an owner it keeps
+        // workspaces for.
         let others = super::super::owners(request)?
             .into_iter()
             .filter(|owner| *owner != host.cert.user_public_key);
@@ -1146,6 +1281,8 @@ mod addresses_tests;
 #[cfg(test)]
 mod asking_tests;
 mod branch;
+#[cfg(all(test, feature = "agents"))]
+mod calendar_reach_tests;
 #[cfg(all(test, feature = "agents"))]
 mod calendar_tests;
 #[cfg(test)]

@@ -60,6 +60,39 @@ pub fn read_request(path: &Path) -> Result<Vec<u8>, String> {
     read_input(&path.to_string_lossy(), MAX_REQUEST_BYTES)
 }
 
+/// Read a secret the caller keeps in a file, with the checks a token needs: a
+/// regular file, not a symlink, readable only by its owner, in a directory
+/// nobody else can swap it out of, and small.
+pub fn read_secret_input(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let caller = ["PKEXEC_UID", "SUDO_UID"]
+            .iter()
+            .find_map(|k| std::env::var(k).ok())
+            .map(|v| v.parse::<u32>().map_err(|_| "invalid caller UID"))
+            .transpose()?
+            .unwrap_or(0);
+        let trusted = |m: &std::fs::Metadata| m.uid() == 0 || m.uid() == caller;
+        let parent = path.parent().ok_or("the secret has no directory")?;
+        let dir = std::fs::symlink_metadata(parent).map_err(|e| e.to_string())?;
+        if !dir.is_dir() || !trusted(&dir) || dir.permissions().mode() & 0o022 != 0 {
+            return Err("the secret's directory is writable by others".into());
+        }
+        let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        if !meta.is_file() || !trusted(&meta) || meta.permissions().mode() & 0o077 != 0 {
+            return Err(
+                "the secret file is not owned safely and readable only by its owner".into(),
+            );
+        }
+    }
+    let bytes = read_input(&path.to_string_lossy(), limit)?;
+    if bytes.is_empty() {
+        return Err("the secret file is empty".into());
+    }
+    Ok(bytes)
+}
+
 pub fn create_progress(path: &Path) -> Result<std::fs::File, String> {
     let mut options = std::fs::OpenOptions::new();
     // create_new refuses a pre-planted file or symlink.

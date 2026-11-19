@@ -13,7 +13,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace_at};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
@@ -76,7 +76,11 @@ fn fixture_with_documents_and_expiry(
         issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
-    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
+    // The fixture's one instant: the founding, the seed and every write are
+    // stamped with it, so a second read of the same fixture builds the same
+    // bytes.
+    let made_at_secs = 2000;
+    let now = SystemTime::UNIX_EPOCH + Duration::from_secs(made_at_secs);
     let mut peer =
         StatePeer::new(WORKSPACE, cert.clone(), vec![], RevocationList::new(), now).unwrap();
     let documents = (0..count)
@@ -98,7 +102,13 @@ fn fixture_with_documents_and_expiry(
         .collect::<Vec<_>>();
     peer.install_seed(
         SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &cert, &[cert.clone()]).unwrap(),
+            workspace_changes: seed_workspace_at(
+                WORKSPACE,
+                &cert,
+                &[cert.clone()],
+                i64::try_from(made_at_secs).unwrap(),
+            )
+            .unwrap(),
             documents,
         },
         &key,
@@ -440,21 +450,9 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
         .collect::<Vec<_>>();
     changes.reverse();
     eprintln!("last changes (bytes, ops): {changes:?}");
-    // Every change carries an entry naming who made it, the same whatever the
-    // change writes: what a layout costs is the rest of the change, here and
-    // in the whole-map layout alike.
-    let attribution = workspace
-        .get_changes(&[])
-        .into_iter()
-        .rev()
-        .take(end.changes - start.changes)
-        .map(|change| change.message().map_or(0, str::len))
-        .sum::<usize>();
-    (
-        end.bytes - start.bytes - attribution,
-        whole_map_bytes,
-        saved,
-    )
+    // A governance change names who wrote it by its actor and when by its time, both automerge's
+    // own fields: what a layout costs is the change itself.
+    (end.bytes - start.bytes, whole_map_bytes, saved)
 }
 
 #[test]

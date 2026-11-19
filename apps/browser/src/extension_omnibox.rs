@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use ui::webview::{OmniboxInput, OmniboxSuggestion, SharedEngine, WebViewCommand, WebViewEvent};
+use tilo_webview::{OmniboxInput, OmniboxSuggestion, SharedEngine, WebViewCommand, WebViewEvent};
 
 /// The longest keyword taken from a manifest.
 const MAX_KEYWORD_CHARS: usize = 64;
@@ -277,7 +277,7 @@ impl ExtensionOmnibox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::webview::test_engine::TestEngine;
+    use tilo_webview::test_engine::TestEngine;
 
     fn keyword(id: &str, keyword: &str) -> Keyword {
         Keyword {

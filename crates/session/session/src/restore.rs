@@ -26,6 +26,7 @@ use tilo_desktop_model::{Layout, TabId, TileContent, WorkspaceId};
 use crate::apps::{self, Apps};
 use crate::i18n::t_args;
 use crate::windows_compat::Reopen;
+use tilo_desktop_surface::outcome::Closed;
 
 /// How long a saved window may take to show itself before its tab says it did not open: an app that
 /// started and never mapped is not coming.
@@ -76,8 +77,13 @@ pub(crate) struct Restore {
     /// tab of one of them that no window of theirs claimed is a window the app closed while the
     /// desktop was away, and is not asked for again, which would start a second instance of an app
     /// that still runs. An app that ended while the desktop was away is one step further: its tabs
-    /// close the same way, and its end is reported rather than the app started again.
+    /// close the same way, and its end is reported rather than the app started again. An app whose
+    /// keeper was killed outright never ended, so its tab stays to say it stopped working.
     kept_apps: Vec<String>,
+    /// The kept launches whose keeper was killed outright while no desktop was there, until their
+    /// saved tabs say the app stopped working ([`Self::show_stopped`]).
+    #[cfg(target_os = "linux")]
+    stopped: Vec<tilo_app_launch::kept::KeptLaunch>,
     /// The revision of the layout the kept windows' keepers were last told their tabs at.
     placed_at: Option<u64>,
     /// The apps still running from before an update that this desktop cannot show, while they
@@ -214,7 +220,7 @@ impl Restore {
         #[cfg(target_os = "linux")]
         let kept = self
             .kept_since
-            .filter(|_| !self.kept.is_empty())
+            .filter(|_| !self.kept.is_empty() || !self.stopped.is_empty())
             .and_then(|since| since.checked_add(KEPT_WAIT));
         #[cfg(not(target_os = "linux"))]
         let kept = None;
@@ -251,9 +257,9 @@ impl Restore {
             self.kept_since = Some(Instant::now());
             #[cfg(target_os = "linux")]
             {
-                let (kept, ended) = apps.take_kept();
-                self.kept = kept;
-                for launch in ended {
+                let taken = apps.take_kept();
+                self.kept = taken.kept;
+                for launch in taken.ended {
                     tracing::info!(
                         target: tilo_startup_metrics::KEPT_APPS_TARGET,
                         app = %launch.app,
@@ -261,6 +267,7 @@ impl Restore {
                     );
                     self.keep_identities(launch);
                 }
+                self.stopped = taken.killed;
                 self.close_left_by_kept(desktop);
             }
         }
@@ -271,6 +278,8 @@ impl Restore {
                 apps.attach_kept(keeper);
             }
             self.claim_outdated(apps, shown);
+            // Before the tabs are asked for: no app is started for one that says its app stopped.
+            self.show_stopped(desktop);
         }
         // A saved tab's Windows program the service would not open: the tab says so.
         for refused in apps.take_windows_refused() {
@@ -319,6 +328,11 @@ impl Restore {
                 policy.on_its_way(saved.tab) || !policy.waits_for_window(saved.tab)
             });
             if coming {
+                continue;
+            }
+            // A tab that names no app has nothing to start: it stays as it stands, for a kept
+            // window that claims it ([`Self::claim_kept`]).
+            if saved.app.trim().is_empty() {
                 continue;
             }
             let host = workspace_holding(desktop, saved.tab, |held| held.id().to_string())
@@ -441,6 +455,43 @@ impl Restore {
         self.waiting.retain(|saved| !closed.contains(&saved.tab));
         for tab in closed {
             desktop.with_policy(|policy| policy.release_tab(tab));
+        }
+    }
+
+    /// Put the saved tab of each kept app whose keeper was killed outright to saying the app
+    /// stopped working, with Reopen: the person lost what it held without closing it. It stands
+    /// in the first tab of the app, where the person looks first, and the app's other tabs close
+    /// as one the app closed would; an app whose saved tab is gone, or whose layout never comes,
+    /// gets a tab of its own, as one that ended while the desktop was away. Only once the layout
+    /// is laid out is there a tab to put it in.
+    #[cfg(target_os = "linux")]
+    fn show_stopped(&mut self, desktop: &ShellDesktop) {
+        let waited = self
+            .kept_since
+            .is_some_and(|since| since.elapsed() >= KEPT_WAIT);
+        if self.stopped.is_empty() || !(self.seeded || waited) {
+            return;
+        }
+        for launch in std::mem::take(&mut self.stopped) {
+            let tabs: Vec<TabId> = self
+                .waiting
+                .iter()
+                .filter(|saved| launch_by(&launch, saved))
+                .map(|saved| saved.tab)
+                .collect();
+            self.waiting.retain(|saved| !tabs.contains(&saved.tab));
+            let asked = launch.asked.clone().unwrap_or_else(|| launch.app.clone());
+            let title = launch.title.clone();
+            let mut tabs = tabs.into_iter();
+            let first = tabs.next();
+            for tab in tabs {
+                desktop.with_policy(|policy| policy.release_tab(tab));
+            }
+            if let Err(error) =
+                desktop.with_policy(|policy| policy.stopped(&asked, &title, Closed::Crashed, first))
+            {
+                tracing::warn!(%error, app = %asked, "no notice for an app that stopped");
+            }
         }
     }
 
@@ -705,9 +756,15 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
             let TileContent::LocalApp { app_id, label, .. } = &tab.tile else {
                 continue;
             };
-            if app_id.trim().is_empty() {
+            // A tab that shows one thing of the app is the person's place of that thing, not a
+            // window waiting to be opened again.
+            if tilo_desktop_model::apps::shows_a_view(tab) {
                 continue;
             }
+            // A window that announced no app id (an X11 client without a class, `vkcube`) is
+            // saved under none: nothing here can start it again, but its window, kept across an
+            // in-place restart, still claims this tab by its id.
+            let unnamed = app_id.trim().is_empty();
             let name = if label.trim().is_empty() {
                 app_id.clone()
             } else {
@@ -719,16 +776,41 @@ fn waiting_in(tree: &Layout, wanted: impl Fn(WorkspaceId) -> bool) -> Vec<(Works
                     tab: tab.id,
                     app: app_id.clone(),
                     name,
-                    start: apps::launch_of(app_id).map(Start::App).or_else(|| {
-                        crate::windows_compat::saved_entry(&workspace.id().to_string(), app_id)
-                            .map(Start::Windows)
-                    }),
+                    start: if unnamed {
+                        None
+                    } else {
+                        apps::launch_of(app_id).map(Start::App).or_else(|| {
+                            crate::windows_compat::saved_entry(&workspace.id().to_string(), app_id)
+                                .map(Start::Windows)
+                        })
+                    },
                     shows: tab.view.clone(),
                 },
             ));
         }
     }
     saved
+}
+
+/// Whether `saved` is a tab of one of the windows of the kept launch `launch`: by what its
+/// windows announce themselves as, or, for a Windows program, by the entry it was asked as.
+#[cfg(target_os = "linux")]
+fn launch_by(launch: &tilo_app_launch::kept::KeptLaunch, saved: &Saved) -> bool {
+    if let Some(Start::Windows(entry)) = &saved.start
+        && launch
+            .asked
+            .as_deref()
+            .is_some_and(|asked| asked == format!("{}{entry}", crate::windows_compat::ASKED_PREFIX))
+    {
+        return true;
+    }
+    let app = saved.app.as_str();
+    std::iter::once(launch.app.as_str())
+        .chain(launch.window_identities.iter().map(String::as_str))
+        .any(|id| {
+            tilo_desktop_model::apps::app_ids_match(id, app)
+                || tilo_desktop_model::apps::app_ids_match(app, id)
+        })
 }
 
 /// What a tab says when the app it holds is not on this machine.
@@ -1035,6 +1117,51 @@ mod tests {
             Some(41),
             "the window takes its own tab"
         );
+    }
+
+    /// A kept app whose window announces no app id (an X11 client without a class, `vkcube`) was
+    /// saved in a tab that names no app. After an in-place restart that window still takes its own
+    /// tab, by the tab its keeper was told, instead of opening a new tab beside an empty one.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_kept_window_that_names_no_app_takes_its_own_tab() {
+        let unnamed = TileContent::LocalApp {
+            app_id: String::new(),
+            label: "vkcube".into(),
+            note: String::new(),
+        };
+        let mut tree = layout(vec![window(44, unnamed), window(43, notes())]);
+        tree.active = tree.workspaces[0].id();
+        let (desktop, _policy) = tilo_shell_surface::desktop(7, 1.0);
+        let mut restore = Restore::default();
+        restore.begin();
+        assert!(restore.start(&Layout::default(), &mut tree));
+        desktop.with_policy(|policy| policy.handle().replace_tree(tree.clone()));
+        let mut cube = kept(&[("w1", Some("44"))]);
+        cube.windows[0].app_id = None;
+        restore.kept = vec![cube];
+        restore.kept_since = Some(std::time::Instant::now());
+        assert_eq!(
+            restore.claim_kept(&desktop),
+            [50],
+            "its tab is laid out: it shows without waiting for every layout"
+        );
+        let waiting: Vec<u64> = restore.waiting.iter().map(|saved| saved.tab).collect();
+        assert_eq!(waiting, [43], "only another app's tab still waits");
+        let tab = desktop.with_policy(|policy| {
+            policy
+                .map(tilo_desktop_policy::Window {
+                    id: 1,
+                    app_id: None,
+                    pid: Some(50),
+                    tag: Some("w1".into()),
+                    ..tilo_desktop_policy::Window::default()
+                })
+                .expect("mapped");
+            policy.tab_of(1)
+        });
+        assert_eq!(tab, Some(44), "the window takes its own tab");
+        assert_eq!(tabs(&desktop), [44, 43], "and no other tab opened");
     }
 
     /// On a real login the keepers answer before the workspaces' layouts are read. Their windows

@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use crate::Entry;
 
 use super::{Command, Exit, MAX_BACKOFF, NOT_ADMITTED, Task, TransportPhase};
-use crate::remote::NOT_CONNECTED;
+use tilo_session_actions::NOT_CONNECTED;
 
 /// Where the host's answer to another entry goes ([`Cmd::Enter`]).
 pub(super) type EntryCompletion =
@@ -35,9 +35,9 @@ pub(super) enum Refusal {
 
 pub(super) fn refusal(error: &LinkError) -> Refusal {
     match error {
-        LinkError::HostChanged => Refusal::Final(
+        LinkError::ServerChanged => Refusal::Final(
             "host-changed",
-            "This workspace’s host was set up again.".to_owned(),
+            "This workspace’s server was set up again.".to_owned(),
         ),
         LinkError::Unavailable(_) | LinkError::Malformed(_) | LinkError::Sign(_) => {
             Refusal::Reachability

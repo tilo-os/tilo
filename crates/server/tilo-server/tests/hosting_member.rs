@@ -170,29 +170,47 @@ async fn a_certified_host_of_the_person_serves_a_workspace_its_device_governs() 
     clippy::significant_drop_tightening,
     reason = "Hosted::stop consumes each holder after the assertions; the suggested earlier drop would use a moved value"
 )]
-async fn a_device_serves_no_workspace_another_device_governs() {
+async fn every_device_of_the_governing_person_holds_the_workspace_and_no_one_elses_does() {
     let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let desktop = alice.enrol("desktop", DeviceCapabilities::primary());
+    let bobs = bob.enrol("desktop", DeviceCapabilities::primary());
     let governor = serve_on(&alice, &laptop, WorkSetting::none()).await;
-    let other = serve_on(&alice, &desktop, WorkSetting::none()).await;
+    let own = serve_on(&alice, &desktop, WorkSetting::none()).await;
+    let others = serve_on(&bob, &bobs, WorkSetting::none()).await;
     let workspaces = governor.host.workspaces();
     let workspace = workspaces.create("Notes").await.unwrap();
 
-    let refused = workspaces
+    // Another device of the person who governs the workspace holds it, though
+    // it takes no work from anyone: the workspace is the person's, not the
+    // device's it was made on.
+    let held = workspaces
         .attach_server(
             &workspace.workspace,
             desktop.device_pubkey(),
-            other.host.node_addr(),
+            own.host.node_addr(),
+            CopyRole::KeyHolder,
+        )
+        .await;
+    assert!(held.is_ok(), "{held:?}");
+    // A device of someone who does not govern it, and takes no one's work,
+    // does not.
+    let refused = workspaces
+        .attach_server(
+            &workspace.workspace,
+            bobs.device_pubkey(),
+            others.host.node_addr(),
             CopyRole::KeyHolder,
         )
         .await;
     assert!(refused.is_err(), "{refused:?}");
     assert_eq!(
         workspaces.hosts(&workspace.workspace).await.unwrap().len(),
-        1
+        2
     );
-    other.stop().await;
+    others.stop().await;
+    own.stop().await;
     governor.stop().await;
 }
 

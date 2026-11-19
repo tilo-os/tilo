@@ -1,6 +1,6 @@
 //! An agent on another of the person's devices at this desktop's MCP server,
 //! over iroh: the server this session answers on (`Session::device_mcp`, what
-//! its endpoint serves on `tilo_mcp::devices::ALPN`) admits only the
+//! its endpoint serves on `tilo_device_mcp::ALPN`) admits only the
 //! person's own devices, and an agent from one is asked about on the same
 //! sheet as a program of this login — named after the device it came from —
 //! unless the person let agents from their other devices in on this device.
@@ -34,7 +34,7 @@ use tilo_actions::remote::PendingPoll;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 use tilo_device_identity::{IdentityPaths, persist};
-use tilo_mcp::devices::{ALPN, NotOpened, open};
+use tilo_device_mcp::{ALPN, NotOpened, open};
 use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
 use tilo_runtime::personal_devices::PersonalDevices;
@@ -577,7 +577,7 @@ struct ThisComputer {
     /// The certificate this device presents.
     cert: DeviceCert,
     /// The person's root, signing here as it does at their own desktop.
-    root: runtime_identity::SigningIdentity,
+    root: tilo_identity::store::SigningIdentity,
     /// The workspace this device holds, by id.
     workspace: String,
     /// Where the session keeps what it holds.
@@ -605,10 +605,10 @@ impl ThisComputer {
         let key = persist::load_device_key(&paths).expect("this device's key");
         let cert =
             persist::read_device_cert(&paths.device_cert).expect("this device's certificate");
-        let record = runtime_identity::resolve_active_identity(&identity_dir)
+        let record = tilo_identity_client::resolve_active_identity(&identity_dir)
             .expect("this identity's record");
-        let root =
-            runtime_identity::load_from_path(record).expect("the person's root signs on this box");
+        let root = tilo_identity::store::load_from_path(record)
+            .expect("the person's root signs on this box");
         let workspace = collab_types::personal_cluster(&cert.user_public_key).to_string();
         workspace_held_here(state.path(), &workspace, &cert, &key);
         Self {
@@ -1255,7 +1255,7 @@ fn notes(
             workspace_id: workspace.to_owned(),
             device_certificate: serde_json::to_vec(cert).expect("a certificate is JSON"),
             proof: key
-                .sign(&runtime_identity::collaboration_join_digest(workspace).unwrap())
+                .sign(&tilo_identity_client::collaboration_join_digest(workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }

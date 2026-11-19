@@ -120,13 +120,29 @@ impl ProgressBarFace {
         ctx.scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.intent.selection,
+            theme.tokens.colors.intent.value_track,
             None,
             &RoundedRect::from_rect(rect, radius),
         );
         let fill = self.fill_colour(theme);
+        let filled = self.filled(theme, rect);
+        if !filled.is_zero_area() {
+            ctx.scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &RoundedRect::from_rect(filled, radius),
+            );
+        }
+        filled
+    }
+
+    /// The part of a track spanning `rect` that is filled: the share done, or where the
+    /// indeterminate segment stands now.
+    fn filled(&self, theme: &Theme, rect: Rect) -> Rect {
         let track_width = rect.width();
-        let filled = match self.progress {
+        match self.progress {
             None => {
                 let segment_width = track_width * INDETERMINATE_SEGMENT_FRAC;
                 let travel = track_width + segment_width;
@@ -146,17 +162,7 @@ impl ProgressBarFace {
                 rect.y1,
             ),
             Some(_) => Rect::ZERO,
-        };
-        if !filled.is_zero_area() {
-            ctx.scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &RoundedRect::from_rect(filled, radius),
-            );
         }
-        filled
     }
 }
 
@@ -178,6 +184,14 @@ pub struct ProgressBar {
     permission_scope: Option<PermissionScope>,
     /// Accessible label (e.g. "Uploading").
     label: Option<String>,
+    /// Whether the label also shows over the track, as a gauge's name does: a bar that says
+    /// what is under way rather than one beside words that already say it.
+    label_shown: bool,
+    /// The shown label's style, the gap under it and the track's height, from the theme the
+    /// bar was laid out in.
+    label_style: Option<crate::text_render::TextStyle>,
+    label_gap: f64,
+    track_h: f64,
 }
 
 impl ProgressBar {
@@ -207,6 +221,10 @@ impl ProgressBar {
             presence_path: Vec::new(),
             permission_scope: None,
             label: None,
+            label_shown: false,
+            label_style: None,
+            label_gap: 0.0,
+            track_h: 0.0,
         }
     }
 
@@ -228,6 +246,10 @@ impl ProgressBar {
             presence_path: Vec::new(),
             permission_scope: None,
             label: None,
+            label_shown: false,
+            label_style: None,
+            label_gap: 0.0,
+            track_h: 0.0,
         }
     }
 
@@ -272,6 +294,26 @@ impl ProgressBar {
             fill: self.fill,
             ..face
         }
+    }
+
+    /// Show `label` over the track as well as giving it to a reader: what is under way, in
+    /// words a person reads ("Uploading").
+    #[must_use]
+    pub fn with_shown_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self.label_shown = true;
+        self
+    }
+
+    /// The label over the track, when it shows one.
+    fn shown_label(&self) -> Option<&str> {
+        self.label.as_deref().filter(|_| self.label_shown)
+    }
+
+    /// Where the track stands in the bar's rect: along its foot, under a shown label.
+    fn track_rect(&self, theme: &Theme) -> Rect {
+        let h = ProgressBarFace::height(theme).min(self.rect.height());
+        Rect::new(self.rect.x0, self.rect.y1 - h, self.rect.x1, self.rect.y1)
     }
 
     pub fn set_label(&mut self, label: impl Into<String>) {
@@ -332,13 +374,50 @@ fn pct_to_i64(pct: f32) -> i64 {
 }
 
 impl Widget for ProgressBar {
-    /// The browser's own bar: its value where it knows one, its label for a reader.
+    /// Its label as words over a track and a fill, as the bar paints them: the same track
+    /// and fill colours on the page as in the window.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-        cx.element("progress");
-        cx.attr("max", "100");
+        use crate::composition::{Ground, TextLook, rgba8};
+        let theme = cx.theme();
+        let track = self.track_rect(theme);
+        cx.element("div");
         if !self.indeterminate {
             let pct = (self.progress.clamp(0.0, 1.0) * 100.0).round();
-            cx.attr("value", format!("{pct:.0}"));
+            cx.attr("aria-valuenow", format!("{pct:.0}"));
+            cx.attr("aria-valuemin", "0");
+            cx.attr("aria-valuemax", "100");
+        }
+        if let Some(label) = self.shown_label() {
+            let look = TextLook::new(
+                label.to_owned(),
+                &theme.text(crate::tokens::TextRole::Label),
+                Some(theme.text_primary),
+            );
+            cx.words(
+                "label",
+                "span",
+                Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, track.y0),
+                look,
+            );
+        }
+        let radius = f64::from(theme.tokens.radii.detail).min(track.height() / 2.0);
+        let face = self.face();
+        let ground = cx.part("track", "ProgressBar", track);
+        ground.ground = Some(Ground {
+            fill: Some(rgba8(theme.tokens.colors.intent.value_track)),
+            edge: None,
+            radius,
+            inset: [0.0; 2],
+        });
+        let filled = face.filled(theme, track);
+        if !filled.is_zero_area() {
+            let ground = cx.part("fill", "ProgressBar", filled);
+            ground.ground = Some(Ground {
+                fill: Some(rgba8(face.fill_colour(theme))),
+                edge: None,
+                radius,
+                inset: [0.0; 2],
+            });
         }
     }
 
@@ -355,14 +434,45 @@ impl Widget for ProgressBar {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.label_style = Some(theme.text(crate::tokens::TextRole::Label));
+        self.label_gap = f64::from(theme.tokens.spacing.rhythm.tight);
+        self.track_h = ProgressBarFace::height(theme);
+        let height = if self.shown_label().is_some() {
+            Dimension::auto()
+        } else {
+            Dimension::length(crate::num::f32_of_f64(self.track_h))
+        };
         let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(crate::num::f32_of_f64(ProgressBarFace::height(theme))),
+                height,
             },
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
+    }
+
+    /// A shown label's line, the rhythm's tight step and the track under it.
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => width,
+            _ => 0.0,
+        });
+        let label = match (self.shown_label(), &self.label_style) {
+            (Some(label), Some(style)) => {
+                f64::from(text_renderer.measure_style(label, None, style).1) + self.label_gap
+            }
+            _ => 0.0,
+        };
+        Size {
+            width,
+            height: crate::num::f32_of_f64((label + self.track_h).ceil()),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -380,9 +490,23 @@ impl Widget for ProgressBar {
     ) {
         self.reduce_motion = theme.reduce_motion || crate::time::wall_frozen();
         let segment_width = self.rect.width() * INDETERMINATE_SEGMENT_FRAC;
+        if let Some(label) = self.shown_label() {
+            let style = theme.text(crate::tokens::TextRole::Label);
+            let width = crate::num::f32_of_f64(self.rect.width().max(1.0));
+            let label = text_renderer.elide_to_width_style(label, width, &style);
+            text_renderer.draw_style(
+                scene,
+                &label,
+                theme.text_primary,
+                transform.pre_translate(vello::kurbo::Vec2::new(self.rect.x0, self.rect.y0)),
+                None,
+                &style,
+            );
+        }
+        let track = self.track_rect(theme);
         let current_segment = self.face().paint(
             &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            self.rect,
+            track,
         );
         if self.indeterminate {
             let step = Some(crate::animation::indicator_step(
@@ -756,6 +880,47 @@ mod tests {
             assert!(
                 ProgressBar::indeterminate().needs_animation_frame(),
                 "a live segment moves"
+            );
+        }
+
+        phase a_shown_label_stands_over_the_track_and_a_spoken_one_does_not;
+        {
+            let theme = Theme::light();
+            let mut text = TextRenderer::new();
+            let mut lay_out = |bar: &mut ProgressBar| {
+                let mut taffy = TaffyTree::<()>::new();
+                let mut map = std::collections::HashMap::new();
+                bar.build_layout(&mut taffy, &theme, &mut map);
+                bar.measure(
+                    Size {
+                        width: Some(200.0),
+                        height: None,
+                    },
+                    Size {
+                        width: taffy::AvailableSpace::Definite(200.0),
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                    &mut text,
+                )
+                .height
+            };
+            let track = crate::num::f32_of_f64(ProgressBarFace::height(&theme));
+            let mut shown = ProgressBar::new(0.6).with_shown_label("Uploading");
+            let mut spoken = ProgressBar::new(0.6).with_label("Uploading");
+            let shown_h = lay_out(&mut shown);
+            assert!(shown_h > track * 2.0, "the label stands over the track: {shown_h}");
+            lay_out(&mut spoken);
+            spoken.rect = Rect::new(0.0, 0.0, 200.0, f64::from(track));
+            let spoken_fills = count_color_fills(&render(&mut spoken));
+            shown.rect = Rect::new(0.0, 0.0, 200.0, f64::from(shown_h));
+            assert!(
+                count_color_fills(&render(&mut shown)) > spoken_fills,
+                "a shown label paints its words; a label for a reader paints none"
+            );
+            assert_eq!(
+                shown.track_rect(&theme).height(),
+                f64::from(track),
+                "the track keeps its height under the label"
             );
         }
     }

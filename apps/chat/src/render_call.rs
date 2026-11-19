@@ -31,7 +31,7 @@ use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ChipStyle, 
 use ui::tilo_resource::MemberId;
 
 use crate::app::{ChatApp, Hit};
-use crate::model::{self, VoiceMember};
+use crate::model::VoiceMember;
 use crate::paint::{elide, line_in, line_of, text, width_of};
 
 /// One person to render in the call, derived from the shared CRDT voice
@@ -1916,7 +1916,9 @@ impl ChatApp {
         let head_style = local.text(TextRole::Caption).numeric();
         let body_style = local.text(TextRole::Body);
         let head_h = line_of(tr, &head_style);
-        let at = |key: &str, ts| crate::i18n::t_args(key, &[("time", clock_label(ts).into())]);
+        let at = |key: &str, ts| {
+            crate::i18n::t_args(key, &[("time", crate::render_chat::clock_label(ts).into())])
+        };
         let mut entries: Vec<(String, String)> =
             vec![(at("chat-edit-history-current", m.ts), m.text.clone())];
         for rec in m.history.iter().rev() {
@@ -1994,11 +1996,6 @@ impl ChatApp {
             }
         }
     }
-}
-
-/// The local time of `ts` as `HH:MM`.
-fn clock_label(ts: i64) -> String {
-    model::clock(ts + i64::from(ui::clock::local_now().offset().seconds()))
 }
 
 /// Greedy-pack buttons `widths` wide into rows that each fit `max_row_w`.

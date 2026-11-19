@@ -16,8 +16,15 @@ use std::time::Duration;
 
 use crate::engine::Engine;
 use neighbour_wire::NeighbourMsg;
+use tilo_actions::InvocationUpdate;
+use tilo_actions::remote::{
+    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
+    WORKSPACE_GOVERNANCE_PROVIDER, workspace_governance_resource,
+};
+use tilo_endpoint_reachability::Reachability;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_network_actor::own_service::{OwnService, workspace_service};
+use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE};
 use tilo_workspace_keys::KeyProvider;
 use tilo_workspace_service::workspaces::{DeviceKeyGroups, GroupKeys, KeySink};
 
@@ -26,53 +33,95 @@ use tilo_workspace_service::workspaces::{DeviceKeyGroups, GroupKeys, KeySink};
 const OPEN_WAIT: Duration = Duration::from_secs(30);
 
 /// Open this device's workspace service under `engine`'s state, as `identity`, on `endpoint`,
-/// and serve it through `own` from now on.
+/// waking the relays `reachability` holds back for the invitations it signs, and serve it
+/// through `own` from now on.
 ///
 /// # Errors
-/// The identity's key cannot leave its store (a page's), the engine keeps no state, or the
+/// The engine keeps no state, this device cannot certify the service's own key, or the
 /// service's store cannot be opened.
 pub(super) async fn open(
     own: &OwnService,
     identity: &DeviceIdentity,
     engine: &Arc<Engine>,
-    endpoint: iroh::Endpoint,
+    endpoint: &iroh::Endpoint,
+    reachability: &Reachability,
+) -> Result<Arc<workspace_service::WorkspaceService>, String> {
+    let groups = DeviceKeyGroups {
+        keys: Arc::new(DeviceGroupKeys {
+            keys: engine.keys(),
+        }),
+        sink: Some(Arc::new(DeviceKeySink {
+            engine: Arc::downgrade(engine),
+        })),
+    };
+    open_with_groups(own, identity, engine, endpoint, reachability, groups).await
+}
+
+/// [`open`] with `groups` keeping the workspaces' keys: keys a test makes itself, where the
+/// session opens no key service of its own.
+pub(crate) async fn open_with_groups(
+    own: &OwnService,
+    identity: &DeviceIdentity,
+    engine: &Arc<Engine>,
+    endpoint: &iroh::Endpoint,
+    reachability: &Reachability,
+    groups: DeviceKeyGroups,
 ) -> Result<Arc<workspace_service::WorkspaceService>, String> {
     let root = engine
         .service_root()
         .ok_or("this session keeps no state, so it opens no workspace service")?;
-    let secret = identity
-        .signer
-        .endpoint_secret()
-        .ok_or("this device's key never leaves its store, so it opens no workspace service")?;
-    let cert = identity.device_cert.clone();
+    // The service writes under a key of its own, which this device certifies as its workspace
+    // service: the device's engine and the service never number changes from one count.
+    let service_identity = workspace_service::ServiceIdentity::beside_device(
+        &root,
+        &identity.device_cert,
+        &*identity.signer,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     let service = workspace_service::WorkspaceService::open(
         workspace_service::ServiceConfig {
             // The desktop's first frame waits on this service, and its endpoint holds its relays
             // back until something needs the device reachable: the service names its address
             // again once a relay comes, and a desktop never waits on the network to show.
             reaching: tilo_endpoint_reachability::Reaching::WhenNeeded,
+            // The service makes the links this device hands out, and an invitation's address is
+            // its to sign: it wakes these relays and waits for one before it does.
+            reachability: reachability.clone(),
             ..workspace_service::ServiceConfig::new(root, tilo_server_protocol::WorkSetting::none())
         },
-        workspace_service::ServiceIdentity {
-            user_public_key: cert.user_public_key,
-            device_signing_key: ed25519_dalek::SigningKey::from_bytes(&secret),
-            device_cert: cert,
-            // Each workspace's own revocations reach the service through its governance.
-            revocations: tilo_user_identity::RevocationList::new(),
-        },
-        endpoint,
-        Some(DeviceKeyGroups {
-            keys: Arc::new(DeviceGroupKeys {
-                keys: engine.keys(),
-            }),
-            sink: Some(Arc::new(DeviceKeySink {
-                engine: Arc::downgrade(engine),
-            })),
-        }),
+        service_identity,
+        endpoint.clone(),
+        Some(groups),
     )
     .await
     .map_err(|error| error.to_string())?;
     Ok(own.install(Arc::new(service)))
+}
+
+/// Note the links out of the workspaces this device holds, as its own service lists them: they
+/// were made before this session, and whoever redeems one dials this device
+/// ([`Engine::invitations_open`]).
+pub(super) async fn note_open_links(engine: &Arc<Engine>) {
+    for workspace in engine.workspaces() {
+        let named = workspace.to_string();
+        if !engine.is_holder(&named) {
+            continue;
+        }
+        let Some(asked) = engine.ask_holder(
+            workspace,
+            tilo_workspace_service::workspaces::INVITATIONS,
+            serde_json::Map::new(),
+        ) else {
+            return;
+        };
+        match asked.await {
+            Ok(listed) => engine.note_invitations(workspace, &listed),
+            Err(error) => {
+                tracing::warn!(%error, %named, "the links out of a workspace were not listed");
+            }
+        }
+    }
 }
 
 /// This device's key service, as its workspace service asks it for a workspace's keys.
@@ -84,13 +133,16 @@ impl GroupKeys for DeviceGroupKeys {
     fn group_keys<'a>(
         &'a self,
         workspace: &'a str,
+        readers: &'a str,
         create: bool,
     ) -> tilo_workspace_service::workspaces::GroupKeysAnswerFuture<'a> {
         Box::pin(async move {
             if self.keys.get().is_none() {
                 return Some(Err("this device's key service is not up".into()));
             }
-            self.keys.group_keys(workspace, create, OPEN_WAIT).await
+            self.keys
+                .group_keys(workspace, readers, create, OPEN_WAIT)
+                .await
         })
     }
 }
@@ -122,11 +174,23 @@ impl KeySink for DeviceKeySink {
 /// this process reaches; so a desktop with no network keeps its layout through a restart, and
 /// once a session's network comes up it carries what was founded here, with nothing to move.
 pub(crate) fn found_alone(engine: &Arc<Engine>) {
+    serve_alone(engine, None, |founder| founder);
+}
+
+/// [`found_alone`] with the workspaces' keys kept by `groups`, where the session opens no key
+/// service of its own: a test's keys, so its made workspaces seal as a device's do. `wrap` is
+/// handed the founder before it serves, for a caller that founds elsewhere.
+pub(crate) fn serve_alone(
+    engine: &Arc<Engine>,
+    groups: Option<DeviceKeyGroups>,
+    wrap: impl FnOnce(Arc<dyn crate::engine::Founder>) -> Arc<dyn crate::engine::Founder>,
+) {
     if engine.founds() {
         return;
     }
     let identity = engine.identity().clone();
     let (own, _unrouted) = OwnService::deferred();
+    let mut groups = groups;
     let opening = async {
         let secret = identity
             .signer
@@ -137,7 +201,23 @@ pub(crate) fn found_alone(engine: &Arc<Engine>) {
             .bind()
             .await
             .map_err(|error| format!("this device's own endpoint: {error}"))?;
-        open(&own, &identity, engine, endpoint.clone()).await?;
+        // Only this process reaches this endpoint, so nothing is held back for a link it makes.
+        match groups.take() {
+            Some(groups) => {
+                open_with_groups(
+                    &own,
+                    &identity,
+                    engine,
+                    &endpoint,
+                    &Reachability::default(),
+                    groups,
+                )
+                .await?;
+            }
+            None => {
+                open(&own, &identity, engine, &endpoint, &Reachability::default()).await?;
+            }
+        }
         Ok::<_, String>(endpoint)
     };
     let opened = tilo_rt::try_app()
@@ -145,14 +225,15 @@ pub(crate) fn found_alone(engine: &Arc<Engine>) {
         .and_then(|runtime| runtime.block_on(opening).map_err(|error| error.to_string()))
         .and_then(|opened| opened);
     match opened {
-        Ok(endpoint) => engine.serve_founding(Arc::new(Founding {
+        Ok(endpoint) => engine.founders().serve(wrap(Arc::new(Founding {
             service: own,
             endpoint,
             link: engine.link(),
             identity,
             engine: Arc::downgrade(engine),
             network: None,
-        })),
+            actions: None,
+        }))),
         Err(error) => {
             tracing::warn!(%error, "this device's workspace service did not open, so it founds no workspace");
         }
@@ -173,6 +254,9 @@ pub(super) struct Founding {
         tokio::sync::mpsc::Sender<tilo_network_actor::NetEvent>,
     )>,
     pub(super) link: Option<Arc<crate::workspace_keys::KeyLink>>,
+    /// The session's device action service, which asks a workspace held elsewhere of its holder:
+    /// `None` while this device takes part in no peer network.
+    pub(super) actions: Option<ActionService>,
 }
 
 impl tilo_session_client::engine::Founder for Founding {
@@ -219,18 +303,103 @@ impl tilo_session_client::engine::Founder for Founding {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<tilo_session_client::engine::ServiceAnswer> {
         let engine = self.engine.upgrade()?;
-        let workspace = workspace.to_string();
-        // The service holds a workspace this device is the holder of: it shares this device's key.
-        if !engine.hosts_itself(&workspace) {
-            return None;
+        let named = workspace.to_string();
+        let request = governance_request(&named, action, arguments);
+        // The service holds a workspace this device is the holder of: it shares this device's key,
+        // and answers it here as it answers every other member's device.
+        if engine.is_holder(&named) {
+            let cert = &self.identity.device_cert;
+            let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key)
+                .in_workspace(named);
+            let invoked = self
+                .service
+                .get()?
+                .workspaces()
+                .device_actions()
+                .invoke(&caller, request);
+            return Some(Box::pin(async move {
+                match invoked.await {
+                    Some(Ok(receipt)) => settled(receipt.status),
+                    Some(Err(error)) => Err(error.to_string()),
+                    None => Err(UNANSWERED.to_owned()),
+                }
+            }));
         }
+        // Held elsewhere: its holder is asked at the address its enrollment names, as the device
+        // that holder is (a desktop's workspace service is its desktop's).
+        let (_, addr) = engine.holder_address(workspace)?;
+        let holder = engine.holder_of(workspace)?;
+        let actions = self.actions.as_ref()?;
+        actions.reach_device_at(holder, *addr.id.as_bytes());
+        let followed = std::sync::Arc::new(actions.remote(&self.endpoint, &addr, &named))
+            .invoke_until_settled(request, FOLLOW_DEADLINE);
+        Some(Box::pin(async move {
+            match followed.await {
+                Some(Ok(InvocationUpdate::Succeeded { output, .. })) => {
+                    Ok(output.value.unwrap_or_default())
+                }
+                Some(Ok(InvocationUpdate::Failed { error, .. })) => Err(error.message),
+                Some(Ok(_)) => Err("the workspace's holder cancelled the request".to_owned()),
+                Some(Err(error)) => Err(error.to_string()),
+                None => Err(UNANSWERED.to_owned()),
+            }
+        }))
+    }
+
+    /// The host's own operations (`tilo.host`): what the person plans and
+    /// reads here, whether or not this device holds the workspace yet. The
+    /// service makes the workspace a plan needs when the first machine is
+    /// planned into it.
+    fn ask_host(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<tilo_session_client::engine::ServiceAnswer> {
         let service = self.service.get()?;
         let caller = self.identity.device_cert.clone();
         let action = action.to_owned();
         Some(Box::pin(async move {
-            service
-                .ask_workspace(&caller, &workspace, &action, arguments)
-                .await
+            service.ask_own(&caller, &action, arguments).await
         }))
+    }
+}
+
+/// What a request no holder answered says.
+const UNANSWERED: &str = "the workspace's holder dropped the request";
+
+/// `workspace`'s governance action `action` with `arguments`, as an invocation of it.
+fn governance_request(
+    workspace: &str,
+    action: &str,
+    arguments: serde_json::Map<String, serde_json::Value>,
+) -> InvokeRequest {
+    InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                workspace_governance_resource(workspace),
+                action,
+            ),
+        },
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    }
+}
+
+/// What a receipt the governance answered at once comes to.
+fn settled(status: ReceiptStatus) -> Result<serde_json::Value, String> {
+    match status {
+        ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
+        ReceiptStatus::Rejected { error } => Err(error.to_string()),
+        ReceiptStatus::Failed { error } => Err(error.message),
+        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
+            Err("the request did not finish".to_owned())
+        }
     }
 }

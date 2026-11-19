@@ -13,7 +13,7 @@ use vello::kurbo::Rect;
 use zeroize::Zeroizing;
 
 use crate::CATALOG;
-use crate::actions::PasswordsEffect;
+use crate::actions::{PasswordsEffect, item_of, proposal_of};
 use crate::transfer::ImportLogin;
 
 pub(crate) type Shared = Rc<RefCell<Core>>;
@@ -633,6 +633,32 @@ impl Core {
             self.open(&id);
             self.show_pane = None;
         }
+    }
+
+    /// Decide the app's request `proposal` names, whether the effect addressed
+    /// the request's row or the request itself.
+    fn decide_request(
+        &mut self,
+        proposal: &str,
+        decision: accounts::AccessDecision,
+    ) -> Result<(), String> {
+        self.model
+            .as_ref()
+            .ok_or_else(|| crate::CATALOG.t("passwords-request-expired"))?
+            .decide_app_proposal(proposal_of(proposal), decision)?;
+        self.refresh();
+        Ok(())
+    }
+
+    /// Make the item the effect `item` names the other way round: a favorite,
+    /// or no longer one.
+    fn flip_favorite(&mut self, item: &str) -> Result<(), String> {
+        let id = SecretId(item_of(item).to_owned());
+        let was = self
+            .item(&id)
+            .map(is_favorite)
+            .ok_or_else(|| "That item is no longer in your vault".to_owned())?;
+        self.set_favorite(&id, !was)
     }
 
     pub(crate) fn toggle_favorite(&mut self, id: &SecretId) {
@@ -1762,7 +1788,7 @@ impl Core {
     pub(crate) fn perform(&mut self, effect: PasswordsEffect) -> Result<(), String> {
         self.refresh_model();
         let open = |core: &mut Self, id: String| {
-            if core.open(&SecretId(id)) {
+            if core.open(&SecretId(item_of(&id).to_owned())) {
                 Ok(())
             } else {
                 Err("That item is no longer in your vault".to_owned())
@@ -1770,25 +1796,22 @@ impl Core {
         };
         match effect {
             PasswordsEffect::ShowAccess => self.navigate("app-access"),
-            PasswordsEffect::RevokeAccess { grant } => self.revoke(&grant)?,
+            PasswordsEffect::RevokeAccess { grant } => {
+                self.revoke(crate::actions::grant_of(&grant))?;
+            }
             PasswordsEffect::ApproveAccess { proposal, lifetime } => {
                 let decision = match lifetime.as_str() {
                     "session" => accounts::AccessDecision::AllowForSession,
                     "persistent" => accounts::AccessDecision::AllowAlways,
                     _ => return Err(crate::CATALOG.t("passwords-request-expired")),
                 };
-                self.model
-                    .as_ref()
-                    .ok_or_else(|| crate::CATALOG.t("passwords-request-expired"))?
-                    .decide_app_proposal(&proposal, decision)?;
-                self.refresh();
+                self.decide_request(&proposal, decision)?;
+            }
+            PasswordsEffect::ApproveForSession { proposal } => {
+                self.decide_request(&proposal, accounts::AccessDecision::AllowForSession)?;
             }
             PasswordsEffect::DenyAccess { proposal } => {
-                self.model
-                    .as_ref()
-                    .ok_or_else(|| crate::CATALOG.t("passwords-request-expired"))?
-                    .decide_app_proposal(&proposal, accounts::AccessDecision::Deny)?;
-                self.refresh();
+                self.decide_request(&proposal, accounts::AccessDecision::Deny)?;
             }
             PasswordsEffect::Add => self.begin_add(),
             PasswordsEffect::Save => {
@@ -1841,9 +1864,12 @@ impl Core {
                 open(self, item)?;
                 self.hide_revealed();
             }
-            PasswordsEffect::Delete { item } => self.delete(&SecretId(item))?,
+            PasswordsEffect::Delete { item } => {
+                self.delete(&SecretId(item_of(&item).to_owned()))?;
+            }
+            PasswordsEffect::ToggleFavorite { item } => self.flip_favorite(&item)?,
             PasswordsEffect::Favorite { item, favorite } => {
-                self.set_favorite(&SecretId(item), favorite)?;
+                self.set_favorite(&SecretId(item_of(&item).to_owned()), favorite)?;
             }
             PasswordsEffect::Import => self.request_import(),
             PasswordsEffect::Export => self.request_export(),

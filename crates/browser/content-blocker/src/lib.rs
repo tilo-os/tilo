@@ -6,7 +6,7 @@
 //! happens natively inside `WebKit`'s network process; there is no per-request
 //! hook.
 //!
-//! The toolkit's `ui::webview::adblock` is the API apps call. This crate is
+//! The toolkit's `tilo_webview::adblock` is the API apps call. This crate is
 //! its implementation, kept free of the toolkit's types so that the toolkit
 //! can either link it (a build without the shared runtime) or open it from
 //! `libtilo_adblock_engine.so` the first time an app compiles lists, which

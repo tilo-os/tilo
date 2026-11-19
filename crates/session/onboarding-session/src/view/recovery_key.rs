@@ -23,7 +23,7 @@ pub(super) fn import_recovery_words(
     // The words carry no display name; like native minting, an unnamed
     // identity is shown by its fingerprint until the person names it.
     let profile = store.import_recovery_words(words, "").map_err(|error| {
-        runtime_identity::recovery_words_error(&error)
+        tilo_identity::store::recovery_words_error(&error)
             .map_or_else(|| error.to_string(), words_problem)
     })?;
     let runtime_id = profile
@@ -31,7 +31,7 @@ pub(super) fn import_recovery_words(
         .file_stem()
         .and_then(|value| value.to_str())
         .ok_or_else(|| "restored identity has no valid runtime id".to_string())?;
-    runtime_identity::set_active_identity(import_dir, runtime_id)
+    tilo_identity::store::set_active_identity(import_dir, runtime_id)
         .map_err(|error| error.to_string())?;
     crate::firstboot::ensure_collaboration_identity(import_dir, identity_paths)
         .map_err(|error| error.to_string())?;
@@ -44,8 +44,8 @@ pub(super) fn import_recovery_words(
     })
 }
 
-fn words_problem(problem: runtime_identity::RecoveryWordsError) -> String {
-    use runtime_identity::RecoveryWordsError as Problem;
+fn words_problem(problem: tilo_identity::store::RecoveryWordsError) -> String {
+    use tilo_identity::store::RecoveryWordsError as Problem;
     match problem {
         Problem::WordCount { found } => {
             t_args("onboarding-recovery-key-count", &[("found", found.into())])
@@ -65,13 +65,13 @@ fn words_problem(problem: runtime_identity::RecoveryWordsError) -> String {
 /// Which word is wrong, as typed, and the word probably meant when one
 /// stands out: the person fixes it without hunting through the list.
 fn typo(phrase: &str, position: usize) -> String {
-    let Some(word) = runtime_identity::unknown_recovery_words(phrase)
+    let Some(word) = tilo_identity::store::unknown_recovery_words(phrase)
         .first()
         .and_then(|range| phrase.get(range.clone()))
     else {
-        return words_problem(runtime_identity::RecoveryWordsError::UnknownWord { position });
+        return words_problem(tilo_identity::store::RecoveryWordsError::UnknownWord { position });
     };
-    match runtime_identity::closest_recovery_word(word) {
+    match tilo_identity::store::closest_recovery_word(word) {
         Some(suggestion) => t_args(
             "onboarding-recovery-key-suggestion",
             &[
@@ -89,7 +89,7 @@ fn typo(phrase: &str, position: usize) -> String {
 
 /// What the words typed so far amount to, for feedback while typing.
 pub(super) fn words_check(phrase: &str, expected: Option<[u8; 32]>) -> WordsCheck {
-    let progress = runtime_identity::recovery_words_progress(phrase);
+    let progress = tilo_identity::store::recovery_words_progress(phrase);
     let still_typing = phrase.chars().last().is_some_and(char::is_alphabetic);
     if progress.words == 0 {
         return WordsCheck::Empty;
@@ -97,12 +97,12 @@ pub(super) fn words_check(phrase: &str, expected: Option<[u8; 32]>) -> WordsChec
     if let Some(position) = progress.unknown_word {
         return WordsCheck::Problem(typo(phrase, position));
     }
-    if progress.words < runtime_identity::RECOVERY_WORD_COUNT {
+    if progress.words < tilo_identity::store::RECOVERY_WORD_COUNT {
         return WordsCheck::Typing {
             words: progress.words,
         };
     }
-    match runtime_identity::recovery_words_public_key(phrase) {
+    match tilo_identity::store::recovery_words_public_key(phrase) {
         Ok(key) if expected.is_some_and(|expected| expected != key) => WordsCheck::Different {
             fingerprint: hex::encode(key),
         },
@@ -110,7 +110,7 @@ pub(super) fn words_check(phrase: &str, expected: Option<[u8; 32]>) -> WordsChec
             fingerprint: hex::encode(key),
         },
         // The last word may be half typed; judge it once it is finished.
-        Err(_) if still_typing && progress.words == runtime_identity::RECOVERY_WORD_COUNT => {
+        Err(_) if still_typing && progress.words == tilo_identity::store::RECOVERY_WORD_COUNT => {
             WordsCheck::Typing {
                 words: progress.words,
             }
@@ -173,7 +173,7 @@ impl RecoveryKeyCopy {
 /// Three different positions spread over the key, in order: one from each
 /// third, so a copy that stopped early or skipped a line is caught.
 fn recovery_key_checks() -> [usize; RECOVERY_KEY_CHECKS] {
-    let third = runtime_identity::RECOVERY_WORD_COUNT / RECOVERY_KEY_CHECKS;
+    let third = tilo_identity::store::RECOVERY_WORD_COUNT / RECOVERY_KEY_CHECKS;
     let mut random = [0_u8; RECOVERY_KEY_CHECKS];
     // Which word is asked is not a secret; a fixed choice is still a check.
     let _ = getrandom::fill(&mut random);
@@ -260,8 +260,8 @@ impl OnboardingView {
             self.start_identity_work(
                 move || {
                     IdentityDone::RecoveryWords(
-                        runtime_identity::recovery_words(&identity).map_err(|error| {
-                            runtime_identity::recovery_words_error(&error)
+                        tilo_identity::store::recovery_words(&identity).map_err(|error| {
+                            tilo_identity::store::recovery_words_error(&error)
                                 .map_or_else(|| error.to_string(), words_problem)
                         }),
                     )

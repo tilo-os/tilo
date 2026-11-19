@@ -6,6 +6,7 @@ format = 2
 kind = "themes.studio"
 label = "Themes"
 version = 1
+shows = ["delete-theme", "duplicate-theme"]
 fields = [
   { path = "themes", type = { collection = { named = "Theme" } }, stored = "collection" },
   { path = "themes.*.name", type = "text", label = true },

@@ -1,8 +1,10 @@
 //! How a [`VirtualList`]'s rows stand as a tree ([`VirtualList::with_tree`]): which row each
 //! stands under, how deep it stands, and which rows a folded row hides.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::marker::PhantomData;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -10,7 +12,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::keyboard::{Key, NamedKey};
 
-use super::typed::KeyedMarks;
 use super::{ListKey, VirtualRows};
 use super::{RowGroup, RowStance};
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
@@ -40,7 +41,7 @@ impl VirtualRows {
 }
 
 impl Chevrons {
-    pub(super) fn gutter(&self, marks: &Rc<dyn KeyedMarks>, key: &ListKey) -> Option<f64> {
+    pub(super) fn gutter(&self, marks: &Rc<Marks>, key: &ListKey) -> Option<f64> {
         if !marks.is_branch(key) {
             return None;
         }
@@ -49,7 +50,7 @@ impl Chevrons {
 
     pub(super) fn rect(
         &self,
-        marks: &Rc<dyn KeyedMarks>,
+        marks: &Rc<Marks>,
         theme: &Theme,
         key: &ListKey,
         row: Rect,
@@ -64,21 +65,24 @@ impl Chevrons {
         ))
     }
 
-    /// Paint the hairline up each depth's gutter the row `key` stands past, through its own box
-    /// `row`, so a deep tree keeps its structure legible.
+    /// Paint the hairline under each ancestor's chevron through the box `row` of a row `depth`
+    /// deep: a branch's line hangs from the middle of its chevron down past the last row inside
+    /// it, so every row reads as inside the row over it, and a line never sits beside a chevron.
     pub(super) fn paint_guides(
         &self,
-        marks: &Rc<dyn KeyedMarks>,
         scene: &mut Scene,
         transform: Affine,
-        key: &ListKey,
+        theme: &Theme,
+        depth: u32,
         row: Rect,
         color: vello::peniko::Color,
     ) {
-        let depth = marks.depth(key);
+        let side = f64::from(theme.tokens.metrics.icon_sm);
         for level in 0..depth {
-            let x =
-                self.x0 + self.lead + self.column + f64::from(level) * self.step + self.step / 2.0;
+            // The chevron of the ancestor at `level` stands where a branch row of that depth
+            // keeps it ([`Self::gutter`]).
+            let chevron = self.x0 + self.lead + self.column + (f64::from(level) - 1.0) * self.step;
+            let x = chevron + side / 2.0;
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -91,7 +95,7 @@ impl Chevrons {
 
     pub(super) fn paint(
         &self,
-        marks: &Rc<dyn KeyedMarks>,
+        marks: &Rc<Marks>,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
@@ -121,36 +125,34 @@ pub struct TreeRow<K> {
     pub above: Option<K>,
 }
 
+/// A tree's rows by their model's keys: how deep each one is, and which are folded, branches or
+/// nested.
 #[derive(Debug)]
 pub struct TreeMarks<K> {
-    pub(super) depth: std::cell::RefCell<HashMap<K, u32>>,
-    folded: std::cell::RefCell<HashSet<K>>,
-    pub(super) branches: std::cell::RefCell<HashSet<K>>,
-    pub(super) nested: std::cell::RefCell<HashSet<K>>,
+    pub(super) marks: Rc<Marks>,
+    key: PhantomData<fn(K) -> K>,
 }
 
 impl<K> Default for TreeMarks<K> {
     fn default() -> Self {
         Self {
-            depth: std::cell::RefCell::default(),
-            folded: std::cell::RefCell::default(),
-            branches: std::cell::RefCell::default(),
-            nested: std::cell::RefCell::default(),
+            marks: Rc::default(),
+            key: PhantomData,
         }
     }
 }
 
-impl<K: Clone + Eq + Hash> TreeMarks<K> {
+impl<K: Clone + Eq + Hash + 'static> TreeMarks<K> {
     pub fn depth(&self, key: &K) -> u32 {
-        self.depth.borrow().get(key).copied().unwrap_or(0)
+        self.marks.depth(&ListKey::of(key))
     }
 
     pub fn is_folded(&self, key: &K) -> bool {
-        self.folded.borrow().contains(key)
+        self.marks.is_folded(&ListKey::of(key))
     }
 
     pub fn is_branch(&self, key: &K) -> bool {
-        self.branches.borrow().contains(key)
+        self.marks.is_branch(&ListKey::of(key))
     }
 
     /// Whether the row stands under the row it follows, rather than away from the parent it
@@ -158,25 +160,69 @@ impl<K: Clone + Eq + Hash> TreeMarks<K> {
     /// in another group, under another heading — says whose it is instead of being indented
     /// under nothing.
     pub fn is_nested(&self, key: &K) -> bool {
-        self.nested.borrow().contains(key)
+        self.marks.nested.borrow().contains(&ListKey::of(key))
     }
 
     #[must_use]
     pub fn folded_keys(&self) -> Vec<K> {
-        self.folded.borrow().iter().cloned().collect()
+        self.marks
+            .folded
+            .borrow()
+            .iter()
+            .map(ListKey::typed)
+            .collect()
     }
 
     pub fn restore_folded(&self, keys: impl IntoIterator<Item = K>) {
-        *self.folded.borrow_mut() = keys.into_iter().collect();
+        *self.marks.folded.borrow_mut() = keys.into_iter().map(ListKey::new).collect();
     }
 
     pub fn fold(&self, key: &K, folded: bool) {
+        self.marks.fold(&ListKey::of(key), folded);
+    }
+}
+
+/// What a [`TreeMarks`] holds, as the list reads and writes it.
+#[derive(Debug, Default)]
+pub(super) struct Marks {
+    depth: RefCell<HashMap<ListKey, u32>>,
+    folded: RefCell<HashSet<ListKey>>,
+    branches: RefCell<HashSet<ListKey>>,
+    nested: RefCell<HashSet<ListKey>>,
+}
+
+impl Marks {
+    pub(super) fn depth(&self, key: &ListKey) -> u32 {
+        self.depth.borrow().get(key).copied().unwrap_or(0)
+    }
+
+    pub(super) fn is_folded(&self, key: &ListKey) -> bool {
+        self.folded.borrow().contains(key)
+    }
+
+    pub(super) fn is_branch(&self, key: &ListKey) -> bool {
+        self.branches.borrow().contains(key)
+    }
+
+    fn fold(&self, key: &ListKey, folded: bool) {
         let mut folded_set = self.folded.borrow_mut();
         if folded {
             folded_set.insert(key.clone());
         } else {
             folded_set.remove(key);
         }
+    }
+
+    fn mark(&self, depth: HashMap<ListKey, u32>, branches: Vec<ListKey>, nested: Vec<ListKey>) {
+        self.depth.borrow_mut().extend(depth);
+        self.branches.borrow_mut().extend(branches);
+        self.nested.borrow_mut().extend(nested);
+    }
+
+    fn clear(&self) {
+        self.depth.borrow_mut().clear();
+        self.branches.borrow_mut().clear();
+        self.nested.borrow_mut().clear();
     }
 }
 
@@ -190,7 +236,7 @@ pub enum TreeMove {
 
 impl VirtualRows {
     #[must_use]
-    pub(super) fn with_tree(mut self, marks: Rc<dyn KeyedMarks>) -> Self {
+    pub(super) fn with_tree(mut self, marks: Rc<Marks>) -> Self {
         self.tree = Some(marks);
         self.tree_rows.clear();
         self.tree_hidden.clear();
@@ -488,11 +534,11 @@ impl VirtualRows {
         // stands on the pane's content edge — so the row's lift keeps the column's gutter — and
         // the chevron column stands inside that box, as the first thing at the edge, where on a
         // phone it would otherwise reach the glass. A list inside a page has its own edge as the
-        // gutter: the page already stands in from the window, so the chevron column stands in
-        // front of the rows' box there.
+        // gutter: the page already stands in from the window, so the rows' box starts on the
+        // list's edge (the lift hangs past it) with the chevron column, if any, in front of it.
         let (lead, chevron_column) = match self.stance {
             RowStance::Column => (self.bleed, gutter),
-            RowStance::Bleed | RowStance::Flush => (self.bleed.max(gutter), 0.0),
+            RowStance::Bleed | RowStance::Flush => (gutter, 0.0),
         };
         let stepped = (self.chevron_column - chevron_column).abs() > 0.5;
         self.chevron_column = chevron_column;

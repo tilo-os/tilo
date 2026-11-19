@@ -190,7 +190,7 @@ impl Photos {
             PhotosEffect::View { photo_id } => {
                 self.view_photo(library, &photo_id)?;
             }
-            PhotosEffect::ViewLibrary => self.show_library(),
+            PhotosEffect::ViewLibrary | PhotosEffect::ShowLibrary => self.show_library(),
             PhotosEffect::ViewAlbums => self.show_albums(),
             PhotosEffect::ViewTimeline { anchor } => {
                 self.view_timeline(library, anchor.as_ref())?;
@@ -522,7 +522,7 @@ impl Photos {
         }
         match effect {
             PhotosEffect::View { photo_id } => self.view_photo(library, &photo_id)?,
-            PhotosEffect::ViewLibrary => self.show_library(),
+            PhotosEffect::ViewLibrary | PhotosEffect::ShowLibrary => self.show_library(),
             PhotosEffect::ViewAlbums => self.show_albums(),
             PhotosEffect::ViewTimeline { anchor } => {
                 self.view_timeline(library, anchor.as_ref())?;

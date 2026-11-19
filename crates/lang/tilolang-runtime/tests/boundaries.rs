@@ -46,6 +46,8 @@ action rename(bag: Bag, name: Text) {
     bag.name = name
 }
 
+default view item_document for Item
+
 action check(item: Item) {
     item.done = true
 }

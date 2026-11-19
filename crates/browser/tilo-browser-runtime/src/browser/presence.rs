@@ -132,36 +132,31 @@ impl Mount {
             return;
         };
         if desktop.shared.agents.is_none() {
-            // The resource arrives after the page does: open it again until the store has it,
-            // as the windows' own resources are opened again when they arrive.
+            // The resource arrives after the page does: open it again until it is here, as the
+            // windows' own resources are opened again when they arrive.
             let shared = &mut desktop.shared;
-            let opened = shared.owners.as_ref().and_then(|owners| {
-                crate::page_agents::open(
-                    owners,
-                    &shared.stores,
-                    &shared.workspace,
-                    desktop.author.clone(),
-                )
-            });
+            let opened = crate::workspace_resources::WORKSPACE_RESOURCES
+                .get()
+                .zip(shared.page_stores(&desktop.author))
+                .and_then(|(code, page)| (code.agents)(&page));
             if opened.is_some() {
                 shared.agents = opened;
             }
         }
-        let Some(resource) = &desktop.shared.agents else {
+        let Some(named) = desktop
+            .shared
+            .agents
+            .as_ref()
+            .and_then(|agents| agents.named())
+        else {
             return;
         };
-        let Some(state) = resource.try_get() else {
-            return;
-        };
-        let mut agents: Vec<(MemberId, String, PresenceHue)> = state
-            .active()
-            .filter_map(|agent| {
-                let name = agent.name.trim();
-                (!name.is_empty()).then(|| {
-                    let id = MemberId::agent(agent.id.0.clone());
-                    let hue = PresenceHue::of_member(&id);
-                    (id, name.to_owned(), hue)
-                })
+        let mut agents: Vec<(MemberId, String, PresenceHue)> = named
+            .into_iter()
+            .map(|(id, name)| {
+                let id = MemberId::agent(id);
+                let hue = PresenceHue::of_member(&id);
+                (id, name, hue)
             })
             .collect();
         agents.sort_by(|a, b| {
@@ -322,7 +317,6 @@ impl Mount {
             members || note
         };
         if changed {
-            desktop.announce_arrivals();
             // The bar reads the strips' counts in its update pass, which a
             // bare redraw skips: without the wake it would paint them only on
             // its next other change, such as the clock's minute.

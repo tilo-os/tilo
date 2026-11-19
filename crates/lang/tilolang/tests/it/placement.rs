@@ -30,12 +30,10 @@ root board: Board
 
 default view board for Board
 
-default view task_page for Task
+default view task for Task
 
-view task_page(t: Task) {
-    std.document(t) {
-        text(t.title)
-    }
+view task(t: Task) {
+    text(t.title)
 }
 
 action check(t: Task, done: Bool = not t.done) { t.done = done }

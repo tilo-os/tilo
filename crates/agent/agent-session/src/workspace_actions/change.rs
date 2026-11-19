@@ -5,8 +5,8 @@
 //! ([`tilo_actions::remote::ActionProvider::changed`]); the device that holds the workspace holds its
 //! answer here until a change comes or the wait runs out.
 use super::{
-    ActionCallError, Arc, Caller, Completer, DocumentRoute, Event, Instant, MAX_REMOTE_WAIT, Needs,
-    Worker, Workspace, WorkspaceDocuments, WorkspaceId,
+    ActionCallError, Arc, Caller, Completer, DocumentRoute, Event, HashSet, Instant,
+    MAX_REMOTE_WAIT, Needs, Worker, Workspace, WorkspaceDocuments, WorkspaceId,
 };
 
 /// One caller waiting for a change of what it follows in a workspace ([`Worker::watch`]).
@@ -91,6 +91,9 @@ impl Workspace {
         // answers for all of a run's landings — and a busy workspace's writes
         // otherwise cost a read for every write since the last request.
         let mut landed: Vec<DocumentRoute> = Vec::new();
+        // Of those, the documents a write landed in that this service did not make.
+        let mut from_others: HashSet<DocumentRoute> = HashSet::new();
+        let own = self.peer.engine().identity().device_cert.device_public_key;
         for event in self.member.take(workspace_id) {
             match event {
                 Event::HostReady {
@@ -131,9 +134,24 @@ impl Workspace {
                         self.answered.insert(route);
                     }
                 }
-                Event::Landed { route, .. } => {
+                Event::Landed { route, author } => {
                     if WorkspaceId::parse(&route.cluster_id) != Some(workspace_id) {
                         continue;
+                    }
+                    // One of this service's own writes landing, counted off what it handed
+                    // ([`Workspace::unlanded`]); a write too large for one frame lands a
+                    // segment at a time, each its own. A count of zero names no write of ours
+                    // still to land: the next landing there is merged like any other's. The
+                    // entry waits for a refresh to take it, so reading a zero as ours would
+                    // swallow the server's own writes to that document until then.
+                    let ours = author == Some(own)
+                        && self.unlanded.get_mut(&route).is_some_and(|handed| {
+                            let ours = *handed > 0;
+                            *handed = handed.saturating_sub(1);
+                            ours
+                        });
+                    if !ours {
+                        from_others.insert(route.clone());
                     }
                     if !landed.contains(&route) {
                         landed.push(route);
@@ -149,29 +167,35 @@ impl Workspace {
         self.watchers.note(&landed);
         for route in landed {
             let engine = self.peer.engine();
-            // Undecided: the replica holds the record and cannot read it yet. Keys that
-            // arrived for a record it holds nothing of leave nothing undecided.
-            // Asked without reading the record out, as a write lands for every post;
-            // this device's own writes not taken in yet leave only a read to decide.
-            let reads = engine
-                .document_revision(&route.cluster_id, &route.app_id, &route.document)
-                .and_then(|revision| match revision {
-                    Some(_) => Ok(true),
-                    None => engine
-                        .record(&route.cluster_id, &route.app_id, &route.document)
-                        .map(|read| read.is_some()),
-                });
-            let undecided = match reads {
-                Ok(reads) => !reads,
-                Err(_) => engine.records(&route.cluster_id).is_ok_and(|records| {
-                    records
-                        .iter()
-                        .any(|(app, record)| *app == route.app_id && *record == route.document)
-                }),
+            // Undecided: the replica holds the document and cannot read it yet. Keys that
+            // arrived for a document it holds nothing of leave nothing undecided. A document only
+            // this service wrote since it was last decided is one it read to write: reading a
+            // sealed part out to learn only that cost most of a second for every action that
+            // wrote one. Another's write is asked without reading the document out, as a write
+            // lands for every post; this device's own writes not taken in yet leave only a
+            // read to decide.
+            let undecided = from_others.contains(&route) && {
+                super::count_read();
+                let reads = engine
+                    .document_revision(&route.cluster_id, &route.app_id, &route.document)
+                    .and_then(|revision| match revision {
+                        Some(_) => Ok(true),
+                        None => engine
+                            .record(&route.cluster_id, &route.app_id, &route.document)
+                            .map(|read| read.is_some()),
+                    });
+                match reads {
+                    Ok(reads) => !reads,
+                    Err(_) => engine.documents(&route.cluster_id).is_ok_and(|records| {
+                        records
+                            .iter()
+                            .any(|(app, record)| *app == route.app_id && *record == route.document)
+                    }),
+                }
             };
             if undecided {
                 self.undecided.insert(route.clone());
-            } else {
+            } else if from_others.contains(&route) {
                 self.undecided.remove(&route);
             }
             self.documents
@@ -189,6 +213,7 @@ impl Workspace {
             self.listings.clear();
             self.named.clear();
         }
+        self.landed_from_others.extend(from_others);
     }
 }
 

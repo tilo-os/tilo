@@ -24,7 +24,7 @@ impl IdentityRegistry {
     /// Returns an error if the record cannot be loaded from the provided path or if
     /// the record disappears immediately after registration (should not occur).
     pub fn register_record(&mut self, record_path: &Path) -> io::Result<&IdentityProfile> {
-        let record = runtime_identity::load_from_path(record_path.to_path_buf())
+        let record = crate::store::load_from_path(record_path.to_path_buf())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         let public_key = record.group_public_key();
         let id = hex::encode(public_key);
@@ -55,7 +55,7 @@ impl IdentityRegistry {
         identity_dir: &Path,
     ) -> io::Result<&IdentityProfile> {
         let bytes = read_import_record(source)?;
-        let record = runtime_identity::load_from_bytes(&bytes)
+        let record = crate::store::load_from_bytes(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         let id = hex::encode(record.group_public_key());
         // Runtime store ids are capped at 64 characters and must begin with a
@@ -64,16 +64,16 @@ impl IdentityRegistry {
         let store_id = format!("identity-{}", id.get(..55).unwrap_or(&id));
         fs::create_dir_all(identity_dir)?;
         set_private_dir_mode(identity_dir)?;
-        if let Some(existing) = runtime_identity::list_identities(identity_dir)?
+        if let Some(existing) = crate::store::list_identities(identity_dir)?
             .into_iter()
             .find(|summary| summary.public_key == record.group_public_key())
         {
-            runtime_identity::secure_identity(identity_dir, &existing.id)?;
+            crate::store::secure_identity(identity_dir, &existing.id)?;
             return self.register_record(&identity_dir.join(format!("{}.json", existing.id)));
         }
         let destination = identity_dir.join(format!("{store_id}.json"));
         if destination.exists() {
-            let existing = runtime_identity::load_from_path(destination.clone())
+            let existing = crate::store::load_from_path(destination.clone())
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
             if existing.group_public_key() != record.group_public_key() {
                 return Err(io::Error::new(
@@ -82,7 +82,7 @@ impl IdentityRegistry {
                 ));
             }
         } else {
-            runtime_identity::import_identity(identity_dir, &store_id, &bytes)?;
+            crate::store::import_identity(identity_dir, &store_id, &bytes)?;
         }
         self.register_record(&destination)
     }
@@ -104,29 +104,22 @@ impl IdentityRegistry {
         if let Some(profile) = self.identities.get(&id) {
             return Some(profile.clone());
         }
-        for directory in record_directories() {
-            let Ok(summaries) = runtime_identity::list_identities(&directory) else {
-                continue;
-            };
-            let Some(summary) = summaries
-                .into_iter()
-                .find(|summary| summary.public_key == *user_public_key)
-            else {
-                continue;
-            };
-            let record_path = directory.join(format!("{}.json", summary.id));
-            return Some(IdentityProfile {
-                id: id.clone(),
-                display_name: if summary.display_name.trim().is_empty() {
-                    format!("Identity {}", short_fingerprint(&id))
-                } else {
-                    summary.display_name.trim().to_string()
-                },
-                record_path: absolute_path(&record_path).ok()?,
-                user_public_key: *user_public_key,
-            });
-        }
-        None
+        let directory = resolve_identity_dir().ok()?;
+        let summaries = crate::store::list_identities(&directory).ok()?;
+        let summary = summaries
+            .into_iter()
+            .find(|summary| summary.public_key == *user_public_key)?;
+        let record_path = directory.join(format!("{}.json", summary.id));
+        Some(IdentityProfile {
+            id: id.clone(),
+            display_name: if summary.display_name.trim().is_empty() {
+                format!("Identity {}", short_fingerprint(&id))
+            } else {
+                summary.display_name.trim().to_string()
+            },
+            record_path: absolute_path(&record_path).ok()?,
+            user_public_key: *user_public_key,
+        })
     }
 }
 
@@ -314,7 +307,7 @@ impl IdentityRegistryStore {
     /// Load the registry after registering every identity record in the
     /// directory and adopting the runtime's active record as the default.
     /// Provisioning, onboarding and the Users pane write records and the
-    /// active marker through `runtime_identity`, not through this registry.
+    /// active marker through `tilo_identity::store`, not through this registry.
     /// Idempotent.
     pub fn load_reconciled(&self) -> io::Result<IdentityRegistry> {
         fs::create_dir_all(&self.identity_dir)?;
@@ -334,7 +327,7 @@ impl IdentityRegistryStore {
         RECONCILES_ON_THIS_THREAD.with(|count| count.set(count.get().saturating_add(1)));
         let mut registry = self.load()?;
         let mut changed = false;
-        for summary in runtime_identity::list_identities(&self.identity_dir)? {
+        for summary in crate::store::list_identities(&self.identity_dir)? {
             let id = hex::encode(summary.public_key);
             let path = self.identity_dir.join(format!("{}.json", summary.id));
             let profile = IdentityProfile {
@@ -476,11 +469,11 @@ impl IdentityRegistryStore {
 
     /// Restore an encrypted portable backup into the managed identity store.
     ///
-    /// Decryption remains inside `runtime-identity`; this registry only sees
+    /// Decryption remains inside `tilo_identity::store`; this registry only sees
     /// the public fingerprint and the final secured metadata path. Re-importing
     /// a backup already present on this login is idempotent.
     pub fn import_portable(&self, source: &Path, passphrase: &[u8]) -> io::Result<IdentityProfile> {
-        let info = runtime_identity::verify_portable_backup(source, passphrase)?;
+        let info = crate::store::verify_portable_backup(source, passphrase)?;
         let id = hex::encode(info.group_public_key);
         let mut registry = self.load_reconciled()?;
         if let Some(existing) = registry.identities.get(&id) {
@@ -490,7 +483,7 @@ impl IdentityRegistryStore {
         // Runtime ids are capped at 64 characters and must start with a
         // letter. The full fingerprint remains the registry's stable id.
         let runtime_id = format!("identity-{}", id.get(..55).unwrap_or(&id));
-        let destination = runtime_identity::import_portable_backup_matching(
+        let destination = crate::store::import_portable_backup_matching(
             source,
             passphrase,
             &self.identity_dir,
@@ -505,7 +498,7 @@ impl IdentityRegistryStore {
     /// Restore an identity from its 24-word recovery key.
     ///
     /// The words are decoded and their seed stored with the secret provider
-    /// inside `runtime-identity`; this registry sees only the fingerprint and
+    /// inside `tilo_identity::store`; this registry sees only the fingerprint and
     /// the secured record. Input is read leniently (case, punctuation and
     /// list numbering do not matter). A record of the same identity already
     /// here — a joined device's public one, or one whose secret was lost — is
@@ -514,8 +507,8 @@ impl IdentityRegistryStore {
     ///
     /// # Errors
     ///
-    /// An error carrying a [`runtime_identity::RecoveryWordsError`] (read it
-    /// with [`runtime_identity::recovery_words_error`]) for malformed words
+    /// An error carrying a [`crate::store::RecoveryWordsError`] (read it
+    /// with [`crate::store::recovery_words_error`]) for malformed words
     /// or words of another identity than [`Self::recovery_expected_identity`];
     /// otherwise the storage or provider failure.
     pub fn import_recovery_words(
@@ -523,13 +516,13 @@ impl IdentityRegistryStore {
         words: &str,
         display_name: &str,
     ) -> io::Result<IdentityProfile> {
-        let public_key = runtime_identity::recovery_words_public_key(words)?;
+        let public_key = crate::store::recovery_words_public_key(words)?;
         let id = hex::encode(public_key);
         let mut registry = self.load_reconciled()?;
         // Runtime ids are capped at 64 characters and must start with a
         // letter. The full fingerprint remains the registry's stable id.
         let runtime_id = format!("identity-{}", id.get(..55).unwrap_or(&id));
-        let destination = runtime_identity::import_recovery_words(
+        let destination = crate::store::import_recovery_words(
             &self.identity_dir,
             &runtime_id,
             words,
@@ -545,7 +538,7 @@ impl IdentityRegistryStore {
     /// or `None` when the account has no identity yet and any words will do.
     /// Reads public metadata only.
     pub fn recovery_expected_identity(&self) -> io::Result<Option<[u8; 32]>> {
-        runtime_identity::recovery_expected_identity(&self.identity_dir)
+        crate::store::recovery_expected_identity(&self.identity_dir)
     }
 }
 
@@ -592,21 +585,7 @@ fn device_cert() -> Option<DeviceCert> {
 
 /// Resolve the identity directory from environment variables.
 fn resolve_identity_dir() -> io::Result<PathBuf> {
-    runtime_identity::identity_dir_from_env()
-}
-
-/// The directories that hold this login's identity records: its own identity
-/// directory, and the directory of the record a launcher bound this process
-/// to, which need not live in it.
-pub(crate) fn record_directories() -> Vec<PathBuf> {
-    let mut directories: Vec<PathBuf> = resolve_identity_dir().ok().into_iter().collect();
-    if let Some(record) = std::env::var_os(runtime_identity::IDENTITY_ENV_VAR)
-        && let Some(directory) = PathBuf::from(record).parent()
-        && !directories.iter().any(|held| held == directory)
-    {
-        directories.push(directory.to_path_buf());
-    }
-    directories
+    crate::store::identity_dir_from_env()
 }
 
 /// Convert a relative path to absolute, or return unchanged if already absolute.
@@ -854,7 +833,7 @@ mod tests {
         {
             use tilo_identity_ceremony::IdentityRecord;
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            env.set(crate::store::FILE_SECRETS_ENV, "1");
             let original = tempfile::tempdir().expect("original");
             crate::provisioning::create_primary_identity(
                 original.path(),
@@ -864,9 +843,9 @@ mod tests {
             )
             .expect("mint");
             let minted =
-                runtime_identity::load_from_path(original.path().join("primary.json")).expect("minted");
+                crate::store::load_from_path(original.path().join("primary.json")).expect("minted");
             let words =
-                runtime_identity::recovery_words(original.path().join("primary.json")).expect("words");
+                crate::store::recovery_words(original.path().join("primary.json")).expect("words");
             assert_eq!(
                 IdentityRegistryStore::at(original.path())
                     .recovery_expected_identity()
@@ -903,7 +882,7 @@ mod tests {
             assert!(record.secret_ref.is_some());
             assert!(record.threshold_identity.secret_bytes.is_empty());
             let restored =
-                runtime_identity::load_from_path(profile.record_path.clone()).expect("restored");
+                crate::store::load_from_path(profile.record_path.clone()).expect("restored");
             assert_eq!(
                 restored.sign(b"same person").unwrap(),
                 minted.sign(b"same person").unwrap()
@@ -920,7 +899,7 @@ mod tests {
                 .file_stem()
                 .and_then(|stem| stem.to_str())
                 .expect("id");
-            runtime_identity::set_active_identity(store.identity_dir(), runtime_id).expect("active");
+            crate::store::set_active_identity(store.identity_dir(), runtime_id).expect("active");
             let other = tempfile::tempdir().expect("other");
             crate::provisioning::create_primary_identity(
                 other.path(),
@@ -930,13 +909,13 @@ mod tests {
             )
             .expect("mint other");
             let other_words =
-                runtime_identity::recovery_words(other.path().join("primary.json")).expect("words");
+                crate::store::recovery_words(other.path().join("primary.json")).expect("words");
             let refused = store
                 .import_recovery_words(&other_words, "Eve")
                 .expect_err("another identity");
             assert!(matches!(
-                runtime_identity::recovery_words_error(&refused),
-                Some(runtime_identity::RecoveryWordsError::DifferentIdentity { expected, .. })
+                crate::store::recovery_words_error(&refused),
+                Some(crate::store::RecoveryWordsError::DifferentIdentity { expected, .. })
                     if expected == minted.group_public_key()
             ));
             assert_eq!(store.load().expect("saved").identities.len(), 1);

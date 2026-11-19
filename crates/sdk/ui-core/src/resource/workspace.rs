@@ -19,22 +19,6 @@ use super::{
 };
 use crate::permissions::MemberId;
 
-impl ResourceOwners {
-    /// The owner of `app_id`'s records in `workspace` that a window of
-    /// another app opens beside its own. Like [`Self::open_person`] it
-    /// never joins a native component's construction.
-    ///
-    /// # Errors
-    /// Rejects an invalid package or workspace.
-    pub fn open_beside(
-        &mut self,
-        app_id: &str,
-        workspace: &str,
-    ) -> Result<ResourceStore, ResourceOpenError> {
-        self.open_with(app_id, workspace, false)
-    }
-}
-
 /// The id of the workspace's record of `kind`
 /// ([`collab_types::workspace_document_id`]): the same in every workspace, which
 /// scopes it.

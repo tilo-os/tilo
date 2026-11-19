@@ -386,6 +386,9 @@ pub(crate) struct ExactAdmissions {
 struct Settled {
     entries: BTreeMap<AdmissionKey, [u8; 32]>,
     encoded: std::sync::OnceLock<std::sync::Arc<[u8]>>,
+    /// The length and digest of that encoding, once a durable hash asked: taken once per
+    /// settling, not on every commit.
+    digest: std::sync::OnceLock<crate::state::StretchDigest>,
 }
 impl Clone for Settled {
     /// A copy is only ever made to be changed: it starts unencoded.
@@ -393,6 +396,7 @@ impl Clone for Settled {
         Self {
             entries: self.entries.clone(),
             encoded: std::sync::OnceLock::new(),
+            digest: std::sync::OnceLock::new(),
         }
     }
 }
@@ -559,6 +563,7 @@ impl ExactAdmissions {
     fn settled_mut(&mut self) -> &mut BTreeMap<AdmissionKey, [u8; 32]> {
         let settled = std::sync::Arc::make_mut(&mut self.settled);
         settled.encoded = std::sync::OnceLock::new();
+        settled.digest = std::sync::OnceLock::new();
         &mut settled.entries
     }
     /// Whether `self` and `before` share their settled entries and marks:
@@ -674,22 +679,30 @@ impl ExactAdmissions {
         &self,
     ) -> Result<(crate::state::StretchDigest, Vec<u8>), AdmissionError> {
         let rejected = |e: postcard::Error| AdmissionError::Rejected(e.to_string());
-        let settled = if let Some(settled) = self.settled.encoded.get() {
-            settled.to_vec()
+        let settled = if let Some(settled) = self.settled.digest.get() {
+            *settled
         } else {
-            postcard::to_allocvec(&self.settled.entries).map_err(rejected)?
+            let digest = |bytes: &[u8]| {
+                (
+                    u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                    *blake3::hash(bytes).as_bytes(),
+                )
+            };
+            let settled = match self.settled.encoded.get() {
+                Some(settled) => digest(settled),
+                None => digest(&postcard::to_allocvec(&self.settled.entries).map_err(rejected)?),
+            };
+            *self.settled.digest.get_or_init(|| settled)
         };
         let rest = postcard::to_allocvec(&(&self.recent, &*self.marks)).map_err(rejected)?;
-        if settled.len().saturating_add(rest.len()) > MAX_EXACT_ADMISSION_BYTES {
+        if usize::try_from(settled.0)
+            .unwrap_or(usize::MAX)
+            .saturating_add(rest.len())
+            > MAX_EXACT_ADMISSION_BYTES
+        {
             return Err(AdmissionError::ResourceLimit);
         }
-        Ok((
-            (
-                u64::try_from(settled.len()).unwrap_or(u64::MAX),
-                *blake3::hash(&settled).as_bytes(),
-            ),
-            rest,
-        ))
+        Ok((settled, rest))
     }
     /// [`Self::encode`] in two parts: the settled entries, shared and
     /// encoded once per settling, then the rest.

@@ -30,14 +30,14 @@ fn session() -> (Task, Link, tokio::sync::mpsc::UnboundedReceiver<Command>) {
     } = late_admission_at(web_time::SystemTime::now());
     let host = bootstrap.host;
     let config = PeerConfig {
-        host: tilo_server_client::Host::through(
+        host: tilo_server_client::ServerAddress::through(
             iroh_base::EndpointAddr::new(
                 iroh_base::EndpointId::from_bytes(&host.device_public_key).unwrap(),
             ),
             None,
         ),
         cert: bootstrap.device_cert,
-        host_cert: host,
+        server_cert: host,
         revocations: RevocationList::new(),
         entering: None,
     };

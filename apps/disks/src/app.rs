@@ -336,6 +336,12 @@ impl Store {
             .collect()
     }
 
+    /// What the device row `id` offers right now, as the machine stands: its
+    /// declared effects, narrowed by what this target can do.
+    pub(crate) fn device_status(&self, id: &str) -> Vec<ui::framework::EffectStatus> {
+        crate::resource::row_status(&self.topo, id)
+    }
+
     /// Show `topo`, keeping the selection on a drive and partition that still exist.
     fn replace_topology(&mut self, topo: Topology) {
         self.topo = topo;

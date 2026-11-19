@@ -1,6 +1,9 @@
 // These tests use the real bound action API and record loan. Removing capture
 // from dispatch, substituting the outer document, or reusing another target's
 // basis must fail even if the action itself still succeeds.
+
+use crate::bound_dispatch::StoreActions as _;
+
 fn locus_scope(
     fixture: &ActionFixture,
     id: u128,

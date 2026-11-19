@@ -6,6 +6,7 @@ format = 2
 kind = "contacts.book"
 label = "Contacts"
 version = 1
+shows = ["cancel-account-review", "close-accounts", "edit-account", "edit-field", "open-accounts", "open-favorites", "open-group", "open-review", "read-duplicate", "review-account", "review-account-revocation", "select-account-person", "sort-contacts"]
 
 [[resources.verbs]]
 id = "export-vcard-content"

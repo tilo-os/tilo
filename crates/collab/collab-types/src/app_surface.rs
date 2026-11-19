@@ -148,6 +148,16 @@ pub fn hash_of(app_id: &str) -> Option<[u8; 32]> {
         .map(|named| named.hash)
 }
 
+/// Every app's surface this process carries, by app.
+#[must_use]
+pub fn every() -> Vec<(String, &'static [u8])> {
+    registry()
+        .lock_recover()
+        .iter()
+        .map(|(app, named)| (app.clone(), named.bytes))
+        .collect()
+}
+
 /// The surface bytes of `app_id`, when this process carries them.
 #[must_use]
 pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
@@ -185,6 +195,19 @@ pub fn primary_kind(app_id: &str) -> Option<String> {
     surface_of(app_id)?
         .resource(None)
         .map(|surface| surface.kind.clone())
+}
+
+/// Whether `action` of `app_id` shows something in a window of the app, on
+/// whatever resource it is invoked, as its surface declares
+/// ([`tilo_actions::surface::Surface::shows`]). False when this process holds
+/// no surface for it.
+#[must_use]
+pub fn shows(app_id: &str, action: &str) -> bool {
+    surface_of(app_id).is_some_and(|file| {
+        file.resources
+            .iter()
+            .any(|surface| surface.shows.iter().any(|shown| shown == action))
+    })
 }
 
 /// The person-record kinds `app_id`'s surface declares (its

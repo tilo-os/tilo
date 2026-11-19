@@ -6,6 +6,7 @@ format = 2
 kind = "word-processor.document"
 label = "Document"
 version = 3
+shows = ["align", "apply-named-style", "clear-format", "comment-selection", "erase-text", "find", "find-text", "go-to", "go-to-anchor", "go-to-hit", "insert-page-break", "insert-table-here", "markup", "move-caret", "new-paragraph", "outline", "paste", "place-image", "replace-selection", "ruler", "select-all", "select-block", "select-range", "set-format", "set-hyperlink", "set-paragraph-style", "spellcheck", "styles", "toggle-mark", "type-text", "zoom-in", "zoom-out", "zoom-reset"]
 fields = [
   { path = "body", type = "rich_text", ops = "sha256:8bbf96a46d039012" },
   { path = "comments", type = { collection = { named = "Comment" } }, stored = "collection", unit = true },

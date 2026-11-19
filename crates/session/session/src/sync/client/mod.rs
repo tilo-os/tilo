@@ -77,6 +77,8 @@ pub(crate) use network::Reached;
 use network::{Serving, Wire, run};
 #[cfg(target_os = "linux")]
 pub(crate) use own_service::found_alone;
+#[cfg(test)]
+pub(crate) use own_service::serve_alone;
 
 /// How long the session waits for this device's endpoint to bind before it starts without one: a
 /// desktop with no one else on it, rather than a session that never opens.
@@ -237,11 +239,21 @@ impl HostOutbox {
     }
 }
 
-/// What the peer actor and the fabric said that only this desktop keeps: the person's other devices'
-/// fabric traffic, and how far a transfer this device is sending got.
+/// What the peer actor and the fabric said that only this desktop keeps: which of the person's
+/// devices proved itself on a session with this one, and the session's end, the fabric traffic they
+/// send, and how far a transfer this device is sending got.
 #[derive(Debug)]
 #[cfg(target_os = "linux")]
-enum HostEvent {
+enum DesktopEvent {
+    /// One of the person's devices proved itself on its session with this one, or proved itself
+    /// anew there: it comes before anything that device sent.
+    Sibling {
+        peer: EndpointId,
+        certs: Vec<tilo_user_identity::DeviceCert>,
+        revocations: Vec<tilo_user_identity::RevocationEntry>,
+    },
+    /// The session with one of the person's devices ended.
+    SiblingLeft { peer: EndpointId },
     PersonalFabric {
         peer: EndpointId,
         payload: tilo_network_actor::PersonalFabricPayload,
@@ -314,7 +326,7 @@ pub(crate) struct Local {
     /// desktop's own beside it.
     commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
     /// What the peer actor and the fabric said that only this desktop keeps.
-    host_events: std::sync::mpsc::Receiver<HostEvent>,
+    desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
     /// The actions of the person's devices that arrived ahead of the pass routing them: what the
     /// session took at once ([`Client::fabric_actions_now`]) left these for it.
     fabric_waiting: RefCell<Vec<crate::platform::fabric::PersonalFabricActionEnvelope>>,
@@ -394,7 +406,6 @@ impl Local {
                 // The person's other devices hand this one the group frames it lacks, and ask
                 // for the ones they lack.
                 Event::SiblingMsg { peer, msg } => link.heard_from_sibling(*peer.as_bytes(), msg),
-                Event::Sibling { .. } => link.sibling_arrived(),
                 Event::DocumentOpened {
                     ws,
                     channel,
@@ -405,24 +416,6 @@ impl Local {
                 }
                 _ => {}
             }
-        }
-        if let Some(fabric) = &self.fabric {
-            match event {
-                Event::Sibling {
-                    peer,
-                    certs,
-                    revocations,
-                } => fabric.sibling(*peer, certs, revocations),
-                Event::SiblingLeft { peer } => fabric.sibling_left(*peer),
-                _ => {}
-            }
-        }
-        // What a device coming or going means for what Files may offer, and how far a stream this
-        // device is sending got: the Nearby Send engine keeps both.
-        if matches!(event, Event::Sibling { .. } | Event::SiblingLeft { .. })
-            && let Some(nearby) = self.nearby()
-        {
-            nearby.devices_changed();
         }
         // A window's stream is not presence: it goes to the shares, which read it on the pass
         // ([`Self::take_surfaces`]).
@@ -723,10 +716,10 @@ impl Local {
     /// workspace.
     #[cfg(target_os = "linux")]
     /// Take what the peer actor and the fabric said that only this desktop keeps.
-    fn keep_host_events(&self, client: &SessionClient) {
-        while let Ok(event) = self.host_events.try_recv() {
+    fn keep_desktop_events(&self, client: &SessionClient) {
+        while let Ok(event) = self.desktop_events.try_recv() {
             match event {
-                HostEvent::WorkspaceDeleted { ws } => {
+                DesktopEvent::WorkspaceDeleted { ws } => {
                     if let Some(workspace) = client
                         .workspace_id(ws)
                         .and_then(|id| tilo_desktop_model::WorkspaceId::parse(&id))
@@ -734,7 +727,30 @@ impl Local {
                         self.deleted.borrow_mut().push(workspace);
                     }
                 }
-                HostEvent::PersonalFabric {
+                DesktopEvent::Sibling {
+                    peer,
+                    certs,
+                    revocations,
+                } => {
+                    if let Some(fabric) = &self.fabric {
+                        fabric.sibling(peer, &certs, &revocations);
+                    }
+                    if let Some(link) = &self.link {
+                        link.sibling_arrived();
+                    }
+                    if let Some(nearby) = self.nearby() {
+                        nearby.devices_changed();
+                    }
+                }
+                DesktopEvent::SiblingLeft { peer } => {
+                    if let Some(fabric) = &self.fabric {
+                        fabric.sibling_left(peer);
+                    }
+                    if let Some(nearby) = self.nearby() {
+                        nearby.devices_changed();
+                    }
+                }
+                DesktopEvent::PersonalFabric {
                     peer,
                     payload,
                     received,
@@ -743,7 +759,7 @@ impl Local {
                         fabric.arrived(peer, &payload, received);
                     }
                 }
-                HostEvent::NearbyTransferProgress {
+                DesktopEvent::NearbyTransferProgress {
                     transfer_id,
                     sent_bytes,
                     total_bytes,
@@ -881,7 +897,7 @@ impl Local {
     }
 
     /// Why what this session takes part in needs this device reachable, if it does: a workspace it
-    /// shows has someone else here, or it holds a link into one that still admits someone. A host
+    /// shows has someone else here, or a link is out of a workspace it holds as its holder. A host
     /// is dialled at start and on every reconnect, and the peer actor holds the relays up for every
     /// remote party it is connected to or keeps dialling
     /// ([`tilo_endpoint_reachability::Need::Transport`]).
@@ -1204,7 +1220,7 @@ impl Host for Hosting {
 
     fn workspace_host(&self, workspace: &str) -> Option<[u8; 32]> {
         let engine = self.local.engine.as_ref()?;
-        engine.host_of(tilo_desktop_model::WorkspaceId::parse(workspace)?)
+        engine.holder_of(tilo_desktop_model::WorkspaceId::parse(workspace)?)
     }
 
     fn joined(&self, workspace: &str) {
@@ -1221,7 +1237,7 @@ impl Host for Hosting {
 
     fn pass(&self, client: &SessionClient) {
         let local = &self.local;
-        local.keep_host_events(client);
+        local.keep_desktop_events(client);
         let moved = local.hear_live(client);
         // What arrived moved this device's fabric — a copy from another device, a device that is
         // gone: the person's other devices hear so on the same pass.
@@ -1360,7 +1376,7 @@ impl Client {
         let (identity, wake) = (entry.identity, entry.wake);
         let (commands, host_commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
-        let (host_events, host_arrived) = std::sync::mpsc::channel();
+        let (desktop_events, desktop_arrived) = std::sync::mpsc::channel();
         let (enrollments, enrolled) = std::sync::mpsc::channel();
         let (ready, bound) = std::sync::mpsc::channel();
         let (user, device) = certified_as(identity.as_ref());
@@ -1410,7 +1426,7 @@ impl Client {
                     host_commands,
                     Wire {
                         arrivals,
-                        host_events,
+                        desktop_events,
                         enrollments,
                         ready,
                     },
@@ -1439,7 +1455,7 @@ impl Client {
         .bound_to(endpoint_handle);
         let hosting = Local::hosting(Hosted {
             commands,
-            host_events: host_arrived,
+            desktop_events: desktop_arrived,
             engine,
             link,
             versions,
@@ -1475,8 +1491,8 @@ impl Client {
         #[cfg(target_os = "linux")]
         let host = {
             let (commands, _host_commands) = tokio::sync::mpsc::unbounded_channel();
-            let (_host_events, host_arrived) = std::sync::mpsc::channel();
-            Rc::new(Local::bare(commands, host_arrived))
+            let (_desktop_events, desktop_arrived) = std::sync::mpsc::channel();
+            Rc::new(Local::bare(commands, desktop_arrived))
         };
         #[cfg(target_os = "linux")]
         let outgoing = std::sync::Arc::clone(&transport.outgoing);
@@ -1531,7 +1547,7 @@ impl Client {
         let (_unheard, arrived) = std::sync::mpsc::channel();
         let (_unlanded, enrolled) = std::sync::mpsc::channel();
         let (commands, _host_commands) = tokio::sync::mpsc::unbounded_channel();
-        let (_host_events, host_arrived) = std::sync::mpsc::channel();
+        let (_desktop_events, desktop_arrived) = std::sync::mpsc::channel();
         let outbox: Arc<dyn Outbox> = Arc::new(outgoing);
         let inner = SessionClient::over(
             Transport {
@@ -1550,7 +1566,7 @@ impl Client {
         );
         let hosting = Rc::new(Hosting {
             roster: Rc::new(Roster::new()),
-            local: Rc::new(Local::bare(commands, host_arrived)),
+            local: Rc::new(Local::bare(commands, desktop_arrived)),
         });
         inner.attach_host(Rc::clone(&hosting) as Rc<dyn Host>);
         let client = Self {
@@ -1752,7 +1768,7 @@ impl Client {
     #[must_use]
     #[cfg(target_os = "linux")]
     pub fn fabric_actions(&self) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
-        self.hosting.local.keep_host_events(&self.inner);
+        self.hosting.local.keep_desktop_events(&self.inner);
         self.hosting.local.fabric_actions()
     }
 
@@ -1764,7 +1780,7 @@ impl Client {
         take: impl Fn(&crate::platform::fabric::PersonalFabricActionEnvelope) -> bool,
     ) {
         let local = &self.hosting.local;
-        local.keep_host_events(&self.inner);
+        local.keep_desktop_events(&self.inner);
         let left: Vec<_> = local
             .fabric_actions()
             .into_iter()
@@ -1972,7 +1988,7 @@ impl Client {
 #[cfg(target_os = "linux")]
 struct Hosted {
     commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
-    host_events: std::sync::mpsc::Receiver<HostEvent>,
+    desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
     engine: Option<Arc<Engine>>,
     link: Option<Arc<KeyLink>>,
     versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
@@ -1988,7 +2004,7 @@ impl Local {
     fn hosting(
         Hosted {
             commands,
-            host_events,
+            desktop_events,
             engine,
             link,
             versions,
@@ -2003,7 +2019,7 @@ impl Local {
             local: Rc::new(Self {
                 session: RefCell::new(None),
                 commands,
-                host_events,
+                desktop_events,
                 fabric_waiting: RefCell::default(),
                 surfaces: RefCell::new(Vec::new()),
                 call_audio: RefCell::new(Vec::new()),
@@ -2033,13 +2049,13 @@ impl Local {
     /// brings.
     fn bare(
         commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
-        host_events: std::sync::mpsc::Receiver<HostEvent>,
+        desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
     ) -> Self {
         let (_said, versions) = std::sync::mpsc::channel();
         Self {
             session: RefCell::new(None),
             commands,
-            host_events,
+            desktop_events,
             fabric_waiting: RefCell::default(),
             surfaces: RefCell::new(Vec::new()),
             call_audio: RefCell::new(Vec::new()),

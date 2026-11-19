@@ -6,6 +6,7 @@ format = 2
 kind = "containers.engine"
 label = "Containers"
 version = 1
+shows = ["ask-to-remove-image", "ask-to-remove-volume", "open-logs", "read-container", "select-container", "set-section", "set-tab", "tag-image"]
 fields = [
   { path = "draft", type = { named = "CreateDraft" }, stored = "record" },
   { path = "draft.name", type = "text" },

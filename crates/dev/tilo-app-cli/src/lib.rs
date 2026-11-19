@@ -6,8 +6,6 @@ use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::{self, BufRead as _, BufReader, IsTerminal, Write as _};
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
-#[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Stdio};
@@ -2091,7 +2089,11 @@ fn navigation_link_write(
 
 fn write_batch(writes: &[PendingWrite]) -> Result<()> {
     write_batch_with(writes, |write| {
-        write_atomic(&write.path, write.source.as_bytes(), write.description)
+        tilo_files::native::atomic::write_creating_parent_preserving_mode(
+            &write.path,
+            write.source.as_bytes(),
+        )
+        .with_context(|| format!("publishing {} {}", write.description, write.path.display()))
     })
 }
 
@@ -2171,7 +2173,15 @@ fn write_batch_with(
                 .rev()
             {
                 let result = match original {
-                    Some(source) => write_atomic(&restore.path, source, "generator rollback"),
+                    Some(source) => {
+                        tilo_files::native::atomic::write_creating_parent_preserving_mode(
+                            &restore.path,
+                            source,
+                        )
+                        .with_context(|| {
+                            format!("publishing generator rollback {}", restore.path.display())
+                        })
+                    }
                     None if restore.path.exists() => std::fs::remove_file(&restore.path)
                         .with_context(|| format!("removing new {}", restore.path.display())),
                     None => Ok(()),
@@ -3997,25 +4007,8 @@ fn write_ui_node_tree(node: &tilo_ui_graph::UiNode, depth: usize, output: &mut S
 fn write_ui_graph(path: &Path, document: &tilo_ui_graph::UiDocument) -> Result<()> {
     let mut source = document.to_json_pretty()?;
     source.push('\n');
-    write_atomic(path, source.as_bytes(), "UI graph")
-}
-
-fn write_atomic(path: &Path, source: &[u8], description: &str) -> Result<()> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("creating {description} directory {}", parent.display()))?;
-    #[cfg(unix)]
-    let written = {
-        let mode = std::fs::metadata(path)
-            .map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
-        tilo_files::native::atomic::write_with_mode(path, source, mode)
-    };
-    #[cfg(not(unix))]
-    let written = tilo_files::native::atomic::write(path, source);
-    written.with_context(|| format!("publishing {description} {}", path.display()))
+    tilo_files::native::atomic::write_creating_parent_preserving_mode(path, source.as_bytes())
+        .with_context(|| format!("publishing UI graph {}", path.display()))
 }
 
 impl CargoPlan {
@@ -4249,6 +4242,14 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     let mut sources = Vec::new();
     if rust_sources(app_dir, &app_dir.join("src"), &mut sources).is_err() {
         return;
+    }
+    // The resource and its verbs may live in the app's model crate (`apps/<name>-model`), which
+    // the app's window draws: those sources are the app's too.
+    if let (Some(parent), Some(name)) = (app_dir.parent(), app_dir.file_name()) {
+        let model = parent.join(format!("{}-model", name.to_string_lossy()));
+        if model.join("Cargo.toml").is_file() {
+            let _ = rust_sources(app_dir, &model.join("src"), &mut sources);
+        }
     }
     let source = sources
         .iter()
@@ -4865,10 +4866,8 @@ impl ScenarioSuitePlan {
     }
 
     fn build_app(&self) -> Result<PathBuf> {
-        let mut child = ProcessCommand::new(&self.build.program)
-            .args(&self.build.args)
-            .current_dir(&self.build.app_dir)
-            .stdout(Stdio::piped())
+        let mut child = self
+            .build_command()
             .spawn()
             .with_context(|| format!("starting {} build", self.build.program.to_string_lossy()))?;
         let stdout = child
@@ -4901,6 +4900,30 @@ impl ScenarioSuitePlan {
                 "the app builds several binaries; name the GUI one in tilo-app.toml's entrypoint"
             ),
         }
+    }
+
+    /// The app build, in the environment the command was started in.
+    ///
+    /// A variable in a build's environment keys every build script's and proc
+    /// macro's cache entry by it, and the test environment's (a fresh HOME, a
+    /// private audio endpoint, a PID) differ per job, so a build carrying them
+    /// shares no cache with any other job's. tools/test-env.sh writes the
+    /// caller's environment, and the build inputs, before it sets the test
+    /// one, and the build gets that file's environment instead. Outside a test
+    /// environment the build inherits the caller's already.
+    fn build_command(&self) -> ProcessCommand {
+        let mut command = ProcessCommand::new(&self.build.program);
+        command
+            .args(&self.build.args)
+            .current_dir(&self.build.app_dir)
+            .stdout(Stdio::piped());
+        let environment = std::env::var_os("TILO_TEST_ENVIRONMENT")
+            .map(PathBuf::from)
+            .and_then(|root| build_environment(&root));
+        if let Some(environment) = environment {
+            command.env_clear().envs(environment);
+        }
+        command
     }
 
     fn run_cases(&self, program: &Path) -> Result<ScenarioSuiteOutcome> {
@@ -4945,6 +4968,35 @@ impl ScenarioSuitePlan {
         }
         Ok(ScenarioSuiteOutcome { passed, failed })
     }
+}
+
+/// The environment a build is given, from the file
+/// tools/with-test-environment.sh keeps beside the fresh HOME: the caller's
+/// environment and the build inputs. `None` outside a test environment.
+fn build_environment(test_environment: &Path) -> Option<Vec<(OsString, OsString)>> {
+    let written = std::fs::read(test_environment.join("build-environment")).ok()?;
+    Some(parse_environment(&written))
+}
+
+/// `env -0`'s entries: KEY=value, each NUL-terminated, so a value may hold a
+/// newline. An empty entry, or one with no name or no `=`, is not a variable
+/// and is skipped.
+fn parse_environment(source: &[u8]) -> Vec<(OsString, OsString)> {
+    use std::os::unix::ffi::OsStringExt as _;
+    source
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| {
+            let separator = entry.iter().position(|byte| *byte == b'=')?;
+            let (name, value) = entry.split_at(separator);
+            if name.is_empty() {
+                return None;
+            }
+            Some((
+                OsString::from_vec(name.to_vec()),
+                OsString::from_vec(value.strip_prefix(b"=").unwrap_or_default().to_vec()),
+            ))
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -9022,17 +9074,17 @@ fn publish_staged_app_with(
 ) -> Result<()> {
     validate_destination(destination)?;
     if let Some(update) = workspace
-        && let Err(error) = write_atomic(
+        && let Err(error) = tilo_files::native::atomic::write_creating_parent_preserving_mode(
             &update.path,
             update.updated.as_bytes(),
-            "workspace manifest",
         )
+        .with_context(|| format!("publishing workspace manifest {}", update.path.display()))
     {
-        let restore = write_atomic(
+        let restore = tilo_files::native::atomic::write_creating_parent_preserving_mode(
             &update.path,
             update.original.as_bytes(),
-            "workspace rollback",
-        );
+        )
+        .with_context(|| format!("publishing workspace rollback {}", update.path.display()));
         return match restore {
             Ok(()) => Err(error).context("registering app in workspace; manifest rolled back"),
             Err(rollback) => bail!("{error:#}; workspace rollback was incomplete: {rollback:#}"),
@@ -9072,11 +9124,12 @@ fn publish_staged_app_with(
             }
         }
         if let Some(update) = workspace
-            && let Err(rollback) = write_atomic(
-                &update.path,
-                update.original.as_bytes(),
-                "workspace rollback",
-            )
+            && let Err(rollback) =
+                tilo_files::native::atomic::write_creating_parent_preserving_mode(
+                    &update.path,
+                    update.original.as_bytes(),
+                )
+                .with_context(|| format!("publishing workspace rollback {}", update.path.display()))
         {
             rollback_failures.push(rollback.to_string());
         }

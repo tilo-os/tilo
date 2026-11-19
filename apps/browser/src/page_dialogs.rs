@@ -9,13 +9,13 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
 
-use ui::framework::LiveRow;
-use ui::tilo_actions::ResourcePresentation;
-use ui::tokens::TextRole;
-use ui::webview::{
+use tilo_webview::{
     MAX_PAGE_DIALOG_ANSWER, PageDialog, PageDialogKind, SharedEngine, WebViewCommand,
     WebViewEngine, WebViewEvent,
 };
+use ui::framework::LiveRow;
+use ui::tilo_actions::ResourcePresentation;
+use ui::tokens::TextRole;
 use ui::widget::{ModalDialog, PromptBody, Text, Widget};
 
 use crate::CATALOG;
@@ -306,7 +306,7 @@ pub(crate) fn preview(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::webview::test_engine::TestEngine;
+    use tilo_webview::test_engine::TestEngine;
 
     fn asks(kind: PageDialogKind, id: u32) -> WebViewEvent {
         WebViewEvent::PageDialog(PageDialog {

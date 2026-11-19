@@ -374,6 +374,67 @@ pub trait ResourceApp: 'static {
     ///     &[PersonKind::shared::<accounts::person::PersonAccounts>()];
     /// ```
     const PERSON_RESOURCES: &'static [super::PersonKind] = &[];
+
+    /// The app's windows on a platform this one does not serve, shown by another `ResourceApp`
+    /// under the same app id (a page's, where this one is a computer's): the resources those
+    /// windows keep are part of the app's committed surface too, so a workspace takes their
+    /// changes and hands them to everyone else who opens one.
+    ///
+    /// ```ignore
+    /// const OTHER_WINDOWS: &'static [OtherWindow] = &[OtherWindow::of::<PageShell>()];
+    /// ```
+    const OTHER_WINDOWS: &'static [OtherWindow] = &[];
+}
+
+/// A window of the same app shown by another [`ResourceApp`] ([`ResourceApp::OTHER_WINDOWS`]):
+/// what its surface report says, merged into the app's.
+#[derive(Clone, Copy)]
+pub struct OtherWindow {
+    #[cfg(not(target_arch = "wasm32"))]
+    report: fn() -> serde_json::Value,
+}
+
+impl OtherWindow {
+    /// The windows `B` shows.
+    #[must_use]
+    pub const fn of<B: ResourceApp>() -> Self {
+        Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            report: super::headless::surface_report::<B>,
+        }
+    }
+
+    /// Take their surface report's resources (one of a kind `report` has not), effects, views
+    /// and unbound controls into `report`, the app's own, as `tilo-app surface` reads it.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn merge_into(self, report: &mut serde_json::Value) {
+        use serde_json::Value;
+        let other = (self.report)();
+        let kind = |resource: &Value| resource.get("kind").cloned();
+        let kinds: Vec<Option<Value>> = report
+            .get("resources")
+            .and_then(Value::as_array)
+            .map(|resources| resources.iter().map(kind).collect())
+            .unwrap_or_default();
+        for list in ["resources", "effects", "views", "unbound"] {
+            let (Some(theirs), Some(ours)) = (
+                other.get(list).and_then(Value::as_array),
+                report.get_mut(list).and_then(Value::as_array_mut),
+            ) else {
+                continue;
+            };
+            for item in theirs {
+                let known = if list == "resources" {
+                    kinds.contains(&kind(item))
+                } else {
+                    ours.contains(item)
+                };
+                if !known {
+                    ours.push(item.clone());
+                }
+            }
+        }
+    }
 }
 
 /// What [`ResourceApp::opening`] builds with: who the window is for, the workspace, and the record

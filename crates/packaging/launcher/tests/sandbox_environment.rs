@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use launcher::run::{RunOptions, run_with_captured};
+use launcher::run::{LaunchOptions, launch_with_captured};
 use tilo_test_env::ScopedEnv;
 
 use crate::support::{bwrap, isolated_options, manifest, workspacetest_payload};
@@ -24,15 +24,11 @@ const PACKAGE: &str = "so.tilo.envtest";
 /// walked in from the parent.
 const MARKER: &str = "TILO_ENV_LEAK_MARKER";
 
-/// Stand-ins for compositor wiring that an app must not receive: the privileged clipboard socket,
-/// collaboration broker, and user identity file.
+/// Stand-ins for compositor wiring that an app must not receive: the privileged clipboard socket
+/// and the collaboration broker.
 const SESSION_PRIVATE: &[(&str, &str)] = &[
     ("TILO_WAYLAND_PRIVILEGED", "wayland-priv-9"),
     ("QUICK_COLLAB_SOCK", "/run/user/1000/tilo-collab.sock"),
-    (
-        "TILO_USER_IDENTITY",
-        "/home/somebody/.config/tilo/identity/primary.json",
-    ),
 ];
 
 /// Variables set on *this* process for the duration of one test, put back afterwards — what the
@@ -47,7 +43,7 @@ fn parent_env(vars: &[(&str, &str)]) -> ScopedEnv {
 
 fn run(argv: &[&str]) -> String {
     let data = tempfile::tempdir().unwrap();
-    let opts = RunOptions {
+    let opts = LaunchOptions {
         no_services: true,
         bwrap_bin: Some(bwrap()),
         landlock_enforce: false,
@@ -57,7 +53,7 @@ fn run(argv: &[&str]) -> String {
         },
         ..isolated_options(data.path())
     };
-    let (status, out) = run_with_captured(
+    let (status, out) = launch_with_captured(
         &manifest(PACKAGE, "bin/workspacetest", "off"),
         workspacetest_payload(),
         &opts,
@@ -139,7 +135,6 @@ tilo_test_env::scenario! {
                 "TILO_APP_DIR".to_string(),
                 "TILO_PERSON_DIR".to_string(),
                 "TILO_USER_HOME".to_string(),
-                "TILO_USER_IDENTITY".to_string(),
                 "TILO_WORKSPACE_ID".to_string(),
                 "TILO_WORKSPACE_ROOTS".to_string(),
                 "TILO_PARTICIPATION".to_string(),
@@ -354,7 +349,7 @@ fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
         let mut manifest = manifest(PACKAGE, "bin/workspacetest", "off");
         manifest.runtime = Some("tilo-runtime/gst-relocation-fixture".into());
         manifest.entrypoint.bin = format!("bin/{bin}");
-        let opts = RunOptions {
+        let opts = LaunchOptions {
             no_services: true,
             bwrap_bin: Some(bwrap()),
             sandbox_shim_bin: Some(tilo_test_env::package_binary!("tilo-launcher")),
@@ -368,7 +363,7 @@ fn relocated_gstreamer_discovers_and_decodes_in_the_confined_process() {
         };
         assert!(opts.landlock_enforce);
         assert!(!opts.allow_missing_runtime && !opts.allow_unsigned_runtime);
-        let (status, output) = run_with_captured(&manifest, &payload, &opts)
+        let (status, output) = launch_with_captured(&manifest, &payload, &opts)
             .expect("launch the native probe with the verified relocated runtime");
         let output = String::from_utf8_lossy(&output).into_owned();
         assert!(status.success(), "{bin} failed: {status:?} {output}");

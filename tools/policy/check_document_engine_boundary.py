@@ -58,6 +58,9 @@ ENGINE_OWNERS = (
     # revert writes any document's text and marks back as they were.
     "crates/collab/collaboration/",
     "crates/system/app-state/",
+    # The one store for every app's resources: it places resources and their
+    # content documents itself, so it writes their text and marks.
+    "crates/collab/resource-store/",
 )
 SCANNED_ROOTS = ("apps", "crates", "examples")
 

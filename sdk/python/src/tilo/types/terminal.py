@@ -81,7 +81,7 @@ class FinishedCommand(TypedDict):
     undoable: bool
     items: list[CommandItem]
     request: str | None
-    run: str
+    id: str
 
 ItemKind = Literal["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"]
 
@@ -121,7 +121,7 @@ RecordCommandArgs = TypedDict("RecordCommandArgs", {
     "undoable": "bool",
     "items": "list[CommandItem]",
     "request": NotRequired["str | None"],
-    "run": "str",
+    "id": "str",
 })
 """The arguments of `record-command`."""
 
@@ -162,7 +162,7 @@ UsedArgs = TypedDict("UsedArgs", {
 
 class Session(Resource):
     """Terminal — `terminal.session`."""
-    __surface__ = "so.tilo.terminal@8f161992a310d594"
+    __surface__ = "so.tilo.terminal@2222358fc45cc0b3"
     @property
     def target(self) -> str | None:
         """Read only."""
@@ -223,7 +223,7 @@ class Session(Resource):
         tool: str,
         undoable: bool,
         items: list[CommandItem],
-        run: str,
+        id: str,
         output: Any | None = None,
         request: str | None = None,
     ) -> None:
@@ -242,7 +242,7 @@ class Session(Resource):
         args["items"] = items
         if request is not None:
             args["request"] = request
-        args["run"] = run
+        args["id"] = id
         return self.action("record-command", **args)
 
     def record_command_many(self, items: list[RecordCommandArgs]) -> list[dict[str, Any]]:
@@ -327,18 +327,14 @@ class Session(Resource):
         """Runs the app's action."""
         return self.action("history-live")
 
-    def open_link(self, *, url: str) -> None:
-        """Runs the app's action."""
-        return self.action("open-link", url=url)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"run", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "inspect_session", "read_screen", "inspect_editor", "copy_visible", "copy_selection", "select_all", "history_top", "history_live", "open_link"})
+    __actions__ = frozenset({"run", "rerun", "rerun_test", "stop", "stop_many", "record_command", "record_command_many", "record_target", "record_target_many", "record_relay_session", "record_relay_session_many", "claim_pane", "claim_pane_many", "inspect_session", "read_screen", "inspect_editor", "copy_visible", "copy_selection", "select_all", "history_top", "history_live"})
 
 
 class History(Resource):
     """Command history — `terminal.history`."""
-    __surface__ = "so.tilo.terminal@8f161992a310d594"
+    __surface__ = "so.tilo.terminal@2222358fc45cc0b3"
     @property
     def remembered(self) -> list[Entry[Remembered]]:
         """Read only."""
@@ -380,7 +376,7 @@ class History(Resource):
 
 class RecentEnvironments(Resource):
     """Recent environments — `terminal.recent-environments`."""
-    __surface__ = "so.tilo.terminal@8f161992a310d594"
+    __surface__ = "so.tilo.terminal@2222358fc45cc0b3"
     devices: dict[str, str]
 
     def used(self,

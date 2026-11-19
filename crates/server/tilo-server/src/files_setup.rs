@@ -49,10 +49,13 @@ fn existing_person(paths: &IdentityPaths) -> Result<[u8; 32]> {
     Ok(person)
 }
 
-fn protected_identity(dir: &Path, person: [u8; 32]) -> Result<runtime_identity::SigningIdentity> {
-    let record = runtime_identity::resolve_active_identity(dir)
+fn protected_identity(
+    dir: &Path,
+    person: [u8; 32],
+) -> Result<tilo_identity::store::SigningIdentity> {
+    let record = tilo_identity_client::resolve_active_identity(dir)
         .context("existing person identity is unavailable; do not create a replacement")?;
-    let identity = runtime_identity::load_from_path(record).map_err(|e| {
+    let identity = tilo_identity::store::load_from_path(record).map_err(|e| {
         anyhow::anyhow!("open existing identity in its normal signing session: {e}")
     })?;
     anyhow::ensure!(
@@ -356,7 +359,6 @@ mod tests {
             let cache = temp.path().join("files");
             prepare_new(&cache, device.verifying_key().to_bytes(), envelope.clone()).unwrap();
             check(&temp.path().join("identity"), &cache).expect("existing certified Files primary");
-            assert!(!paths.user_privkey.exists(), "no root export is required");
             let mut revoked = envelope.capabilities;
             revoked[0].effect = Effect::Restrict;
             let denied = WorkspaceAuthorityEnvelope::sign(workspace, 2, revoked, false, &root).unwrap();

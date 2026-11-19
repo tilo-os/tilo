@@ -25,7 +25,7 @@ pub(crate) fn bridge_program() -> String {
             tilo_automation::StepKind::Invoke {
                 action: tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
                 resource: tilo_automation::Selector::FirstOfKind("chat.workspace".into()),
-                args: BTreeMap::default(),
+                args: std::collections::BTreeMap::default(),
                 appearance: None,
             },
         )],
@@ -126,7 +126,7 @@ pub(crate) fn install_command(
             source: None,
             armed_at: vec![],
             connector_cursors_from_ms: 1,
-            inputs: BTreeMap::default(),
+            inputs: std::collections::BTreeMap::default(),
             paused: false,
         },
         program: program.into(),

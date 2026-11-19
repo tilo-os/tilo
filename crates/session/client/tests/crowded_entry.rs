@@ -46,7 +46,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_session_client::MemoryPeerStore;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_user_identity::UserIdentity;
@@ -441,7 +441,8 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     let https = host.https();
     let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
-    let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
+    let page_host =
+        || ServerAddress::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let desktop = DocumentRoute {
         app_id: "so.tilo.browser-desktop".into(),
         cluster_id: lounge.workspace.clone(),
@@ -460,7 +461,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     let mut base = desktop_base(64 * 1024);
     let first = Member {
         host: page_host(),
-        host_cert: host_device.cert.clone(),
+        server_cert: host_device.cert.clone(),
         workspace: lounge.workspace.clone(),
         workspace_id: lounge.workspace_id,
         desktop: desktop.clone(),
@@ -557,11 +558,11 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
 
     // What the site hands its page about the host, which its deployment asked
     // once, as `tilo-server page-host` does: no guest asks it again.
-    let site = tilo_server_client::https::host_info(&*https)
+    let site = tilo_server_client::https::server_info(&*https)
         .await
         .unwrap()
         .for_site();
-    assert_eq!(site.host_cert, host_device.cert);
+    assert_eq!(site.server_cert, host_device.cert);
     let place = Place {
         https: &*https,
         site: &site,
@@ -596,8 +597,8 @@ const ARRIVING: usize = 16;
 /// for the workspace's keys.
 #[derive(Clone)]
 struct Member {
-    host: Host,
-    host_cert: tilo_user_identity::DeviceCert,
+    host: ServerAddress,
+    server_cert: tilo_user_identity::DeviceCert,
     workspace: String,
     workspace_id: WorkspaceId,
     desktop: DocumentRoute,
@@ -608,7 +609,7 @@ impl Member {
     async fn arrive(&self, name: &str) -> Link {
         let (root, key) = (new_key(), new_key());
         let (cert, entry) = entry_request(
-            &self.host_cert,
+            &self.server_cert,
             &self.workspace,
             &key,
             Entering {
@@ -624,7 +625,7 @@ impl Member {
         let page = enter_page(
             self.host.clone(),
             cert,
-            self.host_cert.clone(),
+            self.server_cert.clone(),
             key,
             std::sync::Arc::new(MemoryPeerStore::default()),
             entry,
@@ -1021,7 +1022,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                 origin: origin.as_str().trim_end_matches('/').to_owned(),
                 ..web
             };
-            let host = Host::published(&named.clone().into())
+            let host = ServerAddress::published(&named.clone().into())
                 .over(tilo_server_client::Carrier::WebTransport)
                 .with_web(Some(proxied));
             (Wire::Datagrams(datagrams), host)
@@ -1039,8 +1040,9 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
             let link = DelayedLink::start(upstream, round_trip).await;
             let mut relay: url::Url = (*place.relay).clone();
             relay.set_port(Some(link.addr.port())).unwrap();
-            let host = Host::through(iroh::EndpointAddr::new(place.host), Some(relay.into()))
-                .over(tilo_server_client::Carrier::Relay);
+            let host =
+                ServerAddress::through(iroh::EndpointAddr::new(place.host), Some(relay.into()))
+                    .over(tilo_server_client::Carrier::Relay);
             (Wire::Stream(link), host)
         }
     };
@@ -1060,7 +1062,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
     let root = new_key();
     let key = new_key();
     let (cert, entry) = entry_request(
-        &place.site.host_cert,
+        &place.site.server_cert,
         place.workspace,
         &key,
         Entering {
@@ -1077,7 +1079,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
     let page = enter_page(
         host,
         cert,
-        place.site.host_cert.clone(),
+        place.site.server_cert.clone(),
         key,
         std::sync::Arc::new(MemoryPeerStore::default()),
         entry,

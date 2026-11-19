@@ -1,5 +1,6 @@
 //! Opaque ownership observations. These never enter historical presentation inputs.
 use super::{HistoryRegistrationError, HistoryResource};
+use crate::bound_dispatch::StoreActions as _;
 use crate::{
     bound_dispatch::CallbackBinding,
     resource::{DocumentCheckout, ResourceStore},
@@ -426,15 +427,19 @@ impl HistoryOwner {
     /// Merge a peer's `mutation` into the record.
     pub(crate) fn merge_remote(
         &self,
-        mutation: &collab_types::DocumentMutation,
+        mut incoming: crate::collaboration::Incoming<'_>,
         outer: &mut AutoCommit,
     ) -> Result<super::routes::MergedRemote, super::routes::RemoteApplyError> {
         self.validate()
             .map_err(|error| super::routes::RemoteApplyError::Unavailable(error.to_string()))?;
         let (store, checkout) = self.store_checkout();
-        let merged = crate::bound_dispatch::merge_remote_owned_document(store, checkout, mutation)?;
+        let merged = crate::bound_dispatch::merge_remote_owned_document(
+            store,
+            checkout,
+            incoming.reborrow(),
+        )?;
         if merged.changed.is_none() && self.close_named_step(outer) {
-            return crate::bound_dispatch::merge_remote_owned_document(store, checkout, mutation);
+            return crate::bound_dispatch::merge_remote_owned_document(store, checkout, incoming);
         }
         Ok(merged)
     }
@@ -485,6 +490,13 @@ impl HistoryOwner {
         {
             tracing::debug!(?error, "history review could not close the open step");
         }
+    }
+
+    /// Whether this document cannot take a peer's changes yet, an unfinished edit or a restore in
+    /// flight ([`crate::bound_dispatch::defers_remote`]).
+    pub(crate) fn defers_remote(&self) -> bool {
+        let (store, checkout) = self.store_checkout();
+        crate::bound_dispatch::defers_remote(store, checkout)
     }
 
     /// See [`crate::bound_dispatch::CallbackBinding::close_named_step`]: whether a step an open action

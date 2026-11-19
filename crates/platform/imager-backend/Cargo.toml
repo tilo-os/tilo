@@ -41,7 +41,7 @@ wire-frame = { path = "../../system/wire-frame" }
 tilo-unlock-protocol = { path = "../../collab/tilo-unlock-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-identity = { path = "../../runtime/tilo-identity" }
-runtime-identity = { path = "../../runtime/runtime-identity" }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 runtime-collab = { path = "../../runtime/runtime-collab" }
 tilo-test-env = { path = "../../dev/test-env", optional = true }
 reqwest = { workspace = true, features = ["blocking"] }
@@ -91,7 +91,6 @@ tilo-lock = { path = "../tilo-lock", optional = true }
 # The live installer's account fixtures for the imager's tests (`test-support`).
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"], optional = true }
 tilo-paths = { path = "../../platform/tilo-paths" }
-tilo-settings-records = { path = "../../platform/tilo-settings-records" }
 tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-device-identity = { version = "0.1.0", path = "../../collab/tilo-device-identity" }
 
@@ -136,7 +135,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 # The destination namespace checks recognise the fixture roots the tests build in.
 migration-sources = { path = "../migration-sources", features = ["test-support"] }
 tilo-oauth = { path = "../../system/tilo-oauth", features = ["fake"] }
-runtime-identity = { path = "../../runtime/runtime-identity" }
 test-http = { path = "../../dev/test-http" }
 tilo-test-env = { path = "../../dev/test-env" }
 

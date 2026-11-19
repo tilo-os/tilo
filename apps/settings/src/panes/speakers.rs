@@ -62,6 +62,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&SpeakersArea> {
 #[effect(operation = "settings.effect")]
 pub enum SpeakerEffect {
     /// Save a speaker set; the other devices are asked to join.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     CreateSpeakerSet {
         #[param("The set's name")]
@@ -70,6 +71,7 @@ pub enum SpeakerEffect {
         members: Vec<SpeakerMemberSpec>,
     },
     /// Play a short sound on one output, to tell which speaker it is.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     IdentifySpeaker {
         #[param("The device the output is on")]
@@ -79,6 +81,7 @@ pub enum SpeakerEffect {
     },
     /// Measure a set with the offered microphones: the one at `listening`
     /// (where the person sits), and every other except `excluded`.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     CalibrateSpeakerSet {
         #[param("The speaker set's id")]
@@ -89,33 +92,38 @@ pub enum SpeakerEffect {
         listening: Option<String>,
     },
     /// Stop measuring a set.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     CancelCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Apply a measured proposal.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     ApplyCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Go back to how the set sounded before the last calibration.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     RevertCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Discard a measured proposal.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     DismissCalibration {
         #[param("The speaker set's id")]
         group: String,
     },
     /// Delete a speaker set; its devices play on their own again.
-    #[effect(job, row, destructive, returns)]
+    #[effect(kind = "outside")]
+    #[effect(job, row, destructive, returns, on = SpeakerGroup)]
     DeleteSpeakerSet {
-        #[param("The speaker set's id")]
+        #[param("The speaker set's row, or its id")]
         group: String,
     },
 }
@@ -187,6 +195,14 @@ pub(crate) fn answer(
     effect: SpeakerEffect,
     cx: &mut EffectCx<Settings>,
 ) -> EffectAnswer {
+    // A set's row binds the set's row id; a control names the set's id. The
+    // service takes the set's id.
+    let effect = match effect {
+        SpeakerEffect::DeleteSpeakerSet { group } => SpeakerEffect::DeleteSpeakerSet {
+            group: crate::effects::row_entity(&group, "settings.speaker-group").to_owned(),
+        },
+        effect => effect,
+    };
     if !effect.command().valid() {
         return Err(
             "that speaker request is incomplete: check the names, members and ids".to_owned(),
@@ -317,6 +333,16 @@ struct Finished {
     result: Result<SpeakerReply, String>,
 }
 
+/// A saved speaker set, as the pane publishes it: a row of the
+/// `settings.speaker-group` type, whose effect deletes the set.
+#[derive(ui::tilo_resource::Row)]
+#[row(
+    kind = "settings.speaker-group",
+    label = "Speaker set",
+    effects = SpeakerEffect
+)]
+pub(crate) struct SpeakerGroup;
+
 pub struct SpeakersArea {
     devices: bool,
     staged: Option<crate::scenarios::SpeakersSample>,
@@ -369,16 +395,9 @@ impl SpeakersArea {
             .iter()
             .filter(|group| group.led_here)
             .map(|group| {
-                LiveRow::new(
+                LiveRow::typed::<SpeakerGroup>(
                     format!("settings.speaker-group:{}", group.id),
-                    "settings.speaker-group",
                     group.name.clone(),
-                )
-                .operation(
-                    SettingsEffect::from(SpeakerEffect::DeleteSpeakerSet {
-                        group: group.id.clone(),
-                    })
-                    .bound(),
                 )
             })
             .collect()

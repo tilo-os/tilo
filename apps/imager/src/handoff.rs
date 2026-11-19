@@ -508,14 +508,22 @@ fn first_existing(candidates: &[Option<PathBuf>]) -> Option<PathBuf> {
     candidates.iter().find_map(Clone::clone)
 }
 
+/// The person's root lives in their identity store, whose file provider keeps
+/// it in `secrets/`. A joined device gets only the public side of its
+/// identity, so a staged home whose store holds secrets is refused whole.
 fn refuse_human_root_secret(staged_var: &Path) -> io::Result<()> {
-    let secret = staged_var.join("lib/tilo/user-identity/privkey.bin");
-    match fs::symlink_metadata(&secret) {
-        Ok(meta) if meta.is_file() => Err(io::Error::other(
-            "refusing to copy the human root secret onto the target",
-        )),
-        Ok(_) | Err(_) => Ok(()),
+    let Ok(homes) = fs::read_dir(staged_var.join("home")) else {
+        return Ok(());
+    };
+    for home in homes {
+        let secrets = home?.path().join(".config/tilo/identity/secrets");
+        if fs::symlink_metadata(&secrets).is_ok() {
+            return Err(io::Error::other(
+                "refusing to copy the human root secret onto the target",
+            ));
+        }
     }
+    Ok(())
 }
 
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
@@ -693,7 +701,17 @@ mod tests {
         assert!(
             tilo_device_identity::joined_device_is_ready(&paths, ui::time::unix_now_ns()).unwrap()
         );
-        assert!(!paths.user_privkey.exists());
+        assert!(
+            !dir.path()
+                .join("var/home")
+                .read_dir()
+                .unwrap()
+                .any(|home| home
+                    .unwrap()
+                    .path()
+                    .join(".config/tilo/identity/secrets")
+                    .exists())
+        );
         let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
         assert_ne!(
             cert.device_public_key, local_cert.device_public_key,
@@ -819,7 +837,10 @@ mod tests {
         phase the_human_root_secret_never_leaves_the_setup_machine;
         {
             let staged = tempfile::tempdir().unwrap();
-            let secret = staged.path().join("var/lib/tilo/user-identity/privkey.bin");
+            let secret = staged
+                .path()
+                .join("var/home/person/.config/tilo/identity/secrets")
+                .join(format!("{}.key", "ab".repeat(32)));
             fs::create_dir_all(secret.parent().unwrap()).unwrap();
             fs::write(&secret, b"human-root-secret").unwrap();
 
@@ -828,7 +849,7 @@ mod tests {
             fs::create_dir_all(mnt.path().join("state/deploy/abcd/etc")).unwrap();
             fs::create_dir_all(&var).unwrap();
             assert!(install_staged_onto_mounted_root(mnt.path(), staged.path()).is_err());
-            assert!(!var.join("lib/tilo/user-identity/privkey.bin").exists());
+            assert!(!var.join("home/person").exists());
 
             let device = tempfile::NamedTempFile::new().unwrap();
             let device_len = 1000 + PROFILE_BLOCK_SIZE as u64 + SETUP_HANDOFF_HEADER_SIZE + 8192;

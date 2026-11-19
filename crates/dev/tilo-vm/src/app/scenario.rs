@@ -346,7 +346,7 @@ struct VmPartuuids {
 #[serde(deny_unknown_fields)]
 struct VmSelectedTarget {
     schema: String,
-    target_ref: String,
+    repository: String,
     target_digest: String,
     architecture: String,
     hardware_profile: String,
@@ -489,13 +489,13 @@ fn validate_development_target_proof(proof: &VmInstallProof) -> Result<(), Strin
         .as_ref()
         .ok_or("VM development target proof has no selected target")?;
     let source = &selected.provenance.source_revision;
+    let dev_repository = "registry.tilo.so/tilo/tilo-vm";
     let tag = selected
         .update_origin
-        .strip_prefix("registry.tilo.so/tilo/tilo-vm:");
+        .strip_prefix(&format!("{dev_repository}:"));
     if proof.schema != "tilo.vm-install-image-proof.v4"
         || selected.schema != "tilo.installer-dev-target.v1"
-        || selected.target_ref
-            != format!("registry.tilo.so/tilo/tilo-vm@{}", selected.target_digest)
+        || selected.repository != dev_repository
         || selected.target_digest != proof.installed_image_digest
         || selected.architecture != "aarch64"
         || !matches!(
@@ -564,18 +564,17 @@ fn validate_signed_target_proof(proof: &VmInstallProof) -> Result<(), String> {
         .ok_or("VM v2 install proof has no installed update origin")?;
     let source = &selected.provenance.source_revision;
     let profile_matches = signed_target_profile_matches(selected);
-    let repository = if selected.hardware_profile == "lenovo-83ed" {
-        "code.tilo.so/tilo/tilo"
-    } else {
-        "registry.tilo.so/tilo/tilo"
-    };
     if proof.schema != "tilo.vm-install-image-proof.v2"
         || proof.copied_manifest_digest.is_some()
         || !lowercase_hex(booted_composefs, 128)
         || !lowercase_hex(installed_composefs, 128)
         || proof.composefs_digest != installed_composefs
         || selected.schema != "tilo.installer-offline-target.v1"
-        || selected.target_ref != format!("{repository}@{}", selected.target_digest)
+        || !(selected.repository.starts_with("registry.tilo.so/tilo/")
+            || selected.repository.starts_with("code.tilo.so/tilo/"))
+        || !selected
+            .update_origin
+            .starts_with(&format!("{}:", selected.repository))
         || selected.target_digest != proof.installed_image_digest
         || selected.architecture != "aarch64"
         || !profile_matches
@@ -624,7 +623,7 @@ fn signed_target_profile_matches(selected: &VmSelectedTarget) -> bool {
                     .provenance
                     .generation
                     .is_none_or(|generation| generation > 0)
-                && selected.update_origin == format!("code.tilo.so/tilo/tilo:lenovo-83ed-{source}")
+                && selected.update_origin == format!("{}:lenovo-83ed-{source}", selected.repository)
         }
         "generic" => {
             selected.provenance.firmware_candidate.is_none()
@@ -635,7 +634,8 @@ fn signed_target_profile_matches(selected: &VmSelectedTarget) -> bool {
                     .is_some_and(|generation| generation > 0)
                 && selected.update_origin
                     == format!(
-                        "registry.tilo.so/tilo/tilo:gen{}",
+                        "{}:gen{}",
+                        selected.repository,
                         selected.provenance.generation.unwrap_or_default()
                     )
         }
@@ -1953,7 +1953,7 @@ mod tests {
                 "installed_update_origin": format!("ostree-unverified-image:docker://{origin}"),
                 "selected_target": {
                     "schema": "tilo.installer-offline-target.v1",
-                    "target_ref": format!("code.tilo.so/tilo/tilo@{target}"),
+                    "repository": "code.tilo.so/tilo/tilo",
                     "target_digest": target, "architecture": "aarch64",
                     "hardware_profile": "lenovo-83ed", "update_origin": origin,
                     "provenance": {"source_revision": revision,
@@ -1990,8 +1990,7 @@ mod tests {
                     .is_err()
             );
             payload["selected_target"]["provenance"]["generation"] = Value::Null;
-            payload["selected_target"]["target_ref"] =
-                json!(format!("registry.tilo.so/tilo/tilo@{target}"));
+            payload["selected_target"]["repository"] = json!("registry.tilo.so/tilo/tilo");
             assert!(
                 super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
                     .is_err()
@@ -2007,16 +2006,15 @@ mod tests {
                 super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
                     .is_ok()
             );
-            check_development_target_proof(payload, &source, &target);
+            check_development_target_proof(payload, &source);
         }
     }
 
-    fn check_development_target_proof(mut payload: Value, source: &Value, target: &str) {
+    fn check_development_target_proof(mut payload: Value, source: &Value) {
         let dev_origin = "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci";
         payload["schema"] = json!("tilo.vm-install-image-proof.v4");
         payload["selected_target"]["schema"] = json!("tilo.installer-dev-target.v1");
-        payload["selected_target"]["target_ref"] =
-            json!(format!("registry.tilo.so/tilo/tilo-vm@{target}"));
+        payload["selected_target"]["repository"] = json!("registry.tilo.so/tilo/tilo-vm");
         payload["selected_target"]["hardware_profile"] = json!("lenovo-83ed");
         payload["selected_target"]["update_origin"] = json!(dev_origin);
         payload["selected_target"]["verifier_key_sha256"] = Value::Null;

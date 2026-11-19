@@ -244,6 +244,19 @@ pub fn project(workspace: &mut Workspace, policy: &WorkspacePolicy) -> bool {
     true
 }
 
+/// Write the names the workspace's governance gives its people, `people` (its governed members),
+/// into `workspace`: what every surface calls someone who is not here. A person's name is the one
+/// they gave themselves, which their server keeps for every workspace of theirs; a removed member's
+/// row names nobody who is in it. Whether anything changed.
+pub fn project_names(workspace: &mut Workspace, people: &[collab_types::Member]) -> bool {
+    workspace.named_people(
+        people
+            .iter()
+            .filter(|member| !member.removed)
+            .filter_map(|member| Some((member.id.person_id()?, member.name.as_str()))),
+    )
+}
+
 /// The grants `grants` in a settled order, so two readings of one policy compare equal.
 fn settled<'a>(grants: impl IntoIterator<Item = &'a Grant>) -> Vec<Grant> {
     let mut grants: Vec<Grant> = grants.into_iter().cloned().collect();

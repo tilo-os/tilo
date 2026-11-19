@@ -80,6 +80,7 @@ export function made(member: number, item = 0): Record<string, Record<string, nu
   return { $made: { member, item } };
 }
 
+/** An action id from the name a caller writes: `readFormFields` is `read-form-fields`. */
 export function kebab(name: string): string {
   let out = "";
   for (let index = 0; index < name.length; index += 1) {

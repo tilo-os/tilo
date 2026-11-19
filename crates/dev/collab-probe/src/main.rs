@@ -19,7 +19,9 @@
 //! arguments reads the instruction from `probe-routes` in its payload (`TILO_APP_MODULE`).
 
 use std::process::ExitCode;
+use std::sync::Arc;
 use tilo_automerge::ApplyIncoming;
+use tilo_identity_client::BrokerSigningIdentity;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
@@ -118,12 +120,11 @@ fn channel_key(workspace_id: &str) -> String {
     format!("{workspace_id}#app:{APP_ID}")
 }
 
-fn certified_join(
-    workspace_id: &str,
-) -> Result<(Vec<u8>, runtime_identity::SigningIdentity), String> {
-    let identity = runtime_identity::load()
+fn certified_join(workspace_id: &str) -> Result<(Vec<u8>, Arc<BrokerSigningIdentity>), String> {
+    let identity = tilo_identity_client::load()
         .map_err(|error| format!("could not reach the workspace identity service: {error}"))?;
     let certificate = identity
+        .metadata()
         .device_certificate()
         .ok_or_else(|| "workspace identity has no certified device".to_string())?;
     let proof = identity
@@ -148,13 +149,7 @@ fn certified_join(
 )]
 async fn join(
     workspace_id: &str,
-) -> Result<
-    (
-        runtime_collab::ChannelHandle,
-        runtime_identity::SigningIdentity,
-    ),
-    String,
-> {
+) -> Result<(runtime_collab::ChannelHandle, Arc<BrokerSigningIdentity>), String> {
     let (presentation, identity) = certified_join(workspace_id)?;
     let broker = runtime_collab::try_connect()
         .map_err(|error| format!("could not reach the broker over the service fd: {error}"))?;
@@ -169,7 +164,7 @@ async fn join(
 }
 
 fn signed_incremental(
-    identity: &runtime_identity::SigningIdentity,
+    identity: &BrokerSigningIdentity,
     workspace_id: &str,
     bytes: Vec<u8>,
 ) -> Result<Vec<u8>, String> {
@@ -185,7 +180,7 @@ fn signed_incremental(
     let mut op = SignedOp::new_unsigned(
         payload,
         collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID),
-        Ed25519PublicKey::from_bytes(identity.signing_public_key()),
+        Ed25519PublicKey::from_bytes(identity.metadata().signing_public_key()),
         collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID),
         OpKind::Change,
         now,
@@ -378,7 +373,7 @@ async fn routes<'a>(workspace_id: &str, apps: impl Iterator<Item = &'a str>) -> 
         let unsigned = SignedOp::new_unsigned(
             b"probe".to_vec(),
             collab_types::document_artifact_id(app, workspace_id, ""),
-            Ed25519PublicKey::from_bytes(identity.signing_public_key()),
+            Ed25519PublicKey::from_bytes(identity.metadata().signing_public_key()),
             collab_types::document_attestation_id(app, workspace_id, ""),
             OpKind::Change,
             std::time::SystemTime::now(),

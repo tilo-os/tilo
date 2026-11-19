@@ -7,18 +7,23 @@
 //! [`open`](Choices::open) is the list of what it still asks, computed here so
 //! the plan's fields and its `open` list cannot disagree.
 //!
-//! [`mint`] makes the single-use enrollment token the medium carries. The plan
-//! names the token by its nonce and expiry only, so the document travels
-//! through the person's devices, a log or an action's answer without exposing
-//! the token; the token itself goes to a file only its account can read
-//! ([`store`]).
+//! The plan itself is the machine's entry in the person's Servers workspace
+//! (`tilo_workspace_service::workspaces::servers`): this crate only writes the
+//! document, and where it goes is the session's to say. [`mint`] makes the
+//! single-use enrollment token the medium carries; the plan names the token by
+//! its nonce and expiry only, so the document travels through the person's
+//! devices, a log or an action's answer without exposing the token. The token
+//! itself goes to a file only its account can read ([`store_token`]), the one
+//! file this crate keeps.
 
 use std::path::{Path, PathBuf};
 
 use install_profile_model::plan::{self, DiskRule, Holding, Network, Plan, Token};
 use tilo_device_identity::IdentityPaths;
 use tilo_device_identity::persist::{read_device_cert, read_public_key, read_signing_key};
-use tilo_user_identity::{DeviceCapabilities, encode_enrollment_token, mint_enrollment_token};
+use tilo_user_identity::{
+    DeviceCapabilities, Dial, encode_enrollment_token, enrollment_endpoint, mint_enrollment_token,
+};
 
 pub use install_profile_model::plan::{Commands, commands, installer_image};
 
@@ -153,7 +158,7 @@ pub fn mint(system: &IdentityPaths, home_peers: &Path) -> Result<(String, Token)
         now_ns,
         expires_at_ns,
         nonce,
-        dial_peers(home_peers, user),
+        dial_peers(system, home_peers, user),
         &device,
     )
     .map_err(|error| format!("cannot mint the machine's token: {error}"))?;
@@ -168,168 +173,96 @@ pub fn mint(system: &IdentityPaths, home_peers: &Path) -> Result<(String, Token)
     ))
 }
 
-/// The person's devices this computer knows, as an enrollment token names
-/// them: where each is reached over the network, so a machine handed only a
-/// token can dial the devices that admit it from anywhere.
+/// The person's devices that answer enrollments, as a token names them: each
+/// device's enrollment endpoint ([`enrollment_endpoint`]), which its session
+/// serves while it is up, and the relay that reaches it. A session's own
+/// endpoint answers devices, not enrollments, so a token never names that.
+///
+/// This device is named first: the session on the computer that made the plan
+/// answers the machine even when nothing else of the person's is up. Then each
+/// of their devices that may admit one, as the home-peer registry knows them.
 #[must_use]
-pub fn dial_peers(home_peers: &Path, user: [u8; 32]) -> Vec<tilo_user_identity::Dial> {
+pub fn dial_peers(system: &IdentityPaths, home_peers: &Path, user: [u8; 32]) -> Vec<Dial> {
+    let mut dials = Vec::new();
+    if let Ok(device) = read_signing_key(&system.device_privkey) {
+        dials.push(Dial {
+            endpoint: enrollment_endpoint(&device.verifying_key().to_bytes()),
+            relay_url: own_relay(),
+        });
+    }
     let Ok(peers) = tilo_server_protocol::read_home_peers(home_peers) else {
-        return Vec::new();
+        return dials;
     };
-    peers
-        .into_iter()
-        .filter(|peer| peer.user_public_key == hex::encode(user))
-        .filter_map(|peer| peer.server_endpoint)
-        .filter(|endpoint| !endpoint.is_empty())
-        .map(|endpoint| tilo_user_identity::Dial {
-            endpoint: *endpoint.id.as_bytes(),
-            relay_url: endpoint
-                .relay_urls()
-                .next()
-                .map(ToString::to_string)
-                .unwrap_or_default(),
-        })
-        .collect()
+    for peer in peers {
+        if peer.user_public_key != hex::encode(user) {
+            continue;
+        }
+        let Some(cert) = peer.device_cert else {
+            continue;
+        };
+        if !cert.capabilities.can_admit_devices {
+            continue;
+        }
+        let Some(endpoint) = peer.server_endpoint else {
+            continue;
+        };
+        let relay_url = endpoint
+            .relay_urls()
+            .next()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let dial = Dial {
+            endpoint: enrollment_endpoint(&cert.device_public_key),
+            relay_url,
+        };
+        if !dials.contains(&dial) {
+            dials.push(dial);
+        }
+    }
+    dials
 }
 
-/// Where the person's devices keep a plan and its token.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Stored {
-    /// The plan document, readable by the person's devices and agents.
-    pub plan_file: PathBuf,
-    /// The single-use token, readable and writable only by this account.
-    pub token_file: PathBuf,
+/// The relay this device's endpoints are reached through, empty when it is
+/// reached on its own network only.
+fn own_relay() -> String {
+    tilo_endpoint_reachability::relays()
+        .relays
+        .urls::<Vec<_>>()
+        .first()
+        .map(ToString::to_string)
+        .unwrap_or_default()
 }
 
-/// Write `plan` and the encoded `token` where this computer keeps them, both
-/// readable only by this account. `token_file` says where the token goes when
-/// the person wants it somewhere else.
+/// Write the encoded `token` for the plan `plan_id` where this computer keeps
+/// it, readable only by this account; `token_file` says where when the person
+/// wants it somewhere else, such as the medium itself.
+///
+/// The plan itself is not kept here: it is the machine's entry in the
+/// person's Servers workspace, and every one of their devices reads it there.
 ///
 /// # Errors
 ///
-/// The store cannot be made or a file cannot be written.
-pub fn store(
+/// The token's directory cannot be made or the file cannot be written.
+pub fn store_token(
     identity_dir: &Path,
-    plan: &Plan,
+    plan_id: &str,
     token: &str,
     token_file: Option<&Path>,
-) -> Result<Stored, String> {
+) -> Result<PathBuf, String> {
     let plans = plans_dir(identity_dir);
     std::fs::create_dir_all(&plans)
         .map_err(|error| format!("cannot make {}: {error}", plans.display()))?;
-    let plan_file = plans.join(format!("{}.json", plan.plan));
-    let bytes = serde_json::to_vec_pretty(plan).map_err(|error| error.to_string())?;
-    write_private(&plan_file, &bytes)?;
-    let token_file = token_file.map_or_else(
-        || plans.join(format!("{}.token", plan.plan)),
-        Path::to_path_buf,
-    );
-    write_private(&token_file, token.as_bytes())?;
-    Ok(Stored {
-        plan_file,
-        token_file,
-    })
+    let token_file =
+        token_file.map_or_else(|| plans.join(format!("{plan_id}.token")), Path::to_path_buf);
+    tilo_files::native::atomic::write_private(&token_file, token.as_bytes())
+        .map_err(|error| format!("cannot write {}: {error}", token_file.display()))?;
+    Ok(token_file)
 }
 
-/// The directory a computer's plans and tokens live in.
+/// The directory this computer's plan tokens live in.
 #[must_use]
 pub fn plans_dir(identity_dir: &Path) -> PathBuf {
     identity_dir.join("install-plans")
-}
-
-/// The plan files this computer keeps, in name order.
-///
-/// # Errors
-///
-/// The store exists and cannot be read.
-pub fn plan_files(identity_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let plans = plans_dir(identity_dir);
-    let mut found = Vec::new();
-    match std::fs::read_dir(&plans) {
-        Ok(entries) => {
-            for entry in entries {
-                let path = entry?.path();
-                if path
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-                {
-                    found.push(path);
-                }
-            }
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-    found.sort();
-    Ok(found)
-}
-
-/// The plan at `path`.
-///
-/// # Errors
-///
-/// The file cannot be read or is not a plan.
-pub fn read(path: &Path) -> Result<Plan, String> {
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    serde_json::from_slice(&bytes).map_err(|_| format!("{} is not a plan", path.display()))
-}
-
-/// The machines this computer planned, as the person's devices keep them.
-///
-/// # Errors
-///
-/// The store exists and cannot be read.
-pub fn waiting(identity_dir: &Path) -> std::io::Result<Vec<Plan>> {
-    let mut plans = Vec::new();
-    for path in plan_files(identity_dir)? {
-        if let Ok(plan) = read(&path) {
-            plans.push(plan);
-        }
-    }
-    Ok(plans)
-}
-
-/// What the destination reported about its own hardware, beside its plan:
-/// the drives a disk rule is answered against.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Hardware {
-    /// The destination's real drives.
-    #[serde(default)]
-    pub drives: Vec<plan::Drive>,
-}
-
-/// Where a destination's hardware report is kept beside its plan.
-#[must_use]
-pub fn hardware_file(identity_dir: &Path, plan_id: &str) -> PathBuf {
-    plans_dir(identity_dir).join(format!("{plan_id}.hardware.json"))
-}
-
-/// The destination's reported hardware, when it has reported any.
-#[must_use]
-pub fn read_hardware(identity_dir: &Path, plan_id: &str) -> Option<Hardware> {
-    let bytes = std::fs::read(hardware_file(identity_dir, plan_id)).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-/// Write `bytes` to `path`, readable and writable only by this account.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write as _;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|error| format!("cannot make {}: {error}", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-    file.sync_all()
-        .map_err(|error| format!("cannot write {}: {error}", path.display()))
 }
 
 #[cfg(test)]
@@ -433,79 +366,93 @@ mod tests {
     }
 
     #[test]
-    fn the_store_keeps_a_plan_and_the_token_only_its_account_reads() {
+    fn the_token_is_the_only_file_kept_and_only_its_account_reads_it() {
         let directory = tempfile::tempdir().unwrap();
-        let plan = server().plan(&"a".repeat(32), token()).unwrap();
-        let stored = store(directory.path(), &plan, "token-bytes", None).unwrap();
+        let id = "a".repeat(32);
+        let token_file = store_token(directory.path(), &id, "token-bytes", None).unwrap();
         assert_eq!(
-            stored.plan_file,
-            plans_dir(directory.path()).join(format!("{}.json", plan.plan))
+            token_file,
+            plans_dir(directory.path()).join(format!("{id}.token"))
         );
-        assert_eq!(read(&stored.plan_file).unwrap(), plan);
+        assert_eq!(std::fs::read_to_string(&token_file).unwrap(), "token-bytes");
         assert_eq!(
-            std::fs::read_to_string(&stored.token_file).unwrap(),
-            "token-bytes"
+            std::fs::read_dir(plans_dir(directory.path()))
+                .unwrap()
+                .count(),
+            1,
+            "no plan or hardware file is kept beside it"
         );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let mode = std::fs::metadata(&stored.token_file)
-                .unwrap()
-                .permissions()
-                .mode();
+            let mode = std::fs::metadata(&token_file).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
-        assert_eq!(waiting(directory.path()).unwrap(), vec![plan]);
     }
 
     #[test]
     fn a_token_can_sit_where_the_person_put_it() {
         let directory = tempfile::tempdir().unwrap();
         let token_file = directory.path().join("on-a-usb-drive.token");
-        let plan = server().plan(&"a".repeat(32), token()).unwrap();
-        let stored = store(directory.path(), &plan, "token-bytes", Some(&token_file)).unwrap();
-        assert_eq!(stored.token_file, token_file);
+        let stored = store_token(
+            directory.path(),
+            &"a".repeat(32),
+            "token-bytes",
+            Some(&token_file),
+        )
+        .unwrap();
+        assert_eq!(stored, token_file);
         assert_eq!(std::fs::read_to_string(&token_file).unwrap(), "token-bytes");
     }
 
+    /// The token names devices' enrollment endpoints, never a session's own
+    /// endpoint: a machine dials what answers enrollments.
     #[test]
-    fn the_hardware_beside_a_plan_answers_its_disk_question() {
-        let directory = tempfile::tempdir().unwrap();
-        let id = "a".repeat(32);
-        let hardware = Hardware {
-            drives: vec![
-                plan::Drive {
-                    model: "boot".to_owned(),
-                    identity: "s-boot".to_owned(),
-                    bytes: 512,
-                    holds_data: true,
-                    boots: true,
-                },
-                plan::Drive {
-                    model: "fresh".to_owned(),
-                    identity: "s-fresh".to_owned(),
-                    bytes: 4096,
-                    holds_data: false,
-                    boots: false,
-                },
-            ],
+    fn a_token_names_the_enrollment_endpoint_of_the_device_that_made_it() {
+        use tilo_device_identity::persist::{
+            write_device_cert, write_public_key, write_signing_key,
         };
-        std::fs::create_dir_all(plans_dir(directory.path())).unwrap();
-        std::fs::write(
-            hardware_file(directory.path(), &id),
-            serde_json::to_vec(&hardware).unwrap(),
+        let root = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(root.path());
+        paths.ensure_directories().unwrap();
+        let user = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        write_public_key(&paths.user_pubkey, &user.verifying_key().to_bytes()).unwrap();
+        write_signing_key(&paths.device_privkey, &device).unwrap();
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: user.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &user).unwrap();
+        write_device_cert(&paths.device_cert, &cert).unwrap();
+        write_device_cert(
+            &paths.device_cert_for_user(&user.verifying_key().to_bytes()),
+            &cert,
         )
         .unwrap();
-        let read = read_hardware(directory.path(), &id).unwrap();
-        assert_eq!(read, hardware);
-        let rule = DiskRule {
-            kind: "largest".to_owned(),
-            identity: String::new(),
-        };
-        assert_eq!(
-            plan::choose(&rule, &read.drives),
-            plan::Choice::Drive(&read.drives[1])
+
+        let home_peers = tilo_server_protocol::home_peer_registry_path(root.path());
+        let (encoded, _) = mint(&paths, &home_peers).unwrap();
+        let token = tilo_user_identity::decode_enrollment_token(&encoded).unwrap();
+        assert!(
+            token.dial.iter().any(
+                |dial| dial.endpoint == enrollment_endpoint(&device.verifying_key().to_bytes())
+            ),
+            "the token names the device's enrollment endpoint: {:?}",
+            token.dial
         );
-        assert!(read_hardware(directory.path(), &"b".repeat(32)).is_none());
+        assert!(
+            token
+                .dial
+                .iter()
+                .all(|dial| dial.endpoint != device.verifying_key().to_bytes()),
+            "and not the session's own endpoint"
+        );
     }
 }

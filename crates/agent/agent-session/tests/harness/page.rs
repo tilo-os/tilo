@@ -31,11 +31,11 @@ use tilo_actions::remote::{
 };
 
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
-use tilo_session_client::remote::Heard;
+use tilo_session_actions::Heard;
 
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
@@ -97,7 +97,7 @@ impl Page {
         served_by: &Device,
     ) -> Link {
         start_peer(
-            Host::at(server.node_addr()),
+            ServerAddress::at(server.node_addr()),
             device.cert.clone(),
             served_by.cert.clone(),
             device.key.clone(),
@@ -476,7 +476,7 @@ impl Page {
         .map(|output| output.value.unwrap_or_default())
     }
 
-    /// Run one action on the record `provider` serves, followed to its end: a
+    /// Call one action on the record `provider` serves, followed to its end: a
     /// session answers a page accepted while what the action changes is still
     /// landing, as it does for a person's own click.
     pub async fn invoke_on(

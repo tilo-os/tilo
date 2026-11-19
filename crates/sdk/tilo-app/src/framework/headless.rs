@@ -1279,9 +1279,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         &self.checkout().id
     }
 
-    /// The record the window shows now: the one it was opened on, or one
+    /// The document the window shows now: the one it was opened on, or one
     /// its view opened in its place ([`ResourceEnv::open_here`](super::ResourceEnv::open_here)).
-    fn checkout(&self) -> &DocumentCheckout {
+    pub fn checkout(&self) -> &DocumentCheckout {
         self.harness.component_resource().unwrap_or(&self.checkout)
     }
 
@@ -1938,13 +1938,16 @@ impl<A: ResourceApp> HeadlessApp<A> {
         id: &str,
         arguments: serde_json::Value,
     ) -> Result<Option<serde_json::Value>, tilo_actions::ApiError> {
-        let mut ambient = tilo_actions::ActionContext::default();
-        ambient.group = Some(tilo_actions::WorkGroup {
-            id: session.to_owned(),
-            label: None,
-            kind: ui_core::history_source::steps::AGENT_SESSION.to_owned(),
-            declared_id: None,
-        });
+        let ambient = tilo_actions::ActionContext {
+            group: Some(tilo_actions::WorkGroup {
+                id: session.to_owned(),
+                label: None,
+                kind: ui_core::history_source::steps::AGENT_SESSION.to_owned(),
+                declared_id: None,
+                session: None,
+            }),
+            ..tilo_actions::ActionContext::default()
+        };
         self.call_within(Some(&ambient), id, arguments)
     }
 
@@ -2327,17 +2330,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .collect()
     }
 
-    /// Serve the document's history to History, as the session serves the history of the document
-    /// a window shows: without it History lists nothing, since what it lists is the workspace's
-    /// history and not the frame's own reading of the changes.
-    #[cfg(feature = "test-support")]
-    pub fn serve_history(&mut self) {
-        let doc = self.read_document(Clone::clone);
-        ui_core::testing::serve_history(&doc);
-    }
-
-    /// What each version of the record `id` did through an action, oldest
-    /// first: a record the app keeps beside its own, such as a part of a
+    /// What each version of the resource `id` did through an action, oldest
+    /// first: a resource the app keeps beside its own, such as a part of a
     /// chain, as this window holds it.
     pub fn history_of(&self, id: &DocumentId) -> Vec<tilo_actions::ActionContext> {
         self.versions_of(id)
@@ -2361,7 +2355,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ) -> Vec<String> {
         let source = A::catalog().and_then(ui_core::i18n::EmbeddedCatalog::source);
         let catalogue = tilo_history::Catalogue::new("en-US", &Vec::from_iter(source));
-        let reader = tilo_history::Reader::new("en-US").with_app(&catalogue);
+        let reader = tilo_history::Reader::new("en-US")
+            .with_app(&catalogue)
+            .with_labels(&ui_core::history_source::sentence::ThreadLabels);
         entries
             .into_iter()
             .map(|entry| reader.sentence(entry))
@@ -2776,12 +2772,16 @@ fn split_command_line(
 /// ([`reserved_action_ids`](super::reserved_action_ids)).
 #[must_use]
 pub fn surface_report<A: ResourceApp>() -> serde_json::Value {
-    report_surface(
+    let mut report = report_surface(
         &Opening::of::<A>(),
         <A::Resource as Resource>::surface(),
         A::PERSON_RESOURCES,
         &published_ids::<A>,
-    )
+    );
+    for other in A::OTHER_WINDOWS {
+        other.merge_into(&mut report);
+    }
+    report
 }
 
 /// What a built view publishes beside its resource's verbs: its effects and
@@ -2889,6 +2889,7 @@ fn report_surface(
 /// Publish the app's read effects on `surface`: its resource's verbs take
 /// them, each with its parameters and the value it answers with, and the
 /// records and enums that value names join the surface's types.
+/// Its view effects are what the surface says it shows.
 fn add_effect_verbs(
     surface: &mut tilo_resource::Surface,
     rows: &[tilo_resource::effect::EffectRow],
@@ -2937,6 +2938,7 @@ fn add_effect_verbs(
         .collect();
     surface.types.extend(kept);
     surface.verbs.extend(verbs);
+    surface.shows = tilo_resource::surface::view_effects(rows);
 }
 
 /// Collects the controls bound to something the resource does not publish

@@ -433,17 +433,14 @@ impl Workspaces {
         self.page_workspace(workspace, device).await
     }
 
-    /// Name `device`'s person `name` in `workspace`: the name the workspace
-    /// shows for them from now on, in its member list and on the invitations
-    /// they make. Only a person names themself, and only in a workspace they
-    /// are a member of: from any of their devices or keys — one the workspace
-    /// admitted as theirs, or a key of theirs it holds them by their root,
-    /// which is what a declared owner's key is before any device of theirs
-    /// arrived. A name they already go by writes nothing.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace stays locked from the check until the name is committed"
-    )]
+    /// Name `device`'s person `name`, asked in `workspace`: the name they go
+    /// by from now on, there and in every other workspace kept here, in its
+    /// member list and on the invitations they make, and the one their profile
+    /// keeps for every device of theirs. Only a person names themself, and only
+    /// in a workspace they are a member of: from any of their devices or keys —
+    /// one the workspace admitted as theirs, or a key of theirs it holds them by
+    /// their root, which is what a declared owner's key is before any device of
+    /// theirs arrived. A name they already go by writes nothing.
     pub(crate) async fn name_self(
         &self,
         workspace: &str,
@@ -453,6 +450,7 @@ impl Workspaces {
     ) -> Result<WorkspacesReply, CollaborationError> {
         let name = valid_name(name)?;
         let person = hex::encode(device.user_public_key);
+        let own_key = device.capabilities.own_key_in(workspace);
         let state = self.workspace(workspace).await?;
         let mut workspace = state.lock().await;
         let at = system_time(now);
@@ -464,7 +462,7 @@ impl Workspaces {
                 Ok(member) => {
                     !member.acting.delegated() && member.person_id() == Some(person.as_str())
                 }
-                Err(_) => device.capabilities.server_key && device.capabilities.agent.is_some(),
+                Err(_) => own_key,
             };
         let names_themself = theirs
             && workspace
@@ -482,18 +480,21 @@ impl Workspaces {
         }
         let key = self.inner.host.key.clone();
         let mut candidate = workspace.peer().clone();
-        if !candidate
+        if candidate
             .governance_mut()
             .name_person(device.user_public_key, &name, &key, at)
             .map_err(CollaborationError::new)?
         {
-            return Ok(WorkspacesReply::Named);
+            let log = workspace.collaboration().clone();
+            workspace
+                .commit(candidate, &key, at, |_, _| Ok(log))
+                .map_err(CollaborationError::new)?;
+            self.settle(&mut workspace).await?;
         }
-        let log = workspace.collaboration().clone();
-        workspace
-            .commit(candidate, &key, at, |_, _| Ok(log))
-            .map_err(CollaborationError::new)?;
-        self.settle(&mut workspace).await?;
+        drop(workspace);
+        // The name is the person's, not this workspace's: kept with their profile, which every
+        // device of theirs reads, and theirs in every other workspace kept here.
+        self.name_person(device.user_public_key, &name, now).await?;
         Ok(WorkspacesReply::Named)
     }
 
@@ -727,20 +728,22 @@ impl Workspaces {
         let issued = {
             let workspace = self.workspace(&identity).await?;
             let mut workspace = workspace.lock().await;
-            let issued = self.stage_issue(
-                &mut workspace,
-                device,
-                IssueInvitationRequest {
-                    request_id,
-                    role: grant.role,
-                    recipient_user_public_key,
-                    invitee_name: None,
-                    expires_at_ns: grant.expires_at_ns,
-                    inviter_name,
-                },
-                false,
-                now,
-            )?;
+            let issued = self
+                .stage_issue(
+                    &mut workspace,
+                    device,
+                    IssueInvitationRequest {
+                        request_id,
+                        role: grant.role,
+                        recipient_user_public_key,
+                        invitee_name: None,
+                        expires_at_ns: grant.expires_at_ns,
+                        inviter_name,
+                    },
+                    false,
+                    now,
+                )
+                .await?;
             workspace.admissions.record(
                 issued.invite_id,
                 grant,
@@ -894,7 +897,9 @@ impl Workspaces {
                     "that address is no longer on the wait list",
                 ));
             }
-            let issued = self.stage_issue(&mut governed, device, request, administrator, now)?;
+            let issued = self
+                .stage_issue(&mut governed, device, request, administrator, now)
+                .await?;
             governed
                 .wait_list
                 .invited(entry, issued.invite_id, now)
@@ -1325,11 +1330,13 @@ impl Workspaces {
         if let JoinReply::Admitted { workspace, .. } = &reply {
             self.accepted(workspace, &invitation, person).await;
             // A key that came in with an invitation is listed as every key
-            // the workspace admits is, so its person can revoke it there.
+            // the workspace admits is, by the name it joined as, so its
+            // person finds it and can revoke it there.
             if let Some(scope) = cert.capabilities.agent {
                 let governed = self.workspace(workspace).await?;
                 let mut governed = governed.lock().await;
-                self.list_grant(&mut governed, &cert, scope, now).await?;
+                self.list_grant(&mut governed, &cert, scope, Some(name), now)
+                    .await?;
             }
         }
         crate::timing::event("join.prove.admitted", proving, 0);

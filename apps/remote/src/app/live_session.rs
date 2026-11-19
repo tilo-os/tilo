@@ -295,7 +295,7 @@ impl Store {
                 connection.last_used_ms = Some(now);
             }
             self.submit(Ok(crate::model::Remote::MARK_USED.with(
-                crate::resource::remote::MarkUsed {
+                remote_model::remote::MarkUsed {
                     connection: crate::model::Remote::item(id),
                     at_ms: now,
                 },

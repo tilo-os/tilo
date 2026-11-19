@@ -307,7 +307,7 @@ mod tests {
                 payload["args"].as_object().unwrap(),
             )
             .unwrap();
-            let engine = ui::webview::test_engine::TestEngine::new();
+            let engine = tilo_webview::test_engine::TestEngine::new();
             let mut widget = crate::BrowserWidget::with_engine(engine.clone(), true);
             widget
                 .admit(ui::tilo_actions::InvocationId::new(), effect.operation())

@@ -16,7 +16,7 @@ use tilo_actions::ResourceSpec;
 use ui::framework::LiveRow;
 use ui::icons::Icon;
 use ui::search::SearchResult;
-use ui::tilo_resource::{Derived, SearchBody, SearchPiece, SearchText, SearchWeight};
+use ui::tilo_resource::{self, Derived, SearchBody, SearchPiece, SearchText, SearchWeight};
 
 use crate::model::{AnnoKind, Annotation, Book, LibraryEntry};
 use crate::resource::CATALOG;
@@ -32,20 +32,14 @@ pub const ANNOTATION_KIND: &str = "Annotations";
 pub const LOCATION_KIND: &str = "Passages";
 
 /// A passage a search found, as the type its row is an item of.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "ebook.location", label = "Passage")]
 struct Passage;
 
-impl ui::tilo_resource::words::RowType for Passage {
-    const KIND: &'static str = "ebook.location";
-    const LABEL: &'static str = "Passage";
-}
-
 /// A chapter a search found, as the type its row is an item of.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "ebook.chapter", label = "Chapter")]
 struct Chapter;
-
-impl ui::tilo_resource::words::RowType for Chapter {
-    const KIND: &'static str = "ebook.chapter";
-    const LABEL: &'static str = "Chapter";
-}
 
 /// The filter naming the book a result is in.
 pub const BOOK_FACET: &str = "book";

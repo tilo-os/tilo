@@ -5,11 +5,11 @@ use super::credentials::assert_kernel_credentials;
 use launcher::{
     owned_service::{
         self, RetainedIoAdmission, RetainedIoAuthority, RetainedIoCredentials, ServiceAuthority,
-        ServiceCancellation, ServiceEndpoint, ServiceLaunch, ServiceLeaseKey, SupervisedRun,
+        ServiceCancellation, ServiceEndpoint, ServiceLaunch, ServiceLeaseKey, SupervisedLaunch,
         TargetProjectionAdmission, TargetProjectionAuthority, TargetProjectionCredentials,
         TargetProjectionEndpoint,
     },
-    run::{LaunchMode, RunOptions},
+    run::{LaunchMode, LaunchOptions},
 };
 use runtime_fs::{
     DirEntry, EntryKind, Metadata, OpenMode,
@@ -104,7 +104,7 @@ impl TargetProjectionAuthority for FixtureAuthority {
     }
 }
 
-fn bounded_fixture_error(error: &launcher::run::RunError) -> (String, bool) {
+fn bounded_fixture_error(error: &launcher::run::LaunchError) -> (String, bool) {
     struct Text {
         value: String,
         truncated: bool,
@@ -180,7 +180,7 @@ struct Worker {
     cancel: ServiceCancellation,
     key: ServiceLeaseKey,
     working: tempfile::TempDir,
-    job: Option<JoinHandle<SupervisedRun>>,
+    job: Option<JoinHandle<SupervisedLaunch>>,
 }
 impl Worker {
     fn new(root: &Path) -> Self {
@@ -220,19 +220,19 @@ impl Worker {
         });
         let (result_kind, phase, io_kind, errno) = match &run.result {
             Ok(_) => ("quiescent", "none", None, None),
-            Err(launcher::run::RunError::Io(error)) => (
+            Err(launcher::run::LaunchError::Io(error)) => (
                 "io",
                 "none",
                 Some(format!("{:?}", error.kind())),
                 error.raw_os_error(),
             ),
-            Err(launcher::run::RunError::Spawn(error)) => (
+            Err(launcher::run::LaunchError::Spawn(error)) => (
                 "spawn",
                 "none",
                 Some(format!("{:?}", error.kind())),
                 error.raw_os_error(),
             ),
-            Err(launcher::run::RunError::InvalidServiceLaunch(message)) => (
+            Err(launcher::run::LaunchError::InvalidServiceLaunch(message)) => (
                 "invalid-service-launch",
                 if message == "provider exit was not a clean checkpoint" {
                     "provider-not-clean-checkpoint"
@@ -242,15 +242,15 @@ impl Worker {
                 None,
                 None,
             ),
-            Err(launcher::run::RunError::Manifest(_)) => ("manifest", "none", None, None),
-            Err(launcher::run::RunError::Seccomp(_)) => ("seccomp", "none", None, None),
-            Err(launcher::run::RunError::RuntimeBundleSignature { .. }) => {
+            Err(launcher::run::LaunchError::Manifest(_)) => ("manifest", "none", None, None),
+            Err(launcher::run::LaunchError::Seccomp(_)) => ("seccomp", "none", None, None),
+            Err(launcher::run::LaunchError::RuntimeBundleSignature { .. }) => {
                 ("runtime-signature", "none", None, None)
             }
-            Err(launcher::run::RunError::RuntimeBundleMissing { .. }) => {
+            Err(launcher::run::LaunchError::RuntimeBundleMissing { .. }) => {
                 ("runtime-missing", "none", None, None)
             }
-            Err(launcher::run::RunError::RuntimeLibraryMissing { .. }) => {
+            Err(launcher::run::LaunchError::RuntimeLibraryMissing { .. }) => {
                 ("runtime-library-missing", "none", None, None)
             }
             Err(_) => ("other-launch-refusal", "none", None, None),
@@ -291,7 +291,7 @@ fn launch(service: TrustedCaptureService, worker: &Worker, argument: &str) -> Se
     ServiceLaunch {
         manifest: service.manifest.clone(),
         payload: service.payload.clone(),
-        options: RunOptions {
+        options: LaunchOptions {
             no_services: true,
             expected_package_hash: Some(service.package_hash.clone()),
             app_id: Some(owned_service::RETAINED_IO_PACKAGE_ID.into()),
@@ -299,7 +299,7 @@ fn launch(service: TrustedCaptureService, worker: &Worker, argument: &str) -> Se
             mode: LaunchMode::Service {
                 passthrough_argv: vec![argument.into()],
             },
-            ..RunOptions::default()
+            ..LaunchOptions::default()
         },
     }
 }
@@ -1129,7 +1129,7 @@ fn full_home_fixture(alias_mode: bool, writable: bool) {
                     eprintln!("RETAINED_SOURCE_ENDPOINT_RETIREMENT_UNCONFIRMED");
                 }
                 observe_canonical_worker_debug(source.working.path());
-                break Err::<_, io::Error>(e).expect("actual source endpoint");
+                panic!("actual source endpoint: {e}");
             }
         }
     };

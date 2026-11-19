@@ -8,7 +8,7 @@ use serde_json::Value as Json;
 use crate::authority::Authority;
 use crate::catalogue::{Signature, catalogue};
 use crate::core::{Core, ModelHost, OutsideSink};
-use crate::engine::EngineLimits;
+use crate::engine::{DEFAULT_LIMITS, EngineLimits};
 use crate::error::RuntimeError;
 use crate::exec::InvokeOutcome;
 use crate::ids::{Actor, DocId, ModuleHash, PackageId, RunId};
@@ -104,7 +104,7 @@ impl Runtime {
         store: impl Store + 'static,
         authority: impl Authority + 'static,
     ) -> Result<Self, RuntimeError> {
-        Self::with_limits(store, authority, EngineLimits::default())
+        Self::with_limits(store, authority, DEFAULT_LIMITS)
     }
 
     /// As [`Runtime::new`], with explicit fuel and memory limits.
@@ -625,13 +625,7 @@ impl Runtime {
     ///
     /// `NotFound` for an unknown or ambiguous type, or a store failure.
     pub fn create(&self, ty: &str) -> Result<ResourceRef, RuntimeError> {
-        let record = {
-            let reg = self.core.registry.borrow();
-            let id = reg.resolve_global(ty).map_err(RuntimeError::NotFound)?;
-            reg.new_record(&id)
-                .ok_or_else(|| RuntimeError::NotFound(format!("type {ty}")))?
-        };
-        Ok(self.core.store.borrow_mut().create(&record)?)
+        self.core.make(&self.made_as(ty)?, None)
     }
 
     /// Create the per-workspace root of a type, by id or by a name one loaded package declares: the
@@ -641,14 +635,17 @@ impl Runtime {
     ///
     /// `NotFound` for an unknown or ambiguous type; a store failure, or a root that exists.
     pub fn create_root(&self, ty: &str) -> Result<ResourceRef, RuntimeError> {
-        let record = {
-            let reg = self.core.registry.borrow();
-            let id = reg.resolve_global(ty).map_err(RuntimeError::NotFound)?;
-            reg.new_record(&id)
-                .ok_or_else(|| RuntimeError::NotFound(format!("type {ty}")))?
-        };
-        let id = format!("root-{}", record.ty);
-        Ok(self.core.store.borrow_mut().create_with_id(&record, &id)?)
+        let new = self.made_as(ty)?;
+        let id = format!("root-{}", new.ty);
+        self.core.make(&new, Some(&id))
+    }
+
+    /// What a new resource of a type starts as, by id or by a name one loaded package declares.
+    fn made_as(&self, ty: &str) -> Result<crate::store::NewResource, RuntimeError> {
+        let reg = self.core.registry.borrow();
+        let id = reg.resolve_global(ty).map_err(RuntimeError::NotFound)?;
+        reg.new_record(&id)
+            .ok_or_else(|| RuntimeError::NotFound(format!("type {ty}")))
     }
 
     /// Read a field of a resource, by field id or name. A resource of an app this runtime does
@@ -801,13 +798,6 @@ impl Runtime {
         before: &[Value],
     ) -> Result<Option<Value>, RuntimeError> {
         self.core.default_argument(action, at, before)
-    }
-
-    /// Treat what commits from now on as part of making a resource, not a change someone made
-    /// (a root made first): the change reads as the resource's creation, under the platform's
-    /// own action, and nobody is caught up on it.
-    pub fn set_creating(&self, creating: bool) {
-        self.core.creating.set(creating);
     }
 
     /// The workspace's members as the host last gave them ([`Self::set_members`]).
@@ -1242,6 +1232,33 @@ impl Runtime {
     /// The store could not read the versions of `at`.
     pub fn mark_seen(&self, person: &Actor, at: &ResourceRef) -> Result<bool, StoreError> {
         self.core.mark_seen(person, at)
+    }
+
+    /// `person` watched a change of `at` by `by` land, its live mark on screen: what they have
+    /// not seen of it is seen when all of it is `by`'s. A change of someone else's made while
+    /// they were not looking keeps its marks. Whether the mark moved.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of `at`.
+    pub fn seen_live(
+        &self,
+        person: &Actor,
+        at: &ResourceRef,
+        by: &Actor,
+    ) -> Result<bool, StoreError> {
+        let unseen = self.core.unseen_of(person, at)?;
+        if unseen.is_empty() || unseen.iter().any(|v| v.who.as_ref() != Some(by)) {
+            return Ok(false);
+        }
+        self.core.mark_seen(person, at)
+    }
+
+    /// What a write of `field` of a resource of the type `ty` reads with when it renames the
+    /// resource ([`crate::did::renamed`]).
+    #[must_use]
+    pub fn renamed(&self, ty: &str, field: &str) -> Option<crate::did::Said> {
+        crate::did::renamed(&self.core.registry.borrow().type_info(ty)?.1, field)
     }
 
     /// The runs `person` reviewed, as their own record keeps them: every version of one is

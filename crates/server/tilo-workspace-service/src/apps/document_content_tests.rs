@@ -16,7 +16,7 @@ async fn a_picture_one_app_offers_reaches_an_app_on_another_host() {
             let (app_a, _) = host_a.join_worker(901).await;
             let (app_b, _) = host_b.join_worker(902).await;
 
-            let picture: Vec<u8> = (0..crate::apps::document_content::PIECE_BYTES * 2 + 5)
+            let picture: Vec<u8> = (0..neighbour_wire::content::PIECE_BYTES * 2 + 5)
                 .map(|index| u8::try_from(index % 253).unwrap())
                 .collect();
             let hash = tilo_content::hash_bytes(&picture);
@@ -86,7 +86,7 @@ async fn an_app_hears_its_want_wait_for_an_offline_holder_and_the_picture_arrive
             let (app_a, _) = host_a.join_worker(903).await;
             let (app_b, _) = host_b.join_worker(904).await;
 
-            let picture = vec![9_u8; crate::apps::document_content::PIECE_BYTES + 3];
+            let picture = vec![9_u8; neighbour_wire::content::PIECE_BYTES + 3];
             let hash = tilo_content::hash_bytes(&picture);
             app_a.handle.offer_blob(&hash, &picture).await.unwrap();
 

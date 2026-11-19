@@ -98,10 +98,10 @@ chat-agent-work-did = { $count ->
    *[other] Did { $count } things
 }
 # The one line of an agent at work: the step it is at ($what) and how many it has taken.
-chat-agent-work-at-step = { $what } · { $count ->
+chat-agent-work-at-step = { $what } ({ $count ->
     [one] 1 step
    *[other] { $count } steps
-}
+})
 # A step ($step) and what it is about ($about), both in the system's own words.
 chat-agent-work-step-about = { $step }: { $about }
 chat-agent-work-refused = Could not complete this request
@@ -193,7 +193,6 @@ chat-voice-unavailable = Calls can't start in this workspace yet
 chat-call-not-joined = Join the call first.
 
 # "You" belongs to the current reader; shared/legacy names identify their person.
-chat-person-unnamed = Someone ({ $tag })
 chat-person-relative-name = { $name } ({ $tag })
 
 ## History: what each change did, by verb and by field
@@ -422,48 +421,11 @@ chat-voice-channel-unnamed = The voice channel could not be named
 
 ## Actions
 
-chat-effects-model-control = Ask about this message
-chat-effects-show-agent-reasoning = Show reasoning
-chat-effects-open-channel = Open conversation
-chat-effects-open-category = Open category
-chat-effects-toggle-category = Fold category
-chat-effects-reveal-message = Reveal message
-chat-effects-reveal-message-range = Reveal messages
-chat-effects-show-view = Show view
-chat-effects-open-agent = Open agent conversation
-chat-effects-open-direct-conversation = Open direct conversation
-chat-effects-send-direct-message = Send direct message
-chat-effects-send = Send message
-chat-effects-export-content = Export conversation
-chat-effects-attach-file = Attach file
-chat-effects-share-live-context = Share live context
-chat-effects-stop-sharing-live-context = Stop sharing live context
-chat-effects-live-context-status = Live context status
-chat-effects-open-slack-channel = Open Slack channel in browser
-chat-effects-open-discord-channel = Open Discord channel in browser
-chat-effects-join-call = Join call
-chat-effects-leave-call = Leave call
-chat-effects-mute = Mute
-chat-effects-unmute = Unmute
-chat-effects-deafen = Deafen
-chat-effects-undeafen = Undeafen
-chat-effects-camera-on = Turn camera on
-chat-effects-camera-off = Turn camera off
-chat-effects-share-screen = Share screen
-chat-effects-stop-sharing-screen = Stop sharing screen
-chat-effects-call-status = Call status
-chat-effects-start-call = Start a call
-chat-effects-start-video-call = Start a video call
-chat-effects-select-input = Select microphone
 
 ## What the app is called in a window and in the launcher
 chat-app-title = Chat
 ## What the resources are called, and the actions on them
-chat-drafts = Chat drafts
-chat-workspace = Chat
-chat-drafts-start-draft = Start a draft
 chat-messages-post = Post a message
-chat-workspace-begin-chat = Start the chat
 chat-messages-post-file = Post a file
 chat-messages-share-resource = Share live
 chat-messages-share-window = Share a window live
@@ -531,27 +493,6 @@ chat-question-withdrawn-why = No longer asked: { $why }
 chat-messages-record-work = Record agent work
 chat-messages-carry-counts = Carry the counts of the parts before
 chat-messages-stream-output = Record an answer as it arrives
-chat-workspace-create-category = New category
-chat-workspace-create-channel = New channel
-chat-workspace-create-channel-with-id = New channel with an id
-chat-workspace-delete-category = Delete category
-chat-workspace-move-channel = Move a channel
-chat-workspace-move-category = Move a category
-chat-workspace-arrange-channels = Arrange channels
-chat-workspace-set-channel-category = File a channel
-chat-workspace-rename-channel = Rename channel
-chat-workspace-set-channel-topic = Set channel topic
-chat-workspace-archive-channel = Archive channel
-chat-workspace-rename-category = Rename category
-chat-workspace-delete-channel = Delete channel
-chat-workspace-report-message = Report message
-chat-workspace-report-person = Report person
-chat-workspace-decide-reports = Decide on a report
-chat-workspace-overturn-decision = Overturn a decision
-chat-workspace-mark-read = Mark as read
-chat-workspace-keep-summary = Keep a summary
-chat-workspace-submit-feedback = Submit feedback
-chat-workspace-triage = Triage feedback
 # A message moved from another chat: its author there, and the tool.
 chat-origin-author = { $name } in { $source }
 # A question that asks for a secret, under the message that asks.

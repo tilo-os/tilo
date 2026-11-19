@@ -51,8 +51,9 @@ fn personal(apps: &DefaultApps) -> PersonalDefaults {
 #[effect(operation = "settings.effect")]
 pub enum DefaultAppsEffect {
     /// Open a kind of file or link with an installed app.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
-    #[effect(keywords = "default app, open with, file association")]
+    #[effect(own_device, keywords = "default app, open with, file association")]
     SetDefaultApp {
         #[param("The kind of file or link: `ext:pdf`, `mime:text/html`, `scheme:https`")]
         kind: String,
@@ -60,6 +61,7 @@ pub enum DefaultAppsEffect {
         app: String,
     },
     /// Open the workspace's own app defaults in Workspace Settings.
+    #[effect(kind = "outside")]
     #[effect(job)]
     OpenWorkspaceDefaults,
 }
@@ -110,6 +112,19 @@ pub struct DefaultAppsArea {
     pub(crate) read: crate::device_read::DeviceRead<Vec<AppCandidate>>,
     rows: crate::effects::RowsMemo<(ui::storage::SettingsRevision, u64)>,
 }
+
+/// A kind of thing apps open (a file type, a link scheme), as the pane
+/// publishes it: a row of the `settings.default-app-handler` type, holding
+/// an app beneath it that opens it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.default-app-handler", label = "Default app kind")]
+pub(crate) struct DefaultAppKind;
+
+/// An app that can open a kind, as the pane publishes it: a row of the
+/// `settings.default-app-candidate` type, offering to open the kind with it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.default-app-candidate", label = "App choice")]
+pub(crate) struct DefaultAppCandidate;
 
 impl DefaultAppsArea {
     pub fn new(cx: &AreaContext) -> Self {
@@ -175,11 +190,7 @@ impl DefaultAppsArea {
             .map(|kind| {
                 let id = format!("settings.default-app:{}", kind.as_str());
                 let current = resolver.resolve(&kind, "", &defaults, None);
-                let mut row = LiveRow::new(
-                    id.clone(),
-                    "settings.default-app-handler",
-                    kind.display_label(),
-                );
+                let mut row = LiveRow::typed::<DefaultAppKind>(id.clone(), kind.display_label());
                 if let Some(current) = &current {
                     // What opens the kind, by the name the app goes by here: an id is never a row.
                     let chosen = candidates
@@ -213,14 +224,14 @@ impl DefaultAppsArea {
                             ("app", ArgValue::Text(app.display_name.clone())),
                         ],
                     );
-                    row = row.row(
-                        LiveRow::new(
+                    row = row.row({
+                        let mut candidate = LiveRow::typed::<DefaultAppCandidate>(
                             format!("{id}/{}", app.package_id),
-                            "settings.default-app-candidate",
                             app.display_name.clone(),
-                        )
-                        .operation(choose),
-                    );
+                        );
+                        candidate = candidate.operation(choose);
+                        candidate
+                    });
                 }
                 row
             })

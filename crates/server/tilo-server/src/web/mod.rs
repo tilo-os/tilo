@@ -38,7 +38,9 @@ use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use hyper::{Method, Request, Response, StatusCode, header};
 pub(crate) use tilo_server_protocol::web as protocol;
-use tilo_server_protocol::web::{API_PREFIX, HostAddress, HostInfo, MAX_REQUEST_BYTES, WebLink};
+use tilo_server_protocol::web::{
+    API_PREFIX, MAX_REQUEST_BYTES, ServerAddress, ServerInfo, WebLink,
+};
 
 use crate::daemon::{Server, ServerError, WebContext};
 use collab_types::WorkspaceId;
@@ -190,8 +192,8 @@ impl Drop for WebHandle {
 
 struct Web {
     context: WebContext,
-    host_info: HostInfo,
-    /// The endpoint `host_info`'s address is of, whose current address `/host`
+    server_info: ServerInfo,
+    /// The endpoint `server_info`'s address is of, whose current address `/host`
     /// answers ([`Web::current_host_info`]). `None` where the listener serves
     /// no endpoint of its own.
     endpoint: Option<iroh::Endpoint>,
@@ -220,8 +222,6 @@ struct Web {
     site: Option<Site>,
     /// The login codes tabs hand their agents.
     login_codes: Arc<login_codes::LoginCodes>,
-    /// The stand-in approvers this host keeps for people.
-    stand_ins: Arc<stand_in::StandIns>,
     /// The wait list the entry keeps for a workspace taking people by
     /// invitation, when whoever runs this host keeps one.
     wait_list: Option<Arc<crate::entry::WaitListPage>>,
@@ -232,8 +232,8 @@ impl Web {
     /// device dials the host at this address, so it follows the endpoint: a relay the endpoint
     /// reached only after the listener started (its first network report found none, as when
     /// the host's own relay is not routable yet) is named as soon as it is.
-    fn current_host_info(&self) -> HostInfo {
-        let mut info = self.host_info.clone();
+    fn current_host_info(&self) -> ServerInfo {
+        let mut info = self.server_info.clone();
         if let (Some(endpoint), Some(address)) = (&self.endpoint, info.address.as_mut()) {
             follow_endpoint(address, endpoint.addr());
         }
@@ -245,7 +245,7 @@ impl Web {
 /// the relay `address` named, as a host keeps what it named elsewhere
 /// (`tilo_endpoint_reachability::own_address::follow`): it is reached there again once the
 /// relay is back, and an address with no relay reaches it from nowhere.
-fn follow_endpoint(address: &mut HostAddress, now: iroh_base::EndpointAddr) {
+fn follow_endpoint(address: &mut ServerAddress, now: iroh_base::EndpointAddr) {
     let relay = now.relay_urls().next().map(ToString::to_string);
     if relay.is_none() && address.relay_url.is_some() {
         return;
@@ -254,7 +254,8 @@ fn follow_endpoint(address: &mut HostAddress, now: iroh_base::EndpointAddr) {
     address.endpoint_addr = now;
 }
 
-/// Where this host keeps the stand-ins it approves for people with.
+/// Where this server keeps the stand-ins that certify the browser sessions it
+/// places.
 #[must_use]
 pub(crate) fn stand_ins_dir(state_root: &std::path::Path) -> std::path::PathBuf {
     state_root.join("stand-ins")
@@ -500,7 +501,7 @@ impl Server {
         if let Some(workspaces) = self.workspaces() {
             let _ = context.server.carried_calls.set(workspaces.downgrade());
         }
-        let host_cert = context.server.identity.cert.clone();
+        let server_cert = context.server.identity.cert.clone();
         // Where a page dials this host: its endpoint's key and addresses, and
         // the relay it is reached through — which the endpoint names from the
         // moment this host serves anything ([`Server::start`] waits for it), as
@@ -514,9 +515,9 @@ impl Server {
             bind_link(&config, udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;
         let web = Arc::new(Web {
             context: context.clone(),
-            host_info: HostInfo {
-                host_cert,
-                address: Some(HostAddress {
+            server_info: ServerInfo {
+                server_cert,
+                address: Some(ServerAddress {
                     endpoint_addr,
                     relay_url,
                     web: Some(web_link.clone()),
@@ -548,10 +549,14 @@ impl Server {
                 public_origin.clone(),
                 also,
             )),
-            stand_ins: Arc::new(stand_in::StandIns::new(stand_ins_dir(self.state_root()))),
             wait_list: config.wait_list.clone(),
         });
-        web.serve_stand_ins();
+        // The name each person gives themselves is kept with their profile, which the workspaces
+        // here name them by.
+        if let Some(workspaces) = &web.workspaces {
+            workspaces.person_names(web.profiles.clone());
+        }
+        web.serve_code_requests();
         web.serve_pushes(
             self.state_root(),
             config.site.as_deref(),
@@ -1232,29 +1237,21 @@ fn login_route(
             Ok(claim) => web.claim(&claim).unwrap_or_else(|refusal| refusal),
             Err(refusal) => refusal,
         },
+        wire::WAITING_ROUTE => match json_body::<wire::Waiting>(bytes) {
+            Ok(waiting) => answered(web.waiting(&waiting)),
+            Err(refusal) => refusal,
+        },
+        wire::CERTIFY_ROUTE => match json_body::<wire::Certify>(bytes) {
+            Ok(certify) => web.certify(&certify).map_or_else(
+                |refusal| refusal,
+                |()| reply(StatusCode::NO_CONTENT, Vec::new()),
+            ),
+            Err(refusal) => refusal,
+        },
         wire::FOLLOW_ROUTE => match json_body::<wire::Follow>(bytes) {
             Ok(follow) => {
                 answered(codes.follow(&follow.follow, follow.offer.as_ref(), client, now_ms))
             }
-            Err(refusal) => refusal,
-        },
-        wire::STAND_IN_ROUTE => match json_body::<wire::StandInRequest>(bytes) {
-            Ok(request) => web
-                .stand_ins
-                .answer(request, client, tilo_clock::unix_now_ns())
-                .map_or_else(
-                    |refusal| {
-                        let code = match refusal {
-                            stand_in::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,
-                            stand_in::Refusal::Forbidden(_) => StatusCode::FORBIDDEN,
-                            stand_in::Refusal::Unknown => StatusCode::NOT_FOUND,
-                            stand_in::Refusal::TooMany => StatusCode::TOO_MANY_REQUESTS,
-                            stand_in::Refusal::Storage => StatusCode::INTERNAL_SERVER_ERROR,
-                        };
-                        refused(code, refusal.message())
-                    },
-                    |reply| json(&reply),
-                ),
             Err(refusal) => refusal,
         },
         _ => return None,
@@ -1324,7 +1321,21 @@ async fn route(
             };
             kept.publish(&bytes, now_ms, |root| admitted_anywhere(web, root))
                 .await
-                .map(|()| reply(StatusCode::NO_CONTENT, Vec::new()))
+                .map(|root| {
+                    // A profile's name is the person's in every workspace here: each names them
+                    // by it from now on.
+                    if route == "/profile"
+                        && let (Some(workspaces), Some(name)) =
+                            (web.workspaces.clone(), web.profiles.kept_name(&root))
+                    {
+                        tokio::spawn(async move {
+                            workspaces
+                                .name_person_everywhere(root, &name, tilo_clock::unix_now_ns())
+                                .await;
+                        });
+                    }
+                    reply(StatusCode::NO_CONTENT, Vec::new())
+                })
                 .map_err(|refusal| {
                     let code = match refusal {
                         envelopes::Refusal::Malformed(_) => StatusCode::BAD_REQUEST,

@@ -429,7 +429,7 @@ pub(super) async fn turn(
             return wire::response(post.profile, request, &text)
                 .map_err(|error| stream_error(StreamError::Malformed(error.message)));
         }
-        let mut stream = Stream::new(api);
+        let mut stream = Stream::of(post.profile);
         let mut progress = StreamProgress::default();
         let mut deltas = Vec::new();
         let (mut emit, mut timing, wanted) = match streaming {

@@ -52,6 +52,15 @@ use super::{ActionProvider, Addressed, Failure, McpServer, OneCall, Reply, app_n
 /// loses the step it was taking, so it holds on to the action's own answer instead.
 const PROGRAM_WAIT_MS: u64 = super::super::MAX_WAIT_MS;
 
+/// Why a task's program was given up on: what was waited for, and for how long.
+fn waited_for_the_task(what: &str) -> String {
+    format!(
+        "the task's programs did not answer within {} s: {what} did not come; a listing reads \
+         no programs, and a program's call starts another",
+        super::super::QUERY_ANSWER_WAIT.as_secs()
+    )
+}
+
 /// Where an API starts the tilolang host of a task: the session, which launches it as every
 /// tilolang host is launched, its author the task.
 pub trait TaskHosts: Send + Sync {
@@ -922,7 +931,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         *self
             .agent_session
             .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(group);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(crate::Session::Given(group));
         self
     }
 }
@@ -1128,25 +1138,71 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         reason = "the task's link is held while its host answers, as a program's run holds it"
     )]
     pub(super) async fn catalogue(&self) -> Result<Value, String> {
-        let mut link = self.task.lock().await;
+        use std::sync::atomic::Ordering;
+        // A program that did not answer for a listing is not started again by
+        // every listing after it: the export of a workspace lists tens of
+        // paths, and none of them waits its start again. A program's call
+        // starts another and clears this.
+        if self.task_given_up.load(Ordering::SeqCst) {
+            return Err(waited_for_the_task("its program"));
+        }
+        // The task's program is started on its first call, and answers one
+        // line for it: neither is bounded by a timer inside it, so both are
+        // waited for here, under a listing's answer budget. A listing that
+        // asked nothing of programs still has to list.
+        let wait = self.task_answer_wait;
+        let Ok(mut link) = tokio::time::timeout(wait, self.task.lock()).await else {
+            tracing::warn!(
+                "a task's program held its connection past the answer budget; a listing \
+                 reads no programs until a program's call ends"
+            );
+            return Err(waited_for_the_task("the task's connection"));
+        };
         if link.is_none() {
-            *link = Some(self.start_task().await?);
+            match tokio::time::timeout(wait, self.start_task()).await {
+                Ok(Ok(task)) => *link = Some(task),
+                Ok(Err(why)) => {
+                    self.task_given_up.store(true, Ordering::SeqCst);
+                    return Err(why);
+                }
+                Err(_) => {
+                    self.task_given_up.store(true, Ordering::SeqCst);
+                    tracing::warn!(
+                        "a task's program did not start within the answer budget; a listing \
+                         reads no programs, and a program's call starts another"
+                    );
+                    return Err(waited_for_the_task("its start"));
+                }
+            }
         }
         let Some(task) = link.as_mut() else {
             return Err("the task's host did not start".to_owned());
         };
-        let asked = async {
+        let asked = tokio::time::timeout(wait, async {
             task.send(&json!({"catalogue": {}})).await?;
             let answer = task.next().await?;
             answer
                 .get("catalogue")
                 .cloned()
                 .ok_or_else(|| format!("the task's host answered the catalogue with {answer}"))
+        })
+        .await;
+        let asked = if let Ok(asked) = asked {
+            asked
+        } else {
+            tracing::warn!(
+                "a task's program did not answer the catalogue within the answer budget; \
+                 a listing reads no programs, and a program's call starts another"
+            );
+            Err(waited_for_the_task("the catalogue"))
         };
-        let asked = asked.await;
         if asked.is_err() {
-            // A host that failed to answer is started afresh next time.
+            // A program that failed to answer is started afresh next time, and
+            // a listing in between reads no programs rather than wait on it.
             *link = None;
+            self.task_given_up.store(true, Ordering::SeqCst);
+        } else {
+            self.task_given_up.store(false, Ordering::SeqCst);
         }
         drop(link);
         asked
@@ -1251,6 +1307,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if link.is_none() {
             *link = Some(self.start_task().await?);
         }
+        // A program's call started the task's program: listings read from it again.
+        self.task_given_up
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let Some(task) = link.as_mut() else {
             return Err("the task's host did not start".to_owned());
         };
@@ -1274,6 +1333,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if link.is_none() {
             *link = Some(self.start_task().await?);
         }
+        // A program's call started the task's program: listings read from it again.
+        self.task_given_up
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let Some(task) = link.as_mut() else {
             return Err("the task's host did not start".to_owned());
         };
@@ -1350,8 +1412,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
              tilo_read; `undo task` and `history task` are still taken here",
         )?;
         let task = self
-            .agent_session()
-            .map(|run| run.id)
+            .session_id()
             .ok_or("this API's agent works in no run, which a task's programs are")?;
         let workspace = self.workspace.clone();
         let fd = tokio::task::spawn_blocking(move || hosts.start(&workspace, &task))

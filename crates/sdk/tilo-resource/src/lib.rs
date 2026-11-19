@@ -52,7 +52,7 @@
 //! That is the whole app-side state layer. From it the app gets, without
 //! writing any of it:
 //!
-//! * **storage and sync** — the record is an Automerge document; every field
+//! * **storage and sync** — the resource is an Automerge document; every field
 //!   write is a minimal diff, text is spliced, collections are keyed and
 //!   fractionally ordered, so members' concurrent edits merge;
 //! * **replayable actions** — each `#[action]` method is a serializable
@@ -113,6 +113,7 @@ pub mod batch;
 pub mod child;
 pub mod children;
 mod chunk_map;
+mod clock;
 pub mod collection;
 #[cfg(test)]
 mod concurrent_text_tests;
@@ -151,6 +152,7 @@ mod recents;
 pub mod recording;
 pub mod replica;
 pub mod resource;
+pub mod row;
 pub mod schema;
 pub mod schema_check;
 pub mod search_default;
@@ -174,18 +176,21 @@ pub use absolute_path::{AbsolutePath, RelativePath};
 pub use action::{
     ActionCx, ActionKey, ActionKind, ActionRef, Binds, Invoke, Mapped, NoParams, Operation,
     Outcome, Params, Refusal, Reverting, Stamped, TryMapped, Undoing, fresh_uuid, invoking_member,
-    invoking_name, minted_ids, minted_keys, reverting_type, take_minted,
+    invoking_name, minted_ids, minted_keys, restore_minted, reverting_type, take_minted,
 };
 /// A change a document reports, as an `answer` hook reads what its action did.
 pub use automerge::Patch;
 pub use child::{child_resource_id, publish_child};
 pub use children::{ChildList, ChildRef, Children, Trashed};
+pub use clock::HybridClock;
 pub use collection::{
     Collection, Id, Membership, Quarantined, stored_entry, stored_ids, stored_item,
 };
 pub use delta::{Delta, ObjPath, Touch, Touched, Tracker};
 pub use derived::{Bound, Derived};
-pub use effect::{Answers, Effect, EffectDecl, EffectDecodeError, EffectOffload, NoEffect, offer};
+pub use effect::{
+    Answers, Effect, EffectDecl, EffectDecodeError, EffectOffload, EffectTarget, NoEffect, offer,
+};
 pub use evolution::Unreadable;
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use keyed::{ById, Identified, ItemStorage, Items, Keyed};
@@ -217,6 +222,7 @@ pub use resource::{
     origin_now_ms, publish, publish_head, publish_head_of, reset_type_schemas, scope_contains,
     spec_kind, state_from_reading, with_origin_clock,
 };
+pub use row::{LiveRow, RowBindings, typed_resource};
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape, StoredText, Trust, absent_scalar, stored_text};
 pub use storage::{Bytes, Counter, Grid, Outbox, OutboxEntry, Set, Settled};
@@ -226,7 +232,7 @@ pub use tilo_action_policy::edits::Weaker;
 pub use tilo_action_policy::{DIRECT_CONVERSATION_PREFIX, MemberId, PersonId};
 pub use tilo_actions::surface::{FieldType, TypeSet};
 pub use tilo_actions::{Acting, Availability};
-pub use tilo_resource_macros::{Effect, JsonSchema, Model, committed_surface, resource};
+pub use tilo_resource_macros::{Effect, JsonSchema, Model, Row, committed_surface, resource};
 pub use unreadable::withhold_document_actions;
 pub use vocabulary::{Built, Declaration, Vocabulary, vocabulary};
 
@@ -258,7 +264,7 @@ pub mod __private {
     pub use tilo_actions::{
         ActionArgs, ActionKind, ActionParam, ActionRegistry, ActionSpec, Audience, ChangeKind,
         HOST_RENDER_TAG, OperationKind, PROMPTED_PARAM, ParamType, ResourceSpec, ResourceViewSpec,
-        RiskLevel, StepKind, picked_resource_schema,
+        RiskLevel, SCREEN_TAG, StepKind, picked_resource_schema,
     };
     pub use tilo_resource_macros::word;
 
@@ -392,7 +398,7 @@ pub mod __private {
         pub item_field: Option<&'static str>,
         pub writes: &'static [&'static str],
         /// The kind of step it takes (`#[action(step = "create")]`): what
-        /// presence and the activity card say of it
+        /// presence says of it
         /// ([`tilo_actions::StepKind`]). `None` for a verb whose declaration
         /// names none, whose step reads as the part of the record it acts on.
         pub step: Option<tilo_actions::StepKind>,
@@ -806,16 +812,35 @@ pub mod __private {
     }
 
     /// Run `change` on the item of type `T` at `path` of the record `R`,
-    /// reading only that item, then write what changed as field edits at
-    /// its path, each checked: an item method applied.
+    /// reading only that item, then write what changed where the item is
+    /// kept, checked, or remove the item where `change` asked to
+    /// ([`ActionCx::remove_item`](crate::ActionCx::remove_item)): an item
+    /// method applied. `None` where nothing is at `path`: the caller decides
+    /// on the whole resource then, where an item named by its label is
+    /// found, or one that is not there is refused with the items there are.
     ///
     /// # Errors
-    /// There is no such item, it does not read as `T`, the method refused,
-    /// or an edit did not apply.
+    /// The item does not read as `T`, the method refused, or an edit did not
+    /// apply.
     pub fn apply_item<R, T>(
         doc: &mut crate::Doc,
         cx: &mut crate::ActionCx,
         path: &[crate::Segment],
+        change: impl FnOnce(&mut T, &mut crate::ActionCx) -> Result<(), crate::Refusal>,
+    ) -> Option<Result<(), crate::Refusal>>
+    where
+        R: crate::Fields,
+        T: crate::Model,
+    {
+        let obj = crate::Path::<R, T>::from_segments(path.to_vec()).object(doc)?;
+        Some(apply_item_at::<R, T>(doc, cx, path, &obj, change))
+    }
+
+    fn apply_item_at<R, T>(
+        doc: &mut crate::Doc,
+        cx: &mut crate::ActionCx,
+        path: &[crate::Segment],
+        obj: &automerge::ObjId,
         change: impl FnOnce(&mut T, &mut crate::ActionCx) -> Result<(), crate::Refusal>,
     ) -> Result<(), crate::Refusal>
     where
@@ -823,20 +848,41 @@ pub mod __private {
         T: crate::Model,
     {
         let refused = |error: crate::ModelError| crate::Refusal::new(error.to_string());
-        let obj = crate::Path::<R, T>::from_segments(path.to_vec())
-            .object(doc)
-            .ok_or_else(|| crate::Refusal::new("no such item"))?;
         let map = automerge::Value::Object(automerge::ObjType::Map);
-        let before = T::load(doc, &map, &obj).map_err(refused)?;
-        let mut after = T::load(doc, &map, &obj).map_err(refused)?;
+        let before = T::load(doc, &map, obj).map_err(refused)?;
+        let mut after = T::load(doc, &map, obj).map_err(refused)?;
+        let _ = cx.take_item_removal();
         change(&mut after, cx)?;
-        crate::Model::check(&after)?;
-        let mut edits: Vec<crate::Edit<()>> = Vec::new();
-        before.diff(&after, path, &mut edits);
-        for edit in edits {
-            R::edit_fields(doc, &ROOT, edit.path(), edit.op(), cx).map_err(refused)?;
+        if cx.take_item_removal() {
+            let (Some(crate::Segment::Item(id)), Some(collection)) = (
+                path.last(),
+                path.len().checked_sub(1).and_then(|at| path.get(..at)),
+            ) else {
+                return Err(crate::Refusal::new(
+                    "only an item of a collection is removed",
+                ));
+            };
+            let op = crate::EditOp::RemoveItem { id: id.clone() };
+            return R::edit_fields(doc, &ROOT, collection, &op, cx).map_err(refused);
         }
-        Ok(())
+        crate::Model::check(&after)?;
+        if after.stores_as(&before) {
+            return Ok(());
+        }
+        // Written where it is kept, as the resource's own write writes it:
+        // only what changed, its read-only fields too (a verb sets those,
+        // a field edit from outside never does).
+        let Some(automerge::Parent {
+            obj: parent,
+            prop: automerge::Prop::Map(key),
+            ..
+        }) = doc.parents(obj).ok().and_then(|mut parents| parents.next())
+        else {
+            return Err(crate::Refusal::new("the item is not kept under a key"));
+        };
+        after
+            .store(doc, crate::Slot::Key(&parent, &key))
+            .map_err(refused)
     }
 
     /// The first non-empty line of the text `value` carries: one part of a

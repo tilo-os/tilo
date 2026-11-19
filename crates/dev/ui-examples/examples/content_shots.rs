@@ -515,7 +515,7 @@ fn shelf() -> Element {
                 vec![Box::new(MediaGrid::arriving(
                     3,
                     MediaAspect::Wide,
-                    &tilo_ui::arriving::Source::host("Lounge"),
+                    &tilo_ui::arriving::Source::Remote,
                     // Asked a while ago: the skeleton shows.
                     {
                         let now = tilo_ui::time::now();

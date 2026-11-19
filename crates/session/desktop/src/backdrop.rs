@@ -611,7 +611,7 @@ mod tests {
         assert_eq!(backdrop.drawn_wallpaper, None, "and it has none");
     }
 
-    /// What the backdrop draws is what every surface standing on the shell frosts: the one source
+    /// What the backdrop draws is what every surface resting on the shell frosts: the one source
     /// the session hands it holds this workspace's picture while it shows one, and nothing when the
     /// shell falls back to its gradient.
     #[test]

@@ -88,8 +88,9 @@ impl State {
             self.touch.desktop.push((slot, at));
             return;
         }
-        if !self.locked()
-            && let Some(index) = self.shell_surface_under(at)
+        // Locked, the surface under the finger is one that stands over the lock (the session's own
+        // view of it), as it is for the pointer: a finger reaches what unlocks.
+        if let Some(index) = self.shell_surface_under(at)
             && let Some(surface) = self.surfaces.get_mut(index)
         {
             surface.pointer_motion(at.x, at.y);

@@ -128,18 +128,7 @@ pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Pat
             return;
         }
     };
-    if let Some(parent) = path.parent()
-        && let Err(error) = std::fs::create_dir_all(parent)
-    {
-        tracing::warn!(%error, "no place for the notification centre");
-        return;
-    }
-    // Written beside and moved over, so a session that ends mid-write never leaves half a file to
-    // be read back.
-    let beside = path.with_extension("json.new");
-    if let Err(error) =
-        std::fs::write(&beside, &encoded).and_then(|()| std::fs::rename(&beside, path))
-    {
+    if let Err(error) = tilo_files::native::atomic::write_creating_parent(path, &encoded) {
         tracing::warn!(%error, "the notification centre was not written");
     }
 }
@@ -1162,15 +1151,18 @@ impl SessionNotifications {
 /// The resource the notification centre is published under.
 pub const RESOURCE: &str = "session:notifications";
 
-/// What kind of resource [`RESOURCE`] is: the session's own kind, as the clipboard is, so the grant
-/// the device's panel reads the session's own readings through reaches it.
-pub const KIND: &str = tilo_action_policy::roles::SESSION_KIND;
+/// The notification centre as the session publishes it: what was kept there and what each
+/// notification does.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Notifications", effects = CentreAction)]
+pub struct NotificationCentreRoot;
 
 /// What the centre resource offers: what a notification kept there does.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.session.notifications")]
 pub enum CentreAction {
     /// Dismiss a notification, or every one an app grouped
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Dismiss {
         /// The notification's id, as the rows carry it.
@@ -1181,6 +1173,7 @@ pub enum CentreAction {
         group: Option<String>,
     },
     /// Run one of a notification's own actions
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Act {
         /// The notification's id, as the rows carry it.
@@ -1191,12 +1184,15 @@ pub enum CentreAction {
         action: String,
     },
     /// Clear the centre, keeping what the person pinned
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Clear,
     /// Bring back what the last Clear all took
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     UndoClear,
     /// Open one of the notifications the centre kept
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     OpenNotice {
         /// The notification's id, as the rows carry it.
@@ -1205,6 +1201,7 @@ pub enum CentreAction {
     },
     /// Tell the person something, as an app's `notify` does: it rises as a banner and waits in
     /// the centre until they dismiss it
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Notify {
         #[param("What happened, in a short sentence")]
@@ -1217,6 +1214,7 @@ pub enum CentreAction {
         kind: Option<String>,
     },
     /// Hold fresh banners back until turned off again
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     SetQuiet {
         /// Whether to hold them back
@@ -1255,7 +1253,12 @@ impl Served {
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
         let mut resource = offer::<CentreAction>(
-            ResourceSpec::new(RESOURCE, KIND, t("session-notifications")).with_personal_reading(),
+            tilo_resource::LiveRow::typed::<NotificationCentreRoot>(
+                RESOURCE,
+                t("session-notifications"),
+            )
+            .into_resource()
+            .with_personal_reading(),
         );
         // The panel keeps the words the rest of the desktop names them by.
         for spec in &mut resource.actions {

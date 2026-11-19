@@ -101,7 +101,7 @@ pub(super) fn owner_child(role: &str, root: &Path) -> Command {
         .env(ROLE, role)
         .env("TILO_ORIGINAL_PAIRED_ROOT", root)
         .env("TMPDIR", "/tmp")
-        .env(runtime_identity::FILE_SECRETS_ENV, "1")
+        .env(tilo_identity::store::FILE_SECRETS_ENV, "1")
         .env_remove("TILO_FLATPAK_EXTRA_FIXTURE");
     child
 }
@@ -681,13 +681,13 @@ fn restore_child() {
             serde_json::to_value(&setup.manifest().account_ids).unwrap(),
             expected["account_ids"]
         );
-        let signer = runtime_identity::load_from_path(identity_path.clone()).unwrap();
+        let signer = tilo_identity::store::load_from_path(identity_path.clone()).unwrap();
         assert_eq!(
             serde_json::to_value(signer.group_public_key()).unwrap(),
             expected["key"]
         );
         assert_eq!(
-            runtime_identity::load_metadata_from_path(&identity_path)
+            tilo_identity_client::load_metadata_from_path(&identity_path)
                 .unwrap()
                 .display_name,
             "Ada"

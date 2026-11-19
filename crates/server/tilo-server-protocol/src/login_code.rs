@@ -1,6 +1,4 @@
-//! Login codes: the short code a person's tab shows and their agent types,
-//! and the stand-in approver a host keeps for a person who set Tilo up
-//! through an agent.
+//! Login codes: the short code a person's tab shows and their agent types.
 //!
 //! A code is a rendezvous, not a credential of its own: it names one
 //! pairing in progress between one tab and one computer, through the host
@@ -17,9 +15,13 @@
 //!   ([`CreateCode::link`] `None`); `tilo login <code>` on a computer that is
 //!   already a device of the person resolves it ([`Resolved::sign_in`]) and
 //!   claims it for that person ([`Claim`]); the tab learns whom to ask
-//!   ([`Polled::claimed`]) and asks to be certified with that invite; the
-//!   person's stand-in on the host ([`STAND_IN_ROUTE`]) approves exactly
-//!   that request.
+//!   ([`Polled::claimed`]) and asks to be certified with that invite. The
+//!   claiming device is one that may admit devices (it holds the person's
+//!   root, or carries `can_admit_devices`): it reads the tab's request back
+//!   ([`WAITING_ROUTE`]) and answers it with a certificate it signs
+//!   ([`CERTIFY_ROUTE`]), as any approver answers a pairing. There is no
+//!   other approver: a person whose root lives in a tab approves from that
+//!   tab, as it approves any device of theirs.
 //!
 //! A code is only offered until its tab first follows it ([`Follow`]): the
 //! host keeps nothing for a visitor who never uses one. A code is single
@@ -36,30 +38,10 @@
 //! | [`CREATE_ROUTE`] | [`CreateCode`] | [`Created`] |
 //! | [`RESOLVE_ROUTE`] | [`Resolve`] | [`Resolved`]; `404` unknown, spent or expired; `429` too many misses |
 //! | [`STEP_ROUTE`] | [`Report`] | `204` |
-//! | [`CLAIM_ROUTE`] | [`Claim`] | [`Claimed`]; `403` not a device of a person with a stand-in here |
+//! | [`CLAIM_ROUTE`] | [`Claim`] | [`Claimed`]; `403` with a [`ClaimRefused`] reason |
+//! | [`WAITING_ROUTE`] | [`Waiting`] | [`WaitingRequest`] |
+//! | [`CERTIFY_ROUTE`] | [`Certify`] | `204`; `409` nothing waits, `403` not the person's root |
 //! | [`FOLLOW_ROUTE`] | [`Follow`] | [`Polled`]; the first one carrying the [`Offer`] keeps the code |
-//! | [`STAND_IN_ROUTE`] | [`StandInRequest`] | [`StandInReply`] |
-//!
-//! # The stand-in
-//!
-//! A person who set Tilo up through an agent has their root in one browser
-//! tab and nowhere else until they keep it with a passkey. So that clearing
-//! that tab's storage does not lose them, their tab has the host make a key
-//! the host holds (the stand-in) and certifies it with the root as an
-//! approver of new devices of that person (`tilo-user-identity`'s stand-in
-//! capability). What it can do:
-//!
-//! - certify a new device of that one person, with member capabilities and a
-//!   browser's lifetime, when a device of the person already certified asks
-//!   for exactly that request ([`Claim`]);
-//!
-//! and nothing else: it is no device of the person (it reaches no workspace
-//! and holds no membership), it admits no hosts, approves no grants, certifies
-//! no other approver, and it expires ([`STAND_IN_LIFETIME_MS`]). When the
-//! person first keeps their root with a passkey, their root revokes it
-//! through the ordinary revocation path ([`StandInRequest::Retire`]): it can
-//! approve nothing from then on, and every device it certified before stays
-//! valid, as a revocation takes effect from its time on.
 
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::canonical::{CanonicalError, signing_digest};
@@ -72,17 +54,16 @@ pub const RESOLVE_ROUTE: &str = "/login-code/resolve";
 pub const STEP_ROUTE: &str = "/login-code/step";
 /// A device of a person claims a sign-in code for that person.
 pub const CLAIM_ROUTE: &str = "/login-code/claim";
+/// The computer that claimed a code and certifies it reads the tab's request.
+pub const WAITING_ROUTE: &str = "/login-code/waiting";
+/// The computer that claimed a code answers the tab's request with a certificate.
+pub const CERTIFY_ROUTE: &str = "/login-code/certify";
 /// The tab that made a code follows it.
 pub const FOLLOW_ROUTE: &str = "/login-code/follow";
-/// The person's stand-in approver on this host.
-pub const STAND_IN_ROUTE: &str = "/stand-in";
-
 /// How long a code can be resolved.
 pub const CODE_LIFETIME_MS: u64 = 10 * 60 * 1000;
 /// How long a resolved code keeps its steps for the tab to follow.
 pub const FOLLOW_LIFETIME_MS: u64 = 30 * 60 * 1000;
-/// The longest a stand-in's certificate may last.
-pub const STAND_IN_LIFETIME_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 /// The longest pairing link a code names.
 pub const MAX_LINK_CHARS: usize = 2048;
 /// The longest agent name a report carries.
@@ -221,8 +202,9 @@ pub struct Report {
     pub detail: Option<String>,
 }
 
-/// A device of a person claims a sign-in code for them: the tab then asks
-/// to be certified as that person's device, and their stand-in approves.
+/// A device of a person that may admit devices claims a sign-in code for
+/// them: the tab then asks to be certified as that person's device, and the
+/// claiming device certifies it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Claim {
@@ -233,6 +215,66 @@ pub struct Claim {
     pub signed_at_ns: u64,
     /// The device key's Ed25519 signature over [`claim_digest`], hex.
     pub signature: String,
+}
+
+/// Why a server refused a claim (`403`), as the `reason` beside its `error`
+/// sentence: what the claiming computer tells its person, one each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ClaimRefused {
+    /// The device's certificate is not live: it ran out, or is not one.
+    NotLive,
+    /// The person revoked the device.
+    Revoked,
+    /// The claim is dated too far from the server's clock.
+    Clock,
+    /// The claim is not signed by the device its certificate names.
+    Signature,
+    /// The device may not admit devices, so it cannot certify the tab.
+    CannotAdmit,
+}
+
+impl ClaimRefused {
+    /// The server's sentence for it.
+    #[must_use]
+    pub const fn sentence(self) -> &'static str {
+        match self {
+            Self::NotLive => "this is no live certificate of a device",
+            Self::Revoked => "this device is revoked",
+            Self::Clock => "the claim is too old or from the future",
+            Self::Signature => "the claim is not signed by this device",
+            Self::CannotAdmit => {
+                "this device may not admit devices, so it cannot certify this browser"
+            }
+        }
+    }
+}
+
+/// The computer that claimed a code, and certifies it, asks for the tab's
+/// request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Waiting {
+    pub report: String,
+}
+
+/// The tab's request, once it asked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaitingRequest {
+    /// The tab's certification request, postcard as hex; `None` until it
+    /// asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+}
+
+/// The computer that claimed a code answers the tab's request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Certify {
+    pub report: String,
+    /// The root-signed certificate of the tab's device, postcard as hex.
+    pub cert: String,
 }
 
 /// What a device signs to claim the code resolved with `report`: the BLAKE3
@@ -328,85 +370,9 @@ pub struct ClaimedFor {
     pub by: String,
 }
 
-/// What a person's root asks of their stand-in on this host. Each is signed
-/// by the root ([`StandInRequest::signed_digest`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum StandInRequest {
-    /// Make (or name again) the key the host holds as this person's
-    /// stand-in. Answers [`StandInReply::Key`].
-    Key {
-        user: String,
-        signed_at_ns: u64,
-        signature: String,
-    },
-    /// Keep the stand-in's root-signed certificate (postcard, hex): from
-    /// now on it approves claimed sign-ins. Answers [`StandInReply::Kept`].
-    Certify { cert: String },
-    /// The root is kept with a passkey now: forget the stand-in's key. The
-    /// revocation itself travels as every revocation of the person does.
-    /// Answers [`StandInReply::Retired`].
-    Retire {
-        user: String,
-        signed_at_ns: u64,
-        signature: String,
-    },
-}
-
-impl StandInRequest {
-    /// The digest the root signs for [`Self::Key`] and [`Self::Retire`]: the
-    /// operation, the person's root and the time.
-    ///
-    /// # Errors
-    ///
-    /// [`CanonicalError::Serialize`] when the request cannot be encoded.
-    pub fn signed_digest(
-        op: &str,
-        user: &[u8; 32],
-        signed_at_ns: u64,
-    ) -> Result<[u8; 32], CanonicalError> {
-        #[derive(Serialize)]
-        struct View<'a> {
-            op: &'a str,
-            user: &'a [u8; 32],
-            signed_at_ns: u64,
-        }
-        signing_digest(
-            b"tilo-stand-in-v2\0",
-            &View {
-                op,
-                user,
-                signed_at_ns,
-            },
-        )
-    }
-}
-
-/// The host's answer about a stand-in.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum StandInReply {
-    /// The stand-in's public key, hex, for the root to certify.
-    Key { key: String },
-    /// The certificate is kept: the stand-in approves until it expires.
-    Kept { expires_at_ms: u64 },
-    /// The key is forgotten.
-    Retired,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The bound the host and page announce is the one a stand-in's
-    /// certificate is held to.
-    #[test]
-    fn the_stand_in_lifetime_is_the_certificates_bound() {
-        assert_eq!(
-            u128::from(STAND_IN_LIFETIME_MS) * 1_000_000,
-            u128::from(tilo_user_identity::STAND_IN_LIFETIME_NS)
-        );
-    }
 
     tilo_test_env::scenario! {
         fn a_login_code_is_spelled_so_it_reads_back;

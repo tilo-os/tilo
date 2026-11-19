@@ -60,4 +60,7 @@ enum Source {
 
     /// The view of a live Tilo thing in a message.
     static func live(_ thing: LiveThing) -> AnyView { tilo.liveView(thing) }
+
+    /// The full-size interactive view of a live Tilo thing in a full-screen sheet.
+    static func liveStage(_ thing: LiveThing) -> AnyView { tilo.liveView(thing, size: .working) }
 }

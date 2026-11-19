@@ -969,7 +969,7 @@ fn a_tile_nothing_has_painted_asks_for_no_frame_of_its_own() {
             !Widget::needs_redraw(&host),
             "nothing stands on screen to correct"
         );
-        let later = t0 + crate::arriving::NAME_SOURCE_AFTER;
+        let later = t0 + crate::time::Duration::from_secs(2);
         crate::time::testing::with_monotonic_time(later, || {
             assert!(
                 !Widget::needs_redraw(&host),
@@ -1012,7 +1012,7 @@ fn a_tile_holding_only_a_placeholder_reports_no_damage_once_its_steps_are_past()
         host.rect = Rect::new(50.0, 50.0, 350.0, 250.0);
         host
     });
-    let late = t0 + crate::arriving::NAME_SOURCE_AFTER;
+    let late = t0 + crate::time::Duration::from_secs(2);
     crate::time::testing::with_monotonic_time(late, || {
         let _ = paint(&mut host, &theme);
         host.mark_drawn();

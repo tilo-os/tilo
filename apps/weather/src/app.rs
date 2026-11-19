@@ -15,7 +15,7 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
-use ui::framework::{EffectCx, EffectStatus, Effected, Live, LiveRow, Publishes, RunMode, ViewCx};
+use ui::framework::{EffectCx, EffectStatus, Effected, Live, Publishes, RunMode, ViewCx};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -126,21 +126,21 @@ impl Forecasts {
         cx: &mut EffectCx<Weather>,
     ) -> Result<Effected, String> {
         match effect {
-            WeatherEffect::OpenLocation { location } => {
+            WeatherEffect::Open { location } => {
                 let id = parse_location(&location)?;
                 if !self.core.borrow_mut().open_location(id) {
                     return Err("Weather location is no longer saved".into());
                 }
                 Ok(Effected::done())
             }
-            WeatherEffect::Refresh => {
+            WeatherEffect::RefreshAll => {
                 let reply = cx.reply();
                 self.admit_refresh(None, move |outcome| {
                     reply.finish(outcome.map(|()| tilo_actions::ActionOutput::default()));
                 })?;
                 Ok(Effected::Pending)
             }
-            WeatherEffect::RefreshLocation { location } => {
+            WeatherEffect::Refresh { location } => {
                 let id = parse_location(&location)?;
                 let reply = cx.reply();
                 self.admit_refresh(Some(id), move |outcome| {
@@ -154,7 +154,7 @@ impl Forecasts {
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         if self.core.borrow().model.locations.is_empty() {
             vec![EffectStatus::unavailable(
-                WeatherEffect::REFRESH,
+                WeatherEffect::REFRESH_ALL,
                 "no_locations",
                 "Save a weather location before refreshing",
             )]
@@ -163,26 +163,17 @@ impl Forecasts {
         }
     }
 
-    pub(crate) fn location_rows(&self) -> Vec<LiveRow> {
+    /// How the saved place `id` stands, from the forecast last fetched for
+    /// it: what the published item shows beside its name, from state no
+    /// document holds.
+    pub(crate) fn location_presentation(
+        &self,
+        id: LocationId,
+    ) -> Option<ui::tilo_actions::ResourcePresentation> {
         let core = self.core.borrow();
-        core.model
-            .locations
-            .iter()
-            .map(|location| {
-                let row = crate::actions::location_row(location);
-                core.model.snapshot_for(location.id).map_or_else(
-                    || row.clone(),
-                    |snapshot| {
-                        row.clone()
-                            .presentation(crate::presentation::morning_preview(
-                                snapshot,
-                                core.units,
-                                core.notice(),
-                            ))
-                    },
-                )
-            })
-            .collect()
+        core.model.snapshot_for(id).map(|snapshot| {
+            crate::presentation::morning_preview(snapshot, core.units, core.notice())
+        })
     }
 
     fn admit_refresh(
@@ -592,7 +583,13 @@ pub(crate) fn window(cx: &ViewCx<Weather>) -> Element {
         });
     }
     cx.publishing(
-        Publishes::new().live_rows(move || forecasts.borrow().location_rows()),
+        Publishes::new().item_presentation(move |field, id| {
+            if field != "places" {
+                return None;
+            }
+            let id = parse_location(id).ok()?;
+            forecasts.borrow().location_presentation(id)
+        }),
         Box::new(window),
     )
 }
@@ -1546,20 +1543,29 @@ mod interaction_tests {
             );
         }
         {
+            use ui::tilo_resource::Effect as _;
             let h = Harness::new(1280.0, 720.0);
-            let rows = h.app.state().location_rows();
-            assert_eq!(rows.len(), 4);
-            for row in rows {
-                let row = row.into_resource();
-                for id in ["open", "refresh"] {
-                    let action = row.actions.iter().find(|action| action.id == id).unwrap();
+            let locations: Vec<_> = h
+                .app
+                .core
+                .borrow()
+                .model
+                .locations
+                .iter()
+                .map(|location| location.id)
+                .collect();
+            assert_eq!(locations.len(), 4);
+            for id in locations {
+                let item = crate::model::Weather::item(id);
+                let specs = WeatherEffect::item_specs("places", &item);
+                for action_id in ["open", "refresh"] {
+                    let action = specs
+                        .iter()
+                        .find(|action| action.id == action_id)
+                        .unwrap_or_else(|| panic!("{action_id} on {id}"));
                     assert_eq!(action.kind, tilo_actions::OperationKind::Effect);
                 }
-                let refresh = row
-                    .actions
-                    .iter()
-                    .find(|action| action.id == "refresh")
-                    .unwrap();
+                let refresh = specs.iter().find(|action| action.id == "refresh").unwrap();
                 assert_eq!(refresh.contract.result, tilo_actions::ResultSpec::Job);
             }
         }
@@ -2010,14 +2016,14 @@ mod framework_tests {
     fn a_live_window_answers_weather_effects_through_the_api() {
         let mut app = TestApp::<crate::WeatherShell>::new().unwrap();
         let refused = app
-            .effect(&crate::actions::WeatherEffect::Refresh)
+            .effect(&crate::actions::WeatherEffect::RefreshAll)
             .unwrap_err();
         assert!(
             matches!(&refused, tilo_actions::ApiError::Unavailable { code, .. } if code == "no_locations"),
             "{refused:?}"
         );
         assert!(
-            app.effect(&crate::actions::WeatherEffect::OpenLocation {
+            app.effect(&crate::actions::WeatherEffect::Open {
                 location: LocationId::from_u128(9).to_string(),
             })
             .is_err()
@@ -2031,11 +2037,17 @@ mod morning_preview_regression {
     #[test]
     fn morning_preview_is_published_from_the_real_cached_forecast() {
         let app = WeatherApp::sample();
-        let rows = app.state().location_rows();
-        assert!(!rows.is_empty());
-        let row = rows[0].clone().into_resource();
-        let presentation = row
-            .presentation
+        let id = app
+            .core
+            .borrow()
+            .model
+            .locations
+            .first()
+            .map(|location| location.id)
+            .expect("the sample saves places");
+        let presentation = app
+            .state()
+            .location_presentation(id)
             .expect("cached forecast publishes a bounded morning preview");
         assert!(presentation.is_valid());
         let preview = presentation.preview.unwrap();

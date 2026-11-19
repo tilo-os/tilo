@@ -206,6 +206,56 @@ Partition GUIDs are generated at plan time, so identities are known before
 creation. They are recorded before the mutation, and creation is idempotent
 under resume.
 
+### A complete plan: no person at the screen
+
+The request may carry `install_plan` (the machine's plan document, the same one
+the person's devices hold) and `token_file` (where the caller keeps the
+single-use enrollment token). Both are given together or neither is. The plan
+must be complete and a `tilo-server` destination, and its disk rule must name
+the staging disk (by serial or WWN); a rule that names no drive is refused,
+because the staged install writes the disk the plan names and the staging was
+made on, and nothing else. The staging request and the installer each check
+this for themselves.
+
+The handoff carries the plan, which is secret-free like every plan. The token
+is not in it: the elevated helper copies the token to
+`/etc/tilo/enrollment-token.txt` on the staging root, mode 0600, as part of the
+handoff step (a resumed staging verifies it). The live installer spends it
+there, before it closes the disk; it never appears in the handoff, the staging
+journal, a progress line or a command argument.
+
+With a complete plan the live installer installs unattended: the plan answers
+the account and confirmation steps, names the machine and its unlock choice,
+and the startup secret it needs is generated and never stored. A passphrase
+plan is refused: a machine with nobody at its screen cannot unlock by a
+passphrase only its owner knows.
+
+The machine then enrolls from the installer, while the network and the open
+disk are still in hand, and enrols the unlock another of the person's devices
+releases (`enrol --sibling` with the installer's throwaway key). That order is
+what makes a server with no TPM and no console open on its first boot: the
+initramfs needs a sibling unlock in the volume's header, and only an enrolled
+machine that holds the person's device store can add one. A static plan's
+addressing is applied to the installer and written into the installed
+`/etc/NetworkManager/system-connections`, and the same keyfile goes into the
+sibling token so early boot joins the machine's network before its disk is
+open. If the machine cannot enroll, the install fails: a disk that can only be
+opened by typing a recovery key at a console nobody is at is not an install
+that finished.
+
+The disk's recovery key travels with that enrollment: the installer reads it
+from `tilo-disk-encrypt` and hands it to `tilo-enroll enroll
+--recovery-key-file`, never to a screen, a log or a command argument. The
+request carries it sealed to the device that issued the token, and the person's
+own store keeps it — the store their devices already sync, beside their own
+list of their devices, under `identity.machines`, one entry per machine keyed by the
+machine's device key. Only devices the person's root certified are handed that
+store, so only they can read the key. The installed machine keeps no copy: the
+installer shreds the file once the enrollment took it, and a plan-driven
+install writes no recovery-key card at all. On one of their devices the person
+reads whether a key is saved (`tilo server list`) and what it is (`tilo server
+recovery-key <server>`).
+
 ### Host transaction record
 
 - Windows: `%ProgramData%\Tilo\staging\<operation_id>.json`, with the ACL
@@ -277,6 +327,19 @@ state `intended`, unless the action is `remove` for that operation.
 - Linux: `sfdisk --append` with an explicit start, size, type, name and uuid,
   under `flock` on the disk, followed by `partx -u`. Raw writes go through
   `/dev/disk/by-partuuid/<guid>` opened `O_DIRECT|O_EXCL`.
+
+### Target disk
+
+On Linux a request may name the disk to stage onto instead of this machine's
+own system disk: `--disk serial:<serial>` or `--disk wwid:<wwn>`, the identities a
+machine plan names drives by. It resolves through the kernel's block devices
+(`/sys/class/block`), never udev's `/dev/disk/by-id` links, which a privileged
+container often lacks; a disk with a mounted partition is refused. The plan's
+`basis.disk.id` is that identity, so the helper resolves and re-probes the same
+disk in whatever namespace or boot it starts in, and `plan-stale` compares its
+GUID, size, sector size and partition map as usual. An empty GPT (a whole disk
+cleared for the install) is a valid target: all of it is unallocated. Without
+`--disk`, staging targets the system disk as before.
 
 ## 5. Host probe (`staging::probe`)
 
@@ -364,6 +427,20 @@ login succeeds. With the reclaim record present and every identity matching
 
 Any mismatch leaves the partitions untouched and logs why.
 
+## 7a. Tilo becomes the default start
+
+An alongside install leaves `BootOrder` as the retained OS had it and starts
+Tilo once through `BootNext`, so the next restart would boot the retained OS.
+The `server.set-default-start` action (also `tilo server set-default-start
+<server>`) moves the running Tilo's `Boot####` (`BootCurrent`) into the retained
+OS's place in `BootOrder`: every network-boot entry before that place stays
+where it was, so a network rescue still starts, and the retained OS's entry
+leaves the order. The action writes down the order it found and the order it wrote
+in `/var/lib/tilo/boot-order.json`; asking it again restores the recorded order
+when `BootOrder` is still what it wrote, and refuses otherwise. The one program
+that reads and writes firmware state is `tilo-default-start`, started as root by
+`tilo-server-control`; `tilo-boot-order enlist` is unchanged.
+
 ## 8. Imager UI and actions
 
 - The Review page for Full Tilo shows:
@@ -390,7 +467,9 @@ Any mismatch leaves the partitions untouched and logs why.
   - EFI load option encode/decode against fixtures;
   - record state machine and resume;
   - handoff validation;
-  - schema-2 bundle validation in Rust and Python against the same fixtures.
+  - schema-2 bundle validation in Rust and Python against the same fixtures;
+  - target-disk identity parsing, resolution over a temporary sysfs tree, and
+    the mounted-disk scan.
 - Linux loop-device test (root, CI `runner-disk-100g`): stage onto a loop disk
   with a fake efivarfs directory, then check partition map, readback digests,
   load option bytes and `remove`.

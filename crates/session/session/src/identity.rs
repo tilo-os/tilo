@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use tilo_desktop_surface::{DesktopHandle, HostAction};
 use tilo_files::native::Watched;
-use ui::local_identity::{LocalIdentity, LocalIdentitySource, RuntimeIdentity};
+use ui::local_identity::{LocalIdentity, LocalIdentitySource};
 
 use crate::platform::notice::Notices;
 
@@ -32,10 +32,9 @@ use crate::platform::notice::Notices;
 struct Present {
     /// Their public identity.
     identity: Option<LocalIdentity>,
-    /// The public avatar bound to their root key, as [`RuntimeIdentity`] reads it: the file it
-    /// lives in is read with the identity, on the worker, and an avatar a frame paints only clones
-    /// pixels.
-    photo: Option<([u8; 32], runtime_identity::ProfilePhoto)>,
+    /// The public avatar bound to their root key: it is read from their identity record with the
+    /// identity, on the worker, and an avatar a frame paints only clones pixels.
+    photo: Option<([u8; 32], tilo_identity_client::ProfilePhoto)>,
 }
 
 /// [`Present`], kept current by a worker.
@@ -46,23 +45,50 @@ impl LocalIdentitySource for WatchedLocalIdentity {
         self.0.get().identity.clone()
     }
 
-    fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
+    fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
         self.0.get().photo.clone()
     }
 }
 
-/// The directories the person's identity record can live in: the identity directory, and the
-/// directory of the record the launcher bound.
+/// The directory the person's identity record lives in.
 fn identity_directories() -> Vec<PathBuf> {
-    runtime_identity::identity_dir_from_env()
+    tilo_identity::store::identity_dir_from_env()
         .ok()
         .into_iter()
-        .chain(
-            std::env::var_os(runtime_identity::IDENTITY_ENV_VAR)
-                .map(PathBuf::from)
-                .and_then(|record| record.parent().map(std::path::Path::to_path_buf)),
-        )
         .collect()
+}
+
+/// The person's public identity and photo, read from their active record: this session hosts the
+/// identity service, so it reads the directory rather than asking that service.
+fn read_present() -> Present {
+    let Some(directory) = tilo_identity::store::identity_dir_from_env().ok() else {
+        return Present {
+            identity: None,
+            photo: None,
+        };
+    };
+    let Some(record) = tilo_identity_client::resolve_active_identity(&directory) else {
+        return Present {
+            identity: None,
+            photo: None,
+        };
+    };
+    let Ok(metadata) = tilo_identity_client::load_metadata_from_path(&record) else {
+        return Present {
+            identity: None,
+            photo: None,
+        };
+    };
+    Present {
+        identity: Some(LocalIdentity {
+            group_public_key: metadata.group_public_key,
+            display_name: metadata.display_name,
+            avatar_color: metadata.avatar_color,
+        }),
+        photo: metadata
+            .profile_photo
+            .map(|photo| (metadata.group_public_key, photo)),
+    }
 }
 
 /// Who this device runs as, as the one id the session acts as, and the ids they went by before.
@@ -125,10 +151,7 @@ pub fn install() {
         }
         Err(error) => tracing::warn!(%error, "the identity registry is not at hand"),
     }
-    match Watched::start("local-identity", identity_directories(), || Present {
-        identity: RuntimeIdentity.load(),
-        photo: RuntimeIdentity.public_photo(),
-    }) {
+    match Watched::start("local-identity", identity_directories(), read_present) {
         Ok(watched) => {
             ui::local_identity::install_source(Some(Arc::new(WatchedLocalIdentity(watched))));
         }
@@ -148,18 +171,18 @@ pub(crate) fn person_in(workspace: &str, person: &str) -> String {
 /// Name this person's identity `name` : their active identity record takes it, so their own desktop
 /// and the people they work with see it from now on. Says what stopped it when it could not.
 pub(crate) fn rename_to(name: &str) -> Result<(), String> {
-    let dir = runtime_identity::identity_dir_from_env().map_err(|error| error.to_string())?;
-    let record = runtime_identity::resolve_active_identity(&dir)
+    let dir = tilo_identity::store::identity_dir_from_env().map_err(|error| error.to_string())?;
+    let record = tilo_identity_client::resolve_active_identity(&dir)
         .ok_or_else(|| "no active identity".to_owned())?;
     let id = record
         .file_stem()
         .and_then(std::ffi::OsStr::to_str)
         .ok_or_else(|| "identity record without an id".to_owned())?
         .to_owned();
-    let colour = runtime_identity::load_metadata_from_path(&record)
+    let colour = tilo_identity_client::load_metadata_from_path(&record)
         .map(|metadata| metadata.avatar_color)
         .map_err(|error| error.to_string())?;
-    runtime_identity::update_identity_profile(&dir, &id, name, colour)
+    tilo_identity::store::update_identity_profile(&dir, &id, name, colour)
         .map(drop)
         .map_err(|error| error.to_string())
 }

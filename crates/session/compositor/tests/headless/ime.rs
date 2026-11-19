@@ -6,7 +6,7 @@ use super::*;
 
 /// A window that has the keyboard, and the seat as an engine's: a trusted client that binds the
 /// input method and holds the keyboard grab.
-fn window_and_engine() -> (Compositor, TestClient, TestClient) {
+pub(super) fn window_and_engine() -> (Compositor, TestClient, TestClient) {
     let mut compositor = headless(Box::new(StackPolicy));
     let mut client = mapped_client(&mut compositor, "form", (200, 100), [0, 255, 0, 255]);
     click(&mut compositor, 320.0, 240.0);
@@ -55,7 +55,11 @@ fn surface_field(compositor: &mut Compositor, caret: (f64, f64, f64, f64)) -> Rc
 }
 
 /// Whether the engine was told to compose in the field it serves.
-fn serving(compositor: &mut Compositor, client: &mut TestClient, engine: &mut TestClient) {
+pub(super) fn serving(
+    compositor: &mut Compositor,
+    client: &mut TestClient,
+    engine: &mut TestClient,
+) {
     pump(compositor, &mut [client, engine], |compositor, clients| {
         compositor.text_entry().wants_typing && clients[1].seen.ime_activated
     });

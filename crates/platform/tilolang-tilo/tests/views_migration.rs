@@ -66,20 +66,6 @@ fn reference(v: &Value) -> tilolang_runtime::ResourceRef {
     }
 }
 
-fn of_kind<'a>(
-    node: &'a tilolang_runtime::UiNode,
-    kind: &str,
-) -> Vec<&'a tilolang_runtime::UiNode> {
-    let mut out = Vec::new();
-    if node.kind == kind {
-        out.push(node);
-    }
-    for child in &node.children {
-        out.extend(of_kind(child, kind));
-    }
-    out
-}
-
 #[test]
 fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
     // The workspace's document of Views as it was: an agent answered, the answer was kept.
@@ -175,7 +161,7 @@ fn a_kept_answer_moves_into_its_keepers_own_views_with_its_id() {
             vec![Value::resource(&kept)],
         )
         .unwrap();
-    let embed = of_kind(view.tree(), "embed");
+    let embed = view.tree().of_kind("embed");
     assert_eq!(
         embed[0].props.get("state"),
         Some(&Value::text("view")),

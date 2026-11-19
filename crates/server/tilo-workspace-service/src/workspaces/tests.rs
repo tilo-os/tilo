@@ -1087,6 +1087,8 @@ async fn governor_authors_a_workspace_record_no_factory_makes() {
     reason = "one authoring pass: granted, written, read back through the native view and the voice binding"
 )]
 async fn governor_application_authoring_preserves_native_view_and_voice_binding() {
+    use chat::projection::ChatProjection as _;
+
     use automerge::{ROOT, ReadDoc, transaction::Transactable};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();

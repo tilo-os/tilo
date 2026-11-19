@@ -31,30 +31,36 @@ pub enum ImportEffect {
     #[effect(returns, kind = "read")]
     #[effect(label = "imager-import-action-clear-selection")]
     ClearSelection,
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "imager-import-action-prepare-review")]
     PrepareReview,
     #[effect(returns, kind = "read")]
     #[effect(label = "imager-import-action-check-identity")]
     CheckIdentity,
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     #[effect(label = "imager-import-action-start-reviewed-folders")]
     StartReviewedFolders,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-import-action-later-all")]
     LaterAll,
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     #[effect(label = "imager-import-action-start")]
     StartCopy {
         #[param("Id of the reviewed copy")]
         operation_id: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     #[effect(label = "imager-import-action-retry")]
     RetryCopy {
         #[param("Id of the copy to continue")]
         operation_id: String,
     },
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "installer-recovery-cancel")]
     CancelCopy {
@@ -79,12 +85,14 @@ pub enum ImportEffect {
         #[param("Id of the copy")]
         operation_id: String,
     },
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     #[effect(label = "imager-import-action-review-destination")]
     ReviewFolderDestination {
         #[param("Id of the saved folder choice")]
         folder_id: String,
     },
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     #[effect(label = "imager-import-action-choose-folder-destination")]
     ChooseFolderDestination {
@@ -93,6 +101,7 @@ pub enum ImportEffect {
     },
     /// Open the form where the person types an Outline, Linear or mail account's address and
     /// key; the key is never an argument.
+    #[effect(kind = "outside")]
     #[effect(attended, returns)]
     #[effect(label = "imager-import-action-connect-service")]
     ConnectService {
@@ -100,6 +109,7 @@ pub enum ImportEffect {
         service: String,
     },
     /// List what a connected source holds, for the person to choose from.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-import-action-review-service")]
     ReviewService {
@@ -107,6 +117,7 @@ pub enum ImportEffect {
         account: String,
     },
     /// Bring a reviewed group (a collection, a team, a mail account) over, or leave it out.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-import-action-choose-service-group")]
     ChooseServiceGroup {
@@ -118,15 +129,18 @@ pub enum ImportEffect {
         chosen: bool,
     },
     /// Bring the chosen groups of a reviewed source over; a stopped run continues.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-import-action-start-service")]
     StartService {
         #[param("Id of the reviewed source")]
         source: String,
     },
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-import-action-stop-service")]
     StopService,
+    #[effect(kind = "outside")]
     #[effect(returns)]
     #[effect(label = "imager-import-action-folder-mode")]
     SetFolderMode {

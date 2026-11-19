@@ -142,6 +142,20 @@ fn a_data_table_composes_as_a_table_with_headers_and_cells() {
             && cells.iter().any(|cell| cell == "Trip plan"),
         "each row's value is a cell: {cells:?}"
     );
+    // Every other row wears the stripe the canvas paints, from the same token.
+    let rows = tagged(root, "tr");
+    let body: Vec<&&Composed> = rows.iter().skip(1).collect();
+    assert_eq!(body.len(), 2, "two body rows: {rows:?}");
+    let stripe = crate::widget::data_table::zebra_on(
+        &Theme::dark(),
+        Theme::dark().tokens.colors.surfaces.content,
+    );
+    assert!(body[0].ground.is_none(), "the first row stands on the page");
+    assert_eq!(
+        body[1].ground.as_ref().and_then(|ground| ground.fill),
+        Some(crate::composition::rgba8(stripe)),
+        "the second wears the stripe"
+    );
 }
 
 /// A trail of folders is a navigation list; the page a person is on says so.
@@ -206,15 +220,15 @@ fn a_conversation_composes_as_a_list_of_authors_and_words() {
     );
 }
 
-/// A progress bar is the browser's own, with its value and what it is doing.
+/// A progress bar on the page is the track and fill it paints in the window, its value and
+/// what it is doing for a reader, and a shown label as words over the track.
 #[test]
-fn a_progress_bar_composes_as_the_browsers_own_with_its_value() {
-    let bar = crate::widget::ProgressBar::new(0.4).with_label("Uploading");
-    let composition = composed(Box::new(bar), (300, 30));
+fn a_progress_bar_composes_its_track_fill_and_shown_label() {
+    let bar = crate::widget::ProgressBar::new(0.4).with_shown_label("Uploading");
+    let composition = composed(Box::new(bar), (300, 40));
     let root = shown(&composition);
-    assert_eq!(root.tag, Some("progress"), "the browser's bar: {root:?}");
-    assert_eq!(attribute(root, "value"), Some("40"));
-    assert_eq!(attribute(root, "max"), Some("100"));
+    assert_eq!(attribute(root, "aria-valuenow"), Some("40"));
+    assert_eq!(attribute(root, "aria-valuemax"), Some("100"));
     assert_eq!(
         root.semantics
             .as_ref()
@@ -222,6 +236,23 @@ fn a_progress_bar_composes_as_the_browsers_own_with_its_value() {
         Some("Uploading"),
         "it says what it is doing"
     );
+    assert_eq!(texts(root), vec!["Uploading".to_owned()], "the label shows");
+    let ground = |key: &str| {
+        nodes(root)
+            .into_iter()
+            .find(|node| node.path.ends_with(key))
+            .and_then(|node| node.ground.as_ref())
+            .and_then(|ground| ground.fill)
+    };
+    let theme = crate::theme::Theme::dark();
+    assert_eq!(
+        ground("track"),
+        Some(crate::composition::rgba8(
+            theme.tokens.colors.intent.value_track
+        )),
+        "the track is the one every progress indicator stands on"
+    );
+    assert!(ground("fill").is_some(), "the share done is filled");
 }
 
 /// An avatar is a person's mark: their initials as words, their name for a reader.
@@ -377,5 +408,222 @@ fn a_button_on_a_card_wears_the_cards_on_ground_colours() {
         on_card,
         fill(&alone.root),
         "on the card it takes the card's colours"
+    );
+}
+
+/// Your own lines read together in one minute say "Read" and their time once, under the last.
+#[test]
+fn a_conversation_says_read_once_under_lines_read_together() {
+    use crate::widget::conversation::{ConversationLine, DeliveryState};
+    let at = 1_700_000_000_000;
+    let lines = ["One.", "Two.", "Three."]
+        .into_iter()
+        .enumerate()
+        .map(|(n, body)| {
+            ConversationLine::outgoing(
+                format!("{n}"),
+                at + 1_000 * i64::try_from(n).unwrap_or(0),
+                body,
+            )
+            .with_delivery(DeliveryState::Read)
+        })
+        .collect();
+    let conversation = crate::widget::conversation::ConversationList::new(lines);
+    let composition = composed(Box::new(conversation), (500, 400));
+    let captions: Vec<&Composed> = nodes(&composition.root)
+        .into_iter()
+        .filter(|node| node.widget == "ConversationCaption")
+        .collect();
+    assert_eq!(captions.len(), 1, "one caption for the group: {captions:?}");
+    let said = captions[0]
+        .semantics
+        .as_ref()
+        .and_then(|node| node.name.clone())
+        .unwrap_or_default();
+    assert!(
+        said.starts_with("Read"),
+        "it says the state, then the time: {said}"
+    );
+}
+
+/// A change stands on one line as the canvas draws it: its sentence, and its time at the
+/// trailing edge beside it; a change nobody is named for wears no face.
+#[test]
+fn a_history_change_composes_on_one_line_with_its_time_beside_it() {
+    use crate::widget::history::{EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId};
+    let entry = HistoryEntry {
+        id: HistoryEntryId([1; 16]),
+        author: HistoryAuthor::new("", 0.0, ""),
+        entry_kind: EntryKind::Details,
+        artifact_kind: collab_types::ArtifactKind::Note,
+        timestamp: crate::time::SystemTime::UNIX_EPOCH,
+        summary: "Moved to Done".into(),
+        text_delta: None,
+        diff_payload: None,
+        redaction: None,
+        context: None,
+        target: None,
+    };
+    let timeline = crate::widget::ActivityTimeline::with_entries(vec![entry]);
+    let composition = composed(Box::new(timeline), (600, 300));
+    let all = nodes(&composition.root);
+    let part = |key: &str| {
+        all.iter()
+            .copied()
+            .find(|node| node.path.ends_with(key))
+            .unwrap_or_else(|| panic!("a {key} part: {all:?}"))
+    };
+    let (body, time) = (part("#body"), part("#time"));
+    assert_eq!(words(body).as_deref(), Some("Moved to Done"));
+    assert!(
+        time.rect[0] >= body.rect[0] + body.rect[2] - 0.5,
+        "the time stands after the sentence"
+    );
+    assert!(
+        (body.rect[1] - time.rect[1]).abs() < 0.5,
+        "on the same line: {body:?} {time:?}"
+    );
+    assert!(
+        !all.iter().any(|node| node.widget == "ActivityAuthor"),
+        "no face for nobody"
+    );
+}
+
+/// A sidebar's rows stand as the canvas paints them: the chosen one's lift inset from the list's
+/// edges and rounded, every row's icon and words at the canvas's indent, and only the chosen
+/// row's words at full strength.
+#[test]
+fn a_nav_row_lifts_inset_and_indents_as_painted() {
+    use crate::icons::Icon;
+    use crate::widget::{NavItem, NavList, NavSection};
+    let list = NavList::new(vec![NavSection::untitled(
+        "pages",
+        vec![
+            NavItem::new("basics", "Basics").icon(Icon::Inbox),
+            NavItem::new("data", "Data").icon(Icon::Send),
+        ],
+    )])
+    .selected("data");
+    let composition = composed(Box::new(list), (280, 200));
+    let root = shown(&composition);
+    let rows = tagged(root, "li");
+    assert_eq!(rows.len(), 2, "one item per row: {root:?}");
+    let theme = Theme::dark();
+    let tokens = &theme.tokens;
+    let s2 = f64::from(tokens.spacing.s2);
+    let hairline = f64::from(tokens.metrics.chrome_rule_px);
+    let face = |row: &Composed| match &row.own {
+        Some(Own::Face(face)) => face.clone(),
+        other => panic!("a row shows a face, not {other:?}"),
+    };
+    for row in &rows {
+        let ground = row
+            .ground
+            .as_ref()
+            .expect("every row keeps its inset ground");
+        assert_eq!(
+            ground.inset,
+            [s2, hairline],
+            "the lift stands in from the list's edges"
+        );
+        let face = face(row);
+        assert_eq!(
+            face.pad, s2,
+            "the icon sits one step into the lift, as painted"
+        );
+        assert_eq!(
+            face.icon.as_ref().map(|icon| icon.size),
+            Some(f64::from(tokens.metrics.icon_md)),
+            "the icon is the painted size"
+        );
+    }
+    let (chosen, other) = (rows[1], rows[0]);
+    assert!(
+        chosen.ground.as_ref().is_some_and(|g| g.fill.is_some()),
+        "the chosen row lifts"
+    );
+    assert!(
+        other.ground.as_ref().is_some_and(|g| g.fill.is_none()),
+        "the others do not"
+    );
+    let ink = |row: &Composed| face(row).label.and_then(|label| label.color);
+    assert_eq!(
+        ink(chosen),
+        Some(crate::composition::rgba8(tokens.colors.text_primary))
+    );
+    assert_eq!(
+        ink(other),
+        Some(crate::composition::rgba8(tokens.colors.text_dim))
+    );
+}
+
+/// A done or removed item's title is struck through on a page, as the canvas paints it, and an
+/// open one's is not.
+#[test]
+fn a_struck_rows_title_is_struck_through_on_the_page() {
+    use crate::widget::ListRow;
+    let struck = |row: ListRow, title: &str| {
+        let composition = composed(Box::new(row), (400, 60));
+        nodes(shown(&composition))
+            .into_iter()
+            .find_map(|node| match &node.own {
+                Some(Own::Text(look)) if look.text == title => Some(look.struck),
+                _ => None,
+            })
+            .expect("the title shows")
+    };
+    assert!(struck(
+        ListRow::new("stale", "Old errand").struck(),
+        "Old errand"
+    ));
+    assert!(!struck(
+        ListRow::new("milk", "Buy oat milk"),
+        "Buy oat milk"
+    ));
+}
+
+/// A chosen list row stands on the selection's lift as the canvas paints it: under everything it
+/// shows, past its own edges by the list's bleed, so what it says at its end keeps its margin.
+#[test]
+fn a_chosen_list_row_stands_on_the_selection_lift() {
+    let page = composed(
+        Box::new(crate::widget::ListRow::new("main", "main.rs").selected(true)),
+        (300, 200),
+    );
+    let row = nodes(&page.root)
+        .into_iter()
+        .find(|node| node.widget == "ListRow")
+        .expect("the row composes");
+    let lift = row.children.first().expect("the row holds its parts");
+    assert_eq!(
+        lift.widget, "ListRowLift",
+        "the lift stands first, under the rest"
+    );
+    let theme = Theme::dark();
+    let ground = theme.tokens.colors.surfaces.content;
+    let chosen = crate::chrome::selection_tier_on(
+        &theme,
+        crate::chrome::SelectionState::new(true, false, false),
+        ground,
+    )
+    .fill;
+    assert_eq!(
+        lift.ground.as_ref().and_then(|ground| ground.fill),
+        Some(crate::composition::rgba8(chosen))
+    );
+    assert!(
+        lift.rect[0] < row.rect[0] && lift.rect[2] > row.rect[2],
+        "the lift reaches past the row's edges"
+    );
+    let rest = composed(
+        Box::new(crate::widget::ListRow::new("main", "main.rs")),
+        (300, 200),
+    );
+    assert!(
+        nodes(&rest.root)
+            .into_iter()
+            .filter(|node| node.widget == "ListRowLift")
+            .all(|node| node.ground.is_none()),
+        "a row at rest stands on the page's ground"
     );
 }

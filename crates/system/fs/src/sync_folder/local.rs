@@ -2,23 +2,16 @@
 //! ever sees a partial file.
 
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Write as _};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// Prefix of the files a pass stages before renaming them into place; never
-/// imported, and left over only by a crash.
-pub const STAGING_PREFIX: &str = ".tilo-sync-";
-
-static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
 fn ignored(name: &str) -> bool {
-    name.starts_with(STAGING_PREFIX) || name == ".DS_Store"
+    tilo_files::native::atomic::is_temporary_name(std::ffi::OsStr::new(name)) || name == ".DS_Store"
 }
 
 /// What identifies one version of a local file without reading it.
@@ -109,37 +102,17 @@ pub fn scan(root: &Path) -> io::Result<BTreeMap<String, LocalEntry>> {
 /// Replaces `path` with `bytes` modified at `mtime_ms`: staged beside it and
 /// renamed into place, so a reader sees the old file or the new one.
 pub fn write_atomically(path: &Path, bytes: &[u8], mtime_ms: u64) -> io::Result<Stamp> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    let staging = parent.join(format!(
-        "{STAGING_PREFIX}{}-{}",
-        std::process::id(),
-        STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    let written = stage_and_rename(&staging, path, bytes, mtime_ms);
-    if written.is_err() {
-        let _ = fs::remove_file(&staging);
-    }
-    let stamp = written?;
-    tilo_files::native::atomic::sync_directory(parent)?;
-    Ok(stamp)
-}
-
-fn stage_and_rename(staging: &Path, path: &Path, bytes: &[u8], mtime_ms: u64) -> io::Result<Stamp> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(staging)?;
-    file.write_all(bytes)?;
     let mtime = UNIX_EPOCH
         .checked_add(Duration::from_millis(mtime_ms))
         .unwrap_or(UNIX_EPOCH);
-    file.set_modified(mtime)?;
-    file.sync_all()?;
-    let stamp = Stamp::of(&file.metadata()?);
-    fs::rename(staging, path)?;
-    Ok(stamp)
+    let mut stamp = None;
+    tilo_files::native::atomic::write_streaming(path, |file| {
+        file.write_all(bytes)?;
+        file.set_modified(mtime)?;
+        stamp = Some(Stamp::of(&file.metadata()?));
+        Ok(())
+    })?;
+    stamp.ok_or_else(|| io::Error::other("the streamed write computed no stamp"))
 }
 
 /// Copies `path` to `staging`, returning the stamp it had throughout, or `None`

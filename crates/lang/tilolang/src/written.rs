@@ -74,6 +74,7 @@ pub fn is_declaration(source: &str) -> bool {
         "primary ",
         "destructive ",
         "migration ",
+        "initial ",
     ]
     .iter()
     .any(|lead| first.starts_with(lead))

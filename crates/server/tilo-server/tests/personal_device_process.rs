@@ -92,7 +92,13 @@ fn write_approver_fixture(
 ) -> HomePeerRegistration {
     let paths = IdentityPaths::under(root_dir);
     paths.ensure_directories().unwrap();
-    tilo_device_identity::persist::write_signing_key(&paths.user_privkey, root).unwrap();
+    tilo_identity::provisioning::import_single_device_root(
+        identities,
+        root,
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
     tilo_device_identity::persist::write_public_key(
         &paths.user_pubkey,
         &root.verifying_key().to_bytes(),
@@ -250,12 +256,12 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     let member_cert =
         tilo_device_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
     assert_eq!(member_cert.capabilities, DeviceCapabilities::member());
-    assert!(!recipient_paths.user_privkey.exists());
+    assert!(!recipient_identities.join("secrets").exists());
     let record = recipient_identities.join(format!(
         "identity-{}.json",
         &hex::encode(root.verifying_key().to_bytes())[..55]
     ));
-    let projected = runtime_identity::load_from_path(record).unwrap();
+    let projected = tilo_identity::store::load_from_path(record).unwrap();
     assert_eq!(
         projected.group_public_key(),
         root.verifying_key().to_bytes()
@@ -346,9 +352,8 @@ fn fleet_lists(identities: &std::path::Path, user: [u8; 32], label: &str) -> boo
         .any(|cert| cert["device_label"] == label)
 }
 
-/// A device onboarded today keeps the person's root only in their identity
-/// record, never as a seed under the identity root. Approving from it signs
-/// the new device through that record.
+/// A device keeps the person's root only in their identity store. Approving
+/// from it signs the new device through that store.
 #[test]
 fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     let workspace = tempfile::tempdir().unwrap();
@@ -365,7 +370,6 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .unwrap();
-    assert!(!approver_paths.user_privkey.exists());
     let user = tilo_device_identity::persist::read_device_cert(&approver_paths.device_cert)
         .unwrap()
         .user_public_key;
@@ -422,8 +426,7 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     );
     assert_eq!(member_cert.capabilities, DeviceCapabilities::member());
     tilo_user_identity::verify_device_cert(&member_cert).unwrap();
-    assert!(!recipient_paths.user_privkey.exists());
-    assert!(!approver_paths.user_privkey.exists());
+    assert!(!recipient_identities.join("secrets").exists());
 
     assert!(
         fleet_lists(&approver_identities, user, "Headless board"),
@@ -578,7 +581,7 @@ wait "$approval"
         let cert =
             tilo_device_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
         assert_eq!(cert.capabilities, DeviceCapabilities::member());
-        assert!(!recipient_paths.user_privkey.exists());
+        assert!(!recipient_identities.join("secrets").exists());
         let transferred: Vec<HomePeerRegistration> = serde_json::from_slice(
             &std::fs::read(tilo_server::home_peer_registry_path(&recipient_root)).unwrap(),
         )

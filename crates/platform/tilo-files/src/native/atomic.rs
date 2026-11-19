@@ -77,6 +77,13 @@ pub use publication::{
     publish_if_absent, replace,
 };
 
+#[cfg(any(unix, windows))]
+impl From<PublicationError> for io::Error {
+    fn from(error: PublicationError) -> Self {
+        error.into_io_error()
+    }
+}
+
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -189,6 +196,23 @@ pub fn write_creating_parent_with_mode(path: &Path, bytes: &[u8], mode: u32) -> 
     }
 }
 
+/// [`write_creating_parent`] keeping an existing target's own Unix permission bits, for generated
+/// files whose mode is part of them, such as a script's executable bit. A new file gets `0644`; on
+/// targets without Unix modes this is [`write_creating_parent`].
+pub fn write_creating_parent_preserving_mode(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode =
+            fs::metadata(path).map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
+        write_creating_parent_with_mode(path, bytes, mode)
+    }
+    #[cfg(not(unix))]
+    {
+        write_creating_parent(path, bytes)
+    }
+}
+
 /// Saves user-private state: the parent directory is created owner-only (`0700`) and tightened to
 /// `0700` when it already exists, and so is the file.
 pub fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -231,6 +255,22 @@ pub fn write_with_temp_opener(
     publish(path, bytes, open_temp, Publish::Replace).map(|_| ())
 }
 
+/// [`write_with_temp_opener`] for contents produced while they are written rather than held in
+/// memory: `fill` writes the temp file, which is flushed, renamed into place and its directory
+/// synced like any other [`write()`].
+pub fn write_streaming(
+    path: &Path,
+    write_into: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
+    let opened = |tmp: &Path| {
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(tmp)
+    };
+    publish_with(path, opened, Publish::Replace, write_into).map(|_| ())
+}
+
 /// Publishes `bytes` only if nothing exists there yet, never replacing a concurrently created file: the
 /// complete, synced temp file is hard-linked into place, and `false` comes back when another writer
 /// owns the name.
@@ -240,6 +280,26 @@ pub fn create_with_temp_opener(
     open_temp: impl FnMut(&Path) -> io::Result<File>,
 ) -> io::Result<bool> {
     publish(path, bytes, open_temp, Publish::CreateNew)
+}
+
+/// [`create_with_temp_opener`] for owner-only state: the temp file is created with mode `0600` and
+/// the name is published only while it is still absent. A taken name is an `AlreadyExists` error,
+/// so a caller that must not overwrite someone else's file fails closed.
+pub fn create_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let opened = |tmp: &Path| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        options.open(tmp)
+    };
+    if create_with_temp_opener(path, bytes, opened)? {
+        return Ok(());
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "the file exists already",
+    ))
 }
 
 #[cfg(unix)]
@@ -347,13 +407,21 @@ pub(super) fn publish(
     open: impl FnMut(&Path) -> io::Result<File>,
     how: Publish,
 ) -> io::Result<bool> {
+    publish_with(path, open, how, |file| file.write_all(bytes))
+}
+
+pub(super) fn publish_with(
+    path: &Path,
+    open: impl FnMut(&Path) -> io::Result<File>,
+    how: Publish,
+    write_into: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<bool> {
     let (tmp, file) = create_temp(path, open)?;
     let sync = how != Publish::ReplaceUnsynced;
     // Closed at the end of the block, before the rename.
     let written = {
         let mut file = file;
-        file.write_all(bytes)
-            .and_then(|()| if sync { file.sync_all() } else { Ok(()) })
+        write_into(&mut file).and_then(|()| if sync { file.sync_all() } else { Ok(()) })
     };
     if let Err(error) = written {
         let _ = fs::remove_file(&tmp);
@@ -389,6 +457,29 @@ fn parent_or_current(path: &Path) -> &Path {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     }
+}
+
+/// Whether `name` is one of the temporary siblings this module publishes through: a caller that
+/// lists a directory uses it so a crash's leftover is not taken for content.
+#[must_use]
+pub fn is_temporary_name(name: &std::ffi::OsStr) -> bool {
+    let Some(rest) = name
+        .to_str()
+        .and_then(|name| name.strip_prefix('.'))
+        .and_then(|name| name.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let mut parts = rest.rsplit('.');
+    let (Some(sequence), Some(pid), Some(original)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    !original.is_empty()
+        && !sequence.is_empty()
+        && sequence.bytes().all(|byte| byte.is_ascii_digit())
+        && !pid.is_empty()
+        && pid.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Flushes an existing directory after publishing or renaming a file inside it. Windows needs a
@@ -492,10 +583,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn streamed_and_private_first_writes_publish_or_refuse() {
+        let d = TempDir::new().unwrap();
+        let streamed = d.path().join("streamed.bin");
+        let mut stamp = None;
+        write_streaming(&streamed, |file| {
+            file.write_all(b"streamed ")?;
+            file.write_all(b"whole")?;
+            stamp = Some(file.metadata()?.len());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(fs::read(&streamed).unwrap(), b"streamed whole");
+        assert_eq!(stamp, Some(14), "the fill closure sees the temp file");
+
+        let private = d.path().join("key");
+        create_private(&private, b"first").unwrap();
+        let refused = create_private(&private, b"second").unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&private).unwrap(), b"first");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&private).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert!(
+            fs::read_dir(d.path()).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "no temporary file is left behind"
+        );
+    }
+
     tilo_test_env::scenario! {
         #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
         fn atomic_writes_publish_whole_values_beside_their_target;
-
         phase directory_barriers_target_the_containing_directory;
         {
             {

@@ -6,6 +6,7 @@ format = 2
 kind = "calendar.calendar"
 label = "Calendar"
 version = 1
+shows = ["contact-attendees", "open", "read-calendar", "show-agenda", "show-all-calendars", "show-day", "show-month", "show-tasks", "show-view", "show-week", "start-event", "start-task"]
 fields = [
   { path = "projects", type = { collection = { named = "Project" } }, stored = "keyed" },
   { path = "projects.*.id", type = "text", readonly = true },

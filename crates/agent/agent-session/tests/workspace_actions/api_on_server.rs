@@ -8,9 +8,10 @@
 //! key a person approved there, and plays another person who follows the
 //! invitation links the run hands them ([`accept_invitation`]).
 
-use super::{Arc, Device, DeviceCapabilities, Hosted, ModelChoice, Options, SigningKey, enrol};
+use super::{Arc, Device, DeviceCapabilities, Hosted, Options, SigningKey, enrol};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use tilo_agent_session::ModelChoice;
 use tilo_api::{Config, Server, store::Store};
 use tilo_server_protocol::directory::Listing;
 use tilo_server_protocol::workspaces::Role;
@@ -78,8 +79,8 @@ pub struct OnServer {
 
 impl OnServer {
     /// The relay as a person's devices and pages reach it over iroh.
-    pub fn server_host(&self) -> tilo_server_client::Host {
-        tilo_server_client::Host::at(self.hosted.server.node_addr())
+    pub fn server_host(&self) -> tilo_server_client::ServerAddress {
+        tilo_server_client::ServerAddress::at(self.hosted.server.node_addr())
     }
 }
 
@@ -463,14 +464,14 @@ pub async fn enter_page(
         .unwrap();
     assert!(matches!(offer, JoinReply::Invitation { .. }), "{offer:?}");
     // The page's session carries the invitation in its first message.
-    let info = tilo_server_client::https::host_info(&host).await.unwrap();
+    let info = tilo_server_client::https::server_info(&host).await.unwrap();
     let label = page.cert.device_label.clone();
     let held = Held {
         cert: page.cert.clone(),
-        host_cert: Some(info.host_cert.clone()),
+        server_cert: Some(info.server_cert.clone()),
     };
     let (_, entering) = invitation_entry(
-        &info.host_cert,
+        &info.server_cert,
         invitation,
         &page.key,
         Entering {
@@ -486,9 +487,9 @@ pub async fn enter_page(
     let address = info.address.expect("the server takes device sessions");
     let session = tilo_session_client::start_session(
         tilo_session_client::PeerConfig {
-            host: tilo_server_client::Host::published(&address),
+            host: tilo_server_client::ServerAddress::published(&address),
             cert: page.cert.clone(),
-            host_cert: info.host_cert,
+            server_cert: info.server_cert,
             revocations: tilo_user_identity::RevocationList::new(),
             entering: Some(entering),
         },

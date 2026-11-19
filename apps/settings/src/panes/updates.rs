@@ -2245,49 +2245,63 @@ impl UpdatesModel {
 #[effect(operation = "settings.effect")]
 pub enum UpdatesEffect {
     /// Check for a new system image now.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     #[effect(label = "upd-check")]
     CheckForUpdates,
     /// Restart into the staged system image.
+    #[effect(kind = "outside")]
     #[effect(job, destructive, returns)]
     RestartToUpdate,
     /// Show what rolling back to the previous system image does not undo.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     ReviewRollback,
     /// Boot the previous system image next time.
+    #[effect(kind = "outside")]
     #[effect(job, destructive, returns)]
     RollBack,
     /// Ask the firmware service for new firmware.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     RefreshFirmware,
     /// Install the available firmware upgrades.
+    #[effect(kind = "outside")]
     #[effect(job, destructive, returns)]
     InstallFirmware,
     /// Play more video and audio formats: download the media codecs to this device.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     InstallCodecs,
     /// Remove the downloaded media codecs.
+    #[effect(kind = "outside")]
     #[effect(job, destructive, returns)]
     RemoveCodecs,
     /// Check again for hardware H.264/HEVC support.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     RefreshCodecs,
     /// Run Windows apps: download Windows support to this device.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     InstallWindowsSupport,
     /// Remove the downloaded Windows support.
+    #[effect(kind = "outside")]
     #[effect(job, destructive, returns)]
     RemoveWindowsSupport,
     /// Update the system automatically, or only when asked.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, returns)]
     SetAutomaticUpdates { on: bool },
     /// Set when updates download.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, returns)]
     SetUpdateSchedule {
         #[param("When", choices = UPDATE_SCHEDULES.iter().copied())]
         schedule: String,
     },
     /// Download updates on metered networks, or wait for another network.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent, returns)]
     SetMeteredUpdates { allowed: bool },
 }

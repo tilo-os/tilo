@@ -93,9 +93,11 @@ pub struct AttachedView {
     /// action on a resource the frame already finds does not wait for it.
     unsettled: Cell<bool>,
     /// What the view has not laid out includes what reached it from
-    /// elsewhere (a peer's change, a part another device started, a new
-    /// member's access): what its records ask the workspace for is what a frame of
-    /// that makes of it.
+    /// elsewhere and may move what it asks the workspace for (a peer's
+    /// change to its own document, a part another device started, a new
+    /// member's access, the workspace's answer): what it asks for is what
+    /// a frame of that makes of it. A peer's change into a part the view
+    /// already holds is not among them ([`Self::merge_resource`]).
     merged: Cell<bool>,
     /// What the view published as last asked, while nothing it reads moved
     /// ([`Published`]): one call resolves a path, finds its chains and checks
@@ -670,6 +672,25 @@ impl AttachedView {
             .collect()
     }
 
+    /// The chains the view opened that `name` names at the app's own level,
+    /// by their id, kind or label, each as its head part publishes it, and
+    /// only those the member may reach: what a path's first segment costs,
+    /// however many items the chains hold, and without a frame of the view.
+    #[must_use]
+    pub fn chains_named_at_top(&self, name: &str) -> Vec<tilo_actions::ResourceSpec> {
+        let found = {
+            let mut frame = self.frame.borrow_mut();
+            frame
+                .widget_mut::<super::root::ResourceRoot>()
+                .map(|root| root.storage.chains_named(name))
+                .unwrap_or_default()
+        };
+        found
+            .into_iter()
+            .filter_map(|resource| self.permitted(resource))
+            .collect()
+    }
+
     /// Whether `id` is an item a chain the view opened keeps, found in the
     /// part keeping it without a frame of the view: what an action on it is
     /// offered as.
@@ -707,14 +728,11 @@ impl AttachedView {
         &self,
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
-        self.permissions
-            .borrow()
-            .permitted_resource_on(
-                self.definition.app_id(),
-                self.checkout.id.as_str(),
-                resource,
-            )
-            .and_then(reachable)
+        self.permissions.borrow().permitted_resource_on(
+            self.definition.app_id(),
+            self.checkout.id.as_str(),
+            resource,
+        )
     }
 
     /// The resource `id` with its own actions, as the member may reach
@@ -1463,9 +1481,17 @@ impl AttachedView {
         self.awaited.borrow_mut().remove(record);
         self.take_up_kept();
         // A part opened here is new to the view even when the change merged
-        // into it is what it opened from.
-        if changed || opened {
+        // into it is what it opened from, and what the view asks the
+        // workspace for may move with it (a chain read whole asks for the
+        // parts before it): a frame says so before the view is asked. A
+        // change into a part the view already holds moves what that part
+        // holds and nothing the view asks for: it is laid out when the view
+        // is next read, as the view's own changes are, however often the
+        // view is asked what it wants meanwhile.
+        if opened {
             self.unsettle_merged();
+        } else if changed {
+            self.unsettle();
         }
         Ok(changed)
     }
@@ -1612,19 +1638,6 @@ fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, Stri
     ui_core::automerge::AutoCommit::load(document)
         .map(|mut doc| doc.get_heads())
         .map_err(|error| error.to_string())
-}
-
-/// `resource` as a view publishes it: what its member may not take is left out. A listing marks
-/// a denied action not allowed, so an agent hears where it is refused; a view performs only what
-/// its member may do.
-fn reachable(mut resource: tilo_actions::ResourceSpec) -> Option<tilo_actions::ResourceSpec> {
-    resource.retain_actions(|action| action.contract.availability.refusal().is_none());
-    resource.children = resource
-        .children
-        .into_iter()
-        .filter_map(reachable)
-        .collect();
-    (!resource.actions.is_empty() || !resource.children.is_empty()).then_some(resource)
 }
 
 /// Refuse a view that wrote to the record `checkout` names, one its

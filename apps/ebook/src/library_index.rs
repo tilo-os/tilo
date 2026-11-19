@@ -541,12 +541,6 @@ pub(crate) enum BookUnreachable {
     Unavailable,
 }
 
-/// Where a book's text comes from while it is not here: the workspace's
-/// other devices, which no one names here.
-fn elsewhere() -> Source {
-    Source::peer("")
-}
-
 /// The library's index as this device holds it: segments built here,
 /// waiting to be kept with their rows, and the segments of books whose text
 /// is elsewhere, read back and ready to search.
@@ -778,7 +772,7 @@ impl LibraryIndex {
         }
         self.fetching = Some(Fetch {
             entry: entry.clone(),
-            text: Arriving::pending(elsewhere()),
+            text: Arriving::pending(Source::Remote),
             reading: false,
         });
         self.read_book();
@@ -840,7 +834,9 @@ impl LibraryIndex {
         let (id, read) = self.fetched.try_iter().last()?;
         let fetch = self.fetching.as_mut().filter(|fetch| fetch.entry.id == id);
         let state = match read {
-            Read::OnItsWay => Arrival::Pending { from: elsewhere() },
+            Read::OnItsWay => Arrival::Pending {
+                from: Source::Remote,
+            },
             Read::Waiting => Arrival::Failed(BookUnreachable::Waiting),
             Read::Unavailable => Arrival::Failed(BookUnreachable::Unavailable),
             Read::Here(_) | Read::Unreadable => {

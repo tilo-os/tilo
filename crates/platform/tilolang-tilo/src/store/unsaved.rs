@@ -478,20 +478,12 @@ impl Inner {
         let at = note.at.clone().unwrap_or_else(crate::host::system_time);
         let stamp = idx::reflect::Stamp {
             version: Version {
-                who: if note.creating {
-                    None
-                } else {
-                    note.invoker.clone()
-                },
+                who: note.invoker.clone(),
                 at,
-                action: if note.creating {
-                    crate::action::CREATE_ACTION.to_owned()
-                } else {
-                    note.action.clone()
-                },
+                action: note.action.clone(),
                 run: note.group.clone(),
                 from: note.from.clone(),
-                count: if note.creating { 1 } else { note.count.max(1) },
+                count: note.count.max(1),
                 // No change yet: the action was invoked on top of every change this device
                 // holds, so it orders after each of them recorded in the same second.
                 op: idx::reflect::PROVISIONAL,

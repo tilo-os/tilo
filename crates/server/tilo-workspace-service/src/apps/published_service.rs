@@ -90,25 +90,9 @@ impl AppBrokerState {
             // whoever waits on an invocation it held is answered as when an
             // app goes away: told its outcome, or that none comes from here.
             // Never left waiting on a service that is gone.
-            state.end_service_stream(peer_id);
+            state.end_invocations(peer_id);
             stopped(&state, removed);
         });
         Ok(())
-    }
-
-    /// The service peer `peer_id` stopped: its invocation stream ends, and
-    /// each invocation still pending on it fails, or its outcome is unknown
-    /// where it was journaled.
-    fn end_service_stream(&self, peer_id: u64) {
-        if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
-            capabilities.remove(&peer_id);
-        }
-        if let Ok(mut subscribers) = self.invocation_subscribers.lock()
-            && subscribers.remove(&peer_id).is_some()
-        {
-            drop(subscribers);
-            self.invocation_streams_changed();
-        }
-        self.fail_pending_invocations_of(peer_id);
     }
 }

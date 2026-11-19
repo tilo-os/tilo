@@ -33,7 +33,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Event, Link, MemoryPeerStore, Outbox as _};
 use tilo_user_identity::UserIdentity;
@@ -71,14 +71,14 @@ const OPENED_TO_READ: Duration = Duration::from_secs(3);
 
 /// A page of `name` entering `workspace` through its entry.
 async fn arrive(
-    host: Host,
-    host_cert: &tilo_user_identity::DeviceCert,
+    host: ServerAddress,
+    server_cert: &tilo_user_identity::DeviceCert,
     workspace: &str,
     name: &str,
 ) -> Link {
     let (root, key) = (new_key(), new_key());
     let (cert, entry) = entry_request(
-        host_cert,
+        server_cert,
         workspace,
         &key,
         Entering {
@@ -94,7 +94,7 @@ async fn arrive(
     enter_page(
         host,
         cert,
-        host_cert.clone(),
+        server_cert.clone(),
         key,
         std::sync::Arc::new(MemoryPeerStore::default()),
         entry,
@@ -241,7 +241,8 @@ async fn a_fresh_guest_reads_the_chat_it_opens_as_it_enters() {
         .unwrap();
     let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
-    let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
+    let page_host =
+        || ServerAddress::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let chat = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: lounge.workspace.clone(),

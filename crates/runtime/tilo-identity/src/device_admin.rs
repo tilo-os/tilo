@@ -146,7 +146,7 @@ impl PersonPaths {
             },
             PathBuf::from,
         );
-        let dir = runtime_identity::identity_dir_from_env()
+        let dir = crate::store::identity_dir_from_env()
             .map_err(|error| format!("could not find your identity: {error}"))?;
         Ok(Self { root, dir })
     }
@@ -199,12 +199,9 @@ pub enum KeyHolding {
 /// What of the identity at `paths` this device holds, without opening its
 /// secret.
 pub fn key_holding(paths: &PersonPaths) -> Result<KeyHolding, String> {
-    if IdentityPaths::under(&paths.root).user_privkey.exists() {
-        return Ok(KeyHolding::Whole);
-    }
-    let record = runtime_identity::resolve_active_identity(&paths.dir)
+    let record = tilo_identity_client::resolve_active_identity(&paths.dir)
         .ok_or("this account has no identity yet")?;
-    let metadata = runtime_identity::load_metadata_from_path(&record)
+    let metadata = tilo_identity_client::load_metadata_from_path(&record)
         .map_err(|error| format!("could not read your identity: {error}"))?;
     Ok(if metadata.single_device {
         KeyHolding::Whole

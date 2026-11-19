@@ -64,6 +64,12 @@ pub struct Surface {
     /// each declared once, by name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub types: Vec<NamedType>,
+    /// The actions that show something in a window of the app (its view
+    /// effects), on whatever resource of it they are invoked: a row the app
+    /// publishes for one person or item as much as the app itself. A closed
+    /// app asked for one is started with a window.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shows: Vec<String>,
 }
 
 /// One verb.

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tilo_sort::CompactSort as _;
 
 use crate::widget::TaffyTreeExt;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{
@@ -33,6 +33,8 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::{FullscreenProvider, Widget};
 
+/// The shape a player stands at where nothing gives it a height: a video's usual 16:9.
+const NATURAL_ASPECT: f32 = 16.0 / 9.0;
 const CONTROLS_AUTO_HIDE: Duration = Duration::from_secs(3);
 const CONTROLS_BAR_HEIGHT: f64 = 44.0;
 const PLAY_BUTTON_SIZE: f64 = 20.0;
@@ -2306,16 +2308,18 @@ impl Widget for VideoPlayer {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            flex_shrink: 1.0,
-            ..Default::default()
-        };
-        let style = crate::widget::layout::filling(style, 1.0);
-        taffy.widget_leaf(style, node_map, self)
+        taffy.widget_leaf(crate::widget::layout::natural_filling(), node_map, self)
+    }
+
+    /// Where nothing gives it a height (a column that grows with what it holds), the player
+    /// stands at a video's usual shape across the width it has, so the column grows to hold it.
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        _text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        crate::widget::layout::natural_shape(known, available, NATURAL_ASPECT)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

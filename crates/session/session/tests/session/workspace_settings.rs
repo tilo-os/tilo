@@ -37,19 +37,6 @@ fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
     app
 }
 
-/// Write what the sheet shows where a person can look at it, when the run asked for shots:
-/// `TILO_SURFACE_SHOTS` names where they go.
-fn capture(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
-    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
-    else {
-        return;
-    };
-    app.settle();
-    std::fs::create_dir_all(&directory).expect("the directory for shots");
-    app.harness()
-        .render_png(&directory.join(format!("{name}.png")));
-}
-
 /// The Agents tab as the sheet shows it now.
 fn agents_shown(session: &Session) -> tilo_sheets::workspace_settings::Agents {
     session
@@ -506,7 +493,7 @@ fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
         "the row names the action as the app's catalogue does, not its id or the grant's path: {}",
         given.detail
     );
-    capture(&mut app, "workspace-settings-app-grant");
+    crate::common::app_shot(&mut app, "workspace-settings-app-grant");
 
     press(&mut app, &format!("ws-permission-revoke-{}", given.key));
     press(&mut app, "ws-settings-decision.primary");
@@ -712,7 +699,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         .models
         .expect("the review offers models");
     assert_eq!(chosen.summary, "Sonnet from Anthropic");
-    capture(&mut app, "workspace-settings-agent-review");
+    crate::common::app_shot(&mut app, "workspace-settings-agent-review");
 
     activate(&mut app, "Use defaults");
     settle(&mut session, &mut app);
@@ -1183,7 +1170,7 @@ fn make_agent(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>
         )
         .expect("name the agent");
     app.settle();
-    capture(app, "workspace-settings-agents-new");
+    crate::common::app_shot(app, "workspace-settings-agents-new");
     press(app, "ws-agents-create");
     session.step(Duration::from_millis(1)).unwrap();
     pump(session, &mut [], |_, _| {
@@ -1204,7 +1191,7 @@ fn workspace_settings_makes_the_workspaces_agents() {
     own_workspace(&session, &[]);
     let workspace = front_workspace(&session);
     let mut app = agents_tab(&mut session);
-    capture(&mut app, "workspace-settings-agents-empty");
+    crate::common::app_shot(&mut app, "workspace-settings-agents-empty");
     make_agent(&mut session, &mut app, "Analyst");
     let row = listed_agent(&session, "analyst");
     assert_eq!(row.name, "Analyst");
@@ -1222,7 +1209,7 @@ fn workspace_settings_makes_the_workspaces_agents() {
     settle(&mut session, &mut app);
     let row = listed_agent(&session, "analyst");
     assert_eq!(row.model, "Model: Sonnet from Anthropic");
-    capture(&mut app, "workspace-settings-agents");
+    crate::common::app_shot(&mut app, "workspace-settings-agents");
     let admitted = session.handle().read(|tree| {
         tree.active_workspace()
             .unwrap()
@@ -1337,7 +1324,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
         button.x0 >= field.x1 && button.x0 - field.x1 <= 16.0,
         "Set sits at the field's right end: field {field:?}, button {button:?}"
     );
-    capture(&mut app, "workspace-settings-agent-review-limit");
+    crate::common::app_shot(&mut app, "workspace-settings-agent-review-limit");
     press(&mut app, "ws-agent-back");
     settle(&mut session, &mut app);
     let row = listed_agent(&session, "analyst");
@@ -1345,7 +1332,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
         row.spend, "$0 of $5 today",
         "the row counts the day against what the keeper allows, under who keeps it"
     );
-    capture(&mut app, "workspace-settings-agents-spend");
+    crate::common::app_shot(&mut app, "workspace-settings-agents-spend");
     let held = held_agents(&mut session, &workspace, |held| {
         held.is_some_and(|agents| {
             agents

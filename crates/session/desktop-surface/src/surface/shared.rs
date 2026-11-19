@@ -75,6 +75,7 @@ impl Shared {
             asked_floats: Vec::new(),
             holders: HashMap::new(),
             opened_by: std::collections::BTreeMap::new(),
+            resources: std::collections::BTreeMap::new(),
             window_offers: Vec::new(),
             workspace_shares: None,
             workspace_share_asks: Vec::new(),
@@ -125,6 +126,7 @@ impl Shared {
             unresponsive_revision: 0,
             liveness: Vec::new(),
             notice: Rc::default(),
+            notice_actions: RefCell::default(),
             notifications: None,
             #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
             peers: Rc::new(RefCell::new(super::peer_view::PeerSurfaces::default())),

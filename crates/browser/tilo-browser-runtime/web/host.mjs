@@ -207,7 +207,7 @@ const WARM_QUIET_MS=5_000;
  * wheel), on the page's clock: what the warm pass waits out, so it never
  * competes with them. */
 let lastActivity=0;
-if(typeof document!=='undefined'){
+if(typeof addEventListener==='function'){
   const noted=()=>{ lastActivity=performance.now(); };
   for(const type of ['pointerdown','pointermove','keydown','wheel','touchstart'])addEventListener(type,noted,{capture:true,passive:true});
 }

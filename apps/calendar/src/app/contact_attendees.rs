@@ -60,7 +60,6 @@ impl Store {
     pub(crate) fn follow_contacts(&mut self, record: Option<PersonResource<ContactDirectory>>) {
         self.contact_directory = record;
     }
-
     fn contact_choices(&self) -> Vec<Choice> {
         let (Some(id), Some(record), Some(live)) =
             (self.contact_event, &self.contact_directory, &self.live)
@@ -101,14 +100,8 @@ impl Store {
             return Vec::new();
         }
         let collection = choices.iter().fold(
-            LiveRow::new(SCOPE, SCOPE, t("calendar-contact-attendees")),
-            |collection, choice| {
-                collection.row(LiveRow::new(
-                    choice.id(),
-                    "calendar.contact-attendee",
-                    choice.label(),
-                ))
-            },
+            LiveRow::typed::<crate::rows::ContactAttendees>(SCOPE, t("calendar-contact-attendees")),
+            |collection, choice| collection.row(choice_row(choice)),
         );
         vec![collection]
     }
@@ -118,11 +111,7 @@ impl Store {
             return self.contact_rows().pop();
         }
         let choice = self.contact_choice(id)?;
-        Some(LiveRow::new(
-            choice.id(),
-            "calendar.contact-attendee",
-            choice.label(),
-        ))
+        Some(choice_row(&choice))
     }
 
     pub(crate) fn contact_declarations(&self, row: &str) -> Vec<ActionDecl<Calendar>> {
@@ -158,6 +147,12 @@ impl Store {
         self.asks.push(Ask::SearchContacts);
         Ok(())
     }
+}
+
+/// One person the picker offers, as a row: the calendar's own `invite` verb,
+/// bound to them, is what the row edits.
+fn choice_row(choice: &Choice) -> LiveRow {
+    LiveRow::typed::<crate::rows::ContactAttendee>(choice.id(), choice.label())
 }
 
 impl CalendarApp {

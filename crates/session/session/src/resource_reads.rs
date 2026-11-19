@@ -2,7 +2,7 @@
 //! app's Open of a record the workspace holds, and an agent's task reading its workspace's records.
 //!
 //! The read is the engine's ([`Engine::read_resource`]), the one path the shell, search and a branch
-//! also read a record with, for a workspace that commits its records and one that seals them. A
+//! also read a record with, every workspace's records being sealed under their channels' keys. A
 //! record this device holds nothing of is the app's own channel: an Open only waits for what the
 //! workspace's host sends of it — its replay, or the record itself where the host sends records
 //! once they are opened ([`NativeDocumentReads::await_arriving_document`]).
@@ -14,7 +14,6 @@
 
 use std::sync::Arc;
 
-use tilo_broker_core::owner_service::OwnerService as _;
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner::Holding;
 use tilo_session_client::DocumentAnswer;
@@ -58,17 +57,9 @@ impl Records {
 }
 
 impl NativeDocumentReads for Records {
-    /// A workspace this device's owner commits answers every read; one whose records are its
-    /// members' sealed channels answers the records it holds.
-    fn requires_workspace(&self, workspace: &str) -> bool {
-        WorkspaceId::parse(workspace)
-            .is_some_and(|workspace| self.engine.commits_documents(workspace))
-    }
-
+    /// This device's held workspaces seal every record write under its channel's keys.
     fn seals_documents(&self, workspace: &str) -> bool {
-        WorkspaceId::parse(workspace).is_some_and(|workspace| {
-            self.engine.holds(workspace) && !self.engine.commits_documents(workspace)
-        })
+        WorkspaceId::parse(workspace).is_some_and(|workspace| self.engine.holds(workspace))
     }
 
     fn own_resource(
@@ -81,17 +72,12 @@ impl NativeDocumentReads for Records {
     }
 
     fn resource_read(&self, workspace: &str, app: &str, record: &str) -> ResourceRead {
-        let Some(id) = WorkspaceId::parse(workspace) else {
-            return ResourceRead::Own;
-        };
-        if !self.engine.holds_resource(workspace, app, record) {
+        if WorkspaceId::parse(workspace).is_none()
+            || !self.engine.holds_resource(workspace, app, record)
+        {
             return ResourceRead::Own;
         }
-        if self.engine.commits_documents(id) {
-            ResourceRead::Committed
-        } else {
-            ResourceRead::Sealed
-        }
+        ResourceRead::Sealed
     }
 
     /// A record this device holds nothing of may have been written on another device, or before
@@ -112,7 +98,7 @@ impl NativeDocumentReads for Records {
         // replayed to it and no other device sends its records, so a record it holds nothing of is
         // new.
         if !self.engine.reaches_host()
-            || self.engine.hosts_itself(&route.cluster_id)
+            || self.engine.is_holder(&route.cluster_id)
             || self
                 .engine
                 .holds_resource(&route.cluster_id, &route.app_id, &route.document_id)
@@ -379,10 +365,10 @@ mod tests {
     }
 
     /// A workspace this device founded, holding one record of `APP` written under `key`.
-    fn workspace_with_record(engine: &Engine, key: &SigningKey) -> WorkspaceId {
+    fn workspace_with_record(engine: &Arc<Engine>, key: &SigningKey) -> WorkspaceId {
         crate::founding_fixture::serve(engine);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(workspace, "Shell"));
+        pollster::block_on(engine.found(workspace, "Shell")).expect("the workspace is founded");
         assert!(
             engine.holds(workspace),
             "the shell's workspace is held here"
@@ -420,7 +406,6 @@ mod tests {
                 ResourceRead::Own
             );
             assert!(!records.seals_documents(&elsewhere));
-            assert!(!records.requires_workspace(&elsewhere));
             let elsewhere_read = NativeDocumentReadContext::for_reader(
                 CrdtRoute::record(APP, elsewhere, RECORD),
                 cert.clone(),
@@ -453,9 +438,8 @@ mod tests {
             let (engine, cert, key) = device(state.path(), 0x52);
             let workspace = workspace_with_record(&engine, &key);
             let records = Records::new(Arc::clone(&engine));
-            // A workspace whose host takes part in its channels seals its records.
+            // A workspace's records are sealed under its channels' keys.
             assert!(records.seals_documents(&workspace.to_string()));
-            assert!(!records.requires_workspace(&workspace.to_string()));
             assert_eq!(
                 records.resource_read(&workspace.to_string(), APP, RECORD),
                 ResourceRead::Sealed
@@ -518,7 +502,7 @@ mod tests {
             let records = Records::new(Arc::clone(&engine));
             assert!(engine.reaches_host(), "a peer network is running");
             assert!(
-                engine.hosts_itself(&workspace.to_string()),
+                engine.is_holder(&workspace.to_string()),
                 "it was founded here"
             );
             assert!(
@@ -575,7 +559,7 @@ mod tests {
             let (link, mut said) = networked(&engine);
             let records = Records::new(Arc::clone(&engine));
             let id = workspace.to_string();
-            assert!(!engine.hosts_itself(&id), "another device hosts it");
+            assert!(!engine.is_holder(&id), "another device hosts it");
             link.host_ready(topic_of(workspace), true);
             assert!(!engine.holds_resource(&id, APP, RECORD));
 
@@ -683,12 +667,12 @@ mod tests {
     fn joined(engine: &Engine, cert: &DeviceCert, key: &SigningKey) -> (WorkspaceId, Host) {
         let root = SigningKey::from_bytes(&[0x42; 32]);
         let host_key = SigningKey::from_bytes(&[0x43; 32]);
-        let host_cert = testing::certificate(&root, &host_key, "The workspace's host");
+        let server_cert = testing::certificate(&root, &host_key, "The workspace's host");
         let state = tempfile::TempDir::new().expect("the host's state directory");
         let host = Arc::new(
             Engine::open(
                 tilo_identity::identity_store::DeviceIdentity::kept(
-                    host_cert.clone(),
+                    server_cert.clone(),
                     host_key.clone(),
                 ),
                 Some(state.path()),
@@ -697,9 +681,10 @@ mod tests {
             )
             .expect("the host's engine opens"),
         );
-        let governor = TestGovernor::empty_interactive(host_cert.clone(), host_key.clone(), JOINED)
-            .expect("another device governs the workspace");
-        let governor = testing::enroll_into(governor, host.owner(), &host_key, &host_cert)
+        let governor =
+            TestGovernor::empty_interactive(server_cert.clone(), host_key.clone(), JOINED)
+                .expect("another device governs the workspace");
+        let governor = testing::enroll_into(governor, host.owner(), &host_key, &server_cert)
             .expect("the host is in its own workspace");
         testing::enroll_into(governor, engine.owner(), key, cert)
             .expect("the workspace admits this device");

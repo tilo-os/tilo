@@ -128,12 +128,22 @@ fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
         .build()
 }
 
+/// The `power:sleep` resource's declared type: the policy in force and what
+/// keeps the machine awake.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.power.sleep", label = "Power and sleep")]
+pub struct PowerSleep;
+
+/// The `power:battery` resource's declared type: the pack as it reads.
+#[derive(tilo_resource::Row)]
+#[row(kind = "power:battery", label = "Battery")]
+pub struct PowerBattery;
+
 /// The `power:sleep` resource, with the actions a person can take on it.
 #[must_use]
 pub fn sleep_resource() -> ResourceSpec {
-    offer::<SleepAction>(ResourceSpec::new(
+    offer::<SleepAction>(tilo_resource::typed_resource::<PowerSleep>(
         SLEEP,
-        SLEEP_KIND,
         crate::i18n::name(SLEEP_KIND, "Power and sleep"),
     ))
 }
@@ -142,9 +152,8 @@ pub fn sleep_resource() -> ResourceSpec {
 /// where its driver offers one.
 #[must_use]
 pub fn battery_resource() -> ResourceSpec {
-    offer::<BatteryAction>(ResourceSpec::new(
+    offer::<BatteryAction>(tilo_resource::typed_resource::<PowerBattery>(
         BATTERY,
-        BATTERY_KIND,
         crate::i18n::name(BATTERY_KIND, "Battery"),
     ))
 }

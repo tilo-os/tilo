@@ -9,14 +9,14 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 use std::ops::Range;
 
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::chart_geometry;
 use crate::widget::chart_labels::format_compact;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct SunburstNode {
@@ -170,15 +170,10 @@ impl SunburstMarks {
             .max(1)
     }
     fn geometry(&self) -> (Point, f64, f64, f64) {
-        let rect = self.frame.rect;
-        let top = if self.frame.title.is_empty() {
-            0.0
-        } else {
-            34.0
-        };
-        let rect = Rect::new(rect.x0, rect.y0 + top, rect.x1, rect.y1);
+        // A hovered segment reaches past the others by its offset, so the rings keep that margin.
+        let rect = self.frame.inside();
         let center = rect.center();
-        let outer = (rect.width().min(rect.height()) / 2.0 - 16.0).max(1.0);
+        let outer = (rect.width().min(rect.height()) / 2.0 - self.style.hover_offset).max(1.0);
         let inner = outer * self.style.inner_radius.clamp(0.0, 0.75);
         let band = (outer - inner) / f64::from(u32::try_from(self.depth()).unwrap_or(u32::MAX));
         (center, inner, outer, band)
@@ -360,6 +355,10 @@ impl PlotMarks for SunburstMarks {
                 )
             })
             .collect()
+    }
+
+    fn place(&mut self, _tr: &mut TextRenderer, theme: &Theme) {
+        self.frame.margins = Margins::header(theme, &self.frame.title, 0);
     }
 
     fn paint(

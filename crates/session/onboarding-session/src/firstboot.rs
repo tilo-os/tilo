@@ -226,7 +226,7 @@ fn this_device_identity_dir() -> Option<std::path::PathBuf> {
     // A test session may keep its identity's keys under TILO_IDENTITY_ROOT
     // and its record under XDG_CONFIG_HOME: the record's directory is the
     // session's.
-    runtime_identity::identity_dir_from_env().ok()
+    tilo_identity::store::identity_dir_from_env().ok()
 }
 
 /// Reissue what is due of this device's certificates for the identity in

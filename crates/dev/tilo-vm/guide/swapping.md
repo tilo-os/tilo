@@ -396,6 +396,13 @@ handoff preserves its state root and configured RPC flags, checks the root
 and architecture in the new handshake, and records `daemon-handoff` and
 `applying_daemon_layer` in the receipt. A failed handoff applies no generation.
 
+When the VM's daemon speaks another protocol, no upload through it reaches
+the VM. `swap vmd` from a worktree then builds the layer for the VM's
+architecture, unpacks it over plain SSH into `vmd-bridge` under the state
+root, opens its RPC from there, and continues as above: that daemon imports
+the layer, hands off to it and applies the generation. The unpacked copy is
+removed once the imported daemon answers.
+
 This needs the existing SSH route; a peer-only connection reports a clear
 error before activation. No registered daemon command or access policy is
 changed. The update still restarts affected sessions through their normal

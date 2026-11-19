@@ -845,6 +845,7 @@ impl Text {
             &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             (Some(field), item, &label),
             (None, None),
+            None,
             &mut |text, _, start, end| {
                 #[allow(
                     clippy::cast_possible_truncation,
@@ -991,20 +992,29 @@ impl Widget for Text {
         // The same pixel of slack `draw` wraps with, so a line measured as
         // wrapping is painted wrapped and the other way round.
         let max_w = max_w.map(|w| if w > 0.0 { w + 1.0 } else { w });
-        let constraints = TextLayoutConstraints {
-            max_width: max_w,
-            max_height: max_h,
-        };
-        let (w, h) = match input {
-            RendererInput::Prepared(input) => text_renderer.measure_prepared(&input, max_w),
+        let mut measure_at = |max_width: Option<f32>, text_renderer: &mut TextRenderer| match &input
+        {
+            RendererInput::Prepared(input) => text_renderer.measure_prepared(input, max_width),
             RendererInput::Owned(label, style) => {
+                let constraints = TextLayoutConstraints {
+                    max_width,
+                    max_height: max_h,
+                };
                 if let Some(engine) = self.layout_engine.as_deref_mut() {
-                    engine.measure(text_renderer, &label, constraints, &style)
+                    engine.measure(text_renderer, label, constraints, style)
                 } else {
-                    text_renderer.measure_style(&label, max_w, &style)
+                    text_renderer.measure_style(label, max_width, style)
                 }
             }
         };
+        let (w, mut h) = measure_at(max_w, text_renderer);
+        // Wrapped as narrow as it goes, its width is its longest word, and its height there is
+        // the lines it wraps into at that width, where short words share a line again: the height it is
+        // laid out to once given the width it asked for, so a solve that measured it this way
+        // may keep the answer.
+        if known_dimensions.width.is_none() && max_w.is_some_and(|width| width <= 0.0) && w > 0.0 {
+            h = measure_at(Some(w + 0.1 + 1.0), text_renderer).1;
+        }
 
         if let Some(lines) = self.elided_lines() {
             #[allow(
@@ -1312,6 +1322,47 @@ mod tests {
             assert!(
                 free.width < 1.0,
                 "a truncating text's width holds no word: {free:?}"
+            );
+        }
+
+        phase a_text_at_its_min_content_width_stands_as_tall_as_it_wraps_there;
+        {
+            // Short words share a line once the longest word sets the width.
+            let said = "a b c d e f g h extraordinarily";
+            let mut renderer = TextRenderer::new();
+            let mut text = Text::new(said);
+            let narrowest = Widget::measure(
+                &mut text,
+                taffy::Size {
+                    width: None,
+                    height: None,
+                },
+                taffy::Size {
+                    width: taffy::AvailableSpace::MinContent,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &mut renderer,
+            );
+            let there = Widget::measure(
+                &mut text,
+                taffy::Size {
+                    width: Some(narrowest.width),
+                    height: None,
+                },
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(narrowest.width),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                &mut renderer,
+            );
+            assert_eq!(
+                narrowest, there,
+                "its min-content size is the size it lays out to at that width"
+            );
+            let line = text.text_style().line_height_px_at(renderer.text_scale());
+            assert!(
+                narrowest.height < line * 8.0,
+                "short words share lines at the longest word's width: {narrowest:?}"
             );
         }
 

@@ -184,6 +184,15 @@ pub(crate) fn run_surfaces(args: SurfacesArgs) -> Result<Value> {
         }
         let report = tilo_app_cli::surface::report_of(app, Some(executable))
             .with_context(|| format!("reading {}'s surface", app.display()))?;
+        if let Some(view) = &report.view {
+            // Its read actions are missing from a report whose view did not
+            // build, so it says nothing about the surface the code publishes.
+            failures.push(format!(
+                "{}: the view could not be built headless: {view}",
+                app.display()
+            ));
+            continue;
+        }
         for unbound in &report.unbound {
             println!("warning: {}: {unbound}", app.display());
         }

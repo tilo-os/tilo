@@ -818,7 +818,7 @@ pub struct Person {
     pub name: String,
     /// Their root, as a workspace names them.
     pub public: [u8; 32],
-    root: runtime_identity::SigningIdentity,
+    root: tilo_identity::store::SigningIdentity,
     /// The identity the first use of this machine provisioned for them: the record each of their
     /// devices carries, and the root secret devices certify their own keys with.
     identity: tempfile::TempDir,
@@ -847,9 +847,9 @@ impl Person {
             .expect("this person's identity");
         }
         let identity_dir = config.join("tilo/identity");
-        let record = runtime_identity::resolve_active_identity(&identity_dir)
+        let record = tilo_identity_client::resolve_active_identity(&identity_dir)
             .expect("the identity this machine provisioned for the person");
-        let root = runtime_identity::load_from_path(record).expect("the person's root key");
+        let root = tilo_identity::store::load_from_path(record).expect("the person's root key");
         Self {
             name: name.to_owned(),
             public: root.group_public_key(),
@@ -1586,13 +1586,18 @@ impl Device {
         }
         impl std::fmt::Display for Present<'_> {
             fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let state = self.device.state();
                 write!(
                     formatter,
-                    "{} says {} is in {}; it says {:?}",
+                    "{} says {} is in {}; it says {:?}, holds {:?}, knows {}, and its live \
+                     sessions are {}",
                     self.device.label,
                     self.publisher,
                     self.workspace,
-                    self.device.present(self.workspace)
+                    self.device.present(self.workspace),
+                    self.device.held(),
+                    state["state"]["peers"],
+                    state["state"]["sharing"]["live"],
                 )
             }
         }
@@ -2109,9 +2114,9 @@ impl Chat<'_> {
         self.wait_for_texts_ordered(peer, texts, true);
     }
 
-    /// Wait until the conversation with `peer` shows `texts` , and nothing else, in whatever order:
-    /// for messages written at the same time on devices that had not seen each other's, whose order
-    /// is the records' and not the writers'.
+    /// Wait until the conversation with `peer` shows `texts`, and nothing else, in whatever order:
+    /// for a conversation two devices wrote apart, which reads in the order the messages were
+    /// written rather than the order a test names them in.
     pub fn wait_for_texts_in_any_order(&self, peer: &str, texts: &[&str]) {
         self.wait_for_texts_ordered(peer, texts, false);
     }
@@ -2156,15 +2161,15 @@ struct HeldChat {
 
 impl HeldChat {
     /// The conversation with `peer` as Chat shows it, or why there is none: its messages in the
-    /// chain's order (each part's, by the order key the record keeps), and how many of the
-    /// messages `peer` wrote lie past this person's read mark (a part, and how many of the
-    /// conversation's messages in it they saw).
+    /// order Chat shows them (when each was written, ties by id), and how many of the messages
+    /// `peer` wrote lie past this person's read mark (a part, and how many of the conversation's
+    /// messages in it they saw).
     fn conversation(&self, peer: &str) -> Result<Conversation, String> {
         use chat::chat::Chat;
         let me = tilo_actions::policy::MemberId::person(self.me.clone());
         let them = tilo_actions::policy::MemberId::person(peer);
         let slot = |member: &tilo_actions::policy::MemberId| {
-            chat::chat::member_slot(member).as_str().to_owned()
+            chat::chat::member_marks(member).as_str().to_owned()
         };
         if peer == self.me {
             return Err(format!("Chat knows no person {peer}"));
@@ -2187,7 +2192,9 @@ impl HeldChat {
                 .flatten()
                 .filter(|(_, entry)| entry["v"]["channel"] == channel.as_str())
                 .collect();
-            held.sort_by(|(a, x), (b, y)| (x["k"].as_str(), a).cmp(&(y["k"].as_str(), b)));
+            held.sort_by(|(a, x), (b, y)| {
+                (x["v"]["ts"].as_i64(), a).cmp(&(y["v"]["ts"].as_i64(), b))
+            });
             let skip = if index == from { seen } else { 0 };
             let top = held
                 .iter()

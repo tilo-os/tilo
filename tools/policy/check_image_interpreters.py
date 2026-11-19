@@ -32,6 +32,7 @@ ignored.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -50,7 +51,7 @@ POLICY = "docs/policies.md, Dependencies and runtime"
 
 INTERPRETER = re.compile(r"(python[0-9.]*|node|nodejs|deno|bun|perl[0-9.]*)")
 SHELL = re.compile(r"(sh|bash|dash)")
-RUNS_PYTHON = re.compile(r"(^|[\s;|&(`$]|/)python(3(\.[0-9]+)?)?([\s;|&)`]|$)")
+PYTHON_COMMAND = re.compile(r"(^|[\s;|&(`$]|/)python(3(\.[0-9]+)?)?([\s;|&)`]|$)")
 # Build-stage and scratch destinations: nothing there ships.
 BUILD_DESTINATIONS = ("/usr/local/", "/run/", "/tmp/", "/tilo", "/build", "/out", "/src", "/tree/", "/image/", "/repo")
 EXTENSIONS = (".py", ".js", ".mjs", ".cjs", ".pl")
@@ -84,28 +85,38 @@ def shebang_interpreter(first_line: bytes) -> str | None:
     return None
 
 
-def is_interpreter_script(path: Path) -> bool:
+def is_interpreter_script(path: Path, data: bytes | None = None) -> bool:
+    """Whether an interpreter executes the shipped file at ``path``.
+
+    ``data`` is the file's bytes from the index when a commit stages it; without
+    it the file on disk is read.
+    """
     if path.name.endswith(EXTENSIONS):
         return True
-    try:
-        with path.open("rb") as handle:
-            first_line = handle.readline(512)
-    except OSError as error:
-        raise OSError(f"Cannot inspect tracked overlay file {path}: {error}") from error
+    if data is not None:
+        first_line = data.split(b"\n", 1)[0][:512]
+    else:
+        try:
+            with path.open("rb") as handle:
+                first_line = handle.readline(512)
+        except OSError as error:
+            raise OSError(f"Cannot inspect tracked overlay file {path}: {error}") from error
     program = shebang_interpreter(first_line)
     if program is not None and INTERPRETER.fullmatch(program) is not None:
         return True
-    return program is not None and SHELL.fullmatch(program) is not None and runs_python(path)
+    if program is None or SHELL.fullmatch(program) is None:
+        return False
+    if data is not None:
+        return names_python(data.decode("utf-8", "replace"))
+    return names_python(path.read_text(encoding="utf-8", errors="replace"))
 
 
-def runs_python(path: Path) -> bool:
+def names_python(text: str) -> bool:
     """Whether a shell script names Python as a command on any non-comment line."""
-    text = path.read_text(encoding="utf-8", errors="replace")
     for line in text.splitlines():
-        code = line.split("#", 1)[0] if line.lstrip().startswith("#") else line
         if line.lstrip().startswith("#"):
             continue
-        if RUNS_PYTHON.search(code):
+        if PYTHON_COMMAND.search(line):
             return True
     return False
 
@@ -218,18 +229,72 @@ def load_baseline(root: Path) -> dict[str, Entry]:
     return entries
 
 
-def check(root: Path = ROOT) -> tuple[list[str], list[str]]:
-    """Return interpreter scripts missing from the baseline and baseline paths no longer shipped."""
-    shipped = shipped_scripts(root)
+def staged_files(root: Path, *paths: str) -> list[str]:
+    """The paths a commit adds or changes under ``paths``, read from the index."""
+    output = subprocess.check_output(
+        ["git", "-C", str(root), "diff", "--cached", "--name-only", "-z",
+         "--diff-filter=ACMR", "--", *paths],
+    )
+    return sorted(name.decode() for name in output.split(b"\0") if name)
+
+
+def index_bytes(root: Path, path: str) -> bytes:
+    """The bytes the commit stages for ``path``."""
+    return subprocess.check_output(["git", "-C", str(root), "show", ":" + path])
+
+
+def staged_shipped_scripts(root: Path) -> list[str]:
+    """Shipped scripts a commit adds or changes, read from the index.
+
+    Only these can be new to the image: a file the commit leaves as HEAD has it
+    was judged by the commit that added it, and the whole overlay by the policy
+    suite and CI on every pushed head.
+    """
+    changed = set(staged_files(root, *SCANNED, *CONTAINERFILES, COMPONENTS.as_posix()))
+    shipped = [
+        name
+        for name in sorted(changed)
+        if name.startswith(SCANNED) and not name.startswith(UNSCANNED)
+        and is_interpreter_script(root / name, index_bytes(root, name))
+    ]
+    containerfiles = tuple(name for name in CONTAINERFILES if name in changed)
+    if containerfiles:
+        shipped.extend(copied_python(root, containerfiles))
+    if COMPONENTS.as_posix() in changed:
+        shipped.extend(component_python(root))
+    return sorted(set(shipped))
+
+
+def check(root: Path = ROOT, staged: bool = False) -> tuple[list[str], list[str]]:
+    """Return interpreter scripts missing from the baseline and baseline paths no longer shipped.
+
+    ``staged`` judges the files the commit adds or changes, read from the index.
+    The stale half is an inventory of the tree: a commit cannot remove a baselined
+    script it does not stage, and the policy suite and CI hold the list to the tree.
+    """
+    shipped = staged_shipped_scripts(root) if staged else shipped_scripts(root)
     baseline = load_baseline(root)
     new = [path for path in shipped if path not in baseline]
-    stale = sorted(set(baseline) - set(shipped), key=lambda path: baseline[path].line)
+    stale = (
+        []
+        if staged
+        else sorted(set(baseline) - set(shipped), key=lambda path: baseline[path].line)
+    )
     return new, stale
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--staged",
+        action="store_true",
+        help="judge only the shipped files this commit adds or changes, read from the "
+        "index, as the pre-commit hook does; without it every file of the overlay is "
+        "judged, as the policy suite and CI do",
+    )
+    staged = parser.parse_args(argv).staged
     try:
-        new, stale = check(ROOT)
+        new, stale = check(ROOT, staged)
         baseline = load_baseline(ROOT)
     except BaselineError as error:
         print(error)
@@ -252,7 +317,8 @@ def main() -> int:
     if new or stale:
         print(f"No new interpreted code on the OS runtime path ({POLICY}).", file=sys.stderr)
         return 1
-    print(f"Image overlay interpreter scripts: {len(baseline)} baselined, none new.", file=sys.stderr)
+    judged = "staged" if staged else "baselined"
+    print(f"Image overlay interpreter scripts: {len(baseline)} {judged}, none new.", file=sys.stderr)
     return 0
 
 

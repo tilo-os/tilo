@@ -10,6 +10,8 @@ import {runtimeFake} from './runtime-surface.mjs';
 
 const target = {kind: 'workspace', host: 'https://ada.tilo.cloud', workspace: '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90'};
 const commons = {name: 'Commons', host: {origin: target.host}, admission: `${target.host}/`};
+/** The site's listed workspace on that server, its entry letting anyone in. */
+const lounge = {...commons, name: 'Lounge', admission: `${commons.admission}peer/v1/directory/b943a4e2-c020-4494-b087-a71a28bae296/`};
 
 /** A runtime answering `ways` in turn, the first to `wayIn` and each next to
  * whichever the page asks; `asAsked` answers whether an admission is the one
@@ -53,7 +55,7 @@ test('the runtime is told what the link carries and what the page knows of its h
     entered: ({origin, workspace: id}) => origin === target.host && id === 'elsewhere'});
   assert.deepEqual(await admit({scope: target, secrets: {}, tickets: 'https://workspaces.example/', runtime, deps}),
     {peer: {admission: true, workspace: target.workspace}});
-  const here = {entry: true, entered: false, tickets: true, pairing: true};
+  const here = {entry: true, listed: false, person: false, entered: false, tickets: true, pairing: true};
   assert.deepEqual(asked.slice(0, 2), [
     ['wayIn', {scope: {kind: 'workspace', workspace: target.workspace}, malformed: false, invite: false, ticket: false}, here],
     ['wayIn', {scope: {kind: 'workspace', workspace: target.workspace}, malformed: false, invite: false, ticket: false}, {...here, accounts: 0}],
@@ -61,7 +63,7 @@ test('the runtime is told what the link carries and what the page knows of its h
   // The entry is asked at the workspace the link names, not the listed one; the
   // peer it answers with is held to that workspace (`admittedAsAsked` below).
   assert.deepEqual(calls, [['readAccounts', target.host], ['enterViaHost',
-    {workspace: {...commons, workspace: target.workspace, admission: `${target.host}/directory/${target.workspace}/`}}]]);
+    {workspace: {...commons, workspace: target.workspace, name: null, admission: `${target.host}/directory/${target.workspace}/`}}]]);
   // A pairing secret is read by the page: the runtime hears whether it names someone.
   const pairing = rules(['pair']);
   await admit({scope: target, secrets: {pair: 'ab'.repeat(32)}, runtime: pairing.runtime, deps: entries().deps});
@@ -82,12 +84,65 @@ test('a link into another workspace of the host asks at that workspace’s own e
     enterViaHost: async ({workspace}) => { calls.push(['enterViaHost', workspace]); return {workspace: target.workspace}; }});
   assert.deepEqual(await admit({scope: target, runtime: rules(['entry']).runtime, deps}),
     {peer: {workspace: target.workspace}});
-  assert.deepEqual(calls, [['enterViaHost', {...home, workspace: target.workspace,
+  // Not under the listed workspace's name: it is another workspace.
+  assert.deepEqual(calls, [['enterViaHost', {...home, workspace: target.workspace, name: null,
     admission: `${target.host}/peer/v1/directory/${target.workspace}/`}]]);
   // A link naming the listed workspace keeps the entry the site names for it.
   const atHome = {...target, workspace: home.workspace};
   await admit({scope: atHome, runtime: rules(['entry']).runtime, deps});
   assert.deepEqual(calls.at(-1), ['enterViaHost', home]);
+});
+
+test('nobody signed in at a link to another workspace of the host is asked to sign in, before anything joins', async () => {
+  let signedIn = false;
+  const {calls, deps} = entries({workspaceAt: () => lounge, holdsPerson: async () => signedIn});
+  const {asked, runtime} = rules(['accounts', 'sign-in']);
+  await assert.rejects(admit({scope: target, runtime, deps}), {name: 'AdmissionError', code: 'sign-in',
+    // Signing in pairs through the site's listed entry, as any sign-in does.
+    entry: lounge.admission});
+  // The rules hear that the link names another workspace than the listed one, and that nobody is here.
+  assert.equal(asked[0][2].listed, false);
+  assert.equal(asked[0][2].person, false);
+  assert.deepEqual(calls, [['readAccounts', target.host]], 'no entry was asked and nobody joined');
+  // The listed workspace's own link is that entry's to answer; someone signed in is said so.
+  signedIn = true;
+  const listed = rules(['accounts', 'entry']);
+  await admit({scope: {...target, workspace: 'b943a4e2-c020-4494-b087-a71a28bae296'}, runtime: listed.runtime, deps});
+  assert.equal(listed.asked[0][2].listed, true);
+  assert.equal(listed.asked[0][2].person, true);
+});
+
+test('nobody signed in at a link to a public workspace is let in through its own entry, as its server’s directory lists it', async () => {
+  const ownEntry = `${commons.admission}peer/v1/directory/${target.workspace}/`;
+  const listings = [];
+  const read = [];
+  const {calls, deps} = entries({workspaceAt: () => lounge, holdsPerson: async () => false,
+    listings: async origin => { read.push(origin); return listings; }});
+  // Listed, and open to anyone: its own entry, named as it lists itself.
+  listings.splice(0, Infinity, {workspace: target.workspace, name: 'Reading group', entry: ownEntry, invitationOnly: false, waitList: null});
+  const open = rules(['accounts', 'entry']);
+  await admit({scope: target, runtime: open.runtime, deps});
+  assert.deepEqual(read, [commons.admission.slice(0, -1)], 'its server’s directory was read before anything joined');
+  assert.equal(open.asked[0][2].listed, true, 'the rules hear that its entry lets anyone in');
+  assert.deepEqual(calls.at(-1).slice(1), [{workspace: {...lounge, workspace: target.workspace, admission: ownEntry, name: 'Reading group'}}], 'its own entry');
+  // Listed, but only for people invited: closed to a stranger, who signs in, told the listing.
+  const closed = {workspace: target.workspace, name: 'Reading group', entry: ownEntry, invitationOnly: true,
+    waitList: {contact: null, mail: true}};
+  listings.splice(0, Infinity, closed);
+  const invited = rules(['accounts', 'sign-in']);
+  await assert.rejects(admit({scope: target, runtime: invited.runtime, deps}), {code: 'sign-in', listing: closed});
+  assert.equal(invited.asked[0][2].listed, false);
+  // Not listed, or the directory not read: closed alike.
+  listings.splice(0, Infinity);
+  const unlisted = rules(['accounts', 'sign-in']);
+  await assert.rejects(admit({scope: target, runtime: unlisted.runtime, deps}), {code: 'sign-in', listing: null});
+  const unread = entries({workspaceAt: () => lounge, holdsPerson: async () => false, listings: async () => { throw new Error('offline'); }});
+  await assert.rejects(admit({scope: target, runtime: rules(['accounts', 'sign-in']).runtime, deps: unread.deps}), {code: 'sign-in'});
+  // Someone signed in comes back as themself: the directory is not read.
+  read.length = 0;
+  const signedIn = entries({workspaceAt: () => lounge, holdsPerson: async () => true, listings: async origin => { read.push(origin); return []; }});
+  await admit({scope: target, runtime: rules(['accounts', 'entry']).runtime, deps: signedIn.deps});
+  assert.deepEqual(read, []);
 });
 
 test('the person’s own desktop needs no peer', async () => {

@@ -176,12 +176,26 @@ struct State {
     /// closes their saved tabs ([`Apps::take_kept`]).
     #[cfg(target_os = "linux")]
     ended_away: Vec<tilo_app_launch::kept::KeptLaunch>,
+    /// The launches of the kept apps whose keeper was killed outright while no desktop was
+    /// there, until the restore puts their saved tabs to saying they stopped working
+    /// ([`Apps::take_kept`]).
+    #[cfg(target_os = "linux")]
+    stopped_away: Vec<tilo_app_launch::kept::KeptLaunch>,
     /// The apps from before an update that this desktop cannot show, by launch id.
     #[cfg(target_os = "linux")]
     outdated: BTreeMap<u64, outdated::FromBefore>,
     /// The saved tabs whose Windows programs the service was asked for since the last pass, and
     /// has not answered yet.
     windows_waits: Vec<windows::Waiting>,
+}
+
+/// What a start takes from the keepers' registry, once: the launches it took back, the ones that
+/// ended while no desktop was there, and the ones whose keeper was killed outright then.
+#[cfg(target_os = "linux")]
+pub(crate) struct TakenBack {
+    pub(crate) kept: Vec<tilo_app_launch::Adopted>,
+    pub(crate) ended: Vec<tilo_app_launch::kept::KeptLaunch>,
+    pub(crate) killed: Vec<tilo_app_launch::kept::KeptLaunch>,
 }
 
 /// A window whose tab the session asked the shell for: the launch that starts it once the shell asks
@@ -327,6 +341,8 @@ impl Apps {
                 kept: Vec::new(),
                 #[cfg(target_os = "linux")]
                 ended_away: Vec::new(),
+                #[cfg(target_os = "linux")]
+                stopped_away: Vec::new(),
                 #[cfg(target_os = "linux")]
                 outdated: BTreeMap::new(),
                 windows_waits: Vec::new(),
@@ -778,6 +794,7 @@ impl Apps {
         {
             let mut state = self.state.borrow_mut();
             state.ended_away = state.spawner.away();
+            state.stopped_away = state.spawner.stopped_away();
         }
         self.took_up(adopted, true);
     }
@@ -830,19 +847,16 @@ impl Apps {
     /// The kept apps this run took back: each of their windows claims the saved tab its keeper
     /// was last told it stood in, which waits for that window rather than starting the app again.
     /// Beside them, the launches of the kept apps that ended while no desktop was there: their
-    /// saved tabs close, as any the app closed meanwhile. Taken once.
+    /// saved tabs close, as any the app closed meanwhile, and those of the apps whose keeper was
+    /// killed outright: their tabs stay to say they stopped working. Taken once.
     #[cfg(target_os = "linux")]
-    pub(crate) fn take_kept(
-        &self,
-    ) -> (
-        Vec<tilo_app_launch::Adopted>,
-        Vec<tilo_app_launch::kept::KeptLaunch>,
-    ) {
+    pub(crate) fn take_kept(&self) -> TakenBack {
         let mut state = self.state.borrow_mut();
-        (
-            std::mem::take(&mut state.kept),
-            std::mem::take(&mut state.ended_away),
-        )
+        TakenBack {
+            kept: std::mem::take(&mut state.kept),
+            ended: std::mem::take(&mut state.ended_away),
+            killed: std::mem::take(&mut state.stopped_away),
+        }
     }
 
     /// Tell each kept window's keeper the tab it stands in now (`placements`), where that changed:
@@ -1098,7 +1112,10 @@ impl Apps {
         });
         if let Err(error) = started {
             tracing::warn!(%error, %app, "a window an app asked for did not start");
-            self.release_tab(Some(tab));
+            // The tab keeps the place the launch held for it and says why the window did not come,
+            // with the button that asks for it again: a tab that vanished left the person with
+            // nothing to see and nothing to do.
+            self.could_not_open(Some(tab), app, &error.to_string());
         }
     }
 
@@ -1147,9 +1164,10 @@ impl Apps {
             return false;
         };
         let app = launch.app();
-        if !desktop.with_policy(|policy| policy.hold(app, anchor, (background, floated), reveal)) {
-            return false;
-        }
+        // The launch is planned before the shell is asked for its tab: the shell makes the tab on
+        // a pass of its own, and an ask from another thread has that pass take the plan
+        // ([`Self::start_planned`]) before this call queues it. A tab whose plan is not there yet
+        // goes, and no window comes.
         self.plan_window(WindowAsk {
             launch: launch.clone(),
             reveal: reveal.map(str::to_owned),
@@ -1157,6 +1175,10 @@ impl Apps {
             workspace: None,
             tool_context: None,
         });
+        if !desktop.with_policy(|policy| policy.hold(app, anchor, (background, floated), reveal)) {
+            self.give_up_planned(app);
+            return false;
+        }
         true
     }
 
@@ -1189,6 +1211,19 @@ impl Apps {
         };
         let app = launch.app();
         let elsewhere = workspace.is_workspace() && self.active_workspace().id != workspace.id;
+        let tool_context = self.state.borrow().tool_context.clone();
+        // The launch is planned before the shell is asked for its tab: the shell makes the tab on
+        // a pass of its own, and an open asked from another thread — the person's, which arrives
+        // on the session's control thread — has that pass take the plan ([`Self::start_planned`])
+        // before this call queues it. A tab whose plan is not there yet goes, and no window comes.
+        let ask = WindowAsk {
+            launch: launch.clone(),
+            reveal: reveal.map(str::to_owned),
+            new_window,
+            workspace: elsewhere.then(|| workspace.id.clone()),
+            tool_context,
+        };
+        self.plan_window(ask);
         let held = desktop.with_policy(|policy| {
             match new_window
                 .then(|| policy.anchor_for(app))
@@ -1200,17 +1235,17 @@ impl Apps {
             }
         });
         if !held {
+            self.give_up_planned(app);
             return Err(ApiError::Failed(format!("the shell took no open of {app}")));
         }
-        let tool_context = self.state.borrow().tool_context.clone();
-        self.plan_window(WindowAsk {
-            launch: launch.clone(),
-            reveal: reveal.map(str::to_owned),
-            new_window,
-            workspace: elsewhere.then(|| workspace.id.clone()),
-            tool_context,
-        });
         Ok(true)
+    }
+
+    /// Take back the plan `app`'s last launch queued, the shell having taken no open for it.
+    fn give_up_planned(&self, app: &str) {
+        if let Some(queued) = self.state.borrow_mut().planned.get_mut(app) {
+            queued.pop_back();
+        }
     }
 
     /// What the person asked for in `tab` did not happen, `why` says why: the tab keeps its place
@@ -1464,19 +1499,49 @@ impl Apps {
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
             .map(str::to_owned);
         let open = target.address.action == APPLICATION_OPEN_ACTION && arguments.is_empty();
-        match (open, app) {
-            (true, Some(app)) => {
-                let workspace = self.workspace_named(&workspace);
-                let launch = Launch::Package { app, open: None };
-                match place {
-                    // A tab of the window in front is the shell's to arrange: the session opens the
-                    // app the way it opens, and the shell puts the tab where the person asked.
-                    OpenPlace::Focus | OpenPlace::TabHere => self.start(&launch, &workspace),
-                    OpenPlace::Beside => self.start_beside(&launch, &workspace, None, None),
-                }
-            }
-            _ => self.deliver(target, arguments, &workspace),
+        if open && let Some(app) = app {
+            let workspace = self.workspace_named(&workspace);
+            let launch = Launch::Package { app, open: None };
+            return match place {
+                // A tab of the window in front is the shell's to arrange: the session opens the
+                // app the way it opens, and the shell puts the tab where the person asked.
+                OpenPlace::Focus | OpenPlace::TabHere => self.start(&launch, &workspace),
+                OpenPlace::Beside => self.start_beside(&launch, &workspace, None, None),
+            };
         }
+        // The person's own action that takes them somewhere in an app (a conversation, a page, a
+        // message) shows them where it took them: the app's window comes forward here, as its
+        // `open` brings it, and the keyboard with it. A closed app starts for the action in front
+        // already.
+        if let Some(app) = self.navigates(&target)
+            && self.active_workspace().id == workspace
+            && let Some(desktop) = self.desktop.borrow().clone()
+            && desktop.with_policy(|policy| {
+                let shown = policy.app_tabs_in_front();
+                (shown.into_iter().find(|(_, shows)| *shows == app))
+                    .is_some_and(|(tab, _)| policy.focus_tab(tab))
+            })
+        {
+            desktop.with_widgets(WidgetSurface::relayout);
+        }
+        self.deliver(target, arguments, &workspace)
+    }
+
+    /// The app whose own view `target` changes, when it is one: an action of the
+    /// [`tilo_actions::OperationKind::View`] kind, as the app published it (a live surface's word
+    /// before the one kept from before the app closed).
+    fn navigates(&self, target: &RemoteActionTarget) -> Option<String> {
+        let (workspace, app) = application_provider(&target.provider)?;
+        let broker = self.state.borrow().broker.clone()?;
+        let address = &target.address;
+        let kind = broker
+            .published_surfaces()
+            .into_iter()
+            .filter(|surface| surface.app_id == app && surface.route.cluster_id == workspace)
+            .flat_map(|surface| surface.actions)
+            .find(|action| action.resource == address.resource && action.action == address.action)?
+            .operation_kind;
+        (kind == tilo_actions::OperationKind::View).then(|| app.to_owned())
     }
 
     /// Start `launch` in `workspace`, unless the app already has a window there: that
@@ -2410,553 +2475,4 @@ fn handed<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_app_launch::output::OutputTail;
-    use tilo_app_launch::{End, Event};
-    use tilo_desktop_policy::Window;
-
-    const WORKSPACE: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
-
-    fn kept() -> Kept {
-        Kept {
-            workspace: WORKSPACE.to_owned(),
-            id: "scribe".to_owned(),
-            name: "Scribe".to_owned(),
-            model: None,
-        }
-    }
-
-    fn apps() -> Apps {
-        Apps::with_launcher(SessionEnvironment::default(), None, None)
-    }
-
-    /// A package opening a file of the person's is handed it where its sandbox reaches it: the
-    /// path it is given is in its own view of the documents served to it, and reading it there
-    /// gives the file's bytes. The device's own path never reaches it.
-    #[test]
-    fn a_package_opening_a_file_reads_its_bytes_where_its_sandbox_holds_it() {
-        use std::io::Read as _;
-        let home = tempfile::tempdir().unwrap();
-        let agenda = home.path().join("Agenda.docx");
-        std::fs::write(&agenda, b"PK agenda").unwrap();
-        let workspace = Workspace::new(WORKSPACE, home.path().join("capabilities"));
-        let documents = tilo_documents::Documents::new();
-        let launch = Launch::Package {
-            app: "so.tilo.word-processor".to_owned(),
-            open: Some(tilo_app_launch::Open::File(agenda.clone())),
-        };
-
-        let given = handed(&launch, &workspace, Some(&documents)).unwrap();
-        let Launch::Package {
-            open: Some(tilo_app_launch::Open::File(opened)),
-            ..
-        } = given.as_ref()
-        else {
-            panic!("the launch still opens a file: {given:?}");
-        };
-        assert!(
-            opened.starts_with(tilo_documents::SANDBOX_DIR),
-            "{}",
-            opened.display()
-        );
-        assert_eq!(opened.file_name(), agenda.file_name(), "named as it is");
-        let key = tilo_documents::AppKey::new(WORKSPACE, "so.tilo.word-processor").unwrap();
-        let target = tilo_documents::host::resolve(&documents, &key, opened).unwrap();
-        let mut bytes = Vec::new();
-        std::fs::File::from(
-            target
-                .open(rustix::fs::OFlags::RDONLY, rustix::fs::Mode::empty())
-                .unwrap(),
-        )
-        .read_to_end(&mut bytes)
-        .unwrap();
-        assert_eq!(bytes, b"PK agenda");
-        let other = tilo_documents::AppKey::new(WORKSPACE, "so.tilo.notes").unwrap();
-        assert!(
-            tilo_documents::host::resolve(&documents, &other, opened).is_none(),
-            "handed to the app that opens it alone"
-        );
-
-        assert_eq!(
-            handed(&given, &workspace, Some(&documents))
-                .unwrap()
-                .as_ref(),
-            given.as_ref(),
-            "reopening the app's own document, as its history names it, opens it again"
-        );
-        assert!(
-            handed(&launch, &workspace, None).is_err(),
-            "no app is started on a path its sandbox cannot read"
-        );
-        let folder = Launch::Package {
-            app: "so.tilo.file-explorer".to_owned(),
-            open: Some(tilo_app_launch::Open::File(home.path().to_path_buf())),
-        };
-        assert_eq!(handed(&folder, &workspace, None).unwrap().as_ref(), &folder);
-    }
-
-    /// A launch takes the compositor's render node once the compositor has one, though the session
-    /// asked before its backend named it; the node it took then stays.
-    #[test]
-    fn a_launch_follows_the_render_node_the_compositor_names_later() {
-        let apps = apps();
-        apps.set_render_node(None);
-        apps.follow_render_node(|| None, false);
-        assert_eq!(apps.state.borrow().render_node, None);
-        assert!(
-            !apps.state.borrow().software,
-            "nothing is decided before the first frame"
-        );
-        apps.follow_render_node(|| Some(PathBuf::from("/dev/dri/card1")), true);
-        assert_eq!(
-            apps.state.borrow().render_node.as_deref(),
-            Some(Path::new("/dev/dri/card1"))
-        );
-        apps.follow_render_node(|| Some(PathBuf::from("/dev/dri/renderD128")), true);
-        assert_eq!(
-            apps.state.borrow().render_node.as_deref(),
-            Some(Path::new("/dev/dri/card1")),
-            "the node it took stays"
-        );
-    }
-
-    /// A compositor that has drawn with no GPU to import from draws in software, and the apps it
-    /// opens are handed the software renderer's pin, where this machine has one.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_compositor_that_drew_without_a_gpu_pins_its_apps_to_the_software_renderer() {
-        let apps = apps();
-        apps.follow_render_node(|| None, true);
-        let state = apps.state.borrow();
-        assert!(state.software);
-        assert_eq!(state.render_node, None);
-        match launcher::gpu::software_pin(&launcher::gpu::IcdSearch::default()) {
-            Ok(pin) => {
-                for (key, value) in pin.env() {
-                    assert_eq!(
-                        state.environment.variables().get(key),
-                        Some(&value),
-                        "{key}"
-                    );
-                }
-            }
-            Err(_) => assert!(
-                !state.environment.forwarded.contains_key("VK_DRIVER_FILES"),
-                "no software renderer here, so nothing is pinned"
-            ),
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn an_agent_runs_as_one_service_with_the_model_chosen_for_it;
-
-        phase an_agent_is_run_as_a_service_with_its_own_argv;
-        // An agent is a service the launcher runs, and the agent's own options follow the entrypoint:
-        // the workspace its record names it in, the id its actor works as, and the model it plans
-        // with.
-        {
-            let kept = kept();
-            let provider = r#"{"profile_id":"p","model_id":"m","protocol":"anthropic"}"#;
-            assert_eq!(
-                agent_argv(&kept, Some(provider)),
-                [
-                    "--service",
-                    "--workspace",
-                    WORKSPACE,
-                    "--app",
-                    "so.tilo.agent",
-                    "--agent-id",
-                    "scribe",
-                    "--name",
-                    "Scribe",
-                    "--provider",
-                    provider,
-                ]
-            );
-            assert_eq!(
-                agent_argv(&kept, None),
-                [
-                    "--service",
-                    "--workspace",
-                    WORKSPACE,
-                    "--app",
-                    "so.tilo.agent",
-                    "--agent-id",
-                    "scribe",
-                    "--name",
-                    "Scribe",
-                ],
-                "an agent with no model configured plans without a selection, and by keyword"
-            );
-        }
-
-        phase an_agents_model_is_the_keepers_choice_then_the_devices_own;
-        // The keeper's choice on the record is what the agent plans with; with none it follows this
-        // device's Settings for it.
-        {
-            use agent_provider_config::ProviderConfig;
-
-            let mut config: ProviderConfig = serde_json::from_value(serde_json::json!({
-                "profiles": [
-                    {
-                        "id": "keeper",
-                        "label": "Keeper's provider",
-                        "enabled": true,
-                        "models": [{"id": "chosen", "label": "Chosen"}],
-                    },
-                    {
-                        "id": "here",
-                        "label": "This device's provider",
-                        "enabled": true,
-                        "default_model": "default",
-                        "models": [{"id": "default", "label": "Default"}],
-                    },
-                ],
-                "default_profile": "here",
-            }))
-            .expect("a configuration");
-            // The keeper chose a model on the record, for a profile this device holds: that is the one.
-            let mut chosen = kept();
-            chosen.model = Some("keeper/chosen".to_owned());
-            let selection = provider_selection(&config, &chosen).expect("a selection");
-            assert!(
-                selection.contains(r#""profile_id":"keeper""#),
-                "{selection}"
-            );
-            assert!(selection.contains(r#""model_id":"chosen""#), "{selection}");
-            // A profile or model this device does not hold is not guessed.
-            chosen.model = Some("elsewhere/model".to_owned());
-            assert!(provider_selection(&config, &chosen).is_none());
-            // No choice on the record: what this device's Settings hold for it.
-            config.agent_models.insert(
-                "scribe".to_owned(),
-                agent_provider_config::AgentModel {
-                    profile: "here".to_owned(),
-                    model: "default".to_owned(),
-                },
-            );
-            let selection = provider_selection(&config, &kept()).expect("this device's selection");
-            assert!(selection.contains(r#""profile_id":"here""#), "{selection}");
-            assert!(selection.contains(r#""model_id":"default""#), "{selection}");
-        }
-
-        phase an_agent_is_started_once_and_not_restarted_after_it_ends;
-        // One process per agent per session: a pass that sees the same record starts nothing, a
-        // process that ended is not started again, and the record's next change is.
-        {
-            let apps = apps();
-            let kept = kept();
-            let key = (kept.workspace.clone(), kept.id.clone());
-            assert!(apps.agent_due(&key, &kept));
-            apps.remember_agent(key.clone(), &kept, Some(7));
-            assert!(!apps.agent_due(&key, &kept), "a running agent starts once");
-            apps.state.borrow().spawner.report(Event {
-                id: 7,
-                app: "so.tilo.agent".to_owned(),
-                title: "Agent".to_owned(),
-                end: End::exited(1),
-                said: OutputTail::default(),
-            });
-            apps.follow();
-            assert!(
-                !apps.agent_due(&key, &kept),
-                "an agent that ended is not started in a loop"
-            );
-            let mut renamed = kept;
-            renamed.name = "Amanuensis".to_owned();
-            assert!(
-                apps.agent_due(&key, &renamed),
-                "the record's next change starts the agent again"
-            );
-        }
-    }
-
-    /// The desktop the apps are started from, laid out as wide as an output: what its notice tabs
-    /// draw on.
-    fn shell() -> ShellDesktop {
-        let (desktop, _strips) = crate::platform::surfaces::desktop(7, 1.0);
-        desktop.with_widgets(|widgets| {
-            widgets.set_placement(tilo_session_core::surface::Placement {
-                origin: (0, 0),
-                size: (1200, 800),
-                scale: 1.0,
-            });
-        });
-        desktop
-    }
-
-    /// Record that this session started launch `id` of `app` as process `pid`, `lived` ago, and
-    /// how far it got: what [`Apps::spawn`] writes when it starts an app, without a process here.
-    fn record_launch(
-        apps: &Apps,
-        id: u64,
-        app: &str,
-        pid: Option<u32>,
-        instance: Option<u64>,
-        lived: std::time::Duration,
-        got: Got,
-    ) {
-        let started = std::time::Instant::now()
-            .checked_sub(lived)
-            .expect("the clock reads past the launch");
-        apps.state.borrow_mut().launched.insert(
-            id,
-            Launching {
-                asked: app.to_owned(),
-                app: app.to_owned(),
-                workspace: WORKSPACE.to_owned(),
-                pid,
-                instance,
-                window: None,
-                tab: None,
-                started,
-                got,
-            },
-        );
-    }
-
-    /// What the desktop shows after `end` ended the app `asked` , which this session started with
-    /// a window that came.
-    fn showed_after(end: End) -> Vec<String> {
-        let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
-        let desktop = shell();
-        apps.attach(desktop.clone());
-        record_launch(
-            &apps,
-            1,
-            "example.Canvas",
-            None,
-            None,
-            std::time::Duration::ZERO,
-            Got::Landed,
-        );
-        apps.state.borrow().spawner.report(Event {
-            id: 1,
-            app: "example.Canvas".to_owned(),
-            title: "Canvas".to_owned(),
-            end,
-            said: OutputTail::default(),
-        });
-        apps.follow();
-        desktop.with_widgets(|widgets| {
-            widgets.relayout();
-            ui::a11y::texts(widgets.host_mut().root_widget())
-        })
-    }
-
-    /// An app that ends cleanly before the window the person asked for came never opened: its tab
-    /// says it could not open, as for an app that crashed, instead of waiting on a window that is
-    /// not coming. Chat did that on the e2e-ws-branch box and left nothing anywhere.
-    #[test]
-    fn an_app_that_ends_cleanly_before_its_window_came_could_not_open() {
-        let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
-        let desktop = shell();
-        apps.attach(desktop.clone());
-        desktop
-            .with_policy(|policy| {
-                policy
-                    .handle()
-                    .dispatch(tilo_desktop_surface::navigation::ChromeEffect::OpenApp {
-                        app: "example.Canvas".into(),
-                        beside: None,
-                        background: None,
-                        float: None,
-                    })
-            })
-            .unwrap();
-        desktop.with_widgets(WidgetSurface::relayout);
-        let asked = desktop.take_launches();
-        assert_eq!(asked.len(), 1, "the person asked for Canvas");
-        // The launch was asked for the tab the shell held for it, and ended before its window
-        // came.
-        record_launch(
-            &apps,
-            1,
-            "example.Canvas",
-            None,
-            asked[0].tab,
-            std::time::Duration::ZERO,
-            Got::Arriving,
-        );
-        apps.state.borrow().spawner.report(Event {
-            id: 1,
-            app: "example.Canvas".to_owned(),
-            title: "Canvas".to_owned(),
-            end: End::exited(0),
-            said: OutputTail::default(),
-        });
-        apps.follow_ended();
-        let shown = desktop.with_widgets(|widgets| {
-            widgets.relayout();
-            ui::a11y::texts(widgets.host_mut().root_widget())
-        });
-        assert!(
-            shown.iter().any(|text| text.contains("could not open")),
-            "the tab says Canvas could not open: {shown:?}"
-        );
-    }
-
-    /// What a person reads when a launch starts nothing: an app this device does not have says so
-    /// under the card's title, and no refusal shows a package id.
-    #[test]
-    fn a_refusal_names_the_app_as_the_shell_names_it() {
-        let activity = tilo_app_launch::PlanError::NotInstalled("so.tilo.activity".into());
-        assert_eq!(
-            refusal_said(&activity),
-            "It is not installed on this machine"
-        );
-        let content = tilo_app_launch::PlanError::ContentUnavailable {
-            app: "so.tilo.activity".into(),
-        };
-        assert!(
-            !refusal_said(&content).contains("so.tilo."),
-            "no package id: {}",
-            refusal_said(&content)
-        );
-    }
-
-    /// An app opened with no tab waiting for it (through the applications action, as an agent or
-    /// a test opens one) that ends at once without ever showing a window never opened: the person
-    /// is told it could not open, with what the app itself said, whether it exited 0 or not.
-    /// Chat did that on the e2e-ws-branch box, nineteen times, and left nothing anywhere.
-    /// `apps` started the app `example.Canvas` as process `id`, `lived` ago, and it ended as `end`
-    /// saying `said` on stderr.
-    fn canvas_ended(apps: &Apps, id: u64, lived: std::time::Duration, end: End, said: &str) {
-        record_launch(apps, id, "example.Canvas", None, None, lived, Got::Arriving);
-        apps.state.borrow().spawner.report(Event {
-            id,
-            app: "example.Canvas".to_owned(),
-            title: "Canvas".to_owned(),
-            end,
-            said: OutputTail {
-                stderr: vec![said.to_owned()],
-                dropped: 0,
-            },
-        });
-    }
-
-    /// What the shell shows as text now.
-    fn texts(desktop: &ShellDesktop) -> Vec<String> {
-        desktop.with_widgets(|widgets| {
-            widgets.relayout();
-            ui::a11y::texts(widgets.host_mut().root_widget())
-        })
-    }
-
-    /// An app that ended without ever showing a window never opened, however long it ran first
-    /// (Chat joined its workspace's record and went, on the e2e-ws-branch box) and however it
-    /// ended: the person is told it could not open, with what it said, though no tab waited.
-    #[test]
-    fn an_app_that_ends_without_ever_showing_a_window_could_not_open() {
-        for (n, end) in [End::exited(0), End::exited(1)].into_iter().enumerate() {
-            let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
-            let desktop = shell();
-            apps.attach(desktop.clone());
-            let id = u64::try_from(n).unwrap() + 1;
-            let lived = std::time::Duration::from_secs(30);
-            canvas_ended(&apps, id, lived, end, "the display refused this app");
-            apps.follow_ended();
-            let shown = texts(&desktop);
-            assert!(
-                shown.iter().any(|text| text.contains("could not open")),
-                "{n}: the person is told Canvas could not open: {shown:?}"
-            );
-            assert!(
-                shown
-                    .iter()
-                    .any(|text| text.contains("the display refused this app")),
-                "{n}: with what Canvas said: {shown:?}"
-            );
-        }
-    }
-
-    /// An app that showed a window and later ended cleanly opened: its end is no notice, even once
-    /// its window is gone from the shell.
-    #[test]
-    fn an_app_that_showed_a_window_and_ended_is_no_notice() {
-        let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
-        let desktop = shell();
-        apps.attach(desktop.clone());
-        let lived = std::time::Duration::from_secs(30);
-        // A process no longer running stands for the launch's: only its descent matters here.
-        let pid = 4_242;
-        record_launch(
-            &apps,
-            1,
-            "example.Canvas",
-            Some(pid),
-            None,
-            lived,
-            Got::Arriving,
-        );
-        let window = Window {
-            id: 11,
-            app_id: Some("example.Canvas".into()),
-            title: Some("Canvas".into()),
-            pid: Some(pid),
-            ..Window::default()
-        };
-        desktop
-            .with_policy(|policy| policy.map(window))
-            .expect("the window maps");
-        texts(&desktop);
-        // The session's pass reads the window the desktop placed as this launch's own.
-        apps.follow_ended();
-        assert_eq!(
-            apps.launch_state("example.Canvas", WORKSPACE),
-            Some(LaunchState::Landed),
-            "a window of the launch's own process appeared"
-        );
-        desktop.with_policy(|policy| policy.unmap(11));
-        texts(&desktop);
-        apps.state.borrow().spawner.report(Event {
-            id: 1,
-            app: "example.Canvas".to_owned(),
-            title: "Canvas".to_owned(),
-            end: End::exited(0),
-            said: OutputTail::default(),
-        });
-        apps.follow_ended();
-        let shown = texts(&desktop);
-        assert!(
-            !shown.iter().any(|text| text.contains("could not open")),
-            "Canvas opened, and closing is no notice: {shown:?}"
-        );
-    }
-
-    #[test]
-    fn an_app_closed_for_memory_says_so_instead_of_crashing() {
-        let closed = showed_after(End::signalled(9).remembering(Cause::Kernel));
-        assert!(
-            closed
-                .iter()
-                .any(|text| text.contains("was closed to free memory")),
-            "the notice says the session ended it: {closed:?}"
-        );
-        assert!(
-            !closed.iter().any(|text| text.contains("stopped working")),
-            "a closing the session did is not a crash: {closed:?}"
-        );
-        assert!(
-            closed.iter().any(|text| text == "Reopen"),
-            "the notice offers a way back: {closed:?}"
-        );
-
-        let runaway = showed_after(End::signalled(9).remembering(Cause::Runaway));
-        assert!(
-            runaway
-                .iter()
-                .any(|text| text.contains("was using too much memory")),
-            "a runaway app is told apart: {runaway:?}"
-        );
-
-        let crashed = showed_after(End::signalled(9));
-        assert!(
-            crashed
-                .iter()
-                .any(|text| text.starts_with("Canvas stopped working")),
-            "without a cause the same end is still a crash: {crashed:?}"
-        );
-    }
-}
+mod tests;

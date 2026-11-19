@@ -355,9 +355,9 @@ pub struct Proposal {
     pub args: Option<Vec<Ident>>,
 }
 
-/// `primary`, `destructive` or `migration` before `action`: how the action is, not where a surface
-/// shows it. A surface decides placement from what the action offers a person, never from its role;
-/// only a migration is left out.
+/// `primary`, `destructive`, `migration` or `initial` before `action`: how the action is, not where
+/// a surface shows it. A surface decides placement from what the action offers a person, never from
+/// its role; only a migration and an initial action are left out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionRole {
     /// The one main action on its target: the header's Primary button and the empty state's
@@ -368,6 +368,9 @@ pub enum ActionRole {
     /// `migration action`: never offered; the platform runs it once on each resource an earlier
     /// version wrote.
     Migration,
+    /// `initial action`: never offered; what each new resource of its type starts with, which
+    /// the platform writes in the change that makes the resource.
+    Initial,
 }
 
 impl ActionRole {
@@ -376,6 +379,7 @@ impl ActionRole {
             Self::Primary => "primary",
             Self::Destructive => "destructive",
             Self::Migration => "migration",
+            Self::Initial => "initial",
         }
     }
 }

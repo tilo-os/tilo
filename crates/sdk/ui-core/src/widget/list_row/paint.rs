@@ -255,7 +255,8 @@ impl ListRowFace<'_> {
             }
             if let (Some((value, size)), right) = (self.value, geo.value_right) {
                 // A body value says something of the row (a size, a count, a time), so it reads
-                // a step under the name it belongs to; a title value is the row's main figure.
+                // as the row's other facts do, a caption in dim ink under the name it belongs to;
+                // a title value is the row's main figure.
                 let (style, ink) = match size {
                     RowValue::Body => (&m.value_body, theme.text_dim),
                     RowValue::Title => (&m.value_title, theme.text_primary),

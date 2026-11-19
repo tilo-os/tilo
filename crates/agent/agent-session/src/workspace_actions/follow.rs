@@ -16,7 +16,7 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 
-use super::{Shared, WorkspaceActions, tree_put};
+use super::{Shared, WorkspaceActions};
 
 /// How long a held follow looks again at the log even when it was not woken:
 /// short, so an asker that goes away frees the thread, and never the source of
@@ -44,7 +44,9 @@ impl WorkspaceActions {
                     InvocationState::new(invocation, entry.update.clone())
                         .left_at(entry.left_at.clone())
                         .linked(entry.link.clone())
-                        .with_untrusted(tree_put::answers_from_outside(&entry.request.target))
+                        .with_untrusted(super::tree_put::answers_from_outside(
+                            &entry.request.target,
+                        ))
                 })
         };
         let Some(wait) = wait_ms
@@ -74,7 +76,7 @@ impl WorkspaceActions {
                                 InvocationState::new(invocation, entry.update.clone())
                                     .left_at(entry.left_at.clone())
                                     .linked(entry.link.clone())
-                                    .with_untrusted(tree_put::answers_from_outside(
+                                    .with_untrusted(super::tree_put::answers_from_outside(
                                         &entry.request.target,
                                     ))
                             }),

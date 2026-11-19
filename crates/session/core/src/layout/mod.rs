@@ -118,23 +118,6 @@ impl Item {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "do", rename_all = "kebab-case")]
 pub enum LayoutAction {
-    /// Retired: a window of an app stood in a strip, before a place was made from the resource it
-    /// shows ([`Self::Place`]). Kept in place because an action already written names a variant by
-    /// its position; one that sends it is refused.
-    RetiredOpenInto {
-        strip: u64,
-        #[serde(default)]
-        after: Option<u64>,
-        place: u64,
-        shows: String,
-        #[serde(default)]
-        view: String,
-        #[serde(default)]
-        record: String,
-        /// The window's state, as the desktop model keeps it.
-        #[serde(default)]
-        state: serde_json::Value,
-    },
     /// Move the place `place` into the row `row` , before the place `before` or last. A `strip`
     /// names a strip it becomes a tab of, in front, instead of the place's own strip: how a person,
     /// an agent and the REPL open something beside what they are in, and how a drag from a tab or a
@@ -1209,7 +1192,7 @@ impl Layout {
     /// rather than placing a second time.
     #[must_use]
     pub fn place_of(&self, resource: &str) -> Option<u64> {
-        let records = self.records();
+        let records = self.window_resources();
         self.handle.read(|tree| {
             tree.workspaces
                 .iter()
@@ -1227,7 +1210,7 @@ impl Layout {
     /// goes to it"). Opening the root and then one view inside it is one thing open, not two.
     #[must_use]
     pub fn place_of_root(&self, resource: &str) -> Option<u64> {
-        let records = self.records();
+        let records = self.window_resources();
         let root = root_of(resource);
         self.handle.read(|tree| {
             tree.workspaces
@@ -1382,7 +1365,7 @@ impl Layout {
     /// publishes on its api for a shell to draw, read off the layout as it stands.
     #[must_use]
     pub fn reading(&self) -> Reading {
-        let records = self.records();
+        let records = self.window_resources();
         let catalog = self.catalog.borrow();
         let mut reading = self
             .handle
@@ -1447,9 +1430,11 @@ impl Layout {
         self.query_held.borrow().get(&place.to_string()).cloned()
     }
 
-    /// The record each window shows, by tab, as the layout keeps it: what a place put on a record was
-    /// placed on, and what a window took up.
-    fn records(&self) -> BTreeMap<TabId, String> {
+    /// The resource each window shows, by tab, as the layout keeps it: what a place put on a
+    /// resource was placed on, what a window took up, and what its bar carries when a person picks
+    /// it up, on every device of theirs that reads this layout.
+    #[must_use]
+    pub fn window_resources(&self) -> BTreeMap<TabId, String> {
         self.layouts.shown()
     }
 
@@ -1459,7 +1444,7 @@ impl Layout {
     /// workspace of the layout, not only the one in front.
     #[must_use]
     pub fn records_by_workspace(&self) -> BTreeMap<String, std::collections::BTreeSet<String>> {
-        let records = self.records();
+        let records = self.window_resources();
         self.handle.read(|tree| {
             tree.workspaces
                 .iter()
@@ -1723,9 +1708,6 @@ fn change(
     catalog: &Rc<RefCell<Catalog>>,
 ) -> Result<bool, String> {
     match action {
-        LayoutAction::RetiredOpenInto { .. } => {
-            Err("a place is made from the resource it shows, not opened as an app".into())
-        }
         LayoutAction::Move {
             place,
             row,
@@ -2329,8 +2311,6 @@ pub fn verb(action: &LayoutAction) -> &'static str {
         LayoutAction::Snap { .. } => "snap-back",
         LayoutAction::Show { .. } => "show",
         LayoutAction::RetryQuery { .. } => "retry",
-        // Refused before it is stepped: it names no change of the layout.
-        LayoutAction::RetiredOpenInto { .. } => "retired",
     }
 }
 

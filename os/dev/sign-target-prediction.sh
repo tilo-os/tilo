@@ -264,16 +264,15 @@ PY
   chmod 0755 "$work/layer/boot/tilo-target/predictions" \
     "$work/layer/boot/EFI/tilo/pcr-predictions"
 
-  local -a build_args=(-t "$image" -f - --build-arg "BASE_IMAGE=$image")
+  # The Containerfile is a file in the build context, not stdin: podman resolves
+  # `-f -` through /dev/stdin, which t's micro-VMs do not have.
+  printf '%s\n' 'ARG BASE_IMAGE' 'FROM ${BASE_IMAGE}' 'COPY boot/ /boot/' > "$work/layer/Containerfile"
+  local -a build_args=(-t "$image" -f "$work/layer/Containerfile" --build-arg "BASE_IMAGE=$image")
   if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
     mapfile -t reproducible < <(podman_epoch_args "$SOURCE_DATE_EPOCH")
     build_args+=("${reproducible[@]}")
   fi
-  podman build "${build_args[@]}" "$work/layer" <<'EOF'
-ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
-COPY boot/ /boot/
-EOF
+  podman build "${build_args[@]}" "$work/layer"
   msg "signed PCR11 prediction for generation $generation over the exact resealed target UKI"
 }
 

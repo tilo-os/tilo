@@ -229,7 +229,11 @@ root Letters
 
 default view letters for Letters
 
-default view draft_line for Draft
+default view draft for Draft
+
+view draft(d: Draft) {
+    text(d.to)
+}
 
 view letters(letters: Letters) {
     std.list(letters.drafts) { (d, at) ->

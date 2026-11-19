@@ -20,9 +20,9 @@ use tilo_desktop_surface::{
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;
 use tilo_ui::webview::paint::PaintEngine;
-use tilo_ui::webview::test_engine::TestEngine;
-use tilo_ui::webview::{WebViewCommand, WebViewEngine};
 use tilo_ui::widget::{TileContent, TileHost};
+use tilo_webview::test_engine::TestEngine;
+use tilo_webview::{WebViewCommand, WebViewEngine};
 
 /// The page the publisher's engine drew: a header, a sidebar and a button.
 const PAGE: &str = include_str!("../../../browser/paint-stream/tests/fixtures/layers.top.json");

@@ -527,6 +527,19 @@ keyboard-shortcuts-resource = Keyboard shortcuts
 keyboard-shortcuts-list = List shortcuts
 keyboard-shortcuts-list-description = Every desktop shortcut with its current and default keys.
 
+## An agent asks its person something in its own words: a decision, or
+## something only they know.
+agent-ask-title = { $agent } asks you
+agent-ask-workspace = Workspace
+agent-ask-send = Send
+agent-ask-not-now = Not now
+agent-ask-pick-or-type = Pick an answer or type one.
+agent-question-more-label = Also waiting
+agent-question-more = { $count ->
+    [one] 1 more question
+   *[other] { $count } more questions
+}
+
 ## The collaboration network's own questions: an agent on a workspace host
 ## asks its person to allow one action, and a device asks its sibling for the
 ## disk key it boots with.
@@ -728,6 +741,7 @@ so-tilo-workspace-settings-change-revoke-delegation = Take back your work from a
 so-tilo-workspace-settings-change-set-agent-answer = Answer for one kind
 so-tilo-workspace-settings-change-set-agent-model = Choose the model
 so-tilo-workspace-settings-change-set-agent-spend-limit = Set the daily limit
+so-tilo-workspace-settings-change-set-moderation = Turn moderation on or off
 so-tilo-workspace-settings-change-set-role = Change a role
 so-tilo-workspace-settings-change-show-tab = Show a tab
 so-tilo-workspace-settings-change-toggle-device = Show on a device
@@ -754,7 +768,7 @@ pair-device-no-workspace = Open a workspace first: the link opens it on your new
 pair-device-not-yours = This computer isn't signed in as you, so it can't let a new device in.
 pair-device-no-link = The link could not be made. Close this and try again.
 pair-device-waiting-title = Machines waiting to join
-pair-device-waiting-nothing = No machine is waiting. A machine set up from one of your devices appears here when it asks to join.
+pair-device-waiting-nothing = No machine is waiting. A machine set up from one of your devices waits for your approval when it asks to join.
 pair-device-waiting-approve = Approve
 pair-device-waiting-decline = Decline
 pair-device-link-field = The machine's link

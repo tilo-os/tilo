@@ -100,6 +100,8 @@ pub(crate) fn follow_published(
                             workspaces.governor().clone(),
                             agent,
                         );
+                        // A person who governs the workspace turns it on.
+                        workspaces.offer_moderation(&workspace).await;
                         running.insert(workspace, tokio::spawn(bot.run()));
                     }
                     Err(error) => {

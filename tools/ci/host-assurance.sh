@@ -1,24 +1,46 @@
 #!/usr/bin/env bash
-# The server image proves itself by booting, in a VM: the machine comes up
-# serving (the hosted-VM service binds its socket, the boot judges itself, an
-# update stages through the verified path), and an update that breaks the server
-# rolls itself back without anyone at the machine.
+# The server image proves itself by booting, in a VM: the machine boots the boot
+# loader and UKI a release signs under Secure Boot and refuses a UKI whose command
+# line was edited or that nobody signed, comes up serving (the hosted-VM service
+# binds its socket, the boot judges itself, an update stages through the verified
+# path), an update that breaks the server rolls itself back without anyone at the
+# machine, and an update from a registry is verified before it stages.
 #
-# The disk is the image the check image-host built, installed the way the
-# desktop's dev disk is (os/dev/build-image.sh, bootc install to-filesystem).
-# The update staged on it is the same image with one more layer, so bootc sees a
-# different deployment; os/tests/boot_assessment_rollback.sh then stages it,
-# breaks only it and reboots until the boot loader has spent its tries and gone
-# back. The server image runs no sshd, so every step is driven at the serial
-# console, which is also how a person reaches it (os/tests/serial_runner.sh).
+# The image is the one image-host built, its boot chain signed as a release signs
+# it (sign-boot-loader, os-release.sh sign-boot, host-seal.sh apply) with
+# throwaway EFI and PCR keys, one check-only layer more so the image trusts this
+# check's PCR key the way a release trusts the release one, installed the way the
+# desktop's dev disk is (os/dev/build-image.sh, bootc install to-filesystem) onto
+# a LUKS2 root with a LUKS2 store, the layout the installer makes
+# (TILO_ENCRYPT_INSTALL=1). That install opens the volume through device-mapper,
+# which this check's micro-VM has not, so it runs in a guest of its own, booted by
+# the same VM harness with a software TPM; the machine under test then boots that
+# disk with the same TPM, under firmware that enforces Secure Boot with the
+# throwaway EFI certificate as its only key, and the recovery key the install
+# handed over is what opens it the first time.
+#
+# The installer enrolled its TPM keyslot in a guest whose PCR 7 is not the
+# machine's, so it cannot open there. The installed machine seals the volume to
+# itself — the shipped tilo-rollback enrol, against the signed PCR 11 prediction
+# and this machine's live PCR 7 — and reboots with nothing typed to prove the
+# PIN-less keyslot opens it. Then the floor moves: a signed approval per increment,
+# requested by the machine and issued by the throwaway authority, and an older
+# signed image (its measurement authorized as generation 0, below any floor) must
+# not unseal. The update staged on it is the same image with one more layer, sealed
+# and signed the same way, so bootc sees a different deployment the firmware still
+# accepts; os/tests/boot_assessment_rollback.sh then stages it, breaks only it
+# and reboots until the boot loader has spent its tries and gone back, answering
+# each boot's unlock prompt. The server image runs no sshd, so every step is
+# driven at the serial console, which is also how a person reaches it
+# (os/tests/serial_runner.sh).
 #
 # The record of every boot lands in /target/host-assurance.
 set -euo pipefail
+. tools/ci/publish/lib.sh
 
 arch=x86_64
 work=/var/tmp/host-assurance
 out=${CARGO_TARGET_DIR:-/target}/host-assurance
-pub=/target/publish/host
 update_ref=localhost/tilo-host:assurance-update
 
 # Where the disk's account comes from, and what the console runner signs in as
@@ -49,6 +71,8 @@ report_exit() {
 trap report_exit EXIT
 
 bash tools/ci/install-packages.sh tools/ci/packages/boot-assessment.txt
+rpm -q binutils openssl >/dev/null 2>&1 \
+  || dnf install -y --setopt=install_weak_deps=False binutils openssl >/dev/null
 command -v qemu-system-x86_64 qemu-img podman skopeo systemd-repart >/dev/null
 ./os/dev/assert-native-arch.sh "$arch"
 python3 os/dev/probe-kvm.py "$arch" || {
@@ -59,8 +83,9 @@ python3 os/dev/probe-kvm.py "$arch" || {
 rm -rf "$work" "$out"
 mkdir -p "$work" "$out"
 target=$(git rev-parse HEAD)
-[[ -s $pub/image.oci.tar && -s $pub/digest ]] \
-  || die "no server image in $pub: the check needs image-host"
+built=/target/publish/host
+[[ -s $built/image.oci.tar && -s $built/digest && -s $built/generation ]] \
+  || die "no server image in $built: the check needs image-host"
 
 modprobe fuse 2>/dev/null || true
 modprobe loop 2>/dev/null || true
@@ -71,7 +96,7 @@ losetup --find >/dev/null
 say 'install the server image'
 # What this step is given and what it has to put it in, so a failure here says
 # which of the two ran out rather than only that the step died.
-printf 'image archive: %s bytes\n' "$(stat -c %s "$pub/image.oci.tar")" >&2
+printf 'server image archive: %s bytes\n' "$(stat -c %s "$built/image.oci.tar")" >&2
 df -h /var /tmp /target 2>&1 >&2 || true
 free -m >&2 || true
 # A command whose failure must be readable: its stderr goes to the console as
@@ -86,6 +111,94 @@ loud() {
 # sandbox last pointed TMPDIR.
 export TMPDIR=$work/tmp
 loud mkdir -p "$TMPDIR" || die "cannot make $TMPDIR"
+scratch=$TMPDIR
+
+# The boot chain signed as a release signs it (sign-boot-loader, os-release.sh sign-boot,
+# host-seal.sh apply), with throwaway EFI and PCR keys made here: the firmware below
+# trusts those keys and nothing else, and the installed image trusts the throwaway PCR
+# key the way a released image trusts the release one.
+export TILO_BOOT_SIGNER_DRY_RUN=$work/boot-keys TILO_BOOT_SIGNING_DRY_RUN=1
+bash tools/signing/boot-signer.sh export-efi-cert "$work/efi.crt" \
+  || die 'cannot make the throwaway boot signing keys'
+signed_image() {  # SEALED OUT: SEALED's boot chain signed, the image into OUT
+  bash tools/ci/publish/os-release.sh sign-boot "$1" "$work/boot-signed" 2> >(tee /dev/console >&2) \
+    || die "could not sign the boot chain of $1"
+  bash tools/ci/publish/host-seal.sh apply "$1" "$work/boot-signed" "$2" 2> >(tee /dev/console >&2) \
+    || die "could not add the signed boot chain to $1"
+  rm -rf "$work/boot-signed"
+}
+say 'build the image a release ships: its boot loader signed, its PCR authority this machine'
+# The image image-host built carries the release PCR verification key, and the
+# initramfs that verifies a prediction was built with it: it is inside the UKI,
+# so a keyslot sealed to a prediction this check signs could never open. So this
+# check's image, before the seal computes its digest, gets the throwaway public
+# key in place of the release one (rootfs and initramfs alike) and the boot
+# loader signed with the throwaway EFI key (tools/ci/publish/sign-boot-loader.sh,
+# the release's own step). Everything after is the release path unchanged.
+built_name=localhost/tilo-host:built
+load_archive "$built" "$built_name"
+mkdir -p "$work/uki-dir" "$work/kernel"
+podman create --name host-assurance-built "$built_name" >/dev/null
+podman cp "host-assurance-built:/boot/EFI/Linux/." "$work/uki-dir"
+podman cp "host-assurance-built:/kernel/." "$work/kernel"
+podman rm host-assurance-built >/dev/null
+kver=$(ls "$work/kernel")
+[[ -s $work/kernel/$kver/vmlinuz ]] || die "the image carries no /kernel/$kver/vmlinuz"
+set -- "$work"/uki-dir/*.efi
+[[ $# -eq 1 ]] || die 'the image does not carry exactly one UKI'
+uki_name=$(basename "$1")
+objcopy --dump-section .cmdline="$work/uki.cmdline" "$1"
+objcopy --dump-section .osrel="$work/uki.osrel" "$1"
+tr -d '\000' < "$work/uki.cmdline" > "$work/cmdline"
+tr -d '\000' < "$work/uki.osrel" > "$work/osrel"
+mkdir -p "$work/trusted"
+printf 'FROM %s\nCOPY pcr.pem /usr/share/tilo/tpm2-pcr-signing.public.pem\n' "$built_name" \
+  > "$work/trusted/Containerfile"
+cp "$work/boot-keys/pcr.pem" "$work/trusted/pcr.pem"
+SOURCE_DATE_EPOCH=$(podman image inspect --format '{{.Created.Unix}}' "$built_name") \
+  podman build -q --pull=never -t localhost/tilo-host:trusted \
+    -f "$work/trusted/Containerfile" "$work/trusted" >/dev/null \
+  || die "cannot build the image that trusts this check's PCR authority"
+# The initramfs is the image's own recipe (os/scripts/build-initramfs.sh, the
+# headless module set), run over the image that now holds this check's key.
+podman run --rm --privileged --pull=never --network=none -v "$work:/work:Z" \
+  --entrypoint bash localhost/tilo-host:trusted -c '
+set -euo pipefail
+TILO_INITRAMFS_MODULES="crypt systemd-cryptsetup tpm2-tss tilo-rollback" \
+  bash /usr/local/bin/build-initramfs.sh "$1"
+cp "/usr/lib/modules/$1/initramfs.img" /work/initramfs.img
+' initramfs "$kver" 2> >(tee /dev/console >&2) \
+  || die 'cannot build the initramfs that trusts this check'"'"'s PCR key'
+# And the UKI around it: the image's kernel, command line and os-release, which
+# is the same assembly the image build runs (os/dev/uki.sh).
+mkdir -p "$work/uki-tools"
+tar -xf /target/publish/host-base/uki-tools/image.oci.tar -C "$work/uki-tools"
+podman tag "$(podman pull -q "oci:$work/uki-tools")" localhost/tilo-uki-tools:ci
+podman run --rm --pull=never --network=none -v "$work:/work:Z" \
+  --entrypoint ukify localhost/tilo-uki-tools:ci build \
+  --linux "/work/kernel/$kver/vmlinuz" --initrd /work/initramfs.img --uname "$kver" \
+  --cmdline "@/work/cmdline" --os-release "@/work/osrel" --output /work/uki.efi \
+  2> >(tee /dev/console >&2) || die 'cannot assemble the image'"'"'s UKI with this check'"'"'s initramfs'
+printf 'FROM localhost/tilo-host:trusted\nCOPY uki.efi /boot/EFI/Linux/%s\n' "$uki_name" \
+  > "$work/trusted/Containerfile"
+cp "$work/uki.efi" "$work/trusted/uki.efi"
+SOURCE_DATE_EPOCH=$(podman image inspect --format '{{.Created.Unix}}' localhost/tilo-host:trusted) \
+  podman build -q --pull=never -t localhost/tilo-host:trusted-image \
+    -f "$work/trusted/Containerfile" "$work/trusted" >/dev/null \
+  || die 'cannot put the rebuilt UKI into the image'
+mkdir -p "$work/trusted-image"
+save_archive localhost/tilo-host:trusted-image "$work/trusted-image"
+cp "$built/rpms-source" "$work/trusted-image/rpms-source"
+bash tools/ci/publish/sign-boot-loader.sh "$work/trusted-image" "$work/loader-signed" \
+  2> >(tee /dev/console >&2) || die "cannot sign the image's boot loader"
+bash tools/ci/publish/host-seal.sh seal "$work/loader-signed" "$work/sealed" \
+  2> >(tee /dev/console >&2) || die 'cannot seal the signed image'
+sealed=$work/sealed
+say 'sign the sealed server image'
+signed_image "$sealed" "$work/signed"
+pub=$work/signed
+
+
 # The image as an unpacked OCI layout, the way the desktop disk checks load
 # theirs: a transport that reads the archive file itself holds every layer it
 # unpacks in the step's memory, which is what ended this step on its 1.16 GB
@@ -113,21 +226,234 @@ digest=$(loud skopeo inspect --format '{{.Digest}}' "oci:$layout${tag:+:$tag}") 
 image=$(loud podman pull -q "oci:$layout${tag:+:$tag}") \
   || die "podman could not load the image in $pub/image.oci.tar"
 loud podman tag "$image" localhost/tilo-host:ci || die "cannot name the loaded image"
-say 'install the image on a disk'
-TILO_IMAGE=localhost/tilo-host:ci TILO_SKIP_BUILD=1 TILO_DISTROBOX="" \
-  TILO_OUTPUT=$work/install TILO_RUN=$work/install-run TILO_DISK_SIZE=64G \
-  TILO_TARGET_IMGREF="registry.tilo.so/tilo/tilo-host:main-${target:0:7}-ci" \
-  ./os/dev/build-image.sh 2> >(tee /dev/console >&2) \
-  || die "the disk install failed"
+
+# An older signed image, for the floor to refuse later: the same rootfs and one
+# layer more, sealed and signed as the release signs (host-seal.sh seal,
+# os-release.sh sign-boot), its measurement signed as generation 0 — the
+# generation before the server's dense series starts. It is not installed; what
+# it proves is that the TPM will not unseal a generation below the floor.
+# Built over the sealed image, not the signed one: the seal reseals the image's
+# UKIs in one layer of its own, and the signed image already carries a second
+# UKI (/boot/tilo-target) that would make that two.
+say 'build an older signed image'
+older=localhost/tilo-host:older
+n=$(cat "$pub/generation")
+[[ $n =~ ^[1-9][0-9]*$ ]] || die "the sealed image carries no generation"
+load_archive "$sealed" localhost/tilo-host:sealed
+mkdir -p "$work/older"
+printf 'FROM localhost/tilo-host:sealed\nRUN echo %s > /usr/lib/tilo/host-assurance-older\n' "$target" \
+  > "$work/older/Containerfile"
+SOURCE_DATE_EPOCH=$(podman image inspect --format '{{.Created.Unix}}' localhost/tilo-host:sealed) \
+  podman build -q --pull=never -t "$older" -f "$work/older/Containerfile" "$work/older" >/dev/null \
+  || die 'cannot build the older image'
+mkdir -p "$work/older-built"
+save_archive "$older" "$work/older-built"
+cp "$pub/rpms-source" "$work/older-built/rpms-source"
+bash tools/ci/publish/host-seal.sh seal "$work/older-built" "$work/older-sealed" \
+  2> >(tee /dev/console >&2) || die 'cannot seal the older image'
+bash tools/ci/publish/os-release.sh sign-boot "$work/older-sealed" "$work/older-signed" \
+  2> >(tee /dev/console >&2) || die 'cannot sign the older image'
+# The prediction the authority signs is over approved_policy || generation (the
+# same message sign-target-prediction.sh prepare makes), so naming generation 0
+# here and signing again is what makes this image's seal an older one.
+printf '0\n' > "$work/older-signed/boot/generation"
+python3 - "$work/older-signed/boot/approved.bin" "$work/older-signed/boot/message.bin" <<'PY'
+import struct, sys
+approved, message = sys.argv[1:]
+open(message, 'wb').write(open(approved, 'rb').read() + struct.pack('>Q', 0))
+PY
+bash tools/signing/boot-signer.sh sign-sha256-rsa-pkcs1 \
+  "$work/older-signed/boot/message.bin" "$work/older-signed/boot/message.sig" \
+  || die "cannot sign the older image's prediction"
+load_archive "$work/older-sealed" "$older"
+TILO_BOOT_SIGNING_DRY_RUN=1 bash os/dev/sign-target-prediction.sh apply "$older" "$work/older-signed/boot" \
+  2> >(tee /dev/console >&2) || die "cannot add the older image's signed boot files"
+podman create --name host-assurance-older "$older" >/dev/null
+mkdir -p "$work/older-efi" "$work/older-predictions"
+podman cp "host-assurance-older:/boot/EFI/Linux/." "$work/older-efi"
+podman cp "host-assurance-older:/boot/tilo-target/predictions/." "$work/older-predictions"
+podman rm host-assurance-older >/dev/null
+[[ $(printf '%s\n' "$work"/older-efi/*.efi | wc -l) -eq 1 ]] || die 'the older image does not carry exactly one UKI'
+grep -q '"generation":0' "$work/older-predictions"/generation-0.json \
+  || die 'the older image carries no generation-0 prediction'
+
+# The install runs in a guest of the check's own, booted by the same VM harness
+# the machine under test is: this check's micro-VM has no device-mapper (dm_mod
+# does not load in it), and the encrypted layout opens the volume through one.
+# The guest is this tree's dev disk — the machine the desktop's encrypted-install
+# check installs from — and the command inside it is the one the check ran on its
+# own disk before encryption: os/dev/build-image.sh with TILO_ENCRYPT_INSTALL=1,
+# unchanged, so what is proved here is the shipped path and not a second one.
+say 'install the image on an encrypted disk, in a guest that can open one'
+dev_disk=/target/publish/os-dev-disk/x86_64/disk/disk.qcow2
+[[ -s $dev_disk ]] || die "no dev disk in /target/publish/os-dev-disk: the check needs os-dev-disk-lean"
+# The dev disk is an output other checks read too: this guest writes to an
+# overlay of it, never to it.
+qemu-img create -q -f qcow2 -F qcow2 -b "$dev_disk" "$work/guest.qcow2"
+imgref="registry.tilo.so/tilo/tilo-host:main-${target:0:7}-ci"
+# The install's clock: the tree the guest installs from is sent without its Git,
+# and a zero clock is one DNF rejects every RPM header on.
+epoch=$(git log -1 --format=%ct)
+guest_work=/var/tmp/host-assurance-install
+# The install guest and the machine under test are two boots of one emulated
+# TPM, which is the device a keyslot is sealed to: the TPM state lives beside
+# both runs, and each boot has a run directory of its own so one machine's
+# console log is never read as the other's.
+export TILO_DISTROBOX="" TILO_ACCEL=kvm TILO_USER TILO_PASS
+export TILO_TPM_DIR=$work/tpm
+installer_run=$work/installer-run
+TILO_RUN=$installer_run ./os/dev/vm.sh boot --2d --tpm --disk "$work/guest.qcow2" \
+  || die 'the install guest did not boot'
+# The guest is driven over the SSH a dev disk gives the VM harness, as root
+# through sudo: the install runs with the privileges it would have had here.
+unset SSH_ASKPASS SSH_ASKPASS_REQUIRE
+ssh_guest() {
+  sshpass -p "$TILO_PASS" ssh -F /dev/null -p "${TILO_SSH_PORT:-2222}" \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=600 \
+    -o LogLevel=ERROR -o NumberOfPasswordPrompts=1 \
+    -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+    -o KbdInteractiveAuthentication=no "$TILO_USER@127.0.0.1" "$@"
+}
+as_guest_root() {
+  ssh_guest "printf '%s\n' '$TILO_PASS' | sudo -S -p '' bash -c $(printf '%q' "$1")"
+}
+stop_installer() {
+  TILO_RUN=$installer_run ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+}
+trap 'stop_installer; report_exit' EXIT
+for _ in $(seq 1 90); do ssh_guest true >/dev/null 2>&1 && break; sleep 10; done
+ssh_guest true >/dev/null || { stop_installer; die 'the install guest never answered over ssh'; }
+# What the guest installs from, sent in: this checkout's install tools (os/) and
+# the image whose digest the check just proved, unpacked where the guest's own
+# root podman loads it.
+loud ssh_guest "install -d -m 0700 $guest_work/src $guest_work/image" \
+  || die "could not make the install guest's work directories"
+tar -C "$PWD" -cf - os | ssh_guest "tar -C $guest_work/src -xf -" \
+  || die 'could not send the install tools to the guest'
+tar -C "$layout" -cf - . | ssh_guest "tar -C $guest_work/image -xf -" \
+  || die 'could not send the image to the guest'
+cat > "$work/guest-install.sh" <<EOF
+set -euo pipefail
+# The container's own storage and scratch, made first: podman refuses a bind
+# mount whose source it did not make itself.
+install -d -m 0700 $guest_work/inner/containers $guest_work/inner/tmp
+# The disk step runs in a container on the guest, as the installer medium's
+# build does on its worker VM (tools/ci/medium-in-worker-vm.sh): the tools it
+# needs are installed there, and the guest's own root is an immutable image that
+# installs nothing. The container shares the guest's kernel, so the volume it
+# opens is the guest's device-mapper.
+podman run --rm --privileged --network host --security-opt label=disable \\
+  -v /dev:/dev -v $guest_work:/var/w \\
+  -v $guest_work/inner/containers:/var/lib/containers \\
+  -v $guest_work/inner/tmp:/tmp \\
+  -e HOME=/root -e TMPDIR=/tmp \\
+  --entrypoint bash registry.fedoraproject.org/fedora:44 -eo pipefail -c '
+set -euo pipefail
+dnf install -y --setopt=install_weak_deps=False podman skopeo fuse-overlayfs e2fsprogs \\
+  util-linux jq python3 dosfstools btrfs-progs systemd mtools qemu-img sudo curl tar gzip zstd \\
+  cryptsetup shadow-utils >/dev/null
+image=\$(podman pull -q oci:/var/w/image${tag:+:$tag})
+podman tag "\$image" localhost/tilo-host:ci
+cd /var/w/src
+TILO_IMAGE=localhost/tilo-host:ci TILO_SKIP_BUILD=1 TILO_DISTROBOX= \\
+TILO_ENCRYPT_INSTALL=1 TILO_DISK_SIZE=64G TILO_TARGET_IMGREF=$imgref \\
+TILO_OUTPUT=/var/w/install TILO_RUN=/var/w/install-run \\
+SOURCE_DATE_EPOCH=$epoch \\
+  ./os/dev/build-image.sh
+'
+EOF
+ssh_guest "cat > $guest_work/install.sh" < "$work/guest-install.sh" \
+  || die 'could not put the install script on the guest'
+installer_status=0
+as_guest_root "bash $guest_work/install.sh" 2> >(tee /dev/console >&2) || installer_status=$?
+if [[ $installer_status != 0 ]]; then
+  # A failed install keeps its own log in its own guest: bring the reason out
+  # while the guest is still up, then stop it.
+  as_guest_root "tail -n 200 $guest_work/install/qcow2/.install.log 2>/dev/null" >&2 || true
+  stop_installer
+  die "the disk install failed in its guest (exit $installer_status)"
+fi
+# The disk and the one recovery key the install made, out of the guest while it
+# is still up. The key is this check's way into the machine at every boot until
+# the image carries a signed boot chain for a TPM keyslot, which this one does
+# not yet.
+mkdir -p "$work/install"
+ssh_guest "tar -C $guest_work/install -cf - qcow2/disk.qcow2 qcow2/recovery-key.txt" \
+  | tar -C "$work/install" -xf - \
+  || { stop_installer; die 'could not take the installed disk out of the guest'; }
+stop_installer
 disk=$work/disk.qcow2
 mv "$work/install/qcow2/disk.qcow2" "$disk"
+[[ -s $work/install/qcow2/recovery-key.txt ]] \
+  || die "the encrypted install left no recovery key; the disk would be unopenable"
+TILO_UNLOCK_SECRET=$(cat "$work/install/qcow2/recovery-key.txt")
+[[ -n $TILO_UNLOCK_SECRET ]] || die "the install's recovery key file is empty"
+export TILO_UNLOCK_SECRET
 
-# The update: the same image and one more layer, a different deployment, carried
-# to the guest on a small disk of its own (there is no sshd to copy it with).
-say 'build the update the machine will stage'
+raw=$work/disk.raw
+qemu-img convert -f qcow2 -O raw "$disk" "$raw"
+# The install put the boot loader the image carries on the ESP: the `.efi.signed`
+# companion sign-boot-loader.sh signed into it, both copies (bootctl selects it
+# for EFI/systemd and EFI/BOOT). Nothing is signed here; the firmware's verdict
+# below is about what the release path produced.
+esp_offset=$(sfdisk -J "$raw" | python3 -c 'import json, sys
+table = json.load(sys.stdin)["partitiontable"]
+esp = [p for p in table["partitions"] if p["type"].upper() == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"]
+assert len(esp) == 1, esp
+print(esp[0]["start"] * table.get("sectorsize", 512), esp[0]["size"] * table.get("sectorsize", 512))') \
+  || die "cannot find the ESP on $raw"
+read -r esp_start esp_size <<<"$esp_offset"
+mkdir -p "$work/esp"
+mount -o "loop,offset=$esp_start,sizelimit=$esp_size" "$raw" "$work/esp" || die 'cannot mount the ESP'
+podman create --name host-assurance-loader localhost/tilo-host:ci >/dev/null
+podman cp host-assurance-loader:/usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed "$work/loader.signed"
+podman rm host-assurance-loader >/dev/null
+[[ -s $work/loader.signed ]] || die 'the installed image carries no signed boot loader'
+loaders=0
+for loader in "$work"/esp/EFI/BOOT/BOOT*.EFI "$work"/esp/EFI/systemd/systemd-boot*.efi; do
+  [[ -f $loader ]] || continue
+  cmp -s "$work/loader.signed" "$loader" \
+    || die "$loader is not the signed boot loader the image carries"
+  loaders=$((loaders + 1))
+done
+ls -R "$work/esp" > "$out/esp.txt" 2>&1 || true
+umount "$work/esp"
+(( loaders > 0 )) || die 'the install put no systemd-boot on the ESP'
+qemu-img convert -f raw -O qcow2 "$raw" "$disk"
+rm -f "$raw"
+
+# The firmware's variable store with Secure Boot on and the throwaway EFI
+# certificate as its only key (os/dev/prepare-release-secureboot-vars.sh, as a
+# release machine enrols the release certificate): anything that certificate did
+# not sign is refused. The store's certificate check runs the image's own
+# tilo-crypto, as the signing steps do.
+rpm -q python3-virt-firmware >/dev/null 2>&1 \
+  || dnf install -y --setopt=install_weak_deps=False python3-virt-firmware >/dev/null
+mkdir -p "$work/bin"
+cat > "$work/bin/tilo-crypto" <<'EOF'
+#!/bin/sh
+exec podman run --rm --network=none -v "$(dirname "$2"):/in:ro,Z" \
+  --entrypoint /usr/libexec/tilo/tilo-crypto localhost/tilo-host:ci "$1" "/in/$(basename "$2")"
+EOF
+chmod 0755 "$work/bin/tilo-crypto"
+bash tools/signing/boot-signer.sh export-efi-cert "$work/efi.crt"
+efi_cert_sha256=$(openssl x509 -in "$work/efi.crt" -outform DER | sha256sum | cut -d' ' -f1)
+vars_template=$(realpath -e "$(TILO_DISTROBOX="" TILO_RUN=$work/firmware ./os/dev/vm.sh firmware --tpm | awk '$1 == "vars" { print $2 }')")
+[[ -f $vars_template ]] || die "no OVMF variable store template: '$vars_template'"
+PATH=$work/bin:$PATH bash os/dev/prepare-release-secureboot-vars.sh "$vars_template" "$work/secureboot-vars.qcow2" \
+  "$repo_root/tools/signing/boot-signer.sh" "$efi_cert_sha256" || die 'cannot enrol the throwaway EFI certificate'
+
+# The update: the same image and one more layer, a different deployment, sealed
+# and signed the way the image itself was (host-seal.sh seal, then the signing
+# above), so it boots under the same firmware. It reaches the guest on a small
+# disk of its own (there is no sshd to copy it with), beside the sealed image's
+# UKI before anything signed it, which the firmware must refuse.
+say 'build, seal and sign the update the machine will stage'
+load_archive "$sealed" localhost/tilo-host:sealed
 mkdir -p "$work/update"
 {
-  printf 'FROM localhost/tilo-host:ci\n'
+  printf 'FROM localhost/tilo-host:sealed\n'
   printf 'RUN echo %s > /usr/lib/tilo/host-assurance-update\n' "$target"
   # The update whose server cannot serve: the probe the boot judges itself by
   # fails on this image and nowhere else. It is part of the image rather than
@@ -139,25 +465,75 @@ mkdir -p "$work/update"
     '      > /usr/lib/systemd/system/tilo-server-health.service.d/90-boot-assessment-fault.conf'
 } > "$work/update/Containerfile"
 podman build -q -t "$update_ref" -f "$work/update/Containerfile" "$work/update" >/dev/null
-podman save --format oci-archive -o "$work/update.tar" "$update_ref"
+mkdir -p "$work/update-built"
+save_archive "$update_ref" "$work/update-built"
+cp "$sealed/rpms-source" "$work/update-built/rpms-source"
+bash tools/ci/publish/host-seal.sh seal "$work/update-built" "$work/update-sealed" 2> >(tee /dev/console >&2) \
+  || die 'could not seal the update'
+signed_image "$work/update-sealed" "$work/update-signed"
+rm -rf "$work/update-built" "$work/update-sealed"
+podman create --name host-assurance-unsigned localhost/tilo-host:sealed >/dev/null
+podman cp host-assurance-unsigned:/boot/EFI/Linux/. "$work/unsigned"
+podman rm host-assurance-unsigned >/dev/null
 rm -f "$work/update.raw"
 # The disk holds what the machine stages: the whole archive, and the layout
 # skopeo unpacks it into beside the archive. Size it from the archive rather
 # than a fixed number, which fails as a full filesystem on whichever image grew
 # past it and names nothing that said why.
-archive_mib=$(( ($(stat -c %s "$work/update.tar") + 1048575) / 1048576 ))
-truncate -s "$(( 2 * archive_mib + 256 ))M" "$work/update.raw"
+archive_mib=$(( ($(stat -c %s "$work/update-signed/image.oci.tar") + 1048575) / 1048576 ))
+# And what the last steps need at the console: the recovery key that authorises
+# sealing to this machine, and the older signed UKI with its signed prediction.
+truncate -s "$(( 2 * archive_mib + 768 ))M" "$work/update.raw"
 mkfs.ext4 -q -F -L tiloupdate "$work/update.raw"
-mkdir -p "$work/mnt"
+mkdir -p "$work/mnt" "$work/original-efi"
 mount -o loop "$work/update.raw" "$work/mnt"
-cp "$work/update.tar" "$work/mnt/update.oci.tar"
+cp "$work/update-signed/image.oci.tar" "$work/mnt/update.oci.tar"
+cp "$work"/unsigned/*.efi "$work/mnt/unsigned.efi"
+install -m 0600 "$work/install/qcow2/recovery-key.txt" "$work/mnt/recovery.key"
+podman create --name host-assurance-original localhost/tilo-host:ci >/dev/null
+podman cp "host-assurance-original:/boot/EFI/Linux/." "$work/original-efi"
+podman rm host-assurance-original >/dev/null
+cp "$work/original-efi"/*.efi "$work/mnt/original.efi"
+cp "$work/older-efi"/*.efi "$work/mnt/older.efi"
+mkdir -p "$work/mnt/older-predictions"
+cp "$work/older-predictions"/* "$work/mnt/older-predictions/"
+
+# The same update served by a registry on this machine, which the guest reaches
+# as 10.0.2.2 and is told is a mirror of registry.tilo.so/tilo/tilo-host: under
+# the tag the server was installed to follow, signed with a key made here for
+# the repository's name, and beside it an image of the repository nobody signed
+# (os/tests/registry_update_check.sh says what the guest does with them).
+podman run -d --name host-assurance-registry -p 127.0.0.1:5050:5000 docker.io/library/registry:2 >/dev/null \
+  || die 'cannot start the update registry'
+for _ in $(seq 30); do curl -fs http://127.0.0.1:5050/v2/ >/dev/null && break; sleep 1; done
+printf 'host-assurance\n' > "$work/sigstore.pass"
+skopeo generate-sigstore-key --output-prefix "$work/sigstore" --passphrase-file "$work/sigstore.pass" >/dev/null \
+  || die 'cannot make the signing key the registry update is signed with'
+follows="main-${target:0:7}-ci"
+# Signatures go beside the image as sigstore attachments, as the release
+# registry keeps them (os/etc/containers/registries.d).
+mkdir -p "$work/registries.d"
+printf 'docker:\n  127.0.0.1:5050:\n    use-sigstore-attachments: true\n' > "$work/registries.d/update.yaml"
+skopeo --registries.d "$work/registries.d" copy -q --preserve-digests --dest-tls-verify=false \
+  --sign-by-sigstore-private-key "$work/sigstore.private" --sign-passphrase-file "$work/sigstore.pass" \
+  --sign-identity "registry.tilo.so/tilo/tilo-host:$follows" \
+  "oci-archive:$work/update-signed/image.oci.tar" "docker://127.0.0.1:5050/tilo/tilo-host:$follows" \
+  || die 'cannot publish the signed update to the registry'
+staged_digest=$(cat "$work/update-signed/digest")
+mkdir -p "$work/unsigned-image"
+printf 'an image nobody signed\n' > "$work/unsigned-image/note"
+printf 'FROM scratch\nCOPY note /note\n' > "$work/unsigned-image/Containerfile"
+podman build -q -t localhost/host-assurance-unsigned -f "$work/unsigned-image/Containerfile" "$work/unsigned-image" >/dev/null
+skopeo copy -q --dest-tls-verify=false containers-storage:localhost/host-assurance-unsigned \
+  docker://127.0.0.1:5050/tilo/tilo-host:unsigned || die 'cannot publish the unsigned image to the registry'
+cp "$work/sigstore.pub" "$work/mnt/registry-update.pub"
+cp os/tests/registry_update_check.sh "$work/mnt/registry_update_check.sh"
 umount "$work/mnt"
-rm -f "$work/update.tar"
+rm -rf "$work/update-signed" "$work/unsigned" "$work/unsigned-image"
 qemu-img convert -f raw -O qcow2 "$work/update.raw" "$work/update.qcow2"
 rm -f "$work/update.raw"
-podman rmi -f "$update_ref" "$image" >/dev/null 2>&1 || true
+podman rmi -f "$update_ref" localhost/tilo-host:sealed localhost/tilo-host:ci localhost/tilo-host:seal >/dev/null 2>&1 || true
 
-export TILO_DISTROBOX="" TILO_ACCEL=kvm TILO_USER TILO_PASS
 export TILO_RUN=$work/run TILO_DISK=$disk
 export TILO_SERIAL_SOCKET=$work/run/serial.sock
 export TILO_CONSOLE_LOG=$out/console.log TILO_CONSOLE_USER=$TILO_USER TILO_CONSOLE_PASS=$TILO_PASS
@@ -165,14 +541,22 @@ export TILO_CONSOLE_LOG=$out/console.log TILO_CONSOLE_USER=$TILO_USER TILO_CONSO
 # check on a service that is still fetching its guest; the script's own waits
 # are the bound on those, not the console runner's default for one command.
 export TILO_CONSOLE_DEADLINE=1800
+# A secret sent before the prompt draws stays in the line buffer until it reads
+# it, so the unlock is tried often rather than waited for.
+export TILO_UNLOCK_DELAY=5
 mkdir -p "$TILO_RUN"
+# The machine under test boots with the TPM the install guest had: a keyslot the
+# image carries a signed boot chain for is sealed to this one device. Its firmware
+# enforces Secure Boot with the throwaway EFI certificate as its only key.
+export TILO_SECBOOT_KEYS=$work/secureboot-vars.qcow2
 boot_vm() {
-  ./os/dev/vm.sh boot --2d --disk "$disk" --attach "$work/update.qcow2"
+  ./os/dev/vm.sh boot --2d --tpm --disk "$disk" --attach "$work/update.qcow2"
 }
 finish() {
   report_exit
   ./os/dev/vm.sh serial > "$out/serial.log" 2>&1 || true
   ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+  podman rm -f host-assurance-registry >/dev/null 2>&1 || true
 }
 trap finish EXIT
 console() { ./os/tests/serial_runner.sh "$1"; }
@@ -185,8 +569,24 @@ refuse() {
   ok "$what"
 }
 
+# The prompt comes before any network, so the serial console is the only input,
+# and the console runner cannot be used to ask whether the guest is up: while
+# the volume is closed it waits out its own deadline. The log the unlock helper
+# keeps is the signal instead: a login prompt in it means the volume opened.
+unlock_until_console() {
+  local tries="${1:-120}"
+  for _ in $(seq 1 "$tries"); do
+    ./os/dev/unlock-prompt.sh "$TILO_UNLOCK_SECRET" >/dev/null 2>&1 || true
+    if tail -c 20000 "$TILO_CONSOLE_LOG" 2>/dev/null | grep -qi 'login:'; then
+      console 'true' >/dev/null 2>&1 && return 0
+    fi
+    sleep 3
+  done
+  return 1
+}
 boot_vm
-for _ in $(seq 1 60); do console 'true' >/dev/null 2>&1 && break; sleep 2; done
+unlock_until_console \
+  || die 'the installed disk never answered at its console: its encrypted root did not open'
 console 'true' >/dev/null || die 'the installed disk never answered at its console'
 # Keep the console to the runner: kernel messages — auditd's lines among them,
 # one per sudo call — interleave mid-line with the marker it reads, and a marker
@@ -207,6 +607,70 @@ for _ in $(seq 1 90); do
   sleep 5
 done
 refuse 'multi-user.target is active' 'systemctl is-active --quiet multi-user.target'
+say 'the installed machine keeps its root on an encrypted disk'
+refuse 'the root is a LUKS2 volume the initramfs opened' '
+set -eu
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
+case "$src" in
+  /dev/mapper/*) ;;
+  *) echo "root is $src, not a device-mapper volume"; exit 1 ;;
+esac
+name=${src#/dev/mapper/}
+# What the mapper is, from the kernel: a dm-crypt device carrying LUKS2 says
+# so in its uuid (CRYPT-LUKS2-<volume>-<name>; LUKS1 says CRYPT-LUKS1).
+uuid=""
+for dm in /sys/block/dm-*; do
+  if [ "$(cat "$dm/dm/name" 2>/dev/null)" = "$name" ]; then
+    uuid=$(cat "$dm/dm/uuid" 2>/dev/null)
+  fi
+done
+case "$uuid" in
+  CRYPT-LUKS2-*) ;;
+  *) echo "the mapping $name is not a LUKS2 crypt device (uuid: ${uuid:-none})"; exit 1 ;;
+esac
+backing=""
+while read -r n t; do
+  [ "$t" = part ] || continue
+  backing=$n
+  break
+done <<EOF
+$(lsblk -sno NAME,TYPE "$src")
+EOF
+[ -n "$backing" ] || { echo "no partition under $src"; lsblk -s "$src"; exit 1; }
+[ "$(blkid -p -o value -s TYPE "/dev/$backing")" = crypto_LUKS ] \
+  || { echo "/dev/$backing carries no LUKS header"; blkid "/dev/$backing"; exit 1; }
+echo "the root is $src: $uuid over /dev/$backing"
+'
+refuse 'the root has the recovery key and no throwaway install key' '
+set -eu
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
+name=${src#/dev/mapper/}
+command -v cryptsetup >/dev/null \
+  || { echo "the image carries no cryptsetup, so its own LUKS2 header cannot be read here"; exit 1; }
+dump=$(cryptsetup luksDump "$name")
+printf "%s\n" "$dump" | grep -q systemd-recovery \
+  || { echo "no systemd-recovery token in the header"; exit 1; }
+slots=$(printf "%s\n" "$dump" | sed -n "/^Keyslots:/,/^Tokens:/p" | grep -cE "^  [0-9]+:")
+[ "$slots" = 1 ] \
+  || { echo "$slots keyslots; the throwaway install key was not removed"; exit 1; }
+echo "one keyslot: the recovery key the install handed over"
+'
+refuse 'the store volume is LUKS2 and mounts' '
+set -eu
+uuid=""
+for dm in /sys/block/dm-*; do
+  if [ "$(cat "$dm/dm/name" 2>/dev/null)" = tilo-store ]; then
+    uuid=$(cat "$dm/dm/uuid" 2>/dev/null)
+  fi
+done
+case "$uuid" in
+  CRYPT-LUKS2-*) ;;
+  *) echo "tilo-store is not an open LUKS2 volume (uuid: ${uuid:-none})"; exit 1 ;;
+esac
+findmnt -nro FSTYPE /var/lib/tilo/store | grep -qx btrfs
+grep -q tilo-store /etc/crypttab
+echo "the store is a LUKS2 + btrfs volume ($uuid), unlocked from the root"
+'
 refuse 'the API server is enabled and inert without its configuration' \
   'systemctl is-enabled --quiet tilo-api.service && ! systemctl is-active --quiet tilo-api.service'
 refuse 'the update timers are enabled' \
@@ -313,6 +777,70 @@ grep -q 'tilo-server-health.service is active' "$out/boot-health.txt" \
 ok 'tilo-boot-health judges the server by tilo-server-health'
 as_root 'systemctl reset-failed host-assurance-boot-health.service' >/dev/null 2>&1 || true
 
+say 'the boot is verified and measured'
+# The firmware enforces Secure Boot with the throwaway EFI certificate as its
+# only key, and booted this machine: through systemd-stub, from the signed UKI
+# whose command line carries the generation the image does, measured into PCR 11.
+refuse 'the firmware enforced Secure Boot and booted the signed UKI' '
+set -eu
+var() { od -An -t u1 -j4 -N1 "/sys/firmware/efi/efivars/$1" | tr -d " "; }
+[ "$(var SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c)" = 1 ] || { echo "Secure Boot is off"; exit 1; }
+[ "$(var SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c)" = 0 ] || { echo "the firmware is in setup mode"; exit 1; }
+ls /sys/firmware/efi/efivars/StubPcrKernelImage-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f >/dev/null \
+  || { echo "systemd-stub did not start this kernel"; exit 1; }
+generation=$(cat /usr/lib/tilo/generation)
+grep -qw "tilo.generation=$generation" /proc/cmdline || { echo "no tilo.generation=$generation in: $(cat /proc/cmdline)"; exit 1; }
+pcr=$(tpm2_pcrread sha256:11 | sed -n "s/^ *11 *: *0x//p")
+case "$pcr" in ""|*[!0-9A-Fa-f]*|0000000000000000000000000000000000000000000000000000000000000000) tpm2_pcrread sha256:7,11; exit 1 ;; esac
+echo "generation $generation, PCR 11 $pcr"
+'
+
+# A boot the firmware must refuse. What breaks it is done as root on the
+# running machine, as anyone who can write the ESP could, in a mount namespace
+# of its own where the ESP's read-only bind is made writable, as the services
+# that write it do. The machine is then started again and must not come up, and
+# the boot loader must say the firmware refused the image; the disk then goes
+# back to how it was before.
+as_root 'sync' >/dev/null 2>&1 || true
+./os/dev/vm.sh stop >/dev/null 2>&1 || true
+qemu-img snapshot -c signed "$disk" || die 'cannot keep the signed disk to go back to'
+refused_boot() {  # WHAT FILE ROOT-SCRIPT
+  local what=$1 file=$2 script=$3
+  boot_vm
+  unlock_until_console || die "the signed disk never answered at its console before: $what"
+  as_root "dmesg -n 1; unshare -m sh -euc $(printf '%q' "mount -o remount,bind,rw /boot; $script; sync")" \
+    > "$out/$file-broken.txt" 2>&1 || { tail -40 "$out/$file-broken.txt" >&2; die "could not break the boot entry: $what"; }
+  ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+  boot_vm
+  # Its unlock prompt comes before any getty: a minute and a half with neither on
+  # the console is a machine that did not start.
+  if TILO_CONSOLE_PROMPT_TIMEOUT=90 console 'true' >/dev/null 2>&1; then
+    ./os/dev/vm.sh serial > "$out/$file-serial.log" 2>&1 || true
+    die "FAIL $what: the machine booted"
+  fi
+  ./os/dev/vm.sh serial > "$out/$file-serial.log" 2>&1 || true
+  ./os/dev/vm.sh stop >/dev/null 2>&1 || true
+  grep -aiqE 'security violation|access denied' "$out/$file-serial.log" \
+    || { tail -40 "$out/$file-serial.log" >&2; die "FAIL $what: nothing on the console says the firmware refused it"; }
+  qemu-img snapshot -a signed "$disk" || die 'cannot put the signed disk back'
+  ok "$what"
+}
+uki='uki=$(ls /boot/EFI/Linux/bootc/*.efi); [ "$(printf "%s\n" $uki | wc -l)" = 1 ]'
+refused_boot 'a UKI whose command line was edited is refused' edited-cmdline \
+  "$uki; /usr/libexec/tilo-uki-cmdline set tilo.mode=repair \$uki; /usr/libexec/tilo-uki-cmdline show \$uki | grep -qw tilo.mode=repair"
+refused_boot 'a UKI nobody signed is refused' unsigned-uki \
+  "$uki; mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update; cp /mnt/update/unsigned.efi \$uki"
+qemu-img snapshot -d signed "$disk" || true
+
+boot_vm
+unlock_until_console || die 'the signed disk never answered at its console again'
+as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
+for _ in $(seq 1 90); do
+  as_root 'systemctl is-active --quiet multi-user.target' && break
+  sleep 5
+done
+refuse 'the signed disk boots again as it was' 'systemctl is-active --quiet multi-user.target'
+
 say 'stage the update and break it on the staged deployment only'
 as_root 'mkdir -p /mnt/update && mount /dev/vdb /mnt/update && skopeo copy --quiet \
   oci-archive:/mnt/update/update.oci.tar oci:/mnt/update/image:tilo-host' > "$out/stage-transfer.txt" 2>&1 \
@@ -325,7 +853,8 @@ ok 'the update image is on the machine'
 # and any ordering cycle the boot loader resolved against them.
 if ! RUNNER='./os/tests/serial_runner.sh' SUDO_PASS="$TILO_PASS" FAULT=server \
      SUBJECT_UNIT=tilo-server-health.service \
-     RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk '$disk' --attach '$work/update.qcow2'" \
+     UNLOCK='./os/dev/unlock-prompt.sh' \
+     RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --tpm --disk '$disk' --attach '$work/update.qcow2'; ./os/dev/unlock-prompt.sh || true" \
      SERIAL='./os/dev/vm.sh serial' \
      BOOT_TIMEOUT=900 HEALTH_TIMEOUT=900 SWITCH_TIMEOUT=1800 \
      ./os/tests/boot_assessment_rollback.sh oci:/mnt/update/image:tilo-host "$out/boot-assessment"; then
@@ -340,4 +869,147 @@ fi
 say 'the machine serves again, on the deployment that came back'
 refuse 'multi-user.target is active' 'systemctl is-active --quiet multi-user.target'
 refuse 'the server probe still judges it good' 'systemctl start tilo-server-health.service'
-printf '\nPASS: the server image boots serving, and an update that breaks it rolled back by itself (evidence in %s)\n' "$out"
+say 'a registry update is verified and staged'
+refuse 'a registry update is verified and staged, and an unsigned image refused' "
+set -eu
+mkdir -p /mnt/update
+mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+bash /mnt/update/registry_update_check.sh 10.0.2.2:5050/tilo/tilo-host /mnt/update/registry-update.pub unsigned '$staged_digest'
+"
+say 'the disk is sealed to this machine and opens by itself'
+# The installer enrolled the TPM keyslot in a guest of its own, whose PCR 7 is
+# not this machine's, so that slot was never going to open here. The installed
+# machine seals its own: the shipped tilo-rollback enrol, against the signed
+# PCR 11 prediction of the generation it runs and this machine's live PCR 7 —
+# the seal tilo-disk-encrypt enrol makes on a machine the installer runs on.
+refuse 'this machine seals the volume it booted, with no secret' '
+set -eu
+mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
+dev=/dev/$(lsblk -sno NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
+gen=$(cat /usr/lib/tilo/generation)
+tilo-rollback enroll --device "$dev" --generation "$gen" \
+  --predictions /boot/tilo-target/predictions --recovery-key-file /mnt/update/recovery.key --automatic
+tilo-rollback status --device "$dev"
+'
+./os/dev/vm.sh stop >/dev/null 2>&1 || true
+boot_vm
+# Nothing is typed from here: the boot reaching the console's login prompt is
+# the volume opening by itself, which is what the PIN-less keyslot is for.
+unattended_unlock() {
+  local tries=${1:-120} recent
+  for _ in $(seq 1 "$tries"); do
+    recent=$(tail -c 20000 "$TILO_CONSOLE_LOG" 2>/dev/null || true)
+    # Only what this boot printed: a login prompt from an earlier boot says
+    # nothing about the volume this one opened.
+    case "${recent##*Linux version}" in
+      *login:*) console 'true' >/dev/null 2>&1 && return 0 ;;
+    esac
+    sleep 3
+  done
+  return 1
+}
+unattended_unlock || { ./os/dev/vm.sh serial > "$out/unattended-serial.log" 2>&1 || true
+                       die 'the disk asked for a secret on a machine sealed to it: the PIN-less keyslot did not unseal'; }
+refuse 'the boot unlocked through the TPM keyslot, not a typed secret' '
+journalctl -b --no-pager 2>/dev/null | grep -q "unsealed to /run/cryptsetup-keys.d/luks-" \
+  || { echo "the initrd did not leave a TPM-unsealed key file this boot"; journalctl -b --no-pager | grep -i "tilo-rollback" | tail -20; exit 1; }
+'
+as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
+
+say 'an image below the floor is refused'
+# The older signed image the update disk carries (generation 0) gets a keyslot
+# of its own, then the floor moves to this generation: the machine must refuse
+# to unseal it, and the recovery key must still open the disk.
+refuse 'this machine has a keyslot for the older generation' "
+set -eu
+mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
+dev=/dev/\$(lsblk -sno NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
+tilo-rollback enroll --device \"\$dev\" --generation 0 \
+  --predictions /mnt/update/older-predictions --recovery-key-file /mnt/update/recovery.key --automatic
+tilo-rollback status --device \"\$dev\"
+"
+# The floor moves by a signed, single-use approval per increment: requested on
+# the machine, issued by the authority (the throwaway PCR key, here on the
+# check's side), brought back and spent by confirm.
+request=$(as_root '
+set -eu
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
+dev=/dev/$(lsblk -sno NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
+tilo-rollback floor-request --device "$dev" | base64 -w0
+') || die 'the machine could not write a floor request'
+printf '%s' "$request" | base64 -d > "$work/floor-request.json" \
+  || die 'the floor request did not survive the console'
+load_archive "$pub" localhost/tilo-host:ci
+mkdir -p "$work/approvals"
+podman run --rm --pull=never -v "$work:/work:Z" \
+  --entrypoint /usr/libexec/tilo/tilo-rollback localhost/tilo-host:ci \
+  approve-floor --private-key /work/boot-keys/pcr.key \
+  --request /work/floor-request.json --out-dir /work/approvals \
+  || die 'the authority could not approve the floor advance'
+shopt -s nullglob
+approvals=("$work"/approvals/*.json)
+shopt -u nullglob
+(( ${#approvals[@]} > 0 )) || die 'the authority issued no floor approval'
+for approval in "${approvals[@]}"; do
+  as_root "mkdir -p /var/lib/tilo/rollback/approvals
+printf '%s' '$(base64 -w0 < "$approval")' | base64 -d > /var/lib/tilo/rollback/approvals/$(basename "$approval")" \
+    || die "could not put $(basename "$approval") on the machine"
+done
+refuse 'the floor moves to this generation, with the approvals' "
+set -eu
+mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+src=\$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
+dev=/dev/\$(lsblk -sno NAME,TYPE \"\$src\" | awk '\$2 == \"part\" { print \$1; exit }')
+gen=\$(cat /usr/lib/tilo/generation)
+tilo-rollback --retain \$((gen + 1)) --predictions /boot/tilo-target/predictions \
+  confirm --device \"\$dev\" --generation \"\$gen\" --floor-at-least \"\$gen\" \
+  --recovery-key-file /mnt/update/recovery.key
+tilo-rollback status --device \"\$dev\"
+tilo-rollback status --device \"\$dev\" --json
+"
+grep -q "\"floor_generation\":$n" "$out/the floor moves to this generation, with the approvals.txt" \
+  || die "the floor did not move to generation $n"
+# Put the older signed image on the ESP in place of this one, and start it.
+refuse 'the older signed image is on the ESP' '
+set -eu
+mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+uki=$(ls /boot/EFI/Linux/bootc/*.efi); [ "$(printf "%s\n" $uki | wc -l)" = 1 ]
+unshare -m sh -euc "mount -o remount,bind,rw /boot; cp /mnt/update/older.efi \$uki; sync"
+'
+as_root 'sync' >/dev/null 2>&1 || true
+./os/dev/vm.sh stop >/dev/null 2>&1 || true
+boot_vm
+if TILO_CONSOLE_PROMPT_TIMEOUT=120 console 'true' >/dev/null 2>&1; then
+  ./os/dev/vm.sh serial > "$out/floor-serial.log" 2>&1 || true
+  die 'the machine unlocked an image below the floor'
+fi
+./os/dev/vm.sh serial > "$out/floor-serial.log" 2>&1 || true
+grep -q 'rollback floor refuses generation 0' "$out/floor-serial.log" \
+  || { tail -40 "$out/floor-serial.log" >&2
+       die 'the image below the floor did not open, but nothing on the console says the floor refused it'; }
+# The same disk, back on the image the machine runs: the floor permits this
+# generation, so it opens by itself again. The floor is what differed.
+refuse 'the signed image this machine runs is on the ESP again' '
+set -eu
+mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update
+uki=$(ls /boot/EFI/Linux/bootc/*.efi); [ "$(printf "%s\n" $uki | wc -l)" = 1 ]
+unshare -m sh -euc "mount -o remount,bind,rw /boot; cp /mnt/update/original.efi \$uki; sync"
+'
+./os/dev/vm.sh stop >/dev/null 2>&1 || true
+boot_vm
+unattended_unlock || { ./os/dev/vm.sh serial > "$out/floor-permitted-serial.log" 2>&1 || true
+                       die 'the signed image the machine runs no longer opens its disk by itself'; }
+console 'true' >/dev/null || die 'the restored image never answered at its console'
+refuse 'the floor still permits the running generation and refuses the older one' '
+set -eu
+src=$(findmnt -nro SOURCE /sysroot 2>/dev/null || findmnt -nro SOURCE /)
+dev=/dev/$(lsblk -sno NAME,TYPE "$src" | awk '"'"'$2 == "part" { print $1; exit }'"'"')
+tilo-rollback status --device "$dev"
+tilo-rollback status --device "$dev" --json | grep -q "\"floor_generation\":$(cat /usr/lib/tilo/generation)" \
+  || { echo "the floor is not at the running generation"; exit 1; }
+'
+
+printf '\nPASS: the server image installs onto an encrypted disk, boots its release-signed boot loader and signed UKI under Secure Boot and refuses an edited or unsigned one, serves, rolls back an update that breaks it, verifies and stages a registry update, opens its disk by itself through the signed PCR 11 prediction and this machine'"'"'s PCR 7, and refuses an image below the rollback floor (evidence in %s)\n' "$out"
+

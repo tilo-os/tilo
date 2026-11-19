@@ -498,7 +498,6 @@ impl PeerWorkspaceMut<'_> {
             WORK_DELEGATIONS_KEY,
             &delegation.row_key(),
             &delegation.device,
-            &delegation.person,
             Some(&json),
             now,
         )?;

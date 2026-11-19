@@ -29,6 +29,7 @@
 mod entering;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use sha2::{Digest as _, Sha256};
 use tilo_action_policy::{EntryPolicy, ListingPolicy, Role, roles::governance};
@@ -38,7 +39,7 @@ use tilo_server_protocol::directory::{
     DirectoryEntry, EntryJoin, EntryReport, Face, Listing, MAX_FACES, entry_path,
 };
 use tilo_server_protocol::workspaces::{PreAdmission, WorkspaceNotice};
-use tilo_server_session::workspaces::{IssueInvitationRequest, IssuedInvitation};
+use tilo_server_session::workspaces::{IssueInvitationRequest, IssuedInvitation, WorkspaceListing};
 use tilo_user_identity::DeviceCert;
 
 use super::authority::WorkspaceOp;
@@ -592,10 +593,13 @@ impl Workspaces {
     pub async fn directory(&self, online: &BTreeSet<[u8; 32]>) -> Vec<DirectoryEntry> {
         let mut entries = Vec::new();
         for workspace in self.published_workspaces().await {
-            let (Ok(summary), Some(listing)) = (
+            let (Ok(summary), Some(entry)) = (
                 self.summary(&workspace).await,
-                self.listing(&workspace).await,
+                self.entry_policy(&workspace).await,
             ) else {
+                continue;
+            };
+            let Some(listing) = listing_of_entry(&entry) else {
                 continue;
             };
             let (here, here_count) = faces(&summary.members, online);
@@ -615,6 +619,12 @@ impl Workspaces {
                 members: u32::try_from(members).unwrap_or(u32::MAX),
                 last_active_ms: self.inner.directory.last_active(&summary.workspace),
                 community: false,
+                invitation_only: entry.invitation_only,
+                // The wait list every invitation-only entry here names in its refusal.
+                wait_list: self
+                    .wait_list_page()
+                    .filter(|_| entry.invitation_only)
+                    .cloned(),
             });
         }
         entries
@@ -745,6 +755,7 @@ impl Workspaces {
                         false,
                         now,
                     )
+                    .await
                     .map_err(refused)?;
                 governed
                     .admissions
@@ -1615,12 +1626,26 @@ pub(crate) mod entry_tests {
             .await
             .unwrap();
 
-        // Still a listed workspace: the site's directory names it.
+        // Still a listed workspace: the site's directory names it, says it is
+        // invitation-only, and names no wait list while the server offers none.
         let listed = workspaces
             .directory(&std::collections::BTreeSet::new())
             .await;
         assert_eq!(listed.len(), 1, "{listed:?}");
         assert_eq!(listed[0].name, "Lounge");
+        assert!(listed[0].invitation_only);
+        assert_eq!(listed[0].wait_list, None);
+        // Once it offers one, the directory names it, as the entry's refusal does: a
+        // page offers it to someone with no invitation before anyone asks the entry.
+        let offered = tilo_server_protocol::directory::EntryWaitList {
+            contact: Some("hello@lounge.example".into()),
+            mail: true,
+        };
+        assert!(workspaces.offer_wait_list(offered.clone()));
+        let listed = workspaces
+            .directory(&std::collections::BTreeSet::new())
+            .await;
+        assert_eq!(listed[0].wait_list, Some(offered));
 
         // A stranger who holds no invitation is refused, and told why.
         let (_stranger_key, stranger) = guest_device();
@@ -1769,5 +1794,29 @@ pub(crate) mod entry_tests {
             "the listing is the workspace's too"
         );
         server.shutdown().await;
+    }
+}
+
+impl Workspaces {
+    /// The listing of each of `wanted`'s workspaces this server governs, taken in one pass over
+    /// the registry: a person's whole list is built without a registry lock per workspace and
+    /// without reading any document but the ones named.
+    pub async fn listings_of(
+        &self,
+        wanted: &std::collections::HashSet<String>,
+    ) -> std::collections::HashMap<String, WorkspaceListing> {
+        let held = self.inner.workspaces.lock().await;
+        let named: Vec<(String, Arc<tokio::sync::Mutex<GovernedWorkspace>>)> = held
+            .iter()
+            .filter(|(workspace, _)| wanted.contains(*workspace))
+            .map(|(workspace, held)| (workspace.clone(), Arc::clone(held)))
+            .collect();
+        drop(held);
+        let mut listings = std::collections::HashMap::with_capacity(named.len());
+        for (workspace, held) in named {
+            let listing = held.lock().await.listing();
+            listings.insert(workspace, listing);
+        }
+        listings
     }
 }

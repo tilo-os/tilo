@@ -176,48 +176,12 @@ pub fn document_action_result(
 
 /// Whether `operation` may be published on `on` by a widget below its component's root: views and
 /// effects may, a document mutation never does.
-pub fn admits_outside_document(operation: &tilo_actions::ActionSpec, on: &str) -> bool {
-    let admitted = operation.kind != tilo_actions::OperationKind::Document;
-    debug_assert!(
-        admitted,
-        "`{on}` offers document action `{}` outside the resource's actions; \
-         a document change is the resource's Action through its Dispatcher",
-        operation.id
-    );
-    admitted
-}
-
+pub use tilo_resource::share::admits_outside_document;
 /// `resource` without document actions, at any depth: what a widget below its component's root may
 /// publish.
-#[must_use]
-pub fn outside_document(mut resource: tilo_actions::ResourceSpec) -> tilo_actions::ResourceSpec {
-    let on = resource.id.as_str().to_owned();
-    resource
-        .actions
-        .retain(|action| admits_outside_document(action, &on));
-    resource.children = resource
-        .children
-        .into_iter()
-        .map(outside_document)
-        .collect();
-    resource
-}
-
+pub use tilo_resource::share::outside_document;
 /// `resource`, resolved by id below its component's root, without document actions.
-#[must_use]
-pub fn resolved_outside_document(
-    mut resource: tilo_actions::ResourceSpec,
-) -> tilo_actions::ResourceSpec {
-    resource
-        .actions
-        .retain(|action| action.kind != tilo_actions::OperationKind::Document);
-    resource.children = resource
-        .children
-        .into_iter()
-        .map(resolved_outside_document)
-        .collect();
-    resource
-}
+pub use tilo_resource::share::resolved_outside_document;
 
 pub fn resources(
     widget: &(impl Widget + ?Sized),

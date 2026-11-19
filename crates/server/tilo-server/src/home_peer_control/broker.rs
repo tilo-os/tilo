@@ -404,20 +404,6 @@ fn home_for_uid(uid: u32) -> anyhow::Result<PathBuf> {
     Ok(account_for_uid(uid)?.home)
 }
 
-fn run_enrollment_as_identity_owner(
-    command: &mut Command,
-    identity_root: &Path,
-    uid: u32,
-    gid: u32,
-) {
-    if identity_root != Path::new("/var/lib/tilo") {
-        // `uid` also clears inherited supplementary groups, so the child gets
-        // only the requesting account's primary identity rather than any of
-        // the privileged helper's ambient root groups.
-        command.gid(gid).uid(uid);
-    }
-}
-
 /// Every group `account` belongs to, the way a login gives them to it.
 fn account_groups(account: &Account) -> anyhow::Result<Vec<libc::gid_t>> {
     let name = std::ffi::CString::new(account.name.as_str())?;
@@ -536,26 +522,18 @@ fn approve_enrollment(
         (None, None) => {}
         _ => bail!("nearby device and service identities must be supplied together"),
     }
-    if let Some(identity_dir) = identity_dir {
-        let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
-        // The directory is checked now, but the approval runs for up to its
-        // timeout, while the person can replace it; tilo-enroll writes there
-        // only as them.
-        command
-            .arg("--identity-dir")
-            .arg(identity_dir)
-            .args(["--person-uid", &uid.to_string()]);
-        if tilo_device_identity::IdentityPaths::under(&identity_root)
-            .user_privkey
-            .exists()
-        {
-            run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
-        } else {
-            run_as_invoking_person(&mut command, uid, &account)?;
-        }
-    } else {
-        run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
-    }
+    // The person's root signs the approval, and it is kept only in their
+    // identity store.
+    let identity_dir = identity_dir.context("approving needs the person's identity directory")?;
+    let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
+    // The directory is checked now, but the approval runs for up to its
+    // timeout, while the person can replace it; tilo-enroll writes there
+    // only as them.
+    command
+        .arg("--identity-dir")
+        .arg(identity_dir)
+        .args(["--person-uid", &uid.to_string()]);
+    run_as_invoking_person(&mut command, uid, &account)?;
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(90))?;
     enrollment_command_result(&output, "home-server enrollment was not completed")
@@ -626,16 +604,8 @@ fn approve_personal_device(
         .args(["--person-uid", &uid.to_string()])
         .args(["--expected-device", expected_device])
         .args(["--expected-service", expected_service]);
-    // A seed under the identity root is opened by whoever owns that root, as
-    // before. Without one the approval signs with the person's record.
-    if tilo_device_identity::IdentityPaths::under(&identity_root)
-        .user_privkey
-        .exists()
-    {
-        run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
-    } else {
-        run_as_invoking_person(&mut command, uid, &account)?;
-    }
+    // The approval signs with the person's identity, as them.
+    run_as_invoking_person(&mut command, uid, &account)?;
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
     enrollment_command_result(&output, "personal-device enrollment was not completed")

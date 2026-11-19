@@ -417,7 +417,6 @@ impl RetainedSourceRelay {
                 let expected = match source.mode() {
                     TargetProjectionMode::SelectedFile => EntryKind::File,
                     TargetProjectionMode::HomeDirectory => EntryKind::Directory,
-                    TargetProjectionMode::RetiredSelectedParent => return Err(refused()),
                 };
                 if source.metadata()?.kind != expected {
                     return Err(refused());

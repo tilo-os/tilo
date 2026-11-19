@@ -55,6 +55,11 @@ thiserror.workspace = true
 toml.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json"] }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+# The model runtime an app's model module links against, taken out of the
+# runtime package the registry offers: the bundle's signed manifest vouches
+# for its files, and the registry serves only the payload blobs it needs.
+runtime-bundle = { path = "../runtime-bundle" }
+app-registry = { path = "../app-registry" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -64,10 +69,6 @@ workspace-hack = { version = "0.1" }
 rustix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
-# Runtime bundles for the runtime fetch tests.
-runtime-bundle = { path = "../runtime-bundle" }
-# The end-to-end test packs, publishes, and installs a .tapp.
-app-registry = { path = "../app-registry" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }

@@ -45,6 +45,28 @@ pub const MAX_NAME_BYTES: usize = 512;
 /// The longest of the words a permission is listed with, in bytes.
 pub const MAX_WORDS_BYTES: usize = 240;
 
+/// The key of the detail a failure carries where its invocation was not done because its
+/// person is asked about it first and their answer does it. Such an end is no failure of
+/// the action: whoever words it tells it by this from an end where nobody was asked.
+pub const ASKED_DETAIL: &str = "person_asked";
+
+/// The detail of such a failure ([`ASKED_DETAIL`]).
+#[must_use]
+pub fn asked_detail() -> serde_json::Value {
+    let mut detail = serde_json::Map::new();
+    detail.insert(ASKED_DETAIL.to_owned(), serde_json::Value::Bool(true));
+    serde_json::Value::Object(detail)
+}
+
+/// Whether a failure's `details` say that its person is asked about it ([`ASKED_DETAIL`]).
+#[must_use]
+pub fn says_asked(details: Option<&serde_json::Value>) -> bool {
+    details
+        .and_then(|details| details.get(ASKED_DETAIL))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
 /// The target of action `action` of the resource `resource`.
 #[must_use]
 pub fn target(resource: &str, action: &str) -> RemoteActionTarget {

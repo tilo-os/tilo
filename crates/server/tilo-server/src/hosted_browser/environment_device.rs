@@ -193,7 +193,7 @@ async fn lend(
 ) -> Result<serde_json::Value, ActionCallError> {
     let unavailable = |reason: String| ActionCallError::Unavailable { reason };
     let content = keys
-        .group_keys(workspace, false)
+        .group_keys(workspace, collab_types::EVERY_MEMBER, false)
         .await
         .ok_or_else(|| unavailable("this host holds no keys of the workspace's media".to_owned()))?
         .map_err(|error| {
@@ -244,7 +244,12 @@ mod tests {
     struct Holding(ContentKeys);
 
     impl GroupKeys for Holding {
-        fn group_keys<'a>(&'a self, workspace: &'a str, _: bool) -> GroupKeysAnswerFuture<'a> {
+        fn group_keys<'a>(
+            &'a self,
+            workspace: &'a str,
+            _: &'a str,
+            _: bool,
+        ) -> GroupKeysAnswerFuture<'a> {
             let answer = (workspace == WORKSPACE).then(|| Ok(self.0.clone()));
             Box::pin(std::future::ready(answer))
         }

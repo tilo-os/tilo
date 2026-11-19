@@ -17,7 +17,7 @@ fn main() -> ExitCode {
             .first()
             .is_some_and(|arg| arg == "--service-session-capability")
     {
-        return match runtime_dylib::ui::webview::chromium::service_session_capability() {
+        return match runtime_dylib::tilo_webview::chromium::service_session_capability() {
             Ok(value) => {
                 println!("{value}");
                 ExitCode::SUCCESS

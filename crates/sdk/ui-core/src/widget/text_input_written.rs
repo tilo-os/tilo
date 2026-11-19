@@ -36,6 +36,7 @@ impl TextInput {
                 self.is_focused
                     .then(|| self.selection_anchor_focus_or_caret()),
             ),
+            Some(self.accessible_name.as_str()),
             &mut |_, _, start, end| {
                 (
                     self.selection_rects(theme, start, end),

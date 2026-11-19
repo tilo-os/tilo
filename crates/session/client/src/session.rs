@@ -20,12 +20,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use crate::remote::{Heard, NOT_CONNECTED};
 use crate::{
     CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureKind, Link, Outbox, PageShown,
     PeerStatus, Reports, TransportPhase, content::Kept,
 };
 use std::time::Duration;
+use tilo_session_actions::{Heard, NOT_CONNECTED};
 
 use tilo_server_client::{CoeditPayload, DeviceSigner};
 use tilo_server_protocol::Envelope;
@@ -51,7 +51,7 @@ mod voice;
 
 use agent_session::AgentSessionCompletion;
 use connect::Dial;
-pub use connect::{SessionMemberHost, member_host};
+pub use connect::{SessionMemberServer, member_server};
 #[cfg(test)]
 use connect::{connect, connect_backoff, link_error, transient};
 use entry::{Refusal, refusal};
@@ -99,18 +99,18 @@ const BEHIND_ASKED_AFTER_MS: u64 = 15_000;
 const BEHIND_ASKED_AT_MOST_EVERY_MS: u64 = 300_000;
 
 /// Where to reach the user's host: the iroh endpoint it serves its peers'
-/// sessions on ([`tilo_server_client::Host`]).
-pub use tilo_server_client::Host;
+/// sessions on ([`tilo_server_client::ServerAddress`]).
+pub use tilo_server_client::ServerAddress;
 
 /// Where to connect and as whom.
 #[derive(Clone)]
 pub struct PeerConfig {
     /// The user's host (`tilo-server`).
-    pub host: Host,
+    pub host: ServerAddress,
     /// This device's certificate.
     pub cert: DeviceCert,
     /// The host certificate pinned at certification.
-    pub host_cert: DeviceCert,
+    pub server_cert: DeviceCert,
     /// Root-signed revocations this device knows about.
     pub revocations: RevocationList,
     /// The workspace this device enters through its entry on its first
@@ -121,13 +121,13 @@ pub struct PeerConfig {
 
 impl PeerConfig {
     /// A member device's session with `host`, whose certificate is
-    /// `host_cert`: no revocations of its own to announce, no entry to ask for.
+    /// `server_cert`: no revocations of its own to announce, no entry to ask for.
     #[must_use]
-    pub fn member(host: Host, cert: DeviceCert, host_cert: DeviceCert) -> Self {
+    pub fn member(host: ServerAddress, cert: DeviceCert, server_cert: DeviceCert) -> Self {
         Self {
             host,
             cert,
-            host_cert,
+            server_cert,
             revocations: RevocationList::new(),
             entering: None,
         }
@@ -303,6 +303,7 @@ fn session_task(
             Arc::clone(&signer),
         ),
         Arc::new(crate::membership_check::SessionMembership),
+        Arc::new(crate::engine::Founders::default()),
     ));
     engine.keys().set(Some(workspace_keys.clone()));
     engine.held_writes().lock().extend(key_state.held());
@@ -966,16 +967,16 @@ impl Task {
             .is_some_and(|saved| !same_identity(saved, &self.config.cert))
             || self
                 .record
-                .host_cert
+                .server_cert
                 .as_ref()
-                .is_some_and(|saved| !same_identity(saved, &self.config.host_cert))
+                .is_some_and(|saved| !same_identity(saved, &self.config.server_cert))
         {
             return Err("The saved peer identity or host does not match this session.");
         }
         // A read-only invited page may never publish. Keep its certificate
         // and host pin before the first connection, as well as its outbox.
         self.record.cert = Some(self.config.cert.clone());
-        self.record.host_cert = Some(self.config.host_cert.clone());
+        self.record.server_cert = Some(self.config.server_cert.clone());
         self.persist();
         Ok(())
     }
@@ -1438,7 +1439,7 @@ impl Task {
         };
         // The host's own operations, which no workspace decides, go to it on the session itself.
         if workspace_id == HOST_ITSELF {
-            if to != self.config.host_cert.device_public_key {
+            if to != self.config.server_cert.device_public_key {
                 self.reports.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id,
                     to,
@@ -1796,7 +1797,7 @@ impl Task {
         if self.workspaces.contains(&workspace_id) {
             return true;
         }
-        if !places_workspaces(&self.config.cert, &self.config.host_cert) {
+        if !places_workspaces(&self.config.cert, &self.config.server_cert) {
             return self.join(workspace_id, client);
         }
         self.reports.change(|status| {
@@ -2060,6 +2061,7 @@ impl Task {
         };
         tilo_server_protocol::live::SealedLiveFrame::seal(
             &frame,
+            &workspace_id.to_string(),
             |artifact, retention, cleartext| {
                 keys.seal_content(artifact, retention, cleartext)
                     .map_err(|error| error.to_string())
@@ -2075,23 +2077,27 @@ impl Task {
             return Opening::Dropped;
         };
         let bound = self.keyed_routes().find_map(|route| {
-            let record = tilo_server_protocol::live::LiveResource {
+            let resource = tilo_server_protocol::live::LiveResource {
                 app: route.app_id.clone(),
                 record: route.document.clone(),
             };
-            (record.digest() == sealed.record && route.workspace_id().ok() == Some(workspace_id))
-                .then(|| Some((record, self.keys_of(route)?)))
+            (resource.digest() == sealed.record && route.workspace_id().ok() == Some(workspace_id))
+                .then(|| Some((resource, self.keys_of(route)?)))
                 .flatten()
         });
-        let Some((record, keys)) = bound else {
+        let Some((resource, keys)) = bound else {
             return Opening::NoKeys(sealed.record);
         };
         sealed
-            .open_in_record(&record, |artifact, metadata, payload| {
-                keys.open_content(artifact, metadata, payload)
-                    .map(|plaintext| plaintext.to_vec())
-                    .map_err(|error| error.to_string())
-            })
+            .open(
+                &workspace_id.to_string(),
+                &resource,
+                |artifact, metadata, payload| {
+                    keys.open_content(artifact, metadata, payload)
+                        .map(|plaintext| plaintext.to_vec())
+                        .map_err(|error| error.to_string())
+                },
+            )
             .ok()
             .and_then(|frame| frame.encode().ok())
             .map_or(Opening::Dropped, Opening::Opened)
@@ -2482,13 +2488,13 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_host_stops_the_page_and_a_proxys_page_never_counts() {
+    fn a_changed_server_stops_the_page_and_a_proxys_page_never_counts() {
         let code = |error| match refusal(&error) {
             Refusal::Final(code, _) => code,
             Refusal::Unexplained => "unexplained",
             Refusal::Reachability => "reachability",
         };
-        assert_eq!(code(LinkError::HostChanged), "host-changed");
+        assert_eq!(code(LinkError::ServerChanged), "host-changed");
         // An HTML error page from a proxy does not decode: reachability.
         assert_eq!(
             code(LinkError::Malformed("unexpected end of input".into())),

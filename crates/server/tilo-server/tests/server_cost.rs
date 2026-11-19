@@ -81,8 +81,8 @@ const DOCUMENT_CHARS: usize = 10_000;
 /// cleartext op carries no second copy of it), plus the 17 bytes a
 /// frame's workspace id takes (558 B), plus the governance head each
 /// signed op names so a receiver decides it under the roles its writer held
-/// (one 32 B hash and its length). Measured here: 595 B.
-const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 605;
+/// (four bytes of its hash and a length). Measured here: 566 B.
+const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 570;
 /// Ceiling for the largest such frame, a word's first keystroke carrying
 /// the gesture's full entry in its compact form: measured 599 B, held to
 /// the 697 B of the frame before changes named their actions.

@@ -15,6 +15,7 @@ use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
     Button, ButtonRole, Column, Element, ModalDialog, QrWidget, Row, Section, Text, TextInput,
+    TextStack,
 };
 
 use crate::presentation::{Presentation, SheetState, presented};
@@ -260,18 +261,15 @@ fn waiting(device: &AddDevice, typed: &LocalState<String>, ask: &Ask) -> Element
         let declining = ask.clone();
         let approved_ask = machine.ask.clone();
         let declined_ask = machine.ask.clone();
-        let what = if machine.hardware.is_empty() {
-            format!("{} · {}", machine.label, machine.code)
-        } else {
-            format!(
-                "{} · {} · {}",
-                machine.label, machine.hardware, machine.code
-            )
-        };
+        let mut what = TextStack::new(&machine.label);
+        if !machine.hardware.is_empty() {
+            what = what.secondary(&machine.hardware);
+        }
+        what = what.tertiary(&machine.code);
         rows.push(Box::new(
             Row::new()
                 .with_rhythm(Rhythm::Tight)
-                .push(Box::new(Text::new(&what).with_role(TextRole::Body)))
+                .push(Box::new(what))
                 .push(Box::new(
                     Button::new("pair-device-approve", &device.approve)
                         .role(ButtonRole::Primary)

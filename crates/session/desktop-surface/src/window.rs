@@ -10,14 +10,13 @@
 //! a foreign window with its own keyboard and pointer, where its own
 //! accessibility tree and its own shortcuts are, never by an address.
 //!
-//! Both are [`ActionKind::Read`], and offered to agents: the person already
+//! Both are [`tilo_actions::ActionKind::Read`], and offered to agents: the person already
 //! sees the window, and what an agent needs is a way to see it too.
 
-use tilo_actions::{
-    ActionArgs, ActionKind, ActionSpec, Audience, EncodedAction, OperationKind, ResultSpec,
-};
+use tilo_actions::{ActionSpec, ResultSpec};
 use tilo_desktop_model::Layout;
 use tilo_desktop_model::layout::TileContent;
+use tilo_resource::Effect as _;
 
 /// `look` 's operation type: the window as a picture.
 pub const LOOK: &str = "so.tilo.desktop.window.look";
@@ -77,46 +76,40 @@ pub fn shown(tree: &Layout, tab: u64) -> Option<ShownWindow> {
     })
 }
 
+/// Looking at a window of a program on another computer, as a declared view.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.desktop.window.look")]
+pub enum LookWindow {
+    /// Look at the window
+    #[effect(view, audience = "agents", label = "shell-look-window-action")]
+    Look,
+}
+
 /// `look` : the window as it shows now, named `label` for the person reading the catalogue.
 #[must_use]
 pub fn look(label: String) -> ActionSpec {
-    let spec = ActionSpec::typed_operation(
-        "look",
-        label,
-        crate::i18n::t("shell-look-window-action"),
-        OperationKind::View,
-        LOOK,
-        Vec::new(),
-        |_: &ActionArgs| EncodedAction {
-            type_id: LOOK.into(),
-            payload: b"{}".to_vec(),
-        },
-    )
-    .of_kind(ActionKind::Read)
-    .with_description(crate::i18n::t("shell-look-window-detail"))
-    .for_audience(Audience::Agents);
+    let mut spec = LookWindow::Look.bound();
+    spec.type_mut().label = label;
+    spec.type_mut().description = Some(crate::i18n::t("shell-look-window-detail"));
     result(spec)
+}
+
+/// Reading a window of a program on another computer, as a declared view.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.desktop.window.read")]
+pub enum ReadWindow {
+    /// Read the window
+    #[effect(view, audience = "agents", label = "shell-read-window-action")]
+    Read,
 }
 
 /// `read` : what the window says of itself — its title and the app it belongs to — named `label`
 /// for the person reading the catalogue.
 #[must_use]
 pub fn read(label: String) -> ActionSpec {
-    let spec = ActionSpec::typed_operation(
-        "read",
-        label,
-        crate::i18n::t("shell-read-window-action"),
-        OperationKind::View,
-        READ,
-        Vec::new(),
-        |_: &ActionArgs| EncodedAction {
-            type_id: READ.into(),
-            payload: b"{}".to_vec(),
-        },
-    )
-    .of_kind(ActionKind::Read)
-    .with_description(crate::i18n::t("shell-read-window-detail"))
-    .for_audience(Audience::Agents);
+    let mut spec = ReadWindow::Read.bound();
+    spec.type_mut().label = label;
+    spec.type_mut().description = Some(crate::i18n::t("shell-read-window-detail"));
     result(spec)
 }
 

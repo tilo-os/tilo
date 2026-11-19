@@ -100,14 +100,13 @@ def build_proof(args):
                 "offline target verification receipt is unsafe")
         selected = json.loads(receipt_path.read_text(encoding="utf-8"))
         development = selected.get("schema") == "tilo.installer-dev-target.v1"
+        repository = selected.get("repository")
+        origin = selected.get("update_origin")
         require(selected.get("schema") in ("tilo.installer-offline-target.v1", "tilo.installer-dev-target.v1")
                 and selected.get("target_digest") == installed_digest
-                and selected.get("target_ref") == ("registry.tilo.so/tilo/tilo-vm" if development else {
-                    "generic": "registry.tilo.so/tilo/tilo",
-                    # Board images stay on the forge's private registry.
-                    "lenovo-83ed": "code.tilo.so/tilo/tilo",
-                }.get(selected.get("hardware_profile"), "")) + "@" + installed_digest
-                and installed_origin == "ostree-unverified-image:docker://" + selected.get("update_origin", ""),
+                and isinstance(repository, str) and isinstance(origin, str)
+                and origin.startswith(repository + ":")
+                and installed_origin == "ostree-unverified-image:docker://" + origin,
                 "installed deployment differs from the independently signed offline target")
         if development:
             require(DEV_VM_MARKER.is_file() and not DEV_VM_MARKER.is_symlink()

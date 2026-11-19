@@ -51,7 +51,7 @@ impl RowMetrics {
             meta: theme.text(TextRole::Caption).numeric(),
             author: theme.text(TextRole::Caption),
             badge: theme.text(TextRole::Caption).strong(),
-            value_body: theme.text(TextRole::Body).numeric(),
+            value_body: theme.text(TextRole::Caption).numeric(),
             value_title: theme.text(TextRole::Title).numeric(),
             icon: f64::from(metrics.icon_control),
             mark: f64::from(metrics.icon_sm),
@@ -65,12 +65,12 @@ impl RowMetrics {
     }
 
     /// The metrics of a row shown as a card: the row is its own surface, so nothing of it
-    /// bleeds past its box, and the padding inside that surface is its own — compact enough
-    /// that a card of one title line and its facts stands under a control's height.
+    /// bleeds past its box, and the padding inside that surface is its own: the same on every
+    /// side, so a card reads as a small document and never as a field one types into.
     pub(super) fn card(theme: &Theme) -> Self {
         let mut m = Self::new(theme);
         m.bleed = f64::from(theme.tokens.spacing.rhythm.sibling);
-        m.pad_y = f64::from(theme.tokens.spacing.rhythm.tight);
+        m.pad_y = m.bleed;
         m
     }
 
@@ -86,6 +86,20 @@ impl RowMetrics {
         m.title_strong = theme.text(TextRole::Caption).strong();
         m.subtitle = theme.text(TextRole::Caption);
         m.icon = f64::from(theme.tokens.metrics.icon_sm);
+        m
+    }
+
+    /// The metrics of a row of an outline: the label's size in its regular weight, so a
+    /// sidebar's tree of notes or files reads as a column of names, many to a screen.
+    pub(super) fn outline(theme: &Theme) -> Self {
+        let mut m = Self::new(theme);
+        let name = theme
+            .text(TextRole::Label)
+            .with_weight(crate::text_render::TextWeight::Regular);
+        m.title = name.clone();
+        m.title_strong = name.clone().strong();
+        m.subtitle = name;
+        m.pad_y = f64::from(theme.tokens.spacing.rhythm.tight) / 2.0;
         m
     }
 

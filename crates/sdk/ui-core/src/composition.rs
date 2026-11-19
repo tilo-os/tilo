@@ -404,6 +404,14 @@ pub struct Ground {
     pub edge: Option<[u8; 4]>,
     /// Its corners, logical pixels.
     pub radius: f64,
+    /// How far the fill stands in from the element's sides and from its top and bottom, logical
+    /// pixels: a row's lift, inset from the list's edges, while the row still reaches them.
+    #[serde(skip_serializing_if = "edge_to_edge")]
+    pub inset: [f64; 2],
+}
+
+fn edge_to_edge(inset: &[f64; 2]) -> bool {
+    inset.iter().all(|side| side.abs() < f64::EPSILON)
 }
 
 /// An icon: Lucide-style outlines in a 24 × 24 box, as SVG path data.
@@ -521,6 +529,9 @@ pub struct TextLook {
     pub max_lines: Option<u32>,
     /// Monospaced rather than the interface face.
     pub mono: bool,
+    /// Struck through, as a done or removed item's words are painted.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub struck: bool,
 }
 
 impl TextLook {
@@ -551,7 +562,15 @@ impl TextLook {
             },
             max_lines: None,
             mono: matches!(style.family, FontChoice::Monospace),
+            struck: false,
         }
+    }
+
+    /// Struck through when `struck`.
+    #[must_use]
+    pub fn struck(mut self, struck: bool) -> Self {
+        self.struck = struck;
+        self
     }
 
     /// Set to `align`: `start`, `center` or `end`.
@@ -755,6 +774,10 @@ pub struct Composed {
     /// It floats over what is under it, as a window or a panel does: its ground casts a shadow.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub floats: bool,
+    /// The one side a floating body set on a screen edge casts its shadow past (`top`,
+    /// `bottom`, `left`, `right`): a top bar's falls below it only. Unset, it falls all round.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_side: Option<&'static str>,
     /// Attributes its element carries beyond what its role gives it: an `<img>`'s `src` and
     /// `alt`, a `<time>`'s `datetime`, a `<progress>`'s value.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -793,6 +816,7 @@ impl Composed {
             semantics: None,
             ground: None,
             floats: false,
+            shadow_side: None,
             attrs: Vec::new(),
             own: None,
             focusable: false,
@@ -845,6 +869,14 @@ impl Composed {
         self.own = Some(Own::Painted {
             version: hash.finish(),
         });
+    }
+
+    /// [`Self::painted`], at the version `what` it shows names: drawn again when that changes.
+    pub fn painted_of(&mut self, what: &impl std::hash::Hash) {
+        use std::hash::Hasher;
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        what.hash(&mut hash);
+        self.painted(hash.finish());
     }
 }
 
@@ -1275,7 +1307,7 @@ mod tests {
             }
         ));
 
-        let radio = crate::widget::Checkbox::new("any", "path").radio();
+        let radio = crate::widget::Checkbox::bound("any", "path").radio();
         let composed = super::compose_alone(&radio, &crate::Theme::dark(), "radio");
         assert!(matches!(
             controls(&composed)[0],

@@ -2108,9 +2108,7 @@ impl ChatApp {
         if files.member_hourly == 0 {
             return None;
         }
-        let since = ui::tilo_resource::origin_now_ms()
-            .div_euclid(1000)
-            .saturating_sub(3600);
+        let since = ui::tilo_resource::origin_now_ms().saturating_sub(3_600_000);
         let shared = self
             .held_messages()
             .iter()

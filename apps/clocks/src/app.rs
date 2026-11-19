@@ -831,9 +831,14 @@ fn timer_card(
                                 .with_accessible_name(float_label)
                                 .tooltip(float_label)
                                 .control_size(ui::widget::ControlSize::Large),
-                                &ClocksEffect::FloatTimer {
-                                    timer: id.as_str().to_owned(),
-                                    floating: !floating,
+                                &if floating {
+                                    ClocksEffect::UnfloatTimer {
+                                        timer: id.as_str().to_owned(),
+                                    }
+                                } else {
+                                    ClocksEffect::FloatTimer {
+                                        timer: id.as_str().to_owned(),
+                                    }
                                 },
                             ),
                         ))
@@ -1140,8 +1145,10 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                         )
                         .with_icon(Icon::PictureInPicture2)
                         .control_size(ui::widget::ControlSize::Large),
-                        &ClocksEffect::FloatStopwatch {
-                            floating: !floating,
+                        &if floating {
+                            ClocksEffect::UnfloatStopwatch
+                        } else {
+                            ClocksEffect::FloatStopwatch
                         },
                     ),
                 ))

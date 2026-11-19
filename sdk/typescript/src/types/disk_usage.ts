@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.disk-usage@142cf5e7136a5290";
+export const SURFACE = "so.tilo.disk-usage@dc38f49d9643175e";
 
 /** The arguments of `remember`. */
 export interface RememberArgs {

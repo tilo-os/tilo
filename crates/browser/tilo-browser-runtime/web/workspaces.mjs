@@ -338,6 +338,33 @@ function admissionEntry(workspace) {
   return workspace.admission;
 }
 
+/**
+ * The public workspaces the server at `origin` lists in its directory
+ * (`<origin>/peer/v1/directory`, `DirectoryPage`): each as
+ * `{workspace, name, entry, invitationOnly, waitList}`, its `entry` the
+ * address of its own entry. Whether a workspace lets anyone in, and the wait
+ * list an invitation-only one offers (`{contact, mail}`), as its entry would
+ * answer, before anyone asks it. Rejects when the directory is not read.
+ */
+export async function publicListings(origin, {fetch = globalThis.fetch} = {}) {
+  const directory = new URL('/peer/v1/directory', origin).href;
+  const response = await fetch(directory, {method: 'POST', credentials: 'omit'});
+  if (!response.ok) throw new Error(`the directory answered ${response.status}`);
+  const page = await response.json();
+  return (Array.isArray(page?.workspaces) ? page.workspaces : [])
+    .filter(listed => typeof listed?.workspace === 'string' && typeof listed?.entry === 'string')
+    .map(listed => ({
+      workspace: listed.workspace,
+      name: typeof listed.name === 'string' && listed.name ? listed.name : null,
+      entry: new URL(listed.entry, directory).href,
+      invitationOnly: listed.invitationOnly === true,
+      waitList: listed.waitList && typeof listed.waitList === 'object'
+        ? {contact: typeof listed.waitList.contact === 'string' && listed.waitList.contact ? listed.waitList.contact : null,
+          mail: listed.waitList.mail === true}
+        : null,
+    }));
+}
+
 /** The workspace a listing's entry admits into, when it names one, or its
  * entry's address does (`<server>/peer/v1/directory/<workspace>/`, a site's
  * home); else `null`. */

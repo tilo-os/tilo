@@ -33,6 +33,10 @@
 //! that follows its change: that view takes them as they were written rather
 //! than reading each back ([`taking_stored`]).
 //!
+//! An app's model module keeps nothing: it applies one action per call, to a
+//! document the device holds (`--cfg tilo_model_guest`), so there is no next
+//! action to keep anything for, and its writes are the whole ones.
+//!
 //! Keyed by the record's type and by content-addressed change hashes, so a
 //! record kept for one document is never mistaken for another's: a document
 //! without the kept version reads the record whole.
@@ -79,6 +83,9 @@ pub(crate) fn take_any(
     doc: &Doc,
     refresh: &dyn Fn(&mut dyn Any, &Doc, &Delta) -> bool,
 ) -> Option<(Box<dyn Any>, Delta)> {
+    if cfg!(tilo_model_guest) {
+        return None;
+    }
     let Kept {
         record: mut state,
         base,
@@ -184,6 +191,9 @@ pub(crate) fn take_any(
 /// a change of its own on the way (a deterministic slot made beside it)
 /// moved its base past what `record` holds, so nothing is kept.
 pub(crate) fn keep_any(kind: TypeId, record: Box<dyn Any>, doc: &Doc, started: &[ChangeHash]) {
+    if cfg!(tilo_model_guest) {
+        return;
+    }
     if let Some((base, wrote)) = kept_base(doc, started) {
         let kept = Kept {
             record,
@@ -200,6 +210,9 @@ pub(crate) fn keep_any(kind: TypeId, record: Box<dyn Any>, doc: &Doc, started: &
 /// Keep `record`, of the record type `kind`, exactly as an action inside a transaction still
 /// open just wrote it into `doc`, for the next action of its type in the same transaction.
 pub(crate) fn keep_open(kind: TypeId, record: Box<dyn Any>, doc: &Doc) {
+    if cfg!(tilo_model_guest) {
+        return;
+    }
     let mut base = doc.base_heads();
     base.compact_sort();
     let kept = Kept {

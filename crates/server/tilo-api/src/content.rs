@@ -20,7 +20,7 @@
 //! the workspace's disk, not its latency.
 
 use crate::lock;
-use crate::session::Session;
+use crate::session::{CallError, Session};
 use crate::v1::errors::ApiError;
 use base64::Engine as _;
 use futures_util::StreamExt as _;
@@ -105,22 +105,32 @@ fn answer(result: &Value, field: &str) -> Result<Value, String> {
 
 /// One file's bytes through `session` into `workspace` at once: its content
 /// reference.
-pub(crate) async fn put(session: &Session, workspace: &str, body: &[u8]) -> Result<Value, String> {
+///
+/// # Errors
+/// The workspace refused the upload (a key it keeps as revoked is told so, typed) or did not
+/// take all of it.
+pub(crate) async fn put(
+    session: &Session,
+    workspace: &str,
+    body: &[u8],
+) -> Result<Value, CallError> {
     let begun = session
         .call_in(workspace, "tilo_put_begin", json!({"size": body.len()}))
         .await?;
-    let upload = answer(&begun, "upload")?;
-    let written = send(session, workspace, &upload, 0, body).await?;
+    let upload = answer(&begun, "upload").map_err(CallError::unavailable)?;
+    let written = send(session, workspace, &upload, 0, body)
+        .await
+        .map_err(CallError::unavailable)?;
     if written != body.len() as u64 {
-        return Err(format!(
+        return Err(CallError::unavailable(format!(
             "the workspace took {written} of the {} bytes",
             body.len()
-        ));
+        )));
     }
     let finished = session
         .call_in(workspace, "tilo_put_finish", json!({"upload": upload}))
         .await?;
-    answer(&finished, "content")
+    answer(&finished, "content").map_err(CallError::unavailable)
 }
 
 /// Send `chunk` at `offset` to `upload` in `workspace`, in the pieces one
@@ -186,7 +196,8 @@ async fn send_group(
                         "chunk": base64::engine::general_purpose::STANDARD.encode(piece),
                     }),
                 )
-                .await?;
+                .await
+                .map_err(|refused| refused.message)?;
             let written = answer(&appended, "written")?;
             Ok::<_, String>(
                 written
@@ -264,7 +275,10 @@ impl Uploads {
         let begun = session
             .call_in(workspace, "tilo_put_begin", json!({"size": size}))
             .await
-            .map_err(busy)?;
+            .map_err(|refused| match refused.code {
+                "key_revoked" => ApiError::from(refused),
+                _ => busy(refused.message),
+            })?;
         let upload = answer(&begun, "upload").map_err(busy)?;
         let open = Open {
             grant: grant.to_owned(),
@@ -387,6 +401,7 @@ impl Uploads {
         let finished = session
             .call_in(workspace, "tilo_put_finish", json!({"upload": upload}))
             .await
+            .map_err(|refused| refused.message)
             .and_then(|finished| answer(&finished, "content"))
             .map_err(|why| {
                 lock(&self.open).remove(id);

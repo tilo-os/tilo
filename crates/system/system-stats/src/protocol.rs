@@ -363,7 +363,7 @@ pub struct Snapshot {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SystemStats {
-    pub host: HostInfo,
+    pub host: ServerInfo,
     #[serde(default)]
     pub cpu: Option<CpuStats>,
     /// The load averages over 1, 5 and 15 minutes.
@@ -379,7 +379,7 @@ pub struct SystemStats {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostInfo {
+pub struct ServerInfo {
     pub hostname: String,
     pub kernel: String,
     #[serde(default)]

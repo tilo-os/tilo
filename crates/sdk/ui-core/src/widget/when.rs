@@ -235,6 +235,28 @@ impl Decorator for Fitted {
     fn take_structure_change(&mut self) -> StructureChange {
         self.inner.take_structure_change()
     }
+
+    /// A fit that asks for an `aspect` shapes the view wherever it stands: as wide as its parent
+    /// gives it and as tall as the ratio says, in a container that reads fits (a stack, whose
+    /// wrapper then holds the same height) and in one that does not (a section, a card).
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = self.inner.build_layout(taffy, theme, node_map);
+        if let Some(ratio) = self.fit.aspect.filter(|ratio| *ratio > 0.0)
+            && let Ok(style) = taffy.style(node)
+        {
+            let mut style: Style = style.clone();
+            style.size.width = taffy::Dimension::percent(1.0);
+            style.size.height = taffy::Dimension::auto();
+            style.aspect_ratio = Some(ratio);
+            let _ = taffy.set_style(node, style);
+        }
+        node
+    }
 }
 
 #[cfg(test)]

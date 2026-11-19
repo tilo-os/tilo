@@ -27,6 +27,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
 
     private let engine: AnyView?
     private let live: (@MainActor (LiveThing) -> AnyView)?
+    private let liveStage: (@MainActor (LiveThing) -> AnyView)?
     private let makeWindow: @MainActor (NSRect, NSWindow.StyleMask) -> NSWindow
     private var viewMenu = NSMenu()
     private var windowMenu = NSMenu()
@@ -41,6 +42,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
     /// in one that is never put on a screen. `closed` is what the build says of being told while
     /// the app is closed: the bundle's own word, and nothing in a build without the push right.
     public init(source: any AssistantSource, engine: AnyView? = nil, live: (@MainActor (LiveThing) -> AnyView)? = nil,
+                liveStage: (@MainActor (LiveThing) -> AnyView)? = nil,
                 closed: ClosedBuild? = ClosedBuild(info: Bundle.main.infoDictionary),
                 window: @escaping @MainActor (NSRect, NSWindow.StyleMask) -> NSWindow = { frame, style in
                     NSWindow(contentRect: frame, styleMask: style, backing: .buffered, defer: true)
@@ -48,6 +50,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         model = AssistantModel(source: source)
         self.engine = engine
         self.live = live
+        self.liveStage = liveStage
         self.closed = closed
         makeWindow = window
     }
@@ -71,6 +74,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         made.isRestorable = false
         let root = AssistantRoot(model: model, engine: engine) { MacWindow() }
             .environment(\.liveThingView, live)
+            .environment(\.liveStageView, liveStage ?? live)
         let hosting = NSHostingView(rootView: root)
         // The window's sizes are the window's: its smallest is said above.
         hosting.sizingOptions = []
@@ -204,6 +208,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         add(W.about.said, #selector(NSApplication.orderFrontStandardAboutPanel(_:)), to: own, target: NSApp)
         own.addItem(.separator())
         add("\(W.assistantView.said)…", #selector(showAssistantView(_:)), key: ",", to: own, target: self)
+        add(W.signOut.said, #selector(signOut(_:)), to: own, target: self)
         own.addItem(.separator())
         add(W.hideApp.said, #selector(NSApplication.hide(_:)), key: "h", to: own, target: NSApp)
         add(W.hideOthers.said, #selector(NSApplication.hideOtherApplications(_:)), key: "h", [.command, .option], to: own, target: NSApp)
@@ -269,6 +274,10 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
             add((model.supervision.isOn ? W.pauseAssistant : W.resumeAssistant).said, #selector(pauseOrResume(_:)),
                 to: menu, target: self)
         }
+        if model.session != .signedOut {
+            menu.addItem(.separator())
+            add(W.signOut.said, #selector(signOut(_:)), to: menu, target: self)
+        }
         menu.addItem(.separator())
         add(W.quit.said, #selector(NSApplication.terminate(_:)), key: "q", to: menu, target: NSApp)
     }
@@ -287,6 +296,8 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
             model.person != nil
         case #selector(toggleTasks(_:)):
             model.person != nil && model.chat != nil
+        case #selector(signOut(_:)):
+            model.session != .signedOut
         default:
             true
         }
@@ -328,6 +339,10 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
 
     @objc public func pauseOrResume(_ sender: Any?) {
         model.setAssistantOn(!model.supervision.isOn)
+    }
+
+    @objc public func signOut(_ sender: Any?) {
+        model.signOut()
     }
 
     /// Open the window at something that waits for the person: its piece in the main chat, or

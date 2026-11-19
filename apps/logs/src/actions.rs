@@ -15,14 +15,15 @@ const ENTRY_LIMIT: usize = 200;
 pub enum JournalEffect {
     #[effect(job, kind = "read")]
     Refresh,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     SetLiveTail {
         #[param("Follow new entries; omit to toggle")]
         enabled: Option<bool>,
     },
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     ExportFilteredJsonl,
-    #[effect(kind = "read")]
+    #[effect(screen, on = LogEntry)]
     SelectEntry {
         #[param("Stable logs.entry.* id")]
         entry_id: String,
@@ -45,16 +46,15 @@ pub fn entry_resource_id(entry: &LogEntry) -> String {
     format!("logs.entry.{}", hasher.finalize().to_hex())
 }
 
-/// One entry as a live row, offering to show its details.
+/// One entry as a row of the `logs.entry` type, offering to show its details.
 pub fn entry_row(entry: &LogEntry) -> LiveRow {
-    let id = entry_resource_id(entry);
-    LiveRow::new(id.clone(), "logs.entry", entry.unit_short())
-        .presentation(ResourcePresentation {
+    LiveRow::typed::<LogEntry>(entry_resource_id(entry), entry.unit_short()).presentation(
+        ResourcePresentation {
             detail: Some(entry.time_hms()),
-            badge: Some(entry.priority.long().to_string()),
+            badge: Some(entry.priority.long()),
             ..Default::default()
-        })
-        .operation(JournalEffect::SelectEntry { entry_id: id }.bound())
+        },
+    )
 }
 
 /// The first entries `filter` shows, as live rows.

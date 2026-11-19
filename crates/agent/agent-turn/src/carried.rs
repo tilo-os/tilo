@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use collab_types::WorkspaceId;
 use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
 use tilo_lock::MutexRecover as _;
-use tilo_session_client::remote::{Heard, RemoteSession, SessionActions};
+use tilo_session_actions::{Heard, RemoteSession, SessionActions};
 
 /// The device the carried messages are said to go to: the link reaches one host only.
 const HOST: [u8; 32] = [0; 32];

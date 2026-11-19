@@ -160,6 +160,7 @@ impl AgentModels {
 pub enum AgentModelsEffect {
     /// Answer with this model: make its provider the one agents use, and the
     /// model the one they plan with
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     UseModel {
         /// The provider's id
@@ -170,12 +171,20 @@ pub enum AgentModelsEffect {
         model: String,
     },
     /// Take back the last choice of a model, on either provider section
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     UndoModel,
     /// Make the last choice of a model again
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     RedoModel,
 }
+
+/// The agent model choice as a declared type: the providers the person set
+/// up and the model agents answer with.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.agent-models", label = "Agent models")]
+pub struct AgentModelsResource;
 
 /// The reading and its actions, as the settings service publishes them.
 pub(crate) struct Served {
@@ -209,11 +218,12 @@ impl Served {
 
     /// The published resource: its reading's fields and its verbs.
     pub(crate) fn resource() -> tilo_actions::ResourceSpec {
-        tilo_service::offer::<AgentModelsEffect>(tilo_actions::ResourceSpec::new(
-            RESOURCE,
-            KIND,
-            crate::i18n::t("settings-agent-models"),
-        ))
+        tilo_service::offer::<AgentModelsEffect>(
+            tilo_resource::typed_resource::<AgentModelsResource>(
+                RESOURCE,
+                crate::i18n::t("settings-agent-models"),
+            ),
+        )
     }
 
     /// The reading of the resource, as JSON; `None` for another resource.

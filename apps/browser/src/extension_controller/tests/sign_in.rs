@@ -8,7 +8,7 @@ tilo_test_env::scenario! {
 
     phase an_extension_signs_in_on_a_page_shown_over_the_window;
     {
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         controller.refresh = false;
@@ -92,7 +92,7 @@ tilo_test_env::scenario! {
 
     phase the_page_that_asked_for_a_sign_in_waits_beneath_it_and_shows_again;
     {
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         controller.refresh = false;
@@ -106,7 +106,7 @@ tilo_test_env::scenario! {
             interactive: true,
             flow,
         };
-        let settings = ui::webview::test_engine::TestEngine::new();
+        let settings = tilo_webview::test_engine::TestEngine::new();
         let show_settings = |controller: &mut ExtensionController| {
             controller.panel = Some(Panel::Popup {
                 id: "settings:signer".into(),

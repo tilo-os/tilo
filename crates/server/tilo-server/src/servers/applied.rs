@@ -5,11 +5,11 @@
 //! one applies the document it reads:
 //!
 //! - A device that governs a workspace attaches the servers the document says
-//!   hold it ([`Workspaces::attach_server`]), each in the role its entry says,
-//!   moves one whose role changed ([`Workspaces::set_holder_role`]) and
-//!   detaches the ones it no longer names, each at the address that server
-//!   enrolled. One action on the document thus both chooses a holder and names
-//!   it in the workspace, and a server never has to be told anything by hand.
+//!   hold it, each in the role its entry says, moves one whose role changed
+//!   and detaches the ones it no longer names. Every holder of the Servers
+//!   workspace does that, server or desktop alike
+//!   ([`super::attach::attach_named`]), so one action on the document both
+//!   chooses a holder and names it in the workspace.
 //! - Each server sets what it answers devices offering it work from its own
 //!   entry ([`Workspaces::set_offer`]), writes the update policy it follows
 //!   ([`super::policy`]) and the device configuration it applies
@@ -25,12 +25,10 @@
 //! it. Nothing here remembers a setting of its own: what a server is is what
 //! its entry says.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use iroh_base::EndpointAddr;
-use tilo_peer_state::CopyRole;
 use tilo_workspace_service::workspaces::{Offer, ResourceWrite, Workspaces};
 
 use super::{SERVERS, admin_workspace_id, device, device_id, policy, read};
@@ -115,7 +113,6 @@ pub async fn reconcile_into(
     workspaces: &Workspaces,
     requests: &Requests,
 ) -> Result<Applied, String> {
-    let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
     let servers = read(workspaces).await?;
     let cert = workspaces.serving_certificate().clone();
     let own_entry = servers.servers.get(&device_id(&cert.device_public_key));
@@ -133,6 +130,12 @@ pub async fn reconcile_into(
                 Offer::of(server.storage_gb, server.compute, server.machines)
             }),
     );
+    // Every holder of the Servers workspace applies this part of the
+    // document first: one action on it both chooses a holder and names it in
+    // the workspace, and a machine a desktop approved gets the workspace it
+    // waits in. The same pass runs on every device of the person, so it is
+    // applied where it is written rather than only on a server.
+    let attached = super::attach::attach_named(workspaces).await?;
     if let Some(entry) = own_entry {
         if entry.retired {
             // A retired server serves nothing: it lets go of everything it
@@ -148,76 +151,8 @@ pub async fn reconcile_into(
             applied.device_status = settings.device_status;
         }
     }
-    // Each workspace this device governs, which is where a holder it names is
-    // named and from where one its entries stop naming is let go; a workspace
-    // an entry names but this device does not govern is applied by its
-    // governor. The admin workspace counts even before it is listed.
-    let mut named_workspaces = workspaces
-        .list()
-        .await
-        .into_iter()
-        .map(|summary| summary.workspace)
-        .collect::<BTreeSet<_>>();
-    named_workspaces.insert(admin.clone());
-    for (_, server) in servers.servers.iter() {
-        named_workspaces.extend(server.holds.iter().map(|(id, _)| id.as_str().to_owned()));
-    }
-    for workspace in named_workspaces {
-        let Ok(hosts) = workspaces.hosts(&workspace).await else {
-            // Not a workspace this device governs: its governor applies this
-            // part of the document.
-            continue;
-        };
-        let named = hosts
-            .iter()
-            .map(|hint| {
-                (
-                    hint.host.device_public_key,
-                    tilo_peer_state::holder_role(hint),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        for (device, server) in servers.servers.iter() {
-            let Ok(key) = <[u8; 32]>::try_from(hex::decode(device.as_str()).unwrap_or_default())
-            else {
-                continue;
-            };
-            if key == cert.device_public_key {
-                continue;
-            }
-            // Every server takes part in the admin workspace; elsewhere it
-            // holds the workspaces its entry names, and a retired server
-            // holds none.
-            let wants =
-                !server.retired && (workspace == admin || server.holding(&workspace).is_some());
-            // The admin workspace is read by every server of the person.
-            let role = if workspace != admin && server.holding(&workspace) == Some(super::STORE) {
-                CopyRole::Store
-            } else {
-                CopyRole::KeyHolder
-            };
-            if wants && named.get(&key).is_some_and(|named| *named != role) {
-                workspaces.set_holder_role(&workspace, key, role).await?;
-                applied.held.push(workspace.clone());
-            } else if wants && !named.contains_key(&key) {
-                let Some(endpoint) = endpoint(server) else {
-                    tracing::info!(
-                        %workspace,
-                        server = %device.as_str(),
-                        "a server the document names as a holder enrolled no address"
-                    );
-                    continue;
-                };
-                workspaces
-                    .attach_server(&workspace, key, endpoint, role)
-                    .await?;
-                applied.held.push(workspace.clone());
-            } else if !wants && named.contains_key(&key) {
-                workspaces.detach_host(&workspace, key, None).await?;
-                applied.released.push(workspace.clone());
-            }
-        }
-    }
+    applied.held = attached.held;
+    applied.released.extend(attached.released);
     Ok(applied)
 }
 
@@ -252,12 +187,6 @@ async fn apply_settings(
         applied.device_status = true;
     }
     Ok(applied)
-}
-
-/// The address `server` enrolled, as it is dialled: none when it enrolled
-/// none.
-fn endpoint(server: &super::Server) -> Option<EndpointAddr> {
-    serde_json::from_str(&server.endpoint).ok()
 }
 
 /// Apply the document now, and again after each change to it and to the

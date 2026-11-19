@@ -214,11 +214,25 @@ tilo_test_env::scenario! {
             .position(|c| c.starts_with("node view:"))
             .expect("row");
         assert!(item < call, "{rows:#?}");
+        // The row says which field of its item its title shows, so an agent's rename of the
+        // note is drawn on it.
         let row = ui_calls(func(&m, "note_row"));
         assert_eq!(
             row,
-            vec!["node ui.ListRow", "prop title", "prop badge", "prop value"]
+            vec![
+                "node ui.ListRow",
+                "prop edits",
+                "prop title",
+                "prop badge",
+                "prop value"
+            ]
         );
+        // So does a row the toolkit's component writes.
+        let (m, _) = lower(
+            "type Note {\n    title: Text\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nrow view note_row for Note\nview note_row(n: Note) {\n    ui.ListRow(title: n.title)\n}\nview notebook(nb: Notebook) {\n    list(nb.notes)\n}",
+        );
+        let row = ui_calls(func(&m, "note_row"));
+        assert!(row.iter().any(|c| c == "prop edits"), "{row:#?}");
     }
 
     phase a_mark_and_a_chip_read_the_tone_their_cases_name;
@@ -236,7 +250,13 @@ view board(b: Board) {\n    list(b.tasks)\n}",
         let row = ui_calls(func(&m, "task_row"));
         assert_eq!(
             row,
-            vec!["node ui.ListRow", "prop title", "prop mark", "prop tone"],
+            vec![
+                "node ui.ListRow",
+                "prop edits",
+                "prop title",
+                "prop mark",
+                "prop tone"
+            ],
             "the mark and its tone, off the case"
         );
         let tones = strings(func(&m, "task_row"));

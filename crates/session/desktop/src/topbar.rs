@@ -144,6 +144,12 @@ const BAR_CONTROL_LOGICAL: f32 =
     ui::tokens::Metrics::BASE.bar_control_height - ui::tokens::Spacing::BASE.s1;
 const BAR_CONTROL_PX: f64 = BAR_CONTROL_LOGICAL as f64;
 
+/// The ground the bar stands its controls on, docked or shown over the windows: the bar's own
+/// body, so the gap round a face or the edge of a chip is the bar, never a darker rim.
+fn bar_ground(theme: &Theme) -> Color {
+    ui::tokens::finish::role_ground(&theme.tokens.colors, ui::tokens::SurfaceRole::Bar)
+}
+
 /// Inset of an area-filling centre widget (the system monitor, the calendar, a live activity) from
 /// its pill's ends, the same each side so the content is centred in the band.
 const CENTER_INSET_PX: f64 = 12.0;
@@ -406,8 +412,8 @@ pub struct TopBarChrome {
     latest_active: Option<usize>,
     /// Where a phone-wide bar's people button wore its "+N"; zero when it wore none.
     people_count_rect: Rect,
-    /// When someone here was first seen in a call, so their ring breathes from its start.
-    call_since: Option<Instant>,
+    /// When someone here was first seen active, so the arc round their ring sweeps from its start.
+    active_since: Option<Instant>,
     /// Members beyond the three avatars; nonzero paints a "+N" chip.
     face_overflow: usize,
     /// Copied off the chrome on each revision bump. Empty until something polls — an empty reading
@@ -561,7 +567,7 @@ impl TopBarChrome {
             syncs: 0,
             latest_active: None,
             people_count_rect: Rect::ZERO,
-            call_since: None,
+            active_since: None,
             face_overflow: 0,
             faces_shown: 0,
             following: false,
@@ -649,9 +655,13 @@ impl TopBarChrome {
                 .map(|look| {
                     (
                         look.dimmed,
-                        // A breath in eight steps, a bounce in thousandths.
-                        look.call
-                            .map(|level| ui::num::u8_of_f64(f64::from(level) * 8.0)),
+                        // A sweep in its frames' steps, a bounce in thousandths.
+                        look.active.map(|sweep| match sweep {
+                            ui::motion::Sweep::Round(turn) => {
+                                ui::num::u8_of_f64(f64::from(turn) * 32.0)
+                            }
+                            ui::motion::Sweep::Still => u8::MAX,
+                        }),
                         u16::try_from(ui::num::u32_of_f64(look.scale * 1000.0)).unwrap_or(u16::MAX),
                     )
                 })
@@ -750,9 +760,9 @@ impl TopBarChrome {
     }
 
     /// Where the full bar's session side stands: the tray, application tray, media and sharing
-    /// indicators, who is here and the continuity offer. A compact bar on another display
-    /// carries none of these. Returns where the person's own avatar leaves room beside it, for the
-    /// ask.
+    /// indicators, the invite, who is here (the person's own face first) and the continuity offer.
+    /// A compact bar on another display carries none of these. Returns where the ask may end
+    /// beside the faces.
     fn place_session_clusters(
         &mut self,
         theme: &Theme,
@@ -766,8 +776,6 @@ impl TopBarChrome {
             - f64::from(theme.tokens.spacing.s3)
             - tray_w
             - f64::from(theme.tokens.spacing.s2);
-        let stack_right_x = self.place_own_avatar(theme, center_y, stack_right_x);
-        let beside_avatar_x = stack_right_x;
         let stack_right_x = self.place_app_tray(theme, center_y, stack_right_x);
         let stack_right_x =
             self.place_media_indicator(theme, text_renderer, center_y, stack_right_x);
@@ -776,6 +784,7 @@ impl TopBarChrome {
         let people_left_x =
             self.place_people_cluster(theme, text_renderer, (center_y, stack_right_x));
         self.placed.people_x = people_left_x;
+        let beside_avatar_x = people_left_x - f64::from(theme.tokens.spacing.s2);
         let notices_left_x =
             self.place_arrival_notice(theme, text_renderer, (center_y, people_left_x));
         self.people_left_x =
@@ -794,7 +803,6 @@ impl TopBarChrome {
     ) {
         let transform = Affine::IDENTITY;
         self.paint_tray_pill(scene, transform, theme, text_renderer);
-        self.paint_own_avatar(scene, transform, theme, text_renderer);
         self.paint_app_tray(scene, transform, theme, text_renderer);
         self.paint_media_indicator(scene, transform, theme, text_renderer);
         self.paint_sharing_indicator(scene, transform, theme, text_renderer);
@@ -950,34 +958,6 @@ impl TopBarChrome {
         self.rect
     }
 
-    /// The room in the bar beside its clock where a control hint for a gesture no control on
-    /// screen does stands ([`ui::control_hints`]): from just past the clock to just before the
-    /// bar's own controls on its right, the bar's height across, as the bar last laid them out.
-    /// `None` while the bar is hidden, shows no clock, or keeps no room beside it — the hint does
-    /// not show rather than stand over the clock or a control beside it.
-    #[must_use]
-    pub fn hint_room(&self) -> Option<Rect> {
-        if self.presence() == TopBarPresence::Hidden
-            || self.is_compact()
-            || self.rect.height() <= 0.0
-            || self.rect.width() <= 0.0
-            || self.center_rect.is_zero_area()
-        {
-            return None;
-        }
-        // The bar's one control gap, each side of the hint.
-        let gap = f64::from(ui::tokens::Spacing::BASE.s2);
-        let left = self.center_rect.x1 + gap;
-        let mut right = self.right_side_x();
-        if !self.ask.pill.is_zero_area() {
-            // The ask about the person stands where the hint would, from the clock's side: the
-            // hint keeps off it rather than cover a question they are answering.
-            right = right.min(self.ask.pill.x0);
-        }
-        let right = right - gap;
-        (right > left).then(|| Rect::new(left, self.rect.y0, right, self.rect.y1))
-    }
-
     #[must_use]
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         let rev = chrome.snapshot().revision;
@@ -1049,9 +1029,10 @@ impl TopBarChrome {
         self.face_members.clear();
         self.face_ids.clear();
         self.face_presence.clear();
-        // Everyone here, the one this person follows first: the bar stands as many faces as it has
-        // room for and folds the rest into the count badge, so a narrow bar keeps the face being
-        // watched and never drops anyone uncounted.
+        // Everyone here, the one this person follows first, then people, then agents, as every
+        // list of who is here orders them: the bar stands as many faces as fit and
+        // folds the rest into the count badge, so a narrow bar keeps the face being watched and
+        // never drops anyone uncounted.
         let mut here: Vec<(&tilo_desktop_model::Member, &tilo_desktop_model::Present)> = members
             .iter()
             .filter(|member| !own(member))
@@ -1060,7 +1041,7 @@ impl TopBarChrome {
                 Some((member, here))
             })
             .collect();
-        here.sort_by_key(|(_, here)| !here.followed);
+        here.sort_by_key(|(_, here)| (!here.followed, here.member.is_agent()));
         self.following = here.iter().any(|(_, here)| here.followed);
         let peer_count = here.len();
         // How many of them could stand at all, before the bar knows its width: a draw folds this
@@ -1175,7 +1156,7 @@ impl TopBarChrome {
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.base,
+            bar_ground(theme),
             None,
             &self.rect,
         );
@@ -1259,7 +1240,8 @@ impl Widget for TopBarChrome {
                 return true;
             }
         }
-        time_changed
+        // Someone active now: the arc round their ring moves on every frame it wakes for.
+        time_changed || self.active_since.is_some()
     }
 
     /// The end of the time reading on screen. Once it passes it stays reported as due, so the host
@@ -1272,9 +1254,9 @@ impl Widget for TopBarChrome {
             return None;
         }
         let now = ui::time::now();
-        // Someone here is in a call: their ring breathes, gently.
-        let breath = self.call_since.and_then(|_| {
-            ui::motion::Breathe::next_frame(
+        // Someone here is active now: an arc sweeps round their ring.
+        let sweep = self.active_since.and_then(|_| {
+            ui::motion::Sweep::next_frame(
                 now,
                 self.cache_theme.as_ref().map_or_else(
                     || ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
@@ -1284,7 +1266,7 @@ impl Widget for TopBarChrome {
         });
         [
             self.time_wake,
-            breath,
+            sweep,
             self.wave_notice_ends(now),
             self.arrival_notice_ends(now),
         ]

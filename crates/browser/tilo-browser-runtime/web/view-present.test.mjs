@@ -420,3 +420,19 @@ test('a toolbar its widget lays out keeps its tools where they stand, a separato
   assert.match(byPath(layer, 'Toolbar[0]#control:0:choice:2:rule').style.cssText, /left:71.5px;/);
   assert.ok(byPath(layer, 'Toolbar[0]#control:0:choice:1:dot'), 'the new one carries its dot');
 });
+
+test('a swatch is its colour, named for a reader and a tooltip, the chosen one ringed', () => {
+  const layer = new Node('div');
+  const presenter = createViewPresenter(layer);
+  show(presenter, widget('ColorSwatchPicker[0]', [0, 0, 160, 32], {own: {kind: 'control', controls: [{kind: 'choices', list: 'radiogroup', item: 'radio', options: [
+    {label: 'Blue', colour: [58, 123, 213, 255], selected: true},
+    {label: 'Red', colour: [213, 90, 58, 255]},
+  ]}]}}));
+  const blue = byPath(layer, 'ColorSwatchPicker[0]#control:0:choice:0');
+  const red = byPath(layer, 'ColorSwatchPicker[0]#control:0:choice:1');
+  assert.equal(blue.getAttribute('aria-label'), 'Blue');
+  assert.equal(red.getAttribute('title'), 'Red');
+  assert.equal(byPath(layer, 'ColorSwatchPicker[0]#control:0:choice:0:label'), undefined, 'no code beside the colour');
+  assert.match(blue.style.cssText, /box-shadow:inset 0 0 0 2px/);
+  assert.doesNotMatch(red.style.cssText, /box-shadow/);
+});

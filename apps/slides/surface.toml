@@ -6,6 +6,7 @@ format = 2
 kind = "slides.deck"
 label = "Deck"
 version = 1
+shows = ["edit-text", "editor", "end-presentation", "open-element", "open-notes", "open-slide", "overview", "present", "present-largest-external", "present-primary-external", "show-properties", "show-slide-list"]
 fields = [
   { path = "title", type = "text", label = true },
   { path = "palette", type = { named = "PaletteKind" } },

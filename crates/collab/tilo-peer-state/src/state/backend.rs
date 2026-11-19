@@ -281,6 +281,14 @@ impl StoredDocument {
     pub(super) fn ptr_eq(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.document, &b.document)
     }
+    /// Whether `a` and `b` are copies of one document state whose durable part
+    /// nothing changed either: what is made of a document's part is made again
+    /// for one that is not.
+    pub(super) fn same(a: &Self, b: &Self) -> bool {
+        Self::ptr_eq(a, b)
+            && Arc::ptr_eq(&a.encoded, &b.encoded)
+            && Arc::ptr_eq(&a.digests, &b.digests)
+    }
     /// Install the sealed history a restore validated for this record, which
     /// the restore holds alone.
     pub(super) fn restore_sealed(&mut self, sealed: SealedLog) -> Result<(), String> {
@@ -295,6 +303,7 @@ impl StoredDocument {
     /// with it changed though the record did not.
     pub(super) fn reencode(&mut self) {
         self.encoded = Arc::default();
+        self.digests = Arc::default();
     }
     /// The record's durable encoding as `encode` makes it for `route`,
     /// made once per state of the record.
@@ -367,7 +376,7 @@ pub(super) struct PeerCore {
     pub(super) revocations: RevocationList,
     pub(super) receipts: Shared<BTreeMap<String, Vec<u8>>>,
     pub(super) workspace_doc: Option<CachedDocument>,
-    pub(super) documents: Shared<BTreeMap<Route, StoredDocument>>,
+    pub(super) documents: super::documents::Documents,
     pub(super) pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
     pub(super) pending_bytes: usize,
     pub(super) exact_admissions: ExactAdmissions,

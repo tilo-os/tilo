@@ -214,7 +214,7 @@ def checked_proof(path, board_ci=None):
                 and selected.get('schema') == 'tilo.installer-dev-target.v1'
                 and selected.get('architecture') == 'aarch64'
                 and selected.get('hardware_profile') == 'lenovo-83ed'
-                and selected.get('target_ref') == board_ci['image']
+                and selected.get('repository') == board_ci['image'].split('@')[0]
                 and selected.get('target_digest') == board_ci['image'].split('@')[1]
                 and guest['installed_image_digest'] == selected['target_digest']
                 and selected.get('update_origin') == board_ci['update_origin']

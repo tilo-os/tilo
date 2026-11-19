@@ -55,7 +55,21 @@ TOOLS = [
     tool("tilo_put_begin", "Upload bytes: begin.", {"size": {"type": "integer", "description": "How many."}}, ("size",), WRITE),
     tool("tilo_put_append", "Append the next chunk.", {"offset": {"type": "integer", "description": "Bytes sent so far."}}, ("offset",), WRITE),
     tool("tilo_put_finish", "Finish an upload.", {}, (), WRITE),
+    tool("tilo_put_many", "Store several small files whole.", {"files": {"type": "array", "description": "The files, each base64."}}, ("files",), WRITE),
+    tool("tilo_put_have", "Which hashes the workspace holds.", {"hashes": {"type": "array", "description": "The hashes."}}, ("hashes",), READ),
     tool("tilo_get", "Download a file.", {"content": {"type": "string", "description": "The reference."}}, ("content",), READ),
+    tool(
+        "tilo_ask",
+        "Ask your person what only they can answer, and wait for their answer.",
+        {
+            "question": {"type": "string", "description": "What to ask."},
+            "choices": {"type": "array", "items": {"type": "string"}, "description": "The options to choose between."},
+            "typed": {"type": "boolean", "description": "Whether they may type an answer besides the choices."},
+            "wait_ms": {"type": "integer", "description": "How long to wait for the answer."},
+        },
+        ("question",),
+        {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
+    ),
     tool("tilo_devices", "List your other devices.", {}, (), {"readOnlyHint": True, "openWorldHint": True}),
 ]
 
@@ -101,6 +115,8 @@ class McpToolsReferenceTests(unittest.TestCase):
             "It reaches beyond the workspace.",
             page,
         )
+        self.assertIn("### tilo_ask\n", page)
+        self.assertIn("| `question` | string | yes | What to ask. |", page)
         self.assertIn("### tilo_devices\n", page)
         self.assertIn("It takes no arguments.", page)
         self.assertLess(page.index("## Workspace tools"), page.index("## Files"))

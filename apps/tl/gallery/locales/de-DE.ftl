@@ -94,7 +94,7 @@ d-ii4dp5pl = Anzahl
 d-xnmw2f5g-filter-count = Anzahl
 
 d-4cntcc2v = Änderung
-    .doc = Eine Änderung des Dokuments: wer sie gemacht hat, wann und was sie getan hat.
+    .doc = Eine Änderung des Dokuments: was sie getan hat.
     .noun = { $count ->
         [one] Änderung
        *[other] Änderungen
@@ -102,13 +102,7 @@ d-4cntcc2v = Änderung
 
 d-dmejdwow = Titel
 
-d-twgxunl5 = Wer
-
 d-kbnmru3y = Zusammenfassung
-
-d-e4daczuq = Um
-
-d-4cntcc2v-filter-at = Um
 
 d-36wloal6 = Foto
     .doc = Ein Foto der Bibliothek: was es zeigt, wo, und sein Bild, in seiner Adresse getragen.
@@ -136,6 +130,19 @@ d-uuewf2cr = Angeheftet
     }
 
 d-ciwf3kva = Titel
+
+d-5tfi5mod = Art
+
+d-uuewf2cr-filter-kind = Art
+
+d-iidmszju = Art
+    .doc = Was eine angeheftete App ist, und das Bild, das sie auf einem Dock zeigt.
+
+d-7o3hv26g = Notizen
+
+d-7koxgqe5 = Aufgaben
+
+d-ptzwi3be = Mail
 
 d-shklew6c = Dringlichkeit
     .doc = Wie bald ein Bericht fällig ist, als Fall, den der Bericht hält.
@@ -260,16 +267,16 @@ d-7chkyi44 = Grundlagen
     .w-archive-an-item-to-put-it = Archiviere einen Eintrag, um ihn beiseitezulegen.
     .w-a-page-of-a-stack = Eine Seite eines Stapels
     .w-a-section-opened-in-a-page = Ein Abschnitt, in einer eigenen Seite geöffnet, eine Ebene tief.
-    .w-opened-from-the-panel-with-the = Aus dem Panel geöffnet, mit dem Weg zurück darüber.
+    .w-a-page-one-level-deep-slid = Eine Seite eine Ebene tiefer, über die geschoben, die sie geöffnet hat.
 
 d-vvxmf5ve = Backlogliste
-    .w-message-the-team = Nachricht ans Team
-    .w-send = Senden
+    .w-add-an-item-to-the-backlog = Einen Eintrag zum Backlog hinzufügen
+    .w-add = Hinzufügen
+    .w-rows-of-a-collection-each-with = Zeilen einer Sammlung: jede mit einem Menü, einem Wischen, einer Werkzeugleiste beim Darüberfahren und ihren Reaktionen.
 
 d-7ptc3r7a = Eintragszeile
-    .w-copy-link = Link kopieren
+    .w-mark-done = Als erledigt markieren
     .w-delete = Löschen
-    .w-reply = Antworten
 
 d-qczmqkvq = Release-Board
     .w-a-board-a-list-per-stage = Ein Board, eine Liste je Phase, mit Karten, die eine App zwischen ihnen zieht.
@@ -595,7 +602,7 @@ d-5l4lnfd6 = Seitentitel
     .w-media = Medien
     .w-places = Orte
     .w-shell-parts = Rahmenteile
-    .w-your-own = Eigenes
+    .w-charts-and-views = Diagramme und Ansichten
     .w-gallery = Galerie
 
 d-yy2pow4p = Eintrag notiert
@@ -628,6 +635,11 @@ d-avk7hywt = Bild notiert
 d-yy2pow4p-last = Letzte
 
 d-yy2pow4p-x = X
+
+d-vifo6twu = Änderung notieren
+    .doc = Notiert eine Änderung des Dokuments, gemacht von dem, der darum bittet.
+
+d-vifo6twu-summary = Zusammenfassung
 
 d-o4oyc5hc-last = Letzte
 
@@ -765,8 +777,30 @@ d-x3epwv5u-filter-controls_urgency = Bedienelemente Dringlichkeit
 
 d-x3epwv5u-filter-media_at = Position der Medien
 
-d-ugfyyjbk = Füllen beim ersten Start
-    .doc = Eine Galerie, deren Wurzel angelegt wird, öffnet sich gefüllt: Die Plattform wendet dies einmal auf die Wurzel an, wie jede Migration, während die Wurzel entsteht und bevor das Fenster gezeichnet wird, das sie angefordert hat.
-
 d-haqpp6u6 = Füllen
-    .doc = Was die Galerie zeigt, solange noch nichts in ihr steht: ein Dokument jeder Gruppe, damit ein Mensch die Komponenten trifft statt ein leeres Fenster.
+    .doc = Womit eine neue Galerie beginnt: ein Dokument jeder Gruppe, damit ein Mensch die Komponenten trifft statt ein leeres Fenster.
+
+d-6obnc5qh = Eintrag hinzufügen
+    .doc = Fügt hinzu, was die Zeile des Backlogs sagt, als zu erledigenden Eintrag, und leert die Zeile.
+    .w-write-the-item-first = Schreib zuerst den Eintrag
+
+d-qt2z24yc = Erledigen
+    .doc = Markiert einen Eintrag als erledigt.
+    .w-already-done = Schon erledigt
+
+d-jkdyuciq = Eintrag entfernen
+    .doc = Nimmt einen Eintrag aus dem Backlog.
+
+d-jkdyuciq-x = X
+
+d-pshdk4bg = Reagieren
+    .doc = Reagiert mit einem Emoji auf einen Eintrag, oder nimmt die eigene Reaktion zurück.
+
+d-pshdk4bg-emoji = Emoji
+
+d-iemy5gb4 = Eintrag hinzufügen~present
+
+d-24lyinrx = Erledigen~present
+
+d-bmdkc22s = Name
+    .doc = Wie die Galerie heißt: ihr Name, damit kein Feld, das eine Seite bearbeitet, für ihren Titel gehalten wird.

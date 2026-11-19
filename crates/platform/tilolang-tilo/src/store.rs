@@ -1243,39 +1243,6 @@ impl TiloStore {
         crate::action::triggered(mirror, &obj, key)
     }
 
-    /// Record that the migration `migration` (its action id) ran on the resource `doc`, as a
-    /// change of its own: the platform keeps no other mark of it, and runs a migration on each
-    /// resource of its target type once, whether an earlier version wrote the resource or
-    /// this one. A migration reads what an older version left, so one that finds nothing of it
-    /// changes nothing, and a document made by this version starts with every migration of its
-    /// type run.
-    pub fn mark_migrated(&self, doc: &str, migration: &str) -> Result<(), StoreError> {
-        self.load_document()?;
-        let mut inner = self.mutate();
-        let Some((app, ty)) = inner.index.get(doc).cloned() else {
-            return Err(not_found(format!("resource {doc}")));
-        };
-        let Some(schema) = lookup(&ty) else {
-            return Err(not_found(format!("type {ty}")));
-        };
-        let edit = DynEdit::Migrated {
-            id: doc.to_owned(),
-            migration: migration.to_owned(),
-        };
-        let seed = inner.fresh("migrated:").into_bytes();
-        inner.write(&app, vec![edit.clone()], &seed, &[], Moves::default())?;
-        let action = DynAction {
-            app: app.to_string(),
-            kind: format!("tl.{app}.{}", schema.name),
-            action_id: migration.to_owned(),
-            args: Json::String(doc.to_owned()),
-            authorship: Authorship::default(),
-            edits: vec![edit],
-        };
-        inner.enqueue(action);
-        Ok(())
-    }
-
     /// Whether the migration `migration` (its action id) ran on the resource `doc`.
     pub fn migrated(&self, doc: &str, migration: &str) -> Result<bool, StoreError> {
         self.load_document()?;

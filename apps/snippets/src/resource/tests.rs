@@ -359,7 +359,7 @@ fn search_finds_each_snippet_by_what_it_holds() {
     let hit = entries.iter().find(|e| e.title == "Deploy").unwrap();
     for held in [
         "Ops",
-        "Shell",
+        "shell",
         "k8s",
         "kubectl rollout",
         "Roll a deployment",
@@ -373,5 +373,34 @@ fn search_finds_each_snippet_by_what_it_holds() {
     assert_eq!(
         hit.anchor.as_deref(),
         Some(tilo_resource::items::item_resource_id::<Snippets>("snippets", &deploy).as_str())
+    );
+}
+
+/// A snippet's address, as the app publishes it and as an action answers it, reads back: the one
+/// resource built for it answers the read the published page lists, so a caller that read the
+/// address from `made` reads the snippet with it.
+#[test]
+fn a_snippets_address_answers_the_read_the_page_lists() {
+    use ui::framework::testing::TestApp;
+
+    let mut app = TestApp::<SnippetsShell>::drive("").unwrap();
+    app.settle();
+    let harness = app.harness();
+    let published = harness.resources();
+    let listed = published
+        .iter()
+        .flat_map(|resource| resource.children.iter())
+        .find(|child| child.kind == "snippets.library.snippets")
+        .expect("the starter library publishes its snippets");
+    let read = harness
+        .resource(listed.id.as_str())
+        .expect("a snippet is one resource by its address");
+    assert!(
+        read.actions.iter().any(|action| action.id == "read"),
+        "the address answers the read the page lists; it has {:?}",
+        read.actions
+            .iter()
+            .map(|action| action.id.clone())
+            .collect::<Vec<_>>()
     );
 }

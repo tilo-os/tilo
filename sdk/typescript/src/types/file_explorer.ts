@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.file-explorer@0a6b39435b30c1be";
+export const SURFACE = "so.tilo.file-explorer@528977fd1ca945e9";
 
 export interface Bookmark {
   place: string;
@@ -57,40 +57,45 @@ export interface RemoveBookmarkArgs {
 
 /** The arguments of `new-folder`. */
 export interface NewFolderArgs {
-  parent: string;
-  name: string;
-  document?: string;
+  parent: unknown;
+  name: unknown;
+  document?: unknown;
 }
 
 /** The arguments of `new-file`. */
 export interface NewFileArgs {
-  parent: string;
-  name: string;
-  document?: string;
+  parent: unknown;
+  name: unknown;
+  document?: unknown;
 }
 
 /** The arguments of `move`. */
 export interface MoveArgs {
-  node: string;
-  parent: string;
-  name: string;
+  node: unknown;
+  parent: unknown;
+  name: unknown;
 }
 
 /** The arguments of `write`. */
 export interface WriteArgs {
-  node: string;
-  content: string;
-  size: number;
+  node: unknown;
+  content: unknown;
+  size: unknown;
 }
 
 /** The arguments of `trash`. */
 export interface TrashArgs {
-  node: string;
+  node: unknown;
 }
 
 /** The arguments of `restore`. */
 export interface RestoreArgs {
-  node: string;
+  node: unknown;
+}
+
+/** The arguments of `list-chunk`. */
+export interface ListChunkArgs {
+  chunk: unknown;
 }
 
 /** The arguments of `note`. */
@@ -226,48 +231,53 @@ export function folder(ws: tilo.Workspace, path: string): Folder {
 /** Files — `files.tree`. */
 export interface Tree extends tilo.Resource {
   newFolder(args: {
-    parent: string;
-    name: string;
-    document?: string;
+    parent: unknown;
+    name: unknown;
+    document?: unknown;
   }): Promise<void>;
   /** Runs `new-folder` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   newFolderMany(items: NewFolderArgs[]): Promise<tilo.ActionAnswer[]>;
   newFile(args: {
-    parent: string;
-    name: string;
-    document?: string;
+    parent: unknown;
+    name: unknown;
+    document?: unknown;
   }): Promise<void>;
   /** Runs `new-file` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   newFileMany(items: NewFileArgs[]): Promise<tilo.ActionAnswer[]>;
   move(args: {
-    node: string;
-    parent: string;
-    name: string;
+    node: unknown;
+    parent: unknown;
+    name: unknown;
   }): Promise<void>;
   /** Runs `move` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   moveMany(items: MoveArgs[]): Promise<tilo.ActionAnswer[]>;
   write(args: {
-    node: string;
-    content: string;
-    size: number;
+    node: unknown;
+    content: unknown;
+    size: unknown;
   }): Promise<void>;
   /** Runs `write` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   writeMany(items: WriteArgs[]): Promise<tilo.ActionAnswer[]>;
   trash(args: {
-    node: string;
+    node: unknown;
   }): Promise<void>;
   /** Runs `trash` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   trashMany(items: TrashArgs[]): Promise<tilo.ActionAnswer[]>;
   restore(args: {
-    node: string;
+    node: unknown;
   }): Promise<void>;
   /** Runs `restore` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   restoreMany(items: RestoreArgs[]): Promise<tilo.ActionAnswer[]>;
+  listChunk(args: {
+    chunk: unknown;
+  }): Promise<void>;
+  /** Runs `list-chunk` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  listChunkMany(items: ListChunkArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Tree` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const TREE_ACTIONS = ["newFolder", "newFolderMany", "newFile", "newFileMany", "move", "moveMany", "write", "writeMany", "trash", "trashMany", "restore", "restoreMany"] as const;
+export const TREE_ACTIONS = ["newFolder", "newFolderMany", "newFile", "newFileMany", "move", "moveMany", "write", "writeMany", "trash", "trashMany", "restore", "restoreMany", "listChunk", "listChunkMany"] as const;
 
 /** The `files.tree` kind at `path`. */
 export function tree(ws: tilo.Workspace, path: string): Tree {
@@ -307,5 +317,19 @@ export const RECENT_ACTIONS = ["note", "noteMany", "moved", "movedMany", "forget
 /** The `files.recent` kind at `path`. */
 export function recent(ws: tilo.Workspace, path: string): Recent {
   return resourceProxy(ws, path, SURFACE, RECENT_ACTIONS) as unknown as Recent;
+}
+
+/** Files window — `files.workspace`. */
+export interface Workspace extends tilo.Resource {
+  folder: string;
+}
+
+/** The actions `Workspace` reaches before it is read: `ws` calls them without a
+  `load()` first. */
+export const WORKSPACE_ACTIONS = [] as const;
+
+/** The `files.workspace` kind at `path`. */
+export function workspace(ws: tilo.Workspace, path: string): Workspace {
+  return resourceProxy(ws, path, SURFACE, WORKSPACE_ACTIONS) as unknown as Workspace;
 }
 

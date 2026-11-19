@@ -282,9 +282,17 @@ impl<'a> SpansInternal<'a> {
 
 /// A sequence of block markers and text spans. Returned by [`crate::ReadDoc::spans`] and
 /// [`crate::ReadDoc::spans_at`]
+#[cfg(not(tilo_model_guest))]
 #[derive(Clone, Debug)]
 pub struct Spans<'a> {
     internal: SpansInternal<'a>,
+}
+
+/// TILO(model-device): the spans the host of a model module's document read.
+#[cfg(tilo_model_guest)]
+#[derive(Clone, Debug)]
+pub struct Spans<'a> {
+    pub(crate) hosted: crate::model_device::Hosted<'a, Span>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -627,14 +635,26 @@ impl SpanInternal {
 }
 
 impl Spans<'_> {
+    #[cfg(not(tilo_model_guest))]
     pub(crate) fn new(internal: SpansInternal<'_>) -> Spans<'_> {
         Spans { internal }
+    }
+
+    #[cfg(tilo_model_guest)]
+    pub(crate) fn new(_: SpansInternal<'_>) -> Spans<'_> {
+        crate::model_device::outside_device("an op set")
     }
 }
 
 impl Iterator for Spans<'_> {
     type Item = Span;
 
+    #[cfg(tilo_model_guest)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.hosted.next()
+    }
+
+    #[cfg(not(tilo_model_guest))]
     fn next(&mut self) -> Option<Self::Item> {
         Some(self.internal.next()?.export(
             self.internal.iter.op_set?,

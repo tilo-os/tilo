@@ -2,7 +2,7 @@
 //! went wrong and is asserted on the path a person's action takes.
 
 use super::*;
-use ui::webview::WebViewEngine;
+use tilo_webview::WebViewEngine;
 
 use crate::downloads::DownloadStatus;
 
@@ -23,7 +23,7 @@ fn a_navigation_while_a_page_loads_replaces_it() {
         ) -> Result<(), String> {
             self.1.navigate_owned(request_id, command)
         }
-        fn frames(&self) -> ui::webview::FrameSlot {
+        fn frames(&self) -> tilo_webview::FrameSlot {
             self.1.frames()
         }
         fn drain_events(&self) -> Vec<WebViewEvent> {
@@ -140,7 +140,7 @@ fn a_selection_dragged_off_the_page_is_released_on_it() {
         engine.commands().iter().any(|command| matches!(
             command,
             WebViewCommand::MouseButton {
-                button: ui::webview::MouseButton::Left,
+                button: tilo_webview::MouseButton::Left,
                 down: false,
                 ..
             }
@@ -496,7 +496,7 @@ impl WebViewEngine for Asking {
     fn send(&self, command: WebViewCommand) {
         self.1.send(command);
     }
-    fn frames(&self) -> ui::webview::FrameSlot {
+    fn frames(&self) -> tilo_webview::FrameSlot {
         self.1.frames()
     }
     fn drain_events(&self) -> Vec<WebViewEvent> {
@@ -509,7 +509,7 @@ impl WebViewEngine for Asking {
 
 #[test]
 fn a_question_the_page_asks_is_answered_from_its_dialog() {
-    use ui::webview::{PageDialog, PageDialogKind};
+    use tilo_webview::{PageDialog, PageDialogKind};
     let engine = std::sync::Arc::new(Asking(std::sync::Mutex::new(Vec::new()), TestEngine::new()));
     let mut widget = BrowserWidget::with_engine(engine.clone(), true);
     let theme = Theme::dark();
@@ -663,7 +663,7 @@ fn a_question_the_page_asks_is_answered_from_its_dialog() {
 
 #[test]
 fn a_page_action_while_the_page_waits_on_its_question_answers_at_once() {
-    use ui::webview::{PageDialog, PageDialogKind};
+    use tilo_webview::{PageDialog, PageDialogKind};
     let engine = std::sync::Arc::new(Asking(std::sync::Mutex::new(Vec::new()), TestEngine::new()));
     let mut widget = BrowserWidget::with_engine(engine.clone(), true);
     let theme = Theme::dark();
@@ -898,7 +898,7 @@ fn a_history_row_forgets_only_its_own_page() {
 
 #[test]
 fn answering_a_pages_question_says_what_happens_next() {
-    use ui::webview::{PageDialog, PageDialogKind};
+    use tilo_webview::{PageDialog, PageDialogKind};
     let engine = std::sync::Arc::new(Asking(std::sync::Mutex::new(Vec::new()), TestEngine::new()));
     let mut widget = BrowserWidget::with_engine(engine.clone(), true);
     let theme = Theme::dark();
@@ -1112,7 +1112,7 @@ fn a_refused_page_action_is_never_reported_retryable() {
             .request_id;
         widget.accept_page_result(
             request_id,
-            Err(ui::webview::PageFailure::new(code, "the page is busy")),
+            Err(tilo_webview::PageFailure::new(code, "the page is busy")),
         );
         let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
             widget.poll_invocation(invocation)

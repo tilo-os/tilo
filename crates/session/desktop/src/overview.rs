@@ -106,13 +106,24 @@ pub struct WorkspacePerson {
     pub is_you: bool,
 }
 
-/// A person the overview names, as their chip shows them: the id their face takes its colour
-/// from, and what the workspace calls them. A person the workspace has not named reads as a
-/// guest, never as their key.
+/// Someone the overview names, as their chip shows them: the id their face takes its colour
+/// from, what the workspace calls them, and what they are, which their face says (a person's
+/// initials, an agent's mark). A person the workspace has not named reads as a guest, never as
+/// their key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShownPerson {
     pub id: UserId,
     pub name: String,
+    pub kind: HolderKind,
+}
+
+/// What holds a share: a person, an agent acting in the workspace, or a bot of its server's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HolderKind {
+    #[default]
+    Person,
+    Agent,
+    Bot,
 }
 
 /// A capability naming a *resource* — a path, document, device — held by a person. Workspace
@@ -242,20 +253,63 @@ impl WorkspaceCard {
 /// the reader nothing, while the raw subject is both true and the value a revoke would name.
 /// What `ws` calls `id`: the member's own name, or a guest's label where the workspace has not
 /// named them. Never the id itself: nobody is shown their key.
-fn display_name(id: &UserId, ws: &Workspace, _tree: &Layout) -> String {
-    ws.members
-        .iter()
-        .find(|member| member.id.person_id() == Some(id.as_str()))
-        .map(|member| member.name.trim().to_owned())
-        .filter(|name| ui::presence::shown_name(name).is_some())
-        .unwrap_or_else(ui::presence::guest_label)
+fn display_name(id: &UserId, ws: &Workspace) -> String {
+    ws.person_name(id)
+        .map_or_else(ui::presence::guest_label, str::to_owned)
 }
 
 /// `holder` as a share row shows them: their face's id and the name they go by.
-fn shown_person(holder: &str, ws: &Workspace, tree: &Layout) -> ShownPerson {
+fn shown_person(holder: &str, ws: &Workspace) -> ShownPerson {
     ShownPerson {
         id: holder.to_owned(),
-        name: display_name(&holder.to_owned(), ws, tree),
+        name: display_name(&holder.to_owned(), ws),
+        kind: HolderKind::Person,
+    }
+}
+
+/// Whether grant `id` is one that makes its holder an administrator of the workspace or the person
+/// it is kept for: a role they hold in it, which its people show, not a part of it shared out.
+fn is_role(id: &tilo_action_policy::GrantId) -> bool {
+    tilo_action_policy::roles::administrator_named(id).is_some()
+        || tilo_action_policy::roles::keeper_named(id).is_some()
+}
+
+/// The member `holder` as a share row shows them, as what they are: a person by the name they go
+/// by, an agent or a bot by the name the workspace gives it (its server's moderation by what it
+/// does), a person nobody named as a guest.
+fn shown_member(holder: &tilo_action_policy::MemberId, ws: &Workspace) -> ShownPerson {
+    use tilo_action_policy::MemberId;
+    let named = || {
+        ws.members
+            .iter()
+            .find(|member| member.id == *holder)
+            .and_then(|member| ui::presence::shown_name(&member.name).map(str::to_owned))
+    };
+    match holder {
+        MemberId::Person(person) => shown_person(person.as_str(), ws),
+        MemberId::Agent(agent) => ShownPerson {
+            id: agent.clone(),
+            name: named().unwrap_or_else(|| ui::presence::unnamed_label(holder)),
+            kind: HolderKind::Agent,
+        },
+        MemberId::Bot(bot) => ShownPerson {
+            id: bot.clone(),
+            name: named()
+                .or_else(|| {
+                    ws.bots
+                        .iter()
+                        .find(|known| known.installation.as_deref() == Some(bot.as_str()))
+                        .and_then(|known| ui::presence::shown_name(&known.name).map(str::to_owned))
+                })
+                .unwrap_or_else(|| {
+                    if bot == tilo_action_policy::bot::MODERATION {
+                        t("workspace-settings-moderation")
+                    } else {
+                        ui::presence::unnamed_label(holder)
+                    }
+                }),
+            kind: HolderKind::Bot,
+        },
     }
 }
 
@@ -287,7 +341,7 @@ pub fn workspace_people(
                 .any(|here| here.member.person_id() == Some(id.as_str()))
                 || (id == me && ws.id() == tree.active);
             WorkspacePerson {
-                name: display_name(&id, ws, tree),
+                name: display_name(&id, ws),
                 present,
                 is_you: id == me,
                 role,
@@ -299,12 +353,7 @@ pub fn workspace_people(
 
 /// Grouped by what is shared (scope, not capability): two grants on the same folder to two people
 /// are one share with two holders.
-pub fn workspace_shares(
-    ws: &Workspace,
-    tree: &Layout,
-    host: &dyn OverviewHost,
-    now: u64,
-) -> Vec<WorkspaceShare> {
+pub fn workspace_shares(ws: &Workspace, host: &dyn OverviewHost, now: u64) -> Vec<WorkspaceShare> {
     let mut out: Vec<WorkspaceShare> = Vec::new();
     let mut share = |what: String, holder: ShownPerson, writable: bool| match out
         .iter_mut()
@@ -326,20 +375,27 @@ pub fn workspace_shares(
     // file reached outside the sandbox's own.
     let node = ws.node();
     let cx = tilo_desktop_model::context_at(now);
+    let me = host.local_user();
     for grant in &ws.policy.grants {
         if grant.node == node
             || !grant.node.is_within(&node)
             || grant.answer != tilo_action_policy::Answer::Allow
             || !grant.is_live(&cx)
+            || is_role(&grant.id)
         {
             continue;
         }
-        let Some(holder) = grant.grantee.person_id() else {
+        // A person or an agent of the workspace's, by the name it goes by there; what an app or a
+        // whole role holds is not shared with anyone in particular.
+        let Some(holder) = grant.grantee.as_member() else {
             continue;
         };
+        if holder.person_id() == Some(me) {
+            continue;
+        }
         share(
             host.node_label(&grant.node),
-            shown_person(holder, ws, tree),
+            shown_member(holder, ws),
             grant
                 .kinds
                 .contains(tilo_action_policy::ActionKind::Undoable),
@@ -363,11 +419,7 @@ pub fn workspace_shares(
             ),
             None => host.scope_label(&cap.scope),
         };
-        share(
-            what,
-            shown_person(holder, ws, tree),
-            cap.access == Access::Write,
-        );
+        share(what, shown_person(holder, ws), cap.access == Access::Write);
     }
     out.compact_sort_by(|a, b| b.with.len().cmp(&a.with.len()).then(a.what.cmp(&b.what)));
     out
@@ -382,7 +434,7 @@ pub fn workspace_cards(tree: &Layout, host: &dyn OverviewHost, now: u64) -> Vec<
             name: names::workspace(&ws.name),
             is_current: ws.id() == tree.active,
             people: workspace_people(ws, tree, host, now),
-            shares: workspace_shares(ws, tree, host, now),
+            shares: workspace_shares(ws, host, now),
             strips: overview_strips(ws, tree, host, now),
             hosting: None,
         })
@@ -861,7 +913,97 @@ mod workspace_tests {
             );
         }
 
+        fn an_administrator_and_the_person_it_is_kept_for_are_roles_not_shares() {
+            let mut w = ws("Design");
+            let workspace = w.policy.workspace.clone();
+            let by = Grantee::person(ME);
+            for grant in [
+                tilo_action_policy::roles::administrator_grant(&workspace, "ada", by.clone()),
+                tilo_action_policy::roles::administrator_moderation_grant(
+                    &workspace,
+                    "ada",
+                    by.clone(),
+                ),
+                tilo_action_policy::roles::keeper_grant(&workspace, "ada", by),
+            ] {
+                w.grant(grant);
+            }
+            let tree = tree_with(vec![w]);
+            let card = &workspace_cards(&tree)[0];
+            assert!(
+                card.shares.is_empty(),
+                "making someone an administrator shares nothing out: {:?}",
+                card.shares
+            );
+        }
+
+        fn an_agent_holding_part_of_the_workspace_is_named_and_you_are_not_a_share() {
+            let mut w = ws("Design");
+            let node = w.node();
+            w.member_here(tilo_desktop_model::Member::named(
+                collab_types::MemberId::agent("agent-7"),
+                "Linear import",
+            ));
+            for (id, grantee) in [
+                ("for-the-import", Grantee::agent("agent-7")),
+                ("for-me", Grantee::person(ME)),
+            ] {
+                w.grant(tilo_action_policy::Grant::new(
+                    id,
+                    grantee,
+                    node.clone().app("so.tilo.notes"),
+                    tilo_action_policy::KindSet::ALL,
+                    tilo_action_policy::Answer::Allow,
+                    Grantee::person(ME),
+                ));
+            }
+            let tree = tree_with(vec![w]);
+            let card = &workspace_cards(&tree)[0];
+            assert_eq!(card.shares.len(), 1, "{:?}", card.shares);
+            let with: Vec<&str> = card.shares[0]
+                .with
+                .iter()
+                .map(|with| with.name.as_str())
+                .collect();
+            assert_eq!(with, ["Linear import"], "the agent goes by its name");
+        }
+
+        fn a_person_not_here_goes_by_the_name_they_gave_themselves() {
+            let mut w = ws("Lounge");
+            w.admit("ada", collab_types::Role::Editor);
+            w.admit("bo", collab_types::Role::Editor);
+            // What the workspace's governance names its people, as the device showing it projects.
+            assert!(w.named_people([("ada", "Ada Lovelace")]));
+            let tree = tree_with(vec![w]);
+            let card = &workspace_cards(&tree)[0];
+            let names: Vec<&str> = card.others().map(|person| person.name.as_str()).collect();
+            assert_eq!(
+                names,
+                ["Ada Lovelace", "Guest"],
+                "someone who named themselves is never a guest; only someone nobody named is"
+            );
+        }
+
+        fn the_servers_moderation_holds_chat_as_itself() {
+            let mut w = ws("Lounge");
+            let workspace = w.policy.workspace.clone();
+            w.grant(tilo_action_policy::bot::moderation_grant(&workspace, ME));
+            let tree = tree_with(vec![w]);
+            let card = &workspace_cards(&tree)[0];
+            assert_eq!(card.shares.len(), 1, "{:?}", card.shares);
+            let holder = &card.shares[0].with[0];
+            assert_eq!(holder.kind, HolderKind::Bot, "a bot wears its own face");
+            assert_eq!(
+                holder.name, "Moderation",
+                "the server's moderation goes by what it does, never its grant's id"
+            );
+        }
+
         a_workspace_only_you_own_reads_as_private();
+        a_person_not_here_goes_by_the_name_they_gave_themselves();
+        the_servers_moderation_holds_chat_as_itself();
+        an_administrator_and_the_person_it_is_kept_for_are_roles_not_shares();
+        an_agent_holding_part_of_the_workspace_is_named_and_you_are_not_a_share();
         a_member_makes_the_workspace_read_as_shared_with_them();
         a_file_grant_is_a_share_and_not_a_membership();
         a_share_shows_a_person_never_a_key();

@@ -2059,12 +2059,14 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
             &serde_json::json!({ "resource": mails }),
         )
         .unwrap_or_else(|error| panic!("the second turn's place runs: {error}"));
-    let (mx, my, mw, _) = wait_for(&mut session, "the inbox placed", |session| {
+    let (mx, my, mw, mh) = wait_for(&mut session, "the inbox placed", |session| {
         canvas_box(session, "so.tilo.lang.mail")
     });
-    // Adjacent to the turn on any side, a spot in view first (canvas.md §3).
-    let trailing = mx >= bx + bw && my >= by && my < by + bh;
-    let leading = mx + mw <= bx && my >= by && my < by + bh;
+    // Adjacent to the turn on any side, a spot in view first (canvas.md §3): beside it is level
+    // with some of it, raised or lowered as far as staying in view asks.
+    let level = my < by + bh && my + mh > by;
+    let trailing = mx >= bx + bw && level;
+    let leading = mx + mw <= bx && level;
     let below = my >= by + bh && mx >= bx && mx < bx + bw;
     assert!(
         trailing || leading || below,
@@ -2279,5 +2281,83 @@ fn the_test_control_socket_pans_and_zooms_the_canvas() {
         &mut session,
         "the inbox panned by the plain wheel",
         &|now| near(now.2, grown.2) && (now.1 - grown.1).abs() > 1.0,
+    );
+}
+
+/// A notice's banner floats over the canvas: what the person had on screen keeps the place it
+/// stands in when the banner rises, and the banner's own × takes the notice away without moving
+/// it either. The banner is a card drawn over the canvas, never a band between the bar and the
+/// canvas, so a notice arriving never shifts the canvas or what it shows.
+#[test]
+fn a_notice_floats_over_the_canvas_and_never_moves_what_stands() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = seeded_session(root.path());
+    let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
+    let (inbox, (px, py, pw, ph)) = inbox_in(
+        &mut session,
+        (x + w * 0.1, y + h * 0.3),
+        (x + w * 0.5, y + h * 0.85),
+    );
+    let before = on_screen(&session, CANVAS).expect("the canvas");
+    // A notice arrives as the session posts one, as chat's does when someone writes.
+    session.notices().post(
+        tilo_desktop_surface::notifications::Notification::new("Chat", "Guest wrote to you")
+            .with_app_name("Chat"),
+    );
+    let dismiss = wait_for(&mut session, "the banner's dismiss", |session| {
+        session.shell_control("Dismiss")
+    });
+    for _ in 0..20 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    // The banner's own card stands inside the canvas's bounds, under the bar: it is laid over
+    // the canvas, not above it.
+    assert!(
+        dismiss.1 >= before.1 && dismiss.1 + dismiss.3 <= before.1 + before.3,
+        "the banner's dismiss stands over the canvas {before:?}: {dismiss:?}"
+    );
+    // Neither the canvas nor the place moved: what the person had on screen stays put.
+    let after = on_screen(&session, CANVAS).expect("the canvas");
+    assert!(
+        near(after.0, before.0)
+            && near(after.1, before.1)
+            && near(after.2, before.2)
+            && near(after.3, before.3),
+        "the canvas keeps its bounds: {before:?} then {after:?}"
+    );
+    let now = place_on_screen(&session, &inbox).expect("the inbox");
+    assert!(
+        near(now.0, px) && near(now.1, py) && near(now.2, pw) && near(now.3, ph),
+        "the inbox keeps its place: {:?} then {now:?}",
+        (px, py, pw, ph)
+    );
+    // The banner's × takes the notice away, as the person pressing it does, and the canvas still
+    // stands where it did.
+    crate::common::press(&mut session, "Dismiss");
+    until(&mut session, "the banner gone", |session| {
+        session.shell_control("Dismiss").is_none()
+    });
+    for _ in 0..20 {
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    let gone = on_screen(&session, CANVAS).expect("the canvas");
+    assert!(
+        near(gone.0, before.0)
+            && near(gone.1, before.1)
+            && near(gone.2, before.2)
+            && near(gone.3, before.3),
+        "the canvas keeps its bounds once the banner goes: {before:?} then {gone:?}"
+    );
+    let still = place_on_screen(&session, &inbox).expect("the inbox");
+    assert!(
+        near(still.0, px) && near(still.1, py) && near(still.2, pw) && near(still.3, ph),
+        "the inbox keeps its place once the banner goes: {:?} then {still:?}",
+        (px, py, pw, ph)
+    );
+    assert!(
+        session.shell_refusals().is_empty(),
+        "the banner's press reached the layout: {:?}",
+        session.shell_refusals()
     );
 }

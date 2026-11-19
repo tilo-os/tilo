@@ -234,8 +234,11 @@ impl Described for WindowFrame {
             body,
         } = props;
         let tabbed = tabs.as_deref().is_some_and(holds_tabs);
+        // The bar's parts stand edge to edge: the name's own gutter is the one inset before it,
+        // so it starts on the content's edge rather than a gap past it.
         let own = Stack::row()
             .align(Align::Center)
+            .gap(Rhythm::None)
             .push_part(part(tabs.unwrap_or_else(empty), tabs_fit(tabbed)))
             .push_part(part(empty(), Fit::hug()))
             .push_part(part(empty(), after_fit(tabbed)));
@@ -500,6 +503,7 @@ impl WindowFrame {
         let gutter = Spacer::fixed(m.gutter as f32);
         let row = Stack::row()
             .align(Align::Center)
+            .gap(Rhythm::None)
             .push(Box::new(gutter))
             .push(Box::new(title))
             .push_part(part(empty(), Fit::fill(1.0)));
@@ -560,16 +564,13 @@ impl WindowFrame {
             return;
         }
         let title = self.name.clone().unwrap_or_default();
-        crate::widget::drag_bus::publish(crate::widget::drag_bus::InFlight {
-            source: self.key.clone(),
-            payload: crate::dnd::DragPayload::Custom {
-                kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
-                blob: carries.as_bytes().to_vec(),
-            },
-            label: title,
-            pointer: point,
-            runs: vec![(self.key.clone(), self.rect)],
-        });
+        crate::widget::drag_bus::carry(
+            self.key.clone(),
+            carries.as_bytes().to_vec(),
+            title,
+            point,
+            self.rect,
+        );
     }
 
     /// The bar was let go: `Some(true)` when the press travelled and the drag ended here (the

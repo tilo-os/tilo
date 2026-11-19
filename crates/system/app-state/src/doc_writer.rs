@@ -27,16 +27,12 @@ use tilo_app_id::AppId;
 
 use tilo_automerge::load_hint;
 
-use crate::{StoreError, decode_canonical_with};
+use crate::{Save, SavePlan, StoreError, decode_canonical_with};
 
 /// Debounce window [`FsStore`](crate::FsStore) applies by default. Long
 /// enough to swallow a burst of keystrokes, short enough that a `kill` a
 /// moment later still finds the edit stored.
 pub const DEFAULT_DEBOUNCE: Duration = Duration::from_millis(400);
-
-/// Below this, compaction isn't worth it — a small document rewrites in
-/// microseconds and the append bookkeeping would dominate.
-const MIN_COMPACT_BYTES: usize = 64 * 1024;
 
 /// What a writer knows is durable, and any outstanding failure. Reading it
 /// never commits document operations.
@@ -458,8 +454,7 @@ impl DocOwner {
 pub struct DocWriter {
     owner: Option<Rc<DocOwner>>,
     sent: Vec<ChangeHash>,
-    appended: usize,
-    base: usize,
+    plan: SavePlan,
     full_writes: usize,
     appends: usize,
     progress: RefCell<Progress>,
@@ -508,8 +503,7 @@ impl DocWriter {
             ),
             owner: Some(Rc::clone(owner)),
             sent,
-            appended: 0,
-            base,
+            plan: SavePlan::new(base, 0),
             full_writes: 0,
             appends: 0,
             progress: RefCell::new(Progress {
@@ -539,8 +533,7 @@ impl DocWriter {
             owner: None,
             private_history: Err("writer disabled".into()),
             sent: Vec::new(),
-            appended: 0,
-            base: 0,
+            plan: SavePlan::default(),
             full_writes: 0,
             appends: 0,
             progress: RefCell::new(Progress {
@@ -579,12 +572,14 @@ impl DocWriter {
             return;
         };
         self.sent = doc.committed_heads();
-        self.base = owner
-            .stored()
-            .ok()
-            .flatten()
-            .map_or(0, |stored| stored.bytes.len());
-        self.appended = 0;
+        self.plan = SavePlan::new(
+            owner
+                .stored()
+                .ok()
+                .flatten()
+                .map_or(0, |stored| stored.bytes.len()),
+            0,
+        );
         self.progress.get_mut().durable = Some(self.sent.clone());
     }
 
@@ -696,15 +691,16 @@ impl DocWriter {
         if heads == self.sent {
             return Ok(());
         }
-        if self.base == 0 || self.appended >= self.base.max(MIN_COMPACT_BYTES) {
-            self.send_full(doc, heads)
-        } else {
-            let bytes = doc.committed_document().save_after(&self.sent);
-            let len = bytes.len();
-            self.submit(WriteOp::Append(bytes), heads).map(|()| {
-                self.appended = self.appended.saturating_add(len);
-                self.appends = self.appends.saturating_add(1);
-            })
+        match self.plan.next() {
+            Save::Full => self.send_full(doc, heads),
+            Save::Append => {
+                let bytes = doc.committed_document().save_after(&self.sent);
+                let len = bytes.len();
+                self.submit(WriteOp::Append(bytes), heads).map(|()| {
+                    self.plan.appended(len);
+                    self.appends = self.appends.saturating_add(1);
+                })
+            }
         }
     }
 
@@ -778,8 +774,7 @@ impl DocWriter {
             // Only the next open's speed depends on it.
             tracing::debug!(document = %owner.label.display(), %error, "load hint not kept");
         }
-        self.base = len;
-        self.appended = 0;
+        self.plan.stored_whole(len);
         self.full_writes = self.full_writes.saturating_add(1);
         Ok(())
     }
@@ -986,10 +981,14 @@ impl DocWriter {
         }
         self.settle();
         let progress = self.progress.borrow();
-        if let Some(error) = &progress.error {
+        let started_only = durable_store::waiting::forbidden();
+        // Where the store commits on its own, a replacement still under way may clear the failure.
+        let replacing = started_only && progress.inflight.iter().any(|write| write.replace);
+        if let Some(error) = &progress.error
+            && !replacing
+        {
             return Err(error.clone());
         }
-        let started_only = durable_store::waiting::forbidden();
         // The store took the writes and commits them itself: nothing a
         // caller does makes it wait, so this is "written", not "failed".
         let mut on_its_way = false;

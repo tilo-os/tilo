@@ -573,6 +573,160 @@ async fn a_backend_key_works_through_the_api_on_a_server_host() {
     );
 }
 
+/// Every key a person has is listed and revoked from any key of theirs that reaches all their
+/// workspaces, whichever API server made it: a computer's own login, answered by the API in its
+/// own process, lists a script's key that the site's API server approved (named, reaching all
+/// workspaces, until when), before the script used it, and revokes it, after which the workspace
+/// refuses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_key_of_a_person_is_listed_and_revoked_from_any_api_server() {
+    Box::pin(a_persons_keys_are_listed_and_revoked_from_any_api_server()).await;
+}
+
+async fn a_persons_keys_are_listed_and_revoked_from_any_api_server() {
+    let on_server = api_on_server(ISSUER).await;
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    // A script's key, approved through the site's API server as `tilo keys export` asks for one.
+    let script = approved_key(&on_server, &ada, &page, "Linear import").await;
+    // The script works in a workspace of Ada's, its session with the server open.
+    let working = V1 {
+        api: &on_server.api,
+        token: script.clone(),
+    };
+    let (status, made) = working
+        .post("/v1/workspaces", &json!({"name": "Imported issues"}), &[])
+        .await;
+    assert_eq!(status, 201, "{made}");
+    let base = format!("/v1/workspaces/{}", made["id"].as_str().unwrap());
+    let (listing, reading, writing) = (
+        format!("{base}/resources"),
+        format!("{base}/resources/notes/Notes"),
+        format!("{base}/resources/notes/Notes/actions/new-note"),
+    );
+    let (status, wrote) = working
+        .post(&writing, &json!({"title": "First issue"}), &[])
+        .await;
+    assert_eq!(status, 200, "{wrote}");
+    let (status, listed) = working.get(&listing).await;
+    assert_eq!(status, 200, "{listed}");
+    let (status, read) = working.get(&reading).await;
+    assert_eq!(status, 200, "{read}");
+    let open = |api: &Server| {
+        api.open_sessions()
+            .iter()
+            .any(|session| session.starts_with("Linear import"))
+    };
+    assert!(open(&on_server.api), "{:?}", on_server.api.open_sessions());
+    // The computer's own login, answered by the API in its own process from its key file, as
+    // `tilo keys ls` is: an API server that never saw the script's key approved.
+    let laptop = enrol(&ada, "Claude Code on laptop", DeviceCapabilities::member());
+    let file = tilo_api::direct::KeyFile::new(
+        &on_server.server,
+        Some(&on_server.web_entry),
+        "Claude Code on laptop",
+        &laptop.key,
+        &laptop.cert,
+    );
+    let computer = tilo_api::direct::Direct::new(&file).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let listed_script = loop {
+        let (status, listed) = json_of(computer.request("GET", "/v1/keys", &[], b"").await).await;
+        assert_eq!(status, 200, "{listed}");
+        if let Some(row) = listed["keys"].as_array().into_iter().flatten().find(|row| {
+            row["name"]
+                .as_str()
+                .is_some_and(|name| name == "Linear import")
+        }) {
+            break row.clone();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the script's key is not among the person's keys: {listed}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    assert_eq!(listed_script["scope"], "all", "{listed_script}");
+    assert!(
+        listed_script.get("expires_at_ms").is_some(),
+        "a key says until when it lasts (null: until revoked): {listed_script}"
+    );
+    let grant = listed_script["grant"].as_str().unwrap().to_owned();
+
+    let revoking = [(
+        "idempotency-key".to_owned(),
+        "revoke-linear-import".to_owned(),
+    )];
+    let (status, revoked) = json_of(
+        computer
+            .request("DELETE", &format!("/v1/keys/{grant}"), &revoking, b"")
+            .await,
+    )
+    .await;
+    assert_eq!(status, 200, "{revoked}");
+    let (_, listed) = json_of(computer.request("GET", "/v1/keys", &[], b"").await).await;
+    assert!(
+        listed["keys"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|row| row["grant"] != grant.as_str()),
+        "a revoked key is listed no more: {listed}"
+    );
+    // Its open session ends, and it is refused on its next list, read and write alike.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while open(&on_server.api) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a revoked key's session stays open: {:?}",
+            on_server.api.open_sessions()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let (list, read, write) = (
+        working.get(&listing).await,
+        working.get(&reading).await,
+        working
+            .post(&writing, &json!({"title": "After revocation"}), &[])
+            .await,
+    );
+    for (call, (status, refused)) in [("list", list), ("read", read), ("write", write)] {
+        assert_eq!(
+            (status, &refused["error"]["code"]),
+            (401, &json!("key_revoked")),
+            "a revoked key's {call}: {refused}"
+        );
+    }
+    assert!(
+        !open(&on_server.api),
+        "a refused call opens no session: {:?}",
+        on_server.api.open_sessions()
+    );
+    // The workspace keeps the revocation: the script's key enters it no more, from wherever it
+    // comes (here an API server it reaches the workspace through anew, as a script started again
+    // does).
+    let anew = Server::new(
+        &tilo_api::Config {
+            issuer: ISSUER.into(),
+            web_entry: on_server.web_entry.clone(),
+            invite_entry: None,
+            hosts: vec![on_server.server.clone()],
+        },
+        tilo_api::store::Store::in_memory(),
+    )
+    .unwrap();
+    let script = V1 {
+        api: &anew,
+        token: working.token.clone(),
+    };
+    let (status, refused) = script.get("/v1/keys").await;
+    assert_eq!(
+        (status, &refused["error"]["code"]),
+        (401, &json!("key_revoked")),
+        "{refused}"
+    );
+}
+
 /// A program holding a key of the person's own (a device of theirs, not a
 /// grant an API server keeps) reaches the server directly: the API served in
 /// process, the same routes and answers, with no API server between them.
@@ -775,9 +929,9 @@ impl Holder {
             link: tilo_server_client::login::PairingLink::parse(&code).unwrap(),
             agent: agent.to_owned(),
             label: "Ada's laptop".to_owned(),
-            host: on_server.server_host(),
+            server: on_server.server_host(),
             cert: laptop.cert.clone(),
-            host_cert: on_server.host.cert.clone(),
+            server_cert: on_server.host.cert.clone(),
         };
         let device =
             tilo_session_client::device::Device::enter(None, &signed, Arc::new(laptop.key.clone()))
@@ -902,7 +1056,7 @@ impl tilo_server::workspaces::AsksPeople for Approver {
 /// person is asked first, and their answer stands, until they allow it outright.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_it() {
-    use tilo_action_policy::agent_answers::{self, AnswerScope};
+    use tilo_action_policy::agent_answers::AnswerScope;
     use tilo_actions::remote::{WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER};
     let on_server = api_on_server(ISSUER).await;
     let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -968,26 +1122,18 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
     );
     assert_eq!(questions(), 2);
 
-    // Allowed in the workspace's settings, under Agents, it goes unasked: the answer Ada gave,
-    // kept by her workspace's server.
-    let scope = AnswerScope::action(
+    // Allowed in the workspace's settings, under Agents, it goes unasked: Ada's laptop sets the
+    // agent's bound in the workspace's list of its agents, as her settings do, and the server
+    // decides the agent's calls by it.
+    let invite_node = AnswerScope::action(
         WORKSPACE_GOVERNANCE_PROVIDER,
         WORKSPACE_GOVERNANCE_KIND,
         "invite",
-    );
+    )
+    .node(&workspace);
     let agent =
         tilo_actions::remote::device_agent_id(&holder.laptop.cert.user_public_key, "Claude Code");
-    let grant = agent_answers::grant(
-        &workspace,
-        &agent,
-        (&scope, tilo_action_policy::roles::GOVERNANCE_KIND),
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Grantee::person(ada_key.clone()),
-    );
-    workspaces
-        .put_workspace_grants(&workspace, &on_server.host.cert, [7; 32], vec![grant])
-        .await
-        .unwrap();
+    allow_on_list(workspaces, &holder, (&workspace, &agent), &invite_node).await;
     holder
         .command()
         .post(&invitations, &invite)
@@ -995,6 +1141,88 @@ async fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_
         .expect("allowed outright, the agent invites");
     assert_eq!(questions(), 2, "allowed outright, nobody is asked");
     assert!(holder.device.is_live());
+}
+
+/// Ada's laptop allows `agent` outright at `node` in `workspace`: it sets the agent's bound in the
+/// workspace's list of its agents as her own write, once the list names the agent, and waits
+/// until the server holds it.
+async fn allow_on_list(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    holder: &Holder,
+    (workspace, agent): (&str, &str),
+    node: &tilo_action_policy::TreePath,
+) {
+    use ui::tilo_workspace_agent::{Bound, WorkspaceAgents, workspace_agents::SetAgentBound};
+    let chat = ui::tilo_workspace_agent::OWNER;
+    let document = &collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
+    let listed = |bounded: bool| async move {
+        let bytes = workspaces
+            .resource_document(workspace, chat, document)
+            .await
+            .ok()
+            .flatten()?;
+        let doc = automerge::AutoCommit::load(&bytes).ok()?;
+        let agents = <WorkspaceAgents as ui::tilo_resource::Resource>::read(&doc).ok()?;
+        agents
+            .agents
+            .iter()
+            .any(|kept| kept.id.0 == agent && (!bounded || !kept.bound.is_empty()))
+            .then_some(doc)
+    };
+    let deadline = tilo_test_env::hang_deadline();
+    let doc = loop {
+        if let Some(doc) = listed(false).await {
+            break doc;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the workspace's agents never list the computer's agent"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let ada = hex::encode(holder.laptop.cert.user_public_key);
+    let mut list = ui::tilo_resource::Replica::<WorkspaceAgents>::from_doc(doc)
+        .as_author(&ada)
+        .in_app(chat, "Chat");
+    let heads = list.doc_mut().get_heads();
+    list.apply(WorkspaceAgents::SET_AGENT_BOUND.with(SetAgentBound {
+        agent: ui::tilo_resource::Id::from_raw(agent.to_owned()),
+        bound: vec![Bound {
+            node: node.to_string(),
+            kinds: vec!["outside".into()],
+            answer: "allow".into(),
+        }],
+    }))
+    .expect("its keeper may allow it to invite people");
+    let changes = list.doc_mut().save_after(&heads);
+    // The workspace seals what its members write: her laptop seals the change under its keys,
+    // once the workspace handed them to it.
+    let engine = holder.device.session().engine();
+    let held = holder.device.workspace_id();
+    let sealed = loop {
+        match engine
+            .seal_keys(held)
+            .expect("her laptop keeps the workspace's keys")
+        {
+            tilo_session_client::engine::SealKeys::Here(keys) => break keys,
+            _ => assert!(
+                std::time::Instant::now() < deadline,
+                "the workspace never hands her laptop its keys"
+            ),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    engine
+        .write_resource(held, (chat, document), &changes, false, Some(&sealed))
+        .await
+        .expect("Ada's laptop writes the bound");
+    while listed(true).await.is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the server never holds the agent's bound"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 /// What a hosted workspace answers a key besides actions: what changed in it,

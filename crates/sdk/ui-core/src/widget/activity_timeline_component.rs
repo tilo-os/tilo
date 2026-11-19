@@ -6,7 +6,9 @@ use std::collections::HashMap;
 
 use crate::component::{Component, Described, Event, Moment, Person, ResourceId, Value};
 use crate::time::{Duration, UNIX_EPOCH};
-use crate::widget::history::{EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId};
+use crate::widget::history::{
+    AuthorRelation, EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId,
+};
 use crate::widget::{ActivityTimeline, ArtifactKind, Widget};
 
 crate::component::choice!(crate::widget::EntryKind, "EntryKind", {
@@ -136,15 +138,24 @@ fn entry_id(key: &str) -> HistoryEntryId {
 
 fn entry_of(props: &ActivityEntryProps) -> HistoryEntry {
     let id = entry_id(&props.item.0);
-    let (name, short) = props
-        .author
-        .as_ref()
-        .map_or_else(Default::default, |author| {
-            (
-                author.name.clone(),
-                author.identity.id().chars().take(8).collect::<String>(),
-            )
-        });
+    // Who made it as everything else shows them: in the hue they wear, and software as software.
+    let author = props.author.as_ref().map_or_else(
+        || HistoryAuthor::new("", 0.0, ""),
+        |author| {
+            let short = author.identity.id().chars().take(8).collect::<String>();
+            let person = author
+                .identity
+                .member_id()
+                .is_some_and(tilo_actions::MemberId::is_person);
+            HistoryAuthor::new(author.name.clone(), 0.0, short)
+                .with_rgb(crate::presence::identity_rgb(author.hue))
+                .with_relation(if person {
+                    AuthorRelation::Person
+                } else {
+                    AuthorRelation::Software
+                })
+        },
+    );
     let timestamp = props.time.map_or(UNIX_EPOCH, |Moment(at)| {
         let at = u64::try_from(at.max(0)).unwrap_or(0);
         UNIX_EPOCH
@@ -153,7 +164,7 @@ fn entry_of(props: &ActivityEntryProps) -> HistoryEntry {
     });
     HistoryEntry {
         id,
-        author: HistoryAuthor::new(name, 0.0, short),
+        author,
         entry_kind: props.kind.unwrap_or(EntryKind::Details),
         artifact_kind: artifact_of(props.artifact.unwrap_or_default()),
         timestamp,
@@ -316,4 +327,34 @@ fn _report(key: &str) -> Value {
 #[allow(dead_code, reason = "the author is part of the entry")]
 fn _person() -> Option<Person> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn by(who: Person) -> HistoryEntry {
+        entry_of(&ActivityEntryProps {
+            item: ResourceId("c".into()),
+            author: Some(who),
+            time: None,
+            summary: "Moved to Done".into(),
+            kind: None,
+            artifact: None,
+        })
+    }
+
+    /// A change's author reads as everywhere else: a person as a person, software as software,
+    /// each in the hue their identity wears.
+    #[test]
+    fn an_entry_names_its_author_as_a_person_or_as_software_in_their_hue() {
+        let ada = Person::named("Ada");
+        let made = by(ada.clone());
+        assert_eq!(made.author.relation, AuthorRelation::Person);
+        assert_eq!(made.author.rgb(), crate::presence::identity_rgb(ada.hue));
+        let scout = Person::new(tilo_actions::MemberId::agent("scenario:Scout"), "Scout");
+        let made = by(scout.clone());
+        assert_eq!(made.author.relation, AuthorRelation::Software);
+        assert_eq!(made.author.rgb(), crate::presence::identity_rgb(scout.hue));
+    }
 }

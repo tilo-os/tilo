@@ -4,8 +4,10 @@
 //! on a page paired to them, by the page's own device key, and
 //! each question on the native question sheet over the desktop
 //! ([`tilo_sheets::portal`]), in its words. Allow once runs that one
-//! invocation, Deny refuses it; a question the host withdraws, or that
-//! expires, takes the sheet away. While the tab is out of view, a
+//! invocation, Deny refuses it; a question the agent words itself is answered
+//! with one of its choices or what the person types, and Not now leaves it
+//! unanswered. A question the server withdraws, or that expires, takes the
+//! sheet away. While the tab is out of view, a
 //! notification says an agent waits (the person did not cause it).
 //!
 //! This is the page's code for it, reached only through
@@ -19,7 +21,9 @@ use std::collections::{HashSet, VecDeque};
 use tilo_server_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_sheets::SheetState as _;
-use tilo_sheets::portal::{AgentQuestion, Dialog, DrawnSheet, PortalEffect, PortalState};
+use tilo_sheets::portal::{
+    AgentAsk, AgentQuestion, Dialog, DrawnSheet, Field, PortalEffect, PortalState,
+};
 use tokio::sync::mpsc;
 use wasm_bindgen::prelude::*;
 
@@ -81,9 +85,9 @@ pub(crate) fn answer_as(peer: u32, device_key: &JsValue, cert: &DeviceCert) -> R
         while let Some(session) = crate::peer_sync::handle_of(peer) {
             let began = web_time::Instant::now();
             let (answered, mut answers) = mpsc::unbounded_channel();
-            let member_host = tilo_session_client::member_host(&session);
+            let member_server = tilo_session_client::member_server(&session);
             let mut host = MemberQuestions {
-                host: &member_host,
+                server: &member_server,
                 root: &signer,
                 device: device.as_ref(),
             };
@@ -92,7 +96,7 @@ pub(crate) fn answer_as(peer: u32, device_key: &JsValue, cert: &DeviceCert) -> R
                     sleep_ms(POLL_MS)
                 })
                 .await;
-            drop(member_host);
+            drop(member_server);
             drop(session);
             tracing::debug!(%error, retry_in_ms = retry, "agent questions: the host was not reached");
             // A session that ran a while starts its backoff afresh.
@@ -161,8 +165,38 @@ fn dialog(question: &PendingConfirmation) -> Dialog {
         workspace: question.workspace.clone(),
         page: question.page_origin(),
         picture: question.page.as_ref().and_then(|page| page.picture.clone()),
+        ask: asked_words(question),
     }
     .dialog(&format!("agent-question:{}", hex::encode(question.id)))
+}
+
+/// `dialog`, saying how many questions wait behind it: every open question
+/// is in this one place, answered one after the other.
+fn with_more(mut dialog: Dialog, more: usize) -> Dialog {
+    let label = tilo_sheets::word("agent-question-more-label");
+    dialog.facts.retain(|(said, _)| *said != label);
+    if more > 0 {
+        dialog.facts.push((
+            label,
+            tilo_sheets::words_with(
+                "agent-question-more",
+                &[(
+                    "count",
+                    ui::i18n::ArgValue::Number(f64::from(u32::try_from(more).unwrap_or(u32::MAX))),
+                )],
+            ),
+        ));
+    }
+    dialog
+}
+
+/// What `question` asks in its agent's own words, as the sheet asks it.
+fn asked_words(question: &PendingConfirmation) -> Option<AgentAsk> {
+    question.ask.as_ref().map(|ask| AgentAsk {
+        question: ask.question.clone(),
+        choices: ask.choices.clone(),
+        typed: ask.typed,
+    })
 }
 
 /// The notification's tag: at most 15 characters, as every platform keeps.
@@ -225,10 +259,46 @@ impl PageQuestions {
     fn follow(&mut self, show: &mut dyn FnMut(Option<ui::widget::Element>), missing: bool) -> bool {
         let mut changed = false;
         // The state took only presses naming the question up.
+        let asking = self.up.and_then(|id| {
+            WAITING.with_borrow(|waiting| {
+                waiting
+                    .iter()
+                    .find(|asked| asked.question.id == id)
+                    .and_then(|asked| asked_words(&asked.question))
+            })
+        });
         for effect in self.state.take_asked() {
-            let given = match effect {
-                PortalEffect::Confirm { .. } => ConfirmationAnswer::AllowOnce,
-                PortalEffect::Cancel { .. } => ConfirmationAnswer::Deny,
+            let given = match (effect, &asking) {
+                (PortalEffect::Cancel { .. }, _) => ConfirmationAnswer::Deny,
+                (PortalEffect::Confirm { .. }, None) => ConfirmationAnswer::AllowOnce,
+                (PortalEffect::Select { index, .. }, Some(_)) => {
+                    // A choice above the field is picked, not yet sent.
+                    if let Some(mut shown) = self.state.dialog() {
+                        shown.selected = usize::try_from(index).unwrap_or(usize::MAX);
+                        shown.error = None;
+                        self.state.show(Some(shown));
+                        changed = true;
+                    }
+                    continue;
+                }
+                (PortalEffect::Answer { index, .. }, Some(ask)) => {
+                    match ask.reply(usize::try_from(index).ok(), "") {
+                        Some(reply) => ConfirmationAnswer::Reply(reply),
+                        None => continue,
+                    }
+                }
+                (PortalEffect::Confirm { .. }, Some(ask)) => {
+                    let chosen = self.state.dialog().map(|shown| shown.selected);
+                    let Some(reply) = ask.reply(chosen, &self.state.text(Field::Answer)) else {
+                        if let Some(mut shown) = self.state.dialog() {
+                            shown.error = Some(tilo_sheets::word("agent-ask-pick-or-type"));
+                            self.state.show(Some(shown));
+                            changed = true;
+                        }
+                        continue;
+                    };
+                    ConfirmationAnswer::Reply(reply)
+                }
                 _ => continue,
             };
             if let Some(id) = self.up.take() {
@@ -237,14 +307,29 @@ impl PageQuestions {
                 changed = true;
             }
         }
-        let first =
-            WAITING.with_borrow(|waiting| waiting.front().map(|asked| asked.question.clone()));
+        let (first, more) = WAITING.with_borrow(|waiting| {
+            (
+                waiting.front().map(|asked| asked.question.clone()),
+                waiting.len().saturating_sub(1),
+            )
+        });
         match first {
             Some(question) if self.up != Some(question.id) => {
-                self.state.show(Some(dialog(&question)));
+                self.state.show(Some(with_more(dialog(&question), more)));
                 self.state.presentation().open(false);
                 self.up = Some(question.id);
                 changed = true;
+            }
+            // Another question came, or one behind it went: the sheet says
+            // how many more wait, and keeps what the person picked.
+            Some(_) => {
+                if let Some(shown) = self.state.dialog() {
+                    let counted = with_more(shown.clone(), more);
+                    if counted != shown {
+                        self.state.show(Some(counted));
+                        changed = true;
+                    }
+                }
             }
             None if self.up.take().is_some() => {
                 self.state.taken_down();

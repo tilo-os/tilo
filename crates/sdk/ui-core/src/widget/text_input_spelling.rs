@@ -326,7 +326,7 @@ impl super::TextInput {
         }
         self.last_personal_spelling_read = Some((generation, view));
         let current = PersonalSpelling {
-            owner: crate::local_identity::bound().map(|identity| identity.group_public_key),
+            owner: crate::local_identity::load().map(|identity| identity.group_public_key),
             generation,
             configured: self.spell_language.clone(),
             language: self.spell_language.replace('_', "-").to_ascii_lowercase(),

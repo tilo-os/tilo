@@ -68,7 +68,6 @@ const CLEARED_ENV: &[&str] = &[
     "XAUTHORITY",
     "TILO_WORKSPACE_ID",
     "TILO_APP_DIR",
-    "TILO_USER_IDENTITY",
     "TILO_CLI_COMMAND",
     "TILO_EGRESS_PROXY",
     "TILO_HOST_ACTIVATION_TOKEN",
@@ -592,7 +591,6 @@ mod tests {
                 for absent in [
                     "TILO_WORKSPACE_ID",
                     "TILO_APP_DIR",
-                    "TILO_USER_IDENTITY",
                     "TILO_EGRESS_PROXY",
                 ] {
                     assert!(

@@ -1,12 +1,15 @@
 //! Nothing moves while data arrives: a remote list, media grid and document page, each under a heading
 //! and above a line that follows it, laid out frame by frame through the ground, the skeleton, the
-//! skeleton naming its source, the answer landing and its cross-fade.
+//! skeleton held a while, the answer landing and its cross-fade.
 
 use super::*;
-use crate::arriving::{GRACE, NAME_SOURCE_AFTER};
+use crate::arriving::GRACE;
 use crate::launch::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
 use crate::widget::{Column, ListRow, MediaCard, MediaGrid, MediaSource, RowShape, Text};
+
+/// A wait long past the skeleton's first frame.
+const LATE: Duration = Duration::from_secs(2);
 
 const TASK_ROW: RowShape = RowShape::TITLE.with_secondary(1);
 
@@ -36,13 +39,13 @@ fn page(body: Element) -> Column {
 /// and fail on any box that moved from where the first frame put it.
 fn assert_nothing_moves(name: &str, arriving: &Arriving<()>, view: &mut Column, t0: Instant) {
     let mut frame = ShotFrame::new((720, 900), Theme::light());
-    let lands = t0 + NAME_SOURCE_AFTER + Duration::from_millis(100);
+    let lands = t0 + LATE + Duration::from_millis(100);
     let mut instants = vec![
         t0,
         t0 + GRACE - Duration::from_millis(1),
         t0 + GRACE,
         t0 + Duration::from_millis(500),
-        t0 + NAME_SOURCE_AFTER,
+        t0 + LATE,
     ];
     instants.extend((0..40).map(|frame| lands + Duration::from_millis(16 * frame)));
     let mut first: Option<Vec<(String, Rect)>> = None;
@@ -72,8 +75,8 @@ fn assert_nothing_moves(name: &str, arriving: &Arriving<()>, view: &mut Column, 
         }
     }
     assert!(
-        steps.iter().any(|step| step.contains(&Step::Named)),
-        "{name}: the placeholder named its source ({steps:?})"
+        steps.iter().any(|step| step.contains(&Step::Skeleton)),
+        "{name}: the placeholder showed its skeleton ({steps:?})"
     );
     assert!(
         steps
@@ -101,7 +104,7 @@ fn collect_showing(widget: &dyn Widget, found: &mut Vec<Step>, at: Instant) {
 fn a_remote_list_moves_nothing_as_its_rows_arrive() {
     let t0 = crate::time::now();
     let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<()> = Arriving::pending(Source::host("Lounge"));
+        let arriving: Arriving<()> = Arriving::pending(Source::Remote);
         let mut rows = Column::new().with_no_padding().with_intrinsic_height();
         for title in ["Water the plants", "Book the train", "Call the bakery"] {
             rows = rows.push(Box::new(
@@ -121,7 +124,7 @@ fn a_remote_list_moves_nothing_as_its_rows_arrive() {
 fn a_remote_media_grid_moves_nothing_as_its_cards_arrive() {
     let t0 = crate::time::now();
     let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<()> = Arriving::pending(Source::host("Lounge"));
+        let arriving: Arriving<()> = Arriving::pending(Source::Remote);
         let cards = ["Blue Train", "Kind of Blue", "Time Out", "Moanin'"]
             .into_iter()
             .map(|title| -> Element {
@@ -147,7 +150,7 @@ fn a_remote_media_grid_moves_nothing_as_its_cards_arrive() {
 fn a_remote_page_moves_nothing_as_its_text_arrives() {
     let t0 = crate::time::now();
     let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<()> = Arriving::pending(Source::host("Lounge"));
+        let arriving: Arriving<()> = Arriving::pending(Source::Remote);
         let body = arriving
             .view(|()| -> Element {
                 Box::new(Text::new(
@@ -158,79 +161,6 @@ fn a_remote_page_moves_nothing_as_its_text_arrives() {
         (arriving, page(Box::new(body)))
     });
     assert_nothing_moves("page", &arriving, &mut view, t0);
-}
-
-#[test]
-fn a_list_names_its_source_once_on_its_first_row() {
-    let t0 = crate::time::now();
-    let mut frame = ShotFrame::new((720, 600), Theme::light());
-    let ((arriving, other), mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<()> = Arriving::pending(Source::host("Lounge"));
-        let other: Arriving<()> = Arriving::pending(Source::peer("Laptop"));
-        let mut rows = Column::new().with_no_padding().with_intrinsic_height();
-        for read in [&arriving, &arriving, &other, &arriving, &other] {
-            rows = rows.push(Box::new(
-                read.view(|()| -> Element { Box::new(ListRow::new("row", "row")) })
-                    .shaped(SkeletonShape::Row(RowShape::TITLE)),
-            ));
-        }
-        ((arriving, other), rows)
-    });
-    let named = t0 + NAME_SOURCE_AFTER;
-    with_monotonic_time(named, || {
-        frame.sync(&mut view);
-        frame.layout(&mut view).expect("layout solves");
-        let _ = frame.draw(&mut view);
-    });
-    let names: Vec<bool> = view
-        .children()
-        .iter()
-        .map(|row| {
-            let view = row
-                .as_any()
-                .and_then(|any| any.downcast_ref::<ArrivingView>())
-                .expect("an arriving row");
-            names_source(&view.naming, &Theme::light())
-        })
-        .collect();
-    assert_eq!(
-        names,
-        [true, false, true, false, false],
-        "each source named once in the region, on its first row"
-    );
-
-    // The answers land: the faces they fade out keep the lines that named
-    // their sources, rather than falling back to a skeleton bar.
-    let lands = named + Duration::from_millis(100);
-    with_monotonic_time(lands, || {
-        arriving.stand(Arrival::Ready(()));
-        other.stand(Arrival::Ready(()));
-    });
-    let fading = lands + Duration::from_millis(40);
-    with_monotonic_time(fading, || {
-        frame.sync(&mut view);
-        frame.layout(&mut view).expect("layout solves");
-        let _ = frame.draw(&mut view);
-    });
-    let fading_names: Vec<bool> = view
-        .children()
-        .iter()
-        .map(|row| {
-            let view = row
-                .as_any()
-                .and_then(|any| any.downcast_ref::<ArrivingView>())
-                .expect("an arriving row");
-            assert!(
-                view.fade.outgoing(fading).is_some(),
-                "the placeholder still fades out"
-            );
-            view.drawn_naming
-        })
-        .collect();
-    assert_eq!(
-        fading_names, names,
-        "the outgoing faces name what the placeholders named"
-    );
 }
 
 #[test]
@@ -284,14 +214,14 @@ fn rows_sharing_a_read_show_its_failure_once_and_rows_of_their_own_each_show_the
     let mut shot = ShotFrame::new((720, 600), Theme::light());
     let (reads, mut view) = with_monotonic_time(t0, || {
         let reads: Vec<Arriving<()>> = vec![
-            Arriving::pending(Source::host("Lounge")),
-            Arriving::pending(Source::host("Lounge")),
+            Arriving::pending(Source::Remote),
+            Arriving::pending(Source::Remote),
         ];
         let view = rows_of(&reads, &[0, 0, 1, 0, 1]);
         (reads, view)
     });
-    frame(&mut shot, &mut view, t0 + NAME_SOURCE_AFTER);
-    let fails = t0 + NAME_SOURCE_AFTER + Duration::from_millis(100);
+    frame(&mut shot, &mut view, t0 + LATE);
+    let fails = t0 + LATE + Duration::from_millis(100);
     with_monotonic_time(fails, || {
         for read in &reads {
             read.stand(Arrival::Failed("Lounge did not answer".into()));
@@ -311,7 +241,7 @@ fn rows_built_after_their_read_failed_show_its_failure_once() {
     let t0 = crate::time::now();
     let mut shot = ShotFrame::new((720, 600), Theme::light());
     let (_reads, mut view) = with_monotonic_time(t0, || {
-        let read: Arriving<()> = Arriving::pending(Source::host("Lounge"));
+        let read: Arriving<()> = Arriving::pending(Source::Remote);
         read.stand(Arrival::Failed("Lounge did not answer".into()));
         let reads = vec![read];
         let view = rows_of(&reads, &[0, 0, 0]);
@@ -374,7 +304,7 @@ fn a_failed_rows_try_again_shows_nothing_under_its_rounded_corners() {
         let mut shot = ShotFrame::new((width, height), theme.clone());
         let (_read, mut view) = with_monotonic_time(t0, || {
             let read: Arriving<()> =
-                Arriving::pending(Source::host("Lounge")).on_retry(|_: &Arriving<()>| {});
+                Arriving::pending(Source::Remote).on_retry(|_: &Arriving<()>| {});
             read.stand(Arrival::Failed("Lounge did not answer".into()));
             let view = page(Box::new(rows_of(std::slice::from_ref(&read), &[0])));
             (read, view)

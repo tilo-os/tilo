@@ -33,6 +33,23 @@ macro_rules! chart_leaf {
 }
 pub(crate) use chart_leaf;
 
+/// How every chart writes its title: in the heading role, the same for a line, bars, a pie or
+/// a graph.
+pub(crate) fn title_style(theme: &crate::theme::Theme) -> crate::text_render::TextStyle {
+    theme.text(crate::tokens::TextRole::Heading)
+}
+
+/// The height a chart's title takes over what follows it: its line and the related gap under
+/// it; nothing for a chart without one.
+pub(crate) fn title_band(theme: &crate::theme::Theme, title: &str) -> f64 {
+    if title.is_empty() {
+        return 0.0;
+    }
+    f64::from(title_style(theme).line_height_px()) + f64::from(theme.tokens.spacing.rhythm.related)
+}
+
+/// A chart's title on the chart's own top-left corner, where the words over and beside the chart
+/// start.
 pub(crate) fn draw_title(
     scene: &mut vello::Scene,
     transform: vello::kurbo::Affine,
@@ -48,9 +65,9 @@ pub(crate) fn draw_title(
         scene,
         title,
         theme.tokens.colors.text_primary,
-        transform * vello::kurbo::Affine::translate((rect.x0 + 12.0, rect.y0 + 8.0)),
-        None,
-        &theme.text(crate::tokens::TextRole::Heading),
+        transform * vello::kurbo::Affine::translate((rect.x0, rect.y0)),
+        Some(crate::num::f32_of_f64(rect.width().max(0.0))),
+        &title_style(theme),
     );
 }
 

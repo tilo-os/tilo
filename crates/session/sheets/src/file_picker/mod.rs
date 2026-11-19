@@ -105,12 +105,14 @@ pub enum FilePickerEffect {
         handle: String,
     },
     /// Give the app what is chosen
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Confirm {
         #[param("The request it is taken in")]
         handle: String,
     },
     /// Save over the file that already has the name
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Replace {
         #[param("The request it is taken in")]
@@ -123,6 +125,7 @@ pub enum FilePickerEffect {
         handle: String,
     },
     /// Close the chooser and give the app nothing
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Cancel {
         #[param("The request it is taken in")]

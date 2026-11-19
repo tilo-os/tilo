@@ -39,7 +39,7 @@ mode = "off"
 [sandbox.services]
 # The app's actions reach the shell over the workspace's broker: its window
 # publishes them there, and they are invoked back through it.
-collab = "optional@32"
+collab = "optional@34"
 
 [entrypoint]
 bin = "bin/clocks"

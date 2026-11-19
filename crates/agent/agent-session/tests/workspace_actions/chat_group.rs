@@ -32,16 +32,26 @@ fn offered(member: &Replica) -> Vec<ActionDescriptor> {
         .collect()
 }
 
-/// One call's arguments for `action`, from the parameters it publishes: what
-/// an SDK builds a call from. The values come in the order the declaration
-/// names them.
+/// One call's arguments for `action`, named: what an SDK builds a call from.
+/// A name the action does not publish fails here rather than in the call, so
+/// a parameter added, removed or renamed by the app is named by the failure.
 fn arguments(
     action: &ActionDescriptor,
-    values: Vec<serde_json::Value>,
+    values: Vec<(&str, serde_json::Value)>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut arguments = serde_json::Map::new();
-    for (param, value) in action.params.iter().zip(values) {
-        arguments.insert(param.name.to_string(), value);
+    for (name, value) in values {
+        assert!(
+            action.params.iter().any(|param| &*param.name == name),
+            "`{}` publishes `{name}`: {:?}",
+            action.address.action,
+            action
+                .params
+                .iter()
+                .map(|param| param.name.to_string())
+                .collect::<Vec<_>>()
+        );
+        arguments.insert(name.to_owned(), value);
     }
     arguments
 }
@@ -104,8 +114,8 @@ fn a_member_below_moderator_is_offered_the_batch_and_a_batch_is_one_step() {
         let words = arguments(
             post,
             vec![
-                serde_json::json!("c_chat"),
-                serde_json::json!(format!("bulk {at}")),
+                ("channel", serde_json::json!("c_chat")),
+                ("text", serde_json::json!(format!("bulk {at}"))),
             ],
         );
         posts.push(serde_json::json!({"action": post.address.action, "args": words}));

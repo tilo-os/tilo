@@ -67,13 +67,13 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
         )
         .await
         .unwrap();
-    let host_cert = host_device.cert.clone();
+    let server_cert = host_device.cert.clone();
 
     // Bob's tab, with his root, enters through the entry on its session: the workspace admits this
     // very key, and the session subscribes at once.
     let bob = new_key();
     let page = new_key();
-    let (cert, entry) = entry_request(&host_cert, &lounge.workspace, &page, entering(None, &bob))
+    let (cert, entry) = entry_request(&server_cert, &lounge.workspace, &page, entering(None, &bob))
         .await
         .unwrap();
     assert_eq!(cert.device_public_key, page.verifying_key().to_bytes());
@@ -81,7 +81,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     let peer = enter_page(
         host.iroh(),
         cert.clone(),
-        host_cert.clone(),
+        server_cert.clone(),
         page.clone(),
         Arc::new(MemoryPeerStore::default()),
         entry.clone(),
@@ -97,7 +97,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     let again = enter_page(
         host.iroh(),
         cert.clone(),
-        host_cert.clone(),
+        server_cert.clone(),
         page.clone(),
         Arc::new(MemoryPeerStore::default()),
         entry,
@@ -108,10 +108,10 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     // A member comes back with no entry at all, under the certificate it holds.
     let held = Held {
         cert: cert.clone(),
-        host_cert: Some(host_cert.clone()),
+        server_cert: Some(server_cert.clone()),
     };
     let (kept, _) = entry_request(
-        &host_cert,
+        &server_cert,
         &lounge.workspace,
         &page,
         entering(Some(&held), &bob),
@@ -119,7 +119,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     .await
     .unwrap();
     assert_eq!(kept, cert);
-    let member = start_peer(host.iroh(), cert, host_cert.clone(), page);
+    let member = start_peer(host.iroh(), cert, server_cert.clone(), page);
     member.send(Cmd::Join(lounge.workspace_id)).unwrap();
     in_workspace(&member, lounge.workspace_id).await;
     member.close();
@@ -132,13 +132,18 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
         .unwrap();
     let carol = new_key();
     let tab = new_key();
-    let (cert, entry) = entry_request(&host_cert, &lounge.workspace, &tab, entering(None, &carol))
-        .await
-        .unwrap();
+    let (cert, entry) = entry_request(
+        &server_cert,
+        &lounge.workspace,
+        &tab,
+        entering(None, &carol),
+    )
+    .await
+    .unwrap();
     let closed = enter_page(
         host.iroh(),
         cert,
-        host_cert,
+        server_cert,
         tab,
         Arc::new(MemoryPeerStore::default()),
         entry,
@@ -433,23 +438,23 @@ fn entering_without_a_root(held: Option<&Held>) -> Entering<'_> {
 #[tokio::test]
 async fn a_device_without_a_root_comes_to_the_entry_only_under_what_it_holds_from_that_host() {
     let (alice, _) = UserIdentity::generate("Alice", 1);
-    let host_cert = enrol(&alice, "alice-home", DeviceCapabilities::member()).cert;
+    let server_cert = enrol(&alice, "alice-home", DeviceCapabilities::member()).cert;
     let other_host = enrol(&alice, "alice-other", DeviceCapabilities::member()).cert;
     let (bob, page, tab) = (new_key(), new_key(), new_key());
-    let (cert, _) = entry_request(&host_cert, "lounge", &page, entering(None, &bob))
+    let (cert, _) = entry_request(&server_cert, "lounge", &page, entering(None, &bob))
         .await
         .unwrap();
     let own = Held {
         cert: cert.clone(),
-        host_cert: Some(host_cert.clone()),
+        server_cert: Some(server_cert.clone()),
     };
     let from_another_host = Held {
         cert: cert.clone(),
-        host_cert: Some(other_host),
+        server_cert: Some(other_host),
     };
 
     let (kept, entry) = entry_request(
-        &host_cert,
+        &server_cert,
         "lounge",
         &page,
         entering_without_a_root(Some(&own)),
@@ -472,9 +477,14 @@ async fn a_device_without_a_root_comes_to_the_entry_only_under_what_it_holds_fro
         ("held for another device's key", Some(&own), &tab),
     ];
     for (row, held, device) in refusals {
-        let refused = entry_request(&host_cert, "lounge", device, entering_without_a_root(held))
-            .await
-            .unwrap_err();
+        let refused = entry_request(
+            &server_cert,
+            "lounge",
+            device,
+            entering_without_a_root(held),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(
             refused.code,
             DeviceRefusal::NO_CERTIFICATE,

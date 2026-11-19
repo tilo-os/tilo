@@ -6,4 +6,5 @@ format = 2
 kind = "model-providers.root"
 label = "Model providers"
 version = 1
+shows = ["enter-provider-key", "name-other-provider"]
 

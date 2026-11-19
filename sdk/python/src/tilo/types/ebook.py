@@ -240,7 +240,7 @@ KeepArgs = TypedDict("KeepArgs", {
 
 class Library(Resource):
     """Books — `ebook.library`."""
-    __surface__ = "so.tilo.ebook@ae688919837912da"
+    __surface__ = "so.tilo.ebook@608e31c45b23efef"
     entries: list[Entry[LibraryEntry]]
     progress: dict[str, Progress]
     settings: Settings
@@ -440,13 +440,13 @@ class Library(Resource):
 
 class BooksCatalogues(Resource):
     """Book catalogues — `settings.books-catalogues`."""
-    __surface__ = "so.tilo.ebook@ae688919837912da"
+    __surface__ = "so.tilo.ebook@608e31c45b23efef"
     keep_catalogues: bool
 
 
 class Files(Resource):
     """Book files — `ebook.files`."""
-    __surface__ = "so.tilo.ebook@ae688919837912da"
+    __surface__ = "so.tilo.ebook@608e31c45b23efef"
     devices: dict[str, Any]
 
     def keep(self,

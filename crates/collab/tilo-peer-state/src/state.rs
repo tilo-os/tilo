@@ -22,6 +22,7 @@ pub use tilo_workspace_join::{DocumentRow, Member, MemberId, MemberList};
 use web_time::{Duration, SystemTime};
 mod backend;
 mod document_capture;
+mod documents;
 pub use document_capture::{
     KeptDocument, PeerDocumentCapture, PeerDocumentReadError, changes_since,
     committed_document_revision, saved_whole,
@@ -104,12 +105,14 @@ use held::Held;
 pub use held::{MAX_HELD_BYTES, MAX_HELD_INPUTS};
 pub use native_publication::NativePublicationCut;
 pub use personal::device_grants::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
-pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
+pub use personal::link::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, update_person_resource};
+pub use personal::machines::{self as machines, MachineRecovery};
 pub use personal::scopes::{device_resource, resource_owner};
 pub use personal::{
-    DEVICE_FACTS, PeerPersonal, PersonalStore, SETTINGS_KIND, WIFI_KIND, WORKSPACES_KIND,
+    DEVICE_FACTS, ENROLLMENT_KIND, PeerPersonal, PersonalStore, SETTINGS_KIND, WIFI_KIND,
+    WORKSPACES_KIND, store_path,
 };
-pub use seed::{seed_workspace, workspace_seed};
+pub use seed::{person_workspace_seed, seed_workspace, seed_workspace_at, workspace_seed};
 mod compaction_set;
 mod sealed_compaction;
 mod sealed_history;
@@ -126,6 +129,7 @@ mod construction;
 mod durable;
 #[cfg(test)]
 pub(crate) use durable::{DURABLE_VERSION, Durable};
+pub(crate) use durable::{DocumentParts, DurableParts};
 mod receiving;
 mod records;
 mod sealing;
@@ -236,10 +240,13 @@ pub enum TransportOrigin {
     UntrustedPresence([u8; 32]),
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-struct Route {
+pub(crate) struct Route {
     app: String,
     record: String,
 }
+// Documents a durable hash took again: those changed since it was last taken.
+#[cfg(test)]
+thread_local! { pub(crate) static DOCUMENTS_WALKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 #[cfg(test)]
 thread_local! { pub(crate) static CHECKPOINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 #[cfg(test)]

@@ -89,6 +89,13 @@ pub struct Args {
     /// changes PCR 4.
     #[arg(long)]
     pub unattended: bool,
+    /// The packet relay that reaches the person's devices when this machine
+    /// has no session of theirs to ask: a deployment on its own relay names
+    /// it here, where the public one would not reach them. Without it the
+    /// relay this machine's `/etc/tilo/server.toml` names is used, and
+    /// without that the peer network's own.
+    #[arg(long)]
+    pub relay: Option<String>,
 }
 
 /// Hands an [`EnrolRequest`] to the sibling service.
@@ -272,9 +279,18 @@ impl PeerRegistrar {
         if cert.device_public_key != device.verifying_key().to_bytes() {
             bail!("this device's key is not the one its certificate names");
         }
-        let store = DeviceFleetStore::at(identity_dir(session_uid)?, paths);
+        let identity_id = hex::encode(cert.user_public_key);
+        // The person's devices as this machine's own store lists them: on a
+        // personal device their account's identity directory holds the fleet,
+        // and on a server the identity root its enrollment wrote it into. No
+        // session has to be running for this machine to know who to ask.
+        let store = identity_dir(session_uid)
+            .ok()
+            .map(|directory| DeviceFleetStore::at(directory, paths.clone()))
+            .filter(|store| store.fleet_file(&identity_id).exists())
+            .unwrap_or_else(|| DeviceFleetStore::of_device(paths, &identity_id));
         let fleet = store
-            .load(&hex::encode(cert.user_public_key))
+            .load(&identity_id)
             .map_err(|error| anyhow!("your devices: {error}"))?;
         let devices: Vec<[u8; 32]> = fleet
             .personal_devices(&cert.user_public_key, tilo_clock::unix_now_ns())
@@ -641,7 +657,7 @@ pub fn run(args: &Args, machine: Machine<'_>) -> Result<()> {
     if args.replace_networks {
         return replace_networks(machine.runner, &args.device, networks);
     }
-    let registrar = registrars(args.session_uid)?;
+    let registrar = registrars(args.session_uid, args.relay.as_deref())?;
     let existing = existing_passphrase(&args.device, args.key_file.as_deref())?;
     enrol(
         machine,
@@ -657,14 +673,14 @@ pub fn run(args: &Args, machine: Machine<'_>) -> Result<()> {
 /// This machine's registrars in the order they are asked: its own session,
 /// then the person's devices over the peer network. A machine that holds no
 /// root reaches the same devices either way.
-fn registrars(session_uid: Option<u32>) -> Result<Choosing> {
+fn registrars(session_uid: Option<u32>, relay: Option<&str>) -> Result<Choosing> {
     let mut candidates: Vec<Box<dyn Registrar>> = Vec::new();
     match SessionRegistrar::find(session_uid) {
         Ok(session) => candidates.push(Box::new(session)),
         Err(error) if session_uid.is_some() => return Err(error),
         Err(_) => {}
     }
-    match PeerRegistrar::find(session_uid, None) {
+    match PeerRegistrar::find(session_uid, relays(relay)?) {
         Ok(peer) => candidates.push(Box::new(peer)),
         Err(error) => {
             if candidates.is_empty() {
@@ -673,6 +689,48 @@ fn registrars(session_uid: Option<u32>) -> Result<Choosing> {
         }
     }
     Ok(Choosing(candidates))
+}
+
+/// Where this machine's configuration keeps the relay it reaches the person's
+/// devices through (the server image writes it, and its enrollment uses it).
+const SERVER_CONFIG: &str = "/etc/tilo/server.toml";
+
+/// The relays the question is asked over: the one named, else the one this
+/// machine's configuration names, else `None` for the peer network's own.
+/// A machine with a session on it asks that session and never dials.
+fn relays(named: Option<&str>) -> Result<Option<RelayMap>> {
+    let Some(url) = named
+        .map(str::to_owned)
+        .or_else(|| configured_relay(Path::new(SERVER_CONFIG)))
+    else {
+        return Ok(None);
+    };
+    let url = url
+        .parse::<iroh::RelayUrl>()
+        .with_context(|| format!("{url:?} is not a packet relay"))?;
+    Ok(Some(RelayMap::from(url)))
+}
+
+/// The `relay` a `server.toml` at `path` names, if it names one it can read.
+/// The file is the server image's, and this reads the one setting the
+/// enrolment needs rather than depending on the server's schema.
+fn configured_relay(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    relay_in(&text)
+}
+
+/// The value of the top-level `relay` key in `text`, as TOML spells it.
+fn relay_in(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let line = line.trim();
+        let rest = line.strip_prefix("relay")?.trim_start();
+        let value = rest.strip_prefix('=')?.trim();
+        value
+            .strip_prefix('"')
+            .and_then(|value| value.split_once('"'))
+            .map(|(url, _)| url.to_owned())
+            .filter(|url| !url.is_empty())
+    })
 }
 
 fn enrollment_sealing(available: Sealing, require_tpm: bool) -> Result<Sealing> {
@@ -982,6 +1040,45 @@ mod tests {
         assert_eq!(json["sealing"], "cleartext");
         assert_eq!(json["networks"], serde_json::json!([]));
         assert!(enrolled_in(&root.path().join("absent")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_machines_configured_relay_is_the_one_its_enrolment_dials() {
+        // The server image's own file: the key beside others, its value quoted.
+        let config = "# where this machine enrolls\nidentity_root = \"/var/lib/tilo\"\n\
+                      iroh_listen = \"0.0.0.0:0\"\n\
+                      relay = \"https://relay.example.test.\"\n";
+        assert_eq!(
+            relay_in(config).as_deref(),
+            Some("https://relay.example.test.")
+        );
+        let absent = tempfile::NamedTempFile::new().unwrap();
+        assert_eq!(configured_relay(absent.path()), None);
+        // A commented-out key is not the machine's setting, and neither is a
+        // neighbouring key whose name merely starts with it.
+        assert_eq!(relay_in("# relay = \"https://old.example.test.\"\n"), None);
+        assert_eq!(
+            relay_in("relay_url = \"https://page.example.test.\"\n"),
+            None
+        );
+        assert_eq!(relay_in("relay = \"\"\n"), None);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), config).unwrap();
+        assert_eq!(
+            configured_relay(file.path()).as_deref(),
+            Some("https://relay.example.test.")
+        );
+        assert_eq!(
+            relays(Some("https://own.example.test."))
+                .unwrap()
+                .map(|relays| relays.urls::<Vec<_>>()),
+            Some(vec![
+                "https://own.example.test."
+                    .parse::<iroh::RelayUrl>()
+                    .unwrap()
+            ])
+        );
+        assert!(relays(Some("not a relay")).is_err());
     }
 
     #[test]

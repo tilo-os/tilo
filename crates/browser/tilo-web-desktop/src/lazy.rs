@@ -22,7 +22,8 @@
 //! the first page to reach the shell asks for, the renderer's maker, which
 //! the page asks for as it compiles its pipelines, and the code that runs a
 //! view written in the app language, which the first view an app places asks
-//! for.
+//! for, and the code that reads the workspace's resources, which the page
+//! fetches as it starts.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -221,6 +222,15 @@ split_code! {
 }
 
 split_code! {
+    /// The code that reads the workspace's resources: what a window opens beside its own, the
+    /// workspace's agents, its files and its governance. The page fetches it as it starts, beside
+    /// its first frame; the windows that wait for it are built once it is in.
+    mod workspace_resources: tilo_browser_runtime::WorkspaceResourcesCode = tilo_browser_runtime::builtin_workspace_resources()
+        => tilo_browser_runtime::WORKSPACE_RESOURCES, module = "workspace_resources", hash = "5d8e2b17c4a9f063",
+        then = tilo_browser_runtime::workspace_resources_arrived;
+}
+
+split_code! {
     /// The page's layout actions: the page asks for them as it first draws, and an action asked
     /// before they are in waits for them.
     mod page_layout: tilo_browser_runtime::MakePageLayout = tilo_browser_runtime::builtin_page_layout()
@@ -375,6 +385,9 @@ pub(crate) fn register() {
     page_drops::register();
     page_layout::register();
     page_search::register();
+    workspace_resources::register();
+    // Fetched at once: a window the first frame lays out shows its app arriving until it is in.
+    let _ = tilo_browser_runtime::WORKSPACE_RESOURCES.get();
     sheets::register();
     questions::register();
     desktop_search::register();

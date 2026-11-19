@@ -3,7 +3,7 @@
 //! itself rather than lift the lock, which only the right password lifts.
 
 use super::lock::{
-    apart, lock_screen, lockable_session, pictures, private_home,
+    GONE_QUIET, apart, left_alone, lock_screen, lockable_session, pictures, private_home,
     take_back_the_notice_of_the_locks_own_view, type_and_enter, until_back, until_drawn,
 };
 use super::*;
@@ -250,4 +250,45 @@ fn a_session_left_locked_comes_back_locked() {
         !after.starts_locked(),
         "a session that ended unlocked leaves the next one unlocked"
     );
+}
+
+/// A desktop that comes back locked after an in-place restart takes what the person types as it
+/// comes up, and their password after the lock went quiet: no timing of keys against the restart
+/// shuts them out of their session.
+#[test]
+fn a_session_back_locked_takes_keys_typed_as_it_comes_up_and_the_password_after_quiet() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let request = home.path().join("logout-request");
+    drop(tilo_session::recovery::Recovery::begin(&request).expect("the lock state"));
+    let recovery = tilo_session::recovery::Recovery::begin(&request).expect("the lock state");
+    assert!(recovery.starts_locked(), "the restart comes back locked");
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+        Options {
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            collab: false,
+            app_socket: AppSocket::At(home.path().join("collab.sock")),
+            surfaces: vec![lock_screen()],
+            recovery: Some(recovery),
+            ..Options::default()
+        },
+    );
+    let before = pictures(&mut session, &[DISPLAY]);
+    // The person was typing when the desktop restarted: their keys land on the lock as it comes.
+    type_and_enter(&mut session, "wrong");
+    pump(&mut session, &mut [], |session, _| {
+        let reading = session
+            .read("lock")
+            .expect("the session publishes the lock");
+        reading["error"].as_str() == Some(tilo_sheets::lock::wrong_password().as_str())
+    });
+    until_drawn(&mut session, &[DISPLAY], &before);
+    left_alone(&mut session, GONE_QUIET);
+    type_and_enter(&mut session, "sesame");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
 }

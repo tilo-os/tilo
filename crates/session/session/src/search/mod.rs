@@ -1362,7 +1362,7 @@ impl SessionSearch {
         if !records.bring_here(
             workspace,
             &package,
-            DocumentCheckout::new(id, ResourceType::new(kind)),
+            &DocumentCheckout::new(id, ResourceType::new(kind)),
         ) {
             return Err(ApiError::Unavailable {
                 code: "records_unavailable".into(),
@@ -1963,25 +1963,15 @@ mod tests {
     /// in a workspace as if it were still there.
     #[test]
     fn a_row_for_a_record_no_workspace_names_any_more_is_refused() {
-        let home = tilo_test_env::TestHome::new().expect("a home");
-        // An index this device keeps, naming a record that is not the row's: the row names one no
-        // workspace holds.
-        let directory =
-            app_state::workspace_index_directory(home.data(), "so.tilo.notes", "elsewhere")
-                .expect("an index directory");
-        std::fs::create_dir_all(&directory).expect("the index's directory");
-        let mut index = automerge::AutoCommit::new();
-        let kept = ui::resource::DocumentId::parse("file:/work/Kept.odt").expect("a record id");
-        assert!(ui::resource::index::reference(
-            &mut index,
-            &kept,
-            &ui::resource::ResourceType::new("document")
-        ));
-        std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
-
+        const ELSEWHERE: &str = "6d1c1f36-0000-4000-8000-000000000011";
+        const HERE: &str = "6d1c1f36-0000-4000-8000-000000000012";
+        const STALE: &str = "file:/work/Stale plan.odt";
+        const FRESH: &str = "file:/work/Fresh plan.odt";
+        let device = crate::records::testing::Device::holding(&[ELSEWHERE, HERE]);
+        device.name("so.tilo.notes", ELSEWHERE, &[(STALE, "document", None)]);
         let search = SessionSearch::new(
             SearchOptions {
-                records: Some(crate::records::Records::of(home.data().to_path_buf())),
+                records: Some(device.search()),
                 ..SearchOptions::default()
             },
             None,
@@ -1990,24 +1980,39 @@ mod tests {
             None,
             None,
         );
+        // The row is collected now and chosen below.
         let row = Target::Invoke(Box::new(
             InvokeTarget::action(
                 DESKTOP_APP,
-                "elsewhere",
+                ELSEWHERE,
                 record_rows::RECORDS_RESOURCE,
                 record_rows::BRING_HERE,
             )
-            .with_argument(record_rows::RECORD_PARAM, "file:/work/Gone.odt")
+            .with_argument(record_rows::RECORD_PARAM, STALE)
             .with_argument(record_rows::KIND_PARAM, "document")
             .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
         ));
-        let refused = search.perform("here", row, &mut |_| Ok(()));
+        let held = |record: &str| {
+            search
+                .records
+                .as_ref()
+                .is_some_and(|records| records.holds(record))
+        };
+        device.until(|| held(STALE));
+        // The workspace holding it stops naming it, in one write that names another record.
+        device.name("so.tilo.notes", ELSEWHERE, &[(FRESH, "document", None)]);
+        device.until(|| held(FRESH));
+        let refused = search.perform(HERE, row, &mut |_| Ok(()));
         assert!(
             matches!(
                 refused,
                 Err(ApiError::Unavailable { ref code, .. }) if code == "record_not_held"
             ),
             "a record no workspace names is refused: {refused:?}"
+        );
+        assert!(
+            device.names("so.tilo.notes", HERE).is_empty(),
+            "nothing is named here"
         );
     }
 
@@ -2021,28 +2026,14 @@ mod tests {
         {
             const PDF: &str = ui::apps::PDF_VIEWER;
             const FORM: &str = "uuid:6d1c1f36-0000-4000-8000-0000000000aa";
-            let home = tilo_test_env::TestHome::new().expect("a home");
-            let directory = app_state::workspace_index_directory(home.data(), PDF, "here")
-                .expect("an index directory");
-            std::fs::create_dir_all(&directory).expect("the index's directory");
-            let mut index = automerge::AutoCommit::new();
-            let form = ui::resource::DocumentId::parse(FORM).expect("a record id");
-            assert!(ui::resource::index::reference(
-                &mut index,
-                &form,
-                &ui::resource::ResourceType::new("pdf.document")
-            ));
-            assert!(ui::resource::index::set_name(
-                &mut index,
-                &form,
-                Some("application.pdf")
-            ));
-            std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+            const HERE: &str = "6d1c1f36-0000-4000-8000-000000000021";
+            let device = crate::records::testing::Device::holding(&[HERE]);
+            device.name(PDF, HERE, &[(FORM, "pdf.document", Some("application.pdf"))]);
 
             let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
             let search = SessionSearch::new(
                 SearchOptions {
-                    records: Some(crate::records::Records::of(home.data().to_path_buf())),
+                    records: Some(device.search()),
                     ..SearchOptions::default()
                 },
                 None,
@@ -2051,7 +2042,13 @@ mod tests {
                 None,
                 None,
             );
-            let feed = search.feed("here", &Scope::Workspace);
+            device.until(|| {
+                search
+                    .records
+                    .as_ref()
+                    .is_some_and(|records| records.holds(FORM))
+            });
+            let feed = search.feed(HERE, &Scope::Workspace);
             let hit = feed
                 .sources
                 .iter()
@@ -2060,10 +2057,10 @@ mod tests {
                 .expect("the form is found by its name");
             assert_eq!(hit.title, "application.pdf");
             search
-                .perform("here", hit.target, &mut |_| Ok(()))
+                .perform(HERE, hit.target, &mut |_| Ok(()))
                 .expect("the record opens");
             let link = InvokeTarget::place(
-                "here",
+                HERE,
                 &crate::platform::notice::Place {
                     app: PDF.into(),
                     record: FORM.into(),
@@ -2184,22 +2181,15 @@ mod tests {
             std::fs::write(&file, "what the record holds").expect("the record's file");
             let record = ui::resource::DocumentId::for_file(&file);
             // The workspace that holds it names it in its index.
-            let directory =
-                app_state::workspace_index_directory(home.data(), "so.tilo.notes", "elsewhere")
-                    .expect("an index directory");
-            std::fs::create_dir_all(&directory).expect("the index's directory");
-            let mut index = automerge::AutoCommit::new();
-            assert!(ui::resource::index::reference(
-                &mut index,
-                &record,
-                &ui::resource::ResourceType::new("document")
-            ));
-            std::fs::write(directory.join(app_state::DOCUMENT_FILE), index.save()).expect("the index");
+            const ELSEWHERE: &str = "6d1c1f36-0000-4000-8000-000000000031";
+            const HERE: &str = "6d1c1f36-0000-4000-8000-000000000032";
+            let device = crate::records::testing::Device::holding(&[ELSEWHERE, HERE]);
+            device.name("so.tilo.notes", ELSEWHERE, &[(record.as_str(), "document", None)]);
 
             let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
             let search = SessionSearch::new(
                 SearchOptions {
-                    records: Some(crate::records::Records::of(home.data().to_path_buf())),
+                    records: Some(device.search()),
                     ..SearchOptions::default()
                 },
                 None,
@@ -2208,10 +2198,16 @@ mod tests {
                 None,
                 None,
             );
+            device.until(|| {
+                search
+                    .records
+                    .as_ref()
+                    .is_some_and(|records| records.holds(record.as_str()))
+            });
             let row = Target::Invoke(Box::new(
                 InvokeTarget::action(
                     DESKTOP_APP,
-                    "here",
+                    HERE,
                     record_rows::RECORDS_RESOURCE,
                     record_rows::BRING_HERE,
                 )
@@ -2220,20 +2216,21 @@ mod tests {
                 .with_argument(record_rows::PACKAGE_PARAM, "so.tilo.notes"),
             ));
             search
-                .perform("here", row, &mut |_| Ok(()))
+                .perform(HERE, row, &mut |_| Ok(()))
                 .expect("the record is brought here and opened");
             assert_eq!(
                 opened.borrow().as_slice(),
-                [("here".to_owned(), tilo_desktop_search::file_uri(&file))],
+                [(HERE.to_owned(), tilo_desktop_search::file_uri(&file))],
                 "the document is opened by its path, not by the record id's `file:/…`"
             );
+            device.until(|| device.names("so.tilo.notes", HERE) == [record.as_str()]);
 
             // The file going away leaves the record held and says what is gone.
             std::fs::remove_file(&file).expect("the file goes");
             let row = Target::Invoke(Box::new(
                 InvokeTarget::action(
                     DESKTOP_APP,
-                    "here",
+                    HERE,
                     record_rows::RECORDS_RESOURCE,
                     record_rows::BRING_HERE,
                 )
@@ -2243,7 +2240,7 @@ mod tests {
             ));
             assert!(
                 matches!(
-                    search.perform("here", row, &mut |_| Ok(())),
+                    search.perform(HERE, row, &mut |_| Ok(())),
                     Err(ApiError::Failed(ref reason)) if reason.contains("is gone")
                 ),
                 "a record whose file is gone is still held, and the launch says why it does not open"

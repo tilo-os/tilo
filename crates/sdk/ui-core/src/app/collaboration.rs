@@ -920,6 +920,7 @@ impl App {
                 | CollabEvent::NativeMediaCommandResult { .. }
                 | CollabEvent::WorkspaceControl { .. }
                 | CollabEvent::RealtimeCommandResult { .. }
+                | CollabEvent::ResourceCommandResult { .. }
                 | CollabEvent::Realtime(_)
         )
     }
@@ -1010,6 +1011,7 @@ impl App {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }
+            | CollabEvent::ResourceCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged

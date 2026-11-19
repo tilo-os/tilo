@@ -31,6 +31,32 @@ impl Store {
         rows
     }
 
+    /// What the row `id`'s effects say of themselves right now: whether this
+    /// device can open a saved connection, and what the open session offers
+    /// beside disconnecting.
+    pub(crate) fn row_status(&self, id: &str) -> Vec<ui::framework::EffectStatus> {
+        if let Some(raw) = id.strip_prefix("remote.session:") {
+            let Ok(connection_id) = raw.parse::<ConnectionId>() else {
+                return Vec::new();
+            };
+            let Some(connection) = self.workspace.get(connection_id) else {
+                return Vec::new();
+            };
+            let issue = self.ssh_host_key_issue(connection_id);
+            return crate::actions::session_status(connection, issue.as_ref(), id);
+        }
+        let Some(leaf) = id.rsplit('/').next() else {
+            return Vec::new();
+        };
+        let Ok(connection_id) = leaf.parse::<ConnectionId>() else {
+            return Vec::new();
+        };
+        let Some(connection) = self.workspace.get(connection_id) else {
+            return Vec::new();
+        };
+        vec![crate::actions::connect_status(connection, id)]
+    }
+
     /// Answer `effect`. Opening a session and sending text answer once the
     pub(crate) fn answer_effect(
         &mut self,

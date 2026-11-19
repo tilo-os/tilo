@@ -305,6 +305,11 @@ fn ask(
             };
             domain::apply_grant_draft(ws, actor, &draft)
         }),
+        sheet::WorkspaceSettingsEffect::SetModeration { on } => {
+            govern(state, fed, move |ws, actor| {
+                domain::set_moderation(ws, actor, on)
+            });
+        }
         sheet::WorkspaceSettingsEffect::Revoke { grant } => {
             govern(state, fed, move |ws, actor| {
                 domain::apply_revoke(ws, actor, &grant)
@@ -756,7 +761,14 @@ fn settings(
         }),
         // The workspace's agents are Chat's record, opened when the tab is first shown.
         agents: if tab == sheet::Tab::Agents {
-            agents.pane(tree, person, &names, apps, review)
+            // The moderation agent shows where a server keeping the workspace has one.
+            let moderation = workspace.zip(engine).is_some_and(|(workspace, engine)| {
+                engine
+                    .holders(&workspace.id().to_string())
+                    .iter()
+                    .any(|holder| holder.moderates)
+            });
+            agents.pane(tree, person, (&names, apps), moderation, review)
         } else {
             sheet::Agents::default()
         },

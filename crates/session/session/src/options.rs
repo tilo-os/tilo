@@ -313,10 +313,16 @@ fn collaborating(
     let devices = personal.as_ref().map(|personal| {
         std::sync::Arc::new(tilo_runtime::personal_devices::PersonalDevices::new(
             personal.sync().clone(),
-        )) as std::sync::Arc<dyn tilo_mcp::devices::PersonsDevices>
+        )) as std::sync::Arc<dyn tilo_device_mcp::PersonsDevices>
     });
     if let Some(personal) = &personal {
         beside.push(personal.protocol());
+        // Machines that ask to join are answered for as long as this session
+        // is up, not only while a sheet is up: each ask is noted in the
+        // person's store first, so all their devices see it.
+        if let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() {
+            crate::enrollment::serve(personal.sync().clone(), paths.root, paths.dir);
+        }
     }
     if let Some(devices) = &devices {
         beside.push(device_agents.protocol(std::sync::Arc::clone(devices)));
@@ -356,7 +362,7 @@ fn collaborating(
                 sync.attach_personal(personal);
             }
             if let (Some(devices), Some(endpoint)) = (devices, sync.endpoint()) {
-                device_agents.attach(tilo_mcp::devices::OtherDevices::new(
+                device_agents.attach(tilo_device_mcp::OtherDevices::new(
                     endpoint,
                     devices,
                     tilo_rt::app().handle().clone(),

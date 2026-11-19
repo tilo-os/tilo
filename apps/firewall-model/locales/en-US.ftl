@@ -9,3 +9,20 @@ firewall-config-delete-rule = Delete rule
 firewall-config-import = Import configuration
 firewall-applied = Applied configuration
 firewall-applied-applied = Store applied configuration
+
+## The zones' names, and what a rule matches.
+
+firewall-zone-drop-title = Drop
+firewall-zone-block-title = Block
+firewall-zone-public-title = Public
+firewall-zone-external-title = External
+firewall-zone-dmz-title = DMZ
+firewall-zone-work-title = Work
+firewall-zone-home-title = Home
+firewall-zone-internal-title = Internal
+firewall-zone-trusted-title = Trusted
+firewall-zone-rules = { $count ->
+    [one] 1 rule
+   *[other] { $count } rules
+}
+firewall-rule-port-title = Port { $port }

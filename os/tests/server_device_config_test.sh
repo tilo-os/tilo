@@ -119,6 +119,41 @@ grep -q '^method=auto$' "$nm_dir/tilo-eno1.nmconnection" || fail 'a dhcp interfa
 [ "$(report_field revision)" = "$revision" ] || fail 'the report names another revision'
 [ -r "$applied_at" ] || fail 'the helper did not say it applied'
 
+# A link with both address families gets a default route for each: the IPv4
+# gateway goes in the IPv4 section and the IPv6 one in the IPv6 section.
+reset
+cat >"$request" <<EOF
+revision|$revision
+interface|enp3s0|static|65.108.204.148/26,2a01:4f9:1a:a083::2/64|65.108.204.129,fe80::1|185.12.64.1,185.12.64.2||0
+EOF
+keep
+"$helper"
+[ "$(report_field state)" = applied ] || fail "a dual-stack interface was not applied: $(cat "$report")"
+keyfile=$nm_dir/tilo-enp3s0.nmconnection
+v4_gateway=$(sed -n '/^\[ipv4\]/,/^\[ipv6\]/p' "$keyfile" | sed -n 's/^gateway=//p')
+v6_gateway=$(sed -n '/^\[ipv6\]/,$p' "$keyfile" | sed -n 's/^gateway=//p')
+[ "$v4_gateway" = 65.108.204.129 ] || fail "the IPv4 gateway is not in the IPv4 section: $(cat "$keyfile")"
+[ "$v6_gateway" = fe80::1 ] || fail "the IPv6 gateway is not in the IPv6 section: $(cat "$keyfile")"
+grep -q '^address1=2a01:4f9:1a:a083::2/64$' "$keyfile" || fail 'the IPv6 address is not written'
+
+# One gateway for each family: a second of the same family, or one of a family
+# the interface is not addressed in, is refused whole.
+for interface in \
+    'enp2|10.0.0.5/24|10.0.0.1,10.0.0.2' \
+    'enp3s0|65.108.204.148/26,2a01:4f9:1a:a083::2/64|65.108.204.129,fe80::1,fe80::2' \
+    'enp2|10.0.0.5/24|2001:db8::1'; do
+    reset
+    IFS='|' read -r name addresses gateway <<EOF
+$interface
+EOF
+    cat >"$request" <<EOF
+revision|$revision
+interface|$name|static|$addresses|$gateway|||0
+EOF
+    if "$helper" 2>/dev/null; then fail "gateways '$gateway' on $addresses were applied"; fi
+    [ "$(report_field state)" = refused ] || fail "gateways '$gateway' on $addresses were not refused"
+done
+
 # A drive that holds something is refused unless the entry confirmed erasing
 # it by naming the drive; nothing else is applied then either.
 reset

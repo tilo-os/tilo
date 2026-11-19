@@ -7,6 +7,16 @@ use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Effect, Model, resource};
 use ui::widget::Element;
 
+/// A result the search shows: an item of the `launcher.result` type, whose
+/// address names the entry it opens.
+#[derive(ui::tilo_resource::Row)]
+#[row(
+    kind = "launcher.result",
+    label = "Search result",
+    effects = LauncherEffect
+)]
+pub(crate) struct LauncherResult;
+
 /// The launcher resource, where its effects and result rows are published.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Launcher {}
@@ -58,13 +68,15 @@ pub enum LauncherEffect {
         #[param("Rows to move by; negative moves up")]
         by: i64,
     },
-    #[effect(own_device, attended)]
+    #[effect(kind = "outside")]
+    #[effect(own_device, attended, on = LauncherResult)]
     Choose {
         #[param("The result to choose; the selected one when left out")]
         row: Option<String>,
         #[param("How to open it: here (as a tab here), beside, or more (its other actions)")]
         how: Option<String>,
     },
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Adjust {
         #[param("The result whose value to step; the selected one when left out")]
@@ -72,6 +84,7 @@ pub enum LauncherEffect {
         #[param("1 steps up, -1 down")]
         delta: i64,
     },
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     Answer {
         #[param("The value the step asks for")]

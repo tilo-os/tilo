@@ -261,8 +261,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn an_exited_process_not_yet_reaped_has_no_start_time() {
+        use tilo_test_env::SpawnUnderEnvLock as _;
         let mut child = std::process::Command::new("true")
-            .spawn()
+            .spawn_locked()
             .expect("a child starts");
         let pid = child.id();
         // Wait for the exit without reaping it: the child stays a zombie until `wait`.

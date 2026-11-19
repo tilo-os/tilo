@@ -62,6 +62,17 @@ pub const KIND: &str = "so.tilo.downloaded-apps";
 /// The kind of one app's resource, [`wire::app`].
 pub const APP_KIND: &str = "so.tilo.downloaded-app";
 
+/// The resource every app and offer of the person's is read from.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.downloaded-apps", label = "Downloaded apps")]
+pub struct DownloadedApps;
+
+/// One downloaded app's resource, whose actions are
+/// [`DownloadedAppAction`]'s.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.downloaded-app", label = "Downloaded app")]
+pub struct DownloadedApp;
+
 /// Where a program an `AppImage` is moved into goes: a folder in the
 /// person's home they can see in their files.
 const APPLICATIONS: &str = "Applications";
@@ -758,9 +769,11 @@ impl Service for Downloaded {
         let apps: Vec<ResourceSpec> = apps
             .iter()
             .map(|app| {
-                let mut resource =
-                    ResourceSpec::new(wire::app(&app.desktop_id), APP_KIND, app.name.clone())
-                        .with_presentation(presentation(app));
+                let mut resource = tilo_resource::typed_resource::<DownloadedApp>(
+                    wire::app(&app.desktop_id),
+                    app.name.clone(),
+                )
+                .with_presentation(presentation(app));
                 // Locate is how a file that is gone is found again; an app
                 // that starts is not the one to point somewhere else.
                 let actions = [
@@ -777,9 +790,8 @@ impl Service for Downloaded {
             })
             .collect();
         vec![
-            offer::<DownloadedAppsAction>(ResourceSpec::new(
+            offer::<DownloadedAppsAction>(tilo_resource::typed_resource::<DownloadedApps>(
                 RESOURCE,
-                KIND,
                 crate::i18n::name(KIND, "Downloaded apps"),
             ))
             .with_children(apps),

@@ -500,6 +500,10 @@ struct Watched {
     outbound: tokio::sync::mpsc::Sender<crate::transport::Envelope>,
 }
 
+/// One device's list, once built, and the sessions of it that read it: built once however many
+/// connections that device holds.
+type TheirList = (Option<Vec<u8>>, Vec<(u64, Watched)>);
+
 impl PersonalPushes {
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u64, Watched>> {
         self.sessions
@@ -553,6 +557,12 @@ impl Workspaces {
         self.inner.personal_pushes.changed.notify_one();
     }
 
+    /// How long a burst of list changes is gathered before each list is sent: a workspace made
+    /// changes its governance several times, and those are one list. A person who makes a
+    /// hundred workspaces reads the list their devices were sent a moment after they stop, not a
+    /// list built again for each of them, which costs more the more workspaces they have.
+    const GATHER_PERSONAL: std::time::Duration = std::time::Duration::from_millis(250);
+
     /// Follow the change of every person's list: each is sent the new one, as
     /// often as it changes.
     pub(super) fn follow_personal_changes(&self) {
@@ -567,6 +577,10 @@ impl Workspaces {
             let Some(changed) = changed else { return };
             loop {
                 changed.notified().await;
+                // A burst of changes (a workspace made changes its governance several times) is
+                // one list: waiting a moment for it to settle sends each person their list once,
+                // and building a hundredth workspace's list does not stall the work that made it.
+                tokio::time::sleep(Self::GATHER_PERSONAL).await;
                 let Some(inner) = workspaces.upgrade() else {
                     return;
                 };
@@ -592,19 +606,39 @@ impl Workspaces {
                 })
                 .collect()
         };
+        // A device's list is one, however many connections it holds: it is built once and sent
+        // to each. A device's own capabilities decide what its list names, so a person's agent
+        // key keeps its own.
+        let mut by_device: std::collections::HashMap<[u8; 32], TheirList> =
+            std::collections::HashMap::new();
         for (watch, session) in watched {
-            let Ok(list) = serde_json::to_vec(&self.personal_of(&session.cert).await) else {
-                continue;
-            };
-            match session
-                .outbound
-                .try_send(crate::transport::Envelope::PersonalList { list })
-            {
-                // A session already busy with an older list reads the next
-                // change's; one whose connection ended holds nothing.
-                Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    self.inner.personal_pushes.lock().remove(&watch);
+            by_device
+                .entry(session.cert.device_public_key)
+                .or_insert_with(|| (None, Vec::new()))
+                .1
+                .push((watch, session));
+        }
+        for (_, (mut list, sessions)) in by_device {
+            for (watch, session) in sessions {
+                if list.is_none() {
+                    match serde_json::to_vec(&self.personal_of(&session.cert).await) {
+                        Ok(kept) => list = Some(kept),
+                        Err(_) => break,
+                    }
+                }
+                let Some(list) = list.clone() else {
+                    break;
+                };
+                match session
+                    .outbound
+                    .try_send(crate::transport::Envelope::PersonalList { list })
+                {
+                    // A session already busy with an older list reads the next
+                    // change's; one whose connection ended holds nothing.
+                    Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        self.inner.personal_pushes.lock().remove(&watch);
+                    }
                 }
             }
         }

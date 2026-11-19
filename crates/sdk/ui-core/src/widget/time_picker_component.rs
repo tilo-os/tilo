@@ -5,8 +5,9 @@ use crate::widget::TimeValue;
 
 use super::TimePicker;
 
-/// A time of day, as three spinners for hours, minutes and seconds: the arrows step a spinner
-/// and so does the wheel over its cell. It is the time in the person's own zone today.
+/// A time of day, as spinners for hours and minutes, and for seconds when the time holds some:
+/// the arrows step a spinner and so does the wheel over its cell. It is the time in the person's
+/// own zone today.
 #[derive(Component)]
 #[component(name = "TimePicker", role = "Group", label = "label")]
 pub struct TimePickerProps {
@@ -31,9 +32,8 @@ impl Default for TimePickerProps {
     }
 }
 
-/// Today at `time`, as the instant a bound moment holds.
+/// Today at `time` in the person's zone, as the instant a bound moment holds.
 fn instant_today(time: TimeValue) -> String {
-    let day = crate::clock::today();
     let at = jiff::civil::Time::new(
         i8::try_from(time.hours).unwrap_or(0),
         i8::try_from(time.minutes).unwrap_or(0),
@@ -41,9 +41,7 @@ fn instant_today(time: TimeValue) -> String {
         0,
     )
     .unwrap_or(jiff::civil::Time::midnight());
-    day.to_datetime(at)
-        .strftime("%Y-%m-%dT%H:%M:%SZ")
-        .to_string()
+    crate::widget::date_field::instant_text(crate::clock::today(), at)
 }
 
 impl Described for TimePicker {

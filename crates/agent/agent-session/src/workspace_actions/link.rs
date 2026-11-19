@@ -103,6 +103,11 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Option<ViewReadPolicy> {
         None
     }
+    /// Whether `workspace` keeps `caller`'s key as one its person revoked: nothing it asks is
+    /// answered until they approve another, and every refusal says so.
+    fn key_revoked(&self, _workspace: WorkspaceId, _caller: &Caller) -> bool {
+        false
+    }
     /// The agent `caller` is, which a person's own device handed its session to, works in
     /// `workspace`: the server adds it to the workspace's list of its agents where that list
     /// does not name it yet, and answers the bound the list keeps for it, which narrows
@@ -136,16 +141,13 @@ pub trait WorkspaceDocumentsLink: Send + Sync {
     ) -> Result<Option<serde_json::Value>, String> {
         Ok(None)
     }
-    /// The action `action` of `app` as the version `workspace` installs
-    /// declares it in its package's surface: what the caller is offered and
-    /// the kind it is decided by. `None` for an app or action it does not
-    /// declare.
-    fn packaged_action(
-        &self,
-        _workspace: WorkspaceId,
-        _app: &str,
-        _action: &str,
-    ) -> Option<tilo_actions::surface::VerbSurface> {
+    /// The signed `surface.toml` of the version of `app` the workspace
+    /// installs, when this device keeps its package: every resource kind the
+    /// app publishes with its verbs, by which the catalogue lists its actions
+    /// exactly as an app compiled in is listed. `None` for an app the
+    /// workspace installs no such version of, or one this device holds no
+    /// package of.
+    fn packaged_surface(&self, _workspace: WorkspaceId, _app: &str) -> Option<Vec<u8>> {
         None
     }
     /// Read an exact existing source using already-owned host keys. The host
@@ -297,6 +299,9 @@ pub trait AsksInConversation: Send + Sync {
 pub struct PackagedCall<'a> {
     /// The app's id, as its package and its resources name it.
     pub app: &'a str,
+    /// The resource kind the action is for: the app's model serves every
+    /// resource the app declares, and routes the action by this.
+    pub kind: &'a str,
     /// The resource's document id: `""` for what the app keeps per workspace.
     pub document: &'a str,
     /// The `.tapp` the workspace keeps for that app version.
@@ -319,8 +324,10 @@ pub struct AskedInTurn {
     /// The invocation as the person reviews it.
     pub draft: tilo_actions::Draft,
     /// What is asked, by the names the system gave it: what an answer of
-    /// always would let stand.
-    pub asked: Asked,
+    /// always would let stand. `None` offers no such answer: the invocation
+    /// carries its resource's other actions, and an always is for the action
+    /// that asked, never for what carried it.
+    pub asked: Option<Asked>,
     /// The action and the thing it is on, in the system's own words. The
     /// workspace's name is the server's to add.
     pub words: Words,

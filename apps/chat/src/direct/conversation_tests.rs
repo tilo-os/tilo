@@ -22,6 +22,26 @@ fn registered_person_effect_ids_match_the_native_broker_protocol() {
     assert_eq!(ChatEffect::SEND_DIRECT_MESSAGE.id, "send-direct-message");
 }
 
+/// Opening the conversation with a person shows it, on the row Chat publishes for them only once
+/// it is open: the surface the package ships says so, so a closed Chat asked for it starts with a
+/// window.
+#[test]
+fn the_surface_says_opening_a_conversation_with_a_person_shows_it() {
+    use crate::effects::ChatEffect;
+
+    // Named under an id of its own: the surface this process holds for Chat stays as it was.
+    let app = "so.tilo.chat.shipped-surface";
+    ui::app_surface::register_package(app, include_bytes!("../../surface.toml"));
+    assert!(ui::app_surface::shows(
+        app,
+        ChatEffect::OPEN_DIRECT_CONVERSATION.id
+    ));
+    assert!(!ui::app_surface::shows(
+        app,
+        ChatEffect::SEND_DIRECT_MESSAGE.id
+    ));
+}
+
 tilo_test_env::scenario! {
     /// The id of a direct conversation.
     /// Each case was a test of its own, on a fixture of its own; a failure
@@ -522,6 +542,14 @@ fn a_persons_card_opens_the_conversation_chat_keeps() {
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
     let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    // Bob's window has the keyboard, and he is answering in a thread.
+    bob_window.with_chat(|chat| {
+        ui::widget::Widget::set_focus(chat, true);
+        chat.thread_open = Some("m_earlier".to_owned());
+        chat.focus = crate::app::Focus::Thread;
+        chat.set_composer_focus();
+        assert!(chat.composer_thread.is_focused(), "he writes in the thread");
+    });
     bob_window
         .effect(&ChatEffect::OpenDirectConversation {
             public_key: ada.clone(),
@@ -530,7 +558,11 @@ fn a_persons_card_opens_the_conversation_chat_keeps() {
     bob_window.with_chat(|chat| {
         assert!(
             matches!(chat.focus, crate::app::Focus::Main),
-            "the conversation opens with its composer ready"
+            "the conversation opens on its own composer"
+        );
+        assert!(
+            chat.composer_main.is_focused() && !chat.composer_thread.is_focused(),
+            "what Bob types next goes to Ada"
         );
     });
     bob_window.with_chat(|chat| {

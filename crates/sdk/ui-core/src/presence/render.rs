@@ -937,9 +937,16 @@ pub(super) fn draw_agent_nametag(
 ) -> (Rect, Rect) {
     let at = (tip.x, tip.y);
     draw_peer_pointer(scene, transform, theme, at, color, true);
+    let vp = normalised(viewport);
+    // A name longer than the viewport is elided to it: the tag stays inside the window it points
+    // in, its last letters left out rather than painted past the edge.
+    let style = pill_label_style(theme);
+    let k = label_magnification(theme, text_renderer);
+    let widest = (vp.width() - (PILL_PAD_X * 2.0 + AGENT_GLYPH_W) * k).max(0.0) as f32;
+    let label = text_renderer.elide_to_width_style(label, widest, &style);
+    let label = label.as_str();
     let size = peer_pill_size_for(text_renderer, theme, label, true);
     let bounds = pointer_bounds(at);
-    let vp = normalised(viewport);
     // Above or below its line, the tag hangs from the pointer's tip towards its right, so a
     // pointer at the edge of a pane names itself inside that pane, not across its neighbour.
     let chip = super::LabeledCaret {

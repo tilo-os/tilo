@@ -32,11 +32,17 @@ mod agent_mcp;
 #[path = "workspace_actions/agent_member.rs"]
 mod agent_member;
 #[cfg(test)]
+#[path = "workspace_actions/agent_views.rs"]
+mod agent_views;
+#[cfg(test)]
 #[path = "workspace_actions/api.rs"]
 mod api;
 #[cfg(test)]
 #[path = "workspace_actions/api_apps.rs"]
 mod api_apps;
+#[cfg(test)]
+#[path = "workspace_actions/api_asks.rs"]
+mod api_asks;
 #[cfg(test)]
 #[path = "workspace_actions/api_invites.rs"]
 mod api_invites;
@@ -79,6 +85,9 @@ mod branch_workspace;
 #[path = "workspace_actions/computer_agent.rs"]
 mod computer_agent;
 
+#[cfg(test)]
+#[path = "workspace_actions/bulk_import.rs"]
+mod bulk_import;
 #[cfg(test)]
 #[path = "workspace_actions/chat_group.rs"]
 mod chat_group;
@@ -130,6 +139,9 @@ mod hosted_consent_notification;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_documents.rs"]
 pub mod hosted_documents;
+#[cfg(test)]
+#[path = "workspace_actions/hosted_import_open.rs"]
+mod hosted_import_open;
 #[cfg(test)]
 #[path = "workspace_actions/hosted_mail_turn.rs"]
 mod hosted_mail_turn;
@@ -202,6 +214,10 @@ mod workspace_find;
 mod search_beside_requests;
 
 #[cfg(test)]
+#[path = "workspace_actions/person_before_agent.rs"]
+mod person_before_agent;
+
+#[cfg(test)]
 #[path = "workspace_actions/workspace_per_customer.rs"]
 mod workspace_per_customer;
 
@@ -232,7 +248,7 @@ use tilo_actions::{
 };
 use tilo_agent_session::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::harness::hosted::{Hosted, Options};
@@ -592,7 +608,7 @@ struct DeliveryReadFixture {
 
 impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryReadFixture {
     fn user_public_key(&self) -> [u8; 32] {
-        self.member.endpoint.host_cert.user_public_key
+        self.member.endpoint.server_cert.user_public_key
     }
     fn own_device(&self) -> tilo_agent_session::workspace_actions::HostDevice {
         self.member.clone()
@@ -657,7 +673,7 @@ impl tilo_agent_session::workspace_actions::WorkspaceDocumentsLink for DeliveryR
             origin: "https://fixture.tilo.invalid".into(),
             web_entry: Some("https://fixture.tilo.invalid/qos-runtime/".into()),
             workspace: workspace.into(),
-            host_device: hex::encode(self.member.endpoint.host_cert.device_public_key),
+            host_device: hex::encode(self.member.endpoint.server_cert.device_public_key),
             provider: provider.into(),
         })
     }

@@ -38,7 +38,7 @@ pub struct Presence {
     /// The workspace member this frame is, an agent's id, where it is one's: the member every
     /// surface names and colours the agent session by, its whole work and its face alike. `None`
     /// for what a person's device says of itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub member: Option<String>,
 }
 

@@ -68,8 +68,8 @@ file-chooser = "via-host"
 network-monitor = "via-host"
 
 [sandbox.services]
-collab = "optional@32"
-tilo-fs = "optional@32"
+collab = "optional@34"
+tilo-fs = "optional@34"
 
 [entrypoint]
 bin             = "bin/music"

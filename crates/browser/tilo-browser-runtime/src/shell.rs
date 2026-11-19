@@ -1427,11 +1427,11 @@ impl BrowserShell {
         if workspace.to_string() != shared.workspace {
             return;
         }
-        shared.asked_name.replace(Some(name.trim().to_owned()));
         let workspace = shared.workspace.clone();
-        let notifications = self.chrome.notifications.clone();
+        // A rename that did not take is said where the person asked for it, in passing.
+        let handle = self.handle.clone();
         let woken = Arc::clone(&shared.woken);
-        let said = notifications.clone();
+        let said = handle.clone();
         let asked = crate::replicated::host_then(
             peer,
             Box::new(
@@ -1444,9 +1444,7 @@ impl BrowserShell {
                 match answer {
                     Ok(tilo_server_protocol::workspaces::WorkspacesReply::Refused(why))
                     | Err(why) => {
-                        said.post(tilo_desktop_surface::notifications::Notification::new(
-                            why, "",
-                        ));
+                        said.acknowledge(why);
                     }
                     Ok(_) => {}
                 }
@@ -1454,19 +1452,17 @@ impl BrowserShell {
             }),
         );
         if let Err(error) = asked {
-            notifications.post(tilo_desktop_surface::notifications::Notification::new(
-                error, "",
-            ));
+            handle.acknowledge(error);
         }
     }
 
     /// Tell the person why a fixed chord the shell left to the page did not
-    /// run here.
+    /// run here: in passing, where they pressed it, never as a notification.
     fn answer_fixed_shortcut(&self, action: ui::shortcut_table::FixedAction) {
         let Some(outcome) = crate::fixed_chords::unserved(action) else {
             return;
         };
-        self.chrome.notifications.post(outcome.notice());
+        self.handle.acknowledge(outcome.detail());
         (self.chrome.wake)();
     }
 

@@ -115,7 +115,7 @@ StoodArgs = TypedDict("StoodArgs", {
 
 class Library(Resource):
     """Video Player — `video-player.library`."""
-    __surface__ = "so.tilo.video-player@4f05d77ea6c7a710"
+    __surface__ = "so.tilo.video-player@3d989ffc0c9849f4"
     playlists: list[Entry[Playlist]]
     items: list[Entry[PlaylistItem]]
     annotations: list[Entry[TimestampAnnotation]]
@@ -216,18 +216,14 @@ class Library(Resource):
             args["path"] = path
         return self.action("open-video", **args)
 
-    def clear_recent(self) -> None:
-        """Runs the app's action."""
-        return self.action("clear-recent")
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"create_playlist", "create_playlist_many", "delete_playlist", "delete_playlist_many", "add_to_playlist", "add_to_playlist_many", "add_to_watch_later", "add_to_watch_later_many", "add_annotation", "add_annotation_many", "delete_annotation", "delete_annotation_many", "set_transport", "set_transport_many", "open_video", "clear_recent"})
+    __actions__ = frozenset({"create_playlist", "create_playlist_many", "delete_playlist", "delete_playlist_many", "add_to_playlist", "add_to_playlist_many", "add_to_watch_later", "add_to_watch_later_many", "add_annotation", "add_annotation_many", "delete_annotation", "delete_annotation_many", "set_transport", "set_transport_many", "open_video"})
 
 
 class Recent(Resource):
     """Recent videos — `video-player.recent`."""
-    __surface__ = "so.tilo.video-player@4f05d77ea6c7a710"
+    __surface__ = "so.tilo.video-player@3d989ffc0c9849f4"
     devices: dict[str, Any]
 
     def keep(self,

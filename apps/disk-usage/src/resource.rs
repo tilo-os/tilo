@@ -4,29 +4,43 @@
 use std::path::PathBuf;
 
 use ui::framework::{Fixture, LiveRow, ResourceApp, ViewCx};
-use ui::tilo_resource::{self, AbsolutePath};
+use ui::tilo_resource::{self, AbsolutePath, Effect as _};
 use ui::widget::Element;
 
 use crate::scan::ScanResult;
 
 pub use disk_usage_model::{DiskUsage, Folders, RecentFolders};
 
+/// A folder the window offers to scan: an item of the `disk-usage.folder`
+/// type, whose address names the folder on this device.
+#[derive(ui::tilo_resource::Row)]
+#[row(
+    kind = "disk-usage.folder",
+    label = "Folder",
+    effects = DiskUsageEffect
+)]
+pub(crate) struct Folder;
+
 /// What the analyzer does that changes no document: scanning a folder and moving between
 /// the views.
 #[derive(Clone, Debug, PartialEq, ui::framework::Effect)]
 #[effect(operation = "disk-usage.effects")]
 pub enum DiskUsageEffect {
-    #[effect(job, returns)]
+    #[effect(kind = "outside")]
+    #[effect(job, returns, on = Folder)]
     Analyze {
         #[param("Absolute path of the folder to analyze")]
         path: AbsolutePath,
     },
+    #[effect(kind = "outside")]
     #[effect(attended, job, returns)]
     Choose,
+    #[effect(kind = "outside")]
     #[effect(job)]
     Back,
     #[effect(view)]
     Home,
+    #[effect(kind = "outside")]
     #[effect(job)]
     OpenDisks,
 }
@@ -35,15 +49,11 @@ pub(crate) const DISKS_LINK: &str = "tilo://open#/me/so.tilo.disks";
 
 /// One remembered folder, offered to analyze again.
 pub(crate) fn recent_row(path: &std::path::Path) -> LiveRow {
-    let row = LiveRow::new(
+    folder_row_of(
         format!("disk-usage.recent:{}", path.display()),
-        "disk-usage.recent",
         folder_name(path),
-    );
-    match analyze(path) {
-        Some(effect) => row.effect(&effect),
-        None => row,
-    }
+        path,
+    )
 }
 
 /// The analyze effect for `path`; `None` for a relative path, which names no folder.
@@ -63,15 +73,16 @@ pub(crate) fn folder_name(path: &std::path::Path) -> String {
 
 /// One folder a live row offers to analyze.
 pub(crate) fn folder_row(label: &str, path: &std::path::Path) -> LiveRow {
-    let row = LiveRow::new(
-        format!("disk-usage.folder:{}", path.display()),
-        "disk-usage.folder",
-        label,
-    );
-    match analyze(path) {
-        Some(effect) => row.effect(&effect),
-        None => row,
-    }
+    folder_row_of(format!("disk-usage.folder:{}", path.display()), label, path)
+}
+
+/// The row `id`, labelled `label`, of the folder `path`: it offers to scan
+/// the folder, or nothing when the path names no folder this device can.
+fn folder_row_of(id: String, label: impl Into<String>, path: &std::path::Path) -> LiveRow {
+    let bindings = analyze(path).map_or_else(ui::tilo_resource::RowBindings::new, |effect| {
+        ui::tilo_resource::RowBindings::new().bind(DiskUsageEffect::ANALYZE, effect.arguments())
+    });
+    LiveRow::typed_with::<Folder>(id, label, &bindings)
 }
 
 pub struct DiskUsageShell;

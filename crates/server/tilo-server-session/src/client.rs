@@ -190,7 +190,7 @@ pub struct Entry {
     /// The host's certificate, pinned: the session is taken as this host's
     /// from its start, before the host's proof arrives, and that proof is
     /// checked first of all it reads.
-    pub host_cert: DeviceCert,
+    pub server_cert: DeviceCert,
 }
 
 fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> bool {
@@ -1055,9 +1055,9 @@ impl ServerClient {
                     .await
                     .map_err(|error| ClientError::Transport(error.to_string()))?;
                 let host = AuthenticatedPeer {
-                    user_public_key: entry.host_cert.user_public_key,
-                    device_public_key: entry.host_cert.device_public_key,
-                    cert: entry.host_cert.clone(),
+                    user_public_key: entry.server_cert.user_public_key,
+                    device_public_key: entry.server_cert.device_public_key,
+                    cert: entry.server_cert.clone(),
                 };
                 let awaiting = enter_server(
                     &mut send,

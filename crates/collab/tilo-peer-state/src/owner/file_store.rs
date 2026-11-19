@@ -23,8 +23,7 @@
 //! record's files never share the name of the file the host keeps them beside.
 use crate::owner::journal;
 use crate::owner::{
-    Change, LimitedWriter, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, NativeWorkspaceOwner,
-    Store,
+    Change, NativeAuthorityStorage, NativeWorkspaceOwner, Store,
     stored::{StoredPendingEnrollment, StoredWorkspace, format},
 };
 use parking_lot::{Mutex, RwLock};
@@ -127,6 +126,45 @@ pub(crate) fn document_files(path: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, std
     Ok(files)
 }
 
+/// Change the one workspace the record at `path` holds as `change` changes
+/// its fields, behind its owner's back, where the record keeps what its
+/// publications change: an entry appended to the workspace's journal, as
+/// the store appends one.
+#[cfg(test)]
+pub(crate) fn change_stored(path: &Path, change: impl FnOnce(&mut serde_json::Value)) {
+    let parts = parts_of(path);
+    let index: StoredIndex =
+        serde_json::from_slice(&std::fs::read(index_of(&parts)).unwrap()).unwrap();
+    let [(workspace, revision)] = index.held.into_iter().collect::<Vec<_>>()[..] else {
+        panic!("one workspace held");
+    };
+    let snapshot = std::fs::read(part_of(&parts, workspace, revision)).unwrap();
+    let log_path = log_of(&parts, workspace, revision);
+    let log = std::fs::read(&log_path).unwrap_or_default();
+    let stored: StoredWorkspace = serde_json::from_slice(&snapshot).unwrap();
+    let (stored, last) = journal::replay(stored, &log).unwrap();
+    let written = journal::first_of(&stored).unwrap();
+    let mut fields = serde_json::to_value(&stored).unwrap();
+    change(&mut fields);
+    let mut changed: StoredWorkspace = serde_json::from_value(fields).unwrap();
+    changed.peer = stored.peer;
+    let (entry, _) = journal::next(
+        &written,
+        &changed,
+        last.unwrap_or(index.revision).saturating_add(1),
+    )
+    .unwrap();
+    std::io::Write::write_all(
+        &mut std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .unwrap(),
+        &entry,
+    )
+    .unwrap();
+}
+
 /// The file one workspace's record is in, as written at `revision`.
 fn part_of(parts: &Path, workspace: WorkspaceId, revision: u64) -> PathBuf {
     parts.join(format!("{workspace}.{revision}.json"))
@@ -165,41 +203,40 @@ fn provision(parts: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Read the bounded file at `path`, or `None` when there is none.
-fn read_bounded(path: &Path) -> Result<Option<Vec<u8>>, String> {
-    read_within(path, MAX_AUTHORITY_BYTES)
-}
-
-/// Read the file at `path` of at most `cap` bytes, or `None` when there is none.
-fn read_within(path: &Path, cap: usize) -> Result<Option<Vec<u8>>, String> {
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    };
-    let mut bytes = Vec::new();
-    file.take((cap as u64).saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|error| error.to_string())?;
-    if bytes.len() > cap {
-        return Err("joined-workspace record exceeds its cap".into());
+/// Read the file at `path`, or `None` when there is none. A workspace's file
+/// holds every document of the workspace, so no cap is put on it: one would
+/// be reached by using the workspace.
+fn read_whole(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
     }
-    Ok(Some(bytes))
 }
 
-/// The record at `path`, empty when there is none, and the revision each
-/// workspace's file was written at.
-fn read_resource(path: &Path) -> Result<(NativeAuthorityStorage, Held), String> {
+/// What the files at `path` hold, empty when there are none, the revision
+/// each workspace's file was written at, and the journal each one goes on
+/// with.
+fn read_resource(
+    path: &Path,
+) -> Result<(NativeAuthorityStorage, Held, BTreeMap<WorkspaceId, Journal>), String> {
     let parts = parts_of(path);
-    let Some(bytes) = read_bounded(&index_of(&parts))? else {
-        return Ok((NativeAuthorityStorage::default(), Held::new()));
+    let Some(bytes) = read_whole(&index_of(&parts))? else {
+        return Ok((
+            NativeAuthorityStorage::default(),
+            Held::new(),
+            BTreeMap::new(),
+        ));
     };
     let index: StoredIndex = serde_json::from_slice(&bytes)
         .map_err(|error| format!("the record's index does not parse: {error}"))?;
     read_index(path, index)
 }
 
-fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage, Held), String> {
+fn read_index(
+    path: &Path,
+    index: StoredIndex,
+) -> Result<(NativeAuthorityStorage, Held, BTreeMap<WorkspaceId, Journal>), String> {
     if index.version != INDEX_VERSION {
         return Err(format!(
             "the owner record's index is version {}, and this build reads version {INDEX_VERSION}",
@@ -208,17 +245,14 @@ fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage
     }
     let parts = parts_of(path);
     let mut workspaces = BTreeMap::new();
+    let mut journals = BTreeMap::new();
     let mut latest = index.revision;
     for (&workspace, &revision) in &index.held {
         let part = part_of(&parts, workspace, revision);
-        let bytes = read_bounded(&part)?
+        let bytes = read_whole(&part)?
             .ok_or_else(|| format!("the record names {workspace}'s file and it is missing"))?;
-        // A journal holds at most its snapshot's size past the larger of
-        // that and its floor, and one entry, itself within the cap.
-        let journal_cap = MAX_AUTHORITY_BYTES
-            .saturating_mul(2)
-            .saturating_add(JOURNAL_FLOOR);
-        let log = read_within(&log_of(&parts, workspace, revision), journal_cap)?;
+        let snapshot = bytes.len();
+        let log = read_whole(&log_of(&parts, workspace, revision))?;
         // The layout the file names: one this build writes reads as it is,
         // and another is refused rather than replayed over its journal.
         let version = format::stored_version(&bytes)?;
@@ -227,8 +261,12 @@ fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage
             .map_err(|error| error.to_string())?;
         let mut stored: StoredWorkspace =
             serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        let mut whole = true;
+        let mut appended = 0;
         if let Some(log) = log {
-            let (replayed, last) = journal::replay(stored, &log, MAX_AUTHORITY_BYTES)?;
+            whole = journal::read_whole(&log);
+            appended = log.len();
+            let (replayed, last) = journal::replay(stored, &log)?;
             stored = replayed;
             latest = latest.max(last.unwrap_or(0));
         }
@@ -237,15 +275,30 @@ fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage
                 "{workspace}'s file holds another workspace's record"
             ));
         }
+        // The next publication goes on with the journal as it was read, so a
+        // write after a start costs what it changed; a journal a write cut
+        // short is let go with a snapshot first, as nothing after its torn
+        // entry would read.
+        if whole {
+            journals.insert(
+                workspace,
+                Journal {
+                    revision,
+                    written: journal::first_of(&stored)?,
+                    snapshot,
+                    appended,
+                },
+            );
+        }
         workspaces.insert(workspace, stored);
     }
-    let mut record = NativeAuthorityStorage {
+    let mut held = NativeAuthorityStorage {
         revision: latest,
         workspaces,
         pending: index.pending,
     };
-    drop_recovery_projections(&mut record);
-    Ok((record, index.held))
+    drop_recovery_projections(&mut held);
+    Ok((held, index.held, journals))
 }
 
 /// A recovery projection is a re-signed copy of frames this build re-sends
@@ -260,13 +313,9 @@ fn drop_recovery_projections(record: &mut NativeAuthorityStorage) {
     });
 }
 
-/// Compact JSON of one workspace's record, within its file's cap.
+/// Compact JSON of what this device holds of one workspace.
 pub(super) fn part_bytes(stored: &StoredWorkspace) -> Result<Vec<u8>, String> {
-    crate::owner::limits::preflight_document(stored, MAX_AUTHORITY_BYTES)
-        .map_err(|error| error.to_string())?;
-    let mut bytes = LimitedWriter::new(Vec::new(), MAX_AUTHORITY_BYTES);
-    serde_json::to_writer(&mut bytes, stored).map_err(|error| error.to_string())?;
-    Ok(bytes.into_inner())
+    serde_json::to_vec(stored).map_err(|error| error.to_string())
 }
 
 /// Compact JSON of the index of `record`, which names each held workspace's
@@ -278,15 +327,13 @@ fn index_bytes(record: &NativeAuthorityStorage, held: &Held) -> Result<Vec<u8>, 
         held: held.clone(),
         pending: record.pending.clone(),
     };
-    let mut bytes = LimitedWriter::new(Vec::new(), MAX_AUTHORITY_BYTES);
-    serde_json::to_writer(&mut bytes, &index).map_err(|error| error.to_string())?;
-    Ok(bytes.into_inner())
+    serde_json::to_vec(&index).map_err(|error| error.to_string())
 }
 
 /// Read the record kept at `path`: the index beside it and the workspace
 /// files the index names. Empty when there is none.
 pub fn read_file(path: &Path) -> Result<NativeAuthorityStorage, String> {
-    read_resource(path).map(|(record, _)| record)
+    read_resource(path).map(|(held, ..)| held)
 }
 
 /// Open the owner whose record is the file at `path`, starting empty.
@@ -299,14 +346,23 @@ pub fn open_file_with(
     path: &Path,
     host: Arc<dyn FileHost>,
 ) -> Result<NativeWorkspaceOwner, String> {
-    let (mut authority, held) = read_resource(path)?;
+    let (mut authority, held, journals) = read_resource(path)?;
     let migrated = crate::owner::enrollment::migrate_intents(&mut authority)?;
     let store = Arc::new(FileStore::at(path, host, held));
+    let pending = serde_json::to_vec(&authority.pending).map_err(|error| error.to_string())?;
     let owner = NativeWorkspaceOwner::restore(
         Arc::clone(&store) as Arc<dyn Store>,
         authority,
         tilo_clock::wall(),
     )?;
+    if !migrated {
+        // What the index read names: a write that changes neither it nor the
+        // workspaces held appends to the journal it read.
+        let mut kept = journals;
+        kept.retain(|workspace, journal| owner.resume_journal(*workspace, &mut journal.written));
+        *store.journals.lock() = kept;
+        *store.pending.lock() = Some(pending);
+    }
     if migrated {
         // The form of records already there changes neither a workspace nor
         // its server workspace, so it goes straight to the files rather than
@@ -338,8 +394,8 @@ pub(crate) struct FileStore {
     history: crate::owner::HistoryContent,
     /// The revision each held workspace's file was written at.
     held: RwLock<Held>,
-    /// The journal of each workspace's snapshot this store wrote since it
-    /// opened: a workspace read from disk writes a snapshot first.
+    /// The journal of each workspace's snapshot, as this store read or last
+    /// wrote it.
     journals: Mutex<BTreeMap<WorkspaceId, Journal>>,
     /// The enrollments in flight the index last written names.
     pending: Mutex<Option<Vec<u8>>>,
@@ -455,11 +511,8 @@ impl FileStore {
         };
         let (entry, written) = journal::next(&journal.written, stored, next.revision)?;
         let appended = journal.appended.saturating_add(entry.len());
-        // A journal past its snapshot is due a new one; and a record near
-        // its cap is written whole, where the cap is checked exactly.
-        if appended > journal.snapshot.max(JOURNAL_FLOOR)
-            || stored.peer.len().saturating_mul(2) > MAX_AUTHORITY_BYTES
-        {
+        // A journal past its snapshot is due a new one.
+        if appended > journal.snapshot.max(JOURNAL_FLOOR) {
             return Ok(false);
         }
         let path = log_of(&self.parts, workspace, journal.revision);

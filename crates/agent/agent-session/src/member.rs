@@ -30,10 +30,11 @@ use std::time::{Duration, Instant};
 
 use collab_types::presence::Shown;
 use iroh::EndpointId;
-use tilo_agent_turn::{Answer, Asked, Doing, McpServer, Outcome, SessionActions};
+use tilo_agent_turn::{Answer, Asked, Doing, Outcome, SessionActions};
 use tilo_live::presence::KEEPALIVE_MS;
+use tilo_mcp::McpServer;
 use tilo_model_gateway::host_backend::protocol::{ModelRequest, ModelResponse, ToolCall};
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::agents::{AgentStatus, AgentStep, TaskState};
 use tilo_session_client::{
@@ -81,9 +82,9 @@ pub struct Pumped {
 /// Where the agent's session goes.
 pub struct MemberConfig {
     /// The workspace's host.
-    pub host: Host,
+    pub host: ServerAddress,
     /// The host's certificate: whose actions the agent's tools ask.
-    pub host_cert: DeviceCert,
+    pub server_cert: DeviceCert,
     /// The workspace uuid.
     pub workspace: String,
 }
@@ -160,7 +161,8 @@ impl AgentMember {
             &config.workspace,
         )
         .ok_or_else(|| "the agent's certificate names no device".to_string())?;
-        let actions = SessionActions::new(&peer, workspace_id, config.host_cert.device_public_key);
+        let actions =
+            SessionActions::new(&peer, workspace_id, config.server_cert.device_public_key);
         Ok(Self {
             identity,
             control,
@@ -487,7 +489,7 @@ struct Steering {
     leaving: Arc<AtomicBool>,
 }
 
-impl Doing<SessionActions> for Steering {
+impl Doing<McpServer<SessionActions>> for Steering {
     /// A paused agent holds here until its person resumes or stops it.
     fn stopped(&self) -> bool {
         if self.control.paused_on(&self.task) {
@@ -496,7 +498,7 @@ impl Doing<SessionActions> for Steering {
         self.leaving.load(Ordering::Acquire) || !self.control.is_running(&self.task)
     }
 
-    async fn calling(&self, call: &ToolCall) {
+    async fn calling(&self, call: &ToolCall, _: tilo_agent_turn::Step) {
         let activity = step_of(call).map_or_else(
             || call.name.clone(),
             |(_, resource, action)| format!("{action} {resource}"),
@@ -506,7 +508,7 @@ impl Doing<SessionActions> for Steering {
     }
 
     /// Each action the agent ran is a step of its task.
-    fn called(&self, call: &ToolCall, answer: &Answer) {
+    fn called(&self, call: &ToolCall, _: tilo_agent_turn::Step, answer: &Answer) {
         let Some((app, resource, action)) = step_of(call) else {
             return;
         };
@@ -556,7 +558,7 @@ fn join(
         PeerConfig::member(
             config.host.clone(),
             identity.cert.clone(),
-            config.host_cert.clone(),
+            config.server_cert.clone(),
         ),
         Arc::new(identity.key.clone()),
         store,

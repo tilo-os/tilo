@@ -27,8 +27,7 @@ use desktop_entry::launch::LaunchEnv;
 /// itself started with that describe the person and this device. Absent
 /// ones are left absent rather than invented.
 const FORWARDED: &[&str] = &[
-    // Who the person is and where their state lives.
-    "TILO_USER_ID",
+    // Where the person's state and identity live.
     "TILO_WORKSPACE_ROOTS",
     "TILO_APPS_DATA_DIR",
     "TILO_IDENTITY_ROOT",
@@ -261,7 +260,6 @@ mod tests {
 
     fn environment() -> SessionEnvironment {
         SessionEnvironment::reading(|name| match name {
-            "TILO_USER_ID" => Some("person-7".into()),
             "TILO_APPS_DATA_DIR" => Some("/home/you/.local/share/tilo/apps".into()),
             "TILO_IDENTITY_ROOT" => Some("/home/you/.local/share/tilo/identity".into()),
             "TILO_WORKSPACE_ROOTS" => Some("/home/you/.local/state/tilo/files/mount".into()),
@@ -288,7 +286,6 @@ mod tests {
         session.session_bus = Some("unix:path=/run/user/1000/tilo/bus".into());
         let variables = session.variables();
         for (name, value) in [
-            ("TILO_USER_ID", "person-7"),
             ("TILO_APPS_DATA_DIR", "/home/you/.local/share/tilo/apps"),
             ("TILO_IDENTITY_ROOT", "/home/you/.local/share/tilo/identity"),
             (

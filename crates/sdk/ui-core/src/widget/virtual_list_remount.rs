@@ -77,7 +77,7 @@ impl VirtualRows {
         }
         if let Some(changed) = regions.get_mut(first..) {
             for rect in changed {
-                *rect = rect.intersect(self.rect);
+                *rect = rect.intersect(self.drawn());
             }
         }
     }

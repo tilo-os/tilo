@@ -1,50 +1,47 @@
-//! The content store: one content store with one hash space and two backings.
+//! The content store: one content-addressed store with one hash space.
 //!
-//! Loose blobs live in an iroh-blobs store (manifests, the chunks of small files, legacy content,
-//! thumbnails, package payloads). File-backed content ([`FileArea`]) is everything larger than
-//! [`crate::content::FILE_BACKED_MIN`]: one sparse file per content id at the file's own offsets,
-//! filled range by range, with a chunk index so a chunk is served and deduplicated where it lives.
-//! On a Tier 1 store volume the area sits next to the workspaces, so publishing a file clones its
-//! extents instead of copying bytes.
+//! Everything lives in the [`FileArea`]: small blobs (manifests, the chunks of small files,
+//! thumbnails) inline in its index database, a published file's content as one sparse file per
+//! content id with a chunk index so a chunk is served and deduplicated where it lives, and a whole
+//! blob too large to inline as an entry keyed by its own hash with its BAO outboard persisted beside
+//! it. On a Tier 1 store volume the area sits next to the workspaces, so publishing a file clones its
+//! extents instead of copying bytes. iroh-blobs is only the wire protocol and its client: what peers
+//! fetch is served out of this area.
 //!
-//! The same area is the daemon's bounded cache: resident bytes are kept under a byte budget, least
-//! recently used first, and pinned or local-only content is never evicted. A `moka` cache in front
-//! of loose blobs bounds hot reads by bytes ([`BLOB_CACHE_BYTES`]).
+//! The area is also the daemon's bounded cache: resident bytes of file-backed content are kept under
+//! a byte budget, least recently used first, and pinned or local-only content is never evicted. Inline
+//! blobs are inside the index database and outside the budget. A `moka` cache in front of the inline
+//! blobs bounds hot reads by bytes ([`BLOB_CACHE_BYTES`]).
 
 use std::collections::HashSet;
-use std::future::Future;
+use std::fs::File;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::sync::{
-    Arc, RwLock,
-    atomic::{AtomicBool, Ordering},
-};
-use std::time::Duration;
+use std::sync::Arc;
 
 use anyhow::Result;
-use bao_tree::io::mixed::EncodedItem;
+use bao_tree::BaoTree;
+use bao_tree::io::mixed::{EncodedItem, traverse_ranges_validated};
+use bao_tree::io::outboard::{PostOrderMemOutboard, PreOrderMemOutboard};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use iroh_blobs::api::Store;
 use iroh_blobs::api::blobs::BlobStatus;
-use iroh_blobs::protocol::{ChunkRanges, ChunkRangesExt as _};
+use iroh_blobs::protocol::ChunkRangesExt as _;
 use iroh_blobs::provider::events::EventSender;
-use iroh_blobs::store::fs::FsStore;
-use iroh_blobs::store::mem::MemStore;
-use iroh_blobs::store::{GcConfig, ProtectCb, ProtectOutcome};
-use iroh_blobs::{BlobFormat, BlobsProtocol, Hash};
+use iroh_blobs::store::IROH_BLOCK_SIZE;
+use iroh_blobs::{BlobsProtocol, Hash};
 use moka::sync::Cache;
 
 #[cfg(feature = "filesystem")]
 use crate::availability::{AvailabilityRegistry, EvictionRequirements};
 #[cfg(feature = "filesystem")]
 use crate::eviction::{
-    BackendGcAuthorizationError, BlobExtent, ContentPayload, EvictionCatalog, EvictionObservation,
+    BlobExtent, ContentPayload, EvictionAuthorizationError, EvictionCatalog, EvictionObservation,
     EvictionQueue, EvictionRequestId, ObservedBlobState,
 };
 #[cfg(feature = "filesystem")]
 use crate::namespace::{LiveDocumentBlobRoots, LiveDocumentBlobScanError, Namespace};
-use tilo_lock::{MutexRecover as _, RwLockRecover as _};
+use tilo_lock::MutexRecover as _;
 
 pub mod area;
 #[cfg(test)]
@@ -62,11 +59,11 @@ pub const MAX_BLOB_LOOKUP_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 #[cfg(feature = "filesystem")]
 pub const MAX_BLOB_LOOKUP_CHUNKS_PER_RECORD: usize = 100_000;
 
-const OWNED_BLOB_TAG_PREFIX: &str = "tilo/blob/v1/";
-
-/// Persistent stores sweep unreferenced blobs periodically. Explicit eviction does not wait for this
-/// interval; callers observe the queue to learn when a sweep has removed every requested hash.
-pub const DEFAULT_BLOB_GC_INTERVAL: Duration = Duration::from_secs(60);
+/// Largest blob stored inline, in the area's index database, rather than as a file of its own. It
+/// covers every manifest and every chunk of a small file; a larger whole blob is a file entry with a
+/// persisted outboard, and a manifest at the same key as a file-backed content id always stays inline
+/// so the two never collide.
+pub const INLINE_MAX: usize = 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg(feature = "filesystem")]
@@ -115,48 +112,21 @@ pub enum BlobDocumentLookupError {
     },
 }
 
-/// Explicit reclamation errors. iroh-blobs deletes only through GC, so an unqueued plan is not
-/// authority enough.
+/// Explicit reclamation errors.
 #[derive(Debug, thiserror::Error)]
 #[cfg(feature = "filesystem")]
 pub enum StoreEvictionError {
     #[error(transparent)]
-    Authorization(#[from] BackendGcAuthorizationError),
-    #[error("reading owned blob tag {tag} failed: {message}")]
-    ReadOwnedTag { tag: String, message: String },
-    #[error("owned blob tag {tag} points at a different blob or format")]
-    InvalidOwnedTag { tag: String },
-    #[error("releasing owned blob tag {tag} failed: {message}")]
-    ReleaseOwnedTag { tag: String, message: String },
-    #[error("making released blob tags durable failed: {0}")]
-    Sync(String),
-}
-
-/// Durable handoff from the eviction queue to the configured background GC, deliberately not a
-/// deletion receipt.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg(feature = "filesystem")]
-pub struct BackendGcRelease {
-    pub id: EvictionRequestId,
-    pub authorized_hashes: Vec<Hash>,
-    pub released_owned_tags: u64,
-}
-
-enum Backend {
-    Mem(MemStore),
-    Fs(FsStore),
+    Authorization(#[from] EvictionAuthorizationError),
+    #[error("removing evicted blobs failed: {0}")]
+    Remove(String),
 }
 
 pub struct ContentStore {
-    backend: Backend,
     cache: Cache<Hash, Bytes>,
-    /// Serializes owned-tag installation and release, so a concurrent ingest of the same hash wins
-    /// either wholly before or wholly after an eviction handoff.
-    owned_tags: tokio::sync::Mutex<()>,
-    /// Serializes publication with the legacy selective-GC API.
+    /// Serializes publication with eviction, so a blob being written is not removed out from under
+    /// its writer.
     mutation: tokio::sync::Mutex<()>,
-    /// Exact live set supplied only for an authorized selective sweep.
-    gc: GcHold,
     /// Open deferred-durability groups, and whether a write inside one still waits for its database
     /// sync; see [`ContentStore::defer_sync`].
     deferred: std::sync::Mutex<(usize, bool)>,
@@ -164,104 +134,14 @@ pub struct ContentStore {
     read_bytes: std::sync::atomic::AtomicU64,
     files: Arc<FileArea>,
     _scratch: Option<tempfile::TempDir>,
-    /// The runtime the persistent store's actors run on, declared last so it outlives the store
-    /// handle.
-    runtime: Option<StoreRuntime>,
 }
 
-/// A runtime of the content store's own. The store's actors batch their database transactions on
-/// timers; on the daemon's runtime they stalled whenever a worker blocked on the namespace lock
-/// while the content pruner held that lock and waited for the store, and with them every timer and
-/// socket of the daemon.
-struct StoreRuntime(Option<tokio::runtime::Runtime>);
-
-impl StoreRuntime {
-    fn new() -> std::io::Result<Self> {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .thread_name("fs-content-store")
-            .enable_all()
-            .build()
-            .map(|runtime| Self(Some(runtime)))
-    }
-
-    fn handle(&self) -> Option<&tokio::runtime::Handle> {
-        self.0.as_ref().map(tokio::runtime::Runtime::handle)
-    }
-}
-
-impl Drop for StoreRuntime {
-    fn drop(&mut self) {
-        // Dropping a runtime blocks, which an async caller must not do.
-        if let Some(runtime) = self.0.take() {
-            runtime.shutdown_background();
-        }
-    }
-}
-
-impl Drop for ContentStore {
-    fn drop(&mut self) {
-        let Backend::Fs(store) = &self.backend else {
-            // The in-memory store brought no runtime of its own.
-            return;
-        };
-        if self.gc.is_closed() {
-            // Closed through [`ContentStore::close`] or [`ContentStore::shutdown`],
-            // which flushed the database before ending the gc task.
-            return;
-        }
-        let (backend, check) = (Backend::Fs(store.clone()), self.gc.clone());
-        // Ending a store waits on its database, and a drop may run inside a
-        // runtime, so the wait gets a thread of its own. What it waits for
-        // belongs to the store; the process does not wait for it.
-        let spawned = std::thread::Builder::new()
-            .name("fs-content-store-end".into())
-            .spawn(move || {
-                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                else {
-                    return;
-                };
-                if let Err(error) = runtime.block_on(stop_store(&backend, &check)) {
-                    tracing::warn!("closing a dropped content store failed: {error}");
-                }
-            });
-        if let Err(error) = spawned {
-            tracing::warn!("a dropped content store keeps its threads: {error}");
-        }
-    }
-}
-
-/// Flush and close a store's database, then let its background gc task go.
-///
-/// The task parks in the check holding a handle of its own, so it outlives every other handle. Closed,
-/// its next pass runs into the closed store and fails, which ends the task; the last handle goes with
-/// it, the actor ends, and the runtime the actor built shuts down with it.
-async fn stop_store(backend: &Backend, check: &GcHold) -> Result<()> {
-    let stopped = match backend {
-        Backend::Fs(store) => match store.sync_db().await {
-            Ok(()) => store.shutdown().await.map_err(anyhow::Error::from),
-            Err(error) => Err(error.into()),
-        },
-        Backend::Mem(store) => store.shutdown().await.map_err(anyhow::Error::from),
-    };
-    check.close();
-    stopped
-}
-
-/// Heap the hot cache in front of loose blobs may hold, counting each entry's bookkeeping. For what
+/// Heap the hot cache in front of inline blobs may hold, counting each entry's bookkeeping. For what
 /// is read again and again and is small: manifests, the chunks of small files, thumbnails.
 pub const BLOB_CACHE_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Pages of the loose-blob store's metadata database it keeps in memory, read and written. Small
-/// blobs are stored inside those pages, so redb's own default (1 GiB) let a store that small files
-/// keep being written to grow toward a gigabyte of them; the hot cache above is what serves
-/// repeated reads, and the kernel's page cache serves the rest.
-pub const META_CACHE_BYTES: usize = 32 * 1024 * 1024;
-
-/// Largest blob the hot cache admits. Anything larger is file-backed content or document media, both
-/// read by range, and one such blob would take a large share of the budget for a single read.
+/// Largest blob the hot cache admits. Anything larger has a file of its own and is read by range, and
+/// one such blob would take a large share of the budget for a single read.
 pub const MAX_CACHED_BLOB: usize = 1024 * 1024;
 
 /// What a cache entry costs beyond its bytes: the key, the `Bytes` handle and the cache's node.
@@ -271,9 +151,52 @@ const CACHE_ENTRY_OVERHEAD: u32 = 256;
 /// a run of large inserts could otherwise sit above the budget until the next batch.
 const CACHE_SETTLE_AT: usize = 64 * 1024;
 
-/// The hot cache in front of loose blobs, bounded by bytes. Its admission weighs a newcomer's access
+/// The hot cache in front of inline blobs, bounded by bytes. Its admission weighs a newcomer's access
 /// frequency against that of every entry it would evict, so a run of cold large reads does not flush
 /// small hot entries.
+/// A blob's bytes: inline in the index database, or a whole blob's file with its outboard.
+enum Either {
+    Inline(Vec<u8>),
+    /// A complete whole blob of `size` bytes asked for no bytes of it: only its length answers,
+    /// so neither its file nor its outboard is read.
+    Length(u64),
+    Whole {
+        size: u64,
+        file: File,
+        outboard: Vec<u8>,
+    },
+}
+
+/// Copies the bytes `start..end` out of the verified leaves of a BAO stream as each arrives, so a
+/// range read holds the range once rather than its leaves and then their copy.
+struct Collector {
+    start: u64,
+    end: u64,
+    out: Vec<u8>,
+}
+
+impl Collector {
+    fn new(start: u64, end: u64) -> Self {
+        let len = usize::try_from(end.saturating_sub(start)).unwrap_or(0);
+        Self {
+            start,
+            end,
+            out: Vec::with_capacity(len),
+        }
+    }
+}
+
+impl bao_tree::io::mixed::Sender for Collector {
+    type Error = std::convert::Infallible;
+
+    async fn send(&mut self, item: EncodedItem) -> Result<(), Self::Error> {
+        if let EncodedItem::Leaf(leaf) = item {
+            content::copy_part(&mut self.out, &leaf.data, leaf.offset, self.start, self.end);
+        }
+        Ok(())
+    }
+}
+
 fn blob_cache() -> Cache<Hash, Bytes> {
     Cache::builder()
         .max_capacity(BLOB_CACHE_BYTES)
@@ -283,20 +206,6 @@ fn blob_cache() -> Cache<Hash, Bytes> {
                 .saturating_add(CACHE_ENTRY_OVERHEAD)
         })
         .build()
-}
-
-/// Removes what imports left in the blob store's spill directory. A stream import spills to a file
-/// there and is removed only when the import succeeds, so an abandoned upload leaves its part behind.
-/// Called right after the store loads, before anything imports.
-fn remove_import_spills(dir: &Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        if entry.file_type().is_ok_and(|kind| kind.is_file()) {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
 }
 
 fn files_dir(cache_dir: &Path) -> PathBuf {
@@ -337,29 +246,51 @@ fn default_budget(dir: &Path) -> u64 {
     }
 }
 
+/// The BAO outboard of a blob of `len` bytes, read from `source`, in pre order without a length
+/// suffix, as the area persists it. The tree's root is the blob's own hash, so a peer verifies what
+/// it receives against the hash it asked for.
+fn outboard_of_reader(source: impl io::Read, len: u64) -> io::Result<Vec<u8>> {
+    let tree = BaoTree::new(len, IROH_BLOCK_SIZE);
+    let mut data =
+        Vec::with_capacity(usize::try_from(tree.outboard_size()).map_err(io::Error::other)?);
+    let root = bao_tree::io::sync::outboard_post_order(source.take(len), tree, &mut data)?;
+    let post = PostOrderMemOutboard { root, tree, data };
+    Ok(post.flip().data)
+}
+
 impl ContentStore {
     /// Open the persistent store rooted at `cache_dir` (created if missing).
     pub async fn open(cache_dir: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with_gc_interval(cache_dir, DEFAULT_BLOB_GC_INTERVAL).await
+        let dir = cache_dir.as_ref();
+        Self::open_with_files(dir, &files_dir(dir)).await
     }
 
     /// [`Self::open`] with the file-backed content under `files_dir`, for example on the store volume
     /// next to the workspaces.
     pub async fn open_with_files(cache_dir: impl AsRef<Path>, files_dir: &Path) -> Result<Self> {
-        Self::open_inner(cache_dir.as_ref(), DEFAULT_BLOB_GC_INTERVAL, files_dir).await
+        let dir = cache_dir.as_ref().to_owned();
+        let files_dir = files_dir.to_owned();
+        let files = tokio::task::spawn_blocking(move || -> std::io::Result<Arc<FileArea>> {
+            std::fs::create_dir_all(&dir)?;
+            let budget = default_budget(&files_dir);
+            std::fs::create_dir_all(&files_dir)?;
+            Ok(Arc::new(FileArea::open(&files_dir, budget)?))
+        })
+        .await??;
+        Ok(Self {
+            cache: blob_cache(),
+            mutation: tokio::sync::Mutex::new(()),
+            deferred: std::sync::Mutex::new((0, false)),
+            write_syncs: std::sync::atomic::AtomicU64::new(0),
+            read_bytes: std::sync::atomic::AtomicU64::new(0),
+            files,
+            _scratch: None,
+        })
     }
 
-    pub async fn open_with_gc_interval(
-        cache_dir: impl AsRef<Path>,
-        gc_interval: Duration,
-    ) -> Result<Self> {
-        let dir = cache_dir.as_ref();
-        Self::open_inner(dir, gc_interval, &files_dir(dir)).await
-    }
-
-    /// Whether `error` from [`Self::open`] is another process still holding one of the store's
-    /// databases open. Both of them are redb's, the blobs' and the file area's, and redb says a
-    /// database it cannot lock with this sentence, wherever the open that met it ended up.
+    /// Whether `error` from [`Self::open`] is another process still holding the store's database
+    /// open. It is redb's, and redb says a database it cannot lock with this sentence, wherever the
+    /// open that met it ended up.
     pub fn held_elsewhere(error: &anyhow::Error) -> bool {
         format!("{error:#}").contains("Database already open")
     }
@@ -379,49 +310,8 @@ impl ContentStore {
         area::read_entry_unlocked(&files_dir(cache_dir), &content, max_bytes)
     }
 
-    async fn open_inner(dir: &Path, gc_interval: Duration, files_dir: &Path) -> Result<Self> {
-        anyhow::ensure!(!gc_interval.is_zero(), "blob GC interval must be non-zero");
-        std::fs::create_dir_all(dir)?;
-        std::fs::create_dir_all(files_dir)?;
-        let files = Arc::new(FileArea::open(files_dir, default_budget(files_dir))?);
-        let gc_ready = Arc::new(AtomicBool::new(false));
-        let gc = GcHold::default();
-        let mut options = iroh_blobs::store::fs::options::Options::new(dir);
-        options.meta_cache_bytes = META_CACHE_BYTES;
-        // Selective eviction is an explicit user action and must not wait for the ordinary
-        // maintenance cadence. Unscoped passes wait in the callback, so the short interval only
-        // separates the sweeps of one authorized eviction.
-        options.gc = Some(gc.config(
-            gc_interval.min(Duration::from_millis(50)),
-            Some(Arc::clone(&gc_ready)),
-        ));
-        let runtime = StoreRuntime::new()?;
-        let root = dir.to_path_buf();
-        let store = runtime
-            .handle()
-            .ok_or_else(|| anyhow::anyhow!("content store runtime is gone"))?
-            .spawn(async move { FsStore::load_with_opts(root.join("blobs.db"), options).await })
-            .await
-            .map_err(|error| anyhow::anyhow!("opening the content store failed: {error}"))??;
-        gc_ready.store(true, Ordering::Release);
-        remove_import_spills(&dir.join("temp"));
-        Ok(Self {
-            backend: Backend::Fs(store),
-            cache: blob_cache(),
-            owned_tags: tokio::sync::Mutex::new(()),
-            mutation: tokio::sync::Mutex::new(()),
-            gc,
-            deferred: std::sync::Mutex::new((0, false)),
-            write_syncs: std::sync::atomic::AtomicU64::new(0),
-            read_bytes: std::sync::atomic::AtomicU64::new(0),
-            files,
-            _scratch: None,
-            runtime: Some(runtime),
-        })
-    }
-
-    /// An ephemeral store (tests, and as a fallback): loose blobs in memory, file-backed content in a
-    /// temporary directory removed with the store.
+    /// An ephemeral store (tests, and as a fallback): everything in memory and in a temporary
+    /// directory removed with the store.
     #[allow(
         clippy::expect_used,
         reason = "an ephemeral store without a temporary directory cannot hold content at all"
@@ -436,86 +326,39 @@ impl ContentStore {
     }
 
     fn memory_with_files(files: Arc<FileArea>, scratch: Option<tempfile::TempDir>) -> Self {
-        let gc = GcHold::default();
-        let options = iroh_blobs::store::mem::Options {
-            gc_config: Some(gc.config(Duration::from_millis(50), None)),
-        };
         Self {
-            backend: Backend::Mem(MemStore::new_with_opts(options)),
             cache: blob_cache(),
-            owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
-            gc,
             deferred: std::sync::Mutex::new((0, false)),
             write_syncs: std::sync::atomic::AtomicU64::new(0),
             read_bytes: std::sync::atomic::AtomicU64::new(0),
             files,
             _scratch: scratch,
-            runtime: None,
         }
     }
 
-    /// Shuts the store down and releases its databases, so the same directory can be opened again in
+    /// Shuts the store down and releases its database, so the same directory can be opened again in
     /// this process while handles to this store remain; they fail from now on.
     pub async fn shutdown(&self) -> Result<()> {
-        let stopped = stop_store(&self.backend, &self.gc).await;
+        self.flush().await?;
         self.files.close();
-        stopped
+        Ok(())
     }
 
-    /// Flush and close the store so another process may open the same directory, and end it: its
-    /// background gc task stops, and its actor ends with the runtime it built once this handle is
-    /// gone.
+    /// Flush and close the store so another process may open the same directory, and end it.
     pub async fn close(self) -> Result<()> {
-        let stopped = stop_store(&self.backend, &self.gc).await;
-        self.files.close();
-        stopped
+        let files = Arc::clone(&self.files);
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            files.flush()?;
+            files.close();
+            Ok(())
+        })
+        .await??;
+        Ok(())
     }
 
     pub const fn files(&self) -> &Arc<FileArea> {
         &self.files
-    }
-
-    #[cfg(test)]
-    #[cfg(feature = "filesystem")]
-    #[allow(clippy::unwrap_used, reason = "test fixture")]
-    fn memory_with_gc_interval(gc_interval: Duration) -> Self {
-        let scratch = tempfile::tempdir().unwrap();
-        let files = Arc::new(FileArea::open_ephemeral(scratch.path(), u64::MAX).unwrap());
-        Self {
-            backend: Backend::Mem(MemStore::new_with_opts(iroh_blobs::store::mem::Options {
-                gc_config: Some(GcConfig {
-                    interval: gc_interval,
-                    add_protected: None,
-                }),
-            })),
-            cache: blob_cache(),
-            owned_tags: tokio::sync::Mutex::new(()),
-            mutation: tokio::sync::Mutex::new(()),
-            gc: GcHold::default(),
-            deferred: std::sync::Mutex::new((0, false)),
-            write_syncs: std::sync::atomic::AtomicU64::new(0),
-            read_bytes: std::sync::atomic::AtomicU64::new(0),
-            files,
-            _scratch: Some(scratch),
-            runtime: None,
-        }
-    }
-
-    /// The runtime the persistent store runs on, for a caller that must wait on the store from a
-    /// thread holding a lock the daemon's runtime may be blocked on. `None` for the in-memory store.
-    pub fn runtime(&self) -> Option<tokio::runtime::Handle> {
-        self.runtime
-            .as_ref()
-            .and_then(StoreRuntime::handle)
-            .cloned()
-    }
-
-    pub fn store(&self) -> &Store {
-        match &self.backend {
-            Backend::Mem(m) => m,
-            Backend::Fs(f) => f,
-        }
     }
 
     /// Opens a deferred-durability group: until the last open group ends
@@ -523,8 +366,11 @@ impl ContentStore {
     /// so a changeset of many small files costs one sync instead of one per file. Callers end the group
     /// before anything depending on the writes is made durable or announced.
     pub fn defer_sync(&self) {
-        let mut deferred = self.deferred.lock_recover();
-        deferred.0 = deferred.0.saturating_add(1);
+        {
+            let mut deferred = self.deferred.lock_recover();
+            deferred.0 = deferred.0.saturating_add(1);
+        }
+        self.files.set_sync_writes(false);
     }
 
     /// How many database syncs writes to this store have made: one per write outside a
@@ -551,54 +397,111 @@ impl ContentStore {
     /// Closes a group opened by [`Self::defer_sync`]; the last one syncs the database if a write inside
     /// the groups skipped it. The writes stay pending for the next sync when the sync fails.
     pub async fn end_deferred_sync(&self) -> Result<()> {
-        let sync = {
+        let (sync, outermost) = {
             let mut deferred = self.deferred.lock_recover();
             deferred.0 = deferred.0.saturating_sub(1);
             let sync = deferred.0 == 0 && deferred.1;
             if sync {
                 deferred.1 = false;
             }
-            sync
+            (sync, deferred.0 == 0)
         };
+        if outermost {
+            // Every write after the last group is durable on its own again.
+            self.files.set_sync_writes(true);
+        }
         if sync {
             self.write_syncs
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        if sync && let Err(error) = self.store().sync_db().await {
-            self.deferred.lock_recover().1 = true;
-            return Err(error.into());
+            let files = Arc::clone(&self.files);
+            if let Err(error) = tokio::task::spawn_blocking(move || files.sync_db()).await? {
+                self.files.set_sync_writes(false);
+                self.deferred.lock_recover().1 = true;
+                return Err(error.into());
+            }
         }
         Ok(())
     }
 
-    /// Build a `BlobsProtocol` handler backed by this store, serving loose blobs and file-backed chunks
-    /// alike.
+    /// Make everything written so far durable: the index and the files it names.
+    pub async fn flush(&self) -> Result<()> {
+        let files = Arc::clone(&self.files);
+        tokio::task::spawn_blocking(move || files.flush()).await??;
+        Ok(())
+    }
+
+    /// Build a `BlobsProtocol` handler backed by this store, serving inline blobs, whole blobs and
+    /// file-backed chunks alike.
     pub fn blobs_protocol(&self, events: Option<EventSender>) -> BlobsProtocol {
-        let store = serve::serving_store(self.store().clone(), &self.files);
+        let store = serve::serving_store(&self.files);
         BlobsProtocol::new(&store, events)
     }
 
     pub async fn ingest(&self, data: impl Into<Bytes>) -> Result<Hash> {
         let _mutation = self.mutation.lock().await;
-        let data = data.into();
-        self.persist_owned(data).await
+        self.persist_owned(data.into()).await
     }
 
-    /// Locally available bytes of blob `hash` (cache, loose store, or a file-backed chunk, which is
-    /// checked against its hash), or `None`.
+    /// Locally available bytes of blob `hash` (cache, inline storage, a whole blob's file, or a
+    /// file-backed chunk, which is checked against its hash), or `None`.
     pub async fn local(&self, hash: Hash) -> Option<Bytes> {
         if let Some(b) = self.cache.get(&hash) {
             self.note_read(b.len());
             return Some(b);
         }
-        match self.store().blobs().get_bytes(hash).await {
-            Ok(b) => {
-                self.note_read(b.len());
-                self.cache_insert(hash, b.clone());
-                Some(b)
+        let key = *hash.as_bytes();
+        let files = Arc::clone(&self.files);
+        // The area counts what it reads of a whole blob's file itself; an inline blob is counted
+        // here, once.
+        let whole = tokio::task::spawn_blocking(move || {
+            if let Some(bytes) = files.get_inline(&key) {
+                return Some((Bytes::from(bytes), true));
             }
-            Err(_) => self.local_chunk(hash).await,
+            if files.is_blob(&key) {
+                let entry = files.entry(&key)?;
+                return entry
+                    .complete()
+                    .then(|| files.read_at(&key, 0, entry.size).ok())
+                    .flatten()
+                    .map(|bytes| (Bytes::from(bytes), false));
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some((bytes, inline)) = whole {
+            if inline {
+                self.note_read(bytes.len());
+            }
+            self.cache_insert(hash, bytes.clone());
+            return Some(bytes);
         }
+        self.local_chunk(hash).await
+    }
+
+    /// Read-only bytes of a whole blob `hash`: inline, or a complete whole-blob entry's file. Partial
+    /// file-backed versions are not blobs and never answer here.
+    #[cfg(all(test, feature = "filesystem"))]
+    async fn blob_of_bytes(&self, hash: Hash) -> Option<Vec<u8>> {
+        let files = Arc::clone(&self.files);
+        let key = *hash.as_bytes();
+        tokio::task::spawn_blocking(move || {
+            if let Some(bytes) = files.get_inline(&key) {
+                return Some(bytes);
+            }
+            if !files.is_blob(&key) {
+                return None;
+            }
+            let entry = files.entry(&key)?;
+            entry
+                .complete()
+                .then(|| files.read_at(&key, 0, entry.size).ok())
+                .flatten()
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     fn cache_insert(&self, hash: Hash, bytes: Bytes) {
@@ -612,68 +515,74 @@ impl ContentStore {
         }
     }
 
-    /// Import content that arrives as a stream of pieces, hashing and writing each as it comes: a
-    /// persistent store spills it to a file after the first 16 KiB and builds the BAO outboard from
-    /// that file, so it never holds the whole content. Returns the content's hash and length.
+    /// Import content that arrives as a stream of pieces, hashing and writing each as it comes: the
+    /// import is staged to a file, never held whole in memory, and becomes an inline blob or a whole
+    /// blob's file entry with its outboard once its hash is known. Returns the content's hash and
+    /// length.
     ///
-    /// The stream is consumed before any lock is taken, so a slow producer holds up nothing else. The
-    /// import is protected from collection by its temporary tag until the owned tag is in place. A
-    /// piece that is an error abandons the import and stores nothing.
+    /// The stream is consumed before any lock is taken, so a slow producer holds up nothing else. A
+    /// piece that is an error abandons the import: nothing is stored and the staging file is removed.
     pub async fn ingest_stream<S>(&self, pieces: S) -> Result<(Hash, u64)>
     where
         S: futures_util::Stream<Item = std::io::Result<Bytes>> + Send + Sync + 'static,
     {
-        // iroh-blobs' `add_stream` stops forwarding at an error but keeps the import open, waiting for
-        // an end that never comes, so the error is never handed to it: the import is abandoned here and
-        // dropping it ends the store's side.
-        let (abandon, abandoned) = tokio::sync::oneshot::channel::<std::io::Error>();
-        let mut abandon = Some(abandon);
         let mut pieces = Box::pin(pieces);
-        let forwarded =
-            futures_util::stream::poll_fn(move |cx| match pieces.as_mut().poll_next(cx) {
-                std::task::Poll::Ready(Some(Err(error))) => {
-                    if let Some(abandon) = abandon.take() {
-                        let _ = abandon.send(error);
-                    }
-                    std::task::Poll::Pending
+        let (path, mut file) = self.files.staging_file()?;
+        let mut hasher = blake3::Hasher::new();
+        let mut len = 0_u64;
+        let abandon = |path: &Path| {
+            let _ = std::fs::remove_file(path);
+        };
+        while let Some(piece) = pieces.next().await {
+            let piece = match piece {
+                Ok(piece) => piece,
+                Err(error) => {
+                    abandon(&path);
+                    return Err(error.into());
                 }
-                other => other,
-            });
-        let import = async {
-            self.store()
-                .blobs()
-                .add_stream(forwarded)
-                .await
-                .temp_tag()
-                .await
-        };
-        let temporary = tokio::select! {
-            imported = import => imported?,
-            Ok(error) = abandoned => {
-                return Err(anyhow::Error::new(error).context("the streamed import was abandoned"));
+            };
+            hasher.update(&piece);
+            if let Err(error) = file.write_all(&piece) {
+                abandon(&path);
+                return Err(error.into());
             }
-        };
-        let hash = temporary.hash();
-        let BlobStatus::Complete { size } = self.store().blobs().status(hash).await? else {
-            anyhow::bail!("streamed blob {hash} is not complete after its import");
-        };
+            len = len.saturating_add(piece.len() as u64);
+        }
+        drop(file);
+        let hash = Hash::from(*hasher.finalize().as_bytes());
         let _mutation = self.mutation.lock().await;
-        let _owned_tags = self.owned_tags.lock().await;
-        self.store()
-            .tags()
-            .set(
-                owned_blob_tag(hash, temporary.format()),
-                temporary.hash_and_format(),
-            )
-            .await?;
+        let files = Arc::clone(&self.files);
+        let staged = path.clone();
+        let stored = tokio::task::spawn_blocking(move || -> io::Result<()> {
+            if len <= INLINE_MAX as u64 {
+                let bytes = std::fs::read(&staged)?;
+                files.put_inline([(*hash.as_bytes(), Bytes::from(bytes))])?;
+                std::fs::remove_file(&staged)
+            } else {
+                let mut source = File::open(&staged)?;
+                let outboard = outboard_of_reader(&mut source, len)?;
+                files.install_staged_blob(hash.as_bytes(), &staged, len, &outboard)
+            }
+        })
+        .await;
+        match stored {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                abandon(&path);
+                return Err(error.into());
+            }
+            Err(error) => {
+                abandon(&path);
+                return Err(error.into());
+            }
+        }
         self.sync_unless_deferred().await?;
-        drop(temporary);
-        Ok((hash, size))
+        Ok((hash, len))
     }
 
-    /// Read a clipped range and the whole length of a locally complete blob. Loose data is BAO-verified
-    /// over the requested chunk groups only; an empty range needs just its status. Existing cached bytes
-    /// and bounded, hash-checked file chunks stay readable. Never fills the blob cache.
+    /// Read a clipped range and the whole length of a locally complete blob. Inline bytes and whole
+    /// blobs are read from where they live; a whole blob's range is BAO-verified against its stored
+    /// outboard, and file-backed chunks are bounded and hash-checked. Never fills the blob cache.
     pub async fn read_blob_range(
         &self,
         hash: Hash,
@@ -684,39 +593,80 @@ impl ContentStore {
             content::copy_part(&mut out, &bytes, 0, range.start, range.end);
             return Some((out, bytes.len() as u64));
         }
-        let Ok(BlobStatus::Complete { size }) = self.store().blobs().status(hash).await else {
-            let bytes = self.local_chunk(hash).await?;
-            let mut out = Vec::new();
-            content::copy_part(&mut out, &bytes, 0, range.start, range.end);
-            return Some((out, bytes.len() as u64));
-        };
-        let end = range.end.min(size);
-        let start = range.start.min(end);
-        if start == end {
-            return Some((Vec::new(), size));
-        }
-        let requested = end.checked_sub(start)?;
-        let mut out = Vec::with_capacity(usize::try_from(requested).ok()?);
-        let mut items = self
-            .store()
-            .blobs()
-            .export_bao(hash, ChunkRanges::bytes(start..end))
-            .stream();
-        while let Some(item) = items.next().await {
-            match item {
-                EncodedItem::Leaf(leaf) => {
-                    self.note_read(leaf.data.len());
-                    content::copy_part(&mut out, &leaf.data, leaf.offset, start, end);
+        let key = *hash.as_bytes();
+        let files = Arc::clone(&self.files);
+        let wanted = range.clone();
+        let read = tokio::task::spawn_blocking(move || {
+            if let Some(bytes) = files.get_inline(&key) {
+                return Some(Either::Inline(bytes));
+            }
+            if files.is_blob(&key) {
+                let entry = files.entry(&key)?;
+                if !entry.complete() {
+                    return None;
                 }
-                EncodedItem::Size(actual) if actual != size => return None,
-                EncodedItem::Parent(_) | EncodedItem::Size(_) => {}
-                EncodedItem::Done => {
-                    return (out.len() as u64 == requested).then_some((out, size));
+                if wanted.start.min(entry.size) >= wanted.end.min(entry.size) {
+                    return Some(Either::Length(entry.size));
                 }
-                EncodedItem::Error(_) => return None,
+                let outboard = files.outboard(&key)?;
+                let file = files.file(&key).ok()?.as_ref().try_clone().ok()?;
+                return Some(Either::Whole {
+                    size: entry.size,
+                    file,
+                    outboard,
+                });
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten();
+        match read {
+            Some(Either::Inline(bytes)) => {
+                let mut out = Vec::new();
+                content::copy_part(&mut out, &bytes, 0, range.start, range.end);
+                self.note_read(out.len());
+                Some((out, bytes.len() as u64))
+            }
+            Some(Either::Length(size)) => Some((Vec::new(), size)),
+            Some(Either::Whole {
+                size,
+                file,
+                outboard,
+            }) => {
+                let start = range.start.min(size);
+                let end = range.end.min(size);
+                let tree = BaoTree::new(size, IROH_BLOCK_SIZE);
+                if outboard.len() as u64 != tree.outboard_size() {
+                    return None;
+                }
+                let mut out = Vec::new();
+                if start < end {
+                    let ranges = iroh_blobs::protocol::ChunkRanges::bytes(start..end);
+                    let outboard = PreOrderMemOutboard {
+                        root: bao_tree::blake3::Hash::from(key),
+                        tree,
+                        data: outboard,
+                    };
+                    let mut collected = Collector::new(start, end);
+                    traverse_ranges_validated(file, outboard, &ranges, &mut collected)
+                        .await
+                        .ok()?;
+                    out = collected.out;
+                    if out.len() as u64 != end.saturating_sub(start) {
+                        return None;
+                    }
+                    self.note_read(out.len());
+                }
+                Some((out, size))
+            }
+            None => {
+                let bytes = self.local_chunk(hash).await?;
+                let mut out = Vec::new();
+                content::copy_part(&mut out, &bytes, 0, range.start, range.end);
+                Some((out, bytes.len() as u64))
             }
         }
-        None
     }
 
     #[cfg(test)]
@@ -741,8 +691,6 @@ impl ContentStore {
             actual == hash,
             "fetched blob hash mismatch: expected {hash}, got {actual}"
         );
-        // The temporary tag closes the window between import and installing the deterministic
-        // service-owned tag; dropping it afterwards leaves no anonymous `auto-*` tag behind.
         let actual = self.persist_owned(data).await?;
         debug_assert_eq!(actual, hash);
         Ok(())
@@ -771,78 +719,44 @@ impl ContentStore {
         Ok(())
     }
 
+    /// Remove exactly `selected` from the store: an inline blob, a whole blob's file entry, or the
+    /// entry a chunk lives in. Returns how many of the selected blobs were present.
     pub async fn evict_blobs(&self, selected: &HashSet<Hash>) -> Result<u64> {
         if selected.is_empty() {
             return Ok(0);
         }
         let _mutation = self.mutation.lock().await;
-        // File-backed content goes with any of its hashes: its content id or one of its chunks.
-        for hash in selected {
-            let key = if self.files.entry(hash.as_bytes()).is_some() {
-                Some(*hash.as_bytes())
-            } else {
-                self.files.find_chunk(hash.as_bytes()).map(|c| c.key)
-            };
-            if let Some(key) = key {
-                self.files.remove(&key)?;
-            }
-        }
-        let before = self.store().blobs().list().hashes().await?;
-        let before_count = before.len();
-        let live: HashSet<Hash> = before
-            .into_iter()
-            .filter(|hash| !selected.contains(hash))
-            .collect();
-        for hash in selected {
-            self.cache.invalidate(hash);
-        }
-        let mut tags = self.store().tags().list().await?;
-        let mut selected_tags = Vec::new();
-        while let Some(info) = tags.next().await {
-            let info = info?;
-            if selected.contains(&info.hash) {
-                selected_tags.push(info.name);
-            }
-        }
-        for name in selected_tags {
-            self.store().tags().delete(name).await?;
-        }
-        self.gc.authorize(live);
-        let deadline = tokio::time::Instant::now()
-            .checked_add(EVICTION_HANG_BOUND)
-            .unwrap_or_else(tokio::time::Instant::now);
-        loop {
-            let mut remaining = false;
-            for hash in selected {
-                let remaining_time =
-                    deadline.saturating_duration_since(tokio::time::Instant::now());
-                if remaining_time.is_zero() {
-                    self.gc.revoke();
-                    anyhow::bail!("selected blobs remained after eviction deadline");
+        let hashes: Vec<Hash> = selected.iter().copied().collect();
+        let files = Arc::clone(&self.files);
+        let inside = hashes.clone();
+        let removed = tokio::task::spawn_blocking(move || -> io::Result<u64> {
+            let mut removed = 0_u64;
+            for hash in inside {
+                let key = *hash.as_bytes();
+                // File-backed content goes with any of its hashes: its content id or one of its
+                // chunks.
+                let mut gone = files.remove_inline(&key)?;
+                if !gone {
+                    if files.entry(&key).is_some() {
+                        files.remove(&key)?;
+                        gone = true;
+                    } else if let Some(location) = files.find_chunk(&key) {
+                        files.remove(&location.key)?;
+                        gone = true;
+                    }
                 }
-                // Backends may stall a `has` query during a sweep. Bound the query so readiness cannot
-                // block forever or claim a completed prune without a physical verification.
-                let present = tokio::time::timeout(remaining_time, self.store().blobs().has(*hash))
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .unwrap_or(true);
-                if present {
-                    remaining = true;
-                    break;
+                if gone {
+                    removed = removed.saturating_add(1);
                 }
             }
-            if !remaining {
-                self.gc.revoke();
-                let after_count = self.store().blobs().list().hashes().await?.len();
-                return Ok(before_count.saturating_sub(after_count) as u64);
-            }
-            if tokio::time::Instant::now() >= deadline {
-                self.gc.revoke();
-                anyhow::bail!("selected blobs remained after eviction deadline");
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
+            files.sync_db()?;
+            Ok(removed)
+        })
+        .await??;
+        for hash in hashes {
+            self.cache.invalidate(&hash);
         }
+        Ok(removed)
     }
 
     /// Make the writes just made durable now or, inside a deferred-durability group, leave the one sync
@@ -858,7 +772,8 @@ impl ContentStore {
         if !deferred {
             self.write_syncs
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.store().sync_db().await?;
+            let files = Arc::clone(&self.files);
+            tokio::task::spawn_blocking(move || files.sync_db()).await??;
         }
         Ok(())
     }
@@ -872,54 +787,102 @@ impl ContentStore {
     }
 
     async fn persist_owned_batch(&self, data: Vec<Bytes>) -> Result<Vec<Hash>> {
-        /// Blob-store requests in flight at once: the store's actor serves them in parallel, so a batch
-        /// of small chunks is not a round trip per chunk.
-        const IN_FLIGHT: usize = 64;
-
-        let _owned_tags = self.owned_tags.lock().await;
-        let adds = data.into_iter().map(|bytes| async move {
-            let temporary = self
-                .store()
-                .blobs()
-                .add_bytes(bytes.clone())
-                .temp_tag()
-                .await?;
-            let hash = temporary.hash();
-            self.store()
-                .tags()
-                .set(
-                    owned_blob_tag(hash, temporary.format()),
-                    temporary.hash_and_format(),
-                )
-                .await?;
-            Ok::<_, anyhow::Error>((temporary, bytes))
-        });
-        let protected: Vec<_> = futures_util::TryStreamExt::try_collect(
-            futures_util::StreamExt::buffered(futures_util::stream::iter(adds), IN_FLIGHT),
-        )
-        .await?;
-        // `FsStore` does not promise that dropping it flushes recent writes, so the named protection is
-        // made durable before the temporary one is released. Inside a deferred-durability group the
-        // group's end syncs once instead; the owned tags are already installed, so nothing collects the
-        // blobs meanwhile.
+        let files = Arc::clone(&self.files);
+        let stored = tokio::task::spawn_blocking(move || -> io::Result<Vec<(Hash, Bytes)>> {
+            let mut inline = Vec::new();
+            let mut stored = Vec::with_capacity(data.len());
+            for bytes in data {
+                let hash = Hash::new(&bytes);
+                let key = *hash.as_bytes();
+                // A manifest shares its content id with the file-backed entry of the same content, so
+                // it stays inline even beyond the inline size rather than replacing that entry.
+                if bytes.len() <= INLINE_MAX || files.entry(&key).is_some() {
+                    inline.push((key, bytes.clone()));
+                } else {
+                    let outboard = outboard_of_reader(bytes.as_ref(), bytes.len() as u64)?;
+                    files.adopt_blob_bytes(&key, &bytes, &outboard)?;
+                }
+                stored.push((hash, bytes));
+            }
+            files.put_inline(inline)?;
+            Ok(stored)
+        })
+        .await??;
         self.sync_unless_deferred().await?;
-        let hashes = protected
-            .iter()
-            .map(|(temporary, _)| temporary.hash())
-            .collect::<Vec<_>>();
-        for (temporary, bytes) in protected {
-            self.cache_insert(temporary.hash(), bytes);
-            drop(temporary);
+        for (hash, bytes) in &stored {
+            self.cache_insert(*hash, bytes.clone());
         }
-        Ok(hashes)
+        Ok(stored.into_iter().map(|(hash, _)| hash).collect())
     }
 
     pub async fn has(&self, hash: Hash) -> bool {
         if self.cache.contains_key(&hash) {
             return true;
         }
-        self.store().blobs().has(hash).await.unwrap_or(false)
-            || self.files.find_chunk(hash.as_bytes()).is_some()
+        let key = *hash.as_bytes();
+        let files = Arc::clone(&self.files);
+        tokio::task::spawn_blocking(move || {
+            files.has_inline(&key)
+                || (files.is_blob(&key) && files.entry(&key).is_some_and(|entry| entry.complete()))
+                || files.find_chunk(&key).is_some()
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    /// The status of blob `hash` in the one store: inline bytes and a whole blob's complete file
+    /// are complete, a chunk resident in a file-backed entry is complete at its chunk length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store cannot answer.
+    pub async fn blob_status(&self, hash: Hash) -> Result<BlobStatus> {
+        let files = Arc::clone(&self.files);
+        let key = *hash.as_bytes();
+        Ok(tokio::task::spawn_blocking(move || {
+            if let Some(bytes) = files.get_inline(&key) {
+                return BlobStatus::Complete {
+                    size: bytes.len() as u64,
+                };
+            }
+            if files.is_blob(&key)
+                && let Some(entry) = files.entry(&key)
+            {
+                return if entry.complete() {
+                    BlobStatus::Complete { size: entry.size }
+                } else {
+                    BlobStatus::Partial {
+                        size: Some(entry.resident),
+                    }
+                };
+            }
+            files
+                .find_chunk(&key)
+                .map_or(BlobStatus::NotFound, |location| BlobStatus::Complete {
+                    size: u64::from(location.len),
+                })
+        })
+        .await
+        .unwrap_or(BlobStatus::NotFound))
+    }
+
+    /// The blob `tag` names, if any: a document media reference or an import journal entry. The
+    /// store never scans or evicts by these.
+    pub async fn reference(&self, tag: &str) -> Option<Hash> {
+        let files = Arc::clone(&self.files);
+        let tag = tag.to_owned();
+        tokio::task::spawn_blocking(move || files.reference(&tag).map(Hash::from))
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Makes `tag` a name for blob `hash`.
+    pub async fn set_reference(&self, tag: &str, hash: Hash) -> Result<()> {
+        let files = Arc::clone(&self.files);
+        let tag = tag.to_owned();
+        tokio::task::spawn_blocking(move || files.set_reference(&tag, hash.as_bytes())).await??;
+        Ok(())
     }
 
     /// Resolve a blob to every exact live stable record that references it as a manifest root, manifest
@@ -1003,7 +966,7 @@ impl ContentStore {
     }
 
     /// Inspect the exact locally resident graph for a content manifest. The manifest must itself be
-    /// complete and decodable; chunk accounting is read from the backend rather than inferred from
+    /// complete and decodable; chunk accounting is read from the area rather than inferred from
     /// namespace metadata.
     #[cfg(feature = "filesystem")]
     pub async fn inspect_content_payload(&self, manifest_hash: Hash) -> Result<ContentPayload> {
@@ -1037,26 +1000,14 @@ impl ContentStore {
     }
 
     /// Prove that the content `manifest_hash` names, `byte_len` bytes long, is complete in the
-    /// persistent backend: its manifest and every chunk it declares. Hot cache entries and partial
+    /// persistent store: its manifest and every chunk it declares. Hot cache entries and partial
     /// blobs never satisfy this boundary.
-    #[cfg(feature = "filesystem")]
+    #[cfg(all(test, feature = "filesystem"))]
     pub async fn verify_durable_content(&self, manifest_hash: Hash, byte_len: u64) -> Result<()> {
-        let manifest_size = match self.store().blobs().status(manifest_hash).await? {
-            BlobStatus::Complete { size } => size,
-            BlobStatus::Partial { .. } | BlobStatus::NotFound => {
-                anyhow::bail!("version manifest is not durably complete")
-            }
-        };
         let manifest_bytes = self
-            .store()
-            .blobs()
-            .get_bytes(manifest_hash)
+            .blob_of_bytes(manifest_hash)
             .await
-            .map_err(|error| anyhow::anyhow!("reading durable manifest failed: {error}"))?;
-        anyhow::ensure!(
-            manifest_bytes.len() as u64 == manifest_size,
-            "durable manifest size changed during verification"
-        );
+            .ok_or_else(|| anyhow::anyhow!("version manifest is not durably complete"))?;
         let manifest = crate::content::Manifest::decode(&manifest_bytes)?;
         anyhow::ensure!(
             manifest.total_len() == byte_len,
@@ -1071,7 +1022,7 @@ impl ContentStore {
         }
         for chunk in manifest.chunks() {
             let hash = Hash::from(chunk.hash);
-            match self.store().blobs().status(hash).await? {
+            match self.blob_status(hash).await? {
                 BlobStatus::Complete { size } if size == u64::from(chunk.len) => {}
                 BlobStatus::Complete { .. } => anyhow::bail!("durable chunk length mismatch"),
                 BlobStatus::Partial { .. } | BlobStatus::NotFound => {
@@ -1082,14 +1033,12 @@ impl ContentStore {
         Ok(())
     }
 
-    /// Freshly authorize a queued request and make exactly its approved blobs collectible by releasing
-    /// Tilo-owned named tags.
+    /// Freshly authorize a queued request and remove exactly its approved blobs from the store.
     ///
-    /// The caller must keep `registry` and `catalog` stable for the complete call. Other applications'
-    /// tags and temporary transfer tags are never touched. A successful result proves only a durable GC
-    /// handoff; [`Self::observe_eviction_request`] is the completion path.
+    /// The caller must keep `registry` and `catalog` stable for the complete call. A successful result
+    /// proves the bytes are gone; [`Self::observe_eviction_request`] records the completion.
     #[cfg(feature = "filesystem")]
-    pub async fn release_eviction_to_backend_gc(
+    pub async fn evict_request(
         &self,
         queue: &EvictionQueue,
         id: EvictionRequestId,
@@ -1097,77 +1046,18 @@ impl ContentStore {
         catalog: &EvictionCatalog,
         now_ms: u64,
         requirements: EvictionRequirements,
-    ) -> std::result::Result<BackendGcRelease, StoreEvictionError> {
-        let _owned_tags = self.owned_tags.lock().await;
-        let hashes = queue.authorize_backend_gc(id, registry, catalog, now_ms, requirements)?;
-
-        // All content written by this service is Raw, but checking both deterministic namespaces keeps
-        // the ownership contract complete and a future HashSeq writer safe without a tag scan.
-        let mut tags = Vec::with_capacity(hashes.len().saturating_mul(2));
-        for &hash in &hashes {
-            for format in [BlobFormat::Raw, BlobFormat::HashSeq] {
-                let tag = owned_blob_tag(hash, format);
-                let info = self.store().tags().get(&tag).await.map_err(|error| {
-                    StoreEvictionError::ReadOwnedTag {
-                        tag: tag.clone(),
-                        message: error.to_string(),
-                    }
-                })?;
-                if let Some(info) = info {
-                    if info.hash != hash || info.format != format {
-                        return Err(StoreEvictionError::InvalidOwnedTag { tag });
-                    }
-                    tags.push(tag);
-                }
-            }
-        }
-
-        let mut released_owned_tags = 0u64;
-        for tag in tags {
-            released_owned_tags = released_owned_tags.saturating_add(
-                self.store().tags().delete(&tag).await.map_err(|error| {
-                    StoreEvictionError::ReleaseOwnedTag {
-                        tag,
-                        message: error.to_string(),
-                    }
-                })?,
-            );
-        }
-        self.store()
-            .sync_db()
-            .await
-            .map_err(|error| StoreEvictionError::Sync(error.to_string()))?;
-
-        // Unscoped background sweeps abort, so the freshly authorized exact set is installed for the
-        // selective-GC bridge before the durable handoff returns. Observation remains the authority for
-        // completion: a timed-out or partial sweep is still reported as present.
-        let mut selected: HashSet<Hash> = hashes.iter().copied().collect();
-        // A remaining tag is foreign or temporary authority, so that blob is never made collectible:
-        // selective GC must preserve every other owner's reference.
-        let mut remaining_tags = self.store().tags().list().await.map_err(|error| {
-            StoreEvictionError::Sync(format!("listing tags before selective GC failed: {error}"))
-        })?;
-        while let Some(info) = remaining_tags.next().await {
-            let info = info.map_err(|error| {
-                StoreEvictionError::Sync(format!(
-                    "reading tags before selective GC failed: {error}"
-                ))
-            })?;
-            selected.remove(&info.hash);
-        }
+    ) -> std::result::Result<(), StoreEvictionError> {
+        let hashes = queue.authorize_eviction(id, registry, catalog, now_ms, requirements)?;
+        let selected: HashSet<Hash> = hashes.into_iter().collect();
         self.evict_blobs(&selected)
             .await
-            .map_err(|error| StoreEvictionError::Sync(error.to_string()))?;
-
-        Ok(BackendGcRelease {
-            id,
-            authorized_hashes: hashes,
-            released_owned_tags,
-        })
+            .map_err(|error| StoreEvictionError::Remove(error.to_string()))?;
+        Ok(())
     }
 
-    /// Observe a durable eviction request against one coherent backend status sample. Completion is
-    /// persisted only when every requested hash is `NotFound`; backend errors leave the queue unchanged.
+    /// Observe a durable eviction request against one coherent store status sample. Completion is
+    /// persisted only when every requested hash is `NotFound`; a failed read leaves the queue
+    /// unchanged.
     #[cfg(feature = "filesystem")]
     pub async fn observe_eviction_request(
         &self,
@@ -1198,8 +1088,7 @@ impl ContentStore {
             observation.state,
             crate::eviction::EvictionRequestState::Completed { .. }
         ) {
-            // GC only removes backend persistence. Drop any hot in-memory copy
-            // before exposing completion to local readers.
+            // Drop any hot in-memory copy before exposing completion to local readers.
             if let Some(request) = queue.get(id) {
                 for hash in &request.requested_hashes {
                     self.cache.invalidate(hash);
@@ -1210,157 +1099,12 @@ impl ContentStore {
     }
 }
 
-fn owned_blob_tag(hash: Hash, format: BlobFormat) -> String {
-    let format = match format {
-        BlobFormat::Raw => "raw",
-        BlobFormat::HashSeq => "hash-seq",
-    };
-    format!("{OWNED_BLOB_TAG_PREFIX}{format}/{hash}")
-}
-
-/// How long an eviction waits for the blob store's GC to delete the selected blobs. The wait ends as
-/// soon as the next pass removes them; this bound only catches a GC that has stopped.
-const EVICTION_HANG_BOUND: Duration = Duration::from_secs(60);
-
-/// The blob store's background GC runs only while an authorized selective sweep holds an exact live
-/// set.
-///
-/// iroh-blobs polls its protect callback on a fixed interval and exposes no way to trigger a pass.
-/// Answering `Abort` to every idle poll would cost a wakeup and an INFO log line per interval forever,
-/// so the callback's future stays pending until [`Self::authorize`] wakes it, and an idle store costs
-/// nothing.
-#[derive(Clone, Default)]
-struct GcHold {
-    live: Arc<RwLock<Option<HashSet<Hash>>>>,
-    wake: Arc<tokio::sync::Notify>,
-    closed: Arc<AtomicBool>,
-}
-
-impl GcHold {
-    fn authorize(&self, live: HashSet<Hash>) {
-        *self.live.write_recover() = Some(live);
-        self.wake.notify_one();
-    }
-
-    fn revoke(&self) {
-        *self.live.write_recover() = None;
-    }
-
-    fn snapshot(&self) -> Option<HashSet<Hash>> {
-        self.live.read_recover().clone()
-    }
-
-    /// Let the gc task go: its next pass runs into the closed store and fails, which ends it. Until then
-    /// it holds a handle, so nothing can end the store's actor or its runtime.
-    fn close(&self) {
-        self.closed.store(true, Ordering::Release);
-        self.wake.notify_one();
-    }
-
-    fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Acquire)
-    }
-
-    /// A GC configuration whose passes wait for [`Self::authorize`] and, when `ready` is given, for it to
-    /// be set.
-    fn config(&self, interval: Duration, ready: Option<Arc<AtomicBool>>) -> GcConfig {
-        let check = self.clone();
-        let protect: ProtectCb =
-            Arc::new(move |protected| check.clone().protect(ready.clone(), protected));
-        GcConfig {
-            interval,
-            add_protected: Some(protect),
-        }
-    }
-
-    fn protect(
-        self,
-        ready: Option<Arc<AtomicBool>>,
-        protected: &mut HashSet<Hash>,
-    ) -> Pin<Box<dyn Future<Output = ProtectOutcome> + Send + Sync + '_>> {
-        Box::pin(async move {
-            loop {
-                let authorized = self.wake.notified();
-                if self.is_closed() {
-                    // The store is closed; the pass this lets through fails
-                    // at its first command and the gc task ends on it.
-                    return ProtectOutcome::Continue;
-                }
-                let snapshot = ready
-                    .as_ref()
-                    .is_none_or(|ready| ready.load(Ordering::Acquire))
-                    .then(|| self.snapshot())
-                    .flatten();
-                if let Some(snapshot) = snapshot {
-                    protected.extend(snapshot);
-                    return ProtectOutcome::Continue;
-                }
-                authorized.await;
-            }
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    async fn tag_names(store: &Store) -> Vec<Vec<u8>> {
-        let mut tags = store.tags().list().await.unwrap();
-        let mut names = Vec::new();
-        while let Some(tag) = tags.next().await {
-            names.push(tag.unwrap().name.as_ref().to_vec());
-        }
-        names
-    }
-
     #[tokio::test]
-    async fn idle_gc_waits_for_an_authorized_live_set_instead_of_polling() {
-        let check = GcHold::default();
-        let ready = Arc::new(AtomicBool::new(false));
-        let config = check.config(Duration::from_millis(50), Some(Arc::clone(&ready)));
-        let protect = config.add_protected.expect("a protect callback");
-        let kept = Hash::new(b"kept");
-
-        // The callback decides before its first wait, so one poll shows
-        // whether it parked.
-        let parks = |pass: Pin<Box<dyn Future<Output = ProtectOutcome> + Send + Sync + '_>>| {
-            let mut pass = pass;
-            pass.as_mut()
-                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-                .is_pending()
-        };
-        let mut protected = HashSet::new();
-        assert!(
-            parks(protect(&mut protected)),
-            "an unauthorized pass must stay parked"
-        );
-
-        // A live set before the store is ready still does not release a pass.
-        check.authorize(HashSet::from([kept]));
-        assert!(
-            parks(protect(&mut protected)),
-            "a pass must not run before the store is ready"
-        );
-
-        ready.store(true, Ordering::Release);
-        check.revoke();
-        let mut protected = HashSet::new();
-        let parked = protect(&mut protected);
-        let authorize = async {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            check.authorize(HashSet::from([kept]));
-        };
-        let (outcome, ()) = tilo_test_env::within("authorizing to wake the parked pass", async {
-            tokio::join!(parked, authorize)
-        })
-        .await;
-        assert!(matches!(outcome, ProtectOutcome::Continue));
-        assert_eq!(protected, HashSet::from([kept]));
-    }
-
-    #[tokio::test]
-    async fn blobs_ingest_fetch_and_share_hashes_with_owned_tags() {
+    async fn blobs_ingest_and_fetch_round_trip_through_one_store() {
         {
             let store = ContentStore::memory();
             let data = Bytes::from_static(b"the quick brown fox");
@@ -1384,34 +1128,13 @@ mod tests {
         }
         {
             let store = ContentStore::memory();
-            let first = store.ingest(Bytes::from_static(b"ingested")).await.unwrap();
+            let first = Bytes::from_static(b"ingested");
+            let first_hash = store.ingest(first.clone()).await.unwrap();
             let fetched_bytes = Bytes::from_static(b"fetched");
             let fetched = Hash::new(&fetched_bytes);
             store.store_fetched(fetched, fetched_bytes).await.unwrap();
+            assert_eq!(store.local(first_hash).await, Some(first));
 
-            let mut names = tag_names(store.store()).await;
-            names.sort();
-            let mut expected = vec![
-                owned_blob_tag(first, BlobFormat::Raw).into_bytes(),
-                owned_blob_tag(fetched, BlobFormat::Raw).into_bytes(),
-            ];
-            expected.sort();
-            assert_eq!(names, expected);
-            assert!(
-                store
-                    .store()
-                    .tags()
-                    .list_temp_tags()
-                    .await
-                    .unwrap()
-                    .next()
-                    .await
-                    .is_none(),
-                "temporary protection must be released after owned-tag promotion"
-            );
-        }
-        {
-            let store = ContentStore::memory();
             let claimed = Hash::from([9; 32]);
             assert!(
                 store
@@ -1419,38 +1142,98 @@ mod tests {
                     .await
                     .is_err()
             );
-            assert!(tag_names(store.store()).await.is_empty());
             assert!(!store.has(claimed).await);
             assert!(!store.has(Hash::new(b"different")).await);
         }
     }
 
     #[tokio::test]
-    async fn persistent_stores_migrate_tags_evict_selectively_and_survive_restart() {
+    async fn a_whole_blob_and_its_reference_survive_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes: Vec<u8> = (0..3 * 1024 * 1024 + 123_u32)
+            .map(|n| u8::try_from(n % 251).unwrap())
+            .collect();
+        let hash = Hash::new(&bytes);
         {
-            let directory = tempfile::tempdir().unwrap();
-            let kept_bytes = Bytes::from(vec![0x61; 1_048_576]);
-            let (kept, selected) = {
-                let store = ContentStore::open(directory.path()).await.unwrap();
-                let kept = store.ingest(kept_bytes.clone()).await.unwrap();
-                let selected = store
-                    .ingest(Bytes::from(vec![0x62; 1_048_576]))
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    store.evict_blobs(&HashSet::from([selected])).await.unwrap(),
-                    1
-                );
-                assert_eq!(store.local(kept).await, Some(kept_bytes.clone()));
-                assert!(store.local(selected).await.is_none());
-                store.store().shutdown().await.unwrap();
-                (kept, selected)
-            };
-            let reopened = ContentStore::open(directory.path()).await.unwrap();
-            assert_eq!(reopened.local(kept).await, Some(kept_bytes));
-            assert!(reopened.local(selected).await.is_none());
-            reopened.store().shutdown().await.unwrap();
+            let store = ContentStore::open(dir.path()).await.unwrap();
+            let (stored, len) = store
+                .ingest_stream(futures_util::stream::iter([Ok(Bytes::from(bytes.clone()))]))
+                .await
+                .unwrap();
+            assert_eq!((stored, len), (hash, bytes.len() as u64));
+            assert!(store.files().is_blob(hash.as_bytes()));
+            let created = PreOrderMemOutboard::create(&bytes, IROH_BLOCK_SIZE);
+            assert_eq!(
+                store.files().outboard(hash.as_bytes()),
+                Some(created.data.clone()),
+                "the stored outboard is the one the tree builds"
+            );
+            store
+                .set_reference("tilo/media/v1/a/b", hash)
+                .await
+                .unwrap();
+            store.shutdown().await.unwrap();
         }
+        let store = ContentStore::open(dir.path()).await.unwrap();
+        assert_eq!(
+            store.reference("tilo/media/v1/a/b").await,
+            Some(hash),
+            "the reference survives reopening"
+        );
+        assert!(store.files().is_blob(hash.as_bytes()));
+        assert!(
+            store.files().outboard(hash.as_bytes()).is_some(),
+            "the outboard survives reopening"
+        );
+        assert_eq!(
+            store.files().entry(hash.as_bytes()).map(|e| e.complete()),
+            Some(true)
+        );
+        assert_eq!(
+            store.read_blob_range(hash, 0..0).await,
+            Some((Vec::new(), bytes.len() as u64))
+        );
+        assert_eq!(
+            store.read_blob_range(hash, 100..5000).await,
+            Some((bytes[100..5000].to_vec(), bytes.len() as u64))
+        );
+        assert_eq!(
+            store.read_blob_range(hash, 0..u64::MAX).await,
+            Some((bytes.clone(), bytes.len() as u64))
+        );
+        let key = *hash.as_bytes();
+        store.files().write_at(&key, 4096, &[0xff]).unwrap();
+        assert!(
+            store.read_blob_range(hash, 4096..4097).await.is_none(),
+            "a damaged range fails its BAO check"
+        );
+        store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn persistent_stores_evict_selectively_and_survive_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let kept_bytes = Bytes::from(vec![0x61; 1_048_576]);
+        let (kept, selected) = {
+            let store = ContentStore::open(directory.path()).await.unwrap();
+            let kept = store.ingest(kept_bytes.clone()).await.unwrap();
+            let selected = store
+                .ingest(Bytes::from(vec![0x62; 1_048_576]))
+                .await
+                .unwrap();
+            assert_eq!(
+                store.evict_blobs(&HashSet::from([selected])).await.unwrap(),
+                1
+            );
+            assert_eq!(store.local(kept).await, Some(kept_bytes.clone()));
+            assert!(store.local(selected).await.is_none());
+            store.shutdown().await.unwrap();
+            (kept, selected)
+        };
+        let reopened = ContentStore::open(directory.path()).await.unwrap();
+        assert_eq!(reopened.local(kept).await, Some(kept_bytes));
+        assert!(reopened.local(selected).await.is_none());
+        reopened.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -1459,7 +1242,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
     )]
-    async fn backend_residency_and_manifests_decide_what_is_durable_or_evicted() {
+    async fn residency_and_manifests_decide_what_is_durable_or_evicted() {
         {
             let store = ContentStore::memory();
             let data = vec![7u8; 100_000];
@@ -1535,7 +1318,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 present_observation.state,
-                EvictionRequestState::AwaitingBackendGc
+                EvictionRequestState::AwaitingEviction
             );
             assert_eq!(present_observation.remaining_hashes, vec![present]);
 
@@ -1555,9 +1338,9 @@ mod tests {
     #[cfg(feature = "filesystem")]
     #[allow(
         clippy::too_many_lines,
-        reason = "multi-phase backend eviction lifecycle scenario"
+        reason = "each phase keeps one former test's body verbatim"
     )]
-    async fn backend_eviction_releases_only_owned_tags_for_fresh_roots() {
+    async fn eviction_removes_exactly_the_authorized_blobs() {
         {
             use crate::availability::{DocumentAvailability, EntryKind};
             use crate::eviction::{
@@ -1567,18 +1350,13 @@ mod tests {
             use fs_protocol::Residency;
 
             let temp = tempfile::TempDir::new().unwrap();
-            let store = ContentStore::open_with_gc_interval(
-                temp.path().join("blobs"),
-                Duration::from_secs(60 * 60),
-            )
-            .await
-            .unwrap();
-            let target_bytes = Bytes::from(vec![0x5a; 64 * 1024]);
+            let store = ContentStore::open(temp.path().join("blobs")).await.unwrap();
+            let target_bytes = Bytes::from(vec![0x5a; 2 * 1024 * 1024]);
             let target_only = store.ingest(target_bytes.clone()).await.unwrap();
             let target_data_path = temp
                 .path()
-                .join("blobs/data")
-                .join(format!("{}.data", target_only.to_hex()));
+                .join("blobs/files/data")
+                .join(hex::encode(target_only.as_bytes()));
             assert!(target_data_path.exists());
             let shared = store.ingest(Bytes::from_static(b"shared")).await.unwrap();
             let other_only = store
@@ -1641,8 +1419,8 @@ mod tests {
 
             let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
             let id = queue.enqueue(&plan, 1).unwrap().id;
-            let released = store
-                .release_eviction_to_backend_gc(
+            store
+                .evict_request(
                     &queue,
                     id,
                     &registry,
@@ -1652,39 +1430,19 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(released.authorized_hashes, vec![target_only]);
-            assert_eq!(released.released_owned_tags, 1);
-
-            store.store().shutdown().await.unwrap();
-            drop(store);
-            let store = ContentStore::open_with_gc_interval(
-                temp.path().join("blobs"),
-                Duration::from_millis(10),
-            )
-            .await
-            .unwrap();
-
-            let mut completion = None;
-            for observed_at_ms in 3..=203 {
-                let observation = store
-                    .observe_eviction_request(&mut queue, id, observed_at_ms)
-                    .await
-                    .unwrap();
-                if matches!(observation.state, EvictionRequestState::Completed { .. }) {
-                    completion = Some(observation);
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            assert!(
-                completion.is_some(),
-                "configured GC did not sweep released blob"
-            );
             assert!(!store.has(target_only).await);
             assert!(
                 !target_data_path.exists(),
-                "persistent GC must remove the external data file"
+                "eviction removes the whole blob's file"
             );
+            let observation = store
+                .observe_eviction_request(&mut queue, id, 3)
+                .await
+                .unwrap();
+            assert!(matches!(
+                observation.state,
+                EvictionRequestState::Completed { .. }
+            ));
             assert_eq!(
                 store.local(shared).await,
                 Some(Bytes::from_static(b"shared"))
@@ -1710,7 +1468,7 @@ mod tests {
             use fs_protocol::Residency;
 
             let temp = tempfile::TempDir::new().unwrap();
-            let store = ContentStore::memory_with_gc_interval(Duration::from_millis(10));
+            let store = ContentStore::memory();
             let hash = store
                 .ingest(Bytes::from_static(b"becomes shared"))
                 .await
@@ -1761,7 +1519,7 @@ mod tests {
             registry.put(other).unwrap();
             assert!(matches!(
                 store
-                    .release_eviction_to_backend_gc(
+                    .evict_request(
                         &queue,
                         id,
                         &registry,
@@ -1772,112 +1530,7 @@ mod tests {
                     .await,
                 Err(StoreEvictionError::Authorization(_))
             ));
-            assert!(
-                store.gc.snapshot().is_none(),
-                "a refused eviction authorized a sweep"
-            );
-            assert!(store.has(hash).await);
-            assert!(
-                store
-                    .store()
-                    .tags()
-                    .get(owned_blob_tag(hash, BlobFormat::Raw))
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
-        }
-        {
-            use crate::availability::{DocumentAvailability, EntryKind};
-            use crate::eviction::{
-                ContentPayload, EvictionCatalog, EvictionQueue, EvictionRequestState,
-                plan_destructive_eviction,
-            };
-            use fs_protocol::Residency;
-
-            let temp = tempfile::TempDir::new().unwrap();
-            let store = ContentStore::memory_with_gc_interval(Duration::from_millis(10));
-            let hash = store
-                .ingest(Bytes::from_static(b"externally protected"))
-                .await
-                .unwrap();
-            store
-                .store()
-                .tags()
-                .set(
-                    "another-application/keep",
-                    iroh_blobs::HashAndFormat {
-                        hash,
-                        format: BlobFormat::Raw,
-                    },
-                )
-                .await
-                .unwrap();
-
-            let document_id = fs_protocol::FileDocumentId::new();
-            let mut registry =
-                AvailabilityRegistry::open(temp.path().join("availability.json")).unwrap();
-            let mut record = DocumentAvailability::new(document_id, EntryKind::File);
-            record.current_hash = Some(fs_protocol::ContentHash(*hash.as_bytes()));
-            record.residency = Residency::Resident { bytes: 20 };
-            registry.put(record).unwrap();
-            let catalog = EvictionCatalog::new([ContentPayload {
-                manifest: BlobExtent {
-                    hash,
-                    locally_present: true,
-                    resident_bytes: Some(20),
-                },
-                chunks: Vec::new(),
-            }]);
-            let plan = plan_destructive_eviction(
-                &registry,
-                &catalog,
-                document_id,
-                1,
-                EvictionRequirements::default(),
-            )
-            .unwrap();
-            let mut queue = EvictionQueue::open(temp.path().join("evictions.json")).unwrap();
-            let id = queue.enqueue(&plan, 1).unwrap().id;
-            let release = store
-                .release_eviction_to_backend_gc(
-                    &queue,
-                    id,
-                    &registry,
-                    &catalog,
-                    2,
-                    EvictionRequirements::default(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(release.released_owned_tags, 1);
-
-            tokio::time::sleep(Duration::from_millis(35)).await;
-            let observation = store
-                .observe_eviction_request(&mut queue, id, 3)
-                .await
-                .unwrap();
-            assert_eq!(observation.state, EvictionRequestState::AwaitingBackendGc);
-            assert_eq!(observation.remaining_hashes, vec![hash]);
-            assert!(store.has(hash).await);
-            assert!(
-                store
-                    .store()
-                    .tags()
-                    .get("another-application/keep")
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
-            assert!(
-                store
-                    .store()
-                    .tags()
-                    .get(owned_blob_tag(hash, BlobFormat::Raw))
-                    .await
-                    .unwrap()
-                    .is_none()
-            );
+            assert!(store.has(hash).await, "a refused eviction removes nothing");
         }
     }
 
@@ -2084,5 +1737,72 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
         assert_eq!(read([8; 32], u64::MAX), None);
         drop(store);
+    }
+
+    /// A manual measurement that no check performs: `cargo test -p tilo-fs --lib \
+    /// store::tests::small_file_writes_and_a_large_read_timing -- --ignored --nocapture` prints the
+    /// small-file write throughput and the large-file read rate of this store on this machine.
+    #[ignore = "a manual throughput measurement, printed with --ignored --nocapture"]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn small_file_writes_and_a_large_read_timing() {
+        use std::time::Instant;
+
+        const FILES: usize = 2_000;
+        const SMALL: usize = 4 * 1024;
+        const LARGE: usize = 64 * 1024 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("store");
+        let files: Vec<Vec<u8>> = (0..FILES)
+            .map(|index| {
+                (0..SMALL)
+                    .map(|offset| u8::try_from((index * 31 + offset) % 251).unwrap())
+                    .collect()
+            })
+            .collect();
+        let started = Instant::now();
+        {
+            let store = ContentStore::open(&root).await.unwrap();
+            store.defer_sync();
+            for data in &files {
+                store.write_content(data).await.unwrap().unwrap();
+            }
+            store.end_deferred_sync().await.unwrap();
+            store.close().await.unwrap();
+        }
+        let elapsed = started.elapsed();
+        let count = f64::from(u32::try_from(FILES).unwrap_or(u32::MAX));
+        let bytes = f64::from(u32::try_from(FILES * SMALL).unwrap_or(u32::MAX));
+        eprintln!(
+            "PERF small-file writes: {FILES} files of {SMALL} B in {:.1} ms = {:.0} files/s, {:.1} MiB/s",
+            elapsed.as_secs_f64() * 1_000.0,
+            count / elapsed.as_secs_f64(),
+            (bytes / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
+        );
+
+        let large: Vec<u8> = (0..LARGE)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect();
+        let content = {
+            let store = ContentStore::open(&root).await.unwrap();
+            let content = store.write_content(&large).await.unwrap().unwrap();
+            store.close().await.unwrap();
+            content
+        };
+        let store = ContentStore::open(&root).await.unwrap();
+        let manifest = store.manifest(content).await.unwrap();
+        let started = Instant::now();
+        let read = store
+            .read_local(content, &manifest, 0..LARGE as u64)
+            .await
+            .unwrap();
+        let elapsed = started.elapsed();
+        assert_eq!(read.len(), LARGE);
+        let bytes = f64::from(u32::try_from(LARGE).unwrap_or(u32::MAX));
+        eprintln!(
+            "PERF large-file read: {LARGE} B in {:.1} ms = {:.1} MiB/s",
+            elapsed.as_secs_f64() * 1_000.0,
+            (bytes / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
+        );
+        store.close().await.unwrap();
     }
 }

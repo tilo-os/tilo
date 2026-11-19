@@ -1036,7 +1036,7 @@ impl NotesApp {
             .workspace
             .pages()
             .iter()
-            .map(|p| PageEntry::page(p.id, p.title.clone()))
+            .map(|p| PageEntry::page(p.id, self.workspace.name_of(p)))
             .collect();
         self.main.editor_mut().set_link_pages(page_entries);
     }
@@ -1477,12 +1477,9 @@ impl NotesApp {
                 frontier.push(child.id);
             }
         }
-        let title = crate::metadata::note_title(
-            &self
-                .workspace
-                .get(page)
-                .map(|meta| meta.title.clone())
-                .unwrap_or_default(),
+        let title = self.workspace.get(page).map_or_else(
+            || self.workspace.named("", page),
+            |meta| self.workspace.name_of(meta),
         );
         crate::metadata::CATALOG.t_args(
             "notes-deleted",
@@ -1767,7 +1764,7 @@ impl NotesApp {
             // The page-tree shot shows the whole tree, so it keeps every note that holds
             // others open rather than only the ancestors of the note it shows.
             let mut expanded = ancestors;
-            if matches!(scenario, Some("page_tree" | "migrated")) {
+            if matches!(scenario, Some("page_tree" | "page_tree_flat" | "migrated")) {
                 expanded = self.workspace.pages().iter().map(|page| page.id).collect();
             }
             self.sidebar
@@ -1840,7 +1837,8 @@ impl NotesApp {
             self.sidebar.sync_from_workspace(&self.workspace);
         });
         if let Some(page) = selected.and_then(|id| self.workspace.get(id)) {
-            self.main.set_title(Some(page.title.clone()));
+            self.main
+                .set_title(page.title.clone(), &self.workspace.named("", page.id));
         }
         ui::tilo_resource::profiling::measure("link_pages", || self.refresh_link_pages());
         self.self_dirty = true;
@@ -1980,6 +1978,13 @@ impl NotesApp {
             self.unindexed.extend(known);
         }
         self.opened.borrow_mut().known = workspace.pages().iter().map(|page| page.id).collect();
+        // History names each note as it is called now.
+        ui::learn_item_names(
+            workspace
+                .pages()
+                .iter()
+                .map(|page| (page.id.to_string(), workspace.name_of(page))),
+        );
         self.workspace = workspace;
     }
 
@@ -2089,7 +2094,8 @@ impl NotesApp {
             .selected()
             .and_then(|id| self.workspace.get(id))
         {
-            self.main.set_title(Some(page.title.clone()));
+            self.main
+                .set_title(page.title.clone(), &self.workspace.named("", page.id));
         }
         self.refresh_link_pages();
         Ok(())
@@ -2105,7 +2111,8 @@ impl NotesApp {
         self.workspace.set_selected(Some(id));
         self.sidebar.sync_from_workspace(&self.workspace);
         if let Some(page) = self.workspace.get(id) {
-            self.main.set_title(Some(page.title.clone()));
+            self.main
+                .set_title(page.title.clone(), &self.workspace.named("", page.id));
         }
         self.record_current_route();
         self.refresh_status();
@@ -3564,7 +3571,7 @@ impl ui::presence::capability::PublishesPresence for NotesApp {
         selection.resource = Some(tilo_actions::ActionResource {
             id: crate::actions::body_resource_id(page),
             kind: <tilo_document::RichText as ui::tilo_resource::Resource>::KIND.to_owned(),
-            label: crate::metadata::note_title(self.main.title().unwrap_or_default()),
+            label: self.main.name().unwrap_or_default(),
         });
         Some(selection)
     }
@@ -4097,9 +4104,8 @@ impl NotesApp {
 }
 
 /// The window's Undo: what has a history of its own inside it (a title being
-/// typed) first, then the person's last change to a note, which lives in a part
-/// of the notes beside the notebook; the notebook's own changes (its tags) after
-/// that.
+/// typed) first, then the person's last step in the chain, whether it wrote
+/// the notebook or one of its notes.
 impl ui::undo::LocalUndo for NotesApp {
     fn handle_local_undo_request(&mut self, request: ui::undo::UndoRequest) -> bool {
         if self

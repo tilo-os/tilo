@@ -7,9 +7,9 @@
 
 use ui::prelude::Resource;
 
+use tilo_webview::WebViewCommand;
 use ui::icons::Icon;
 use ui::theme::Theme;
-use ui::webview::WebViewCommand;
 use ui::widget::floating_surface::PanelAlign;
 use ui::widget::{
     AccessoryAction, Button, Chip, ChipLead, MenuButton, MenuItem, Row, TextInput, TextInputKind,

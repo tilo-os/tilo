@@ -21,9 +21,10 @@
 
 use super::*;
 use serde_json::{Value, json};
+use tilo_agent_session::ModelChoice;
 use tilo_desktop_search::Source as _;
 use tilo_mcp::McpServer;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 /// The apps the agent works in.
 pub const PDF: &str = "so.tilo.pdf-viewer";
@@ -583,7 +584,7 @@ async fn an_agent_fills_a_form_and_writes_a_letter_on_a_hosted_workspace_with_no
                     Some(&each.id) == id.as_ref()
                         && each.id != INVOCATION
                         && each.id.starts_with("agent-session:")
-                        && each.label.is_none()
+                        && each.label.as_deref() == Some(INVOCATION_LABEL)
                 })
                 && invocation
                     .as_ref()

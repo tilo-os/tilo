@@ -633,6 +633,19 @@ tilo_test_env::scenario! {
         );
         assert!(full.get_rect().height() >= 220.0);
 
+        // The glyph it was given is what tells a person what would be here: a state that
+        // hugs its content keeps it rather than shedding it.
+        let mut with_icon = EmptyState::new("No archived items")
+            .with_message("Archive an item to put it aside.")
+            .with_icon(crate::icons::Icon::Archive)
+            .inline();
+        lay_out(&mut with_icon, 600.0, 600.0);
+        let rect = with_icon.get_rect();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let placed = place(&mut tr, &theme, rect, &with_icon.content(), true);
+        assert!(placed.hero.is_some(), "an inline state shows its glyph in {rect:?}, natural {}", placed.natural);
+
         let busy = EmptyState::new("Scanning your disk").busy();
         assert!(busy.needs_animation_frame(), "a busy state keeps moving");
         let node = Widget::accessibility(&busy).unwrap();

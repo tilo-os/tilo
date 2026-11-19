@@ -91,6 +91,16 @@
           }
         }
       ],
+      "registry.tilo.so/tilo/legacy-guest": [
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/usr/share/tilo/cosign.pub",
+          "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
       "registry.tilo.so/tilo/linux-guest": [
         {
           "type": "sigstoreSigned",

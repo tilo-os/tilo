@@ -14,9 +14,7 @@
 
 use anyhow::Result;
 use serde_json::{Map, Value, json};
-use tilo_actions::remote::{
-    ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
-};
+use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 
 use super::{Asked, Session, TurnUpdate};
 

@@ -4923,6 +4923,7 @@ impl Widget for TextInput {
                 )),
                 edge: None,
                 radius: f64::from(theme.tokens.radii.control),
+                inset: [0.0; 2],
             });
         }
     }

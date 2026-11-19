@@ -35,7 +35,6 @@ mod watch;
 #[cfg(test)]
 mod tests;
 
-pub use local::STAGING_PREFIX;
 pub use watch::Watch;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

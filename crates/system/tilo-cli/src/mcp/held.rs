@@ -27,6 +27,9 @@ use super::{Connection, Enter, Shared, answer};
 
 /// How long a connection waits for a holder to listen.
 const REACHING: Duration = Duration::from_secs(10);
+/// How long a connection waits for the user service it asked to start a holder that listens,
+/// before it starts one itself.
+const SERVICE_STARTING: Duration = Duration::from_secs(5);
 /// How long a holder starting waits for one that is leaving to let go.
 const TAKING_OVER: Duration = Duration::from_secs(20);
 /// How long a holder that has the lock waits for the last one's stores to let go: the lock is
@@ -34,17 +37,27 @@ const TAKING_OVER: Duration = Duration::from_secs(20);
 const OPENING: Duration = Duration::from_secs(30);
 /// How often it looks whether those stores let go.
 const OPENING_POLL: Duration = Duration::from_millis(100);
-/// How long a holder leaving waits for its stores to close before it lets the lock go.
-const RELEASING: Duration = Duration::from_secs(5);
+/// How long a holder leaving waits for its stores to close and the device's endpoint to say it
+/// is going, before it lets the lock go: the next holder opens the store as soon as this
+/// process lets it go rather than when this process ends.
+const RELEASING: Duration = Duration::from_secs(3);
 /// How often a connection looks for a holder that has not started listening.
 const POLL: Duration = Duration::from_millis(50);
+/// How often the service's holder, waiting for a newer program's holder to end, looks for its lock.
+const STANDBY_POLL: Duration = Duration::from_secs(1);
+/// How often the service's holder, waiting so, asks the holder there again to step down.
+const STANDBY_ASK: Duration = Duration::from_secs(30);
 /// How long a holder's process waits for its runtime's threads once it ended. A step that walks
 /// a whole folder tree runs on its thread to its end and cannot be interrupted; a stop leaves it
 /// behind rather than hanging until it finishes.
-const SHUTDOWN: Duration = Duration::from_secs(3);
-/// How long a stop waits for the folders to unmount: one whose mount thread is inside a step on
-/// the tree is cleared when the next holder shows it.
-const UNMOUNTING: Duration = Duration::from_secs(5);
+const SHUTDOWN: Duration = Duration::from_secs(2);
+/// How long a stop waits for one folder to unmount: one whose mount thread is inside a step on
+/// the tree is left behind, and its mount cleared when the next holder shows it.
+pub(crate) const UNMOUNTING: Duration = Duration::from_secs(3);
+/// How long a stop waits for the folders to unmount and each workspace's tree to be kept on
+/// disk, all of them together: a tree's changes made here are saved, and a step still running
+/// is left behind rather than waited for.
+const STOPPING: Duration = Duration::from_secs(8);
 /// How often a holder looks whether the login it serves is still the one under its device
 /// directory: a login made again makes another device, and the holder it replaced steps down so
 /// one computer runs one holder.
@@ -122,20 +135,30 @@ pub(crate) fn ensure(place: &Place) -> Result<(), String> {
 
 /// A connection to the device's holder, starting it when none listens.
 pub(crate) fn reach(place: &Place) -> Result<UnixStream, String> {
-    reach_starting(place, || start_holder(place))
+    reach_starting(place, |via_service| start_holder(place, via_service))
 }
 
-/// [`reach`], with `start` starting a holder; what it started is waited for,
-/// and started again if it ended without listening (one that was leaving
-/// held the lock).
+/// How a holder was started.
+enum Started {
+    /// As a process of this one's, waited for and started again if it ended without listening.
+    Process(std::process::Child),
+    /// As the user service, which keeps it from then on: asked at this instant.
+    Service(Instant),
+}
+
+/// [`reach`], with `start` starting a holder (through the user service where it may); what it
+/// started is waited for, and started again if it ended without listening (one that was leaving
+/// held the lock). A service that started no holder listening within half the wait is not asked
+/// again: this command starts one itself.
 fn reach_starting(
     place: &Place,
-    start: impl Fn() -> std::io::Result<std::process::Child>,
+    start: impl Fn(bool) -> std::io::Result<Started>,
 ) -> Result<UnixStream, String> {
     let deadline = Instant::now()
         .checked_add(REACHING)
         .unwrap_or_else(Instant::now);
-    let mut started: Option<std::process::Child> = None;
+    let mut started: Option<Started> = None;
+    let mut via_service = true;
     loop {
         match tilo_files::native::socket::connect(&place.socket) {
             Ok(stream) => return Ok(stream),
@@ -156,11 +179,17 @@ fn reach_starting(
             }
             Err(_) => {}
         }
-        let ended = started
-            .as_mut()
-            .is_none_or(|child| child.try_wait().ok().flatten().is_some());
+        let ended = match started.as_mut() {
+            None => true,
+            Some(Started::Process(child)) => child.try_wait().ok().flatten().is_some(),
+            Some(Started::Service(asked)) => {
+                let given_up = asked.elapsed() >= SERVICE_STARTING;
+                via_service &= !given_up;
+                given_up
+            }
+        };
         if ended {
-            started = Some(start().map_err(|error| {
+            started = Some(start(via_service).map_err(|error| {
                 tracing::debug!(%error, "Tilo's background sync did not start");
                 "Tilo's background sync didn't start on this computer. Run `tilo status` to see \
                  how it stands, then try again."
@@ -171,12 +200,22 @@ fn reach_starting(
     }
 }
 
-/// Start the peer (`tilo mcp --hold`) on its own: in a process group of its own, so the
-/// agent that ends this connection does not end it with the others', and
-/// writing what it says to its log.
-fn start_holder(place: &Place) -> std::io::Result<std::process::Child> {
+/// Start the peer (`tilo mcp --hold`): as the user service where it is installed, so the one
+/// holder of the device lives where the person's login keeps it, never inside the agent or
+/// command that happened to need it first (and ends with it). Elsewhere on its own: in a process
+/// group of its own, so the agent that ends this connection does not end it with the others',
+/// and adding what it says to its log.
+fn start_holder(place: &Place, via_service: bool) -> std::io::Result<Started> {
     use std::os::unix::process::CommandExt as _;
-    let log = std::fs::File::create(&place.log)?;
+    if via_service && crate::service::start_installed() {
+        return Ok(Started::Service(Instant::now()));
+    }
+    // Added to, never emptied: a holder started while another holds the device ends at once, and
+    // emptying the log the one holding writes to would lose what it said.
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&place.log)?;
     std::process::Command::new(std::env::current_exe()?)
         .args(["mcp", "--hold"])
         .stdin(std::process::Stdio::null())
@@ -184,6 +223,24 @@ fn start_holder(place: &Place) -> std::io::Result<std::process::Child> {
         .stderr(log)
         .process_group(0)
         .spawn()
+        .map(Started::Process)
+}
+
+/// The most a holder's log keeps: a holder that takes the device empties a log grown past it.
+const LOG_KEPT: u64 = 8 << 20;
+
+/// Empty this holder's log once it grew past [`LOG_KEPT`]: it is added to by every holder
+/// started ([`start_holder`]), and the one that holds the device is the one that writes most.
+fn trim_log() {
+    let stderr = std::io::stderr();
+    let Ok(metadata) = rustix::fs::fstat(&stderr) else {
+        return;
+    };
+    let regular =
+        rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::RegularFile;
+    if regular && u64::try_from(metadata.st_size).is_ok_and(|size| size > LOG_KEPT) {
+        let _ = rustix::fs::ftruncate(&stderr, 0);
+    }
 }
 
 /// The threads a bridge's runtime works on.
@@ -209,7 +266,16 @@ pub(crate) fn alone<E: Enter>(shared: &Arc<Shared<E>>) -> Result<ExitCode> {
         tokio::spawn(async move {
             let _ = entering.session(false, super::Ask::Sync).await;
         });
-        converse(Arc::clone(shared), tokio::io::stdin(), tokio::io::stdout()).await;
+        // This process is the agent's own: what its harness calls the session, it says in the
+        // initialize it passes on.
+        let session_name = tilo_mcp::session_api::session_name();
+        converse(
+            Arc::clone(shared),
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+            session_name.as_deref(),
+        )
+        .await;
         // The connection ended (its input closed): the agent leaves the
         // workspace now, while its session can still say so.
         shared.leaving().await;
@@ -221,10 +287,15 @@ pub(crate) fn alone<E: Enter>(shared: &Arc<Shared<E>>) -> Result<ExitCode> {
 
 /// One agent's connection, served as its own run until its input ends: each
 /// request answered as it comes, so a long call holds up no other.
+///
+/// `session_name` is what the agent's harness calls this session, when the process serving it
+/// knows: the initialize the client sends then says it ([`tilo_mcp::session_api::SESSION_NAME`]),
+/// and the workspace shows the agent by that name rather than by its product's name.
 async fn converse<E: Enter>(
     shared: Arc<Shared<E>>,
     read: impl AsyncRead + Unpin,
     write: impl AsyncWrite + Unpin + Send + 'static,
+    session_name: Option<&str>,
 ) {
     let connection = Arc::new(Connection::new(shared));
     let write = Arc::new(tokio::sync::Mutex::new(write));
@@ -234,6 +305,7 @@ async fn converse<E: Enter>(
         if line.trim().is_empty() {
             continue;
         }
+        let line = naming(line, session_name);
         let (connection, write) = (Arc::clone(&connection), Arc::clone(&write));
         answering.spawn(async move {
             if let Some(answer) = answer(&connection, &line).await {
@@ -270,8 +342,32 @@ pub(crate) fn hold<E: Enter>(
             state: device_dir,
         },
         TAKING_OVER,
-        Program::running(),
+        Claim {
+            program: Program::running(),
+            service: crate::service::running_as_service(),
+        },
     )
+}
+
+/// What a holder claims the device as: its program, and whether the user service started it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Claim {
+    pub(crate) program: Program,
+    /// Started by the user service, which keeps it running for as long as the person is logged
+    /// in. A holder an agent or a command started lives in their process tree and ends with it.
+    #[serde(default)]
+    pub(crate) service: bool,
+}
+
+impl Claim {
+    /// Whether a holder claiming this takes the device over from one claiming `holding`: it is
+    /// a newer program, or it is the user service's and `holding` is not, of a program no newer.
+    /// The service's holder is the one that lasts: one an agent started first hands the device
+    /// (its session and its folders) over to it, rather than the service ending beside it.
+    pub(crate) fn takes_over(&self, holding: &Self) -> bool {
+        self.program.replaces(&holding.program)
+            || (self.service && !holding.service && !holding.program.replaces(&self.program))
+    }
 }
 
 /// The program a holder is, as the file it was started from: Tilo replaced by a newer build is
@@ -316,14 +412,16 @@ impl Program {
     }
 }
 
-/// Ask the holder listening at `place` to let a holder of `program` hold the device: whether it
-/// steps down, as it does for a newer program; `None` when none answered.
-fn ask_to_step_down(place: &Place, program: Program) -> Option<bool> {
+/// Ask the holder listening at `place` to let a holder claiming `claim` hold the device: whether
+/// it steps down, as it does when the claim takes over from its own ([`Claim::takes_over`]);
+/// `None` when none answered.
+fn ask_to_step_down(place: &Place, claim: Claim) -> Option<bool> {
     use std::io::{BufRead as _, Write as _};
     let mut stream = connect(place)?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let asked = serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": super::STEP_DOWN, "params": {"program": program},
+        "jsonrpc": "2.0", "id": 1, "method": super::STEP_DOWN,
+        "params": {"program": claim.program, "service": claim.service},
     });
     writeln!(stream, "{asked}").ok()?;
     let mut line = String::new();
@@ -346,24 +444,26 @@ enum Holding {
     Peer { home: PathBuf, state: PathBuf },
 }
 
-/// [`hold`], holding as `holding` says, as a holder of `program`, and waiting up to `taking_over`
-/// for a holder that is leaving, or that a newer `program` asked to.
+/// [`hold`], holding as `holding` says, as a holder claiming `claim`, and waiting up to
+/// `taking_over` for a holder that is leaving, or that `claim` asked to step down.
 fn hold_for<E: Enter>(
     place: &Place,
     shared: Arc<Shared<E>>,
     holding: Holding,
     taking_over: Duration,
-    program: Program,
+    claim: Claim,
 ) -> Result<ExitCode> {
-    let Some(_held) = take_lock(place, taking_over, program)? else {
+    let Some(_held) = take_lock(place, taking_over, claim)? else {
         return Ok(ExitCode::SUCCESS);
     };
-    let _ = shared.held_as.set(program);
+    trim_log();
+    let _ = shared.held_as.set(claim);
     let runtime = bridge_runtime()?;
     let served = runtime.block_on(serve_held(place, shared, holding));
     // A step that walks a whole folder tree — a merge of a tree record, a save of one — runs on
     // its thread to its end and cannot be interrupted. The process ends now instead of waiting
-    // for it: the socket is gone and the folders were unmounted (or given up on) above.
+    // for it: the socket is gone, the folders were unmounted (or given up on), and the trees
+    // were kept, above.
     runtime.shutdown_timeout(SHUTDOWN);
     // The next holder opens the stores as soon as this process lets go of the lock, which is
     // before this process ends: let go of them first, or it finds them still open.
@@ -371,7 +471,7 @@ fn hold_for<E: Enter>(
         let releasing = bridge_runtime()?;
         // The timer is made inside the runtime: one made outside it has no clock to tick on.
         if releasing
-            .block_on(async { tokio::time::timeout(RELEASING, peer.shutdown()).await })
+            .block_on(async { tokio::time::timeout(RELEASING, peer.shutdown(RELEASING)).await })
             .is_err()
         {
             tracing::warn!("the workspaces' files did not close in time");
@@ -383,22 +483,29 @@ fn hold_for<E: Enter>(
 }
 
 /// The lock that makes this process the device's one holder, once one that is leaving let go of
-/// it; `None` when another holds it still. A holder of an older program is asked to step down for
-/// this one's `program`, and waited for: a CLI command that found no holder running starts one
-/// from the program it is, and Tilo updated since must not leave that one serving the old
-/// program's answers while the new one's holder gives up.
+/// it; `None` when another holds it still. A holder this one's `claim` takes over from (an older
+/// program's, or one an agent started where this is the user service's) is asked to step down,
+/// and waited for: a CLI command that found no holder running starts one from the program it
+/// is, and Tilo updated since must not leave that one serving the old program's answers while
+/// the new one's holder gives up.
+///
+/// The user service's holder never gives up: while a newer program's holder keeps the device it
+/// waits for the lock, and holds the device the moment that one ends. A service that ended
+/// beside a holder some agent started left the person's folders to that agent's lifetime.
 fn take_lock(
     place: &Place,
     taking_over: Duration,
-    program: Program,
+    claim: Claim,
 ) -> Result<Option<advisory_lock::FileLock>> {
     use advisory_lock::{FileLock, LockMode, TryLockError};
     let path = &place.lock;
     let mut deadline = Instant::now()
         .checked_add(taking_over)
         .unwrap_or_else(Instant::now);
-    // Whether the holder there answered: it is asked until it does, once.
-    let mut answered = false;
+    // When the holder there last answered: it is asked until it does, once (again and again, by
+    // the service's holder waiting for it).
+    let mut answered_at: Option<Instant> = None;
+    let mut waiting = false;
     loop {
         match FileLock::try_open(path, LockMode::Exclusive) {
             Ok(lock) => return Ok(Some(lock)),
@@ -407,16 +514,21 @@ fn take_lock(
                 return Err(error).with_context(|| format!("open {}", path.display()));
             }
         }
-        let stepping_down = if answered {
+        // The service's holder asks again now and then: the holder that refused may have been
+        // replaced by one that would step down.
+        if claim.service && answered_at.is_some_and(|at: Instant| at.elapsed() >= STANDBY_ASK) {
+            answered_at = None;
+        }
+        let stepping_down = if answered_at.is_some() {
             None
         } else {
-            ask_to_step_down(place, program)
+            ask_to_step_down(place, claim)
         };
-        answered |= stepping_down.is_some();
+        if stepping_down.is_some() {
+            answered_at = Some(Instant::now());
+        }
         if stepping_down == Some(true) {
-            tracing::info!(
-                "a holder of an older Tilo held this device; it steps down for this one"
-            );
+            tracing::info!("the holder of this device steps down for this one");
             // Stepping down unmounts the folders and closes the stores: it is waited for.
             deadline = deadline.max(
                 Instant::now()
@@ -425,10 +537,21 @@ fn take_lock(
             );
         }
         if Instant::now() >= deadline {
+            if claim.service {
+                if !waiting {
+                    waiting = true;
+                    tracing::info!(
+                        lock = %path.display(),
+                        "a holder of a newer Tilo keeps this device; the service holds it once \
+                         that one ends"
+                    );
+                }
+                std::thread::sleep(STANDBY_POLL);
+                continue;
+            }
             tracing::warn!(
                 lock = %path.display(),
-                "another holder of this device's session, of the same Tilo or a newer one, keeps \
-                 it; this one ends"
+                "another holder of this device's session keeps it; this one ends"
             );
             return Ok(None);
         }
@@ -446,10 +569,6 @@ async fn serve_held<E: Enter>(
     // A socket left by a holder that ended without removing it.
     let _ = std::fs::remove_file(&place.socket);
     let listener = tilo_files::native::socket::bind(&place.socket)
-        .and_then(|listener| {
-            listener.set_nonblocking(true)?;
-            tokio::net::UnixListener::from_std(listener)
-        })
         .with_context(|| format!("listen at {}", place.socket.display()))?;
     std::fs::set_permissions(&place.socket, std::fs::Permissions::from_mode(0o600))?;
     serve_api(place, &shared)?;
@@ -467,25 +586,16 @@ async fn serve_held<E: Enter>(
             None
         }
     };
+    let (count, mut live) = tokio::sync::watch::channel(0_usize);
+    let count = Arc::new(count);
+    let mut accepting = accepting(listener, Arc::clone(&shared), Arc::clone(&count))?;
     let mut ended = ending()?;
     let mut login = tokio::time::interval(LOGIN_LOOK);
     // Whether the login this holder serves was replaced: a holder on its way out then unmounts
     // nothing, since the holder of the new login shows the folders again.
     let mut replaced = false;
-    let (count, mut live) = tokio::sync::watch::channel(0_usize);
-    let count = Arc::new(count);
     loop {
         tokio::select! {
-            accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { continue };
-                count.send_modify(|live| *live = live.saturating_add(1));
-                let (shared, count) = (Arc::clone(&shared), Arc::clone(&count));
-                tokio::spawn(async move {
-                    let (read, write) = stream.into_split();
-                    converse(shared, read, write).await;
-                    count.send_modify(|live| *live = live.saturating_sub(1));
-                });
-            }
             () = idle(&mut live, linger) => break,
             _ = login.tick() => if !place.serves_current_login() {
                 tracing::info!(
@@ -496,31 +606,94 @@ async fn serve_held<E: Enter>(
             },
             _ = ended.recv() => break,
             () = shared.stepping_down.notified() => {
-                tracing::info!("a holder of a newer Tilo takes over this device; this one steps down");
+                tracing::info!(
+                    "a holder of a newer Tilo, or the user service's, takes over this device; \
+                     this one steps down"
+                );
                 break;
             },
         }
     }
-    if let Some(peer) = PEER.get()
-        && !replaced
-    {
-        // Unmounting waits for the mount's thread, which may be inside a step on the folder's
-        // tree; a stop does not wait for that step to end.
-        if tokio::time::timeout(UNMOUNTING, peer.close())
-            .await
-            .is_err()
-        {
-            tracing::warn!(
-                "a folder did not unmount in time; the mounts are cleared when next shown"
-            );
-        }
+    // No connection from here on: the socket is shut down rather than left queuing clients that
+    // would be told a holder is there by the kernel and wait in vain for it.
+    accepting.stop();
+    if !replaced && let Some(peer) = PEER.get() {
+        // Unmounting and keeping the trees wait for the mounts' and trees' own steps, which
+        // cannot be interrupted; both are bounded, so a stop ends inside the unit's timeout.
+        peer.stop(STOPPING).await;
     }
-    // No connection is left to cut off: the next one starts a holder anew.
     let _ = std::fs::remove_file(&place.socket);
     let _ = std::fs::remove_file(&place.api);
-    drop(listener);
     shared.leaving().await;
     Ok(())
+}
+
+/// The thread that takes connections: on one of its own, so a client asking (a person's `tilo
+/// status`, an agent's `tilo mcp`) is taken the moment it does, however busy the runtime that
+/// answers it is with another client's work. Each connection is served on that runtime, whose
+/// workers a bulk write's steps never occupy: those go to the blocking pool.
+struct Accepting {
+    /// A duplicate of the listening socket: shutting it down wakes the thread's accept.
+    socket: std::os::unix::net::UnixListener,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Accepting {
+    fn stop(&mut self) {
+        let _ = rustix::net::shutdown(&self.socket, rustix::net::Shutdown::Both);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for Accepting {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Take the connections at `listener` on a thread of its own, serving each on this runtime.
+fn accepting<E: Enter>(
+    listener: std::os::unix::net::UnixListener,
+    shared: Arc<Shared<E>>,
+    count: Arc<tokio::sync::watch::Sender<usize>>,
+) -> std::io::Result<Accepting> {
+    let socket = listener.try_clone()?;
+    let runtime = tokio::runtime::Handle::current();
+    let thread = std::thread::Builder::new()
+        .name("tilo-accept".to_owned())
+        .spawn(move || {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let Ok(()) = stream.set_nonblocking(true) else {
+                            continue;
+                        };
+                        count.send_modify(|live| *live = live.saturating_add(1));
+                        let (shared, count) = (Arc::clone(&shared), Arc::clone(&count));
+                        runtime.spawn(async move {
+                            let Ok(stream) = tokio::net::UnixStream::from_std(stream) else {
+                                count.send_modify(|live| *live = live.saturating_sub(1));
+                                return;
+                            };
+                            let (read, write) = stream.into_split();
+                            // This process is no agent's: the name comes in each connection's
+                            // own initialize, which the connection that reached it wrote.
+                            converse(shared, read, write, None).await;
+                            count.send_modify(|live| *live = live.saturating_sub(1));
+                        });
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    // The holder stopped listening: the socket was shut down.
+                    Err(_) => break,
+                }
+            }
+        })?;
+    Ok(Accepting {
+        socket,
+        thread: Some(thread),
+    })
 }
 
 /// Serve Tilo's API at `place` as this computer's device, over the one session it holds: every
@@ -752,6 +925,9 @@ pub(crate) fn relay(stream: UnixStream, place: &Place) -> Result<ExitCode> {
 
 async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
     let (lines_in, mut input) = tokio::sync::mpsc::channel::<String>(64);
+    // What the agent's harness calls this session: this process is the agent's own child, so it
+    // is the one that knows, and each holder reached says it in the initialize it passes on.
+    let session_name = tilo_mcp::session_api::session_name();
     tokio::spawn(async move {
         let mut stdin = BufReader::new(tokio::io::stdin()).lines();
         while let Ok(Some(line)) = stdin.next_line().await {
@@ -807,6 +983,7 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
         let ended = loop {
             tokio::select! {
                 line = input.recv(), if input_open => if let Some(line) = line {
+                    let line = naming(line, session_name.as_deref());
                     if write.write_all(format!("{line}\n").as_bytes()).await.is_err() {
                         break true;
                     }
@@ -858,6 +1035,23 @@ async fn relaying(first: UnixStream, place: &Place) -> Result<ExitCode> {
 struct Unanswered {
     id: Value,
     line: String,
+}
+
+/// `line` with the session this connection is written in, when it is the client's `initialize`
+/// and the agent's harness named the session: what the workspace shows the agent by, in place of
+/// the product's name. Any other line, and a session with no name, go as they are.
+fn naming(line: String, session_name: Option<&str>) -> String {
+    let Some(name) = session_name else {
+        return line;
+    };
+    let asking = tilo_mcp::session_api::Asking {
+        session_name: Some(name.to_owned()),
+        ..Default::default()
+    };
+    asking
+        .written_into(line.as_bytes())
+        .and_then(|rewritten| String::from_utf8(rewritten).ok())
+        .unwrap_or(line)
 }
 
 /// Whether a request only reads: asking it again runs nothing twice.
@@ -920,6 +1114,124 @@ mod tests {
     use std::io::{BufRead as _, Write as _};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tilo_test_env::SpawnUnderEnvLock as _;
+
+    /// A holder an agent's or a command's `tilo` started, of `program`.
+    const fn agents(program: Program) -> Claim {
+        Claim {
+            program,
+            service: false,
+        }
+    }
+
+    /// The user service's holder, of `program`.
+    const fn services(program: Program) -> Claim {
+        Claim {
+            program,
+            service: true,
+        }
+    }
+
+    /// The user service's holder starting while one an agent started holds the device (the
+    /// service was restarted, or the agent came first): the agent's steps down and the service's
+    /// holds the device, so the session and the folders live as long as the login, not as long
+    /// as some agent. A newer program's holder an agent started is waited for instead, and the
+    /// service holds the device once it ends; the service never ends beside it.
+    #[test]
+    fn the_services_holder_takes_over_from_one_an_agent_started() {
+        let program = Program {
+            file: 1,
+            modified_ns: 1_000,
+        };
+        let newer = Program {
+            file: 2,
+            modified_ns: 2_000,
+        };
+        assert!(services(program).takes_over(&agents(program)));
+        assert!(!agents(program).takes_over(&services(program)));
+        assert!(!agents(program).takes_over(&agents(program)));
+        assert!(!services(program).takes_over(&services(program)));
+        assert!(!services(program).takes_over(&agents(newer)));
+        assert!(agents(newer).takes_over(&services(program)));
+
+        let dir = tempfile::tempdir().unwrap();
+        let place = Place::at(dir.path(), dir.path(), &[7; 32]);
+        let hold_waiting = |name: &'static str, claim: Claim, taking_over: Duration| {
+            let place = place.clone();
+            std::thread::spawn(move || {
+                let shared = Arc::new(Shared::new(Named(name), Err("unused".to_owned())));
+                hold_for(
+                    &place,
+                    shared,
+                    Holding::Linger(Duration::from_secs(60)),
+                    taking_over,
+                    claim,
+                )
+                .unwrap()
+            })
+        };
+        let hold = |name: &'static str, claim: Claim| hold_waiting(name, claim, TAKING_OVER);
+        let program_of = |file: u64| Program {
+            file,
+            modified_ns: u128::from(file).saturating_mul(1_000),
+        };
+        let held_by = |name: &str| {
+            let started = Instant::now();
+            loop {
+                if let Ok(mut stream) = UnixStream::connect(&place.socket)
+                    && initialize(&mut stream).contains(&format!("held by the {name} Tilo"))
+                {
+                    return;
+                }
+                assert!(
+                    started.elapsed() < TAKING_OVER,
+                    "the {name} holder did not hold the device"
+                );
+                std::thread::sleep(POLL);
+            }
+        };
+
+        let agent = hold("agent's", agents(program));
+        held_by("agent's");
+        let service = hold("service's", services(program));
+        agent.join().unwrap();
+        held_by("service's");
+        assert_eq!(
+            ask_to_step_down(&place, agents(program)),
+            Some(false),
+            "an agent's holder never takes the device from the service's"
+        );
+
+        // A newer program's holder takes over from the service's...
+        let newer_agent = hold("newer agent's", agents(newer));
+        service.join().unwrap();
+        held_by("newer agent's");
+        // ...and the service's holder started again waits for it rather than ending, even past
+        // the wait a holder of an agent's gives up after.
+        let service = hold_waiting("service's", services(program), Duration::ZERO);
+        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            !service.is_finished(),
+            "the service's holder waits for the device"
+        );
+        assert_eq!(ask_to_step_down(&place, agents(program_of(3))), Some(true));
+        newer_agent.join().unwrap();
+        held_by("service's");
+        assert_eq!(ask_to_step_down(&place, agents(program_of(4))), Some(true));
+        service.join().unwrap();
+    }
+
+    /// A stop ends by itself inside the user service's timeout: every wait it makes, added
+    /// up, is shorter than what the unit gives it before the process is killed, so a holder
+    /// stopped while a bulk write is under way exits rather than being killed.
+    #[test]
+    fn a_stop_ends_inside_the_services_timeout() {
+        let waits = STOPPING + crate::mcp::CLOSING + SHUTDOWN + RELEASING + SHUTDOWN;
+        assert!(
+            waits < crate::service::STOP_TIMEOUT,
+            "a stop's waits add up to {waits:?}, past the unit's {:?}",
+            crate::service::STOP_TIMEOUT
+        );
+    }
 
     /// A holder whose workers are both inside a step that walks a whole folder tree still ends
     /// when it is stopped: the steps are left behind rather than waited for, which is what a
@@ -994,10 +1306,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let place = Place::at(dir.path(), dir.path(), &[3; 32]);
         let lock = place.lock.clone();
-        let held = take_lock(&place, Duration::ZERO, Program::running()).unwrap();
+        let held = take_lock(&place, Duration::ZERO, agents(Program::running())).unwrap();
         assert!(held.is_some());
         assert!(
-            take_lock(&place, Duration::ZERO, Program::running())
+            take_lock(&place, Duration::ZERO, agents(Program::running()))
                 .unwrap()
                 .is_none(),
             "a lock its owner holds keeps the next holder out"
@@ -1021,7 +1333,7 @@ mod tests {
             "the child never took the lock"
         );
         assert!(
-            take_lock(&place, Duration::ZERO, Program::running())
+            take_lock(&place, Duration::ZERO, agents(Program::running()))
                 .unwrap()
                 .is_some(),
             "the lock of a process that ended wedges the next holder"
@@ -1056,7 +1368,7 @@ mod tests {
             opening.recv_timeout(Duration::from_millis(300)).is_err(),
             "a second holder opened the files this one still holds"
         );
-        runtime.block_on(first.shutdown());
+        runtime.block_on(first.shutdown(RELEASING));
         opening
             .recv_timeout(Duration::from_secs(30))
             .expect("the second holder opens the files once the first lets go")
@@ -1125,12 +1437,12 @@ mod tests {
                     shared,
                     Holding::Linger(linger),
                     Duration::ZERO,
-                    Program::running(),
+                    agents(Program::running()),
                 )
                 .unwrap()
             })
         };
-        let never = || -> std::io::Result<std::process::Child> {
+        let never = |_| -> std::io::Result<Started> {
             Err(std::io::Error::other("the holder runs already"))
         };
         let mut first = loop {
@@ -1165,7 +1477,7 @@ mod tests {
             Arc::clone(&shared),
             Holding::Linger(linger),
             Duration::ZERO,
-            Program::running(),
+            agents(Program::running()),
         );
         assert!(second_holder.is_ok());
         let mut third = UnixStream::connect(&place.socket).unwrap();
@@ -1218,7 +1530,7 @@ mod tests {
                     shared,
                     Holding::Linger(Duration::from_secs(60)),
                     TAKING_OVER,
-                    program,
+                    agents(program),
                 )
                 .unwrap()
             })
@@ -1243,7 +1555,7 @@ mod tests {
                     shared,
                     Holding::Linger(Duration::from_secs(60)),
                     Duration::ZERO,
-                    older,
+                    agents(older),
                 )
                 .unwrap()
             }
@@ -1273,7 +1585,7 @@ mod tests {
             file: 3,
             modified_ns: 3_000,
         };
-        assert_eq!(ask_to_step_down(&place, newest), Some(true));
+        assert_eq!(ask_to_step_down(&place, agents(newest)), Some(true));
         second.join().unwrap();
     }
 
@@ -1329,7 +1641,7 @@ mod tests {
                     shared,
                     Holding::Linger(Duration::from_millis(300)),
                     Duration::ZERO,
-                    Program::running(),
+                    agents(Program::running()),
                 )
                 .unwrap()
             })
@@ -1453,7 +1765,7 @@ mod tests {
             agent: "Claude Code".into(),
             label: "Claude Code on build-box".into(),
             cert: hex::encode(postcard::to_allocvec(&cert).unwrap()),
-            host_cert: "00".into(),
+            server_cert: "00".into(),
             server_address: None,
         };
         crate::login::store(dir, &key, &login).unwrap();

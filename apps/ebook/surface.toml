@@ -6,6 +6,7 @@ format = 2
 kind = "ebook.library"
 label = "Books"
 version = 1
+shows = ["contents", "go-to", "next-page", "notes", "open", "previous-page", "read-annotation", "read-book", "read-font", "read-highlight", "read-scheme", "read-settings", "select-passage", "settings"]
 fields = [
   { path = "entries", type = { collection = { named = "LibraryEntry" } }, stored = "collection" },
   { path = "entries.*.id", type = "text", readonly = true },

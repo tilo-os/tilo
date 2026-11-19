@@ -83,13 +83,25 @@ def dependency_tables(manifest: dict) -> list[dict]:
 def audit(root: Path = ROOT, staged: bool = False) -> tuple[list[Violation], int, int]:
     files = judged(root, staged)
     apps = root / "apps"
-    manifests = sorted(apps.glob("*/Cargo.toml"))
+    if staged:
+        # A manifest's verdict is about its own dependencies: the commit judges
+        # the manifests it stages, and the whole tree the policy suite and CI do.
+        manifests = [
+            (root / relative, tomllib.loads(files.read(relative)))
+            for relative in sorted(files.changed())
+            if len(relative.parts) == 3
+            and relative.parts[0] == "apps"
+            and relative.name == "Cargo.toml"
+        ]
+    else:
+        manifests = []
+        for manifest_path in sorted(apps.glob("*/Cargo.toml")):
+            with manifest_path.open("rb") as handle:
+                manifests.append((manifest_path, tomllib.load(handle)))
     violations: list[Violation] = []
     shared_apps: set[str] = set()
 
-    for manifest_path in manifests:
-        with manifest_path.open("rb") as handle:
-            manifest = tomllib.load(handle)
+    for manifest_path, manifest in manifests:
         dependencies = {
             name for table in dependency_tables(manifest) for name in table
         }

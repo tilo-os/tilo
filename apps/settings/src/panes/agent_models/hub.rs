@@ -12,6 +12,7 @@ use agent_provider_config::local::hub::{
 use agent_provider_config::local::snapshot::HardwareFit;
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::tilo_resource;
 use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, ButtonRole, ProgressBar, Row, Segment, Text, TextInput, ToggleGroup};
 
@@ -28,6 +29,22 @@ use provider_settings_ui::widgets::{
     Item, SettingsSection, field_row, note, row, rows, section, section_with, semantic_status_pill,
     thing_row, value_row,
 };
+
+/// A model a Hugging Face search found, as the pane publishes it: a row of
+/// the `settings.agent-hub-result` type, offering to show its variants.
+#[derive(ui::tilo_resource::Row)]
+#[row(
+    kind = "settings.agent-hub-result",
+    label = "Hugging Face model",
+    effects = AgentModelsEffect
+)]
+pub(crate) struct HubResult;
+
+/// One variant of a Hugging Face model, as the pane publishes it: a row of
+/// the `settings.agent-hub-variant` type, offering to download it.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "settings.agent-hub-variant", label = "Model variant")]
+pub(crate) struct HubVariant;
 
 pub(crate) struct HubBrowser {
     pub(crate) query: String,
@@ -522,26 +539,23 @@ impl HubBrowser {
         let mut found = Vec::new();
         if let Some(Ok(results)) = &self.results {
             for result in results {
-                found.push(
-                    LiveRow::new(
-                        format!("settings.agent-hub-result:{}", result.repo),
-                        "settings.agent-hub-result",
-                        result.repo.clone(),
-                    )
-                    .operation(offer(AgentModelsEffect::ShowHubModel {
-                        model: result.repo.clone(),
-                    })),
+                let mut row = LiveRow::typed::<HubResult>(
+                    format!("settings.agent-hub-result:{}", result.repo),
+                    result.repo.clone(),
                 );
+                row = row.operation(offer(AgentModelsEffect::ShowHubModel {
+                    model: result.repo.clone(),
+                }));
+                found.push(row);
             }
         }
         if let Some(Ok(model)) = &self.offer {
             for variant in &model.variants {
-                let mut live = LiveRow::new(
+                let mut live = LiveRow::typed::<HubVariant>(
                     format!(
                         "settings.agent-hub-variant:{}:{}",
                         model.repo, variant.variant.name
                     ),
-                    "settings.agent-hub-variant",
                     format!("{} {}", model.repo, variant.variant.name),
                 );
                 if variant.fit.fit != HardwareFit::Unsupported {

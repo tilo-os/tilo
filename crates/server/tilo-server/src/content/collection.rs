@@ -637,7 +637,7 @@ mod tests {
         })
         .unwrap();
         assert!(
-            lacks(&workspaces.content_answer(&workspace, &want)),
+            lacks(&workspaces.content_answer(&workspace, &member, &want)),
             "the host keeps none of the attachment any more"
         );
         let mut asked = neighbour_wire::content::ContentWants::default();

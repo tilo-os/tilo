@@ -586,7 +586,7 @@ fn account_overview_and_explicit_provider_choice_paint_with_matching_navigation(
     let ownership = crate::setup::test_support::qualified_tempdir();
     let root = ownership.path().canonicalize().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     env.set("TILO_OAUTH_SPOTIFY_CLIENT_ID", "installer-render-client");
     env.set("XDG_CONFIG_HOME", root.join("config"));
     for (tag, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {

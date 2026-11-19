@@ -474,6 +474,7 @@ pub enum InputEffect {
         page: Option<u32>,
     },
     /// Set the compose key.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     #[effect(keywords = "compose, accents, special characters")]
     SetComposeKey {
@@ -481,6 +482,7 @@ pub enum InputEffect {
         key: String,
     },
     /// Set what the Caps Lock key does.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     #[effect(keywords = "caps lock key, remap caps lock")]
     SetCapsLock {
@@ -488,6 +490,7 @@ pub enum InputEffect {
         behaviour: String,
     },
     /// Type with one of the active input sources.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     SetActiveSource {
         #[param("The source's id, such as `us` or `de`")]
@@ -500,83 +503,79 @@ pub enum InputEffect {
     #[effect(returns, idempotent, kind = "read")]
     InspectKeyboardSources,
     /// Choose the discovered keyboard assignment to inspect and edit.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
-    SelectKeyboardScope {
-        scope: String,
-    },
+    SelectKeyboardScope { scope: String },
     /// Select a configured source without changing what the keyboard types.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
-    SelectConfiguredSource {
-        source: String,
-    },
+    SelectConfiguredSource { source: String },
     /// Show or hide the selected source options.
-    #[effect(idempotent)]
-    SetSourceOptionsVisible {
-        visible: bool,
-    },
+    #[effect(screen, idempotent)]
+    SetSourceOptionsVisible { visible: bool },
     /// Show or hide key and modifier-level inspection.
-    #[effect(idempotent)]
-    SetSourceInspectionVisible {
-        visible: bool,
-    },
+    #[effect(screen, idempotent)]
+    SetSourceInspectionVisible { visible: bool },
     /// Open the separate installed-source picker.
-    #[effect(idempotent)]
+    #[effect(screen, idempotent)]
     OpenSourcePicker,
     /// Return to configured sources without adding anything.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     CloseSourcePicker,
     /// Preview an installed source in the Add screen.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
-    ChooseSourceToAdd {
-        source: String,
-    },
+    ChooseSourceToAdd { source: String },
     /// Add the previewed source without changing the active source.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ConfirmSourceToAdd,
+    #[effect(kind = "outside")]
     ReorderSource {
         source: String,
         target: String,
         after: bool,
     },
     /// Inspect any installed XKB layout without changing what the keyboard types.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
-    PreviewLayout {
-        source: String,
-    },
+    PreviewLayout { source: String },
     /// Show the actual focused keyboard group and modifier state.
-    #[effect(idempotent)]
+    #[effect(screen, idempotent)]
     ShowLiveKeyboardMap,
     /// Inspect XKB levels 5–8 when the selected layout supplies them.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
-    SetPreviewExtraLevels {
-        on: bool,
-    },
+    SetPreviewExtraLevels { on: bool },
     /// Inspect one of the compiled native modifier levels without applying it.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
-    SetPreviewLevel {
-        level: String,
-    },
+    SetPreviewLevel { level: String },
     /// Read a physical key’s complete legends without applying a layout.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
-    InspectKeyboardKey {
-        key: String,
-    },
+    InspectKeyboardKey { key: String },
     /// Choose an explicit physical model for the preview and keyboard.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     SetKeyboardModel {
         #[param("The physical model", choices = ["pc104", "pc105", "jp106", "kr106"])]
         model: String,
     },
     /// Type with the inspected layout, adding it when space is available.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ApplyPreview,
     /// Add an installed input source and type with it.
+    #[effect(kind = "outside")]
     #[effect(job)]
     AddSource {
         #[param("The source's id, such as `us` or `de`")]
         source: String,
     },
     /// Replace one input source by another, in place.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ReplaceSource {
         #[param("The source to replace")]
@@ -584,18 +583,22 @@ pub enum InputEffect {
         #[param("The source's id, such as `us` or `de`")]
         source: String,
     },
+    #[effect(kind = "outside")]
     MoveSourceUp {
         #[param("The source's id")]
         source: String,
     },
+    #[effect(kind = "outside")]
     MoveSourceDown {
         #[param("The source's id")]
         source: String,
     },
+    #[effect(kind = "outside")]
     RemoveSource {
         #[param("The source's id")]
         source: String,
     },
+    #[effect(kind = "outside")]
     AddDictionaryWord {
         #[param("The spelling, including its intended capitalization")]
         word: String,
@@ -604,6 +607,7 @@ pub enum InputEffect {
         #[param("The dictionary revision being edited")]
         revision: u64,
     },
+    #[effect(kind = "outside")]
     EditDictionaryWord {
         old_word: String,
         old_language: String,
@@ -611,15 +615,16 @@ pub enum InputEffect {
         language: String,
         revision: u64,
     },
+    #[effect(kind = "outside")]
     RemoveDictionaryWord {
         word: String,
         language: String,
         revision: u64,
     },
-    ResetDictionary {
-        revision: u64,
-    },
+    #[effect(kind = "outside")]
+    ResetDictionary { revision: u64 },
     /// Map a drawing tablet onto one display, or the whole desktop.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     SetTabletOutput {
         #[param("The tablet's device id")]
@@ -1050,7 +1055,7 @@ impl Dictionary {
     fn read() -> Self {
         Self {
             snapshot: ui::personal_dictionary::snapshot().ok(),
-            identity: ui::local_identity::bound().map(|identity| identity.group_public_key),
+            identity: ui::local_identity::load().map(|identity| identity.group_public_key),
         }
     }
 }
@@ -1083,6 +1088,24 @@ pub struct InputArea {
     shown: LocalState<u64>,
     seen: RefCell<Option<Seen>>,
 }
+
+/// The pane's map of the keyboard's keys, as it publishes it: a row of the
+/// `settings.keyboard-map` type, offering to show the layout.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.keyboard-map", label = "Keyboard map")]
+pub(crate) struct KeyboardMap;
+
+/// A tablet, as the pane publishes it: a row of the `settings.tablet` type,
+/// whose actions are its pen preferences.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.tablet", label = "Tablet")]
+pub(crate) struct Tablet;
+
+/// A tablet's touchpad, as the pane publishes it: a row of the
+/// `settings.tablet-pad` type, whose actions are its pad preferences.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.tablet-pad", label = "Tablet pad")]
+pub(crate) struct TabletPad;
 
 impl InputArea {
     pub fn new(cx: &AreaContext) -> Self {
@@ -1318,17 +1341,15 @@ impl InputArea {
     }
 
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
-        let inspection = LiveRow::new(
-            "settings.keyboard-map",
-            "settings.keyboard-map",
-            t("input-map-title"),
-        )
-        .operation(SettingsEffect::from(InputEffect::InspectKeyboardMap).bound());
+        let mut inspection =
+            LiveRow::typed::<KeyboardMap>("settings.keyboard-map", t("input-map-title"));
+        inspection =
+            inspection.operation(SettingsEffect::from(InputEffect::InspectKeyboardMap).bound());
         let Some(devices) = self.devices() else {
             return vec![inspection];
         };
-        let row = |device: &InputDeviceSnapshot, id: String, kind: &str| {
-            LiveRow::new(id, kind, device_title(device)).presentation(ResourcePresentation {
+        let row = |device: &InputDeviceSnapshot, row: LiveRow| {
+            row.presentation(ResourcePresentation {
                 detail: Some(device.key.clone()),
                 ..ResourcePresentation::default()
             })
@@ -1349,7 +1370,13 @@ impl InputArea {
                     .into_iter()
                     .map(|device| {
                         offer(
-                            row(device, tablet_resource_id(&device.key), "settings.tablet"),
+                            row(
+                                device,
+                                LiveRow::typed::<Tablet>(
+                                    tablet_resource_id(&device.key),
+                                    device_title(device),
+                                ),
+                            ),
                             tablet::pen_operations(&device.key),
                         )
                     })
@@ -1361,8 +1388,10 @@ impl InputArea {
                                 offer(
                                     row(
                                         device,
-                                        pad_resource_id(&device.key),
-                                        "settings.tablet-pad",
+                                        LiveRow::typed::<TabletPad>(
+                                            pad_resource_id(&device.key),
+                                            device_title(device),
+                                        ),
                                     ),
                                     tablet::pad_operations(&device.key),
                                 )

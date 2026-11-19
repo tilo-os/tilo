@@ -172,6 +172,19 @@ public enum EngineScript {
       new MutationObserver(state).observe(root,
         {attributes: true, attributeFilter: ['data-entry', 'data-arrival', 'data-pairing-code', 'data-failure', 'data-refusal',
           'data-connection']});
+      // Which look the page draws in, light or dark: the theme its person has in Tilo, as the
+      // page itself says it on its root element whenever a mount takes a theme (`data-look`,
+      // page_theme.rs). The name of one of two cases, never words: a page that says neither
+      // is not heard, and a look is said once per change.
+      let looked = '';
+      const look = () => {
+        const now = root.dataset.look ?? '';
+        if (now === looked || (now !== 'dark' && now !== 'light')) return;
+        looked = now;
+        post({kind: 'look', dark: now === 'dark'});
+      };
+      new MutationObserver(look).observe(root, {attributes: true, attributeFilter: ['data-look']});
+      look();
       const ready = () => {
         const status = document.getElementById('status');
         if (status) new MutationObserver(state).observe(status, {childList: true, characterData: true, subtree: true});

@@ -32,7 +32,7 @@ NameDriveArgs = TypedDict("NameDriveArgs", {
 
 class System(Resource):
     """Storage devices — `disks.system`."""
-    __surface__ = "so.tilo.disks@d7ae32858694d31a"
+    __surface__ = "so.tilo.disks@2bb26a51ddf1c158"
     names: dict[str, str]
 
     def name_drive(self,
@@ -55,16 +55,12 @@ class System(Resource):
         """Runs the app's action."""
         return self.action("rescan")
 
-    def select(self, *, device: str) -> None:
-        """Runs the app's action."""
-        return self.action("select", device=device)
-
     def show_tab(self, *, tab: str) -> None:
         """Runs the app's action."""
         return self.action("show-tab", tab=tab)
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"name_drive", "name_drive_many", "rescan", "select", "show_tab"})
+    __actions__ = frozenset({"name_drive", "name_drive_many", "rescan", "show_tab"})
 
 

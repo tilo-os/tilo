@@ -1,5 +1,16 @@
 //! Opt-in Linux qualification fixture, never an application or provider. Cargo builds
 //! this through the checkout's normal compiler budget.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::string_slice,
+    clippy::panic,
+    clippy::unreachable,
+    reason = "in a test these are the assertion, not a hazard"
+)]
+
 #[cfg(target_os = "linux")]
 fn main() {
     use std::{
@@ -53,7 +64,7 @@ fn main() {
                 tv_sec: 0,
                 tv_nsec: 1_000_000,
             };
-            unsafe { libc::nanosleep(&delay, std::ptr::null_mut()) };
+            unsafe { libc::nanosleep(&raw const delay, std::ptr::null_mut()) };
         }
         if unsafe { libc::getppid() } != 1 {
             unsafe { libc::_exit(42) };
@@ -69,7 +80,7 @@ fn main() {
     }
     let mut status = 0;
     assert_eq!(
-        unsafe { libc::waitpid(intermediate, &mut status, 0) },
+        unsafe { libc::waitpid(intermediate, &raw mut status, 0) },
         intermediate
     );
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);

@@ -21,7 +21,7 @@ pub mod receiver;
 pub mod transport;
 
 #[cfg(all(unix, feature = "peer"))]
-pub use bootstrap::{SourceIdentity, public_identity_record};
+pub use bootstrap::{SourceIdentity, public_member_record};
 #[cfg(all(unix, feature = "peer"))]
 pub use receiver::{Received, Receiver, ReceiverIdentity};
 #[cfg(all(unix, feature = "peer"))]

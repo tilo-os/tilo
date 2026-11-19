@@ -135,6 +135,8 @@ pub mod codes {
     pub const STAGING_CHANGED: &str = "staging-changed";
     /// `arm` without a completed `stage`, or `remove` without a record.
     pub const NOT_STAGED: &str = "not-staged";
+    /// The plan names a disk this staging disk is not.
+    pub const PLAN_DISK_MISMATCH: &str = "plan-disk-mismatch";
     pub const RECORD_FAILED: &str = "record-failed";
     pub const IO_FAILED: &str = "io-failed";
     /// The helper exited without writing an outcome.

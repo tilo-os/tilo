@@ -1,4 +1,5 @@
-# Setup scripts give the ci profile's runs their test environment (below).
+# Setup scripts give the ci profile's runs their test environment (below), and the runs of every
+# profile that inherits it.
 experimental = ["setup-scripts"]
 
 [profile.default]
@@ -30,6 +31,13 @@ final-status-level = "flaky"
 [profile.ci.junit]
 path = "junit.xml"
 
+# The property tests' count, for the packages t.toml's `test-deep` names: a profile of their own,
+# inheriting `ci` (its hang bound, failure output and setup steps), so the count reaches those
+# tests and no build. In the job's environment it would key every build script's and proc macro's
+# cache entry by it, and another family's run of the same packages would share no build.
+[profile.deep]
+inherits = "ci"
+
 # The ci profile's test environment, set up by nextest itself on the machine
 # that runs the tests, wherever cargo runs them (a CI container, a developer
 # machine, a remote builder). Every test gets `test-runtime`: lavapipe, PDFium,
@@ -56,6 +64,34 @@ command = ["bash", "tools/test-env-setup.sh", "ntfs"]
 
 [scripts.setup.as-root]
 command = ["bash", "tools/test-env-setup.sh", "root"]
+
+# The values only some packages' tests need. They are handed to the test processes, never to the
+# job's environment: a variable there keys every build script's and proc macro's cache entry by
+# it, and these differ per package (the PDF sandbox, the TPM, an agent's render helper, the PAM
+# module), so jobs testing different packages would share no build.
+[scripts.setup.swtpm]
+command = ["bash", "tools/test-env-setup.sh", "swtpm"]
+
+[scripts.setup.pdf-sandbox]
+command = ["bash", "tools/test-env-setup.sh", "pdf-sandbox"]
+
+[scripts.setup.video-render]
+command = ["bash", "tools/test-env-setup.sh", "video-render"]
+
+[scripts.setup.pam-module]
+command = ["bash", "tools/test-env-setup.sh", "pam-module"]
+
+# The property tests' count: the `deep` profile runs the packages t.toml's `test-deep` names with
+# more cases than an ordinary run (tools/test-env-setup.sh, `property-cases`). A family's `env`
+# would carry it into the build of every unit, so another family's run of the same packages would
+# share no build with this one.
+[scripts.setup.property-cases]
+command = ["bash", "tools/test-env-setup.sh", "property-cases"]
+
+[[profile.deep.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "all()"
+setup = "property-cases"
 
 # The programs the session's tests start beside their own: the lock screen,
 # the on-screen keyboard and the quick-settings panel are apps of other
@@ -229,7 +265,7 @@ setup = "font-catalog"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "rdeps(compat-service) or rdeps(music) or rdeps(tilo-capture) or rdeps(tilo-media) or rdeps(tilo-projector) or rdeps(tilo-spotify) or rdeps(tilo-tts) or package(tilo-session-client) or package(tilo-test-env)"
+filter = "rdeps(compat-service) or rdeps(launcher) or rdeps(music) or rdeps(tilo-app-cli) or rdeps(tilo-capture) or rdeps(tilo-media) or rdeps(tilo-projector) or rdeps(tilo-spotify) or rdeps(tilo-tts) or package(tilo-session) or package(tilo-session-client) or package(tilo-test-env)"
 setup = "headless-audio"
 
 [[profile.ci.scripts]]
@@ -291,6 +327,29 @@ setup = "ntfs-fixtures"
 platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-sandbox) and (test(/^host_ids::/) or test(/^limits::/))"
 setup = "as-root"
+
+# The values only some packages' tests need, for those packages: the ones
+# tools/ci/nextest.sh gave the job's environment before, which every build
+# script's and proc macro's cache entry then carried.
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-auth) or package(tilo-rollback) or package(tilo-test-env)"
+setup = "swtpm"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-pdf) or package(pdf-viewer) or package(tilo-thumbnail)"
+setup = "pdf-sandbox"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(tilo-agent-session)"
+setup = "video-render"
+
+[[profile.ci.scripts]]
+platform = { host = 'cfg(target_os = "linux")' }
+filter = "package(pam-tilo)"
+setup = "pam-module"
 
 # Process-isolated compositor, GPU, and collaboration tests need shared limits.
 #

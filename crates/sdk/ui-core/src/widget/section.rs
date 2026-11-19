@@ -531,6 +531,7 @@ impl Widget for CountPill {
             fill: Some(rgba8(raised)),
             edge: Some(rgba8(crate::surface::edge_on(raised))),
             radius: self.rect.height() / 2.0,
+            inset: [0.0; 2],
         });
         let mut look = TextLook::new(self.label.clone(), &m.count, Some(theme.text_dim))
             .with_max_lines(Some(1));
@@ -1821,6 +1822,7 @@ impl Widget for StatusLine {
             fill: Some(crate::composition::rgba8(self.status().colour(theme))),
             edge: None,
             radius: dot / 2.0,
+            inset: [0.0; 2],
         });
         mark.attrs.push(("aria-hidden", "true".into()));
         let look = crate::composition::TextLook::new(

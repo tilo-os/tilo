@@ -2,7 +2,7 @@ use std::path::Path;
 
 use accounts::thunderbird::{Candidate, DiscoveryError, Transport};
 use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
-use ui::tilo_resource::Effect;
+use ui::tilo_resource::{self, Effect};
 use ui::widget::Button;
 
 use super::{AccountsEffect, AccountsPane};
@@ -13,6 +13,22 @@ use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
     El, SettingsSection, caption, note, row, rows, section_with, thing_row,
 };
+
+/// A Thunderbird import the pane can start, as it publishes it: a row of the
+/// `settings.account-import` type, offering to inspect, choose, commit or
+/// cancel the import.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "settings.account-import", label = "Account import")]
+pub(super) struct AccountImport;
+
+/// One account a Thunderbird import found, as the pane publishes it: a row
+/// of the `settings.account-import-choice` type, offering to import it.
+#[derive(ui::tilo_resource::Row)]
+#[row(
+    kind = "settings.account-import-choice",
+    label = "Account import choice"
+)]
+pub(super) struct AccountImportChoice;
 
 pub(super) fn discover(
     app: &SettingsApp,
@@ -104,25 +120,24 @@ fn finish(
 
 impl AccountsPane {
     pub(super) fn thunderbird_import_rows(&self) -> Vec<LiveRow> {
-        let mut root = LiveRow::new(
+        let mut root = LiveRow::typed::<AccountImport>(
             "settings.thunderbird-import",
-            "settings.account-import",
             t("accounts-import-title"),
-        )
-        .operation(SettingsEffect::from(AccountsEffect::InspectThunderbirdImport).bound())
-        .operation(SettingsEffect::from(AccountsEffect::ChooseThunderbirdMetadata).bound())
-        .operation(
-            SettingsEffect::from(AccountsEffect::CommitThunderbirdImport {
-                revision: self.import_review.revision,
-            })
-            .bound(),
-        )
-        .operation(SettingsEffect::from(AccountsEffect::CancelThunderbirdImport).bound());
+        );
+        root = root
+            .operation(SettingsEffect::from(AccountsEffect::InspectThunderbirdImport).bound())
+            .operation(SettingsEffect::from(AccountsEffect::ChooseThunderbirdMetadata).bound())
+            .operation(
+                SettingsEffect::from(AccountsEffect::CommitThunderbirdImport {
+                    revision: self.import_review.revision,
+                })
+                .bound(),
+            )
+            .operation(SettingsEffect::from(AccountsEffect::CancelThunderbirdImport).bound());
         for choice in &self.import_review.choices {
             let source = super::import_review::identity(&choice.candidate);
-            let mut row = LiveRow::new(
+            let mut row = LiveRow::typed::<AccountImportChoice>(
                 format!("settings.thunderbird-account:{source}"),
-                "settings.account-import-choice",
                 choice.candidate.email.clone(),
             );
             for auth in ["password", "oauth"] {

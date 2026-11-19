@@ -9,8 +9,8 @@
 
 use runtime_collab as collab;
 use runtime_fs as fs;
-use runtime_identity as identity;
 use runtime_portal::{self as portal, NotAvailable, is_tilo_native};
+use tilo_identity_client as identity;
 
 // Thin build only: pull the shared runtime SDK dylib
 // (`libruntime_dylib.so`) into the link graph. Without this reference

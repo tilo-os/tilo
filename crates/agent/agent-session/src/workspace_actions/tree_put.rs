@@ -24,7 +24,7 @@ use tilo_fs::namespace::Namespace;
 use tilo_fs::tree_document::{FILES_APP, document_id as tree_document};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server_protocol::WorkspaceId;
-use ui::permissions::policy::{ActionKind, Answer, TreePath};
+use ui::permissions::policy::{ActionKind, Answer};
 
 use super::{Outcome, Worker, commit_failed, invoke_arguments};
 
@@ -290,13 +290,18 @@ impl Worker {
         };
         self.permissions_across(workspace_id, &who, &workspace_id.to_string())
             .is_some_and(|permissions| {
-                let tree = TreePath::root().app(FILES_APP).kind(tree::TREE_KIND);
+                // The nodes a mount writing a file and every receiver of the change decide it at.
                 if verbs.is_empty() {
-                    return permissions.answer(&tree, ActionKind::Read) == Answer::Allow;
+                    return permissions.answer(
+                        &fs_protocol::file_action::verb_node(None, tree::LIST),
+                        ActionKind::Read,
+                    ) == Answer::Allow;
                 }
                 verbs.iter().all(|verb| {
-                    permissions.answer(&tree.clone().action(*verb), ActionKind::Undoable)
-                        == Answer::Allow
+                    permissions.answer(
+                        &fs_protocol::file_action::verb_node(None, verb),
+                        ActionKind::Undoable,
+                    ) == Answer::Allow
                 })
             })
     }

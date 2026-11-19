@@ -487,3 +487,15 @@ request's serial left to the compositor's meaning. Both `SetSelection` requests 
 device.rs` ask it. The compositor bounds the exception; the default refuses.
 
 Remove this once upstream offers a protocol by which a kept client may re-assert a selection.
+## An ack that crossed its role's destroy is not an error
+
+A window that replaces another (a wizard's next page, Wine's dialogs) maps the new toplevel and
+destroys the old one at once. Focusing the new window deactivates the old one, so the compositor
+sends the old one a configure, which can be on its way while the client destroys that toplevel and
+keeps its `xdg_surface`. The client then acks it, as it must. `xdg_toplevel.destroy` resets the
+surface's toplevel data and its pending configures with it, so the ack found no such serial and
+the client was killed with `wrong configure serial`: its new window had the keyboard and never got
+a key. `xdg_surface.ack_configure` in `src/wayland/shell/xdg/handlers/surface.rs` now ignores an
+ack once the surface's role object is gone; there is nothing left to apply it to.
+
+Remove this once upstream tolerates such an ack.

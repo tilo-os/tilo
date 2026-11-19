@@ -21,7 +21,6 @@ use tilo_actions::EncodedAction;
 use tilolang::{IdsLock, PackageMeta};
 use tilolang_runtime::ids::AppId;
 use tilolang_runtime::meta::{Meta, Ty, parse_ty};
-use tilolang_runtime::store::NewResource;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
     Actor, InvokeOutcome, ModuleHash, PackageId, Reading, Runtime, RuntimeError, StoreError,
@@ -1513,22 +1512,10 @@ impl Host {
         if self.inner.store.contains(&id) {
             return Ok(ResourceRef::root(id, ty.to_owned()));
         }
-        let record = NewResource {
-            ty: ty.to_owned(),
-            app: AppId::from(app),
-            fields: Vec::new(),
-            text_defaults: Vec::new(),
-        };
-        let root = self.inner.store.create_with_id(&record, &id)?;
-        // A root made now has its package's migrations behind it: what a package fills its first
-        // start with is there before the window that asked for the root is drawn, and it is part
-        // of the root's making — no one's change, and nothing to catch anyone up on.
-        if let Some(package) = self.package(app) {
-            self.inner.runtime.set_creating(true);
-            self.migrate_doc(&package, ty, &id);
-            self.inner.runtime.set_creating(false);
-        }
-        Ok(root)
+        // Made with what its type starts with, in one change that is nobody's: what a package
+        // fills its first start with is there before the window that asked for the root is
+        // drawn, and nothing about it is anyone's to catch up on.
+        Ok(self.inner.runtime.create_root(ty)?)
     }
 
     /// The type id of the root `chosen` names in `app`: the named root, or a root by its type's
@@ -1552,8 +1539,8 @@ impl Host {
     }
 
     /// Run each loaded package's migrations (`migration action`): once on each resource of the
-    /// migration's target type that the migration has not run on, whether an earlier version
-    /// of the package wrote the resource or this one, as an action of the package version
+    /// migration's target type that an earlier version of the package wrote (one this version
+    /// makes is marked migrated in its making), as an action of the package version
     /// (the app acting by itself), which records in the same change that it
     /// ran. A field the new build keeps as `RichText` where the old one kept `Text` has its
     /// text carried into rich text first, the same words ([`crate::store`]'s

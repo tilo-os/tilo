@@ -84,7 +84,7 @@ impl StatePeer {
                 revocations,
                 receipts: Shared::default(),
                 workspace_doc: None,
-                documents: Shared::default(),
+                documents: super::documents::Documents::default(),
                 pending: VecDeque::new(),
                 pending_bytes: 0,
                 exact_admissions: ExactAdmissions::default(),
@@ -114,7 +114,7 @@ impl StatePeer {
         key: &dyn DeviceSigner,
         now: SystemTime,
     ) -> Result<bool, String> {
-        self.require_member_writer(key, now)?;
+        self.require_admitting_owner_device(key, now)?;
         if cert.user_public_key != self.core.owner {
             return Err("enrollment root mismatch".into());
         }

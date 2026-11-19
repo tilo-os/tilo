@@ -151,9 +151,15 @@ impl FrameHarness {
     /// ([`Self::host_window_parts`]).
     #[must_use]
     pub fn hosts_window_parts(&self) -> bool {
+        self.parts_row_shown()
+    }
+
+    /// Whether a row of the app's parts stands over its frame, rather than only a notice card over
+    /// an app whose own header row is the window's bar: only such a row presents search.
+    pub(super) fn parts_row_shown(&self) -> bool {
         self.part_row
             .as_ref()
-            .is_some_and(|hosted| !hosted.row.is_notice_card())
+            .is_some_and(|parts| !parts.row.is_notice_card())
     }
 
     /// The frame is a window of its own on a shell that leaves the frame to the app
@@ -767,6 +773,46 @@ mod tests {
         assert_eq!(
             face.label.as_ref().map(|label| label.text.as_str()),
             Some("Saved")
+        );
+    }
+
+    /// A page's app whose own header row is the window's bar keeps its search in that row, at
+    /// every rebuild: nothing else on the page presents one.
+    #[test]
+    fn an_apps_own_bar_keeps_its_search() {
+        use crate::search::{SearchRequest, search_button};
+        use crate::widget::NavShell;
+        let shell = NavShell::new()
+            .content_kind(crate::widget::ContentKind::Page)
+            .sidebar(Box::new(crate::widget::Button::new("one", "One")))
+            .content(Box::new(crate::widget::Button::new("two", "Two")))
+            .sidebar_header("Places", Vec::new())
+            .content_header(
+                "A page",
+                vec![Box::new(search_button(SearchRequest::this_app()))],
+            );
+        let mut harness = FrameHarness::for_root(
+            crate::State::new(),
+            shell,
+            (1280, 800),
+            crate::theme::Theme::dark().with_reduce_motion(true),
+        );
+        harness.host_window_parts();
+        harness.relayout();
+        harness.invalidate_layout_tree();
+        harness.relayout();
+        fn shown(node: &crate::composition::Composed, name: &str) -> bool {
+            let named = node
+                .semantics
+                .as_ref()
+                .is_some_and(|semantics| semantics.name.as_deref() == Some(name));
+            (named && node.rect[2] > 0.0 && node.rect[3] > 0.0)
+                || node.children.iter().any(|child| shown(child, name))
+        }
+        let name = crate::i18n::I18nManager::lookup_plain("standalone-search-title");
+        assert!(
+            shown(&harness.composition().root, &name),
+            "the row keeps the app's search"
         );
     }
 

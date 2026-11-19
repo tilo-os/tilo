@@ -277,10 +277,10 @@ root Letters
 
 default view letters for Letters
 
-default view draft_page for Draft
+default view draft for Draft
 
-view draft_page(d: Draft) {
-    ui.ListRow(title: d.to)
+view draft(d: Draft) {
+    text(d.to)
 }
 
 view letters(letters: Letters) {

@@ -1,5 +1,5 @@
 # What tools/ci/boot-assessment.sh needs beside the builder image: the dev image installed
-# with build-image.sh and booted under KVM with vm.sh.
+# with build-image.sh and booted under KVM with vm.sh, with a software TPM.
 qemu-kvm
 qemu-img
 edk2-ovmf
@@ -7,6 +7,8 @@ ipxe-roms-qemu
 openssh-clients
 sshpass
 socat
+swtpm
+swtpm-tools
 btrfs-progs
 cryptsetup
 dosfstools

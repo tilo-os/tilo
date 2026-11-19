@@ -4,9 +4,8 @@
 //! This is the process's one identity boundary, the toolkit's and the collab
 //! client's. The toolkit reads the person's
 //! public identity only through the process's [`LocalIdentitySource`]. The
-//! native implementation reads the runtime identity the launcher bound
-//! (`TILO_USER_IDENTITY`), then `$XDG_CONFIG_HOME/tilo/identity/primary.json`
-//! (feature `local-daemons`). A browser page installs one derived from its
+//! native implementation reads the workspace identity service its launcher
+//! bound it to (feature `local-daemons`). A browser page installs one derived from its
 //! certified device (the server peer's `DeviceCert` names the user root) with
 //! [`install_source`] once certification completes; the device key itself
 //! stays in the page's ownership and signs through the server client's
@@ -34,7 +33,7 @@ pub trait LocalIdentitySource: Send + Sync {
 
     /// Bounded public presentation, bound to the certified person's root key.
     #[cfg(feature = "local-daemons")]
-    fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
+    fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
         None
     }
 }
@@ -43,7 +42,7 @@ pub trait LocalIdentitySource: Send + Sync {
 /// and email addresses are never interpreted as the local person.
 #[cfg(feature = "local-daemons")]
 #[must_use]
-pub fn photo_for(identity: &str) -> Option<runtime_identity::ProfilePhoto> {
+pub fn photo_for(identity: &str) -> Option<tilo_identity_client::ProfilePhoto> {
     let source = SOURCE.read_recover().clone();
     match source {
         Some(source) => photo_from(source.as_ref(), identity),
@@ -55,7 +54,7 @@ pub fn photo_for(identity: &str) -> Option<runtime_identity::ProfilePhoto> {
 fn photo_from(
     source: &dyn LocalIdentitySource,
     identity: &str,
-) -> Option<runtime_identity::ProfilePhoto> {
+) -> Option<tilo_identity_client::ProfilePhoto> {
     // Reject aliases before asking the authenticated source for any metadata.
     if identity.len() != 64
         || !identity
@@ -73,7 +72,7 @@ fn photo_from(
 /// the person beside what they wrote (their own mail).
 #[cfg(feature = "local-daemons")]
 #[must_use]
-pub fn own_public_photo() -> Option<runtime_identity::ProfilePhoto> {
+pub fn own_public_photo() -> Option<tilo_identity_client::ProfilePhoto> {
     let source = SOURCE.read_recover().clone();
     let (_, photo) = match source {
         Some(source) => source.public_photo(),
@@ -108,22 +107,10 @@ pub fn load() -> Option<LocalIdentity> {
     }
 }
 
-/// The identity bound to this process: the installed source, else the
-/// runtime identity the launcher bound (feature `local-daemons`), else none.
-/// Unlike [`load`], never the shell's own `primary.json`: for callers that
-/// fall back to an identity of their own when the launcher bound none.
-pub fn bound() -> Option<LocalIdentity> {
-    let installed = SOURCE.read_recover().clone();
-    match installed {
-        Some(source) => source.load(),
-        None => default_bound(),
-    }
-}
-
 /// What the person is called: their profile name, when they have one.
 #[must_use]
 pub fn own_name() -> Option<String> {
-    bound()
+    load()
         .map(|identity| identity.display_name.trim().to_owned())
         .filter(|name| !name.is_empty())
 }
@@ -152,37 +139,31 @@ impl LocalIdentitySource for NoLocalIdentity {
     }
 }
 
-/// The runtime identity bound by the launcher, else the shell's
-/// `primary.json` for its own unsandboxed in-process apps.
+/// The workspace identity service the process's launcher bound it to.
 #[cfg(feature = "local-daemons")]
 pub struct RuntimeIdentity;
 
 #[cfg(feature = "local-daemons")]
 impl LocalIdentitySource for RuntimeIdentity {
     fn load(&self) -> Option<LocalIdentity> {
-        Self::resolve(true)
+        Self::resolve()
     }
 
-    fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
-        runtime_identity::bound_profile_photo()
+    fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
+        tilo_identity_client::bound_profile_photo()
     }
 }
 
 #[cfg(feature = "local-daemons")]
 impl RuntimeIdentity {
-    /// The launcher's identity, else (with `shell_config`) `primary.json`.
+    /// The person the inherited identity service names.
     ///
-    /// Only the record's public fields are read: a name and colour never
+    /// Only the service's public fields are read: a name and colour never
     /// reach for the signing secret, which on a desktop with a Secret
     /// Service is a D-Bus round trip (and maybe an unlock prompt). The shell
     /// asks on its broker and network runtimes for every presence frame.
-    fn resolve(shell_config: bool) -> Option<LocalIdentity> {
-        let id = bound_metadata().or_else(|| {
-            shell_config
-                .then(config_identity_path)
-                .flatten()
-                .and_then(|p| runtime_identity::load_metadata_from_path(&p).ok())
-        })?;
+    fn resolve() -> Option<LocalIdentity> {
+        let id = bound_metadata()?;
         Some(LocalIdentity {
             group_public_key: id.group_public_key,
             display_name: id.display_name,
@@ -192,49 +173,15 @@ impl RuntimeIdentity {
 }
 
 #[cfg(feature = "local-daemons")]
-fn bound_metadata() -> Option<runtime_identity::IdentityMetadata> {
-    match runtime_identity::load_metadata() {
+fn bound_metadata() -> Option<tilo_identity_client::IdentityMetadata> {
+    match tilo_identity_client::load_metadata() {
         Ok(metadata) => Some(metadata),
-        Err(runtime_portal::NotAvailable::ServiceFdMissing) => {
-            let environment = tilo_process::environment::environment();
-            let path = environment.paths.public_identity_record.as_deref()?;
-            runtime_identity::load_metadata_from_path(path).ok()
-        }
+        Err(runtime_portal::NotAvailable::ServiceFdMissing) => None,
         Err(error) => {
-            tracing::warn!(%error, "the bound identity record could not be read; this app runs with no local identity");
+            tracing::warn!(%error, "the bound identity service could not be read; this app runs with no local identity");
             None
         }
     }
-}
-
-#[cfg(feature = "local-daemons")]
-fn default_bound() -> Option<LocalIdentity> {
-    RuntimeIdentity::resolve(false)
-}
-
-#[cfg(not(feature = "local-daemons"))]
-const fn default_bound() -> Option<LocalIdentity> {
-    None
-}
-
-/// The person's active identity record under
-/// `$XDG_CONFIG_HOME/tilo/identity` (else `$HOME/.config/tilo/identity`):
-/// the one its `active` selector names, else the legacy `primary.json`.
-/// A device set up with more than one identity keeps them as
-/// `identity-<key>.json` beside that selector and no `primary.json`; reading
-/// only `primary.json` left such a person nameless on their own desktop.
-#[cfg(feature = "local-daemons")]
-fn config_identity_path() -> Option<std::path::PathBuf> {
-    identity_record_in(
-        &tilo_process::environment::environment()
-            .paths
-            .config_dir()?,
-    )
-}
-
-#[cfg(feature = "local-daemons")]
-fn identity_record_in(config: &std::path::Path) -> Option<std::path::PathBuf> {
-    runtime_identity::resolve_active_identity(&config.join("tilo").join("identity"))
 }
 
 #[cfg(feature = "local-daemons")]
@@ -293,11 +240,11 @@ mod photo_tests {
         fn load(&self) -> Option<LocalIdentity> {
             None
         }
-        fn public_photo(&self) -> Option<([u8; 32], runtime_identity::ProfilePhoto)> {
+        fn public_photo(&self) -> Option<([u8; 32], tilo_identity_client::ProfilePhoto)> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Some((
                 [0x12; 32],
-                runtime_identity::ProfilePhoto::new(1, 1, vec![20, 90, 210, 255]).ok()?,
+                tilo_identity_client::ProfilePhoto::new(1, 1, vec![20, 90, 210, 255]).ok()?,
             ))
         }
     }
@@ -315,49 +262,5 @@ mod photo_tests {
         let photo = photo_from(&source, &"12".repeat(32)).unwrap();
         assert_eq!(photo.rgba(), &[20, 90, 210, 255]);
         assert!(photo_from(&NoLocalIdentity, &"12".repeat(32)).is_none());
-    }
-}
-
-#[cfg(test)]
-#[cfg(all(unix, feature = "local-daemons"))]
-mod active_document_tests {
-    use super::LocalIdentitySource as _;
-    use std::os::unix::fs::PermissionsExt as _;
-
-    fn private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-        std::fs::write(path, bytes)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-    }
-
-    #[test]
-    fn the_active_identity_record_is_read_where_there_is_no_primary() {
-        let config = tempfile::tempdir().unwrap();
-        let dir = config.path().join("tilo").join("identity");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let record =
-            runtime_identity_host::public_member_record("Ada", [10, 20, 30], [7; 32]).unwrap();
-        private(&dir.join("identity-ada.json"), &record).unwrap();
-        private(&dir.join("active"), b"identity-ada\n").unwrap();
-
-        let path = super::identity_record_in(config.path()).expect("the active record");
-        assert_eq!(path, dir.join("identity-ada.json"));
-        let metadata = runtime_identity::load_metadata_from_path(&path).unwrap();
-        assert_eq!(metadata.display_name, "Ada");
-
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.remove("TILO_SVC_IDENTITY_FD")
-            .remove("TILO_USER_IDENTITY")
-            .set("XDG_CONFIG_HOME", config.path());
-        assert_eq!(
-            super::RuntimeIdentity.load(),
-            Some(super::LocalIdentity {
-                group_public_key: [7; 32],
-                display_name: "Ada".into(),
-                avatar_color: [10, 20, 30],
-            })
-        );
-        assert!(super::RuntimeIdentity::resolve(false).is_none());
-        assert!(super::RuntimeIdentity.public_photo().is_none());
     }
 }

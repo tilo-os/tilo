@@ -22,6 +22,7 @@ use tilo_clock::unix_now_ns;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_user_identity::{DeviceCert, RevocationList, verify_device_cert_at};
 
+use tilo_endpoint_reachability::Reachability;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::Reaching;
@@ -68,6 +69,10 @@ pub struct ServiceConfig {
     /// it would have to rename; an endpoint that will never name one says so
     /// here, rather than making every open wait for it.
     pub reaching: Reaching,
+    /// The relays this embedder holds back: a holder wakes them before it signs an
+    /// invitation's address, so the link it hands out names where it is reached from any
+    /// network. The default holds nothing back, so an invitation names the endpoint's address.
+    pub reachability: Reachability,
     /// What a server's operator answered for the folder that keeps the keys
     /// of people's sealed stores apart from `state_root`: one a copy or a
     /// backup of the state does not take along, so that such a copy opens
@@ -78,6 +83,10 @@ pub struct ServiceConfig {
     /// where nobody is asked: each key is kept beside its sealed file and
     /// nothing is said.
     pub people_keys: Option<PathBuf>,
+    /// The device this service's member copies act as, when the embedder
+    /// keeps it on a device that serves the workspaces that device joined as
+    /// a member: `None` for a server, which joins none.
+    pub member: Option<Arc<crate::workspaces::MemberDevice>>,
 }
 
 impl ServiceConfig {
@@ -95,7 +104,9 @@ impl ServiceConfig {
             apps: None,
             shell_payloads: crate::payloads::neighbour(),
             reaching: Reaching::ByRelay,
+            reachability: Reachability::default(),
             people_keys: None,
+            member: None,
         }
     }
 }
@@ -156,6 +167,26 @@ pub struct ServiceSessions {
     membership_watch: Arc<crate::membership_watch::WatchTask>,
 }
 
+/// An app action server that answers nothing: what a service opened only for
+/// the member copies a device holds serves.
+struct NoActions;
+
+impl AppActionServer for NoActions {
+    fn serve(
+        &self,
+        _workspace_id: WorkspaceId,
+        _caller: &tilo_actions::remote::Caller,
+        _message: tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>> {
+        None
+    }
+}
+
+/// The app action server such a service answers with.
+fn no_actions() -> Arc<dyn AppActionServer> {
+    Arc::new(NoActions)
+}
+
 /// A service's workspaces, when it governs them: the governance and the app action server
 /// answering its actions.
 pub struct Governed {
@@ -171,8 +202,9 @@ impl ServiceSessions {
     ///
     /// # Errors
     ///
-    /// The identity is invalid or, for a certified service, not able to serve;
-    /// the state root cannot be created; or the workspaces cannot be opened.
+    /// The identity is invalid or, for a certified service, not able to serve
+    /// or to govern the workspaces it was asked to govern; the state root
+    /// cannot be created; or the workspaces cannot be opened.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the handler is a set of shared handles moved into the sessions it becomes part of; dropping it earlier releases no lock"
@@ -189,7 +221,7 @@ impl ServiceSessions {
         ) -> Option<Arc<dyn AppActionServer>>,
     ) -> Result<(Self, Option<Governed>), ServiceError> {
         validate_service_device_identity(&identity)?;
-        say_when_unsealed(governs, &identity.device_cert);
+        may_govern(governs, &identity.device_cert)?;
         std::fs::create_dir_all(&cfg.state_root)?;
         let workspaces: WorkspaceRegistry =
             Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
@@ -253,9 +285,12 @@ impl ServiceSessions {
             closing: Arc::new(tokio::sync::watch::channel(false).0),
             membership_watch: Arc::new(crate::membership_watch::WatchTask::spawn(&cfg.state_root)),
         };
-        let (Some(governance), Some(actions)) = (governance, own_server) else {
+        // A service that governs nothing still holds the member copies of a
+        // device that joined workspaces another device serves; with neither,
+        // there is nothing to open.
+        if governance.is_none() && cfg.member.is_none() {
             return Ok((sessions, None));
-        };
+        }
         if let Some(named) = &cfg.people_keys {
             // Decided and said before any person's store is opened: each key
             // is made, or found, where it is kept from then on.
@@ -272,24 +307,29 @@ impl ServiceSessions {
         // have to rename: the endpoint names where it is reached first, when it
         // will at all.
         cfg.reaching.awaited(&endpoint).await;
-        let workspaces = crate::workspaces::Workspaces::open(
+        let workspaces = Box::pin(crate::workspaces::Workspaces::open(
             sessions.workspace_services(&cfg, &identity, endpoint, revocations, channels),
             cfg.state_root.join("workspaces"),
             cfg.state_root.join("store"),
-        )
+        ))
         .await
         .map_err(ServiceError::Workspaces)?;
-        governance.attach(workspaces.clone());
-        // Sessions ask its governance what a device may do; the lock is set
-        // before the endpoint routes any session to a service that governs here.
-        let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
-        #[cfg(any(feature = "agents", feature = "web"))]
-        take_part(&sessions.handler.compactor, &workspaces);
+        if let Some(member) = cfg.member.clone() {
+            workspaces.set_member_device(member);
+        }
+        if let Some(governance) = governance {
+            governance.attach(workspaces.clone());
+            // Sessions ask its governance what a device may do; the lock is set
+            // before the endpoint routes any session to a service that governs here.
+            let _ = sessions.handler.admin.set(Arc::new(workspaces.clone()));
+            #[cfg(any(feature = "agents", feature = "web"))]
+            take_part(&sessions.handler.compactor, &workspaces);
+        }
         Ok((
             sessions,
             Some(Governed {
                 workspaces,
-                actions,
+                actions: own_server.unwrap_or_else(no_actions),
             }),
         ))
     }
@@ -321,9 +361,11 @@ impl ServiceSessions {
             agents: self.handler.agents.clone(),
             environments: self.handler.environments.clone(),
             work: cfg.work.clone(),
+            reachability: cfg.reachability.clone(),
             holder: Arc::new(std::sync::RwLock::new(crate::workspaces::HolderClaim {
                 label: cfg.label.clone(),
                 cloud: cfg.rented,
+                moderates: std::collections::BTreeSet::new(),
             })),
             arrivals: self.handler.arrivals.clone(),
         }
@@ -421,17 +463,18 @@ fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::works
     tokio::spawn(async move { repairing.fold_away_unsent(&compactor).await });
 }
 
-/// Say loudly when a service that `governs` workspaces under `cert` takes part in no
-/// channels: its certificate may not own workspaces, so the workspaces it governs
-/// keep their records in the clear in the workspace document instead of sealed
-/// channels.
-fn say_when_unsealed(governs: bool, cert: &DeviceCert) {
+/// Whether a service asked to govern under `cert` may: governing a workspace is holding its
+/// keys, which its documents are sealed under, so a device enrolled without that capability
+/// serves its person's sessions but keeps no workspace.
+fn may_govern(governs: bool, cert: &DeviceCert) -> Result<(), ServiceError> {
     if governs && !cert.capabilities.holds_workspace_keys() {
-        tracing::error!(
-            device = %cert.device_label,
-            "this service's certificate cannot own workspaces, so the workspaces it governs are not sealed; re-enroll it with the own capability"
-        );
+        return Err(ServiceError::Identity(
+            "this service's certificate cannot own workspaces, so it cannot govern \
+             them: re-enroll it with the own capability"
+                .into(),
+        ));
     }
+    Ok(())
 }
 
 /// The handlers of a governing service's ALPNs, shared between the routers
@@ -540,9 +583,15 @@ impl WorkspaceService {
                 "a service admitting anyone governs no workspaces".into(),
             ));
         }
-        let (sessions, governed) =
-            ServiceSessions::open(cfg, identity, endpoint, true, channels, |_, server| server)
-                .await?;
+        let (sessions, governed) = Box::pin(ServiceSessions::open(
+            cfg,
+            identity,
+            endpoint,
+            true,
+            channels,
+            |_, server| server,
+        ))
+        .await?;
         let Some(Governed {
             workspaces,
             actions,
@@ -550,6 +599,53 @@ impl WorkspaceService {
         else {
             return Err(ServiceError::Workspaces(
                 "the service governs no workspaces".into(),
+            ));
+        };
+        let handlers = service_handlers(&sessions, &workspaces);
+        Ok(Self {
+            sessions,
+            workspaces,
+            actions,
+            handlers,
+        })
+    }
+
+    /// Open the service on `endpoint` without governing the workspaces kept
+    /// there: the embedder serves them itself, and the service holds only the
+    /// member copies the device joined. Its sessions answer the join protocol
+    /// and the direct link, which member copies sync over.
+    ///
+    /// # Errors
+    ///
+    /// The identity is invalid or not able to serve; the state root cannot be
+    /// created; or the workspaces kept there cannot be opened.
+    pub async fn open_joining(
+        cfg: ServiceConfig,
+        identity: ServiceIdentity,
+        endpoint: Endpoint,
+        channels: Option<crate::workspaces::DeviceKeyGroups>,
+    ) -> Result<Self, ServiceError> {
+        if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
+            return Err(ServiceError::Identity(
+                "a service admitting anyone governs no workspaces".into(),
+            ));
+        }
+        let (sessions, governed) = Box::pin(ServiceSessions::open(
+            cfg,
+            identity,
+            endpoint,
+            false,
+            channels,
+            |_, server| server,
+        ))
+        .await?;
+        let Some(Governed {
+            workspaces,
+            actions,
+        }) = governed
+        else {
+            return Err(ServiceError::Workspaces(
+                "the service holds no member copies".into(),
             ));
         };
         let handlers = service_handlers(&sessions, &workspaces);
@@ -657,6 +753,16 @@ impl WorkspaceService {
         self.sessions.workspace_documents()
     }
 
+    /// The resources of the workspaces this service holds, as the broker answers an app's Open of
+    /// one and the session's own reads of one.
+    #[cfg(feature = "apps")]
+    #[must_use]
+    pub fn document_reads(&self) -> Arc<dyn crate::apps::services::NativeDocumentReads> {
+        Arc::new(crate::apps::service_reads::ServiceReads::new(
+            self.workspaces.clone(),
+        ))
+    }
+
     /// The certificate this service proves itself with.
     #[must_use]
     pub fn device_cert(&self) -> &DeviceCert {
@@ -733,32 +839,38 @@ impl ServiceSlot {
 /// nothing.
 #[must_use]
 pub fn deferred_protocols() -> (ServiceSlot, Protocols) {
-    let slot = ServiceSlot::default();
-    let handlers = SERVICE_ALPNS
+    let service = ServiceSlot::default();
+    (service.clone(), deferred_protocols_in(&service))
+}
+
+/// [`deferred_protocols`] for a [`ServiceSlot`] the embedder already holds: what it answers once
+/// a service is installed there ([`ServiceSlot::install`]).
+#[must_use]
+pub fn deferred_protocols_in(service: &ServiceSlot) -> Protocols {
+    SERVICE_ALPNS
         .iter()
         .map(|alpn| {
             (
                 alpn.to_vec(),
                 Box::new(Deferred {
-                    slot: slot.clone(),
+                    service: service.clone(),
                     alpn,
                 }) as Box<dyn DynProtocolHandler>,
             )
         })
-        .collect();
-    (slot, handlers)
+        .collect()
 }
 
 /// One ALPN of a [`ServiceSlot`].
 #[derive(Debug)]
 struct Deferred {
-    slot: ServiceSlot,
+    service: ServiceSlot,
     alpn: &'static [u8],
 }
 
 impl ProtocolHandler for Deferred {
     async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        let Some(service) = self.slot.service() else {
+        let Some(service) = self.service.service() else {
             return Err(AcceptError::from_err(std::io::Error::other(
                 "no workspace is served here",
             )));
@@ -850,6 +962,7 @@ impl GovernedAccessWriter {
         &self,
         workspace_id: WorkspaceId,
         access: tilo_peer_state::GovernedAccess,
+        revoked: Vec<[u8; 32]>,
     ) -> Result<Vec<[u8; 32]>, ServiceError> {
         if self.handshake_trust.allow_any {
             return Err(ServiceError::GovernedAccess(
@@ -889,6 +1002,7 @@ impl GovernedAccessWriter {
                 member_user_roots,
                 governed: true,
             },
+            revoked,
         )
         .await;
         // Also after an I/O error the handshake union must reflect the
@@ -1049,6 +1163,83 @@ pub struct ServiceIdentity {
     pub device_cert: DeviceCert,
     /// Current revocation list (may be empty).
     pub revocations: RevocationList,
+}
+
+/// Where a device's workspace service keeps its own key and the certificate
+/// its device issued for it, under the service's state root.
+const OWN_KEY_DIR: &str = "service-key";
+
+impl ServiceIdentity {
+    /// The identity of the workspace service of the device `device`, whose
+    /// key `signer` holds, keeping its state under `root`: a
+    /// key of the service's own, made the first time and kept there, and the
+    /// certificate `device` issues for it as its workspace service
+    /// ([`tilo_user_identity::prepare_service_cert`]). The certificate is
+    /// issued again whenever the one kept no longer holds for `device` as it
+    /// is certified now.
+    ///
+    /// The service never signs under the device's key: the device and its
+    /// service each write under a key of their own, so neither takes a
+    /// sequence number the other already gave a change.
+    ///
+    /// # Errors
+    ///
+    /// The key or certificate cannot be kept under `root`, or `signer` does
+    /// not sign for `device`.
+    pub async fn beside_device(
+        root: &std::path::Path,
+        device: &DeviceCert,
+        signer: &dyn collab_types::signer::DeviceSigner,
+    ) -> Result<Self, ServiceError> {
+        use tilo_device_identity::persist;
+        let fail = |what: &str, error: &dyn std::fmt::Display| {
+            ServiceError::Identity(format!("this device's workspace service {what}: {error}"))
+        };
+        let dir = root.join(OWN_KEY_DIR);
+        let key_path = dir.join("key.bin");
+        let cert_path = dir.join("cert.bin");
+        let key = if key_path.exists() {
+            persist::read_signing_key(&key_path).map_err(|error| fail("key", &error))?
+        } else {
+            std::fs::create_dir_all(&dir).map_err(|error| fail("key", &error))?;
+            let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
+                getrandom::SysRng,
+            ));
+            persist::write_signing_key(&key_path, &key).map_err(|error| fail("key", &error))?;
+            key
+        };
+        let public = key.verifying_key().to_bytes();
+        let now = unix_now_ns();
+        let kept = persist::read_device_cert(&cert_path).ok().filter(|cert| {
+            cert.device_public_key == public
+                && cert.issuer.as_deref() == Some(device)
+                && verify_device_cert_at(cert, now).is_ok()
+        });
+        let cert = if let Some(cert) = kept {
+            cert
+        } else {
+            let mut cert = tilo_user_identity::prepare_service_cert(
+                device,
+                public,
+                &device.device_label,
+                now.max(device.issued_at_ns),
+            );
+            tilo_user_identity::sign_device_cert_async(&mut cert, signer)
+                .await
+                .map_err(|error| fail("certificate", &error))?;
+            persist::write_device_cert(&cert_path, &cert)
+                .map_err(|error| fail("certificate", &error))?;
+            cert
+        };
+        Ok(Self {
+            user_public_key: cert.user_public_key,
+            device_signing_key: key,
+            device_cert: cert,
+            // Each workspace's own revocations reach the service through its
+            // governance.
+            revocations: RevocationList::new(),
+        })
+    }
 }
 
 pub fn validate_service_device_identity(identity: &ServiceIdentity) -> Result<(), ServiceError> {
@@ -1475,6 +1666,47 @@ mod tests {
             listed(&trust),
             vec![hex::encode(own_user), hex::encode([8; 32])],
             "a forgotten workspace's reader is trusted no more"
+        );
+    }
+
+    /// Governing a workspace is holding its keys, so a service whose
+    /// certificate may not own workspaces keeps none: asked to govern, it
+    /// refuses instead of serving workspaces it could not seal.
+    #[tokio::test]
+    async fn a_service_whose_cert_cannot_own_governs_no_workspace() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (key, cert) = crate::workspaces::fixtures::governor_with(
+            tilo_user_identity::DeviceCapabilities::administrator(),
+        );
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+            .bind()
+            .await
+            .expect("a loopback endpoint binds");
+        let opened = ServiceSessions::open(
+            ServiceConfig::new(
+                state.path().to_owned(),
+                tilo_server_protocol::WorkSetting::none(),
+            ),
+            ServiceIdentity {
+                user_public_key: cert.user_public_key,
+                device_signing_key: key,
+                device_cert: cert,
+                revocations: RevocationList::new(),
+            },
+            endpoint.clone(),
+            true,
+            None,
+            |_, server| server,
+        )
+        .await;
+        endpoint.close().await;
+        let Err(ServiceError::Identity(reason)) = opened else {
+            panic!("a service whose certificate cannot own workspaces governed them");
+        };
+        assert!(
+            reason.contains("own capability"),
+            "the refusal names what the device needs: {reason}"
         );
     }
 }

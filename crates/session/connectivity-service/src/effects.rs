@@ -3,11 +3,16 @@
 
 use tilo_resource::Effect;
 
+use crate::{
+    BluetoothAccessoryRow, BluetoothNearbyRow, SavedNetworkRow, VpnProfileRow, WifiNetworkRow,
+};
+
 /// The `network` resource's actions.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.connectivity.network")]
 pub enum NetworkAction {
     /// Turn Wi-Fi on or off.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -19,9 +24,11 @@ pub enum NetworkAction {
         on: bool,
     },
     /// Turn Wi-Fi off when it is on, and on when it is off.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "wifi", keywords = "wifi, wi-fi, wlan, wireless")]
     ToggleWifi,
     /// Look again for Wi-Fi networks in reach.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -30,12 +37,14 @@ pub enum NetworkAction {
     )]
     ScanWifi,
     /// Join a Wi-Fi network: one this device knows, or an open one.
-    #[effect(own_device, row, icon = "wifi")]
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "wifi", on = WifiNetworkRow)]
     JoinWifi {
         #[param("The network's name")]
         network: String,
     },
     /// Join a protected Wi-Fi network with its password.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "wifi")]
     ConnectWifi {
         #[param("The network's name")]
@@ -44,6 +53,7 @@ pub enum NetworkAction {
         password: String,
     },
     /// Join a Wi-Fi network that does not broadcast its name.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "wifi", keywords = "hidden network, hidden ssid")]
     ConnectHiddenWifi {
         #[param("The network's name")]
@@ -53,6 +63,7 @@ pub enum NetworkAction {
     },
     /// Join an enterprise (802.1X) Wi-Fi network with the identity and the
     /// organization's certificates, and connect.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "wifi",
@@ -81,27 +92,31 @@ pub enum NetworkAction {
         password: Option<String>,
     },
     /// Leave the Wi-Fi network this device is connected to.
-    #[effect(own_device, row, icon = "wifi-off")]
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "wifi-off", on = WifiNetworkRow)]
     DisconnectWifi {
         #[param("The network's name")]
         network: String,
     },
-    /// Forget a saved network: this device no longer joins it by itself.
-    #[effect(own_device, destructive, icon = "trash-2")]
-    ForgetNetwork {
-        #[param("The saved network, by its id")]
-        profile: String,
-    },
     /// Join a saved network by itself when it is in reach, or stop.
-    #[effect(own_device, idempotent, icon = "wifi")]
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "wifi", on = SavedNetworkRow)]
     SetNetworkAutoconnect {
         #[param("The saved network, by its id")]
         profile: String,
         #[param("Whether it joins by itself")]
         on: bool,
     },
+    /// Forget a saved network: this device no longer joins it by itself.
+    #[effect(kind = "outside")]
+    #[effect(own_device, destructive, icon = "trash-2", on = SavedNetworkRow)]
+    ForgetNetwork {
+        #[param("The saved network, by its id")]
+        profile: String,
+    },
     /// Send a saved network's traffic through a proxy, or straight out.
-    #[effect(own_device, idempotent, icon = "globe")]
+    #[effect(kind = "outside")]
+    #[effect(own_device, idempotent, icon = "globe", on = SavedNetworkRow)]
     SetNetworkProxy {
         #[param("The saved network, by its id")]
         profile: String,
@@ -109,6 +124,7 @@ pub enum NetworkAction {
         server: Option<String>,
     },
     /// Connect or disconnect the wired network.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -120,6 +136,7 @@ pub enum NetworkAction {
         on: bool,
     },
     /// Turn mobile data on or off.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -131,6 +148,7 @@ pub enum NetworkAction {
         on: bool,
     },
     /// Type the access point name mobile data connects through.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -143,12 +161,14 @@ pub enum NetworkAction {
     },
     /// Let mobile data connect on another operator's network, or keep it to
     /// this one.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent, icon = "signal", keywords = "roaming, abroad")]
     SetMobileRoaming {
         #[param("Whether it may roam")]
         on: bool,
     },
     /// Turn airplane mode on or off: every wireless radio goes off with it.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -160,6 +180,7 @@ pub enum NetworkAction {
         on: bool,
     },
     /// Turn airplane mode off when it is on, and on when it is off.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "plane", keywords = "airplane mode, flight mode")]
     ToggleAirplaneMode,
 }
@@ -169,6 +190,7 @@ pub enum NetworkAction {
 #[effect(operation = "so.tilo.connectivity.bluetooth")]
 pub enum BluetoothAction {
     /// Turn Bluetooth on or off.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -180,21 +202,25 @@ pub enum BluetoothAction {
         on: bool,
     },
     /// Turn Bluetooth off when it is on, and on when it is off.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "bluetooth", keywords = "bluetooth, headphones")]
     ToggleBluetooth,
     /// Connect a paired accessory.
-    #[effect(own_device, row, icon = "bluetooth")]
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "bluetooth", on = BluetoothAccessoryRow)]
     Connect {
         #[param("The accessory's address")]
         address: String,
     },
     /// Disconnect an accessory.
-    #[effect(own_device, row, icon = "bluetooth-off")]
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "bluetooth-off", on = BluetoothAccessoryRow)]
     Disconnect {
         #[param("The accessory's address")]
         address: String,
     },
     /// Look for accessories in reach, or stop looking.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -208,14 +234,26 @@ pub enum BluetoothAction {
     /// Pair a device in reach: `BlueZ` bonds with it, trusting it and
     /// connecting it. What the device asks to compare is a question the
     /// person answers.
-    #[effect(own_device, icon = "bluetooth", keywords = "pair, connect new")]
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        icon = "bluetooth",
+        keywords = "pair, connect new",
+        on = BluetoothNearbyRow
+    )]
     Pair {
         #[param("The device's address")]
         address: String,
     },
     /// Forget a device: its bond, its keys and its trust go, so it must be
     /// paired again from scratch.
-    #[effect(own_device, destructive, icon = "trash-2")]
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash-2",
+        on = BluetoothAccessoryRow
+    )]
     Forget {
         #[param("The device's address")]
         address: String,
@@ -227,11 +265,13 @@ pub enum BluetoothAction {
 #[effect(operation = "so.tilo.connectivity.vpn")]
 pub enum VpnAction {
     /// Connect or disconnect a VPN profile.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
         icon = "shield",
-        keywords = "vpn, tunnel, wireguard"
+        keywords = "vpn, tunnel, wireguard",
+        on = VpnProfileRow
     )]
     SetVpn {
         #[param("The profile, by its id")]
@@ -241,6 +281,7 @@ pub enum VpnAction {
     },
     /// Add a VPN from a configuration file's text: `WireGuard`, `OpenVPN` or
     /// a `NetworkManager` key file.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "shield",
@@ -255,7 +296,13 @@ pub enum VpnAction {
         text: String,
     },
     /// Remove a VPN profile from this device.
-    #[effect(own_device, destructive, icon = "trash-2")]
+    #[effect(kind = "outside")]
+    #[effect(
+        own_device,
+        destructive,
+        icon = "trash-2",
+        on = VpnProfileRow
+    )]
     ForgetVpn {
         #[param("The profile, by its id")]
         profile: String,
@@ -267,6 +314,7 @@ pub enum VpnAction {
 #[effect(operation = "so.tilo.connectivity.tethering")]
 pub enum TetheringAction {
     /// Share this device's connection over a Wi-Fi hotspot, or stop.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -279,6 +327,7 @@ pub enum TetheringAction {
     },
     /// Name the hotspot, choose its band and set its password, then share
     /// the connection over it.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "radio-tower",

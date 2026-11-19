@@ -47,6 +47,7 @@ pub enum VideoEditorEffect {
         media: String,
     },
     /// Import media.
+    #[effect(kind = "outside")]
     #[effect(job)]
     #[effect(label = "video-editor-shortcut-import-media")]
     Import {
@@ -57,6 +58,7 @@ pub enum VideoEditorEffect {
     ///
     /// Brings a video project file (`.qvp`) in as this project, in place of
     /// what the timeline holds; Undo takes it back.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, opens_path = "qvp")]
     OpenProjectFile {
         #[param("Absolute path; omit to use the system picker")]
@@ -67,6 +69,7 @@ pub enum VideoEditorEffect {
     /// Writes the project as a video project file (`.qvp`) to hand to
     /// someone or open elsewhere. The project itself is always kept; this
     /// is a copy of it.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, risk = "project_file_risk")]
     ExportProjectFile {
         #[param("Absolute path; omit to use the system picker")]
@@ -76,6 +79,7 @@ pub enum VideoEditorEffect {
     ///
     /// Writes the rendered timeline to a file, an outside effect like any
     /// other.
+    #[effect(kind = "outside")]
     #[effect(cancellable)]
     #[effect(label = "video-editor-shortcut-export-video")]
     Export {
@@ -83,6 +87,7 @@ pub enum VideoEditorEffect {
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Cancel export.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     #[effect(label = "video-editor-a11y-cancel-export")]
     CancelExport,

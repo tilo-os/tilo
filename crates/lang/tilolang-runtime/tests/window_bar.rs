@@ -149,6 +149,14 @@ mod cases {
             .collect()
     }
 
+    /// The window's actions: the content's own part, and the overview's where the window lists
+    /// items beside what they show.
+    fn bar(shell: &UiNode) -> Vec<&UiNode> {
+        let mut actions = part(shell, "actions");
+        actions.extend(part(shell, "overview_actions"));
+        actions
+    }
+
     /// `node` and the child holding `key` at every step down to it.
     fn path_to<'a>(tree: &'a UiNode, key: &str) -> Option<Vec<&'a UiNode>> {
         if tree.key == key {
@@ -201,9 +209,7 @@ mod cases {
         // view's: the shell holds the button, in the part its content's actions go in.
         let shell = of_kind(tree, "ui.NavShell")[0];
         assert!(
-            part(shell, "actions")
-                .iter()
-                .any(|node| node.key == new_task[0].key),
+            bar(shell).iter().any(|node| node.key == new_task[0].key),
             "the primary stands in the window's bar:\n{}",
             dump(tree)
         );
@@ -324,7 +330,7 @@ mod cases {
         let window = w.window("home", &root);
         let tree = window.tree();
         let shell = of_kind(tree, "ui.NavShell")[0];
-        let bar = part(shell, "actions");
+        let bar = bar(shell);
         let (drawn, overflow): (Vec<&UiNode>, Vec<&UiNode>) = bar
             .iter()
             .filter(|node| node.kind == "ui.Button")
@@ -529,7 +535,7 @@ view note_page(n: Note) {
             .into_iter()
             .next()
             .expect("the window's bar");
-        let archive = part(shell, "actions")
+        let archive = bar(shell)
             .into_iter()
             .filter(|child| child.props.get("label") == Some(&Value::text("Archive")))
             .count();
@@ -670,11 +676,9 @@ type Shelf {
 }
 root Shelf
 default view shelf for Shelf
-default view album_page for Album
-view album_page(a: Album) {
-    section(a.title) {
-        text(a.title)
-    }
+default view album for Album
+view album(a: Album) {
+    text(a.title)
 }
 primary action add(s: Shelf) -> Album (icon: .plus) {
     s.albums.insert(Album(title: "Blue"))
@@ -696,10 +700,7 @@ view shelf(s: Shelf) {
             let window = w.window("shelf", &root);
             let tree = window.tree();
             let shell = of_kind(tree, "ui.NavShell")[0];
-            // The window lists albums that open, so `std.browse` shapes it as a document with
-            // an overview, and the controls stand over that overview: the part the window's
-            // bar is.
-            let bar: Vec<&UiNode> = part(shell, "overview_actions")
+            let bar: Vec<&UiNode> = bar(shell)
                 .into_iter()
                 .filter(|node| node.kind == "ui.Button")
                 .collect();

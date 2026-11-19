@@ -104,7 +104,7 @@ pub struct IncomingIssue {
     /// `outside:<name>`: who it is assigned to there, who need not be a member here.
     pub assignee: Option<String>,
     pub comments: Vec<IncomingComment>,
-    /// The pages of the issues its relations name: how Tasks finds them, in this run or an
+    /// The pages of the issues its relations name: how Tasks finds them, in this import or an
     /// earlier one.
     pub links: Vec<String>,
     /// The page of the issue it is a sub-issue of.
@@ -141,18 +141,39 @@ pub struct IncomingIssue {
     pub relations: Vec<IncomingRelation>,
 }
 
-/// Where a run's items go.
+/// Where an import's items go.
 pub trait Landing {
-    /// Hand `page` to Notes, durably.
+    /// How many items it takes in one hand-over; the import saves its journal after each.
+    fn batch(&self) -> usize {
+        1
+    }
+    /// Hand `pages` to Notes, durably: which of them it has now, and which it refused and why.
     ///
     /// # Errors
-    /// It could not be written.
-    fn page(&mut self, page: &IncomingPage) -> io::Result<()>;
-    /// Hand `issue` to Tasks, durably.
+    /// It could not be reached; what it answered for before stays kept on its side.
+    fn pages(&mut self, pages: &[IncomingPage]) -> io::Result<Delivered>;
+    /// Hand `issues` to Tasks, durably: which of them it has now, and which it refused and why.
     ///
     /// # Errors
-    /// It could not be written.
-    fn issue(&mut self, issue: &IncomingIssue) -> io::Result<()>;
+    /// It could not be reached; what it answered for before stays kept on its side.
+    fn issues(&mut self, issues: &[IncomingIssue]) -> io::Result<Delivered>;
+}
+
+/// What a landing did with the items handed to it: the keys of those it has now, and those it
+/// refused, each with why. An item in neither was not reached and comes again in the next import.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Delivered {
+    pub landed: Vec<String>,
+    pub refused: Vec<RefusedItem>,
+}
+
+/// An item the destination refused: its key, how people know it (`ENG-12`, a page's title), and
+/// the destination's reason.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefusedItem {
+    pub key: String,
+    pub name: String,
+    pub why: String,
 }
 
 #[derive(Serialize)]
@@ -223,7 +244,27 @@ impl InboxLanding {
 }
 
 impl Landing for InboxLanding {
-    fn page(&mut self, page: &IncomingPage) -> io::Result<()> {
+    fn pages(&mut self, pages: &[IncomingPage]) -> io::Result<Delivered> {
+        let mut delivered = Delivered::default();
+        for page in pages {
+            self.page(page)?;
+            delivered.landed.push(page.key.clone());
+        }
+        Ok(delivered)
+    }
+
+    fn issues(&mut self, issues: &[IncomingIssue]) -> io::Result<Delivered> {
+        let mut delivered = Delivered::default();
+        for issue in issues {
+            self.issue(issue)?;
+            delivered.landed.push(issue.key.clone());
+        }
+        Ok(delivered)
+    }
+}
+
+impl InboxLanding {
+    fn page(&self, page: &IncomingPage) -> io::Result<()> {
         let engine = base64::engine::general_purpose::STANDARD;
         let entry = PageEntry {
             version: INBOX_VERSION,
@@ -246,7 +287,7 @@ impl Landing for InboxLanding {
         self.write("so.tilo.notes", "pages", &page.source, &page.key, &bytes)
     }
 
-    fn issue(&mut self, issue: &IncomingIssue) -> io::Result<()> {
+    fn issue(&self, issue: &IncomingIssue) -> io::Result<()> {
         let bytes = serde_json::to_vec(&IssueEntry {
             version: INBOX_VERSION,
             issue,

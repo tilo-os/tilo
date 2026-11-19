@@ -386,7 +386,7 @@ impl Store {
                 blocked.reason.clone(),
             ));
             statuses.push(EffectStatus::unavailable(
-                BackupsEffect::RESTORE_SNAPSHOT,
+                BackupsEffect::RESTORE,
                 blocked.code,
                 blocked.reason,
             ));
@@ -399,6 +399,23 @@ impl Store {
             ));
         }
         statuses
+    }
+
+    /// What one published row says about its own effects: a snapshot's verify and
+    /// restore do not run while this device has no usable backup location, while the
+    /// row stays for reading.
+    pub(crate) fn row_status(&self, id: &str) -> Vec<EffectStatus> {
+        let Some(blocked) = self.blocked() else {
+            return Vec::new();
+        };
+        if !id.starts_with("backups.snapshot:") && !id.starts_with("backups.restore-target:") {
+            return Vec::new();
+        }
+        vec![
+            EffectStatus::unavailable(BackupsEffect::VERIFY, blocked.code, blocked.reason.clone())
+                .on(id),
+            EffectStatus::unavailable(BackupsEffect::RESTORE, blocked.code, blocked.reason).on(id),
+        ]
     }
 
     fn has_snapshot(&self, id: &str) -> bool {
@@ -440,47 +457,16 @@ impl Store {
                 self.ui.sel_snapshot = Some(snapshot_id.clone());
                 Ok(self.start_verify(snapshot_id, me, cx))
             }
-            BackupsEffect::RestoreSnapshot { snapshot_id } => {
+            BackupsEffect::Restore { snapshot_id } => {
                 self.repository_ready(&snapshot_id)?;
                 self.ui.sel_snapshot = Some(snapshot_id.clone());
                 Ok(self.choose_restore_folder(snapshot_id, me, cx))
             }
-            BackupsEffect::ShowSource { source_id } => {
-                if !self
-                    .catalog
-                    .sources
-                    .iter()
-                    .any(|source| source.id == source_id)
-                {
-                    return Err("That source is unavailable on this device.".into());
-                }
-                self.ui.sel_source = Some(source_id);
-                self.ui.sel_snapshot = None;
-                self.ui.view = View::Sources;
-                Ok(Effected::done())
-            }
-            BackupsEffect::ShowDestination { destination_id } => {
-                if !self
-                    .catalog
-                    .destinations
-                    .iter()
-                    .any(|destination| destination.id == destination_id)
-                {
-                    return Err("That destination is unavailable on this device.".into());
-                }
-                self.ui.sel_dest = Some(destination_id);
-                self.ui.view = View::Destinations;
-                Ok(Effected::done())
-            }
-            BackupsEffect::ReadSnapshot { snapshot_id } => {
+            BackupsEffect::Read { snapshot_id } => {
                 Ok(Effected::value(self.read_snapshot(&snapshot_id)?))
             }
-            BackupsEffect::ShowSnapshot { snapshot_id } => {
-                if !self.has_snapshot(&snapshot_id) {
-                    return Err("That snapshot is unavailable in this local repository.".into());
-                }
-                self.ui.sel_snapshot = Some(snapshot_id);
-                self.ui.view = View::Timeline;
+            BackupsEffect::Open { row } => {
+                self.show_row(&row)?;
                 Ok(Effected::done())
             }
             BackupsEffect::OrderSnapshots { order } => {
@@ -488,20 +474,50 @@ impl Store {
                 self.dirty = true;
                 Ok(Effected::done())
             }
-            BackupsEffect::ShowSchedule { source_id } => {
-                if !self
-                    .catalog
-                    .sources
-                    .iter()
-                    .any(|source| source.id == source_id)
-                {
-                    return Err("That schedule's source is unavailable on this device.".into());
-                }
-                self.ui.sel_source = Some(source_id);
-                self.ui.view = View::Schedules;
-                Ok(Effected::done())
-            }
         }
+    }
+
+    /// Show what the catalog row `row` is: its source, its schedule, its destination, or
+    /// the stored snapshot it names (a run shows the snapshot it ran).
+    fn show_row(&mut self, row: &str) -> Result<(), String> {
+        if let Some(id) = row.strip_prefix("backups.source:") {
+            if !self.catalog.sources.iter().any(|source| source.id == id) {
+                return Err("That source is unavailable on this device.".into());
+            }
+            self.ui.sel_source = Some(id.to_owned());
+            self.ui.sel_snapshot = None;
+            self.ui.view = View::Sources;
+        } else if let Some(id) = row.strip_prefix("backups.schedule:") {
+            if !self.catalog.sources.iter().any(|source| source.id == id) {
+                return Err("That schedule's source is unavailable on this device.".into());
+            }
+            self.ui.sel_source = Some(id.to_owned());
+            self.ui.view = View::Schedules;
+        } else if let Some(id) = row.strip_prefix("backups.destination:") {
+            if !self
+                .catalog
+                .destinations
+                .iter()
+                .any(|destination| destination.id == id)
+            {
+                return Err("That destination is unavailable on this device.".into());
+            }
+            self.ui.sel_dest = Some(id.to_owned());
+            self.ui.view = View::Destinations;
+        } else if row.starts_with("backups.snapshot:") || row.starts_with("backups.run:") {
+            let id = row
+                .strip_prefix("backups.snapshot:")
+                .or_else(|| row.strip_prefix("backups.run:"))
+                .unwrap_or(row);
+            if !self.has_snapshot(id) {
+                return Err("That snapshot is unavailable in this local repository.".into());
+            }
+            self.ui.sel_snapshot = Some(id.to_owned());
+            self.ui.view = View::Timeline;
+        } else {
+            return Err(format!("`{row}` is not a backup row"));
+        }
+        Ok(())
     }
 
     /// What the stored snapshot `snapshot_id` is: when it was taken, of what, where it is
@@ -984,7 +1000,7 @@ impl Store {
         self.job_kind = match &effect {
             BackupsEffect::BackupNow => Some(JobKind::Backup),
             BackupsEffect::Verify { .. } => Some(JobKind::Verify),
-            BackupsEffect::RestoreSnapshot { .. } => Some(JobKind::Restore),
+            BackupsEffect::Restore { .. } => Some(JobKind::Restore),
             _ => self.job_kind,
         };
         let result = self.answer_backend(effect, me, cx);
@@ -1273,7 +1289,7 @@ impl BackupsWindow {
                 Intent::OpenRestore => open_restore = true,
                 Intent::ChooseRestoreFolder => {
                     if let Some(id) = &repo.selected {
-                        repo.invoke(&BackupsEffect::RestoreSnapshot {
+                        repo.invoke(&BackupsEffect::Restore {
                             snapshot_id: id.clone(),
                         });
                     }
@@ -1444,17 +1460,21 @@ pub(crate) fn window(cx: &ViewCx<Backups>) -> Element {
             }
         });
     }
-    let (rows, row, entries) = (Rc::clone(&repo), Rc::clone(&repo), repo);
+    let (rows, row, statuses, entries) =
+        (Rc::clone(&repo), Rc::clone(&repo), Rc::clone(&repo), repo);
     cx.publishing(
         Publishes::new()
             .live_rows(move || {
                 let repo = rows.borrow();
-                crate::actions::live_rows(&repo.catalog, repo.blocked().as_ref())
+                crate::actions::live_rows(&repo.catalog)
             })
             .live_row(move |id| {
                 let repo = row.borrow();
-                crate::actions::live_row(&repo.catalog, repo.blocked().as_ref(), id)
+                crate::actions::live_row(&repo.catalog, id)
             })
+            // A snapshot row says a restore cannot run while this device has no
+            // usable backup location.
+            .row_status(move |id| statuses.borrow().row_status(id))
             .search_entries(move || crate::search::snapshot_entries(&entries.borrow().catalog)),
         Box::new(window),
     )
@@ -1527,6 +1547,13 @@ impl ui::widget::Decorator for BackupsWindow {
         self.drain_intents();
         self.show_repository();
         self.shell.update(state, path) || self.repo.borrow().dirty || progressed || jobs_moved
+    }
+
+    /// A running job reports its progress through a shared line the window polls on a
+    /// deadline, so what the window shows fills in as the job works: until it ends the
+    /// window is not at rest, and a capture waits for its page to be final.
+    fn has_pending_visual_work(&self) -> bool {
+        self.repo.borrow().work == Work::Running
     }
 
     /// A running job reports progress through a shared line; the app reads it a few times a
@@ -1745,20 +1772,30 @@ mod tests {
             3,
             "backing up, verifying and restoring are unavailable; setup is not"
         );
-        let rows: Vec<_> =
-            crate::actions::live_rows(&Catalog::sample(now()), app.blocked().as_ref())
-                .into_iter()
-                .map(ui::framework::LiveRow::into_resource)
-                .collect();
+        let rows: Vec<_> = crate::actions::live_rows(&Catalog::sample(now()))
+            .into_iter()
+            .map(ui::framework::LiveRow::into_resource)
+            .collect();
         let snapshot = &rows[2].children[0];
         for id in ["verify", "restore"] {
-            let action = snapshot.actions.iter().find(|a| a.id == id).unwrap();
             assert!(
-                matches!(
-                    &action.contract.availability,
-                    tilo_actions::Availability::Unavailable { reason, .. } if *reason == blocked.reason
-                ),
-                "{id}"
+                snapshot.actions.iter().any(|action| action.id == id),
+                "the row still offers {id}"
+            );
+        }
+        let statuses = app.row_status(snapshot.id.as_str());
+        assert_eq!(
+            statuses.len(),
+            2,
+            "verify and restore say why they cannot run"
+        );
+        for id in ["verify", "restore"] {
+            assert!(
+                statuses.iter().any(|status| {
+                    let said = format!("{status:?}");
+                    said.contains(id) && said.contains(&blocked.reason)
+                }),
+                "the row says {id} is unavailable, with the reason"
             );
         }
     }
@@ -2081,7 +2118,7 @@ mod tests {
         let cancel = app.restore.as_ref().unwrap().secondary_rect();
         click(&mut app, cancel.center());
         assert!(app.restore.is_none());
-        let rows = crate::actions::live_rows(&app.repo.borrow().catalog, None)
+        let rows = crate::actions::live_rows(&app.repo.borrow().catalog)
             .into_iter()
             .map(ui::framework::LiveRow::into_resource)
             .collect::<Vec<_>>();

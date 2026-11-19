@@ -1183,11 +1183,7 @@ impl ActivityTimeline {
         if entry.is_genesis() {
             return None;
         }
-        let row = RowSlot {
-            rect: self.row_rect(i)?,
-            depth: self.row_depth(i),
-        }
-        .indented();
+        let row = self.indented_row(i, self.row_rect(i)?);
         let cy = f64::midpoint(row.y0, row.y1);
         let x = row.x0 + 8.0;
         Some(Rect::new(
@@ -1264,6 +1260,15 @@ impl ActivityTimeline {
                 .map_or(ROW_HEIGHT, |face| face.height(ROW_HEIGHT, &self.face_theme)),
             None => ROW_HEIGHT,
         }
+    }
+
+    /// Row `i` at `rect`, stepped in by its depth in the tree of changes.
+    fn indented_row(&self, i: usize, rect: Rect) -> Rect {
+        RowSlot {
+            rect,
+            depth: self.row_depth(i),
+        }
+        .indented()
     }
 
     fn row_depth(&self, i: usize) -> usize {
@@ -1442,9 +1447,7 @@ impl ActivityTimeline {
         }
         self.row_face(i)?.copy.as_ref()?;
         let beside_revert = self.revert_chip_rect(i).is_some();
-        let row = self.row_rect(i)?;
-        let depth = self.row_depth(i);
-        let row = RowSlot { rect: row, depth }.indented();
+        let row = self.indented_row(i, self.row_rect(i)?);
         Some(self.hit_rect_within(self.copy_chip_painted(row, beside_revert), row))
     }
 
@@ -2276,7 +2279,9 @@ impl ActivityTimeline {
 
         let row = slot.indented();
         let cy = f64::midpoint(row.y0, row.y1);
-        if !entry.is_genesis() {
+        // A change nobody is named for wears no face: a blank one in a colour says someone it
+        // cannot say who.
+        if !entry.is_genesis() && !entry.author.name.is_empty() {
             Self::draw_row_avatar(ctx, row, cy, entry);
         }
 
@@ -2290,29 +2295,8 @@ impl ActivityTimeline {
                 .is_some_and(|face| face.copy.is_some());
         let chip_reserve = (self.revert_chip_w() + 6.0)
             * f64::from(u8::from(offers_revert) + u8::from(offers_copy));
-        // The time is fixed at the row's trailing edge; the author cluster
-        // may take a bounded share of what is left, and the change's own mark
-        // and sentence take the rest — never under the time, whatever the
-        // writer's name is and however narrow the pane.
-        let trailing = self.time_slot_w() + chip_reserve + TRAILING_INSET;
-        let body_end = (row.x1 - trailing).max(row.x0);
-        let cluster = if entry.is_genesis() {
-            None
-        } else {
-            self.row_author_cluster(entry, ctx.text, ctx.theme, row, cy, body_end)
-        };
-        let body_left = cluster
-            .as_ref()
-            .map_or(body_end.min(row.x0 + AUTHOR_SLOT_W), |cluster| {
-                cluster.body_left
-            });
-        let body = Rect::new(body_left, row.y0, body_end.max(body_left), row.y1);
-        let time = Rect::new(
-            body_end,
-            row.y0,
-            (row.x1 - chip_reserve - TRAILING_INSET).max(body_end),
-            row.y1,
-        );
+        let (cluster, body, time) =
+            self.entry_row_columns(entry, ctx.text, ctx.theme, row, chip_reserve);
         let layout = EntryRowLayout {
             row,
             cy,
@@ -2337,6 +2321,77 @@ impl ActivityTimeline {
         parts.mark = self.draw_row_body(ctx, &layout, entry, now);
         self.draw_row_trailing(ctx, &layout, entry, now);
         self.row_parts.borrow_mut().insert(entry.id, parts);
+    }
+
+    /// Where a change row's columns stand in `row`: its writer's chip, its mark and sentence, and
+    /// its time, with `chip_reserve` kept at the trailing edge for the chips a hovered row offers.
+    ///
+    /// The time is fixed at the row's trailing edge; the author cluster may take a bounded share
+    /// of what is left, and the change's own mark and sentence take the rest — never under the
+    /// time, whatever the writer's name is and however narrow the pane. One answer for the paint
+    /// and the page, so the two cannot place a row's parts apart.
+    fn entry_row_columns(
+        &self,
+        entry: &HistoryEntry,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        chip_reserve: f64,
+    ) -> (Option<writers::AuthorCluster>, Rect, Rect) {
+        let cy = f64::midpoint(row.y0, row.y1);
+        let trailing = self.time_slot_w() + chip_reserve + TRAILING_INSET;
+        let body_end = (row.x1 - trailing).max(row.x0);
+        let cluster = if entry.is_genesis() {
+            None
+        } else {
+            self.row_author_cluster(entry, text, theme, row, cy, body_end)
+        };
+        let body_left = cluster
+            .as_ref()
+            .map_or(body_end.min(row.x0 + AUTHOR_SLOT_W), |cluster| {
+                cluster.body_left
+            });
+        let body = Rect::new(body_left, row.y0, body_end.max(body_left), row.y1);
+        let time = Rect::new(
+            body_end,
+            row.y0,
+            (row.x1 - chip_reserve - TRAILING_INSET).max(body_end),
+            row.y1,
+        );
+        (cluster, body, time)
+    }
+
+    /// The sentence a change row says, and whether it says the change was taken back.
+    fn row_sentence(&self, entry: &HistoryEntry, now: SystemTime) -> (String, bool) {
+        if let Some(redaction) = entry.redaction.as_ref() {
+            return (
+                widget_format(
+                    "history-redacted",
+                    &[
+                        ("who", redaction.redactor_label.as_str().into()),
+                        (
+                            "when",
+                            format_relative_time(redaction.redacted_at, now).into(),
+                        ),
+                        ("reason", redaction.reason.as_str().into()),
+                    ],
+                ),
+                true,
+            );
+        }
+        let breadcrumb = if self.filters_people {
+            // One document's History: every change is of this app and
+            // this document, so naming them is noise.
+            None
+        } else {
+            Self::entry_breadcrumb(entry)
+        };
+        let said = self.summary_of(entry);
+        let summary = breadcrumb.map_or_else(
+            || said.to_owned(),
+            |breadcrumb| format!("{breadcrumb} · {said}"),
+        );
+        (summary, false)
     }
 
     /// The author's face: a person as their round face in their colour;
@@ -2509,39 +2564,9 @@ impl ActivityTimeline {
         }
 
         let line_top = text_top(text_renderer, text_style, cy);
-        let summary_x = glyph_x + 24.0;
+        let summary_x = glyph_x + f64::from(theme.tokens.spacing.s6);
         let summary_x_end = body.x1;
-        let (summary_owned, is_redacted_row): (String, bool) =
-            if let Some(redaction) = entry.redaction.as_ref() {
-                (
-                    widget_format(
-                        "history-redacted",
-                        &[
-                            ("who", redaction.redactor_label.as_str().into()),
-                            (
-                                "when",
-                                format_relative_time(redaction.redacted_at, now).into(),
-                            ),
-                            ("reason", redaction.reason.as_str().into()),
-                        ],
-                    ),
-                    true,
-                )
-            } else {
-                let breadcrumb = if self.filters_people {
-                    // One document's History: every change is of this app and
-                    // this document, so naming them is noise.
-                    None
-                } else {
-                    Self::entry_breadcrumb(entry)
-                };
-                let said = self.summary_of(entry);
-                let summary = breadcrumb.map_or_else(
-                    || said.to_owned(),
-                    |breadcrumb| format!("{breadcrumb} · {said}"),
-                );
-                (summary, false)
-            };
+        let (summary_owned, is_redacted_row) = self.row_sentence(entry, now);
         // A change that acted on one thing reads as what it did, then the thing, as a link
         // that opens it: two elements, never one string joined by a glyph.
         if !is_redacted_row

@@ -141,7 +141,7 @@ impl Session {
                         let (line, focus) = match &present.doing {
                             // The window of the app it acts in, and what that window is called: the
                             // note, the sheet, the meeting. What it does is said on that record, as
-                            // the window's own activity cards say it.
+                            // the agent's own mark in that window says it.
                             Some(doing) => {
                                 let window = doing.app.as_deref().and_then(|app| {
                                     app_window(tree, &self.shared.notes, &present.workspace, app)
@@ -179,12 +179,7 @@ impl Session {
                             focus.as_ref(),
                             None,
                         );
-                        (
-                            present.workspace,
-                            present.session.0,
-                            present.agent.clone(),
-                            face,
-                        )
+                        (present.workspace, present.session.0, present.agent, face)
                     })
                     .collect()
             });

@@ -197,12 +197,11 @@ pub(crate) fn work_takes(
     own: &DeviceCert,
     request: &HostWorkspaceRequest,
 ) -> bool {
-    // A person's Servers workspace is theirs: every one of their devices holds
-    // it, whatever work that device takes.
-    if request.workspace_id.to_string()
-        == tilo_server_protocol::servers::admin_workspace_id(&own.user_public_key)
-        && owners(request)
-            .is_ok_and(|owners| owners.iter().all(|owner| *owner == own.user_public_key))
+    // A workspace belongs to the person who governs it, not to the device it
+    // was made on: every device of that person holds it, whatever work the
+    // device takes from others, so it outlasts any one of them.
+    if replica(&request.bootstrap, tilo_clock::wall())
+        .is_ok_and(|peer| peer.owner() == own.user_public_key)
     {
         return true;
     }
@@ -287,6 +286,10 @@ impl Workspaces {
     ///
     /// The request does not hold up, the caller is not the holder whose
     /// address it carries, or the workspace could not be kept here.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace stays locked while the changes a hand-over brings are merged into its copy"
+    )]
     pub(crate) async fn hold(
         &self,
         caller: &DeviceCert,
@@ -311,7 +314,20 @@ impl Workspaces {
         let held = self.inner.workspaces.lock().await.get(&workspace).cloned();
         let state = if let Some(held) = held {
             if !names_holder(&held.lock().await.peer(), caller) {
-                return Err(NOT_A_HOLDER.into());
+                // A workspace that is its person's own is founded by every one
+                // of their devices alike, so a device of theirs that founded
+                // it beside this one hands the changes it made. Its certificate
+                // comes in from the hand-over, the changes are judged as any
+                // governance change is, and this copy names it a holder once
+                // they are in.
+                let governed = held.lock().await;
+                let mut peer = governed.peer().clone();
+                peer.admit_owner_device(caller, now)?;
+                take_governance(&mut peer, &request.bootstrap, now)?;
+                if !names_holder(&peer, caller) {
+                    return Err(NOT_A_HOLDER.into());
+                }
+                *governed.peer.lock() = peer;
             }
             held
         } else {

@@ -24,10 +24,11 @@ class OfflineTargetTest(unittest.TestCase):
         module_spec = importlib.util.spec_from_file_location("prepare_dev_target", script)
         prepare = importlib.util.module_from_spec(module_spec)
         module_spec.loader.exec_module(prepare)
-        args = SimpleNamespace(image=metadata["target_ref"],
+        args = SimpleNamespace(image=metadata["repository"] + "@" + metadata["target_digest"],
                                source_revision=metadata["source_revision"],
                                ci_run_id=metadata["ci_run_id"],
                                hardware_profile=metadata["hardware_profile"],
+                               architecture=metadata["architecture"],
                                update_origin=metadata["update_origin"],
                                rpms_ref=None,
                                output=Path(self.temp.name) / "exported")
@@ -62,10 +63,11 @@ class OfflineTargetTest(unittest.TestCase):
         prepare = importlib.util.module_from_spec(module_spec)
         module_spec.loader.exec_module(prepare)
         rpms = "registry.tilo.so/tilo/rpms@sha256:" + "d" * 64
-        args = SimpleNamespace(image=metadata["target_ref"],
+        args = SimpleNamespace(image=metadata["repository"] + "@" + metadata["target_digest"],
                                source_revision=metadata["source_revision"],
                                ci_run_id=metadata["ci_run_id"],
                                hardware_profile=metadata["hardware_profile"],
+                               architecture=metadata["architecture"],
                                update_origin=metadata["update_origin"],
                                rpms_ref=rpms, output=Path(self.temp.name) / "exported")
         calls = []
@@ -110,8 +112,10 @@ class OfflineTargetTest(unittest.TestCase):
             prepare.prepare(args)
         self.assertFalse(any(argv[:2] == ["podman", "build"] for argv in calls))
 
-    def dev_transport(self, *, flavour="dev", revision="a" * 40):
-        config = {"architecture": "arm64", "os": "linux", "config": {"Labels": {
+    def dev_transport(self, *, flavour="dev", revision="a" * 40,
+                      repository="registry.tilo.so/tilo/tilo-vm",
+                      architecture="aarch64", oci_architecture="arm64"):
+        config = {"architecture": oci_architecture, "os": "linux", "config": {"Labels": {
             "org.opencontainers.image.revision": revision, "sh.tilo.image.flavour": flavour,
         }}}
         def blob(data):
@@ -131,13 +135,28 @@ class OfflineTargetTest(unittest.TestCase):
         (self.root / "oci/index.json").write_text(json.dumps({
             "schemaVersion": 2, "manifests": [manifest]}))
         metadata = {"schema": "tilo.installer-dev-target.v1",
-                    "target_ref": "registry.tilo.so/tilo/tilo-vm@" + manifest["digest"],
-                    "target_digest": manifest["digest"], "architecture": "aarch64",
-                    "hardware_profile": "lenovo-83ed",
-                    "update_origin": "registry.tilo.so/tilo/tilo-vm:fixture-lenovo-83ed-ci",
+                    "repository": repository,
+                    "target_digest": manifest["digest"], "architecture": architecture,
+                    "hardware_profile": "generic",
+                    "update_origin": repository + ":fixture-ci",
                     "source_revision": "a" * 40, "ci_run_id": "75340"}
         (self.root / "target.json").write_text(json.dumps(metadata))
         return metadata
+
+    def test_server_image_is_an_explicit_development_target(self):
+        # The medium stages the x86_64 server image without a named source: its
+        # digest binds the build.
+        metadata = self.dev_transport(flavour="server", revision="",
+                                      repository="registry.tilo.so/tilo/tilo-host",
+                                      architecture="x86_64", oci_architecture="amd64")
+        self.assertEqual(offline.verify(self.root, development=True), metadata)
+        # The declared architecture, not the live medium's, is what the image
+        # config must match.
+        self.dev_transport(flavour="server", revision="",
+                           repository="registry.tilo.so/tilo/tilo-host",
+                           architecture="x86_64", oci_architecture="arm64")
+        with self.assertRaisesRegex(ValueError, "declared Linux architecture"):
+            offline.verify(self.root, development=True)
 
     def test_explicit_development_transport(self):
         metadata = self.dev_transport()
@@ -156,6 +175,13 @@ class OfflineTargetTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source or flavour"):
             offline.verify(self.root, development=True)
         self.dev_transport(revision="b" * 40)
+        with self.assertRaisesRegex(ValueError, "source or flavour"):
+            offline.verify(self.root, development=True)
+        # A server image's build names no commit, so its revision label is
+        # empty and its digest binds the build.
+        self.dev_transport(flavour="server", revision="")
+        offline.verify(self.root, development=True)
+        self.dev_transport(flavour="server", revision="b" * 40)
         with self.assertRaisesRegex(ValueError, "source or flavour"):
             offline.verify(self.root, development=True)
         self.dev_transport()
@@ -191,10 +217,11 @@ class OfflineTargetTest(unittest.TestCase):
         signature["annotations"] = {"kind": "dev.cosignproject.cosign/sigs"}
         (layout / "index.json").write_text(json.dumps({
             "schemaVersion": 2, "manifests": [target, signature]}))
-        self.ref = "code.tilo.so/tilo/tilo@" + target["digest"]
+        self.repository = "code.tilo.so/tilo/tilo"
+        self.digest = target["digest"]
         (self.root / "target.json").write_text(json.dumps({
             "schema": "tilo.installer-offline-target.v1",
-            "target_ref": self.ref,
+            "repository": self.repository,
             "target_digest": target["digest"],
             "architecture": "aarch64",
             "hardware_profile": "lenovo-83ed",
@@ -203,16 +230,16 @@ class OfflineTargetTest(unittest.TestCase):
 
     def test_accepts_valid_targets(self):
         with self.subTest(phase="valid_target_and_copy"):
-            self.assertEqual(offline.verify(self.root)["target_ref"], self.ref)
+            self.assertEqual(offline.verify(self.root)["repository"], self.repository)
             destination = Path(self.temp.name) / "staged"
             offline.install(self.root, destination)
-            self.assertEqual(offline.verify(destination)["target_ref"], self.ref)
+            self.assertEqual(offline.verify(destination)["repository"], self.repository)
         restart_fixture(self)
         with self.subTest(phase="generic_signed_child_transport"):
             metadata_path = self.root / "target.json"
             metadata = json.loads(metadata_path.read_text())
             metadata["hardware_profile"] = "generic"
-            metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
+            metadata["repository"] = "registry.tilo.so/tilo/tilo"
             metadata["update_origin"] = "registry.tilo.so/tilo/tilo:gen7"
             metadata_path.write_text(json.dumps(metadata))
             self.assertEqual(offline.verify(self.root)["hardware_profile"], "generic")
@@ -222,9 +249,11 @@ class OfflineTargetTest(unittest.TestCase):
             # A board image carries private firmware and stays on the forge.
             metadata_path = self.root / "target.json"
             metadata = json.loads(metadata_path.read_text())
-            metadata["target_ref"] = "registry.tilo.so/tilo/tilo@" + metadata["target_digest"]
+            metadata["repository"] = "registry.tilo.so/tilo/tilo"
+            metadata["update_origin"] = (
+                "registry.tilo.so/tilo/tilo:lenovo-83ed-" + "a" * 40)
             metadata_path.write_text(json.dumps(metadata))
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "pin a supported"):
                 offline.verify(self.root)
         restart_fixture(self)
         with self.subTest(phase="tampered_blob_rejected"):
@@ -264,9 +293,8 @@ class OfflineTargetTest(unittest.TestCase):
             metadata_path = self.root / "target.json"
             metadata = json.loads(metadata_path.read_text())
             metadata["target_digest"] = target["digest"]
-            metadata["target_ref"] = "code.tilo.so/tilo/tilo@" + target["digest"]
             metadata_path.write_text(json.dumps(metadata))
-            with self.assertRaisesRegex(ValueError, "Linux ARM64"):
+            with self.assertRaisesRegex(ValueError, "declared Linux architecture"):
                 offline.verify(self.root)
 
 

@@ -214,7 +214,7 @@ pub fn serve(dir: &Path, control: &Path) -> Result<std::convert::Infallible, Net
 /// # Errors
 /// The proxy could not be reached, or refused the policy.
 pub fn set_policy(control: &Path, policy: &EgressPolicy) -> Result<(), NetworkProxyError> {
-    let stream = std::os::unix::net::UnixStream::connect(control).map_err(|source| {
+    let stream = tilo_files::native::socket::connect(control).map_err(|source| {
         NetworkProxyError::Control {
             path: control.to_path_buf(),
             source,
@@ -351,12 +351,11 @@ fn bind_control(control: &Path) -> Result<std::os::unix::net::UnixListener, Netw
     }
     // A socket left by a proxy that was killed would make bind() fail.
     let _ = fs::remove_file(control);
-    let listener = std::os::unix::net::UnixListener::bind(control).map_err(|source| {
-        NetworkProxyError::Control {
+    let listener =
+        tilo_files::native::socket::bind(control).map_err(|source| NetworkProxyError::Control {
             path: control.to_path_buf(),
             source,
-        }
-    })?;
+        })?;
     fs::set_permissions(control, fs::Permissions::from_mode(0o600)).map_err(|source| {
         NetworkProxyError::Control {
             path: control.to_path_buf(),

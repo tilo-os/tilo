@@ -1,12 +1,13 @@
 //! Native owner-route bridge. SDK retains signing, encryption and transport.
-#[allow(
-    clippy::wildcard_imports,
-    reason = "private implementation module shares its enclosing host types"
-)]
 use super::*;
 pub(super) use crate::collaboration::document_routes::{
     decode_routed_mutation, validated_route_payload_with,
 };
+#[allow(
+    clippy::wildcard_imports,
+    reason = "private implementation module shares its enclosing host types"
+)]
+use crate::state::StateHistory as _;
 
 /// The user-visible status a transport outcome implies for a route: `Some`
 /// replaces the current one (clearing it on success), `None` leaves it (a
@@ -483,7 +484,16 @@ impl App {
     fn drain_document_routes_after_refresh(&mut self) {
         let mut changed = self.document_routes.merge_owned(&mut self.state.doc);
         while let Some(mutation) = self.document_routes.primary.front() {
-            match self.state.merge_remote_committed(mutation) {
+            // A window whose document cannot take a peer's document yet must not load — and, on
+            // bytes that do not load, quarantine — it now:
+            // [`StateHistory::defers_remote`](crate::state::StateHistory::defers_remote) says so before the whole document is read.
+            if self.state.defers_remote() {
+                break;
+            }
+            let state = &mut self.state;
+            match crate::history_mode::routes::with_mutation(mutation, |incoming| {
+                state.merge_remote_committed(incoming)
+            }) {
                 Ok(Some(applied)) => {
                     self.document_routes.primary.pop_applied();
                     changed |= applied;
@@ -933,6 +943,12 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                 continue;
             }
             while let Some(mutation) = entry.pending.front() {
+                // A document that cannot take a peer's changes yet must not load — and, on
+                // bytes that do not load, quarantine — them now: hold them queued, closing an
+                // unfinished named step when that is what holds it.
+                if owner.defers_remote() && !owner.close_named_step(outer) {
+                    break;
+                }
                 use automerge::transaction::Transactable as _;
                 let (store, checkout) = owner.store_checkout();
                 // A peer's whole document that this replica merges and is
@@ -945,7 +961,9 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                     }
                     _ => None,
                 };
-                match owner.merge_remote(mutation, outer) {
+                match crate::history_mode::routes::with_mutation(mutation, |incoming| {
+                    owner.merge_remote(incoming, outer)
+                }) {
                     Ok(merged) => {
                         // The route delivered these changes, so they are never
                         // published back on it; this app's own unsent changes

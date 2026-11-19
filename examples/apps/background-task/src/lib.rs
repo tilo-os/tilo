@@ -113,9 +113,11 @@ enum Screen {
 #[effect(operation = "example.prime-search.task")]
 pub enum Task {
     /// Count primes.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, returns)]
     Run,
     /// Cancel the count.
+    #[effect(kind = "outside")]
     Cancel,
 }
 

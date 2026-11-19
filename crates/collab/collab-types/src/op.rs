@@ -42,9 +42,7 @@ const MAX_ENCODED_DOCUMENT_MUTATION_BYTES: usize = DOCUMENT_MUTATION_V2_PREFIX.l
     + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES
     + crate::document_transfer::MAX_DOCUMENT_TRANSFER_BYTES / 1024
     + 16;
-const DOCUMENT_ARTIFACT_DOMAIN: &[u8] = b"tilo-document-artifact-v1\0";
 const DOCUMENT_ATTESTATION_DOMAIN: &[u8] = b"tilo-document-attestation-v1\0";
-const LIVE_ARTIFACT_DOMAIN: &[u8] = b"tilo-live-artifact-v1\0";
 
 /// Meaning of a signed document payload. Keeping this tag inside
 /// [`SignedOp::payload`] makes snapshot-vs-incremental part of the bytes the
@@ -211,37 +209,16 @@ impl DocumentMutation {
     }
 }
 
-/// Deterministically derive the policy artifact for one collaboration route.
-/// Length-prefixing prevents ambiguous concatenations; domain separation keeps
-/// these ids distinct from user-minted UUIDs and other derived identifiers.
+/// The artifact of `document_id`, a document of `app_id` in `workspace_id`: what its writes name
+/// and its content is sealed for, as every member reads it
+/// ([`crate::readers::content_artifact_id`]).
 #[must_use]
 pub fn document_artifact_id(app_id: &str, workspace_id: &str, document_id: &str) -> ArtifactId {
-    ArtifactId(derived_document_uuid(
-        DOCUMENT_ARTIFACT_DOMAIN,
-        app_id,
+    crate::readers::content_artifact_id(
         workspace_id,
-        document_id,
-    ))
-}
-
-/// Artifact a sealed live frame is bound to: its workspace's content
-/// key seals it for this kind, sequence and record only, so a frame cannot
-/// be replayed under another sequence, record or kind.
-#[must_use]
-pub fn live_artifact_id(resource_digest: &[u8; 32], kind: u8, seq: u64) -> ArtifactId {
-    let mut hash = Sha256::new();
-    hash.update(LIVE_ARTIFACT_DOMAIN);
-    hash.update(resource_digest);
-    hash.update([kind]);
-    hash.update(seq.to_le_bytes());
-    let digest = hash.finalize();
-    let mut bytes = [0_u8; 16];
-    for (target, source) in bytes.iter_mut().zip(digest.iter()) {
-        *target = *source;
-    }
-    bytes[6] = (bytes[6] & 0x0f) | 0x80;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    ArtifactId(uuid::Uuid::from_bytes(bytes))
+        crate::readers::EVERY_MEMBER,
+        &crate::readers::app_document_id(app_id, document_id),
+    )
 }
 
 static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =
@@ -597,6 +574,19 @@ mod claims_wire {
 /// none is decided at once.
 pub const MAX_GOVERNANCE_HEADS: usize = 8;
 
+/// How an op names the governance change whose hash is `hash`
+/// ([`SignedOp::governance`]): by the first four bytes of the hash, as a short
+/// commit id names a commit. Every op a member writes carries its governance
+/// heads, so each costs what tells one workspace's governance changes apart,
+/// not a whole 32-byte hash on every keystroke. A receiver looks a head up
+/// only for a change it would otherwise refuse, and two changes sharing these
+/// bytes cost nothing but timing: the receiver then decides the op at once,
+/// as it decides an op naming no heads.
+#[must_use]
+pub fn governance_head(hash: &[u8; 32]) -> [u8; 4] {
+    hash.first_chunk::<4>().copied().unwrap_or_default()
+}
+
 /// Why a write that waited for the governance it was written under is
 /// refused when that governance did not come in time.
 pub const GOVERNANCE_NEVER_ARRIVED: &str = "the role change it depends on never arrived";
@@ -653,8 +643,9 @@ pub struct SignedOp {
     /// refuse the op while some of these are not in its governance yet holds
     /// it until they are, then decides it against all the governance it holds
     /// by then, revocations made since included: the heads say when to decide,
-    /// never what against. At most [`MAX_GOVERNANCE_HEADS`].
-    pub governance: Vec<[u8; 32]>,
+    /// never what against. At most [`MAX_GOVERNANCE_HEADS`], each named as
+    /// [`governance_head`] names it.
+    pub governance: Vec<[u8; 4]>,
     /// Detached Ed25519 signature by `author` over the canonical-bytes view
     /// of every other field. See `SignedOp::signing_bytes`.
     pub signature: Signature,
@@ -736,13 +727,19 @@ impl SignedOp {
     /// ([`Self::governance`]); past [`MAX_GOVERNANCE_HEADS`] of them it names
     /// none, and is decided at once as before.
     #[must_use]
-    pub fn with_governance(mut self, heads: Vec<[u8; 32]>) -> Self {
+    pub fn with_governance(mut self, heads: &[[u8; 32]]) -> Self {
+        self.name_governance(heads);
+        self
+    }
+
+    /// Name `heads` as the governance this op was written under, as
+    /// [`Self::with_governance`] does.
+    pub fn name_governance(&mut self, heads: &[[u8; 32]]) {
         self.governance = if heads.len() > MAX_GOVERNANCE_HEADS {
             Vec::new()
         } else {
-            heads
+            heads.iter().map(governance_head).collect()
         };
-        self
     }
 
     /// Whether this op is the whole record rather than a change to it: a
@@ -775,7 +772,7 @@ impl SignedOp {
             encryption: &'a Option<EncryptionMetadata>,
             claims: &'a [crate::claim::ChangeClaim],
             surface: &'a Option<[u8; 32]>,
-            governance: &'a [[u8; 32]],
+            governance: &'a [[u8; 4]],
         }
         canonical_bytes(&View {
             payload: &self.payload,
@@ -916,7 +913,7 @@ mod tests {
                 invoker: None,
             }])
             .with_surface(Some([5; 32]))
-            .with_governance(vec![[6; 32]]);
+            .with_governance(&[[6; 32]]);
             crate::crypto::sign_op(&mut op, &key).unwrap();
             let bytes = canonical_bytes(&op).unwrap();
             assert_eq!(from_canonical_bytes::<SignedOp>(&bytes).unwrap(), op);
@@ -926,7 +923,7 @@ mod tests {
             );
             assert_eq!(
                 hex::encode(sha2::Sha256::digest(&bytes)),
-                "a1e378b555d485b52b46558e54ceb769b778b8dd7e4edb677ac767f384416d4c",
+                "15f9d40de991b2176a1982bb360b0431dba89f8a6caa45666878ac7586d32f41",
                 "{}",
                 hex::encode(&bytes)
             );
@@ -1144,12 +1141,12 @@ mod tests {
                 "artifact and attestation domains must not alias"
             );
             assert_eq!(first.0.get_version_num(), 8);
-            assert_eq!(first.0.to_string(), "e2ada506-cd66-8f71-816d-98526180e680");
+            assert_eq!(first.0.to_string(), "3b09fe70-3936-80a2-b81e-463232e016b9");
             assert_eq!(
                 document_artifact_id("dev.tilo.notes", "workspace-a", "record-b")
                     .0
                     .to_string(),
-                "bbc5b5c9-074e-887b-911b-beb90a51413d"
+                "2ceca59c-1004-854e-9067-9a09c2b5128a"
             );
             assert_eq!(
                 document_attestation_id("dev.tilo.notes", "workspace-a", "record-b")

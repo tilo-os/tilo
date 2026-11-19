@@ -120,6 +120,7 @@ pub(crate) struct OfferedStyles {
 pub(crate) enum TrayEffect {
     /// Open or close the running application's tray item `key`: its window, or its menu when the
     /// item is one
+    #[effect(kind = "outside")]
     #[effect(row, label = "session-tray-open")]
     OpenTrayItem { key: String },
 }
@@ -129,6 +130,7 @@ pub(crate) enum TrayEffect {
 #[effect(operation = "so.tilo.session.agents")]
 pub(crate) enum AgentsEffect {
     /// End one agent session: its connection closes and its presence leaves the bar.
+    #[effect(kind = "outside")]
     #[effect(label = "session-agents-stop", audience = "people")]
     StopAgent {
         #[param("The agent session, by its key")]
@@ -147,6 +149,7 @@ pub const SWITCHER_SCOPES: [&str; 2] = ["workspace", "app"];
 pub(crate) enum InviteEffect {
     /// The invitations this device's person made into a workspace that can still be
     /// redeemed, in the words the workspace's host lists them by
+    #[effect(kind = "outside")]
     Invitations {
         /// The workspace, by its key; the one in front when absent
         #[param("The workspace, by its key; the one in front when absent")]
@@ -154,6 +157,7 @@ pub(crate) enum InviteEffect {
     },
     /// Make an invitation into a workspace from this device: the link to hand to whoever is
     /// being invited, which their device joins with
+    #[effect(kind = "outside")]
     IssueInvitation {
         /// The part the invitation brings them in at: `viewer`, `commenter`, `editor`,
         /// `moderator` or `administrator`; editor when absent
@@ -180,6 +184,7 @@ pub(crate) enum InviteEffect {
     /// Open the invite sheet on a workspace: where a link into it is made, the part it brings
     /// someone in at picked and the links that still work taken back. An app shares what it shows
     /// by asking this, so it offers the one sheet the bar's invite button opens.
+    #[effect(screen)]
     ShowInvite {
         /// The workspace, by its key; the one in front when absent
         #[param("The workspace, by its key; the one in front when absent")]
@@ -188,12 +193,15 @@ pub(crate) enum InviteEffect {
     /// Show how an agent or another computer connects as the person: the setup their own card's
     /// "Connect an agent or computer" opens. An app that lists what acts as them offers adding to
     /// it this way.
+    #[effect(screen)]
     ShowConnect,
     /// Open the Add a device sheet: the link a new device of the person's becomes one of theirs,
     /// shown as a code its camera reads. An app that lists what acts as the person offers adding
     /// to it this way.
+    #[effect(screen)]
     ShowPairDevice,
     /// Cancel the invitation `invite` of a workspace: its link admits nobody from now on
+    #[effect(kind = "outside")]
     CancelInvitation {
         /// The invitation's id, 64 hex characters, as listing invitations reports it
         #[param("The invitation's id, 64 hex characters, as listing invitations reports it")]
@@ -413,8 +421,8 @@ pub(crate) struct DeviceLists {
     /// The agents the person admitted at its MCP server: each works here as itself, and the bar
     /// shows it as its own presence.
     pub(crate) agent_sessions: std::sync::Arc<crate::agent_sessions::AgentSessions>,
-    /// This device's workspaces' record, when the session holds one: the invitations a workspace's
-    /// people made are kept there, by the device that made them.
+    /// This device's workspaces' record, when the session holds one: the workspace whose holder
+    /// decides an invitation is asked there, and the links out of it keep this device dialable.
     pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// What the shell asks the session for while it runs: opening the invite sheet, which is the
     /// session's own surface and not a layer the shell draws.
@@ -596,18 +604,23 @@ impl DeviceLists {
 
     /// The invitations into a workspace this device's person made that are still redeemable, as the
     /// workspace's host lists them: its id in hex, the part it grants, whom it is addressed to, how
-    /// it names them and when it lapses.
+    /// it names them and when it lapses. The same list says whether a link is out, which keeps
+    /// this device dialable ([`crate::engine::Engine::invitations_open`]).
     fn invitations(&self, workspace: Option<&str>) -> Result<Started, ApiError> {
         let engine = self.engine()?;
         let workspace_id = self.workspace_id(workspace)?;
-        if let Some(asked) = engine.ask_own_service(
-            workspace_id,
-            tilo_workspace_service::workspaces::INVITATIONS,
-            serde_json::Map::new(),
-        ) {
-            return Ok(answered_by_service(asked, Ok));
-        }
-        Err(held_elsewhere())
+        let asked = engine
+            .ask_holder(
+                workspace_id,
+                tilo_workspace_service::workspaces::INVITATIONS,
+                serde_json::Map::new(),
+            )
+            .ok_or_else(no_holder)?;
+        let noting = std::sync::Arc::clone(engine);
+        Ok(answered_by_service(asked, move |value| {
+            noting.note_invitations(workspace_id, &value);
+            Ok(value)
+        }))
     }
 
     /// Cancel one of them, from the device that issued it: the link admits nobody from now on.
@@ -620,14 +633,14 @@ impl DeviceLists {
         let workspace_id = self.workspace_id(workspace)?;
         let mut arguments = serde_json::Map::new();
         arguments.insert("invite".to_owned(), invite.into());
-        if let Some(asked) = engine.ask_own_service(
-            workspace_id,
-            tilo_workspace_service::workspaces::CANCEL_INVITATION,
-            arguments,
-        ) {
-            return Ok(answered_by_service(asked, Ok));
-        }
-        Err(held_elsewhere())
+        let asked = engine
+            .ask_holder(
+                workspace_id,
+                tilo_workspace_service::workspaces::CANCEL_INVITATION,
+                arguments,
+            )
+            .ok_or_else(no_holder)?;
+        Ok(answered_by_service(asked, Ok))
     }
 
     /// Hand out a link into a workspace, made by this device's own person: the invitation the shell
@@ -695,31 +708,36 @@ impl DeviceLists {
         if let Some(recipient) = recipient {
             arguments.insert("recipient".to_owned(), hex::encode(recipient).into());
         }
-        if let Some(asked) = engine.ask_own_service(
-            workspace_id,
-            tilo_action_policy::roles::governance::INVITE,
-            arguments,
-        ) {
-            let role = role.key();
-            return Ok(answered_by_service(asked, move |issued| {
-                let signed = issued
-                    .get("invitation")
-                    .and_then(Value::as_str)
-                    .map(hex::decode)
-                    .transpose()
-                    .map_err(|_| "the workspace service sent an invalid invitation".to_owned())?
-                    .ok_or("the workspace service answered no invitation")?;
-                let link = tilo_peer_state::join::encode_invitation_text(&signed);
-                Ok(serde_json::json!({
-                    "invite": issued.get("invite"),
-                    "link": link,
-                    "role": role,
-                    "administrator": makes_administrator,
-                    "expires_at_ns": issued.get("expires_at_ns"),
-                }))
-            }));
-        }
-        Err(held_elsewhere())
+        let asked = engine
+            .ask_holder(
+                workspace_id,
+                tilo_action_policy::roles::governance::INVITE,
+                arguments,
+            )
+            .ok_or_else(no_holder)?;
+        let noting = std::sync::Arc::clone(engine);
+        let role = role.key();
+        Ok(answered_by_service(asked, move |issued| {
+            let signed = issued
+                .get("invitation")
+                .and_then(Value::as_str)
+                .map(hex::decode)
+                .transpose()
+                .map_err(|_| "the workspace's holder sent an invalid invitation".to_owned())?
+                .ok_or("the workspace's holder answered no invitation")?;
+            let link = tilo_peer_state::join::encode_invitation_text(&signed);
+            // Whoever redeems it dials this device.
+            if let Some(lapses) = issued.get("expires_at_ns").and_then(Value::as_u64) {
+                noting.note_link(workspace_id, lapses);
+            }
+            Ok(serde_json::json!({
+                "invite": issued.get("invite"),
+                "link": link,
+                "role": role,
+                "administrator": makes_administrator,
+                "expires_at_ns": issued.get("expires_at_ns"),
+            }))
+        }))
     }
 
     /// What an invitation verb answers, when `effect` is one of them: the links that still work,
@@ -747,7 +765,8 @@ impl DeviceLists {
         }
     }
 
-    /// This device's engine: invitations are its record's, and a session without one has none.
+    /// This device's engine: the workspace's holder is asked through it, and a session without one
+    /// reaches no holder.
     fn engine(&self) -> Result<&std::sync::Arc<crate::engine::Engine>, ApiError> {
         self.engine
             .as_ref()
@@ -755,10 +774,10 @@ impl DeviceLists {
     }
 }
 
-/// What an invitation verb answers for a workspace this device's own workspace service does not
-/// hold: its invitations are made, listed and taken back where it is held.
-fn held_elsewhere() -> ApiError {
-    ApiError::Failed("only the workspace's holder issues its invitations".to_owned())
+/// What an invitation verb answers when this device reaches none of the workspace's holders: its
+/// invitations are made, listed and taken back only there.
+fn no_holder() -> ApiError {
+    ApiError::Failed("this device reaches no holder of the workspace".to_owned())
 }
 
 impl DeviceLists {
@@ -872,27 +891,62 @@ impl DeviceLists {
     }
 }
 
+/// The session's own lists as it publishes them: what each is to search and read, under the
+/// session's kind.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Windows")]
+pub(crate) struct WindowsList;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Tray", effects = TrayEffect)]
+pub(crate) struct TrayRoot;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Agents", effects = AgentsEffect)]
+pub(crate) struct AgentsRoot;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Invite", effects = InviteEffect)]
+pub(crate) struct InviteRoot;
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "session", label = "Styles")]
+pub(crate) struct StylesRoot;
+
 impl Service for DeviceLists {
     fn resources(&self) -> Vec<ResourceSpec> {
-        let kind = tilo_action_policy::roles::SESSION_KIND;
         vec![
-            ResourceSpec::new(WINDOWS_RESOURCE, kind, crate::i18n::t("session-windows")),
-            offer::<TrayEffect>(ResourceSpec::new(
-                TRAY_RESOURCE,
-                kind,
-                crate::i18n::t("session-tray"),
-            )),
-            offer::<AgentsEffect>(ResourceSpec::new(
-                AGENTS_RESOURCE,
-                kind,
-                crate::i18n::t("session-agents"),
-            )),
-            offer::<InviteEffect>(ResourceSpec::new(
-                INVITE_RESOURCE,
-                kind,
-                crate::i18n::t("session-invite"),
-            )),
-            ResourceSpec::new(STYLES_RESOURCE, kind, crate::i18n::t("session-styles")),
+            tilo_resource::LiveRow::typed::<WindowsList>(
+                WINDOWS_RESOURCE,
+                crate::i18n::t("session-windows"),
+            )
+            .into_resource(),
+            offer::<TrayEffect>(
+                tilo_resource::LiveRow::typed::<TrayRoot>(
+                    TRAY_RESOURCE,
+                    crate::i18n::t("session-tray"),
+                )
+                .into_resource(),
+            ),
+            offer::<AgentsEffect>(
+                tilo_resource::LiveRow::typed::<AgentsRoot>(
+                    AGENTS_RESOURCE,
+                    crate::i18n::t("session-agents"),
+                )
+                .into_resource(),
+            ),
+            offer::<InviteEffect>(
+                tilo_resource::LiveRow::typed::<InviteRoot>(
+                    INVITE_RESOURCE,
+                    crate::i18n::t("session-invite"),
+                )
+                .into_resource(),
+            ),
+            tilo_resource::LiveRow::typed::<StylesRoot>(
+                STYLES_RESOURCE,
+                crate::i18n::t("session-styles"),
+            )
+            .into_resource(),
         ]
     }
 

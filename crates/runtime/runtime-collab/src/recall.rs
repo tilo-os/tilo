@@ -17,7 +17,7 @@ pub use crate::{INSTRUCTION_CONVERSATION, INSTRUCTION_LEARNED};
 /// The most an instruction a turn carries may hold, in bytes: the agent refuses a longer one.
 pub const INSTRUCTION_BYTES: usize = 32 * 1024;
 /// The most a kept summary holds, in bytes.
-pub const SUMMARY_BYTES: usize = 4 * 1024;
+pub use tilo_actions::RECALL_SUMMARY_BYTES as SUMMARY_BYTES;
 /// The most one fold adds to a summary, in bytes.
 pub const ADDED_BYTES: usize = 800;
 /// What a summary is written again within, once adding to it would outgrow [`SUMMARY_BYTES`].

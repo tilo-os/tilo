@@ -104,7 +104,7 @@ impl SecretBackend for FileStore {
             value,
         )
         .map_err(|error| failed("sealing the secret", error))?;
-        write_private(&self.path(&record), &sealed)
+        tilo_files::native::atomic::write_with_mode(&self.path(&record), &sealed, 0o600)
             .map_err(|error| failed("storing the secret", error))
     }
 
@@ -157,11 +157,6 @@ fn check_private(file: &File, path: &Path) -> Result<(), SecretError> {
 
 const fn libc_flags() -> i32 {
     libc::O_NOFOLLOW | libc::O_CLOEXEC
-}
-
-/// Replace `path` with `bytes`, owner-only, atomically and durably.
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
 }
 
 fn sync_dir(dir: &Path) -> io::Result<()> {

@@ -840,11 +840,11 @@ pub fn merged_strength(
         } else {
             lexical
         };
-    let naming = if title_names_query(needle, kind, title) {
-        TITLE_NAMES_FIT
-    } else {
-        0.0
-    };
+    // An app's top score is the best name it is known by for this query, its keyword
+    // included ([`application_ranks`]): "youtube" names the video app as its title does.
+    let named = title_names_query(needle, kind, title)
+        || (matches!(kind, ResourceKind::Application) && score >= top && !needle.trim().is_empty());
+    let naming = if named { TITLE_NAMES_FIT } else { 0.0 };
     lexical + score as f32 / top as f32 + application_intent + proximity + naming
 }
 

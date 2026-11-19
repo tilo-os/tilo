@@ -3,7 +3,6 @@
 use super::*;
 use crate::setup::flatpak_transfer::{NativeRunner, discover};
 use std::ffi::CString;
-use tilo_test_env::SpawnUnderEnvLock as _;
 const TEST: &str = "setup::flatpak_transfer::portable::native_tests::system::real_named_system_producer_and_native_target_restore";
 #[path = "native_selected_state_tests.rs"]
 mod selected;
@@ -40,7 +39,7 @@ fn nobody() -> (u32, u32) {
             record.as_mut_ptr(),
             buffer.as_mut_ptr().cast(),
             buffer.len(),
-            &mut result,
+            &raw mut result,
         )
     };
     assert_eq!(status, 0, "NSS owner lookup failed");
@@ -394,7 +393,7 @@ fn owner_producer() {
     // SAFETY: this call merely observes process authority.
     assert_ne!(rustix::process::geteuid().as_raw(), 0);
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     environment.set("TILO_NATIVE_FLATPAK_FIXTURE_DIAGNOSTICS", "1");
     let source_home = PathBuf::from(std::env::var_os("TILO_FLATPAK_SYSTEM_SOURCE").unwrap());
     let inventory = discover(&NativeRunner, &source_home).unwrap();

@@ -974,10 +974,11 @@ async fn only_a_key_reaching_all_workspaces_lasts_and_only_the_key_flow_makes_on
     let server = server();
     let now = tilo_clock::unix_now_ms();
 
-    // A key for one workspace is no server key and stays bounded.
+    // A key for one workspace is the person's own, a server key, and stays
+    // bounded.
     let studio = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
     let (_, asked) = ask_for_key(&server, &json!({"name": "Jane", "workspace": studio})).await;
-    assert!(!asked.server_key);
+    assert!(asked.server_key);
     assert!(asked.expires_ms.unwrap() <= now + 90 * DAY_MS);
     for body in [
         json!({"name": "Jane", "workspace": studio, "expires_in": 100 * 24 * 60 * 60}),
@@ -1083,14 +1084,23 @@ fn the_run_is_named_for_the_person() {
 
 /// A site on loopback whose every page answers `status`, counting asks.
 async fn site_answering(status: &'static str) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counted = Arc::clone(&asked);
+    serve_answering(listener, status, Arc::clone(&asked));
+    (origin, asked)
+}
+
+/// Answer every request on `listener` with `status`, counting the asks.
+fn serve_answering(
+    listener: tokio::net::TcpListener,
+    status: &'static str,
+    asked: Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
-            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            asked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let mut request = [0u8; 4096];
             let _ = stream.read(&mut request).await;
             let reply =
@@ -1098,7 +1108,6 @@ async fn site_answering(status: &'static str) -> (String, Arc<std::sync::atomic:
             let _ = stream.write_all(reply.as_bytes()).await;
         }
     });
-    (origin, asked)
 }
 
 fn server_in_front_of(site: &str) -> Arc<Server> {
@@ -1127,8 +1136,8 @@ async fn health(server: &Arc<Server>) -> Value {
 }
 
 /// A site deployed without the sign-in page every approval lands on shows
-/// on the server's health, and the server asks the site again only after a
-/// while, however often it is probed.
+/// on the server's health, and the next probe asks the site again: only a
+/// served page is remembered.
 #[tokio::test]
 async fn health_says_when_the_site_serves_no_sign_in_page() {
     let (missing, asked) = site_answering("404 Not Found").await;
@@ -1142,8 +1151,8 @@ async fn health_says_when_the_site_serves_no_sign_in_page() {
     health(&api).await;
     assert_eq!(
         asked.load(std::sync::atomic::Ordering::Relaxed),
-        1,
-        "probes within a minute reuse what the site answered"
+        2,
+        "a page the site does not serve is asked for again"
     );
 
     let (served, _) = site_answering("200 OK").await;
@@ -1151,6 +1160,32 @@ async fn health_says_when_the_site_serves_no_sign_in_page() {
         health(&server_in_front_of(&served)).await["sign_in"],
         "served"
     );
+}
+
+/// The API starts before the site, as `stack.sh up` starts it: the probe that
+/// found nothing there is not kept, so the first health check after the site
+/// is up finds its sign-in page.
+#[tokio::test]
+async fn a_site_that_starts_after_the_api_is_seen_served_at_once() {
+    // The address the site will answer on: taken to know it, then given back
+    // for it to listen on.
+    let port = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let api = server_in_front_of(&format!("http://127.0.0.1:{port}"));
+    let answered = health(&api).await;
+    assert_ne!(answered["sign_in"], "served", "nothing answers yet");
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    serve_answering(listener, "200 OK", Arc::clone(&asked));
+    assert_eq!(health(&api).await["sign_in"], "served");
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
 
 /// A workspace operation the server refused is read by its case, never by its

@@ -61,7 +61,10 @@ sys.path.insert(0, str(ROOT / "tools"))
 from ci import capability_filter, nextest_filters  # noqa: E402
 from ci.affected_packages import package_cost, recorded_test_seconds  # noqa: E402
 
-DEFAULT_STAGES = "check,clippy,test,policy,goldens,certify,scenarios,scoped"
+# The policy suite is not in the default stages: they are the same steps `t test policy` gives
+# jobs of their own on the build server, where they belong, and a default that took them here
+# spent the machine it was on. `--stage policy` asks for them here.
+DEFAULT_STAGES = "check,clippy,test,goldens,certify,scenarios,scoped"
 CHANGED_STAGES = "check,clippy,test"
 GOLDEN_PACKAGES = {"tilo-ui", "ebook"}
 # Above this much recorded test time (seconds, tools/ci/recorded_test_time.json) a
@@ -463,19 +466,22 @@ def main() -> int:
                 ["bash", "tools/ci/lint-affected.sh", "--default-builds", *defaults]))
 
     # The repository policy suite (tools/policy/run.sh: the policy checks and every Python
-    # test under tools/tests and .codex/hooks), as CI's quality job runs it: here, beside the
-    # builder jobs, since its tests build Git repositories of their own from this checkout.
+    # test under tools/tests and .codex/hooks), as CI's quality job works through it: here,
+    # beside the builder jobs, since its tests build Git repositories of their own from this
+    # checkout. `--local` is what this stage asks for: the suite refuses on a development
+    # machine, because `t test policy` gives the same steps jobs of their own on the build
+    # server, so it is not in the default stages and `--stage policy` takes it here on purpose.
     # Its tests of Node.js scripts (steps.toml `node_tests`) need Node.js, which the builder's
     # container has and this machine may not, and no Git checkout, which the builder's copy of
-    # the worktree lacks: without Node.js here they run there, the rest here.
+    # the worktree lacks: without Node.js here they go there, the rest here.
     if want("policy"):
         if shutil.which("node") or primary.prefix is None:
             spawn("policy", lambda job: job.run("repository policy suite", Builder("local", None),
-                                                ["bash", "tools/policy/run.sh"]))
+                                                ["bash", "tools/policy/run.sh", "--local"]))
         else:
             spawn("policy", lambda job: job.run("repository policy suite without its Node.js tests",
                                                 Builder("local", None),
-                                                ["bash", "tools/policy/run.sh", "--no-node"]))
+                                                ["bash", "tools/policy/run.sh", "--local", "--no-node"]))
             # No bytecode: the copy's __pycache__ would come back as conflicts with this one's.
             spawn("policy-node", lambda job: job.run(
                 "repository policy tests of Node.js scripts", primary,
@@ -571,7 +577,7 @@ def main() -> int:
                           "tilo-app", "--", "certify", "--workspace", *flags(row_tests)])
             if want("scenarios") and any(n.startswith("example-") or n == "tilo-app-cli" for n in row_tests):
                 post.run(f"example scenarios shard {row['shard']}", local,
-                         ["bash", "tools/test-env.sh", "bash", "tools/ci/example-scenarios.sh", *flags(row_tests)])
+                         ["bash", "tools/ci/example-scenarios.sh", *flags(row_tests)])
             if want("scoped") and row.get("scoped_tests"):
                 post.run(f"scoped reader tests shard {row['shard']}", local,
                          ["env", f"SCOPED_TESTS={row['scoped_tests']}", sys.executable,

@@ -26,6 +26,7 @@ pub(crate) mod feed;
 #[cfg(any(test, feature = "test-support"))]
 pub use feed::tests as served_history;
 pub mod folder;
+mod listing;
 pub mod preview;
 pub mod restore;
 pub use assets::{HistoricalAssetRequest, HistoricalAssetResponse, HistoricalAssetSource};
@@ -193,6 +194,8 @@ struct SelectedPreview {
 /// Documents a window keeps beside its own, whose versions its History shows and restores: the parts
 /// of the app's chain. The workspace's history lists their changes with the window's own.
 pub trait HistoryParts {
+    /// Every part's committed frontier, in one list: it moves whenever a part changes or arrives.
+    fn heads(&self) -> Vec<ChangeHash>;
     /// Every part's committed document.
     fn documents(&self) -> Vec<(HistoryPart, AutoCommit)>;
     /// The window's view of what `part` held at `version.heads`, drawn over `version.own`, the

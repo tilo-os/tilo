@@ -32,6 +32,34 @@ impl GovernanceHeads {
             })
         })
     }
+
+    /// Whether this state holds a change for every head an op names
+    /// ([`collab_types::SignedOp::governance`]), or the op names more than
+    /// [`collab_types::MAX_GOVERNANCE_HEADS`] (and so names none). Asked only
+    /// of a change that would be refused: a head that is one of the
+    /// governance's own is found at once, an older one by a pass over its
+    /// change hashes.
+    #[must_use]
+    pub fn holds_named(&self, heads: &[[u8; 4]]) -> bool {
+        if heads.len() > collab_types::MAX_GOVERNANCE_HEADS {
+            return true;
+        }
+        let Some(doc) = self.0.as_ref() else {
+            return heads.is_empty();
+        };
+        let current: Vec<_> = automerge::transaction::Transactable::base_heads(&**doc)
+            .iter()
+            .map(|head| collab_types::governance_head(&head.0))
+            .collect();
+        heads.iter().all(|head| {
+            current.contains(head)
+                || doc
+                    .committed_document()
+                    .change_hashes()
+                    .iter()
+                    .any(|hash| collab_types::governance_head(&hash.0) == *head)
+        })
+    }
 }
 
 impl PeerGovernance<'_> {
@@ -69,7 +97,7 @@ impl PeerGovernance<'_> {
     /// The governance's heads now.
     #[must_use]
     pub fn heads(self) -> Vec<[u8; 32]> {
-        self.peer.governance_heads()
+        self.peer.governance_heads().unwrap_or_default()
     }
     /// Whether the governance carries a device's removal without its cut
     /// ([`crate::removals`]): one recorded before cuts were kept. Until the
@@ -197,10 +225,18 @@ impl PeerGovernance<'_> {
         // A host the governance names holds the workspace: its device is let
         // in wherever the workspace is held, and its person, whose host holds
         // all of it already, is let reach the hosts holding it.
-        for (root, device) in self.keeping_certificates(now) {
-            member_devices.push(device);
-            member_user_roots.push(root);
+        for hint in self.keeping_devices() {
+            let cert = &hint.host;
+            if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
+                && !self.peer.core.revocations.refuses(cert)
+            {
+                member_devices.push(cert.device_public_key);
+                member_user_roots.push(cert.user_public_key);
+            }
         }
+        // A key its person revoked is let in nowhere: its device leaves the workspace's access,
+        // and a session of it that is open is told so and let go.
+        member_devices.retain(|device| !self.revoked_key(device));
         member_devices.sort_unstable();
         member_devices.dedup();
         member_user_roots.sort_unstable();
@@ -260,8 +296,32 @@ impl PeerGovernance<'_> {
         self.peer.require_administrator_invitation(key, now).is_ok()
     }
 
-    /// The device that created the workspace: it founds the workspace's MLS
-    /// group, and no other device does.
+    /// The device that founds the workspace's MLS group, and no other device:
+    /// the device the workspace was created on, or, for a workspace founded in
+    /// its person's name, the first of its key-holding devices by device key.
+    /// A person-founded workspace is one every one of their devices makes
+    /// identically when they found it before they see one another, so no
+    /// single device of theirs created it; the first key holder founds its
+    /// group, and a device that is not that one takes the group it hands over.
+    #[must_use]
+    pub fn founding_device(self) -> Option<[u8; 32]> {
+        let founder = self.founder()?;
+        if founder != self.peer.owner() {
+            return Some(founder);
+        }
+        self.keeping_devices()
+            .into_iter()
+            .filter(|hint| {
+                hint.host.user_public_key == self.peer.owner()
+                    && super::holder_role(hint) == super::CopyRole::KeyHolder
+            })
+            .map(|hint| hint.host.device_public_key)
+            .min()
+    }
+
+    /// Who created the workspace: the device it was created on, or, for a
+    /// workspace founded in its person's name, the person's root key. What
+    /// founds the workspace's MLS group is [`Self::founding_device`].
     pub fn founder(self) -> Option<[u8; 32]> {
         let doc = self.peer.core.workspace_doc.as_ref()?;
         let (value, _) = doc.get(ROOT, super::seed::FOUNDER).ok()??;
@@ -289,21 +349,30 @@ impl PeerGovernance<'_> {
             .collect())
     }
 
-    /// The certificates of the devices the workspace names among its keepers,
-    /// as `(person root, device key)`: each one the holder signed itself, still
-    /// valid at `now` and not revoked. A keeper holds the workspace by this
-    /// name, so this is how its device and the person it keeps it for are
-    /// known ([`Self::governed_access`], [`Self::governed_members`]).
-    fn keeping_certificates(self, now: SystemTime) -> Vec<([u8; 32], [u8; 32])> {
-        self.keeping_devices()
+    /// The devices of `people` among the workspace's key holders at `now`
+    /// ([`Self::key_holders`]): who holds the keys of a group only those
+    /// people read. A person it no longer has as a member, and a revoked key,
+    /// hold none, so the commit that follows either rotates that group's keys.
+    pub fn reader_key_holders(
+        self,
+        people: &BTreeSet<[u8; 32]>,
+        now: SystemTime,
+    ) -> Result<BTreeSet<[u8; 32]>, String> {
+        let mut theirs: BTreeSet<[u8; 32]> = self
+            .governed_set(now)?
             .into_iter()
-            .filter_map(|hint| {
-                let cert = &hint.host;
-                (tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
-                    && !self.peer.core.revocations.refuses(cert))
-                .then_some((cert.user_public_key, cert.device_public_key))
-            })
-            .collect()
+            .filter(|(root, member)| !member.removed && people.contains(root))
+            .flat_map(|(_, member)| member.devices)
+            .collect();
+        theirs.extend(
+            self.keeping_devices()
+                .iter()
+                .filter(|hint| people.contains(&hint.host.user_public_key))
+                .map(|hint| hint.host.device_public_key),
+        );
+        let mut holders = self.key_holders(now)?;
+        holders.retain(|device| theirs.contains(device));
+        Ok(holders)
     }
 
     /// The workspace's people and grants as its governance records them: its
@@ -378,7 +447,15 @@ impl PeerGovernance<'_> {
         // name and is no member's device for its access ([`Self::governed_set`]).
         // A page still shows it as the device of the person who keeps it
         // there, so a window it serves or what it narrates reads as theirs.
-        let keeping = self.keeping_certificates(now);
+        let keeping: Vec<([u8; 32], [u8; 32])> = self
+            .keeping_devices()
+            .into_iter()
+            .filter(|hint| {
+                tilo_user_identity::verify_device_cert_at(&hint.host, now_ns(now)).is_ok()
+                    && !self.peer.core.revocations.refuses(&hint.host)
+            })
+            .map(|hint| (hint.host.user_public_key, hint.host.device_public_key))
+            .collect();
         // Read once per document state ([`crate::cached_document`]), so
         // listing the people costs no decoding or signature check for a row
         // a change left as it was.
@@ -830,15 +907,8 @@ impl PeerGovernanceMut<'_> {
         let mut document = (**cached).clone();
         document.set_actor(self.peer.workspace_actor_of(key));
         let before = document.get_heads();
-        let author = self.peer.governance_author(key, now);
-        match crate::governance::admit_invited_member(
-            &mut document,
-            cached,
-            redemption,
-            name,
-            author.as_ref(),
-            now,
-        )? {
+        match crate::governance::admit_invited_member(&mut document, cached, redemption, name, now)?
+        {
             crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
             crate::governance::AdmissionOutcome::Applied { .. } => {
                 // The workspace's owner is not one of its members: they hold

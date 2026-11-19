@@ -119,8 +119,11 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         // the winner. Keeping every commit and Welcome
         // made each newcomer replay the group's whole history, every
         // Welcome carrying the group's ratchet tree.
-        NeighbourMsg::MlsGovernance { frame, .. } => {
+        NeighbourMsg::MlsGovernance {
+            workspace, frame, ..
+        } => {
             let mut route = b"mls-governance\0".to_vec();
+            reader_group_route(&mut route, workspace, frame.workspace);
             if matches!(frame.action, collab_types::MlsGovernanceAction::Genesis) {
                 route.extend_from_slice(&frame.digest().ok()?);
             } else if audience(msg).is_some() {
@@ -132,8 +135,11 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             }
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
-        NeighbourMsg::MlsAccessRequest { request, .. } => {
+        NeighbourMsg::MlsAccessRequest {
+            workspace, request, ..
+        } => {
             let mut route = b"mls-access\0".to_vec();
+            reader_group_route(&mut route, workspace, request.workspace);
             route.extend_from_slice(request.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
@@ -149,6 +155,18 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
         _ => return None,
     };
     Some((*blake3::hash(route).as_bytes(), kind))
+}
+
+/// Name `group` in `route` when it is the group of a reader set within `workspace`
+/// ([`collab_types::reader_group`]) rather than the workspace's own: each group's head and
+/// each device's request in it are kept apart from every other group's. The workspace's own
+/// group keeps the routes it always had.
+fn reader_group_route(route: &mut Vec<u8>, workspace: &str, group: collab_types::WorkspaceId) {
+    if collab_types::WorkspaceId::parse(workspace).is_some_and(|workspace| workspace != group) {
+        route.extend_from_slice(b"group\0");
+        route.extend_from_slice(group.as_uuid().as_bytes());
+        route.push(0);
+    }
 }
 
 /// The retained channel of an app record. Isolation between workspaces is
@@ -356,6 +374,43 @@ mod tests {
         assert_eq!(kind, Retention::Checkpoint);
         assert_ne!(mine, retention(&request(&other), false).unwrap().0);
         assert_ne!(mine, first.0);
+
+        // The group of a reader set, carried in its workspace, keeps a head and requests of
+        // its own beside the workspace's group's, which keeps the routes it had.
+        let readers = collab_types::Readers::people([[9; 32]]).unwrap().text();
+        let group = collab_types::reader_group(workspace, &readers).unwrap();
+        let carried = |group: WorkspaceId| NeighbourMsg::MlsGovernance {
+            workspace: workspace.to_string(),
+            frame: Box::new(
+                MlsGovernanceFrame::signed(
+                    group,
+                    [2; 32],
+                    2,
+                    MlsGovernanceAction::Commit {
+                        removed: vec![collab_types::Ed25519PublicKey::from_bytes(
+                            device.verifying_key().to_bytes(),
+                        )],
+                        added: Vec::new(),
+                        commit: vec![2],
+                        joining: None,
+                        history: None,
+                    },
+                    &signer,
+                )
+                .unwrap(),
+            ),
+            delivery: 0,
+        };
+        let own_head = retention(&carried(workspace), false).unwrap();
+        assert_eq!(own_head, head);
+        assert_ne!(retention(&carried(group), false).unwrap().0, head.0);
+        let asked = |group: WorkspaceId| NeighbourMsg::MlsAccessRequest {
+            workspace: workspace.to_string(),
+            request: Box::new(MlsAccessRequestV1::signed(group, vec![1], 1, &device).unwrap()),
+            delivery: 0,
+        };
+        assert_eq!(retention(&asked(workspace), false).unwrap().0, mine);
+        assert_ne!(retention(&asked(group), false).unwrap().0, mine);
     }
 
     fn host_persists_state_but_never_late_session_actions() {

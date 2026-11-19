@@ -28,7 +28,7 @@ use fs::workspace_authority::{
 use fs::{
     AclHandle, CapabilityFile, ContentStore, FsTransportIdentity, Heuristics, Hydrator,
     IdentityKey, Namespace, QuickFS, Ticket, Workspace, identity_paths,
-    load_certified_mount_identity_once_valid, load_revocation_list, load_workspace_share_issuer,
+    load_certified_mount_identity_once_valid, load_revocation_list,
 };
 use fuser::{Config, MountOption, SessionACL};
 use std::io::Read;
@@ -901,21 +901,20 @@ fn export_home_peer(
     }
     let capability_json = std::fs::read_to_string(acl)
         .with_context(|| format!("read capability list {}", acl.display()))?;
-    let _: serde_json::Value =
-        serde_json::from_str(&capability_json).context("capability list is not valid JSON")?;
-    let capabilities: collab_types::FsAuthority = serde_json::from_str(&capability_json)?;
-    let paths = identity_paths();
-    let governor = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)
-        .context("read workspace governor key")?;
+    fs::caps_file::authority(capability_json.as_bytes(), acl)?;
+    // The person's identity signed the authority this workspace serves; the bundle carries that
+    // revision, since the person's root is never on this device.
+    let person = tilo_device_identity::persist::read_public_key(&identity_paths().user_pubkey)
+        .context("read the person this device is certified for")?;
+    let saved = cache_dir.join("workspace-authority.bin");
+    let authority: WorkspaceAuthorityEnvelope = postcard::from_bytes(
+        &std::fs::read(&saved)
+            .with_context(|| format!("read the signed Files authority {}", saved.display()))?,
+    )
+    .context("the signed Files authority is unreadable")?;
+    authority.verify(decoded_ticket.workspace_id(), person)?;
     server_workspace_ids.sort_unstable();
     server_workspace_ids.dedup();
-    let authority = WorkspaceAuthorityEnvelope::sign(
-        decoded_ticket.workspace_id(),
-        1,
-        capabilities,
-        false,
-        &governor,
-    )?;
     let workspace = HomePeerBundle {
         ticket: ticket.trim().to_owned(),
         cache_dir: replica_cache_dir.join(decoded_ticket.workspace_id().to_string()),
@@ -1258,7 +1257,6 @@ async fn serve(
     let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
-    let share_issuer = load_workspace_share_issuer(&paths, &credentials)?;
     let transport_identity =
         FsTransportIdentity::new(credentials.clone(), Arc::clone(&revocations))
             .with_transport_switch(transport_switch);
@@ -1318,8 +1316,8 @@ async fn serve(
         println!("Restored workspace from {}", p.display());
     }
 
-    // The serving owner is the authority publisher. A capability file may bootstrap its first
-    // signed revision, but every peer thereafter enforces the durable governor-signed state.
+    // The person's identity publishes the authority's signed revisions; every peer enforces the
+    // durable governor-signed state.
     let workspace_authority = match cache_dir.as_ref() {
         Some(cache_dir) => {
             let members = acl_args
@@ -1327,41 +1325,15 @@ async fn serve(
                 .iter()
                 .map(|member| parse_member(member))
                 .collect::<Result<Vec<_>>>()?;
-            let bootstrap = acl_args
-                .acl
-                .as_ref()
-                .filter(|_| remote_ticket.is_none())
-                .zip(share_issuer.as_ref())
-                .map(|(path, signer)| -> Result<_> {
-                    let authority: collab_types::FsAuthority =
-                        serde_json::from_slice(&std::fs::read(path)?)
-                            .context("parse workspace authority bootstrap capabilities")?;
-                    Ok((authority.capabilities, signer))
-                })
-                .transpose()?;
             workspace_startup::owner_authority(
                 cache_dir,
                 workspace_id,
                 credentials.user_public_key(),
                 members,
-                bootstrap,
             )?
         }
         None => None,
     };
-    let authority_reload = workspace_authority
-        .as_ref()
-        .zip(share_issuer.as_ref())
-        .zip(acl_args.acl.as_ref())
-        .map(|((authority, governor), path)| {
-            fs::workspace_authority::spawn_capability_file_reload(
-                path.clone(),
-                Arc::clone(authority),
-                governor.clone(),
-            )
-            .with_context(|| format!("watching the capability list {}", path.display()))
-        })
-        .transpose()?;
     // The desktop publishes signed ACL revisions through this group-restricted local socket. It
     // never receives write access to the daemon cache, and the daemon remains the one authority
     // writer.
@@ -1472,9 +1444,6 @@ async fn serve(
     )
     .await?;
     final_flush(persist, &namespace, np.as_deref()).await;
-    if let Some(task) = authority_reload {
-        task.abort();
-    }
     if let Some(task) = authority_socket_task {
         task.abort();
     }
@@ -2524,10 +2493,11 @@ mod tests {
             }
         }
 
-        phase every_capability_list_an_image_ever_seeded_still_mounts_with_its_grant;
+        phase a_capability_list_an_older_image_seeded_is_refused_until_the_machine_reseeds_it;
         // tmpfiles' `C` never overwrites, so a machine keeps the capability list of the image it was
-        // installed with across every update. Each version the image ever seeded must still mount with
-        // the grant it gave, through the same loader fs.service uses.
+        // installed with across every update. The shipped version must mount with its grant through
+        // the same loader fs.service uses; a version in a schema the code no longer reads must be
+        // refused with what the machine has to do about it.
         {
             use fs::Access;
 
@@ -2546,18 +2516,29 @@ mod tests {
                 "the history must hold the list the image ships today: {versions:?}"
             );
             let identity: IdentityKey = [0x5A; 32];
+            let local = vec![parse_member("person:local").unwrap()];
             for path in &versions {
-                let local = vec![parse_member("person:local").unwrap()];
-                let file = CapabilityFile::load(path, identity, local).unwrap_or_else(|error| {
-                    panic!(
-                        "{} must still load on an upgraded machine: {error}",
-                        path.display()
-                    )
-                });
+                let is_shipped = std::fs::read(path).is_ok_and(|bytes| bytes == shipped);
+                let file = match CapabilityFile::load(path, identity, local.clone()) {
+                    Ok(file) => file,
+                    Err(error) => {
+                        assert!(
+                            !is_shipped,
+                            "the list the image ships today must load on an upgraded machine: \
+                             {error}"
+                        );
+                        assert!(
+                            error.to_string().contains("remove it"),
+                            "{} is refused without saying how a machine re-seeds it: {error}",
+                            path.display()
+                        );
+                        continue;
+                    }
+                };
                 let handle = file.handle();
                 assert!(
                     handle.permits(&identity, "/notes/today.md", Access::Write),
-                    "{} must still let the local session write its workspace",
+                    "{} must let the local session write its workspace",
                     path.display()
                 );
                 let outsider = CapabilityFile::load(path, identity, Vec::new())

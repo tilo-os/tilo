@@ -242,10 +242,6 @@ pub enum PersonalFabricAction {
         request_id: [u8; 16],
         session_id: String,
     },
-    /// Retired: a placement for the receiving device to author. Where the
-    /// person's screens stand is their shared placement setting now; the
-    /// variant keeps every later Postcard discriminant's value.
-    RetiredSetDisplayPlacement,
     /// A target-issued, short-lived permission delivered to its controller.
     InputLeaseGranted {
         lease: InputLease,
@@ -362,18 +358,6 @@ pub enum PersonalFabricAction {
         id: crate::fabric::notification::ContinuityNotificationId,
         action_key: String,
     },
-    /// Retired: a metadata-only realtime handoff offer. No build produced
-    /// one; a call's continuity is the live session's, so the variant stays only
-    /// so every later Postcard discriminant keeps its value.
-    RetiredRealtimeOffer,
-    /// Retired with [`Self::RetiredRealtimeOffer`].
-    RetiredRealtimeAccept,
-    /// Retired with [`Self::RetiredRealtimeOffer`].
-    RetiredRealtimeMediaReady,
-    /// Retired with [`Self::RetiredRealtimeOffer`].
-    RetiredRealtimeStopSource,
-    /// Retired with [`Self::RetiredRealtimeOffer`].
-    RetiredRealtimeCancel,
     /// Request one fixed-profile virtual gamepad on the exact target. The
     /// payload contains semantic controls only: descriptors, HID reports,
     /// serials, and arbitrary evdev codes are not representable.
@@ -444,20 +428,6 @@ pub enum PersonalFabricAction {
     RemoteAudioCancel {
         session_id: [u8; 16],
     },
-    /// Retired: negotiation for using another of the person's devices as a
-    /// camera, microphone or scanner. No build produced one, and there is no
-    /// capture path to hand it to; the variant stays only so every later
-    /// Postcard discriminant keeps its value.
-    RetiredRemoteCaptureSignal,
-    /// Retired with [`Self::RetiredRemoteCaptureSignal`].
-    RetiredRemoteCaptureChunk,
-    /// Retired: a liveness and RTT probe between one person's devices. No
-    /// build produced one and nothing measured what it would have reported;
-    /// the variant stays only so every later Postcard discriminant keeps its
-    /// value.
-    RetiredDeviceHealthProbe,
-    /// Retired with [`Self::RetiredDeviceHealthProbe`].
-    RetiredDeviceHealthReport,
     /// Fabric clock probe, sent only while something on the prober holds
     /// this peer's clock in sync. `sent_us` is the prober's
     /// `CLOCK_MONOTONIC` send time in microseconds, echoed back so the
@@ -471,12 +441,6 @@ pub enum PersonalFabricAction {
     FabricClockReport {
         report: crate::fabric::clock::ClockReport,
     },
-    /// Retired: consent-bound request, grant, sealed credential or teardown
-    /// for an exact certified phone. Sharing this device's connection is the
-    /// connectivity service's own `tethering` resource, so no build produced
-    /// one of these; the variant stays only so every later Postcard
-    /// discriminant keeps its value.
-    RetiredTethering,
     /// Abort one exact authenticated Bluetooth transaction. Both peers roll
     /// back only the accessory bound to this request; no inventory or bond
     /// material is disclosed.
@@ -618,16 +582,6 @@ pub enum PersonalFabricAction {
     WakeProbeReply {
         nonce: [u8; 16],
     },
-    /// Retired, as [`Self::RetiredSetDisplayPlacement`]: its compare-and-set form.
-    RetiredSetDisplayPlacementChecked,
-    /// Retired: sequencing for [`Self::Input`], which one ordered session
-    /// between two devices already gives.
-    RetiredSpatialInputProtocol,
-    /// Retired, as [`Self::RetiredSpatialInputProtocol`].
-    RetiredSpatialInputSequenced,
-    /// Retired: a window shown on the receiving device. No build sent one; a
-    /// window crosses as the drag of its bar ([`Self::DragCarried`]).
-    RetiredShowTab,
     /// Certify a device the sender paired: the devices that can approve it
     /// ask their person (the shell's device certification). The ask,
     /// postcard-encoded.
@@ -1128,23 +1082,6 @@ impl PersonalFabricActionEnvelope {
                 {
                     return Err(FabricError::InvalidAction);
                 }
-            }
-            PersonalFabricAction::RetiredRealtimeOffer
-            | PersonalFabricAction::RetiredRealtimeAccept
-            | PersonalFabricAction::RetiredRealtimeMediaReady
-            | PersonalFabricAction::RetiredRealtimeStopSource
-            | PersonalFabricAction::RetiredRealtimeCancel
-            | PersonalFabricAction::RetiredRemoteCaptureSignal
-            | PersonalFabricAction::RetiredRemoteCaptureChunk
-            | PersonalFabricAction::RetiredDeviceHealthProbe
-            | PersonalFabricAction::RetiredDeviceHealthReport
-            | PersonalFabricAction::RetiredTethering
-            | PersonalFabricAction::RetiredShowTab
-            | PersonalFabricAction::RetiredSetDisplayPlacement
-            | PersonalFabricAction::RetiredSetDisplayPlacementChecked
-            | PersonalFabricAction::RetiredSpatialInputProtocol
-            | PersonalFabricAction::RetiredSpatialInputSequenced => {
-                return Err(FabricError::InvalidAction);
             }
             PersonalFabricAction::GamepadForwardRequest {
                 forwarding_id,

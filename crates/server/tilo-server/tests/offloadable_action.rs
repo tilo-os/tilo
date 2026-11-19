@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use launcher::capture::{CapturedRunOutput, CapturedTermination};
+use launcher::capture::{CapturedLaunchOutput, CapturedTermination};
 use runtime_fs::blobs::BlobScope;
 use thumbnail::batch::{ENTRYPOINT, PACKAGE};
 use tilo_actions::offload::{OffloadRequest, Offloaded, content_inputs};
@@ -61,7 +61,7 @@ impl ComputeSandbox for ThumbnailSandbox {
     fn launch(
         &self,
         invocation: ComputeSandboxInvocation<'_>,
-    ) -> Result<CapturedRunOutput, String> {
+    ) -> Result<CapturedLaunchOutput, String> {
         use std::fmt::Write as _;
         use std::os::unix::process::ExitStatusExt;
         if invocation.entrypoint != ENTRYPOINT {
@@ -84,7 +84,7 @@ impl ComputeSandbox for ThumbnailSandbox {
             ),
             Err(error) => (i32::from(error.exit_code()), error.to_string().into_bytes()),
         };
-        Ok(CapturedRunOutput {
+        Ok(CapturedLaunchOutput {
             termination: CapturedTermination::Exited(std::process::ExitStatus::from_raw(
                 code.checked_mul(256).unwrap(),
             )),

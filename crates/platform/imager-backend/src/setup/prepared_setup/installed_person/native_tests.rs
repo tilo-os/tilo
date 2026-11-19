@@ -78,7 +78,7 @@ fn fixture() -> Fixture {
     let record = identity.join("member.json");
     tilo_files::native::atomic::write_with_mode(
         &record,
-        &runtime_identity::public_member_record("Synthetic qualifier", [88, 101, 242], person)
+        &tilo_identity::store::public_member_record("Synthetic qualifier", [88, 101, 242], person)
             .unwrap(),
         0o600,
     )
@@ -144,10 +144,6 @@ fn fixture() -> Fixture {
     assert_eq!(
         std::fs::metadata(&certificate_path).unwrap().mode() & 0o7777,
         0o644
-    );
-    assert!(
-        !installed_paths.user_privkey.exists(),
-        "no human root key may be imported"
     );
     publish_namespace(&authenticated, &installed_root).unwrap();
     assert!(

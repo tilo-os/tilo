@@ -47,7 +47,10 @@ impl Default for Mounted {
 impl Mounted {
     pub(super) fn new(secrets: Secrets) -> Self {
         Self {
-            state: OnboardingState::new(secrets, Some(runtime_identity::unknown_recovery_words)),
+            state: OnboardingState::new(
+                secrets,
+                Some(tilo_identity::store::unknown_recovery_words),
+            ),
             app: None,
             refused: false,
             api: SharedApi::default(),
@@ -300,7 +303,7 @@ impl OnboardingView {
             },
             connect_path: self.connect_path.get(),
             recovery_check: self.recovery_check.clone(),
-            recovery_words_total: runtime_identity::RECOVERY_WORD_COUNT,
+            recovery_words_total: tilo_identity::store::RECOVERY_WORD_COUNT,
             backup_error: self.backup_error.clone(),
             backup_saved: self
                 .backup_saved

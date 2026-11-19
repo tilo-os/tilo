@@ -5,8 +5,8 @@
 use super::tests::{bookmarked, layout_at, synced};
 use super::*;
 use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_webview::WebViewEngine;
 use ui::tilo_actions::OperationKind;
-use ui::webview::WebViewEngine;
 
 #[test]
 #[allow(

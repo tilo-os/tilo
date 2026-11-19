@@ -106,6 +106,7 @@ impl super::Loop {
             facts,
             workspace: asked,
             key,
+            session_name,
             session,
             decide,
             ..
@@ -132,7 +133,12 @@ impl super::Loop {
                 }
             };
         tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "MCP server: the person's agent key admits this client");
-        let consent = super::as_member(members, &facts, (&workspace, person));
+        let consent = super::as_member(
+            members,
+            &facts,
+            (&workspace, person),
+            session_name.as_deref(),
+        );
         self.sessions.admit(&session, &consent, &agent, &name);
         let _ = decide.send(consent);
     }
@@ -165,7 +171,7 @@ impl AgentKey {
             let mut secret = [0_u8; 32];
             getrandom::fill(&mut secret).map_err(|error| io::Error::other(error.to_string()))?;
             let key = format!("{PREFIX}{}", hex::encode(secret));
-            super::write_private(file, format!("{key}\n").as_bytes())?;
+            tilo_files::native::atomic::write_private(file, format!("{key}\n").as_bytes())?;
             key
         };
         if key.len() > 128 || !key.bytes().all(|byte| byte.is_ascii_graphic()) {

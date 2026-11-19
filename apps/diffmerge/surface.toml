@@ -6,6 +6,7 @@ format = 2
 kind = "diffmerge.session"
 label = "Diff & Merge"
 version = 1
+shows = ["next-change", "previous-change", "show", "show-diff", "show-merge"]
 fields = [
   { path = "comparison", type = { option = { named = "Comparison" } }, readonly = true, stored = "record" },
   { path = "comparison.left_label", type = "text" },

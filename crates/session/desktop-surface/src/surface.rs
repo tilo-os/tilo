@@ -47,6 +47,8 @@ use ui::widget::DrawChild;
 mod arrivals;
 mod artwork;
 #[cfg(test)]
+mod carry_tests;
+#[cfg(test)]
 mod close_button_tests;
 #[cfg(test)]
 mod close_motion_tests;
@@ -168,9 +170,11 @@ pub trait TileSource {
         None
     }
 
-    /// The record `tab`'s window shows and the kind of resource it keeps,
-    /// for the windows a person may share ([`ui::window_share`]).
-    fn window_record(&self, _tab: TabId) -> Option<(String, String)> {
+    /// The resource `tab`'s window shows, by its published address, and the kind of resource it
+    /// keeps: what the windows a person may share are listed by ([`ui::window_share`]). What the
+    /// window's bar carries is the workspace's layout's
+    /// ([`DesktopHandle::set_window_resources`]), which every device of the person's reads.
+    fn window_resource(&self, _tab: TabId) -> Option<(String, String)> {
         None
     }
 
@@ -217,6 +221,10 @@ struct Shared {
     /// The agent run that opened each window an agent opened, by tab
     /// ([`DesktopHandle::set_opened_by`]).
     opened_by: std::collections::BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>,
+    /// The resource each window shows, by tab, as the workspace's layout keeps it
+    /// ([`DesktopHandle::set_window_resources`]): what a window's bar carries when a person picks
+    /// it up, on every device that reads the layout.
+    resources: std::collections::BTreeMap<TabId, String>,
     /// The windows the sharing app lists for its picker, as last published
     /// ([`DesktopSurface::offer_window_shares`]): a window's menu offers the share row exactly for
     /// these.
@@ -342,6 +350,9 @@ struct Shared {
     liveness: Vec<(TabId, LivenessChoice)>,
     /// What the shell says over the windows for a while ([`DesktopHandle::notice`]).
     notice: Rc<RefCell<ui::widget::toast::Transient<ui::window_toolbar::ToolbarNotice>>>,
+    /// The buttons of that notice the person pressed that the shell does not carry out itself,
+    /// waiting for the layer that showed them ([`DesktopHandle::take_notice_actions`]).
+    notice_actions: RefCell<Vec<String>>,
     /// The notifications the host installed: the shell carries out what the person chose there,
     /// and the host above the windows draws them ([`DesktopHandle::notifications`]).
     notifications: Option<DesktopNotifications>,
@@ -371,12 +382,24 @@ impl DesktopHandle {
     /// Say in passing what left nothing to see, or why nothing happened: a short-lived notice
     /// over the windows, said politely to screen readers, never a notification.
     pub fn acknowledge(&self, text: impl Into<String>) {
-        self.shared
-            .borrow()
-            .say(ui::window_toolbar::ToolbarNotice::new(
-                text,
-                ui::widget::toast::ToastKind::Info,
-            ));
+        self.acknowledge_with(ui::window_toolbar::ToolbarNotice::new(
+            text,
+            ui::widget::toast::ToastKind::Info,
+        ));
+    }
+
+    /// Say `notice` in passing, as [`Self::acknowledge`] does, with what the person can still do
+    /// about it: the shell carries out the buttons it knows, and [`Self::take_notice_actions`]
+    /// hands the rest to whoever showed the notice.
+    pub fn acknowledge_with(&self, notice: ui::window_toolbar::ToolbarNotice) {
+        self.shared.borrow().say(notice);
+    }
+
+    /// The buttons of the notice the person pressed that the shell does not carry out itself,
+    /// taken by the layer that showed it. One press each, in the order they were made.
+    #[must_use]
+    pub fn take_notice_actions(&self) -> Vec<String> {
+        std::mem::take(&mut *self.shared.borrow().notice_actions.borrow_mut())
     }
 
     /// The notice the shell says over the windows: the host draws it
@@ -403,6 +426,13 @@ impl DesktopHandle {
         if offered && action == REOPEN_CLOSED {
             // Undo after a close reopens as Shift+Super+T does, through the same command.
             let _ = self.dispatch(ChromeEffect::ReopenClosed { app: None });
+        } else if offered {
+            // A notice the shell itself put up: whoever showed it takes its buttons.
+            self.shared
+                .borrow()
+                .notice_actions
+                .borrow_mut()
+                .push(action.to_owned());
         }
         offered
     }
@@ -639,6 +669,20 @@ impl DesktopHandle {
             return false;
         }
         shared.holders = holders;
+        true
+    }
+
+    /// Give every window the resource it shows, by the address the workspace's layout keeps: what
+    /// its bar carries. Whether that is news.
+    pub fn set_window_resources(
+        &self,
+        resources: std::collections::BTreeMap<TabId, String>,
+    ) -> bool {
+        let mut shared = self.shared.borrow_mut();
+        if shared.resources == resources {
+            return false;
+        }
+        shared.resources = resources;
         true
     }
 
@@ -1097,6 +1141,15 @@ impl DesktopSurface {
             for group in &mut row.groups {
                 let tabs: Vec<TabId> = group.tabs().iter().map(|tab| tab.id).collect();
                 changed |= group.set_new_tab(shared.opens);
+                // The window's bar carries the resource its place shows, as the layout keeps it:
+                // a press that travels then lifts it here and on the device beside this one.
+                changed |= group.set_carries(
+                    shared
+                        .resources
+                        .get(&group.active_tab_id())
+                        .filter(|resource| !resource.is_empty())
+                        .cloned(),
+                );
                 for tab in tabs {
                     changed |= group.set_tab_holder(tab, shared.holders.get(&tab).cloned());
                     changed |= group.set_tab_opened_by(tab, shared.opened_by.get(&tab).cloned());
@@ -1644,6 +1697,12 @@ impl DesktopSurface {
         // A window lifted over the shell, or let go back into its strip.
         if let Some(ask) = row.take_pending_float() {
             changed |= floats::carry_out(&mut shared, strip_id, row, ask);
+        }
+        // A window another of the person's devices carried here, let go over one of this strip's
+        // windows: the place showing it joins that window, as a window's bar let go there does.
+        if let Some((into, resource)) = row.take_pending_window_drop() {
+            let resources = shared.resources.clone();
+            changed |= window_menu::join_place(&mut shared, &resources, strip_id, into, &resource);
         }
         let mut new_tab = None;
         let mut search_in = None;

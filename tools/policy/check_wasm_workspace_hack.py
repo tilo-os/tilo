@@ -5,7 +5,7 @@
 (tokio's ``net``, sockets, D-Bus, ...), and hakari writes most of them into
 its unconditional ``[dependencies]``. A crate that also builds for
 ``wasm32-unknown-unknown`` (the browser runtime's web core, the apps it links
-as side modules, the registry verifier) therefore names the hack only under
+as side modules, the registry verifier, an app's model module) therefore names the hack only under
 ``[target.'cfg(not(target_arch = "wasm32"))'.dependencies]``; otherwise its
 wasm32 build pulls mio and fails. ``cargo hakari manage-deps`` adds the line
 unconditionally to a new member, so this check names any member the browser
@@ -27,12 +27,14 @@ WASM = "wasm32-unknown-unknown"
 HACK = "workspace-hack"
 
 # What the browser builds for wasm32: the desktop bundle, which links the
-# browser runtime and every web app, and the image compute worker, each with
-# the manifest a finding about it names.
+# browser runtime and every web app, and the image compute worker; and every
+# app's model module, linked together in one build before it is split. Each
+# with the manifest a finding about it names.
 ROOTS = (
     ("tilo-web-desktop", (), "crates/browser/tilo-web-desktop/Cargo.toml"),
     ("tilo-browser-runtime", (), "crates/browser/tilo-browser-runtime/Cargo.toml"),
     ("tilo-browser-compute", (), "crates/browser/tilo-browser-compute/Cargo.toml"),
+    ("tilo-models-wasm", (), "crates/sdk/tilo-models-wasm/Cargo.toml"),
 )
 
 

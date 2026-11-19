@@ -107,6 +107,15 @@ impl List {
     pub(crate) fn new() -> Self {
         Self(Default::default())
     }
+
+    /// A list of these items, as a model module's host receives it.
+    pub(crate) fn from_items(items: Vec<ListValue>) -> Self {
+        let mut list = SequenceTree::new();
+        for item in items {
+            list.push(item);
+        }
+        Self(list)
+    }
 }
 
 impl ListValue {

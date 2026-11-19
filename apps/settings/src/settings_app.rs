@@ -260,7 +260,7 @@ impl SettingsApp {
 
     pub fn publish_browser_identity(&self, origin: String) -> Result<(), String> {
         let identity =
-            ui::local_identity::bound().ok_or("Sign in before publishing this identity")?;
+            ui::local_identity::load().ok_or("Sign in before publishing this identity")?;
         let root = hex::encode(identity.group_public_key);
         self.account_root
             .publish_browser_identity(root, origin, identity.display_name)

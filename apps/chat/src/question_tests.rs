@@ -231,7 +231,7 @@ fn only_the_person_asked_answers_themselves_and_the_question_waits_for_them() {
     };
     assert_eq!(given.answer.0, ALLOW);
     assert_eq!(given.device.0, "Phone", "it says where it was pressed");
-    assert_eq!(given.at, later / SECOND_MS, "and when");
+    assert_eq!(given.at, later, "and when");
 
     // The same answer pressed on a second device changes nothing; another
     // answer is refused, and so is taking the question back.

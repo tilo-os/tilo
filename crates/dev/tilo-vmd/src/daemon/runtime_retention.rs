@@ -129,6 +129,17 @@ pub(super) fn prepare(
     }
 }
 
+/// A selected runtime version names one directory under `usr/lib/tilo-runtime`, nothing else.
+fn confined(version: &str) -> Result<(), DaemonError> {
+    let mut components = Path::new(version).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(_)), None) => Ok(()),
+        _ => Err(invalid(
+            "selected runtime version is not one confined path component",
+        )),
+    }
+}
+
 fn prepare_into(
     stage: &Path,
     prior: &Path,
@@ -138,22 +149,17 @@ fn prepare_into(
 ) -> Result<bool, DaemonError> {
     let mut records: BTreeMap<PathBuf, Vec<RetainedBundleTrust>> = BTreeMap::new();
     for version in versions {
-        if Path::new(version).components().count() != 1
-            || !matches!(
-                Path::new(version).components().next(),
-                Some(Component::Normal(_))
-            )
-        {
-            return Err(invalid(
-                "selected version is not one confined path component",
-            ));
-        }
+        confined(version)?;
         let relative = Path::new("usr/lib/tilo-runtime").join(version);
         let user = selected.runtime_paths.get(*version);
         let old = if let Some(path) = user {
             path.clone()
         } else if candidate.join(&relative).exists() {
             verify_admitted(candidate, &candidate.join(&relative), version)?;
+            continue;
+        } else if !prior.join(&relative).exists() {
+            // Its runtime is on no layer nor in the user's store: it cannot start now, so nothing
+            // is kept; once the cohort is selected, `validate_current` refuses it if it remains.
             continue;
         } else {
             prior.join(&relative)
@@ -251,22 +257,37 @@ pub(super) fn validate_current(
         .filter_map(|row| row.runtime.strip_prefix("tilo-runtime/"))
         .collect();
     for version in versions {
-        if Path::new(version).components().count() != 1
-            || !matches!(
-                Path::new(version).components().next(),
-                Some(Component::Normal(_))
-            )
-        {
-            return Err(invalid("selected runtime version is not confined"));
-        }
+        confined(version)?;
         let path = selected
             .runtime_paths
             .get(version)
             .cloned()
             .unwrap_or_else(|| view.join("usr/lib/tilo-runtime").join(version));
+        if !path.try_exists().map_err(invalid)? {
+            return Err(missing_runtime(selected, version));
+        }
         verify_admitted(view, &path, version)?;
     }
     Ok(())
+}
+
+/// Apps whose runtime is nowhere cannot start; the account keeps them selected until someone
+/// uninstalls them, which this says how to do (their saved state stays).
+fn missing_runtime(selected: &crate::SelectedApps, version: &str) -> DaemonError {
+    let runtime = format!("tilo-runtime/{version}");
+    let ids: Vec<&str> = selected
+        .apps
+        .iter()
+        .filter(|row| row.runtime == runtime)
+        .map(|row| row.id.as_str())
+        .collect();
+    invalid(format!(
+        "{} still selected on runtime {version}, which is on no layer and not in the account's \
+         store, so it cannot start; uninstall it, keeping its saved state: \
+         tilo-vm account exec --account <account> -- /usr/libexec/tilo/tilo-install uninstall \
+         --keep-state <id>",
+        ids.join(", ")
+    ))
 }
 
 fn verify_admitted(view: &Path, path: &Path, version: &str) -> Result<BundleManifest, DaemonError> {
@@ -401,6 +422,33 @@ mod tests {
         (prior, candidate, old, new, selected)
     }
 
+    /// A leftover selection of a runtime that is on no layer any more (its layer was removed)
+    /// has nothing to retain and leaves the retention of the others as it was.
+    fn leftover_case(
+        root: &Path,
+        prior: &Path,
+        candidate: &Path,
+        stage: &Path,
+        partial: &crate::SelectedApps,
+    ) -> crate::SelectedApps {
+        let mut leftover = crate::SelectedApps {
+            apps: partial.apps.clone(),
+            runtime_paths: partial.runtime_paths.clone(),
+        };
+        let mut gone = partial.apps[1].clone();
+        gone.id = "so.tilo.gone".into();
+        gone.runtime = "tilo-runtime/2026.07+native.00000000000000000000000000000000".into();
+        leftover.apps.push(gone);
+        let third = prepare(&root.join("staging"), prior, candidate, &leftover)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            crate::layers::tree_hash(stage).unwrap(),
+            crate::layers::tree_hash(&third).unwrap()
+        );
+        leftover
+    }
+
     fn run_retention_cases(root: &Path) {
         let (prior, candidate, old, new, selected) = selected_fixture(root);
         assert!(selected.apps[0].held);
@@ -442,6 +490,7 @@ mod tests {
             crate::layers::tree_hash(&stage).unwrap(),
             crate::layers::tree_hash(&second).unwrap()
         );
+        let leftover = leftover_case(root, &prior, &candidate, &stage, &partial);
         same_abi_case(root, &prior, &old, &partial);
         fs::write(
             prior.join("usr/share/tilo/runtime-bundle-publisher.hex"),
@@ -481,6 +530,14 @@ mod tests {
             }
         }
         validate_current(&candidate, &partial).unwrap();
+        // ... but the leftover selection itself is still refused once the cohort is selected.
+        let refused = validate_current(&candidate, &leftover)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("so.tilo.gone") && refused.contains("uninstall"),
+            "{refused}"
+        );
         let mut replaced = crate::SelectedApps {
             apps: partial.apps.clone(),
             runtime_paths: partial.runtime_paths.clone(),

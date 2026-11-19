@@ -12,7 +12,7 @@ use tilo_vm_protocol::layer_hash::{self, EntryContent, PROVENANCE, RELEASE_DIR};
 use tilo_vm_protocol::{LayerInfo, Provenance};
 
 use crate::error::DaemonError;
-use crate::fsutil::{self, write_atomic};
+use crate::fsutil;
 
 /// Top-level trees `systemd-sysext` merges; anything else is rejected.
 const ALLOWED_TOP: [&str; 2] = ["usr", "opt"];
@@ -285,10 +285,9 @@ impl LayerStore {
         let release_dir = stage.join(RELEASE_DIR);
         fs::create_dir_all(&release_dir).map_err(DaemonError::io("create extension-release.d"))?;
         let release = format!("ID=_any\nTILO_VM_COMPONENT={}\n", provenance.component);
-        write_atomic(
-            &release_dir.join(format!("extension-release.{hash}")),
-            release.as_bytes(),
-        )?;
+        let declaration = release_dir.join(format!("extension-release.{hash}"));
+        tilo_files::native::atomic::write_creating_parent(&declaration, release.as_bytes())
+            .map_err(DaemonError::io(format!("write {}", declaration.display())))?;
         record_provenance(stage, provenance)?;
         label(stage)?;
         match fs::rename(stage, &target) {
@@ -308,7 +307,9 @@ impl LayerStore {
 fn record_provenance(layer: &Path, provenance: &Provenance) -> Result<(), DaemonError> {
     let bytes = serde_json::to_vec_pretty(provenance)
         .map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
-    write_atomic(&layer.join(PROVENANCE), &bytes)
+    let path = layer.join(PROVENANCE);
+    tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+        .map_err(DaemonError::io(format!("write {}", path.display())))
 }
 
 pub fn is_hash(text: &str) -> bool {

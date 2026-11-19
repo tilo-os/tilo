@@ -2,7 +2,7 @@ use launcher::{
     owned_service::{
         CaptureAdmission, ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey,
     },
-    run::{LaunchMode, RunOptions},
+    run::{LaunchMode, LaunchOptions},
 };
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
@@ -306,7 +306,7 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
     let launch = ServiceLaunch {
         manifest: installed.manifest_path,
         payload: installed.payload_root,
-        options: RunOptions {
+        options: LaunchOptions {
             expected_package_hash: Some(installed.package_id_hex),
             app_id: Some(PACKAGE.into()),
             no_services: true,
@@ -320,14 +320,14 @@ fn signed_capture_worker_confines_source_and_output_and_reaps_on_cancel() {
                     ambient.as_raw_fd().to_string(),
                 ],
             },
-            ..RunOptions::default()
+            ..LaunchOptions::default()
         },
     };
     let cancel = ServiceCancellation::default();
     let callback_cancel = cancel.clone();
     let (send, receive) = std::sync::mpsc::channel();
     let key = ServiceLeaseKey::default();
-    let exit = launcher::owned_service::run_capture_connected(
+    let exit = launcher::owned_service::launch_capture_connected(
         launch,
         admission,
         Arc::new(Authority),
@@ -508,7 +508,7 @@ struct CaptureThread {
     cancellation: ServiceCancellation,
     worker: Option<
         std::thread::JoinHandle<
-            Result<launcher::owned_service::QuiescentExit, launcher::run::RunError>,
+            Result<launcher::owned_service::QuiescentExit, launcher::run::LaunchError>,
         >,
     >,
 }
@@ -526,7 +526,7 @@ fn returning_callback_retains_original_ownership(
     source: File,
     key: ServiceLeaseKey,
     retire: bool,
-) -> Result<launcher::owned_service::QuiescentExit, launcher::run::RunError> {
+) -> Result<launcher::owned_service::QuiescentExit, launcher::run::LaunchError> {
     let context = Arc::new(RetainedReadFixture {
         source,
         retired: AtomicBool::new(false),
@@ -549,7 +549,7 @@ fn returning_callback_retains_original_ownership(
     let mut running = CaptureThread {
         cancellation,
         worker: Some(std::thread::spawn(move || {
-            launcher::owned_service::run_capture_connected(
+            launcher::owned_service::launch_capture_connected(
                 launch,
                 admission,
                 Arc::new(Authority),
@@ -661,7 +661,7 @@ fn signed_reader_failure(
     diagnostic: &Path,
     phase: &str,
     error: &dyn std::fmt::Debug,
-) -> launcher::run::RunError {
+) -> launcher::run::LaunchError {
     // Preserve canonical ownership and the actual refusal rather than letting an assertion panic
     // silently discard the owning thread's terminal result.
     running.cancellation.cancel();
@@ -678,7 +678,7 @@ fn signed_reader_failure(
     if let Err(error) = observation {
         stderr = format!("diagnostic unavailable: {error}");
     }
-    launcher::run::RunError::Io(io::Error::other(format!(
+    launcher::run::LaunchError::Io(io::Error::other(format!(
         "actual signed reader {phase}: {error:?}; worker refusal: {refusal}\nchild diagnostics:\n{stderr}"
     )))
 }
@@ -770,7 +770,7 @@ fn original_reader_launch(
     ServiceLaunch {
         manifest: installed.manifest_path.clone(),
         payload: installed.payload_root.clone(),
-        options: RunOptions {
+        options: LaunchOptions {
             mode: LaunchMode::Service {
                 passthrough_argv: vec![
                     "--original-read".into(),
@@ -868,10 +868,10 @@ fn assert_original_reader_refuses_unattached_ownership(
     .err()
     .expect("unguarded original reader must refuse before spawn");
     assert!(
-        matches!(error, launcher::run::RunError::Io(_)),
+        matches!(error, launcher::run::LaunchError::Io(_)),
         "unguarded reader refused for an unrelated reason: {error:?}"
     );
-    if let launcher::run::RunError::Io(error) = error {
+    if let launcher::run::LaunchError::Io(error) = error {
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(
             error.to_string(),

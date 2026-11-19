@@ -160,6 +160,18 @@ fn key(app: &str, workspace: &str) -> Key {
     (app.to_owned(), workspace.to_owned())
 }
 
+/// Whether `link`'s process can take invocations: it has not let go of its link, as a
+/// process that stopped taking them does before it goes
+/// ([`runtime_portal::process_link::hung_up`]). A link a launch reserved but whose process is
+/// still starting can: what is asked of it waits for its first publish.
+///
+/// The broker asks the same of each of the process's connections before it picks one
+/// (`open_stream`): a window that stopped taking invocations ends its stream, and the
+/// process lets go of its link once none of its windows takes them.
+fn serves_invocations(link: &Link) -> bool {
+    !runtime_portal::process_link::hung_up(&link.ours)
+}
+
 impl Links {
     /// The links of the apps `connections` makes windows for.
     #[must_use]
@@ -251,7 +263,21 @@ impl Links {
         instance: Option<u64>,
     ) -> Routed {
         let mut links = self.links();
-        let Some(link) = links.get_mut(&key(app, workspace)) else {
+        let here = key(app, workspace);
+        // A process that stopped taking invocations, as it closes, takes no window: the
+        // window starts a process of its own, and so do any that waited on it.
+        if links
+            .get(&here)
+            .is_some_and(|link| !serves_invocations(link))
+        {
+            let gone = links.remove(&here);
+            drop(links);
+            if let Some(gone) = gone {
+                start_alone(gone.queued);
+            }
+            return Routed::NotRunning;
+        }
+        let Some(link) = links.get_mut(&here) else {
             return Routed::NotRunning;
         };
         let mut late = Vec::new();
@@ -278,7 +304,7 @@ impl Links {
                 Err(error) => {
                     // The process is gone; the next launch starts another.
                     tracing::info!(%error, app, "the app's window link is closed");
-                    let gone = links.remove(&key(app, workspace));
+                    let gone = links.remove(&here);
                     drop(links);
                     if let Some(gone) = gone {
                         start_alone(gone.queued);
@@ -361,8 +387,9 @@ impl Links {
     }
 
     /// Reserve the link of a process about to start for `app` in `workspace`
-    /// with no window: `None` when a process of the app runs there already,
-    /// or is starting, and serves the workspace in its place.
+    /// with no window: `None` when a process of the app there can take
+    /// invocations already ([`serves_invocations`]), running or starting, and
+    /// serves the workspace in its place.
     ///
     /// # Errors
     /// No link could be made for the process.
@@ -371,8 +398,18 @@ impl Links {
         app: &str,
         workspace: &str,
     ) -> Result<Option<Reservation>, String> {
-        if self.links().contains_key(&key(app, workspace)) {
-            return Ok(None);
+        let gone = {
+            let mut links = self.links();
+            let key = key(app, workspace);
+            match links.get(&key) {
+                Some(link) if serves_invocations(link) => return Ok(None),
+                // The process stopped taking work as it goes: the work starts another.
+                Some(_) => links.remove(&key),
+                None => None,
+            }
+        };
+        if let Some(gone) = gone {
+            start_alone(gone.queued);
         }
         self.reserve(app, workspace)
             .map(Some)
@@ -735,6 +772,14 @@ mod tests {
         }
     }
 
+    /// One `StartAlone` per window asked for, counting the ones that ran.
+    fn alone_counting(ran: Rc<std::cell::Cell<usize>>) -> impl Fn() -> StartAlone {
+        move || {
+            let ran = Rc::clone(&ran);
+            Box::new(move || ran.set(ran.get().saturating_add(1)))
+        }
+    }
+
     impl Links {
         fn reserve_for_test(self: &Rc<Self>, app: &str, workspace: &str) {
             self.reserve(app, workspace).expect("reserved").launched();
@@ -789,6 +834,36 @@ mod tests {
             let (links, _) = links();
             drop(links.reserve(APP, WORKSPACE).expect("reserved"));
             assert!(!has_channel(&links, APP, WORKSPACE));
+        }
+
+        phase a_process_that_stopped_taking_work_leaves_the_next_to_another;
+        // An app's process going away with its last window closes its end of the link first:
+        // what is asked of the app from then on starts a process of its own, rather than
+        // waiting on one that is about to exit.
+        {
+            const WORKSPACE: &str = "7a110d00-0000-4000-8000-000000000004";
+            let (links, _) = links();
+            links.reserve_for_test(APP, WORKSPACE);
+            let mut held = links.hold(APP, WORKSPACE).expect("held");
+            let theirs = held.serve(4242).expect("the launcher's end");
+            assert!(
+                links
+                    .reserve_unless_running(APP, WORKSPACE)
+                    .expect("asked")
+                    .is_none(),
+                "the running process serves the workspace"
+            );
+            runtime_portal::process_link::close(&theirs).expect("closed");
+            let reserved = links
+                .reserve_unless_running(APP, WORKSPACE)
+                .expect("asked")
+                .expect("a process of its own");
+            reserved.launched();
+            drop(held);
+            assert!(
+                links.links().contains_key(&key(APP, WORKSPACE)),
+                "the going process leaves the new one's link"
+            );
         }
 
         phase a_launch_that_names_what_it_opens_reserves_a_channel_and_starts;
@@ -997,6 +1072,38 @@ mod tests {
             assert!(
                 receive_window(&launcher_end).is_some(),
                 "the window that waited opens in the app"
+            );
+        }
+
+        phase a_window_asked_of_a_process_that_let_go_of_its_link_starts_one;
+        // A window the shell asked for while the app started waited at its link for the app
+        // to say whether it opens windows. The process let go of the link before it said so:
+        // it is closing, and it takes no windows. The window starts a process of its own,
+        // rather than waiting on one that will never read it.
+        {
+            const APP: &str = "so.tilo.window-link-closing";
+            const WORKSPACE: &str = "7a110d00-0000-4000-8000-00000000000b";
+            let (links, _) = links();
+            links.reserve_for_test(APP, WORKSPACE);
+            let mut held = links.hold(APP, WORKSPACE).expect("held");
+            let launcher_end = held.serve(4_100_003).expect("the launcher's end");
+            let ran = Rc::new(std::cell::Cell::new(0));
+            let alone = alone_counting(Rc::clone(&ran));
+            assert_eq!(
+                links.open_in_running(APP, WORKSPACE, &Opens::default(), &alone, None),
+                Routed::Opened,
+                "the window waits for the app to say whether it opens windows"
+            );
+            runtime_portal::process_link::close(&launcher_end).expect("let go");
+            assert_eq!(
+                links.open_in_running(APP, WORKSPACE, &Opens::default(), &never_alone, None),
+                Routed::NotRunning,
+                "the process that let go of its link takes no window"
+            );
+            assert_eq!(
+                ran.get(),
+                1,
+                "the window that waited starts a process of its own"
             );
         }
 

@@ -56,7 +56,7 @@ extension AssistantModel {
             pasteboard.clearContents()
             pasteboard.setString(words.plain, forType: .string)
             #else
-            UIPasteboard.general.string = words.plain
+            pasteboard.string = words.plain
             #endif
         case .selectText:
             selecting = words

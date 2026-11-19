@@ -111,72 +111,76 @@ fn is_tag(text: &str) -> bool {
         && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
-/// Whether `origin` is a tag the selected target may follow.
-fn supported_origin(origin: &str, development: bool, profile: &str) -> bool {
-    if development {
-        origin
-            .strip_prefix("registry.tilo.so/tilo/tilo-vm:")
-            .is_some_and(is_tag)
-    } else if profile == "lenovo-83ed" {
-        origin
-            .strip_prefix("code.tilo.so/tilo/tilo:lenovo-83ed-")
-            .is_some_and(|revision| is_hex(revision, 40))
-    } else {
-        origin
-            .strip_prefix("registry.tilo.so/tilo/tilo:gen")
-            .is_some_and(is_positive_decimal)
-    }
+/// `registry.tilo.so/tilo/<name>` or `code.tilo.so/tilo/<name>`: one image
+/// repository. Board images carry private firmware and stay on the forge's
+/// private registry; everything else is public.
+#[must_use]
+pub fn is_repository(text: &str) -> bool {
+    let Some(name) = ["registry.tilo.so/tilo/", "code.tilo.so/tilo/"]
+        .iter()
+        .find_map(|prefix| text.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    !name.is_empty()
+        && name.len() <= 128
+        && name.split(['.', '_', '-']).all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
 }
 
+/// The OCI config `architecture` an installer target's own architecture names.
 #[must_use]
-pub fn repository(profile: &str) -> Option<&'static str> {
-    match profile {
-        "generic" => Some("registry.tilo.so/tilo/tilo"),
-        // Board images carry private firmware and stay on the forge's private
-        // registry.
-        "lenovo-83ed" => Some("code.tilo.so/tilo/tilo"),
+pub fn oci_architecture(architecture: &str) -> Option<&'static str> {
+    match architecture {
+        "x86_64" => Some("amd64"),
+        "aarch64" => Some("arm64"),
         _ => None,
     }
 }
 
-/// `(repository)@(sha256:…)` of a target reference this transport accepts.
-fn split_reference(reference: &str, development: bool) -> Option<(&str, &str)> {
-    let (repository, digest) = reference.split_once('@')?;
-    let known = if development {
-        repository == "registry.tilo.so/tilo/tilo-vm"
-    } else {
-        matches!(
-            repository,
-            "registry.tilo.so/tilo/tilo" | "code.tilo.so/tilo/tilo"
-        )
-    };
-    (known && is_digest(digest)).then_some((repository, digest))
+/// Whether `origin` is `<repository>:<tag>` for the target's repository.
+#[must_use]
+pub fn is_update_origin(repository: &str, origin: &str) -> bool {
+    origin
+        .strip_prefix(repository)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .is_some_and(is_tag)
+}
+
+/// The transport's hardware profiles: `generic` for public images and
+/// `lenovo-83ed` for the board whose private firmware its proof binds.
+fn is_hardware_profile(profile: &str) -> bool {
+    matches!(profile, "generic" | "lenovo-83ed")
+}
+
+/// A board target carries private firmware, so its image stays on the forge's
+/// private registry.
+fn board_repository_matches(profile: &str, repository: &str) -> bool {
+    profile != "lenovo-83ed" || repository.starts_with("code.tilo.so/tilo/")
 }
 
 fn check_metadata(metadata: &Map<String, Value>, development: bool) -> Result<()> {
     let text = |key: &str| get(metadata, key).as_str().unwrap_or_default();
-    let profile = text("hardware_profile");
     let expected_schema = if development {
         "tilo.installer-dev-target.v1"
     } else {
         "tilo.installer-offline-target.v1"
     };
-    let reference = split_reference(text("target_ref"), development);
-    let pinned = reference.is_some_and(|(repository_name, digest)| {
-        text("target_digest") == digest
-            && text("architecture") == "aarch64"
-            && matches!(profile, "generic" | "lenovo-83ed")
-            && Some(repository_name)
-                == if development {
-                    Some("registry.tilo.so/tilo/tilo-vm")
-                } else {
-                    repository(profile)
-                }
-            && supported_origin(text("update_origin"), development, profile)
-    });
+    let repository = text("repository");
+    let profile = text("hardware_profile");
+    let pinned = is_repository(repository)
+        && is_digest(text("target_digest"))
+        && oci_architecture(text("architecture")).is_some()
+        && is_hardware_profile(profile)
+        && (development || board_repository_matches(profile, repository))
+        && is_update_origin(repository, text("update_origin"));
     require(
         text("schema") == expected_schema && pinned,
-        "target metadata does not pin a supported CI ARM64 child",
+        "target metadata does not pin a supported CI image",
     )?;
     if development {
         require(
@@ -232,7 +236,7 @@ fn read_metadata(path: &Path, development: bool) -> Result<Map<String, Value>> {
     let metadata = bounded_json(path, 16384)?;
     let mut fields = vec![
         "schema",
-        "target_ref",
+        "repository",
         "target_digest",
         "architecture",
         "hardware_profile",
@@ -348,10 +352,12 @@ fn manifest_refs(
         let image_config_value =
             bounded_json(&blob_path(layout, config.get("digest"))?, 1024 * 1024)?;
         let image_config = object(&image_config_value, "OCI config")?;
+        let expected = oci_architecture(get(metadata, "architecture").as_str().unwrap_or_default())
+            .unwrap_or_default();
         require(
-            get(image_config, "architecture").as_str() == Some("arm64")
+            get(image_config, "architecture").as_str() == Some(expected)
                 && get(image_config, "os").as_str() == Some("linux"),
-            "target OCI config is not Linux ARM64",
+            "target OCI config is not the declared Linux architecture",
         )?;
         if development {
             let empty = Map::new();
@@ -363,10 +369,22 @@ fn manifest_refs(
                 None => &empty,
                 Some(value) => object(value, "OCI labels")?,
             };
+            // A development image is unsigned and content-bound to its source
+            // and flavour. A dev image's build reads the commit, so its
+            // revision label names it; the server image's build reads no Git
+            // (its cache is commit-free), so its digest binds the build and its
+            // revision label is empty.
+            let flavour = get(labels, "sh.tilo.image.flavour").as_str();
+            let revision = get(labels, "org.opencontainers.image.revision").as_str();
+            let source = get(metadata, "source_revision").as_str();
             require(
-                get(labels, "org.opencontainers.image.revision")
-                    == get(metadata, "source_revision")
-                    && get(labels, "sh.tilo.image.flavour").as_str() == Some("dev"),
+                match flavour {
+                    Some("dev") => revision == source,
+                    Some("server") => {
+                        revision.is_none_or(|value| value.is_empty() || Some(value) == source)
+                    }
+                    _ => false,
+                },
                 "development target source or flavour label differs",
             )?;
         }

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use launcher::capabilities::CapabilityPlan;
 use launcher::manifest::{ManifestView, ServiceReq, read_manifest};
-use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
+use launcher::run::{LaunchError, LaunchOptions, launch, launch_with, launch_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 use tilo_test_env::{ScopedEnv, TestHome};
 
@@ -48,8 +48,8 @@ fn hello_manifest(services: BTreeMap<String, ServiceReq>) -> ManifestView {
 // never at risk.
 
 /// Options that resolve without services and without enforcing the sandbox.
-fn offline_options() -> RunOptions {
-    RunOptions {
+fn offline_options() -> LaunchOptions {
+    LaunchOptions {
         no_services: true,
         landlock_enforce: false,
         ..Default::default()
@@ -63,8 +63,8 @@ fn gui_options(
     bwrap: std::path::PathBuf,
     no_services: bool,
     shim: bool,
-) -> RunOptions {
-    RunOptions {
+) -> LaunchOptions {
+    LaunchOptions {
         no_services,
         runtime_root: None,
         bwrap_bin: Some(bwrap),
@@ -180,9 +180,9 @@ tilo_test_env::scenario! {
             );
 
             // And when both minimal-libs and a resolvable runtime bundle are requested, resolve_runtime
-            // picks the bundle — exercised directly since argv isn't readable from `run_with` without
+            // picks the bundle — exercised directly since argv isn't readable from `launch_with` without
             // spawning bwrap.
-            let opts = RunOptions {
+            let opts = LaunchOptions {
                 minimal_libs: true,
                 ..offline_options()
             };
@@ -289,14 +289,14 @@ tilo_test_env::scenario! {
             )
             .unwrap();
             let data_home = tempfile::tempdir().unwrap();
-            let opts = RunOptions {
+            let opts = LaunchOptions {
                 no_services: true,
                 landlock_enforce: false,
                 ..isolated_options(data_home.path())
             };
-            let err = run_with(&m, payload.path(), &opts).unwrap_err();
+            let err = launch_with(&m, payload.path(), &opts).unwrap_err();
             match &err {
-                RunError::RuntimeLibraryMissing {
+                LaunchError::RuntimeLibraryMissing {
                     package,
                     runtime,
                     library,
@@ -360,7 +360,7 @@ tilo_test_env::scenario! {
             home.env()
                 .set(runtime_bundle::RUNTIME_DIR_ENV, overlay.path());
             let resolved =
-                launcher::run::resolve_runtime_test_helper(&manifest, &RunOptions::default());
+                launcher::run::resolve_runtime_test_helper(&manifest, &LaunchOptions::default());
             assert_eq!(resolved.unwrap().unwrap().0, bundle);
         }
         {
@@ -471,7 +471,7 @@ tilo_test_env::scenario! {
             .push("tilo-runtime/2026.10.0-missing".to_string());
         let refused = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap_err();
         assert!(
-            matches!(refused, launcher::run::RunError::RequiredRuntimeMissing { ref runtime, .. }
+            matches!(refused, launcher::run::LaunchError::RequiredRuntimeMissing { ref runtime, .. }
                 if runtime == "tilo-runtime/2026.10.0-missing"),
             "{refused}"
         );
@@ -486,7 +486,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 refused,
-                launcher::run::RunError::RuntimeBundleSignature { .. }
+                launcher::run::LaunchError::RuntimeBundleSignature { .. }
             ),
             "{refused}"
         );
@@ -496,7 +496,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 refused,
-                launcher::run::RunError::RuntimeReferenceMalformed(_)
+                launcher::run::LaunchError::RuntimeReferenceMalformed(_)
             ),
             "{refused}"
         );
@@ -531,7 +531,7 @@ tilo_test_env::scenario! {
         m.entrypoint.runtime = Some("tilolang/0.2.0-missing".to_string());
         let refused = launcher::run::required_runtimes_test_helper(&m, &opts).unwrap_err();
         assert!(
-            matches!(refused, launcher::run::RunError::RequiredRuntimeMissing { ref runtime, .. }
+            matches!(refused, launcher::run::LaunchError::RequiredRuntimeMissing { ref runtime, .. }
                 if runtime == "tilolang/0.2.0-missing"),
             "{refused}"
         );
@@ -544,7 +544,7 @@ tilo_test_env::scenario! {
         assert!(
             matches!(
                 refused,
-                launcher::run::RunError::RuntimeBundleSignature { .. }
+                launcher::run::LaunchError::RuntimeBundleSignature { .. }
             ),
             "{refused}"
         );
@@ -562,11 +562,11 @@ tilo_test_env::scenario! {
             let opts = offline_options();
             let err = launcher::run::resolve_runtime_test_helper(&m, &opts).unwrap_err();
             match &err {
-                RunError::RuntimeBundleUnsigned { .. } => {}
+                LaunchError::RuntimeBundleUnsigned { .. } => {}
                 other => panic!("expected RuntimeBundleUnsigned, got {other:?}"),
             }
 
-            let opts_ok = RunOptions {
+            let opts_ok = LaunchOptions {
                 allow_unsigned_runtime: true,
                 ..offline_options()
             };
@@ -602,8 +602,8 @@ tilo_test_env::scenario! {
             std::fs::write(&trust_file, format!("{}\n", other.public_key_hex())).unwrap();
             let err = launcher::run::resolve_runtime_test_helper(&m, &opts).unwrap_err();
             match &err {
-                RunError::RuntimeBundleSignature { .. } => {}
-                RunError::RuntimeBundleUnsigned { .. } => panic!("bundle IS signed"),
+                LaunchError::RuntimeBundleSignature { .. } => {}
+                LaunchError::RuntimeBundleUnsigned { .. } => panic!("bundle IS signed"),
                 other => panic!("expected RuntimeBundleSignature, got {other:?}"),
             }
 
@@ -635,7 +635,7 @@ tilo_test_env::scenario! {
             launcher::run::resolve_runtime_test_helper(&m, &opts).expect("accept signed");
 
             // Pin to the bundle's publisher: accepted.
-            let opts_pinned = RunOptions {
+            let opts_pinned = LaunchOptions {
                 require_runtime_publisher: Some(identity.public_key_hex()),
                 ..offline_options()
             };
@@ -643,13 +643,13 @@ tilo_test_env::scenario! {
 
             // Pin to a different publisher: refused.
             let other = runtime_bundle::Identity::generate();
-            let opts_wrong = RunOptions {
+            let opts_wrong = LaunchOptions {
                 require_runtime_publisher: Some(other.public_key_hex()),
                 ..offline_options()
             };
             let err = launcher::run::resolve_runtime_test_helper(&m, &opts_wrong).unwrap_err();
             match &err {
-                RunError::RuntimeBundleSignature { .. } => {}
+                LaunchError::RuntimeBundleSignature { .. } => {}
                 other => panic!("expected RuntimeBundleSignature, got {other:?}"),
             }
         }
@@ -667,10 +667,10 @@ tilo_test_env::scenario! {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("manifest.toml");
             std::fs::write(&path, "this is { not valid toml = ").unwrap();
-            let opts = RunOptions::default();
-            let err = run(&path, dir.path(), &opts).unwrap_err();
+            let opts = LaunchOptions::default();
+            let err = launch(&path, dir.path(), &opts).unwrap_err();
             match err {
-                RunError::Manifest(_) => {} // expected: parse error
+                LaunchError::Manifest(_) => {} // expected: parse error
                 other => panic!("expected ManifestError, got {other:?}"),
             }
         }
@@ -681,9 +681,9 @@ tilo_test_env::scenario! {
             let mut m = hello_manifest(BTreeMap::new());
             m.runtime = Some("tilo-runtime/nope-9.9.9".to_string());
             let opts = offline_options();
-            let err = run_with(&m, home.root(), &opts).unwrap_err();
+            let err = launch_with(&m, home.root(), &opts).unwrap_err();
             match &err {
-                RunError::RuntimeBundleMissing { runtime, paths } => {
+                LaunchError::RuntimeBundleMissing { runtime, paths } => {
                     assert!(runtime.contains("nope-9.9.9"));
                     assert!(!paths.is_empty(), "error should list checked paths");
                 }
@@ -746,12 +746,12 @@ tilo_test_env::scenario! {
             let mut svcs = BTreeMap::new();
             svcs.insert("collab".to_string(), service_req("required@1"));
             let m = hello_manifest(svcs);
-            let opts = RunOptions {
+            let opts = LaunchOptions {
                 no_services: false,
                 landlock_enforce: true,
                 ..isolated_options(dir.path())
             };
-            let err = run_with(&m, dir.path(), &opts).unwrap_err();
+            let err = launch_with(&m, dir.path(), &opts).unwrap_err();
             assert_eq!(err.to_exit_code(), EXIT_REQUIRED_SERVICE_MISSING);
             let msg = format!("{err}");
             assert!(msg.contains("collab"), "error must name service: {msg}");
@@ -773,7 +773,7 @@ tilo_test_env::scenario! {
             svcs.insert("collab".to_string(), service_req("required@1"));
             let m = hello_manifest(svcs);
             let opts = gui_options(data.path(), bwrap, true, false);
-            let status = run_with(&m, payload, &opts).expect("launch");
+            let status = launch_with(&m, payload, &opts).expect("launch");
             assert!(status.success());
         }
         {
@@ -787,7 +787,7 @@ tilo_test_env::scenario! {
             svcs.insert("collab".to_string(), service_req("optional@1"));
             let m = hello_manifest(svcs);
             let opts = gui_options(dir.path(), bwrap, false, false);
-            let status = run_with(&m, payload, &opts).expect("launch");
+            let status = launch_with(&m, payload, &opts).expect("launch");
             assert!(status.success(), "optional missing should still run");
         }
         {
@@ -797,7 +797,7 @@ tilo_test_env::scenario! {
 
             let m = hello_manifest(BTreeMap::new());
             let opts = gui_options(data.path(), bwrap, false, true);
-            let (status, stdout) = run_with_captured(&m, payload, &opts).expect("launch");
+            let (status, stdout) = launch_with_captured(&m, payload, &opts).expect("launch");
             assert!(status.success(), "child exited non-zero: {status:?}");
             let stdout = String::from_utf8_lossy(&stdout);
             assert!(
@@ -855,7 +855,7 @@ tilo_test_env::scenario! {
             let m = read_manifest(&row.manifest_path).expect("the launcher reads the signed manifest");
             let data = tempfile::tempdir().unwrap();
             let opts = gui_options(data.path(), bwrap, false, true);
-            let (status, stdout) = run_with_captured(&m, &row.payload_root, &opts).expect("launch");
+            let (status, stdout) = launch_with_captured(&m, &row.payload_root, &opts).expect("launch");
             assert!(status.success(), "child exited non-zero: {status:?}");
             let stdout = String::from_utf8_lossy(&stdout);
             assert!(
@@ -900,7 +900,7 @@ tilo_test_env::scenario! {
             .unwrap();
 
             let m = hello_manifest(BTreeMap::new());
-            let opts = RunOptions {
+            let opts = LaunchOptions {
                 capabilities_path: Some(caps_file),
                 ..offline_options()
             };
@@ -930,7 +930,7 @@ tilo_test_env::scenario! {
 
             let malformed = dir.path().join("caps.json");
             std::fs::write(&malformed, b"not json at all").unwrap();
-            let opts = RunOptions {
+            let opts = LaunchOptions {
                 no_services: true,
                 capabilities_path: Some(malformed),
                 ..Default::default()
@@ -941,7 +941,7 @@ tilo_test_env::scenario! {
                 "a malformed capability file must not fall open"
             );
 
-            let opts_missing = RunOptions {
+            let opts_missing = LaunchOptions {
                 no_services: true,
                 capabilities_path: Some(dir.path().join("does-not-exist.json")),
                 ..Default::default()
@@ -952,7 +952,7 @@ tilo_test_env::scenario! {
                 "a missing capability file must not fall open"
             );
 
-            let opts_none = RunOptions {
+            let opts_none = LaunchOptions {
                 no_services: true,
                 ..Default::default()
             };

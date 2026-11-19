@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Downloadable system-extension manifests (tools/extensions, os/usr/share/tilo/system-extensions/
 # README.md, "Downloaded system extensions") for the published OS images: t's
-# extension-manifests-{x86_64,aarch64} checks resolve them, publish-extension-manifests signs
-# and publishes them.
+# extension-manifests-{x86_64,aarch64} checks resolve them, publish-extension-manifests-{x86_64,
+# aarch64} sign and publish them.
 #
 #   extension-manifests.sh resolve ARCH OUT   resolve every extension inside each published
 #                                             OS image's ARCH child, natively: the image's own
@@ -73,13 +73,20 @@ case ${1:-} in
       for recipe in tools/extensions/*/recipe.toml; do
         id=$(basename "$(dirname "$recipe")")
         [[ -z $expected || $id == media-codecs ]] || continue
-        podman run --rm --network host --security-opt label=disable \
-          --volume "$PWD/tools/extensions:/extensions:ro" --volume "$out/$key:/out" \
-          --entrypoint python3 "$child" /extensions/resolve.py resolve \
-          --recipe "/extensions/$id/recipe.toml" --image "$child" --out "/out/$id.json"
         qualification=()
         [[ -z $expected ]] || qualification=(--expected-content-sha256 "$expected")
-        python3 tools/extensions/resolve.py check "$out/$key/$id.json" "${qualification[@]}"
+        # One extension that does not resolve (an upstream repository out of step with the
+        # base) keeps its last published manifest and does not hold back the others: it is
+        # named in <id>.failed, which publish reports as its own failure once the rest are out.
+        if ! podman run --rm --network host --security-opt label=disable \
+          --volume "$PWD/tools/extensions:/extensions:ro" --volume "$out/$key:/out" \
+          --entrypoint python3 "$child" /extensions/resolve.py resolve \
+          --recipe "/extensions/$id/recipe.toml" --image "$child" --out "/out/$id.json" \
+          || ! python3 tools/extensions/resolve.py check "$out/$key/$id.json" "${qualification[@]}"; then
+          [[ -z $expected ]] || die "$id did not resolve for $child"
+          rm -f "$out/$key/$id.json"
+          echo "$id did not resolve for $child ($image)" | tee "$out/$key/$id.failed" >&2
+        fi
       done
       # Prebuilt sysext images (the Windows compatibility payload) are pinned, not resolved:
       # the OS build publishes one with a descriptor per commit.
@@ -131,6 +138,11 @@ case ${1:-} in
     failed=0
     for manifest in "${manifests[@]}"; do
       bash tools/extensions/publish.sh "${mode[@]}" "$manifest" || failed=1
+    done
+    mapfile -t unresolved < <(find "$@" -type f -name '*.failed' -print 2>/dev/null | LC_ALL=C sort)
+    for note in "${unresolved[@]}"; do
+      echo "not published: $(cat "$note")" >&2
+      failed=1
     done
     exit "$failed"
     ;;

@@ -19,7 +19,8 @@
 # (tools/tests/test_test_environment.py holds it to that). What takes work is
 # a step of its own, `fonts` and `audio`, which nextest runs only for the
 # packages whose code can use it (.config/nextest.toml,
-# tools/ci/setup_filters.py). `runtime` still promises both to every test
+# tools/ci/setup_filters.py); so are the values only some packages' tests need
+# (`ntfs` and the four below). `runtime` still promises both to every test
 # (TILO_REQUIRE_FONTS, TILO_REQUIRE_AUDIO), so a test that needs one in a
 # package the step leaves out fails, naming it, and never skips.
 #
@@ -67,10 +68,38 @@
 #          step, and keep it where the others run as the test user
 #          (tools/as-test-user.sh). In a container's own cgroup root, its
 #          processes move to a leaf so the root delegates its controllers.
+# swtpm    TILO_REQUIRE_SWTPM=1: the sign-in and rollback tests observe an emulated
+#          TPM, which the builder has (dist/ci/install-build-deps.sh); one that
+#          cannot start it fails instead of passing by skipping.
+# pdf-sandbox
+#          TILO_REQUIRE_PDF_SANDBOX, where the node's kernel can enforce Landlock
+#          (tools/ci/require-pdf-sandbox.sh): the PDF tests then require the
+#          helper's sandbox instead of letting an unconfined helper stand down.
+# video-render
+#          TILO_VIDEO_RENDER: the agent's render helper, which no package depends
+#          on. A job handed it (t.toml's `starts`) names it; one handed none (a
+#          developer's) builds it, and though named explicitly it is found also
+#          where an archive of test binaries executes away from its build directory.
+# pam-module
+#          TILO_PAM_TILO_MODULE: pam_tilo's cdylib, which no test binary links and
+#          an archive of test binaries does not carry. Its tests load the module
+#          as libpam does. A job handed it (T_STARTED_CDYLIB_pam_tilo) names it;
+#          one handed none (a developer's) builds it.
+# property-cases
+#          PROPTEST_CASES=256: the count the property tests of t.toml's
+#          `test-deep` packages use, more than the default (tilo-doc-codecs
+#          uses 64 when it is unset). Only the `deep` profile takes this step
+#          (.config/nextest.toml); in a family's environment it would key
+#          every build script's and proc macro's cache entry by it.
+#
+# The four before `property-cases` are values only a package's tests need, so the ci profile takes
+# them for those packages' tests alone: given to the job's environment instead, each would key
+# every build script's and proc macro's cache entry, and jobs testing different packages would
+# share no build.
 set -euo pipefail
 
 if [[ $# -eq 0 ]]; then
-    echo "usage: $0 runtime|fonts|audio|ntfs|root ..." >&2
+    echo "usage: $0 runtime|fonts|audio|ntfs|root|swtpm|pdf-sandbox|video-render|pam-module|property-cases ..." >&2
     exit 2
 fi
 env_file=${NEXTEST_ENV:?test-env-setup.sh writes the environment to the file NEXTEST_ENV names}
@@ -298,6 +327,46 @@ root() {
     delegate_cgroups
 }
 
+swtpm() {
+    provide TILO_REQUIRE_SWTPM 1
+}
+
+pdf-sandbox() {
+    local required
+    required=$(bash "$repo/tools/ci/require-pdf-sandbox.sh")
+    [[ -z $required ]] || provide TILO_REQUIRE_PDF_SANDBOX "$required"
+}
+
+video-render() {
+    local path
+    # shellcheck source=tools/ci/handed.sh
+    source "$repo/tools/ci/handed.sh"
+    path=$(handed_bin tilo-video-render)
+    if [[ -n $path ]]; then
+        provide TILO_VIDEO_RENDER "$path"
+    else
+        cargo build --locked -p tilo-video-render --bin tilo-video-render
+        provide TILO_VIDEO_RENDER "${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-video-render"
+    fi
+}
+
+pam-module() {
+    local path
+    # shellcheck source=tools/ci/handed.sh
+    source "$repo/tools/ci/handed.sh"
+    path=$(handed T_STARTED_CDYLIB_pam_tilo -f a file)
+    if [[ -n $path ]]; then
+        provide TILO_PAM_TILO_MODULE "$path"
+    else
+        cargo build --locked -p pam-tilo --lib
+        provide TILO_PAM_TILO_MODULE "${CARGO_TARGET_DIR:-$repo/target}/debug/libpam_tilo.so"
+    fi
+}
+
+property-cases() {
+    provide PROPTEST_CASES 256
+}
+
 # The limits tests give jobs cgroups of their own, under one that hands its
 # children the controllers. A cgroup holding processes cannot: a container's
 # own root, where every process of the run starts, is one. As root there, its
@@ -324,7 +393,8 @@ delegate_cgroups() {
 
 for step; do
     case $step in
-        runtime | fonts | audio | ntfs | root) "$step" ;;
+        runtime | fonts | audio | ntfs | root | swtpm | pdf-sandbox | video-render | pam-module | property-cases)
+            "$step" ;;
         *) echo "unknown test environment step: $step" >&2; exit 2 ;;
     esac
 done

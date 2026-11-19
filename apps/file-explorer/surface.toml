@@ -6,6 +6,7 @@ format = 2
 kind = "files.folder"
 label = "Folder"
 version = 1
+shows = ["account-details", "availability", "back", "browse-cloud", "cancel-cloud", "clear-selection", "forget-recent", "forward", "go-to", "grid", "history", "import-cloud", "keyboard-shortcuts", "list", "more-cloud", "move-favorite", "open-account", "open-drive", "open-folder", "open-item", "open-trash", "properties", "read-entry", "reauthenticate", "recent", "remove-favorite", "retry-cloud", "reveal", "reveal-cloud", "reveal-recent", "select-all", "select-cloud", "select-entries", "selected-entries", "send-nearby", "sort-ascending", "sort-descending", "sort-modified", "sort-name", "sort-size", "sort-type", "toggle-hidden", "up", "zoom-in", "zoom-out"]
 fields = [
   { path = "places", type = { collection = { named = "Bookmark" } }, stored = "collection" },
   { path = "places.*.place", type = "text", readonly = true },
@@ -232,50 +233,57 @@ person = true
 id = "new-folder"
 kind = "undoable"
 params = [
-  { name = "parent", type = "text", required = true, schema = { type = "string" } },
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
-  { name = "document", type = "text", required = false, schema = { type = "string" } },
+  { name = "parent", required = true },
+  { name = "name", required = true },
+  { name = "document", required = false },
 ]
 
 [[resources.verbs]]
 id = "new-file"
 kind = "undoable"
 params = [
-  { name = "parent", type = "text", required = true, schema = { type = "string" } },
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
-  { name = "document", type = "text", required = false, schema = { type = "string" } },
+  { name = "parent", required = true },
+  { name = "name", required = true },
+  { name = "document", required = false },
 ]
 
 [[resources.verbs]]
 id = "move"
 kind = "undoable"
 params = [
-  { name = "node", type = "text", required = true, schema = { type = "string" } },
-  { name = "parent", type = "text", required = true, schema = { type = "string" } },
-  { name = "name", type = "text", required = true, schema = { type = "string" } },
+  { name = "node", required = true },
+  { name = "parent", required = true },
+  { name = "name", required = true },
 ]
 
 [[resources.verbs]]
 id = "write"
 kind = "undoable"
 params = [
-  { name = "node", type = "text", required = true, schema = { type = "string" } },
-  { name = "content", type = "text", required = true, schema = { type = "string" } },
-  { name = "size", type = "int", required = true, schema = { type = "integer" } },
+  { name = "node", required = true },
+  { name = "content", required = true },
+  { name = "size", required = true },
 ]
 
 [[resources.verbs]]
 id = "trash"
 kind = "undoable"
 params = [
-  { name = "node", type = "text", required = true, schema = { type = "string" } },
+  { name = "node", required = true },
 ]
 
 [[resources.verbs]]
 id = "restore"
 kind = "undoable"
 params = [
-  { name = "node", type = "text", required = true, schema = { type = "string" } },
+  { name = "node", required = true },
+]
+
+[[resources.verbs]]
+id = "list-chunk"
+kind = "undoable"
+params = [
+  { name = "chunk", required = true },
 ]
 
 [[resources]]
@@ -318,5 +326,13 @@ name = "RecentUse"
 cases = [
   { name = "opened" },
   { name = "changed" },
+]
+
+[[resources]]
+kind = "files.workspace"
+label = "Files window"
+version = 1
+fields = [
+  { path = "folder", type = "text" },
 ]
 

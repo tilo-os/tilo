@@ -90,8 +90,7 @@ pub(super) fn all_rows(doc: Option<&AutoCommit>, map: &str) -> Vec<(String, [u8;
 
 impl PeerWorkspaceMut<'_> {
     /// Put `text` at `key` of the founded `map`, or remove the row when `text`
-    /// is `None`, as `device`'s own change in `person`'s name, made at `now`.
-    /// Answers whether a row was there.
+    /// is `None`, as `device`'s own change, made at `now`. Answers whether a row was there.
     ///
     /// # Errors
     ///
@@ -101,7 +100,6 @@ impl PeerWorkspaceMut<'_> {
         map: &str,
         key: &str,
         device: &[u8; 32],
-        person: &[u8; 32],
         text: Option<&str>,
         now: SystemTime,
     ) -> Result<bool, String> {
@@ -109,15 +107,14 @@ impl PeerWorkspaceMut<'_> {
             map,
             key,
             device,
-            person,
             text.map(|text| automerge::ScalarValue::Str(text.into())),
             now,
         )
     }
 
     /// Put `value` at `key` of the founded `map`, or remove the row when
-    /// `value` is `None`, as `device`'s own change in `person`'s name, made at
-    /// `now` ([`super::commit_governance`]). Answers whether a row was there.
+    /// `value` is `None`, as `device`'s own change, made at `now`
+    /// ([`super::commit_governance`]). Answers whether a row was there.
     ///
     /// # Errors
     ///
@@ -127,7 +124,6 @@ impl PeerWorkspaceMut<'_> {
         map: &str,
         key: &str,
         device: &[u8; 32],
-        person: &[u8; 32],
         value: Option<automerge::ScalarValue>,
         now: SystemTime,
     ) -> Result<bool, String> {
@@ -151,7 +147,7 @@ impl PeerWorkspaceMut<'_> {
             Some(value) => candidate.put(&rows, key, value).map_err(message)?,
             None => candidate.delete(&rows, key).map_err(message)?,
         }
-        super::commit_governance(&mut candidate, Some(person), super::now_secs(now));
+        super::commit_governance(&mut candidate, super::now_secs(now));
         self.peer.core.workspace_doc = Some(candidate.into());
         Ok(held)
     }

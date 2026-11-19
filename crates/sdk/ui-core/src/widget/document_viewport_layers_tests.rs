@@ -70,9 +70,9 @@ fn canvas(theme: &Theme) -> App {
 fn sheet(theme: &Theme) -> App {
     let mut column = crate::widget::Column::new().with_intrinsic_height();
     for row in 0..60 {
-        column = column.push(Box::new(crate::widget::Toggle::new(
+        column = column.push(Box::new(crate::widget::Toggle::given(
             &format!("switch-{row}"),
-            "",
+            false,
         )));
     }
     let mut viewport = DocumentViewport::new(Box::new(column));

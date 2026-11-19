@@ -6,8 +6,8 @@
 )]
 
 use super::*;
+use crate::store::SigningIdentity;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use runtime_identity::SigningIdentity;
 use threshold_identity::{EnrolmentRound2, ThresholdIdentity};
 use tilo_user_identity::DeviceCapabilities;
 
@@ -30,7 +30,7 @@ fn record(
         },
     }))
     .unwrap();
-    runtime_identity::load_from_bytes(&bytes).unwrap()
+    crate::store::load_from_bytes(&bytes).unwrap()
 }
 
 /// A device holding the whole key of the person `seed` makes.

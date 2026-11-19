@@ -6,8 +6,8 @@
 //! action after `#`. `browser@4711/page#read-page` names one window of an
 //! app by its provider (what the desktop's `open` answers, what `tilo_ls`
 //! lists); without it the app's newest window answers. The host's own
-//! services answer to their app too: `desktop#list-windows` is the desktop's
-//! layout. A path names things as a person would and survives a
+//! services answer to their app too: `desktop` is the desktop's layout, on a
+//! desktop that serves it. A path names things as a person would and survives a
 //! compositor restart; the opaque ids a broker mints per publication
 //! (`tilo-ui-bound:v1:<uuid>:<uuid>:<hex>`) stay inside this module, which
 //! resolves a path against the live directory on every call.
@@ -30,6 +30,8 @@ use tilo_lock::MutexRecover as _;
 
 #[path = "mcp_answer.rs"]
 mod answer;
+#[path = "mcp_ask.rs"]
+mod ask;
 #[path = "mcp_agent_find.rs"]
 mod find;
 #[path = "mcp_agent_launch.rs"]
@@ -88,6 +90,8 @@ const DEEP_READS: usize = 16;
 const NAME_BYTES: usize = 256;
 /// Lines `tilo_ls` answers before a cursor.
 const LS_LINES: usize = 40;
+/// Root-resource read searches a session keeps, by app and directory revision.
+const SWEPT_READS: usize = 256;
 /// Hits `tilo_find` answers.
 const FIND_HITS: usize = 15;
 /// Characters of a read answered before the rest is cut.
@@ -287,7 +291,7 @@ use mcp_agent_pick::{
     action_rank, is_program_form, named_beyond_its_start, only_by_id, pick, pick_action,
     pick_action_anywhere, published_on, rank, reads_action,
 };
-pub(super) use mcp_agent_tools::tool_definitions;
+pub(super) use mcp_agent_tools::{held_until_ended, tool_definitions};
 
 /// [`list_names`], or `none` for no names: an empty list reads as a
 /// sentence cut short.
@@ -989,6 +993,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         name: &str,
         levels: &mut Levels,
     ) -> Result<Option<Level>, String> {
+        // A name the app's own level carries is asked of the app by name
+        // first: a chain it keeps is answered from the head part publishing
+        // it, never a page of the listing built from every item the app
+        // shows. A name no one resource there answers is listed as before.
+        if let Some(among) = self.named(provider, "", name).await?
+            && let [only] = among.children.as_slice()
+        {
+            return Ok(Some(Level {
+                own: Vec::new(),
+                children: vec![only.clone()],
+                revision: among.revision,
+                pages: std::sync::Arc::default(),
+            }));
+        }
         let root = self.level(provider, "", levels).await?;
         let mut revision = root.revision.clone();
         // A name the app's own level carries exactly is answered there: its id
@@ -1377,7 +1395,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 };
                 // A host service (the desktop's layout, on `desktop:session`)
                 // publishes everything on its one resource: its actions are
-                // the service's own, `desktop#list-windows`. A record's one
+                // the service's own, `desktop#<action>`. A resource's one
                 // container (Tasks' tracker) holds what the app offers more.
                 if provider.parse::<u64>().is_err()
                     && root.own.is_empty()
@@ -1601,6 +1619,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Ok(args) => Box::pin(self.agent_tilo(args, structured)).await,
                 Err(error) => Err(error.into()),
             },
+            "tilo_ask" => match parse(args) {
+                Ok(args) => self.agent_ask(args, structured).await,
+                Err(error) => Err(error.into()),
+            },
             "tilo_watch" => match parse(args) {
                 Ok(args) => self.agent_watch(args).await,
                 Err(error) => Err(error.into()),
@@ -1754,6 +1776,21 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // own actions, a line each. A page is a window of them.
         let mut entries: Vec<(String, Option<Value>)> = Vec::new();
         if want_resources {
+            // Whether a read answers the rows listed here without their
+            // offering one: the resource they are listed under reads one of
+            // its items at a time, as a notebook reads its notes. A row
+            // neither that nor its own actions read is only a place inside
+            // what lists it (an option, a choice), which the row says.
+            let inherited_read = read
+                .as_ref()
+                .map(|(level, _)| &level.own)
+                .or_else(|| resolved.node.is_none().then_some(&resolved.actions))
+                .and_then(|own| reads_action(own))
+                .is_some_and(|read| {
+                    read.params
+                        .iter()
+                        .any(|param| param.name.as_ref() == "item")
+                });
             let mut named: Vec<Node> = children.clone();
             named.extend(resolved.node.clone());
             let shared = shared_names(&children, &named);
@@ -1792,6 +1829,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     &resolved.path,
                     &name,
                     forms.kind(&child.kind).unwrap_or(&child.kind),
+                    inherited_read || reads_action(&child.actions).is_some(),
                 );
                 entries.push((line, Some(row)));
             }
@@ -1995,7 +2033,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             arguments,
             tilo_actions::InvocationId::new(),
             None,
-            std::time::Duration::from_millis(DEFAULT_WAIT_MS),
+            self.held_for(None),
             &mut None,
         ))
         .await?;
@@ -2064,6 +2102,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // names no item answers a document whole, and a resource inside it is
         // that read's to answer: a listing that takes no item would answer
         // every item with the whole document.
+        //
+        // Which root resource that is depends on the app's directory alone, so
+        // it is looked for once an app's directory stands still: a path that no
+        // root resource reads otherwise reads every one of them, and a walk
+        // over an app's empty places would pay that for each.
+        let sweep = (resolved.provider.clone(), resolved.revision.clone());
+        if !sweep.1.is_empty()
+            && let Some(known) = self.swept_reads.lock_recover().get(&sweep).cloned()
+        {
+            return Ok(known);
+        }
+        let root = self.level(&resolved.provider, "", levels).await?;
         let reading_item = |found: &ActionDescriptor| {
             resolved.node.is_none()
                 || found
@@ -2071,17 +2121,25 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     .iter()
                     .any(|param| param.name.as_ref() == "item")
         };
-        let root = self.level(&resolved.provider, "", levels).await?;
+        let mut found = None;
         for node in &root.children {
             let level = self.level(&resolved.provider, &node.id, levels).await?;
-            if let Some(found) = reads_action(&level.own)
+            if let Some(reading) = reads_action(&level.own)
                 .or_else(|| reads_action(&node.actions))
-                .filter(|found| reading_item(found))
+                .filter(reading_item)
             {
-                return Ok(Some((node.id.clone(), found)));
+                found = Some((node.id.clone(), reading));
+                break;
             }
         }
-        Ok(None)
+        if !sweep.1.is_empty() {
+            let mut swept = self.swept_reads.lock_recover();
+            if swept.len() >= SWEPT_READS {
+                swept.clear();
+            }
+            swept.insert(sweep, found.clone());
+        }
+        Ok(found)
     }
 
     async fn agent_do(&self, args: DoArgs, structured: bool) -> Result<Reply, Failure> {
@@ -2405,136 +2463,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    /// The action `path` names, as its app publishes it now; or how the call
-    /// ended when it named the app itself (started or opened it).
-    async fn resolve_action(
-        &self,
-        path: &str,
-        arguments: serde_json::Map<String, Value>,
-        invocation: Option<String>,
-        wait_ms: Option<u64>,
-    ) -> Result<Resolution, Failure> {
-        let answered = |done: Done| Resolution::Done(Box::new(done));
-        let parsed = parse_path(path).map_err(|why| format!("invalid_arguments: {why}"))?;
-        let action = parsed.action.clone().ok_or_else(|| {
-            format!(
-                "invalid_arguments: name the action: {path}#<action>; tilo_ls {path} lists them"
-            )
-        })?;
-        // The app is looked up once: resolving the path in it does not ask
-        // again which apps run.
-        let Some((app_id, provider, pinned)) = self
-            .acting_in(&parsed, &action, wait_ms)
-            .await
-            .map_err(|why| refused_as("not_found", why))?
-        else {
-            let AppRef::Installed { app_id, .. } = self.app_ref(&parsed.app).await? else {
-                return Err(format!("{} started while it was asked to", parsed.app).into());
-            };
-            return (self.launched((&parsed, &app_id, &action), arguments, invocation, wait_ms))
-                .await
-                .map(answered);
-        };
-        // A path names a type the way a listing does (`tasks.Task`), so an action is found on
-        // the resource a listing showed: such a segment is read by the program form first, and
-        // a form no app declares is read plainly, as a title may be.
-        let forms = self.forms_named(&parsed).await;
-        let mut resolved = if pinned {
-            self.resolve_in(
-                &parsed,
-                app_id.clone(),
-                provider.clone(),
-                false,
-                forms.as_ref(),
-            )
-            .await
-            .map_err(|why| refused_as("not_found", why))?
-        } else {
-            self.resolve_published(
-                &parsed,
-                app_id.clone(),
-                provider.clone(),
-                false,
-                forms.as_ref(),
-            )
-            .await
-            .map_err(|why| refused_as("not_found", why))?
-        };
-        if forms.is_some() && resolved.chain.is_empty() {
-            resolved = if pinned {
-                self.resolve_in(&parsed, app_id, provider, false, None)
-                    .await?
-            } else {
-                self.resolve_published(&parsed, app_id, provider, false, None)
-                    .await?
-            };
-        }
-        self.acted_in(&resolved.provider, &resolved.app_id);
-        let (named_at, descriptor) =
-            if let Some(descriptor) = self.action_named(&resolved, &action).await? {
-                (resolved.path.clone(), descriptor)
-            } else {
-                // Not one of the target's actions by its id: what the target
-                // offers decides (a label, the start of an id), as listing it
-                // shows. A path naming the app alone means the app's own
-                // actions and those it publishes on its resources.
-                if let Some(node) = resolved.node.clone() {
-                    let mut levels = std::mem::take(&mut resolved.levels);
-                    let here = self
-                        .level(&resolved.provider, &node.id, &mut levels)
-                        .await?;
-                    resolved.actions = if here.own.is_empty() {
-                        node.actions.clone()
-                    } else {
-                        here.own
-                    };
-                }
-                // `notes#open` is what the listing of a stopped app says to
-                // call; once the app runs, it answers what is in it.
-                let opens = parsed.segments.is_empty() && arguments.is_empty();
-                // There it names the app's own verb, never an action whose id only begins with it
-                // (Notes' `open-link`): one by its whole id was asked above.
-                if opens && starts_app(&action) {
-                    return self.running(&resolved, &action).await.map(answered);
-                }
-                // With arguments the word that starts an app is no other action's either: it names
-                // an action of the running app only where the app calls one that, by its id or its
-                // label, never another whose id merely begins with it, which nobody asked for.
-                let starts = parsed.segments.is_empty() && starts_app(&action);
-                let picked = self.pick_action_in(&action, &resolved).await;
-                // Found, and refused below as the word that starts an app: the word only begins
-                // the id of another action the app offers.
-                let begins_another = starts && picked.is_ok();
-                match named_beyond_its_start(starts, &action, &resolved.path, picked) {
-                    Ok((at, found)) => (at, super::refusal::not_allowed(found)?),
-                    // The open's own arguments are a file, which reaches the app's open whether
-                    // the app runs or not. Arguments that name no file are another action's where
-                    // the app offers one the word begins: the caller is told which, and nothing
-                    // is run.
-                    Err(_) if starts && (opens_a_file(&arguments) || !begins_another) => {
-                        let opening = (&parsed, resolved.app_id.as_str(), action.as_str());
-                        return self
-                            .launched(opening, arguments, invocation, wait_ms)
-                            .await
-                            .map(answered);
-                    }
-                    Err(error) => {
-                        let asked = (arguments, invocation, wait_ms);
-                        return Box::pin(self.unoffered(&resolved, &action, &error, asked)).await;
-                    }
-                }
-            };
-        let history = resolved.history();
-        let known = ResolvedAction {
-            app_id: resolved.app_id,
-            provider: resolved.provider,
-            path: named_at,
-            descriptor,
-            history,
-        };
-        Ok(Resolution::At(Box::new(known), arguments))
-    }
-
     /// The action `name` means in what `resolved` names, with the path to
     /// the resource it is published on: the target's own actions, else — a
     /// path naming the app — the actions the app publishes on the resources
@@ -2768,7 +2696,6 @@ mod level;
 pub(super) mod resolved;
 #[path = "mcp_agent_unoffered.rs"]
 mod unoffered;
-use resolved::{Resolution, ResolvedAction};
 
 /// The answer to a read of `resolved` when it publishes no read action: the actions it has, and
 /// where to look inside it.

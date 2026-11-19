@@ -14,6 +14,11 @@
 # It is not a bootable image by itself: it runs no Tilo program and enables no
 # Tilo unit. Nothing here compiles — t builds every program (the check
 # host-binaries) and os/Containerfile.host lays them out.
+#
+# host-base.sh builds this file with the desktop's `uki-tools` stage after it
+# (os/image/helpers/uki-tools.Containerfile): the throwaway tools that seal the
+# server's UKI come out of the same base and snapshot, built once with this
+# base and handed to os/Containerfile.host as an image.
 # ============================================================================
 
 # ---- Frozen RPM repo + mirrored base (cross-time reproducibility) ----------
@@ -26,7 +31,7 @@ FROM scratch AS external-assets
 COPY --from=github-assets / /
 
 # ---- Runtime base ----------------------------------------------------------
-FROM ${BASE_REF}
+FROM ${BASE_REF} AS host-base
 
 # Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
 ARG RPMS_REF
@@ -52,6 +57,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         firewalld \
         fuse3 \
         ca-certificates \
+        efibootmgr \
         iproute \
         NetworkManager \
         NetworkManager-wifi \

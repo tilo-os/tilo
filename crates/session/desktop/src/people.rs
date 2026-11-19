@@ -1118,8 +1118,7 @@ impl PeopleOverlay {
         if !in_call {
             self.call_since = None;
         }
-        let breath =
-            ui::motion::Breathe::level(now.saturating_duration_since(since), theme.motion());
+        let sweep = ui::motion::Sweep::at(now.saturating_duration_since(since), theme.motion());
         for place in self.rows.clone() {
             let Some(row) = model.rows.get(place.index) else {
                 continue;
@@ -1161,7 +1160,7 @@ impl PeopleOverlay {
             let paint_face = |ctx: &mut ui::paint::PaintCtx<'_>, rect: Rect| {
                 let mut face = ui::presence::Face::member(&row.label, &row.member, row.color);
                 face.dimmed = row.availability.dims();
-                face.in_call = row.call.as_ref().map(|_| breath);
+                face.active = row.call.as_ref().map(|_| sweep);
                 ui::presence::FaceStack {
                     side: FACE - 6.0,
                     overlap: 0.0,
@@ -1526,12 +1525,12 @@ impl PeopleOverlay {
                 .as_ref()
                 .and_then(|scroll| scroll.next_wake_deadline(theme))
         });
-        // Someone here is in a call: their ring breathes, gently.
+        // Someone here is in a call: an arc sweeps round their ring.
         let breath = self
             .shown_rows
             .iter()
             .any(|row| row.call.is_some())
-            .then(|| ui::motion::Breathe::next_frame(ui::time::now(), self.motion))
+            .then(|| ui::motion::Sweep::next_frame(ui::time::now(), self.motion))
             .flatten();
         [scrollbar, breath, self.shown_waved_until]
             .into_iter()

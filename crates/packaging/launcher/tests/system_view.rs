@@ -102,13 +102,15 @@ fn compare_inside_a_user_namespace() {
     });
 
     // Unrestricted network and the user's files: the network view, the resolver files fresh per
-    // launch, grants with a private store masked.
+    // launch, grants with a private store masked. An app outside the image reaches the network
+    // only through a grant, so this one holds a grant of every site.
     compare(&Launch {
         view: &view,
         manifest: manifest("host"),
         payload: &payload,
         runtime: None,
         capabilities: CapabilityPlan {
+            net_hosts: vec!["*".to_string()],
             ro_paths: vec![grants.join("ro")],
             rw_paths: vec![grants.join("rw")],
             pinned_dirs: vec![grants.join("rw")],

@@ -605,10 +605,11 @@ impl super::Session {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
-        let actor = invoker.as_ref().map_or_else(
-            || ui::tilo_actions::MemberId::person(self.person.clone()).into(),
-            |invoker: &ui::tilo_actions::ActionInvoker| invoker.acting.by.clone(),
+        let acting = invoker.as_ref().map_or_else(
+            || ui::tilo_actions::Acting::person(self.person.clone()),
+            |invoker: &ui::tilo_actions::ActionInvoker| invoker.acting.clone(),
         );
+        let actor = acting.by.clone();
         let context = match invoker {
             Some(invoker) => Some(ambient.cloned().unwrap_or_default().with_invoker(invoker)),
             None => ambient.cloned(),
@@ -626,11 +627,76 @@ impl super::Session {
             context,
         );
         match answered {
-            Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+            Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+                self.show_write(&acting, resource, action, &output);
+                Ok(output)
+            }
             Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) => Err(error.message),
             Some(other) => Err(format!("{other:?}")),
             None => Err(format!("the API answered nothing of `{action}`")),
         }
+    }
+
+    /// Show the characters `action`'s answer says it wrote where they landed, as the broker's
+    /// step for an agent at work does: the write's colour on the new characters and the writer's
+    /// caret at their end, under way.
+    fn show_write(
+        &mut self,
+        acting: &ui::tilo_actions::Acting,
+        resource: &str,
+        action: &str,
+        output: &ui::tilo_actions::ActionOutput,
+    ) {
+        let Some(mut wrote) = output.wrote() else {
+            return;
+        };
+        // A window names an item's text by the resource it publishes it under
+        // (`tl:app:document/item`); the anchor names the item's own id.
+        if let ui::tilo_actions::InteractionAnchor::Text { ranges, .. } = &mut wrote {
+            for range in ranges {
+                if !range.block.is_empty() && resource.ends_with(&range.block) {
+                    range.block.clone_from(&resource.to_owned());
+                }
+            }
+        }
+        let super::Window::Harness(window) = &mut self.window else {
+            return;
+        };
+        let resources = window.resources();
+        let descriptor = ui::tilo_actions::api::survey(&resources)
+            .into_iter()
+            .find(|descriptor| {
+                descriptor.address.resource == resource && descriptor.address.action == action
+            });
+        let event = ui::tilo_actions::SemanticInteraction {
+            version: ui::tilo_actions::INTERACTION_VERSION,
+            invocation: ui::tilo_actions::InvocationId::new(),
+            sequence: 1,
+            actor: acting.clone(),
+            phase: ui::tilo_actions::InteractionPhase::Applying,
+            action: ui::tilo_actions::InteractionAction {
+                id: action.to_owned(),
+                label: descriptor.as_ref().map_or_else(
+                    || action.to_owned(),
+                    |descriptor| descriptor.action_label.clone(),
+                ),
+                app: None,
+                step: None,
+                creates: None,
+                did: None,
+            },
+            resource: ui::tilo_actions::ActionResource {
+                id: resource.to_owned(),
+                kind: descriptor
+                    .as_ref()
+                    .map_or_else(String::new, |descriptor| descriptor.resource_kind.clone()),
+                label: descriptor.map_or_else(String::new, |descriptor| descriptor.resource_label),
+            },
+            anchor: wrote,
+            group: None,
+        };
+        let _ =
+            window.update_presence(|presence| presence.apply_interaction(event).unwrap_or(false));
     }
 
     /// Deliver `action` of `resource` at the API the broker delivers to, run by `actor` within

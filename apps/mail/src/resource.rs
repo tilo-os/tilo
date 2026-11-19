@@ -1309,11 +1309,9 @@ impl TestMail {
 pub(crate) fn live_extras(app: &crate::app::Mailroom) -> Vec<ui::framework::LiveRow> {
     let mut extras = Vec::new();
     if app.has_pending_send() {
-        extras.push(ui::framework::LiveRow::new(
-            "mail.send:pending",
-            "mail.send",
-            "Sending message…",
-        ));
+        extras.push(ui::framework::LiveRow::typed::<
+            crate::actions::PendingSendItem,
+        >("mail.send:pending", "Sending message…"));
     }
     extras
 }

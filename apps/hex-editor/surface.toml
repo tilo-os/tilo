@@ -6,6 +6,7 @@ format = 2
 kind = "hex-editor.document"
 label = "Hex document"
 version = 1
+shows = ["goto-offset", "search"]
 fields = [
   { path = "name", type = { option = "text" }, readonly = true },
   { path = "opened", type = "int", readonly = true },

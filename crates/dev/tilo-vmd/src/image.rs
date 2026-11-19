@@ -18,7 +18,6 @@ use tilo_vm_protocol::{AccountLayers, Declaration, HeldLayer, ImageChange, Prove
 
 use crate::accounts::{AccountStore, now};
 use crate::error::DaemonError;
-use crate::fsutil::write_atomic;
 use crate::layers::LayerStore;
 
 /// The image the last boot ran.
@@ -150,7 +149,8 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), DaemonError> {
     let bytes =
         serde_json::to_vec_pretty(value).map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
-    write_atomic(path, &bytes)
+    tilo_files::native::atomic::write_creating_parent(path, &bytes)
+        .map_err(DaemonError::io(format!("write {}", path.display())))
 }
 
 fn remove_if_present(path: &Path, what: &str) -> Result<(), DaemonError> {

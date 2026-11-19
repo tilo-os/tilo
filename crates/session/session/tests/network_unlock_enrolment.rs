@@ -146,6 +146,8 @@ struct TwoDevices {
     /// The person's other device, which holds the half the enrolment is
     /// registered with.
     phone: Rc<Client>,
+    /// That device's certified key.
+    phone_key: [u8; 32],
     /// The device asking, which is one of the person's and holds no root.
     enrollee: ed25519_dalek::SigningKey,
     session: tilo_session::Session,
@@ -178,6 +180,7 @@ impl TwoDevices {
                 .expect("this device may enroll another of the person's")
         };
         let phone_key = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+        let phone_public = phone_key.verifying_key().to_bytes();
         let phone_cert = store
             .complete_enrollment(
                 &profile.id,
@@ -253,6 +256,7 @@ impl TwoDevices {
             questions,
             shell,
             phone,
+            phone_key: phone_public,
             enrollee,
             session,
             runtime: tokio::runtime::Runtime::new().expect("a runtime"),
@@ -384,11 +388,26 @@ fn a_device_without_the_root_enrols_when_the_person_allows_it() {
         !response.siblings.is_empty(),
         "the person's other devices hold the half"
     );
-    // The phone holds the half the phone's own enrolment is registered with.
+    // The device that signed the enrolment and the phone both hold the half;
+    // only the device being enrolled is not asked, so a person with two
+    // devices still has one to ask at boot.
+    let asked: std::collections::BTreeSet<[u8; 32]> = response
+        .siblings
+        .iter()
+        .map(|sibling| sibling.device_public_key)
+        .collect();
+    let signing = tilo_session::sync::device_identity()
+        .expect("this session's own device")
+        .device_cert
+        .device_public_key;
     assert_eq!(
-        response.siblings.len(),
-        1,
-        "the other device of the person's holds the half"
+        asked,
+        std::collections::BTreeSet::from([signing, devices.phone_key]),
+        "the signing device and the phone hold the half"
+    );
+    assert!(
+        !asked.contains(&devices.enrollee.verifying_key().to_bytes()),
+        "the device being enrolled does not hold its own half"
     );
 }
 

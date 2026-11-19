@@ -749,6 +749,9 @@ pub struct Enrollment<'a> {
     /// Signed predictions the token carries; at least one is required.
     pub predictions: &'a [Prediction],
     pub pin: Option<&'a [u8]>,
+    /// The Secure Boot authority digest this enrollment approved, for a keyslot that
+    /// opens without a secret: the initramfs compares it before trying such a token.
+    pub anchors: Option<&'a str>,
 }
 
 /// Build the whole seal + slot + token sequence for one generation. `authorising` is a secret that
@@ -766,6 +769,7 @@ pub fn enroll_generation(
         floor,
         predictions,
         pin,
+        anchors,
     } = *enrollment;
     if predictions.is_empty() {
         bail!("refusing to enroll generation {generation} with no signed PCR prediction");
@@ -798,6 +802,7 @@ pub fn enroll_generation(
             policy_digest: &digest,
         },
         predictions,
+        anchors,
     );
     let token_id = free_token_id(runner, device)?;
     import_token(runner, ws, device, token_id, &token)?;
@@ -899,6 +904,7 @@ Digests:
                 },
                 predictions: &[],
                 pin: None,
+                anchors: None,
             };
             let cfg = crate::Config::default();
             let refusals = [

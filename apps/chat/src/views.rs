@@ -29,7 +29,7 @@ type Id = sdk::tilo_resource::Id;
 
 /// The conversation toolkit's clock and day breaks: how a transcript labels a day, and the rule
 /// a run of one person's messages follows, read from the toolkit the view draws with.
-use sdk::widget::conversation::list::RUN_WINDOW_SECS;
+use sdk::widget::conversation::list::GROUPING_WINDOW_SECS;
 use sdk::widget::conversation::{ConversationClock, DayBreaks};
 
 /// One conversation of a workspace, as the place that shows it names it: a channel everyone in
@@ -106,7 +106,7 @@ pub struct Message {
     pub id: String,
     /// Who wrote it, as [`Channel::people`] names them.
     pub author: MemberId,
-    /// When, in seconds since the epoch.
+    /// When it was written, in milliseconds since the epoch.
     #[serde(default)]
     pub ts: i64,
     /// Its text, one line per paragraph: what it says.
@@ -742,11 +742,11 @@ fn header_facts(c: &Channel, cx: &ViewCx) -> Vec<Node> {
 /// The channel's messages, oldest first, each a row saying who spoke, when, and what.
 ///
 /// A transcript's rows are the ones every conversation draws: a day's divider over the first
-/// message of a local day, and a run of one person's consecutive messages under their avatar and
+/// message of a local day, and one person's consecutive messages grouped under their avatar and
 /// name once, the time beside it. The day is the toolkit's (`ui.SectionDivider`), the avatar
 /// (`ui.Avatar`), the clock the person's (`ui.Time`, read in their language and zone), and the
-/// grouping the run's own rule ([`runs`]): a message continues the run above it when one person
-/// wrote it within [`RUN_WINDOW_SECS`] of the one before, on the same local day.
+/// grouping the toolkit's own rule: a message joins the group above it when one person wrote it
+/// within [`GROUPING_WINDOW_SECS`] of the one before, on the same local day.
 fn transcript(c: &Channel, cx: &ViewCx) -> Node {
     // A conversation scrolls its transcript, opening at the newest message and following it as
     // it grows. It fills the room the page leaves it, so the composer stays at the foot and the
@@ -805,11 +805,11 @@ fn transcript(c: &Channel, cx: &ViewCx) -> Node {
 }
 
 /// What the transcript shows of the channel, in order: each message, whether a day begins over
-/// it (its label, when one does), and whether it continues the run above it.
+/// it (its label, when one does), and whether it joins the group above it.
 ///
-/// A run is one person's consecutive messages within [`RUN_WINDOW_SECS`] of one another on one
-/// local day, so the avatar, the name and the time stand over the run's first message and the
-/// others line up under it, as every conversation draws them. A day's divider stands over the
+/// A group is one person's consecutive messages within [`GROUPING_WINDOW_SECS`] of one another on
+/// one local day, so the avatar, the name and the time stand over the group's first message and
+/// the others line up under it, as every conversation draws them. A day's divider stands over the
 /// first message of a local day, never otherwise.
 fn grouped_messages<'a>(
     c: &'a Channel,
@@ -819,7 +819,7 @@ fn grouped_messages<'a>(
     let mut out: Vec<(Option<String>, &Message, bool)> = Vec::with_capacity(c.messages.len());
     let mut previous: Option<&Message> = None;
     for message in &c.messages {
-        let day = clock.day(message.ts);
+        let day = clock.day(message.ts.div_euclid(1_000));
         let label = breaks.begins(day).then(|| clock.day_label(day));
         let continues = label.is_none()
             && previous.is_some_and(|before| {
@@ -827,7 +827,8 @@ fn grouped_messages<'a>(
                     // What started a turn stands alone, under its own name.
                     && before.cause.is_none()
                     && message.cause.is_none()
-                    && message.ts.saturating_sub(before.ts) <= RUN_WINDOW_SECS
+                    && message.ts.saturating_sub(before.ts)
+                        <= GROUPING_WINDOW_SECS.saturating_mul(1_000)
             });
         out.push((label, message, continues));
         previous = Some(message);
@@ -1355,8 +1356,8 @@ fn actor(person: Option<&Person>, id: &MemberId) -> tilo_view::Actor {
 
 /// A moment as a component's `time` takes it: RFC 3339 in UTC, as `Item::time` and `ui.Time`
 /// read it.
-fn moment(ts: i64) -> String {
-    jiff::Timestamp::from_second(ts).map_or_else(|_| String::new(), |at| format!("{at:.0}"))
+fn moment(at_ms: i64) -> String {
+    jiff::Timestamp::from_millisecond(at_ms).map_or_else(|_| String::new(), |at| format!("{at:.0}"))
 }
 
 #[cfg(test)]
@@ -1518,14 +1519,14 @@ mod tests {
                 "c_ask",
                 "m_ask",
                 MemberId::person(me),
-                1_782_470_400,
+                1_782_470_400_000,
                 "hello",
             ),
             row(
                 "c_ask",
                 "m_reply",
                 MemberId::agent(agent),
-                1_782_470_460,
+                1_782_470_460_000,
                 "Hi",
             ),
         ];
@@ -1630,12 +1631,12 @@ mod tests {
             const BOB: &str = "7f3c0f9bb4ed0e42f1a2d0e5a3c1b0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3";
             let chat = crate::chat::Chat::default();
             sdk::tilo_resource::members::know([(MemberId::person(ADA), "Ada".to_owned())]);
-            let mut said = row("c_ask", "m_reply", MemberId::agent("helper"), 1_782_470_460, "Hi");
+            let mut said = row("c_ask", "m_reply", MemberId::agent("helper"), 1_782_470_460_000, "Hi");
             said.acting =
                 Some(sdk::tilo_resource::Acting::agent("helper").acting_for(
                     sdk::tilo_resource::Acting::person(ADA),
                 ));
-            let rows = vec![row("c_ask", "m_ask", MemberId::person(ADA), 1_782_470_400, "hello"), said];
+            let rows = vec![row("c_ask", "m_ask", MemberId::person(ADA), 1_782_470_400_000, "hello"), said];
             let names = Names {
                 members: [(MemberId::agent("helper"), "Helper".to_owned())].into(),
                 ..Names::default()
@@ -1658,7 +1659,7 @@ mod tests {
                     ..crate::chat::Conversation::default()
                 },
             );
-            let rows = vec![row("c_ask", "m_ask", MemberId::person(STRANGER), 1_782_470_400, "hello")];
+            let rows = vec![row("c_ask", "m_ask", MemberId::person(STRANGER), 1_782_470_400_000, "hello")];
             let channel = Channel::read(&chat, &rows, "c_ask", &MemberId::person(crate::model::ME), &Names::default());
             let person = channel.person(&MemberId::person(STRANGER)).expect("the author is named");
             assert!(
@@ -1761,7 +1762,7 @@ mod tests {
             };
             channel.messages.push(Message {
                 id: "m_shared".to_owned(),
-                ts: 1_782_470_400,
+                ts: 1_782_470_400_000,
                 attachments: vec![Attachment {
                     kind: "resource".to_owned(),
                     label: "Async Rust".to_owned(),
@@ -1827,7 +1828,7 @@ mod tests {
             let mut channel = demo_channel();
             channel.messages.push(Message {
                 id: "m_dropped".to_owned(),
-                ts: 1_782_470_400,
+                ts: 1_782_470_400_000,
                 text: "what is left?".to_owned(),
                 attachments: vec![attachment],
                 ..Message::by(channel.people[0].id.clone())
@@ -1951,7 +1952,7 @@ mod tests {
             };
             channel.messages.push(Message {
                 id: "m_shared".to_owned(),
-                ts: 1_782_470_400,
+                ts: 1_782_470_400_000,
                 attachments: vec![Attachment {
                     kind: "resource".to_owned(),
                     label: "Q3 plan".to_owned(),
@@ -2010,19 +2011,19 @@ mod tests {
                 message
             };
             let rows = vec![
-                message("m_one", MemberId::person(ME), 1_782_470_400, "first", None),
-                message("m_two", MemberId::person(ME), 1_782_470_410, "second", None),
+                message("m_one", MemberId::person(ME), 1_782_470_400_000, "first", None),
+                message("m_two", MemberId::person(ME), 1_782_470_410_000, "second", None),
                 message(
                     "m_three",
                     MemberId::agent("assistant"),
-                    1_782_470_420,
+                    1_782_470_420_000,
                     "answers the second",
                     Some("m_two"),
                 ),
                 message(
                     "m_four",
                     MemberId::agent("assistant"),
-                    1_782_470_430,
+                    1_782_470_430_000,
                     "answers the first",
                     Some("m_one"),
                 ),
@@ -2080,14 +2081,14 @@ mod tests {
                     "c_crit",
                     "m_asked",
                     MemberId::person(crate::model::ME),
-                    1_782_470_400,
+                    1_782_470_400_000,
                     answered,
                 ),
                 row(
                     "c_crit",
                     "m_other",
                     MemberId::person(crate::model::ME),
-                    1_782_470_410,
+                    1_782_470_410_000,
                     "and the cost line?",
                 ),
             ];
@@ -2095,7 +2096,7 @@ mod tests {
                 "c_crit",
                 "m_reply",
                 MemberId::agent("tide"),
-                1_782_470_420,
+                1_782_470_420_000,
                 "Yes: that stretch flattens",
             );
             reply.parent = Some("m_asked".to_owned());
@@ -2167,14 +2168,14 @@ mod tests {
         });
         channel.messages.push(Message {
             id: "m_asked".to_owned(),
-            ts: 1_782_470_300,
+            ts: 1_782_470_300_000,
             text: "Add the revenue curve".to_owned(),
             ..Message::by(MemberId::person(crate::model::ME))
         });
         channel.messages.push(Message {
             id: crate::chat::reply_id(&Id::from_raw("m_asked"), &MemberId::agent("tide"))
                 .to_string(),
-            ts: 1_782_470_400,
+            ts: 1_782_470_400_000,
             text: partial.to_owned(),
             reply_to: Some(Quote {
                 id: "m_asked".to_owned(),
@@ -2376,7 +2377,7 @@ mod tests {
             channel.messages[0].attempts = 1;
             channel.messages.push(Message {
                 id: "m_reply_2".to_owned(),
-                ts: 1_782_470_500,
+                ts: 1_782_470_500_000,
                 text: "The curve is drawn".to_owned(),
                 reply_to: Some(Quote {
                     id: "m_asked".to_owned(),
@@ -2422,7 +2423,7 @@ mod tests {
                 id: reply_id.clone(),
                 channel: "c_crit".to_owned(),
                 author: MemberId::agent("tide"),
-                ts: 1_782_470_400,
+                ts: 1_782_470_400_000,
                 text: String::new(),
                 body: Vec::new(),
                 edited: false,
@@ -2442,7 +2443,7 @@ mod tests {
                         crate::model::AgentWorkState::ProviderFinished {
                             outcome: crate::agent_stream::AgentFinish::Failed,
                         },
-                        1_782_470_400,
+                        1_782_470_400_000,
                     )
                 }),
                 reactions: Vec::new(),
@@ -2541,13 +2542,13 @@ mod tests {
             channel.messages = vec![
                 Message {
                     id: "m_day_one".to_owned(),
-                    ts: 1_782_470_400, // 2026-06-30
+                    ts: 1_782_470_400_000, // 2026-06-30
                     text: "First day".to_owned(),
                     ..Message::by(MemberId::person(crate::model::ME))
                 },
                 Message {
                     id: "m_day_two".to_owned(),
-                    ts: 1_782_470_400 + 86_400, // the day after
+                    ts: 1_782_470_400_000 + 86_400_000, // the day after
                     text: "Second day".to_owned(),
                     ..Message::by(MemberId::person(crate::model::ME))
                 },
@@ -2578,13 +2579,13 @@ mod tests {
             channel.messages = vec![
                 Message {
                     id: "m_a".to_owned(),
-                    ts: 1_782_470_400,
+                    ts: 1_782_470_400_000,
                     text: "One".to_owned(),
                     ..Message::by(MemberId::person(crate::model::ME))
                 },
                 Message {
                     id: "m_b".to_owned(),
-                    ts: 1_782_470_400 + 60,
+                    ts: 1_782_470_400_000 + 60_000,
                     text: "Two".to_owned(),
                     ..Message::by(MemberId::person(crate::model::ME))
                 },
@@ -2647,9 +2648,9 @@ mod tests {
                     ..crate::chat::Conversation::default()
                 },
             );
-            let mut said = row("c_ask", "m_reply", MemberId::agent("assistant"), 1_782_470_420, "Hi");
+            let mut said = row("c_ask", "m_reply", MemberId::agent("assistant"), 1_782_470_420_000, "Hi");
             said.parent = Some("m_ask".to_owned());
-            let rows = vec![row("c_ask", "m_ask", MemberId::person(ME), 1_782_470_400, "hello"), said];
+            let rows = vec![row("c_ask", "m_ask", MemberId::person(ME), 1_782_470_400_000, "hello"), said];
             let mut names = Names {
                 me: "Quinn Davis".to_owned(),
                 ..Names::default()
@@ -2708,7 +2709,7 @@ mod tests {
             // 2026-06-26 09:16 UTC, read in the zone the page reads clocks in.
             channel.messages = vec![Message {
                 id: "m_when".to_owned(),
-                ts: 1_782_465_360,
+                ts: 1_782_465_360_000,
                 text: "Sent at a moment".to_owned(),
                 ..Message::by(MemberId::person(crate::model::ME))
             }];
@@ -2745,19 +2746,19 @@ mod tests {
             channel.messages = vec![
                 Message {
                     id: "m_one".to_owned(),
-                    ts: 1_782_470_400,
+                    ts: 1_782_470_400_000,
                     text: "First".to_owned(),
                     ..Message::by(MemberId::person("u_aria"))
                 },
                 Message {
                     id: "m_two".to_owned(),
-                    ts: 1_782_470_460,
+                    ts: 1_782_470_460_000,
                     text: "Still the same run".to_owned(),
                     ..Message::by(MemberId::person("u_aria"))
                 },
                 Message {
                     id: "m_three".to_owned(),
-                    ts: 1_782_470_520,
+                    ts: 1_782_470_520_000,
                     text: "Another person".to_owned(),
                     ..Message::by(MemberId::person("u_milo"))
                 },
@@ -2806,7 +2807,7 @@ mod tests {
             let workspace = crate::demo::Workspace::demo().expect("the demo workspace");
             let mut rows = workspace.message_rows("c_crit");
             // A day after the rest, so it starts a run of its own and carries its byline.
-            let ts = rows.iter().map(|row| row.ts).max().unwrap_or_default() + 86_400;
+            let ts = rows.iter().map(|row| row.ts).max().unwrap_or_default() + 86_400_000;
             let mut sent = row("c_crit", "m_sent", MemberId::person(crate::model::ME), ts, "On its way");
             sent.sending = true;
             rows.push(sent);

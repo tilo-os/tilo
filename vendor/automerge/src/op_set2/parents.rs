@@ -10,11 +10,19 @@ use crate::{clock::Clock, exid::ExId, Prop};
 /// have reached the root of the document.
 ///
 /// This is returned by [`crate::ReadDoc::parents`]
+#[cfg(not(tilo_model_guest))]
 #[derive(Debug, Clone)]
 pub struct Parents<'a> {
     pub(crate) obj: ObjId,
     pub(crate) ops: &'a OpSet,
     pub(crate) clock: Option<Clock>,
+}
+
+/// TILO(model-device): the parents the host of a model module's document read.
+#[cfg(tilo_model_guest)]
+#[derive(Debug, Clone)]
+pub struct Parents<'a> {
+    pub(crate) hosted: crate::model_device::Hosted<'a, Parent>,
 }
 
 impl Parents<'_> {
@@ -49,6 +57,12 @@ impl Parents<'_> {
 impl Iterator for Parents<'_> {
     type Item = Parent;
 
+    #[cfg(tilo_model_guest)]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.hosted.next()
+    }
+
+    #[cfg(not(tilo_model_guest))]
     fn next(&mut self) -> Option<Self::Item> {
         if self.obj.is_root() {
             return None;
@@ -75,7 +89,7 @@ impl Iterator for Parents<'_> {
 }
 
 /// A component of a path to an object
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Parent {
     /// The object ID this component refers to
     pub obj: ExId,

@@ -101,7 +101,7 @@ impl Store {
             }
             CalendarEffect::ReadCalendar { id } => {
                 return self
-                    .read_calendar(&id, &cx.live().get())
+                    .read_calendar(crate::rows::calendar_of_row(&id), &cx.live().get())
                     .map(Effected::value);
             }
             CalendarEffect::ShowAllCalendars => self.asks.push(Ask::ShowAllCalendars),
@@ -139,10 +139,9 @@ impl Store {
             CalendarEffect::ContactAttendees { event_id } => {
                 self.open_contact_attendees(&cx.live().get(), &event_id)?;
             }
-            CalendarEffect::PrepareInMail {
-                event_id,
-                attendee_id,
-            } => {
+            CalendarEffect::PrepareInMail { attendee } => {
+                let (event_id, attendee_id) = crate::rows::attendee_of_row(&attendee)
+                    .ok_or_else(|| "that is not a guest of an event".to_string())?;
                 let draft = invitation(&cx.live().get(), &event_id, &attendee_id)?;
                 self.asks
                     .push(Ask::Say(t("calendar-invite-prepared"), ToastKind::Info));
@@ -151,15 +150,28 @@ impl Store {
             CalendarEffect::SetColor { id, color } => {
                 let color = Palette::from_name(&color)
                     .ok_or_else(|| format!("no colour is called {color}"))?;
+                let id = crate::rows::calendar_of_row(&id);
                 let slot = u8::try_from(color.index()).unwrap_or_default();
-                self.change_display(&id, |display| {
-                    display.colors.insert(id.clone(), slot);
+                self.change_display(id, |display| {
+                    display.colors.insert(id.to_owned(), slot);
                 })?;
             }
+            CalendarEffect::ShowCalendar { id } => {
+                self.set_visibility(crate::rows::calendar_of_row(&id), true)?;
+                self.asks.push(Ask::Say(
+                    CalendarApp::visibility_status(true),
+                    ToastKind::Info,
+                ));
+            }
+            CalendarEffect::HideCalendar { id } => {
+                self.set_visibility(crate::rows::calendar_of_row(&id), false)?;
+                self.asks.push(Ask::Say(
+                    CalendarApp::visibility_status(false),
+                    ToastKind::Info,
+                ));
+            }
             CalendarEffect::SetVisibility { id, visible } => {
-                self.change_display(&id, |display| {
-                    display.visible.insert(id.clone(), visible);
-                })?;
+                self.set_visibility(&id, visible)?;
                 self.asks.push(Ask::Say(
                     CalendarApp::visibility_status(visible),
                     ToastKind::Info,
@@ -167,6 +179,12 @@ impl Store {
             }
         }
         Ok(Effected::done())
+    }
+
+    fn set_visibility(&self, id: &str, visible: bool) -> Result<(), String> {
+        self.change_display(id, |display| {
+            display.visible.insert(id.to_owned(), visible);
+        })
     }
 
     fn change_display(
@@ -304,19 +322,39 @@ impl Store {
             .iter()
             .flat_map(|event| {
                 event.attendees.iter().map(move |attendee| {
-                    LiveRow::new(
+                    LiveRow::typed::<crate::rows::AttendeeRow>(
                         crate::actions::attendee_resource_id(event.id, attendee.id),
-                        "calendar.attendee",
                         attendee.email.clone(),
                     )
-                    .effect(&CalendarEffect::PrepareInMail {
-                        event_id: event.id.to_string(),
-                        attendee_id: attendee.id.to_string(),
-                    })
                 })
             })
             .take(ATTENDEE_ROWS)
             .collect()
+    }
+
+    /// What a calendar or a guest row is like now: a calendar is shown or
+    /// hidden, never both, so its row offers only the change that applies.
+    pub(crate) fn row_status(&self, id: &str) -> Vec<EffectStatus> {
+        let Some(calendar) = self
+            .calendars
+            .iter()
+            .find(|calendar| crate::actions::calendar_resource_id(&calendar.id) == id)
+        else {
+            return Vec::new();
+        };
+        if calendar.visible {
+            vec![EffectStatus::unavailable(
+                CalendarEffect::SHOW_CALENDAR,
+                "already-shown",
+                "This calendar's events are already shown",
+            )]
+        } else {
+            vec![EffectStatus::unavailable(
+                CalendarEffect::HIDE_CALENDAR,
+                "already-hidden",
+                "This calendar's events are already hidden",
+            )]
+        }
     }
 }
 
@@ -432,7 +470,8 @@ pub(crate) fn window(cx: &ViewCx<Calendar>, mut app: CalendarApp) -> Element {
                 .ask(Ask::Stage(scenario.map(str::to_owned)));
         });
     }
-    let (rows, row, edits, entries) = (
+    let (rows, row, edits, entries, statuses) = (
+        Rc::clone(&store),
         Rc::clone(&store),
         Rc::clone(&store),
         Rc::clone(&store),
@@ -443,6 +482,8 @@ pub(crate) fn window(cx: &ViewCx<Calendar>, mut app: CalendarApp) -> Element {
             .live_rows(move || rows.borrow().live_rows())
             .live_row(move |id| row.borrow().contact_row(id))
             .row_edits(move |row| edits.borrow().contact_declarations(row))
+            // A calendar's row offers showing or hiding it, whichever applies.
+            .row_status(move |id| statuses.borrow().row_status(id))
             .search_entries(move || entries.borrow().contact_search_entries()),
         Box::new(app),
     )

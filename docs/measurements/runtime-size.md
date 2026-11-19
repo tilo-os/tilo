@@ -181,12 +181,12 @@ app names those engines: the toolkit opens them by name the first time
 (`tilo-engine-loader`: `dlopen` with local symbols, never closed) and calls
 one entry function, whose type the toolkit defines and the engine crate is
 checked against at compile time (`tilo_highlight::GrammarsEntry`,
-`ui::webview::adblock::EngineEntry`, `tilo_theme_sdk::PainterEntry`):
+`tilo_webview::adblock::EngineEntry`, `tilo_theme_sdk::PainterEntry`):
 
 | engine library | opened by | the first time |
 |---|---|---|
 | `libtilo_highlight_engine.so` | the code editor's highlighter (`lazy-highlight`) | a line of code is highlighted |
-| `libtilo_adblock_engine.so` | `ui::webview::adblock` (`lazy-adblock`) | an app compiles filter lists |
+| `libtilo_adblock_engine.so` | `tilo_webview::adblock` (`lazy-adblock`) | an app compiles filter lists |
 | `libtilo_theme_painter_engine.so` | `part_paint` (`lazy-painter`) | a theme names a painter set that is not built in |
 
 The runtime-side crate names the engine's code only while its `lazy-*`

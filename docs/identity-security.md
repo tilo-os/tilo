@@ -150,10 +150,10 @@ would pass its proof on; Tilo's bus clients open connections close-on-exec.
 
 ## Compatibility and limits
 
-`runtime_identity::load()` prefers the identity-service descriptor, then
-`TILO_USER_IDENTITY` for unsandboxed development, which the Tilo launcher
-never sets or mounts. Existing application call sites keep the same
-`SigningIdentity` API.
+`tilo_identity_client::load()` reads the workspace identity service the launcher
+bound the process to, and nothing else: a process the launcher gave no
+service has no identity of its own. The service never signs caller-chosen
+messages; an app asks it for the specific workspace operation instead.
 
 Automated tests cover protocol bounds, the service's refusal to sign with a
 root key, signature verification, one-shot file descriptor ownership,
@@ -161,7 +161,7 @@ migration without secret bytes in metadata, symlink and permission refusal,
 duplicate imports, shared-secret removal, active/final record protections, and
 prevention of migration/chmod outside the canonical identity store.
 
-`runtime-identity`'s own test builds always use the file store. The store a
+`tilo_identity::store`'s own test builds always use the file store. The store a
 real session chooses is proven by `crates/system/secret-service/tests/identity_ownership.rs`,
 which runs the production identity and vault code against the built
 `tilo-secret-service` on a private session bus. With no Secret Service on the

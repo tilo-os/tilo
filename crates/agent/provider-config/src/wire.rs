@@ -133,6 +133,14 @@ pub fn body(
             object.insert(chat_limit_field(profile).into(), cap.into());
             reasoning(profile, &mut object, false);
             set_stream(&mut object, streaming, true);
+            // Google's endpoint thinks before it answers and says nothing of it unless asked;
+            // where the answer streams, its thought is shown as it comes. What a caller asked
+            // of Google itself stays as it asked it.
+            if streaming && profile.is_googles_endpoint() {
+                object.entry("extra_body").or_insert_with(
+                    || json!({"google": {"thinking_config": {"include_thoughts": true}}}),
+                );
+            }
         }
         Api::Responses => {
             object.insert("max_output_tokens".into(), cap.into());
@@ -174,16 +182,17 @@ pub fn response(
 ) -> Result<ModelResponse, ModelError> {
     let value: Value = serde_json::from_str(body)
         .map_err(|_| ModelError::invalid("the provider's answer is not JSON"))?;
-    let response = decode(Api::of(profile), &value)?;
+    let response = decode(Api::of(profile), profile.is_googles_endpoint(), &value)?;
     check(&response, request)?;
     Ok(response)
 }
 
-/// The turn a whole answer `value` on `api` holds, unchecked.
-pub(crate) fn decode(api: Api, value: &Value) -> Result<ModelResponse, ModelError> {
+/// The turn a whole answer `value` on `api` holds, unchecked; `google` when it came from
+/// Google's endpoint.
+pub(crate) fn decode(api: Api, google: bool, value: &Value) -> Result<ModelResponse, ModelError> {
     match api {
         Api::Anthropic => anthropic::response(value),
-        Api::Chat => chat::response(value),
+        Api::Chat => chat::response(value, google),
         Api::Responses | Api::ChatGpt => responses::response(value),
     }
 }
@@ -397,3 +406,5 @@ pub(crate) fn extra<'a>(extra: Option<&'a Value>, key: &str) -> Option<&'a Value
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod thought_tests;

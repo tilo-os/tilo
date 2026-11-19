@@ -187,7 +187,7 @@ RecordSentArgs = TypedDict("RecordSentArgs", {
 
 class Workspace(Resource):
     """API workspace — `api-tester.workspace`."""
-    __surface__ = "so.tilo.api-tester@3269c62757803c40"
+    __surface__ = "so.tilo.api-tester@0bb73ebb3a42c416"
     collections: list[Entry[SavedCollection]]
     environments: list[Entry[Environment]]
     active_environment: str | None

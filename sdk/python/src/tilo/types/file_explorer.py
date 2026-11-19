@@ -27,6 +27,7 @@ __all__ = [
     "Folder",
     "Tree",
     "Recent",
+    "Workspace",
     "AddBookmarkArgs",
     "RemoveBookmarkArgs",
     "NewFolderArgs",
@@ -35,6 +36,7 @@ __all__ = [
     "WriteArgs",
     "TrashArgs",
     "RestoreArgs",
+    "ListChunkArgs",
     "NoteArgs",
     "MovedArgs",
     "ForgetArgs",
@@ -68,42 +70,47 @@ RemoveBookmarkArgs = TypedDict("RemoveBookmarkArgs", {
 """The arguments of `remove-bookmark`."""
 
 NewFolderArgs = TypedDict("NewFolderArgs", {
-    "parent": "str",
-    "name": "str",
-    "document": NotRequired["str | None"],
+    "parent": "Any",
+    "name": "Any",
+    "document": NotRequired["Any | None"],
 })
 """The arguments of `new-folder`."""
 
 NewFileArgs = TypedDict("NewFileArgs", {
-    "parent": "str",
-    "name": "str",
-    "document": NotRequired["str | None"],
+    "parent": "Any",
+    "name": "Any",
+    "document": NotRequired["Any | None"],
 })
 """The arguments of `new-file`."""
 
 MoveArgs = TypedDict("MoveArgs", {
-    "node": "str",
-    "parent": "str",
-    "name": "str",
+    "node": "Any",
+    "parent": "Any",
+    "name": "Any",
 })
 """The arguments of `move`."""
 
 WriteArgs = TypedDict("WriteArgs", {
-    "node": "str",
-    "content": "str",
-    "size": "int",
+    "node": "Any",
+    "content": "Any",
+    "size": "Any",
 })
 """The arguments of `write`."""
 
 TrashArgs = TypedDict("TrashArgs", {
-    "node": "str",
+    "node": "Any",
 })
 """The arguments of `trash`."""
 
 RestoreArgs = TypedDict("RestoreArgs", {
-    "node": "str",
+    "node": "Any",
 })
 """The arguments of `restore`."""
+
+ListChunkArgs = TypedDict("ListChunkArgs", {
+    "chunk": "Any",
+})
+"""The arguments of `list-chunk`."""
 
 NoteArgs = TypedDict("NoteArgs", {
     "device": "str",
@@ -128,7 +135,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Folder(Resource):
     """Folder — `files.folder`."""
-    __surface__ = "so.tilo.file-explorer@0a6b39435b30c1be"
+    __surface__ = "so.tilo.file-explorer@528977fd1ca945e9"
     places: list[Entry[Bookmark]]
 
     def add_bookmark(self,
@@ -350,12 +357,12 @@ class Folder(Resource):
 
 class Tree(Resource):
     """Files — `files.tree`."""
-    __surface__ = "so.tilo.file-explorer@0a6b39435b30c1be"
+    __surface__ = "so.tilo.file-explorer@528977fd1ca945e9"
     def new_folder(self,
         *,
-        parent: str,
-        name: str,
-        document: str | None = None,
+        parent: Any,
+        name: Any,
+        document: Any | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -371,9 +378,9 @@ class Tree(Resource):
 
     def new_file(self,
         *,
-        parent: str,
-        name: str,
-        document: str | None = None,
+        parent: Any,
+        name: Any,
+        document: Any | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -389,9 +396,9 @@ class Tree(Resource):
 
     def move(self,
         *,
-        node: str,
-        parent: str,
-        name: str,
+        node: Any,
+        parent: Any,
+        name: Any,
     ) -> None:
         """Runs the app's action."""
         return self.action("move", node=node, parent=parent, name=name)
@@ -402,9 +409,9 @@ class Tree(Resource):
 
     def write(self,
         *,
-        node: str,
-        content: str,
-        size: int,
+        node: Any,
+        content: Any,
+        size: Any,
     ) -> None:
         """Runs the app's action."""
         return self.action("write", node=node, content=content, size=size)
@@ -413,7 +420,7 @@ class Tree(Resource):
         """Runs `write` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("write", items)
 
-    def trash(self, *, node: str) -> None:
+    def trash(self, *, node: Any) -> None:
         """Runs the app's action."""
         return self.action("trash", node=node)
 
@@ -421,7 +428,7 @@ class Tree(Resource):
         """Runs `trash` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("trash", items)
 
-    def restore(self, *, node: str) -> None:
+    def restore(self, *, node: Any) -> None:
         """Runs the app's action."""
         return self.action("restore", node=node)
 
@@ -429,14 +436,22 @@ class Tree(Resource):
         """Runs `restore` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("restore", items)
 
+    def list_chunk(self, *, chunk: Any) -> None:
+        """Runs the app's action."""
+        return self.action("list-chunk", chunk=chunk)
+
+    def list_chunk_many(self, items: list[ListChunkArgs]) -> list[dict[str, Any]]:
+        """Runs `list-chunk` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("list-chunk", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"new_folder", "new_folder_many", "new_file", "new_file_many", "move", "move_many", "write", "write_many", "trash", "trash_many", "restore", "restore_many"})
+    __actions__ = frozenset({"new_folder", "new_folder_many", "new_file", "new_file_many", "move", "move_many", "write", "write_many", "trash", "trash_many", "restore", "restore_many", "list_chunk", "list_chunk_many"})
 
 
 class Recent(Resource):
     """Recent files — `files.recent`."""
-    __surface__ = "so.tilo.file-explorer@0a6b39435b30c1be"
+    __surface__ = "so.tilo.file-explorer@528977fd1ca945e9"
     devices: dict[str, Any]
 
     def note(self,
@@ -485,5 +500,11 @@ class Recent(Resource):
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
     __actions__ = frozenset({"note", "note_many", "moved", "moved_many", "forget", "forget_many"})
+
+
+class Workspace(Resource):
+    """Files window — `files.workspace`."""
+    __surface__ = "so.tilo.file-explorer@528977fd1ca945e9"
+    folder: str
 
 

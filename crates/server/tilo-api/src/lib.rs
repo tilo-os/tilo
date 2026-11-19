@@ -200,16 +200,16 @@ pub struct Server {
     /// each stands, so a connection that failed continues instead of
     /// starting again.
     uploads: content::Uploads,
-    /// Whether the site serves the sign-in page every approval lands on, as
-    /// last seen and when ([`Self::sign_in_page`]).
-    sign_in_seen: Mutex<Option<(std::time::Instant, Result<(), String>)>>,
+    /// When the site was last seen serving the sign-in page every approval
+    /// lands on ([`Self::sign_in_page`]).
+    sign_in_served: Mutex<Option<std::time::Instant>>,
     /// The Tilo desktop this server is part of, when it is: it answers every
     /// workspace itself, and no call is forwarded anywhere.
     here: Option<Arc<dyn session::Here>>,
 }
 
-/// How long what the site answered for its sign-in page is trusted.
-const SIGN_IN_SEEN_FOR: Duration = Duration::from_secs(60);
+/// How long a site seen serving its sign-in page is trusted to keep serving it.
+const SIGN_IN_SERVED_FOR: Duration = Duration::from_secs(60);
 
 /// What every answer's body is: whole, or a stream (server-sent events).
 pub type Body = http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>;
@@ -291,7 +291,7 @@ impl Server {
             held: std::sync::OnceLock::new(),
             page_tokens: Mutex::default(),
             approved_keys: Mutex::default(),
-            sign_in_seen: Mutex::default(),
+            sign_in_served: Mutex::default(),
             v1: v1::State::default(),
             uploads: content::Uploads::default(),
             here,
@@ -300,31 +300,32 @@ impl Server {
 
     /// Whether the site serves the sign-in page every key and agent approval
     /// lands on (`<web entry>/sign-in`): `Err` with what it answered when it
-    /// does not, so a site deployed without it shows on `/health` and in the
-    /// log instead of as a dead link in front of the person approving.
+    /// does not, so a site deployed without it shows on `/health` instead of as
+    /// a dead link in front of the person approving.
+    ///
+    /// Only a served page is remembered: a site that is not up yet has not
+    /// answered, so the call after it starts asks again.
     pub async fn sign_in_page(&self) -> Result<(), String> {
-        if let Some((at, seen)) = lock(&self.sign_in_seen).as_ref()
-            && at.elapsed() < SIGN_IN_SEEN_FOR
+        if let Some(at) = *lock(&self.sign_in_served)
+            && at.elapsed() < SIGN_IN_SERVED_FOR
         {
-            return seen.clone();
+            return Ok(());
         }
         let url = self.sign_in_entry.as_str();
-        let seen = match self
+        match self
             .http
             .get(url)
             .timeout(Duration::from_secs(5))
             .send()
             .await
         {
-            Ok(answer) if answer.status().is_success() => Ok(()),
+            Ok(answer) if answer.status().is_success() => {
+                *lock(&self.sign_in_served) = Some(std::time::Instant::now());
+                Ok(())
+            }
             Ok(answer) => Err(format!("{url} answers {}", answer.status())),
             Err(error) => Err(format!("{url} was not reached: {error}")),
-        };
-        if let Err(why) = &seen {
-            tracing::error!(%why, "the site serves no sign-in page: no key or agent can be approved");
         }
-        *lock(&self.sign_in_seen) = Some((std::time::Instant::now(), seen.clone()));
-        seen
     }
 
     /// The live MCP sessions.
@@ -791,7 +792,7 @@ impl Server {
     /// `POST /sign-in`: the person's Tilo answers a pending authorization,
     /// declined (`decision=deny`) or with a sign-in proof and the certificate
     /// it gave the grant's key.
-    fn signed_in(&self, body: &[u8]) -> Reply {
+    fn signed_in(self: &Arc<Self>, body: &[u8]) -> Reply {
         let form = oauth::form(body).unwrap_or_default();
         let now = now_ms();
         // Answered once, whatever the answer: its challenge and key are spent.
@@ -1346,7 +1347,7 @@ impl Server {
                     .get(&id)
                     .filter(|session| session.grant == grant.id)
                     .cloned();
-                let Some(session) = session else {
+                let Some(mut session) = session else {
                     return json_reply(
                         StatusCode::NOT_FOUND,
                         &json!({"jsonrpc": "2.0", "id": request.get("id").cloned().unwrap_or(Value::Null),
@@ -1354,6 +1355,27 @@ impl Server {
                                           "message": "unknown session; initialize again"}}),
                     );
                 };
+                // A session that reaches its workspaces no more (its key revoked there) ended:
+                // it is opened again under the same id, which a revoked key is refused saying so.
+                if !session.is_live() {
+                    lock(&self.sessions).remove(&id);
+                    session = match self
+                        .initialized(&grant, session.scope.clone(), session.label.clone())
+                        .await
+                    {
+                        Ok(opened) => opened,
+                        Err(mut refused) => {
+                            if let Some(fields) = refused.as_object_mut() {
+                                fields.insert(
+                                    "id".into(),
+                                    request.get("id").cloned().unwrap_or(Value::Null),
+                                );
+                            }
+                            return json_reply(StatusCode::OK, &refused);
+                        }
+                    };
+                    lock(&self.sessions).insert(id, Arc::clone(&session));
+                }
                 let reply = session.handle(request).await;
                 session_reply(&reply, headers, None)
             }
@@ -1443,6 +1465,17 @@ impl Server {
         }
     }
 
+    /// The sessions keys hold open here that still reach their workspaces,
+    /// by name ("Visa backend #3"): a revoked key's are gone from it.
+    #[must_use]
+    pub fn open_sessions(&self) -> Vec<String> {
+        lock(&self.sessions)
+            .values()
+            .filter(|session| session.is_live())
+            .map(|session| session.label.clone())
+            .collect()
+    }
+
     /// `grant`'s run for the calls of the API: one per key, named for it
     /// ("Visa backend #3"), opened the first time and kept with the key's
     /// other sessions, so revoking the key ends it.
@@ -1465,31 +1498,49 @@ impl Server {
             .next_run(&grant.person)
             .map_err(|_| unavailable("this key cannot act now".to_owned()))?;
         let label = format!("{} #{number}", grant.client_name);
+        let opened = match self.initialized(grant, grant.scope.clone(), label).await {
+            Ok(opened) => opened,
+            Err(refused) => {
+                let why = refused
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the workspace refused");
+                // The workspace records its keys' revocations: a key it refused
+                // as revoked is told so, and asks the person for another.
+                if why.contains("key_revoked")
+                    || refused.pointer("/error/data/code").and_then(Value::as_str)
+                        == Some("key_revoked")
+                {
+                    return Err(
+                        v1::errors::ApiError::new("key_revoked", "this key was revoked")
+                            .next(crate::APPROVE_AGAIN),
+                    );
+                }
+                return Err(unavailable(why.to_owned()));
+            }
+        };
+        lock(&self.sessions).insert(id, Arc::clone(&opened));
+        Ok(opened)
+    }
+
+    /// A new session of `grant` in `scope`, named `label`, initialized as a client initializes one:
+    /// the JSON-RPC refusal when it was not (a key its workspace keeps as revoked is told so).
+    async fn initialized(
+        self: &Arc<Self>,
+        grant: &store::Grant,
+        scope: store::Scope,
+        label: String,
+    ) -> Result<Arc<Session>, Value> {
         let opened = Arc::new(
-            self.new_session(grant, grant.scope.clone(), label)
+            self.new_session(grant, scope, label)
                 .await
-                .map_err(unavailable)?,
+                .map_err(|why| session::error(&Value::Null, -32000, &why))?,
         );
         let initialize = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
             "protocolVersion": "2025-06-18", "capabilities": {},
             "clientInfo": {"name": "tilo-api", "version": env!("CARGO_PKG_VERSION")},
         }});
-        if let Err(refused) = opened.initialize(&initialize).await {
-            let why = refused
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("the workspace refused");
-            // The workspace records its keys' revocations: a key it refused
-            // as revoked is told so, and asks the person for another.
-            if why.contains("key_revoked") {
-                return Err(
-                    v1::errors::ApiError::new("key_revoked", "this key was revoked")
-                        .next(crate::APPROVE_AGAIN),
-                );
-            }
-            return Err(unavailable(why.to_owned()));
-        }
-        lock(&self.sessions).insert(id, Arc::clone(&opened));
+        opened.initialize(&initialize).await?;
         Ok(opened)
     }
 
@@ -1525,6 +1576,46 @@ impl Server {
 }
 
 impl Server {
+    /// Have `grant`, a key the person just approved, enter every workspace it reaches, in the
+    /// background: each workspace keeps the keys it admitted, which every server holding it and
+    /// every API server reads, so the key is listed (`account/keys#list`, `tilo keys ls`) and
+    /// revocable wherever the person asks, before anything used it.
+    pub(crate) fn admit_into_its_workspaces(self: &Arc<Self>, grant: &store::Grant) {
+        let Some(key) = grant.key() else {
+            return;
+        };
+        let (server, id) = (Arc::downgrade(self), grant.id.clone());
+        tokio::spawn(async move {
+            let Some(server) = server.upgrade() else {
+                return;
+            };
+            let connection = match server.connection(&id, &key).await {
+                Ok(connection) => connection,
+                Err(error) => {
+                    tracing::warn!(%error, grant = id, "a new key's workspaces were not reached");
+                    return;
+                }
+            };
+            let workspaces = match key.scope() {
+                tilo_user_identity::AgentScope::Workspace(_) => vec![key.scope().name()],
+                tilo_user_identity::AgentScope::AllWorkspaces => connection
+                    .server()
+                    .labelled(
+                        &connection,
+                        &tilo_server_session::workspaces::WorkspaceLabels::new(),
+                    )
+                    .await
+                    .map(|listed| listed.into_iter().map(|workspace| workspace.id).collect())
+                    .unwrap_or_default(),
+            };
+            for workspace in workspaces {
+                if let Err(error) = connection.server().enter(&connection, &workspace).await {
+                    tracing::info!(%error, workspace, grant = id, "a new key is not recorded in a workspace yet");
+                }
+            }
+        });
+    }
+
     /// Keep `grant` when it is a key this server did not issue, once the
     /// server its session is with has let its person in
     /// ([`Connection::when_let_in`]). Until then nothing of it is kept:
@@ -1680,9 +1771,9 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// What a key that no longer acts (revoked, expired, or no longer granted in
-/// its workspace) is told to do: the one command that approves a key again.
-pub(crate) const APPROVE_AGAIN: &str = "approve a new key: the person types `tilo keys create \"<name>\"` \
-     and approves it in their Tilo tab (on their own computer, `tilo login` again)";
+/// its workspace) is told to do: the one command that approves a key again,
+/// as every surface says it.
+pub(crate) const APPROVE_AGAIN: &str = tilo_actions::remote::APPROVE_AGAIN;
 
 /// Why a token the server was sent reaches nothing, as every refusal of the server is
 /// typed: `{"error": {code, message, next_steps}}`, with when it was revoked

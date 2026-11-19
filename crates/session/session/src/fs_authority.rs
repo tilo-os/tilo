@@ -4,9 +4,10 @@
 //! change, so taking a folder away stops the app that holds it at its next open — without closing
 //! the app, restarting it, or asking it to notice anything.
 //! The list is the workspace's own permissions in the mount's terms: the grants apps hold through
-//! portals, and what each member's role lets them reach in the workspace's files (a viewer reads,
-//! an editor writes). Both follow the shell's replica revision, so a role change or a removed member
-//! reaches the daemon in the same pass, never on a timer.
+//! portals, and what each member may do to the workspace's files as the workspace's action grants
+//! answer it at the files' node, the node every holder decides a file change at
+//! ([`fs_protocol::file_action::tree_node`]). Both follow the shell's replica revision, so a role
+//! change, a grant or a removed member reaches the daemon in the same pass, never on a timer.
 //! The daemon signs the list it reads into the ACL every mount enforces
 //! (`WorkspaceAuthority::apply`), so writing the file is the session's whole part wherever the
 //! daemon holds the governor key. A desktop that keeps that key out of reach — a host install,
@@ -19,10 +20,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use collab_types::Role;
 use collab_types::caps::{Access, CapOverride, FsAuthority, Scope};
 use collab_types::crypto::Ed25519PublicKey;
-use tilo_action_policy::{Acting, Grantee, MemberId};
+use tilo_action_policy::{
+    Acting, ActionKind, Answer, Context, Grantee, MemberAccess, MemberId, WorkspacePolicy,
+};
 use tilo_desktop_model::Layout;
 use tilo_lock::MutexRecover as _;
 
@@ -50,17 +52,21 @@ pub(crate) fn list(tree: &Layout, person: &str, device: Option<[u8; 32]>) -> FsA
         }) {
             push_with_device(&mut capabilities, capability, acting.as_ref(), device);
         }
-        // What the workspace's roles let each member reach in its files. The roles are the
-        // workspace's one statement of who may do what, so a role change rewrites this list and the
-        // daemon enforces the new answer at the next open; a member removed from the workspace
-        // holds nothing here, and their device stops at once without being told.
-        for (member, role) in workspace.roster() {
+        // What the workspace's grants let each member do to its files, decided as every holder
+        // decides a change of them: a role change or a grant rewrites this list and the daemon
+        // enforces the new answer at the next open; a member removed from the workspace holds
+        // nothing here, and their device stops at once without being told.
+        let policy = std::sync::Arc::new(workspace.policy.clone());
+        for (member, _) in workspace.roster() {
+            let Some(access) = files_access(&policy, &member) else {
+                continue;
+            };
             let capability = CapOverride::grant(
                 Grantee::person(member.clone()),
                 Scope::FsPath(WORKSPACE_FILES.into()),
-                role_files_access(role),
+                access,
             )
-            .with_id(role_capability_id(&workspace.id().to_string(), &member));
+            .with_id(member_capability_id(&workspace.id().to_string(), &member));
             push_with_device(&mut capabilities, &capability, acting.as_ref(), device);
         }
     }
@@ -76,19 +82,31 @@ fn person_key(person: &str) -> Option<Ed25519PublicKey> {
 /// role's access ranges over.
 const WORKSPACE_FILES: &str = "/var/workspace";
 
-/// What a member's role lets them do to the workspace's files: a viewer and a commenter read them,
-/// an editor and everything above changes them.
-const fn role_files_access(role: Role) -> Access {
-    match role {
-        Role::Viewer | Role::Commenter => Access::Read,
-        Role::Editor | Role::Moderator | Role::Owner => Access::Write,
+/// What `member` may do to the workspace's files under `policy`: change them where its grants
+/// allow writing a file, read them where they allow reading, nothing otherwise.
+fn files_access(policy: &std::sync::Arc<WorkspacePolicy>, member: &str) -> Option<Access> {
+    let access = MemberAccess::new(
+        std::sync::Arc::clone(policy),
+        Acting::member(MemberId::parsed_person(member)?),
+    );
+    let cx = Context::at_time(tilo_clock::wall());
+    let allows = |verb: &str, kind| {
+        let node = access.node(&fs_protocol::file_action::verb_node(None, verb));
+        access.answer(&node, kind, &cx) == Answer::Allow
+    };
+    if allows(fs_protocol::file_action::verbs::WRITE, ActionKind::Undoable) {
+        Some(Access::Write)
+    } else if allows(fs_protocol::tree::LIST, ActionKind::Read) {
+        Some(Access::Read)
+    } else {
+        None
     }
 }
 
-/// The id of the capability a workspace's role gives a member, so the same member's grant is
-/// recognisable across revisions and in the daemon's log.
-fn role_capability_id(workspace: &str, member: &str) -> String {
-    format!("role:{workspace}:{member}")
+/// The id of the capability the workspace's grants give a member over its files, so the same
+/// member's entry is recognisable across revisions and in the daemon's log.
+fn member_capability_id(workspace: &str, member: &str) -> String {
+    format!("files:{workspace}:{member}")
 }
 
 /// Publish `capability` as it stands, and again bound to this device's key when it is the key of
@@ -365,6 +383,7 @@ mod tests {
     use collab_types::caps::{Access, CapOverride, Effect};
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::Path;
+    use tilo_action_policy::Role;
     use tilo_desktop_model::Workspace;
 
     const PERSON: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -447,6 +466,31 @@ mod tests {
                 "a removed member reads nothing"
             );
             assert!(!may_write(&removed, &member, NOTE));
+        }
+
+        phase a_grant_on_the_files_decides_over_the_role;
+        {
+            const MEMBER: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+            const NOTE: &str = "/var/workspace/brief/plan.md";
+            let member = Acting::person(MEMBER);
+            let mut tree = tree_with(app_folder_grant());
+            tree.workspaces[0].admit(MEMBER, Role::Editor);
+            let workspace = tree.workspaces[0].policy.workspace.clone();
+            tree.workspaces[0].policy.grants.push(tilo_action_policy::Grant::new(
+                "files-read-only",
+                Grantee::person(MEMBER),
+                tilo_action_policy::TreePath::workspace(workspace)
+                    .joined(&fs_protocol::file_action::tree_node()),
+                tilo_action_policy::KindSet::UNDOABLE,
+                Answer::Deny,
+                Grantee::person(PERSON),
+            ));
+            let listed = list(&tree, PERSON, None);
+            assert!(may_read(&listed, &member, NOTE), "the role still lets them read");
+            assert!(
+                !may_write(&listed, &member, NOTE),
+                "a Deny on the files' node takes writing away, as every holder decides it"
+            );
         }
 
         phase a_revoked_folder_is_refused_at_the_next_open_and_the_app_keeps_running;

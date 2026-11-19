@@ -19,6 +19,7 @@ SCRIPT = ROOT / "tools/with-test-environment.sh"
 RUNNER = ROOT / "tools/cargo-runner.sh"
 HELPER = ROOT / "tools/desktop-isolation.sh"
 SETUP = ROOT / "tools/test-env-setup.sh"
+TEST_ENV = ROOT / "tools/test-env.sh"
 DUMP = "import json, os; print(json.dumps(dict(os.environ)))"
 # Programs a wrapper could start to decide or to prepare something.
 RECORDED = ("bash", "sh", "env", "dirname", "basename", "id", "uname", "awk", "sed", "sort",
@@ -334,7 +335,11 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "font-catalog": ["fonts"],
                                  "headless-audio": ["audio"],
-                                 "ntfs-fixtures": ["ntfs"], "as-root": ["root"]})
+                                 "ntfs-fixtures": ["ntfs"], "as-root": ["root"],
+                                 "swtpm": ["swtpm"], "pdf-sandbox": ["pdf-sandbox"],
+                                 "video-render": ["video-render"],
+                                 "pam-module": ["pam-module"],
+                                 "property-cases": ["property-cases"]})
         for script in scripts.values():
             self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
@@ -370,7 +375,41 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                                  # Only the sandbox's tests that map host ids or
                                  # make cgroups run as root.
                                  "package(tilo-sandbox) and (test(/^host_ids::/) or "
-                                 "test(/^limits::/))": "as-root"})
+                                 "test(/^limits::/))": "as-root",
+                                 # The values only some packages' tests need, for those packages:
+                                 # given to the run's environment, each would key every build
+                                 # script's and proc macro's cache entry by it.
+                                 "package(tilo-auth) or package(tilo-rollback) or "
+                                 "package(tilo-test-env)": "swtpm",
+                                 "package(tilo-pdf) or package(pdf-viewer) or "
+                                 "package(tilo-thumbnail)": "pdf-sandbox",
+                                 "package(tilo-agent-session)": "video-render",
+                                 "package(pam-tilo)": "pam-module"})
+
+    def test_the_deep_profile_gives_its_tests_more_property_cases(self) -> None:
+        # t.toml's `test-deep` tests its packages with more proptest cases, through a profile of
+        # its own: in the family's environment the count would key every build script's and proc
+        # macro's cache entry by it, and no other family's build of the same packages would be
+        # shared. The profile inherits `ci`, so the tests keep its setup, its hang bound and the
+        # failure output their results are read by.
+        config = tomllib.loads((ROOT / ".config/nextest.toml").read_text())
+        self.assertEqual(config["profile"]["deep"]["inherits"], "ci")
+        rules = [(rule["filter"], rule["setup"]) for rule in config["profile"]["deep"]["scripts"]]
+        self.assertEqual(rules, [("all()", "property-cases")])
+        result, env = self.setup("property-cases")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(env, {"PROPTEST_CASES": "256"})
+        families = tomllib.loads((ROOT / "t.toml").read_text())["cargo"]
+        family = next(family for family in families if family["name"] == "test-deep")
+        self.assertIn(["--profile", "deep"], [family["args"][i:i + 2]
+                                              for i in range(len(family["args"]) - 1)])
+        # A nextest family's values are its profile's setup steps, never the job's environment:
+        # there, each keys every build script's and proc macro's cache entry, so jobs that test
+        # different packages share no build.
+        for family in families:
+            if family.get("tool") == "nextest":
+                with self.subTest(family=family["name"]):
+                    self.assertNotIn("env", family)
 
     def test_runtime_provides_the_renderer_and_the_promised_capabilities(self) -> None:
         driver = Path(f"/usr/share/vulkan/icd.d/lvp_icd.{os.uname().machine}.json")
@@ -531,6 +570,90 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         result, _ = self.setup("bogus")
         self.assertEqual(result.returncode, 2)
 
+    def test_the_tpm_and_pdf_sandbox_steps_promise_what_the_node_has(self) -> None:
+        result, env = self.setup("swtpm")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(env, {"TILO_REQUIRE_SWTPM": "1"})
+        # The sandbox is promised only where the kernel can enforce it
+        # (tools/ci/require-pdf-sandbox.sh prints 1 there and nothing elsewhere).
+        required = subprocess.run(
+            ["bash", str(ROOT / "tools/ci/require-pdf-sandbox.sh")],
+            capture_output=True, text=True, check=True).stdout.strip()
+        result, env = self.setup("pdf-sandbox")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(env, {"TILO_REQUIRE_PDF_SANDBOX": required} if required else {})
+
+    def handed_step(self, work: Path, step: str, **extra: str):
+        """STEP as a shard gets it: the result, the variables it provided, and the Cargo
+        invocations it made."""
+        programs, ran = work / "bin", work / "cargo-ran"
+        programs.mkdir()
+        (programs / "cargo").write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >>"{ran}"\n')
+        (programs / "cargo").chmod(0o755)
+        env_file = work / "env"
+        env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+               "HOME": str(work), "NEXTEST_ENV": str(env_file),
+               "CARGO_TARGET_DIR": str(work / "target"), **extra}
+        result = subprocess.run(["bash", str(SETUP), step], env=env,
+                                capture_output=True, text=True, check=False)
+        provided = (dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+                    if env_file.exists() else {})
+        given = ran.read_text().splitlines() if ran.exists() else []
+        return result, provided, given
+
+    def test_a_handed_render_helper_is_named_to_the_tests_and_not_built(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            helper = work / "tilo-video-render"
+            helper.write_text("#!/bin/sh\n")
+            helper.chmod(0o755)
+            result, provided, given = self.handed_step(
+                work, "video-render",
+                **{"NEXTEST_BIN_EXE_tilo-video-render": str(helper)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(provided, {"TILO_VIDEO_RENDER": str(helper)})
+            self.assertEqual(given, [], "the job's helper, not one built here")
+
+    def test_a_render_helper_not_handed_is_built(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            result, provided, given = self.handed_step(work, "video-render")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(given, ["build --locked -p tilo-video-render --bin tilo-video-render"])
+            self.assertEqual(provided,
+                             {"TILO_VIDEO_RENDER": f"{work}/target/debug/tilo-video-render"})
+
+    def test_a_handed_pam_module_is_named_to_the_tests_and_not_built(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            module = work / "libpam_tilo.so"
+            module.write_text("")
+            result, provided, given = self.handed_step(
+                work, "pam-module", T_STARTED_CDYLIB_pam_tilo=str(module))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(provided, {"TILO_PAM_TILO_MODULE": str(module)})
+            self.assertEqual(given, [], "the job's module, not one built here")
+
+    def test_a_pam_module_not_handed_is_built(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            result, provided, given = self.handed_step(work, "pam-module")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(given, ["build --locked -p pam-tilo --lib"])
+            self.assertEqual(provided,
+                             {"TILO_PAM_TILO_MODULE": f"{work}/target/debug/libpam_tilo.so"})
+
+    def test_a_handed_program_that_cannot_run_fails_instead_of_building(self) -> None:
+        # Building here would hide a broken handoff and compile the program in every shard again.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            result, provided, given = self.handed_step(
+                work, "video-render",
+                **{"NEXTEST_BIN_EXE_tilo-video-render": str(work / "not-executable")})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("NEXTEST_BIN_EXE_tilo-video-render", result.stderr)
+            self.assertEqual((provided, given), ({}, []))
+
 
 class SiblingBinaryTests(unittest.TestCase):
     """tools/build-sibling-binaries.sh builds only what the run was not handed."""
@@ -652,6 +775,183 @@ class CargoRunnerTests(unittest.TestCase):
             env = self.run_binary(relative)
             self.assertNotIn("TILO_TEST_ENVIRONMENT", env)
             self.assertEqual(env["WAYLAND_DISPLAY"], "wayland-0")
+
+    def test_a_wrapped_jobs_environment_reaches_its_programs_but_never_a_stale_file(self) -> None:
+        # tools/test-env.sh writes the test environment beside the build directory, so a build's
+        # scripts never carry it (it is keyed into every build script's cache entry there). Every
+        # program such a job starts gets it, and the isolation a test harness gets.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            (work / ".rustc_info.json").write_text("{}")
+            example = work / "debug" / "examples" / "probe"
+            example.parent.mkdir(parents=True)
+            example.write_text(f"#!/bin/sh\nexec python3 -c '{DUMP}'\n")
+            example.chmod(0o755)
+            environment = work / "test-env-vars"
+            environment.write_text(f"pid={os.getpid()}\nTILO_PROBE=handed\nTILO_REQUIRE_MEDIA=1\n")
+            base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "HOME": "/nonexistent-developer-home",
+                    "VK_DRIVER_FILES": "/nonexistent-driver.json"}
+            result = subprocess.run([str(RUNNER), str(example)], env=base,
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            env = json.loads(result.stdout)
+            self.assertEqual(env["TILO_PROBE"], "handed")
+            self.assertEqual(env["TILO_REQUIRE_MEDIA"], "1")
+            self.assertEqual(env["XDG_RUNTIME_DIR"], f"{env['TILO_TEST_ENVIRONMENT']}/runtime")
+            # A file a killed job left behind is not read.
+            environment.write_text("pid=999999999\nTILO_PROBE=stale\n")
+            result = subprocess.run([str(RUNNER), str(example)], env=base,
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            env = json.loads(result.stdout)
+            self.assertNotIn("TILO_PROBE", env)
+            self.assertNotIn("TILO_TEST_ENVIRONMENT", env, "the caller's session is kept")
+
+    def test_a_jobs_test_environment_goes_beside_the_build_directory_not_to_cargo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            programs, dumped, stage = work / "bin", work / "cargo-env", work / "vars"
+            programs.mkdir()
+            (programs / "cargo").write_text(
+                f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n'
+                f'cp -- "$CARGO_TARGET_DIR/test-env-vars" "{stage}"\n')
+            (programs / "cargo").chmod(0o755)
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
+                   "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
+                   "TILO_TEST_NTFS_FIXTURES": "0"}
+            result = subprocess.run(["bash", str(TEST_ENV), "cargo", "test", "--no-run"], env=env,
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            cargo_env = json.loads(dumped.read_text())
+            self.assertEqual(cargo_env["HOME"], str(work / "home"),
+                             "the build gets the caller's HOME")
+            for name in ("PULSE_SERVER", "PULSE_RUNTIME_PATH", "MESA_SHADER_CACHE_DIR",
+                         "TILO_TEST_CACHE_DIR", "TILO_REQUIRE_MEDIA", "TILO_TEST_ENVIRONMENT"):
+                self.assertNotIn(name, cargo_env, "the build carries no test environment")
+            lines = stage.read_text().splitlines()
+            self.assertRegex(lines[0], r"^pid=\d+$")
+            provided = dict(line.split("=", 1) for line in lines[1:])
+            self.assertTrue(provided["TILO_TEST_CACHE_DIR"].endswith("/.cache/tilo/test-env"))
+            self.assertFalse((work / "target" / "test-env-vars").exists(),
+                             "the handoff is removed afterwards")
+
+    def test_a_cargo_run_targets_environment_goes_beside_the_build_directory_too(self) -> None:
+        # An example a job runs is a program the job starts, like its tests: the build gets the
+        # caller's environment, and the target finds the test environment where the runner reads
+        # it (tools/cargo-runner.sh).
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            programs, dumped, stage = work / "bin", work / "cargo-env", work / "vars"
+            programs.mkdir()
+            (programs / "cargo").write_text(
+                f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n'
+                f'cp -- "$CARGO_TARGET_DIR/test-env-vars" "{stage}"\n')
+            (programs / "cargo").chmod(0o755)
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
+                   "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
+                   "TILO_TEST_NTFS_FIXTURES": "0"}
+            result = subprocess.run(
+                ["bash", str(TEST_ENV), "cargo", "run", "--example", "window_share_shots"],
+                env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            cargo_env = json.loads(dumped.read_text())
+            self.assertEqual(cargo_env["HOME"], str(work / "home"),
+                             "the build gets the caller's HOME")
+            for name in ("PULSE_SERVER", "PULSE_RUNTIME_PATH", "TILO_HEADLESS_AUDIO_PID",
+                         "TILO_TEST_CACHE_DIR", "TILO_TEST_ENVIRONMENT"):
+                self.assertNotIn(name, cargo_env, "the build carries no test environment")
+            provided = dict(line.split("=", 1) for line in stage.read_text().splitlines()[1:])
+            self.assertIn("TILO_TEST_CACHE_DIR", provided)
+            self.assertFalse((work / "target" / "test-env-vars").exists(),
+                             "the handoff is removed afterwards")
+
+    def test_a_build_runs_in_the_callers_environment_with_the_build_inputs(self) -> None:
+        # tools/test-env.sh --build: for a command that builds and then runs what it built
+        # (tools/ci/layout-check.sh, tools/ci/example-scenarios.sh) the build is the one every
+        # other job's build shares, and nothing of the test environment reaches it.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            programs, dumped = work / "bin", work / "cargo-env"
+            programs.mkdir()
+            (programs / "cargo").write_text(
+                f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n')
+            (programs / "cargo").chmod(0o755)
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
+                   "TILO_TEST_NTFS_FIXTURES": "0"}
+            result = subprocess.run(
+                ["bash", str(TEST_ENV), "--build", "cargo", "build", "--locked"],
+                env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            cargo_env = json.loads(dumped.read_text())
+            self.assertEqual(cargo_env["HOME"], str(work / "home"))
+            self.assertEqual(cargo_env["TILO_FONT_ASSET_CACHE"],
+                             str(work / "target" / "font-artifacts"),
+                             "the build inputs every job's build shares are exported")
+            for name in ("PULSE_SERVER", "PULSE_RUNTIME_PATH", "MESA_SHADER_CACHE_DIR",
+                         "TILO_TEST_CACHE_DIR", "TILO_REQUIRE_MEDIA", "TILO_TEST_ENVIRONMENT",
+                         "TILO_TEST_NTFS_FIXTURES"):
+                self.assertNotIn(name, cargo_env, "the build carries no test environment")
+            self.assertFalse((work / "target").exists(), "no environment was prepared")
+
+    def test_a_command_started_in_the_environment_finds_the_builds_environment(self) -> None:
+        # A command started in the environment that builds the app it then starts builds as
+        # --build builds: tools/test-env.sh writes the environment it was given, before its
+        # steps add theirs, beside the fresh HOME.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            programs, dumped = work / "bin", work / "probe-env"
+            programs.mkdir()
+            (programs / "probe").write_text(
+                f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n'
+                f'cp -- "$TILO_TEST_ENVIRONMENT/build-environment" "{work}/environment"\n')
+            (programs / "probe").chmod(0o755)
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target"),
+                   "TILO_REQUIRE_GPU": "0", "TILO_REQUIRE_AUDIO": "0",
+                   "TILO_TEST_NTFS_FIXTURES": "0"}
+            result = subprocess.run(["bash", str(TEST_ENV), "probe"], env=env,
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            started = json.loads(dumped.read_text())
+            self.assertEqual(started["XDG_RUNTIME_DIR"],
+                             f"{started['TILO_TEST_ENVIRONMENT']}/runtime",
+                             "the command itself gets the test environment")
+            written = Path(work, "environment").read_bytes().decode("utf-8", "surrogateescape")
+            build = dict(entry.split("=", 1) for entry in written.split("\0") if "=" in entry)
+            self.assertEqual(build["HOME"], str(work / "home"),
+                             "the build environment is the caller's")
+            self.assertEqual(build["TILO_FONT_ASSET_CACHE"],
+                             str(work / "target" / "font-artifacts"),
+                             "the build inputs every job's build shares are in it")
+            for name in ("PULSE_SERVER", "TILO_TEST_CACHE_DIR", "TILO_TEST_ENVIRONMENT",
+                         "MESA_SHADER_CACHE_DIR", "TILO_HEADLESS_AUDIO_PID"):
+                self.assertNotIn(name, build, "the build environment carries no test environment")
+
+    def test_a_nextest_command_passes_unchanged(self) -> None:
+
+        # Its ci profile sets the test environment up itself, where its tests execute.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            programs, dumped = work / "bin", work / "cargo-env"
+            programs.mkdir()
+            (programs / "cargo").write_text(
+                f'#!/bin/sh\npython3 -c \'{DUMP}\' >"{dumped}"\n')
+            (programs / "cargo").chmod(0o755)
+            env = {"PATH": f"{programs}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}",
+                   "HOME": str(work / "home"), "CARGO_TARGET_DIR": str(work / "target")}
+            result = subprocess.run(
+                ["bash", str(TEST_ENV), "cargo", "nextest", "run", "--profile", "ci"],
+                env=env, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            cargo_env = json.loads(dumped.read_text())
+            self.assertEqual(cargo_env["HOME"], str(work / "home"))
+            for name in ("TILO_TEST_CACHE_DIR", "TILO_TEST_ENVIRONMENT", "PULSE_SERVER"):
+                self.assertNotIn(name, cargo_env)
+            self.assertFalse((work / "target").exists(), "no environment was prepared")
 
     def build_tree(self, work: Path, test: str) -> tuple[Path, Path]:
         """A build directory as cargo leaves one, with TEST as a test binary in it."""

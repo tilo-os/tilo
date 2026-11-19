@@ -4,41 +4,17 @@
 
 use ui::framework::{Fixture, ResourceApp, RunMode, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, Effect, Invoke, Model, resource};
+use ui::tilo_resource::{self, Effect, Invoke};
 use ui::widget::Element;
 
-use crate::app::{MonitorApp, SortKey};
-use crate::model::MonitorModel;
+use crate::app::MonitorApp;
+use crate::model::{MonitorModel, Process};
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-/// The process table's layout, shared with everyone who sees it. The tab, the
-/// filter and the selection are each window's own.
-#[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Monitor {
-    /// Sort column
-    pub sort: SortKey,
-    /// Ascending
-    pub ascending: bool,
-    /// Flat list
-    pub flat: bool,
-}
-
-impl Monitor {
-    /// What the resource holds: the shared table layout.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "monitor.processes",
-    read_content = Monitor::read_document
-)]
-impl Monitor {}
+/// The shared table layout and the columns it sorts by: their type lives in
+/// `monitor-model`.
+pub use monitor_model::{Monitor, SortKey};
 
 /// What Monitor does on this machine: work with no document delta, from its own
 /// controls, the palette, an agent or a script. A `process` names one process
@@ -47,41 +23,42 @@ impl Monitor {}
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "monitor.effect")]
 pub enum MonitorEffect {
-    #[effect(kind = "read", label = "monitor-effect-refresh")]
+    #[effect(screen, label = "monitor-effect-refresh")]
     Refresh,
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowTab {
         #[param("processes | resources")]
         tab: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Filter {
         #[param("Process filter text, or omit to clear")]
         query: Option<String>,
     },
-    #[effect(kind = "read")]
+    #[effect(screen, on = Process)]
     Inspect {
         #[param("The process row's id")]
         process: String,
     },
-    #[effect(kind = "read")]
+    #[effect(own_device, kind = "read", on = Process)]
     CopyPid {
         #[param("The process row's id")]
         process: String,
     },
     /// Asks the process to close, as quitting it would. Only the person's own apps
     /// and programs can be ended, never the system's services.
-    #[effect(destructive)]
+    #[effect(kind = "outside", destructive, on = Process)]
     EndProcess {
         #[param("The process row's id")]
         process: String,
     },
-    #[effect(destructive)]
+    #[effect(kind = "outside", destructive, on = Process)]
     Kill {
         #[param("The process row's id")]
         process: String,
     },
     /// Asks every process of the app to close.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     EndApp {
         #[param("The app's id, as a process row names it")]

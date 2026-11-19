@@ -356,6 +356,7 @@ impl ActionContext {
             label: Some(label.into()),
             kind: kind.into(),
             declared_id: None,
+            session: None,
         });
         self
     }
@@ -1623,6 +1624,12 @@ pub struct WorkGroup {
     /// what tells the caller's runs apart in history; never the group itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_id: Option<String>,
+    /// The session's own name, as the client's harness names it ("Office
+    /// Hours"): what an agent that works through a connection of its own is
+    /// shown by, where the session is what people see it as. Display only,
+    /// like the label; `None` for work that names no session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 /// [`ActionFacet::key`] of the risk ([`crate::RiskLevel::name`]) of the

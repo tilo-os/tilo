@@ -2,9 +2,9 @@
 //! and fetching one change no resource, so they are [`WeatherEffect`]s answered by
 //! the window.
 
-use ui::prelude::{Effect, LiveRow, tilo_resource};
+use ui::prelude::{Effect, tilo_resource};
 
-use crate::model::{LocationId, SavedLocation, Weather};
+use crate::model::{LocationId, Weather};
 
 pub fn location_resource_id(id: LocationId) -> String {
     tilo_resource::items::item_resource_id::<Weather>("places", &Weather::item(id))
@@ -16,42 +16,24 @@ pub enum WeatherEffect {
     /// Refresh forecasts.
     ///
     /// Fetch the forecast and air quality of every saved place.
-    #[effect(job, kind = "read")]
-    Refresh,
+    #[effect(job, kind = "read", label = "weather-effects-refresh")]
+    RefreshAll,
     /// Refresh this forecast.
     ///
     /// Fetch the forecast and air quality of one saved place.
-    #[effect(job, kind = "read", label = "weather-refresh-forecast")]
-    RefreshLocation {
+    #[effect(job, kind = "read", label = "weather-refresh-forecast", item = places)]
+    Refresh {
         #[param("Id of the saved place")]
         location: String,
     },
     /// Open forecast.
     ///
     /// Show one saved place's forecast.
-    #[effect(kind = "read")]
-    OpenLocation {
+    #[effect(screen, item = places, label = "weather-effects-open-location")]
+    Open {
         #[param("Id of the saved place")]
         location: String,
     },
-}
-
-pub(crate) fn location_row(location: &SavedLocation) -> LiveRow {
-    let id = location.id.to_string();
-    let mut open = WeatherEffect::OpenLocation {
-        location: id.clone(),
-    }
-    .bound();
-    open.type_mut().id = "open".into();
-    let mut refresh = WeatherEffect::RefreshLocation { location: id }.bound();
-    refresh.type_mut().id = "refresh".into();
-    LiveRow::new(
-        location_resource_id(location.id),
-        "weather.location",
-        location.name.clone(),
-    )
-    .operation(open)
-    .operation(refresh)
 }
 
 #[cfg(test)]
@@ -118,33 +100,36 @@ mod tests {
                 }
             }
 
-            let place = seeded().state().unwrap().model().locations.remove(1);
-            let row = location_row(&place).into_resource();
-            assert_eq!(row.id.as_str(), location_resource_id(place.id));
-            assert!(
-                places.iter().any(|child| child.id == row.id),
-                "the row joins its place"
-            );
-            for (id, effect) in [
+            let place = places.first().expect("the saved places are published");
+            let (field, id) =
+                tilo_resource::items::item_of_resource::<Weather>(place.id.as_str())
+                    .expect("a place is an item of the resource");
+            assert_eq!(field, "places");
+            for (action_id, effect) in [
                 (
                     "open",
-                    WeatherEffect::OpenLocation {
-                        location: place.id.to_string(),
+                    WeatherEffect::Open {
+                        location: id.to_string(),
                     },
                 ),
                 (
                     "refresh",
-                    WeatherEffect::RefreshLocation {
-                        location: place.id.to_string(),
+                    WeatherEffect::Refresh {
+                        location: id.to_string(),
                     },
                 ),
             ] {
-                let spec = row.actions.iter().find(|action| action.id == id).unwrap();
+                let spec = place
+                    .actions
+                    .iter()
+                    .find(|action| action.id == action_id)
+                    .unwrap_or_else(|| panic!("{action_id} on {}", place.id.as_str()));
                 assert_eq!(spec.kind, tilo_actions::OperationKind::Effect);
                 let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
                 assert_eq!(
                     WeatherEffect::from_payload(&encoded.payload).unwrap(),
-                    effect
+                    effect,
+                    "the place's id is bound"
                 );
             }
         }

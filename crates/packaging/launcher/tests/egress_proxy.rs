@@ -394,7 +394,7 @@ fn probe_test_name(probe: &str) -> String {
 }
 
 /// Run the probe inside a sandbox whose network shape is decided by the production [`EgressDecision`].
-fn run_probe(
+fn launch_probe(
     decision: &EgressDecision,
     proxy_socket: Option<&Path>,
     allowed_port: u16,
@@ -718,7 +718,7 @@ tilo_test_env::scenario! {
 
             // And the launch-level consequence: a refusal that says what was granted, and how to
             // deliberately choose the unfiltered path.
-            let run_err = launcher::run::RunError::EgressProxy {
+            let run_err = launcher::run::LaunchError::EgressProxy {
                 hosts: vec![ALLOWED_NAME.to_string()],
                 source: err,
             };
@@ -745,7 +745,7 @@ tilo_test_env::scenario! {
             let policy = decision.policy().expect("a named host is filtered").clone();
             let (proxy, socket) = start_proxy("one-host", policy);
 
-            let report = run_probe(&decision, Some(&socket), allowed_port, other_port, true);
+            let report = launch_probe(&decision, Some(&socket), allowed_port, other_port, true);
             report.dump("granted: localhost");
 
             assert_eq!(
@@ -839,7 +839,7 @@ tilo_test_env::scenario! {
             );
 
             // Blocked means no proxy is started at all, so there is no socket to bind into the sandbox.
-            let report = run_probe(&decision, None, allowed_port, other_port, false);
+            let report = launch_probe(&decision, None, allowed_port, other_port, false);
             report.dump("granted: nothing");
 
             for key in ["raw_allowed", "raw_other"] {
@@ -862,7 +862,7 @@ tilo_test_env::scenario! {
                 "a grant for `*` is unrestricted and needs no proxy"
             );
 
-            let report = run_probe(&decision, None, allowed_port, other_port, false);
+            let report = launch_probe(&decision, None, allowed_port, other_port, false);
             report.dump("granted: *");
 
             assert_eq!(
@@ -880,7 +880,7 @@ tilo_test_env::scenario! {
             let strict = EgressDecision::resolve("host", &[], &[ALLOWED_NAME.to_string()], false);
             let (strict_proxy, strict_socket) =
                 start_proxy("breakage-strict", strict.policy().unwrap().clone());
-            let refused = run_probe(
+            let refused = launch_probe(
                 &strict,
                 Some(&strict_socket),
                 allowed_port,
@@ -908,7 +908,7 @@ tilo_test_env::scenario! {
             // Filter disabled: allowlist permits everything, nothing else changed.
             let (open_proxy, open_socket) = start_proxy("breakage-open", EgressPolicy::Any);
             let open_decision = EgressDecision::Filtered(EgressPolicy::Any);
-            let passed = run_probe(
+            let passed = launch_probe(
                 &open_decision,
                 Some(&open_socket),
                 allowed_port,

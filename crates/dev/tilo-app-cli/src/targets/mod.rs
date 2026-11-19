@@ -771,7 +771,11 @@ pub fn add_capability(start: &Path, name: &str, required: bool) -> Result<Capabi
     let updated = with_capability(&source, capability.name(), required)?;
     tilo_app_package::Manifest::from_toml_str(&updated)
         .context("the updated manifest does not validate")?;
-    crate::write_atomic(&manifest_path, updated.as_bytes(), "app manifest")?;
+    tilo_files::native::atomic::write_creating_parent_preserving_mode(
+        &manifest_path,
+        updated.as_bytes(),
+    )
+    .with_context(|| format!("publishing app manifest {}", manifest_path.display()))?;
     Ok(CapabilityAdded {
         manifest: manifest_path,
         capability,

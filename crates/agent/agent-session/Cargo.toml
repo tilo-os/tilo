@@ -41,6 +41,8 @@ agent = { path = "../../../apps/agent" }
 # One agent turn over the workspace's MCP tools: what an agent member works on
 # each task with.
 tilo-agent-turn = { path = "../agent-turn" }
+# The MCP tools a member's turn works through, held in its own process.
+tilo-mcp = { path = "../../runtime/tilo-mcp" }
 # The apps an agent can open in a browser session: the browser desktop's
 # registry, generated from the app manifests.
 # generated apps: begin (tools/web/generate_web_desktop.py)
@@ -169,6 +171,7 @@ discord = { path = "../../../apps/discord" }
 
 
 [dev-dependencies]
+tilo-session-actions = { path = "../../session/session-actions" }
 # What a test puts in the workspace in pieces, as a page sends it.
 base64.workspace = true
 # The meeting times a test writes into a calendar.
@@ -203,8 +206,6 @@ test-http = { path = "../../dev/test-http" }
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
 # `tilolang repl`, driven in process against a workspace the server hosts.
 tilolang-cli = { path = "../../lang/tilolang-cli" }
-# The MCP projection `tilo mcp` serves, driven over a device's session.
-tilo-mcp = { path = "../../runtime/tilo-mcp" }
 iroh.workspace = true
 # The session client's test support (its host fixture), included by path.
 tilo-net = { path = "../../platform/tilo-net" }

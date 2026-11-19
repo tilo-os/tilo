@@ -142,6 +142,32 @@ action remind(t: Task) uses notify {
 }
 ```
 
+## Initial content
+
+What a new resource starts with is an `initial action` on its type. The platform applies it
+inside the making of each new resource of that type: a root the first time it is wanted, and an
+item wherever code inserts one. It writes in the change that makes the resource, so what it
+writes is the resource's making: one entry in history, nobody's change, and nothing anyone is
+caught up on.
+
+```
+/// A new board starts with the three columns most teams use.
+initial action columns(b: Board) {
+    b.columns.insert(Column(title: "To do"))
+    b.columns.insert(Column(title: "Doing"))
+    b.columns.insert(Column(title: "Done"))
+}
+```
+
+A resource that already exists never gets it, so changing an initial action changes what new
+resources start with and nothing else; upgrading what an earlier version wrote is a `migration
+action`'s job. A type has at most one. It takes the new resource and nothing else, answers
+nothing, declares no `uses` and holds no `require`: it is the same wherever and whenever the
+resource is made. It calls no action, since each action is a change of its own; it inserts what
+it needs itself, and each item it inserts starts with its own type's initial content in the same
+change. Content that would make itself again (a `Book` that starts with a `Book`) is refused.
+Nothing invokes an initial action by name, and no surface offers it.
+
 ## Triggers
 
 An action that runs without anyone pressing anything is a `trigger`: the package says when it

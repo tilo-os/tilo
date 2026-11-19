@@ -310,6 +310,7 @@ word-processor-effects-comment-selection = Auswahl kommentieren
 word-processor-effects-place-image = Bild platzieren
 word-processor-effects-go-to = Wechseln zu
 word-processor-effects-go-to-anchor = Zu kommentiertem Text springen
+word-processor-effects-go-to-hit = Suchergebnis anzeigen
 word-processor-document = Dokument
 word-processor-document-append-paragraph = Absatz hinzufügen
 word-processor-document-replace-body = Text ersetzen

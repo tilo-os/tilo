@@ -16,7 +16,7 @@ mod controls;
 mod keys;
 mod tooltips;
 
-pub(crate) use controls::{ControlCore, json_argument};
+pub(crate) use controls::{ControlCore, WaitingControl, json_argument};
 pub(crate) use keys::{KeyCore, RootEvent};
 pub(crate) use tooltips::TooltipLayer;
 

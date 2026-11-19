@@ -1,5 +1,5 @@
 [Unit]
-Description=Tilo app process activation socket
+Description=Tilo package service activation socket
 PartOf=tilo-graphical-session.target
 
 [Socket]

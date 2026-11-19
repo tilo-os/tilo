@@ -360,15 +360,6 @@ pub fn lists_under(tree: &UiNode, under: Option<&str>) -> Vec<(String, String, O
     out
 }
 
-pub(crate) fn find_kind<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
-    if node.kind == kind {
-        return Some(node);
-    }
-    node.children
-        .iter()
-        .find_map(|child| find_kind(child, kind))
-}
-
 impl RowSource for RemoteRows {
     fn len(&self) -> usize {
         self.keys.len()
@@ -407,7 +398,7 @@ impl RowSource for RemoteRows {
             let Some(row) = self.rows.get(key) else {
                 return Ok(false);
             };
-            let Some(item) = find_kind(row, &self.item) else {
+            let Some(item) = row.first_of_kind(&self.item) else {
                 return Ok(false);
             };
             prefixed(item, &self.prefix)
@@ -439,7 +430,7 @@ impl RowSource for RemoteRows {
         let Some(item) = self
             .rows
             .get(key)
-            .and_then(|row| find_kind(row, &self.item))
+            .and_then(|row| row.first_of_kind(&self.item))
         else {
             return Ok(false);
         };

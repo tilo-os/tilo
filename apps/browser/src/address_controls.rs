@@ -5,12 +5,12 @@ use crate::{
     effects::BrowserEffect,
     resource::Browser,
 };
+use tilo_webview::AddressFields;
 use ui::framework::PersonResource;
 use ui::{
     LocalState,
     icons::Icon,
     tokens::TextRole,
-    webview::AddressFields,
     widget::{
         Actions, Button, ButtonRole, Column, Field, Form, FormSection, ListRow, Section, Text,
         TextInput, Widget,

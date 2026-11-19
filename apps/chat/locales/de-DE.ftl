@@ -96,10 +96,10 @@ chat-agent-work-did = { $count ->
    *[other] Hat { $count } Sachen erledigt
 }
 # The one line of an agent at work: the step it is at ($what) and how many it has taken.
-chat-agent-work-at-step = { $what } · { $count ->
+chat-agent-work-at-step = { $what } ({ $count ->
     [one] 1 Schritt
    *[other] { $count } Schritte
-}
+})
 # A step ($step) and what it is about ($about), both in the system's own words.
 chat-agent-work-step-about = { $step }: { $about }
 chat-agent-work-refused = Diese Anfrage konnte nicht abgeschlossen werden
@@ -191,7 +191,6 @@ chat-voice-unavailable = Anrufe können in diesem Arbeitsbereich noch nicht star
 chat-call-not-joined = Tritt zuerst dem Anruf bei.
 
 # „Du“ gehört der lesenden Person; geteilte und alte Namen nennen ihre Person.
-chat-person-unnamed = Jemand ({ $tag })
 chat-person-relative-name = { $name } ({ $tag })
 
 ## Verlauf: was jede Änderung getan hat, nach Verb und nach Feld
@@ -423,48 +422,11 @@ chat-voice-channel-unnamed = Der Sprachkanal konnte nicht benannt werden
 
 ## Actions
 
-chat-effects-model-control = Zu diesem Beitrag fragen
-chat-effects-show-agent-reasoning = Begründung anzeigen
-chat-effects-open-channel = Unterhaltung öffnen
-chat-effects-open-category = Kategorie öffnen
-chat-effects-toggle-category = Kategorie ein- oder ausklappen
-chat-effects-reveal-message = Beitrag anzeigen
-chat-effects-reveal-message-range = Beiträge anzeigen
-chat-effects-show-view = Ansicht anzeigen
-chat-effects-open-agent = Unterhaltung mit Agent öffnen
-chat-effects-open-direct-conversation = Direkte Unterhaltung öffnen
-chat-effects-send-direct-message = Direktnachricht senden
-chat-effects-send = Nachricht senden
-chat-effects-export-content = Unterhaltung exportieren
-chat-effects-attach-file = Datei anhängen
-chat-effects-share-live-context = Live-Kontext teilen
-chat-effects-stop-sharing-live-context = Live-Kontext nicht mehr teilen
-chat-effects-live-context-status = Status des Live-Kontexts
-chat-effects-open-slack-channel = Slack-Kanal im Browser öffnen
-chat-effects-open-discord-channel = Discord-Kanal im Browser öffnen
-chat-effects-join-call = Anruf beitreten
-chat-effects-leave-call = Anruf verlassen
-chat-effects-mute = Stummschalten
-chat-effects-unmute = Stummschaltung aufheben
-chat-effects-deafen = Ton aus
-chat-effects-undeafen = Ton an
-chat-effects-camera-on = Kamera einschalten
-chat-effects-camera-off = Kamera ausschalten
-chat-effects-share-screen = Bildschirm teilen
-chat-effects-stop-sharing-screen = Bildschirm nicht mehr teilen
-chat-effects-call-status = Anrufstatus
-chat-effects-start-call = Anruf starten
-chat-effects-start-video-call = Videoanruf starten
-chat-effects-select-input = Mikrofon wählen
 
 ## What the app is called in a window and in the launcher
 chat-app-title = Chat
 ## What the resources are called, and the actions on them
-chat-drafts = Chat-Entwürfe
-chat-workspace = Chat
-chat-drafts-start-draft = Entwurf beginnen
 chat-messages-post = Nachricht senden
-chat-workspace-begin-chat = Chat beginnen
 chat-messages-post-file = Datei senden
 chat-messages-share-resource = Live teilen
 chat-messages-share-window = Fenster live teilen
@@ -532,27 +494,6 @@ chat-question-withdrawn-why = Wird nicht mehr gefragt: { $why }
 chat-messages-record-work = Arbeit des Agenten festhalten
 chat-messages-carry-counts = Zählstände der vorigen Teile übernehmen
 chat-messages-stream-output = Antwort beim Eintreffen festhalten
-chat-workspace-create-category = Neue Kategorie
-chat-workspace-create-channel = Neuer Kanal
-chat-workspace-create-channel-with-id = Neuer Kanal mit einer ID
-chat-workspace-delete-category = Kategorie löschen
-chat-workspace-move-channel = Kanal verschieben
-chat-workspace-move-category = Kategorie verschieben
-chat-workspace-arrange-channels = Kanäle anordnen
-chat-workspace-set-channel-category = Kanal einordnen
-chat-workspace-rename-channel = Kanal umbenennen
-chat-workspace-set-channel-topic = Kanalthema festlegen
-chat-workspace-archive-channel = Kanal archivieren
-chat-workspace-rename-category = Kategorie umbenennen
-chat-workspace-delete-channel = Kanal löschen
-chat-workspace-report-message = Nachricht melden
-chat-workspace-report-person = Person melden
-chat-workspace-decide-reports = Über eine Meldung entscheiden
-chat-workspace-overturn-decision = Entscheidung aufheben
-chat-workspace-mark-read = Als gelesen markieren
-chat-workspace-keep-summary = Zusammenfassung festhalten
-chat-workspace-submit-feedback = Feedback senden
-chat-workspace-triage = Feedback sichten
 # A message moved from another chat: its author there, and the tool.
 chat-origin-author = { $name } in { $source }
 # A question that asks for a secret, under the message that asks.

@@ -408,7 +408,7 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
     // is the system's open (shell.md §3), never Chat's.
     let before: Vec<String> = crate::common::places(&session)
         .into_iter()
-        .map(|place| place.record)
+        .map(|place| place.resource)
         .collect();
     crate::common::press(&mut session, SHARED);
     // The press places the video beside the page: the layout takes it as one step of the
@@ -419,7 +419,7 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
             .expect("step");
         if crate::common::places(&session)
             .iter()
-            .any(|place| place.record.starts_with("tube.video:"))
+            .any(|place| place.resource.starts_with("tube.video:"))
         {
             break;
         }
@@ -427,12 +427,12 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
     assert!(
         crate::common::places(&session)
             .iter()
-            .any(|place| place.record.starts_with("tube.video:")),
+            .any(|place| place.resource.starts_with("tube.video:")),
         "the attachment's press places what it holds; before: {before:?}, after: {:?}; the \
          shell refused {:?}",
         crate::common::places(&session)
             .into_iter()
-            .map(|place| place.record)
+            .map(|place| place.resource)
             .collect::<Vec<_>>(),
         session.shell_refusals()
     );
@@ -478,7 +478,7 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     // The resources placed before the drag: the drag adds the video beside the channel.
     let before: Vec<String> = crate::common::places(&session)
         .into_iter()
-        .map(|place| place.record)
+        .map(|place| place.resource)
         .collect();
     assert!(
         !before.iter().any(|record| record == DROPPED),
@@ -506,11 +506,11 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     crate::common::until(&mut session, "the video placed on the canvas", |session| {
         crate::common::places(session)
             .iter()
-            .any(|place| place.record == DROPPED)
+            .any(|place| place.resource == DROPPED)
     });
     let placed: Vec<String> = crate::common::places(&session)
         .into_iter()
-        .map(|place| place.record)
+        .map(|place| place.resource)
         .collect();
     assert!(
         placed.iter().any(|record| record == DROPPED),
@@ -522,7 +522,7 @@ fn an_attachment_chip_dragged_out_of_the_transcript_places_its_resource_on_the_c
     // map point under the pointer where the drag ended.
     let place_key = crate::common::places(&session)
         .into_iter()
-        .find(|place| place.record == DROPPED)
+        .find(|place| place.resource == DROPPED)
         .and_then(|place| place.key.parse().ok())
         .expect("the video's place stands in the layout");
     let strip =

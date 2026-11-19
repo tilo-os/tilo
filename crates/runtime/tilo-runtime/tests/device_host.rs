@@ -27,7 +27,7 @@ use tilo_actions::remote::{
     ReceiptStatus,
 };
 use tilo_desktop_model::WorkspaceId;
-use tilo_mcp::enter::Entered;
+use tilo_device_mcp::enter::Entered;
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::key_sessions::{KeySessions, SessionHost, Sessions};
 use tilo_runtime::personal_devices::PersonalDevices;
@@ -308,9 +308,9 @@ async fn device_host(root: &SigningKey) -> Box_ {
 async fn session(device: &Box_, key: &(SigningKey, DeviceCert)) -> Device {
     let session = Device::over(
         PeerConfig {
-            host: tilo_server_client::Host::at(addr(&device.endpoint)),
+            host: tilo_server_client::ServerAddress::at(addr(&device.endpoint)),
             cert: key.1.clone(),
-            host_cert: device.cert.clone(),
+            server_cert: device.cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
             entering: None,
         },

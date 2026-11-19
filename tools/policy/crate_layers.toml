@@ -100,7 +100,11 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the browser runtime coalesces the engine's document-frame route for the app it mounts; the engine itself stays in the member's host"
 
   [[rule.allow]]
-  package = "tilo-mcp"
+  package = "tilo-device-mcp"
   tests = true
-  why = "a test checks that the agent id the MCP server forms is one a workspace admits"
+  why = "a test checks that the agent id the device's MCP server forms is one a workspace admits"
+
+  [[rule.allow]]
+  package = "tilo-portal"
+  why = "the desktop portal answers a device's permission questions from the grants a workspace keeps, naming the DeviceGrants a person's answer holds; it holds no engine state and acts only through published actions"
 

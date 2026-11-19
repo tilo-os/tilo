@@ -195,6 +195,14 @@ impl DesktopSurface {
                             None => continue,
                         }
                     }
+                    // The tab it was asked to open beside is gone: its window ended while the
+                    // request was being carried out. The window lands as any launch's does.
+                    Admitted::TabOpenBeside(_, app, _) => {
+                        match launch::open(self.tiles.as_mut(), &mut shared, &app, false, None) {
+                            Some(op) => ops.push(op),
+                            None => continue,
+                        }
+                    }
                     // Opening search changes no model state.
                     Admitted::Search(query) => {
                         shared.search_request = Some(search::SearchRequest::Open {

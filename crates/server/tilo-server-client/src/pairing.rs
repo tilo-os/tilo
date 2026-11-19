@@ -1,9 +1,9 @@
 //! What a person's root gives their devices, and the pairing ceremony their
-//! host carries between them: a new device asks to be certified
+//! server carries between them: a new device asks to be certified
 //! ([`certify`](crate::certify)), a root-holding device lists the waiting
 //! requests ([`pending_pairings`]) and answers one ([`answer_pairing`]).
 //!
-//! Only the root signs: the host carries and checks, and hands nothing on
+//! Only the root signs: the server carries and checks, and hands nothing on
 //! that a root did not sign for exactly that request.
 
 #[cfg(feature = "dial")]
@@ -12,7 +12,6 @@ use tilo_server_protocol::certify::{
 };
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
-    STAND_IN_LIFETIME_NS,
     certification::{CERTIFICATION_CLOCK_ALLOWANCE_NS, MAX_CERTIFICATION_LABEL_BYTES},
     check_agent_grant, sign_device_cert_async, sign_revocation_entry_async, verify_device_cert_at,
 };
@@ -21,7 +20,7 @@ use tilo_user_identity::{
 use tilo_user_identity::{RevocationList, issue_device_cert_async};
 
 #[cfg(feature = "dial")]
-use crate::certify::MemberHost;
+use crate::certify::MemberServer;
 use crate::error::CertifyError;
 use crate::https::{self, HttpClient};
 use crate::signer::DeviceSigner;
@@ -215,61 +214,9 @@ pub async fn issue_agent_grant(
     Ok(cert)
 }
 
-/// Have `root` make `stand_in_public_key`, a key the person's host holds, the
-/// person's stand-in approver for `lifetime_ns`: while the root lives in one
-/// tab, it certifies a new member browser of the person a device of theirs
-/// asked for, and nothing else. The root revokes it once they keep their root
-/// with a passkey; what it certified before stays valid.
-///
-/// # Errors
-///
-/// [`CertifyError::Request`] for the root's own key, a lifetime of zero or
-/// beyond [`STAND_IN_LIFETIME_NS`], a label a certificate does not carry, or a
-/// signature that does not verify.
-pub async fn issue_stand_in(
-    root: &dyn DeviceSigner,
-    stand_in_public_key: [u8; 32],
-    label: &str,
-    lifetime_ns: u64,
-) -> Result<DeviceCert, CertifyError> {
-    let user_public_key = root.device_public_key();
-    if stand_in_public_key == user_public_key {
-        return Err(CertifyError::Request(
-            "the root certifies a stand-in, never itself".into(),
-        ));
-    }
-    let label = label.trim();
-    if label.is_empty()
-        || label.len() > MAX_CERTIFICATION_LABEL_BYTES
-        || label.chars().any(char::is_control)
-    {
-        return Err(CertifyError::Request(
-            "a stand-in's label names who holds it".into(),
-        ));
-    }
-    if lifetime_ns == 0 || lifetime_ns > STAND_IN_LIFETIME_NS {
-        return Err(CertifyError::Request(
-            "a stand-in lasts for a while, and at most 30 days".into(),
-        ));
-    }
-    let now = tilo_clock::unix_now_ns();
-    let cert = tilo_user_identity::prepare_stand_in_cert(
-        user_public_key,
-        stand_in_public_key,
-        label,
-        now,
-        now.saturating_add(lifetime_ns),
-    );
-    let cert = signed(root, cert).await?;
-    tilo_user_identity::verify_stand_in_cert_at(&cert, now)
-        .map_err(|error| CertifyError::Request(error.to_string()))?;
-    Ok(cert)
-}
-
 /// Have `root` revoke `device_public_key` as of `at_ns`, for `reason`: the
-/// entry every host and device refuses that key from then on with, while what
-/// it signed before stays valid. A stand-in approver is revoked this way once
-/// the person keeps their root with a passkey.
+/// entry every server and device refuses that key from then on with, while what
+/// it signed before stays valid.
 ///
 /// # Errors
 ///
@@ -340,39 +287,39 @@ pub(crate) async fn member_approval_as(
 
 #[cfg(feature = "dial")]
 async fn approve(
-    host: &impl MemberHost,
+    server: &impl MemberServer,
     root: &dyn DeviceSigner,
     request: ApproverRequest,
 ) -> Result<ApproverReply, CertifyError> {
     let approval = member_approval(root, request).await?;
-    match host.ask(&approval).await? {
+    match server.ask(&approval).await? {
         ApproverReply::Refused { reason } => Err(CertifyError::Denied(reason)),
         reply => Ok(reply),
     }
 }
 
-/// The requests of new devices waiting at `host` for `root` (a
+/// The requests of new devices waiting at `server` for `root` (a
 /// member's root) to answer, each showing its pairing code.
 ///
 /// # Errors
 ///
-/// [`CertifyError::Transport`] when the host is not reached, or
+/// [`CertifyError::Transport`] when the server is not reached, or
 /// [`CertifyError::Denied`] when it refuses.
 #[cfg(feature = "dial")]
 pub async fn pending_pairings(
-    host: &impl MemberHost,
+    server: &impl MemberServer,
     root: &dyn DeviceSigner,
 ) -> Result<Vec<tilo_server_protocol::certify::PendingCertification>, CertifyError> {
-    match approve(host, root, ApproverRequest::ListPending).await? {
+    match approve(server, root, ApproverRequest::ListPending).await? {
         ApproverReply::Pending(pending) => Ok(pending),
         _ => Err(CertifyError::Denied(
-            "the host answered something else".into(),
+            "the server answered something else".into(),
         )),
     }
 }
 
 /// [`pending_pairings`] once they are other than `known`, the request digests
-/// the caller holds: the host answers as a new device asks for `root` or one
+/// the caller holds: the server answers as a new device asks for `root` or one
 /// is answered, or with what waits after
 /// [`AWAIT_PENDING_NS`](tilo_server_protocol::certify::AWAIT_PENDING_NS).
 ///
@@ -381,35 +328,35 @@ pub async fn pending_pairings(
 /// As [`pending_pairings`].
 #[cfg(feature = "dial")]
 pub async fn next_pairings(
-    host: &impl MemberHost,
+    server: &impl MemberServer,
     root: &dyn DeviceSigner,
     known: Vec<[u8; 32]>,
 ) -> Result<Vec<tilo_server_protocol::certify::PendingCertification>, CertifyError> {
-    match approve(host, root, ApproverRequest::AwaitPending { known }).await? {
+    match approve(server, root, ApproverRequest::AwaitPending { known }).await? {
         ApproverReply::Pending(pending) => Ok(pending),
         _ => Err(CertifyError::Denied(
-            "the host answered something else".into(),
+            "the server answered something else".into(),
         )),
     }
 }
 
-/// Answer the pending request `request_digest` at `host`:
+/// Answer the pending request `request_digest` at `server`:
 /// approved, `root` certifies the device it names as a browser of that root,
 /// and the certificate it issued is answered for the root's own record.
 ///
 /// # Errors
 ///
-/// [`CertifyError::Denied`] when the request is gone or the host refuses, and
+/// [`CertifyError::Denied`] when the request is gone or the server refuses, and
 /// [`CertifyError::Transport`] when it is not reached.
 #[cfg(feature = "dial")]
 pub async fn answer_pairing(
-    host: &impl MemberHost,
+    server: &impl MemberServer,
     root: &dyn DeviceSigner,
     request_digest: [u8; 32],
     approved: bool,
 ) -> Result<Option<DeviceCert>, CertifyError> {
     let decision = if approved {
-        let pending = pending_pairings(host, root).await?;
+        let pending = pending_pairings(server, root).await?;
         let Some(found) = pending
             .iter()
             .find(|entry| entry.request_digest == request_digest)
@@ -436,12 +383,12 @@ pub async fn answer_pairing(
         ApproverDecision::Issue(cert) => Some(cert.clone()),
         _ => None,
     };
-    decide_pairing(host, root, request_digest, issued.clone())
+    decide_pairing(server, root, request_digest, issued.clone())
         .await
         .map(|()| issued)
 }
 
-/// Answer the pending request `request_digest` at `host`, as
+/// Answer the pending request `request_digest` at `server`, as
 /// `approver`: with `cert`, one the person's root already issued for exactly
 /// that request, or turned away without one.
 ///
@@ -450,7 +397,7 @@ pub async fn answer_pairing(
 /// As [`answer_pairing`].
 #[cfg(feature = "dial")]
 pub async fn decide_pairing(
-    host: &impl MemberHost,
+    server: &impl MemberServer,
     approver: &dyn DeviceSigner,
     request_digest: [u8; 32],
     cert: Option<DeviceCert>,
@@ -460,7 +407,7 @@ pub async fn decide_pairing(
         None => ApproverDecision::Deny,
     };
     approve(
-        host,
+        server,
         approver,
         ApproverRequest::Decide {
             request_digest,
@@ -472,11 +419,11 @@ pub async fn decide_pairing(
 }
 
 /// Certify the device behind `signer` with the root the page holds, for the
-/// host at `client`: its certificate must be a host of the same root.
+/// server at `client`: its certificate must be a server of the same root.
 ///
 /// # Errors
 ///
-/// [`CertifyError::Transport`] when the host is not reached,
+/// [`CertifyError::Transport`] when the server is not reached,
 /// [`CertifyError::Denied`] when it is not a device of this root, or the errors
 /// of [`issue_device_cert`].
 pub async fn certify_with_root(
@@ -485,17 +432,19 @@ pub async fn certify_with_root(
     signer: &dyn DeviceSigner,
     label: &str,
 ) -> Result<(DeviceCert, DeviceCert), CertifyError> {
-    let host_cert = https::host_info(client).await?.host_cert;
-    check_host(&host_cert, root.device_public_key())?;
+    let server_cert = https::server_info(client).await?.server_cert;
+    check_host(&server_cert, root.device_public_key())?;
     let cert =
         issue_device_cert(root, signer.device_public_key(), label, IssuedRole::Browser).await?;
-    Ok((cert, host_cert))
+    Ok((cert, server_cert))
 }
 
-fn check_host(host_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), CertifyError> {
-    verify_device_cert_at(host_cert, tilo_clock::unix_now_ns())
-        .map_err(|error| CertifyError::Denied(format!("host certificate refused: {error}")))?;
-    if host_cert.user_public_key != user_public_key || !host_cert.capabilities.can_own_workspaces {
+fn check_host(server_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), CertifyError> {
+    verify_device_cert_at(server_cert, tilo_clock::unix_now_ns())
+        .map_err(|error| CertifyError::Denied(format!("server certificate refused: {error}")))?;
+    if server_cert.user_public_key != user_public_key
+        || !server_cert.capabilities.can_own_workspaces
+    {
         return Err(CertifyError::Denied(
             "the certificate is not a device of this person".into(),
         ));
@@ -509,7 +458,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{
         AgentScope, CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCertError,
-        MAX_AGENT_GRANT_LIFETIME_NS, verify_device_cert, verify_issued_cert,
+        MAX_AGENT_GRANT_LIFETIME_NS, verify_device_cert,
     };
 
     /// The page's clock in the tests that hold it, in Unix milliseconds: a
@@ -806,171 +755,5 @@ mod tests {
         tilo_user_identity::sign_revocation_entry(&mut held, &root).unwrap();
         assert_eq!(later, held);
         assert_eq!(tilo_user_identity::verify_revocation_entry(&later), Ok(()));
-    }
-
-    #[tokio::test]
-    async fn the_root_makes_a_host_key_its_stand_in_whose_certificates_check_as_a_browser() {
-        let root = SigningKey::from_bytes(&[5; 32]);
-        let stand_in = SigningKey::from_bytes(&[6; 32]);
-        let now = tilo_clock::unix_now_ns();
-        let day = 24 * 60 * 60 * 1_000_000_000;
-        let cert = issue_stand_in(
-            &root,
-            stand_in.verifying_key().to_bytes(),
-            "Stand-in on tilo.example",
-            30 * day,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            tilo_user_identity::verify_stand_in_cert_at(&cert, cert.issued_at_ns),
-            Ok(())
-        );
-        assert!(
-            verify_device_cert(&cert).is_err(),
-            "a stand-in is no device"
-        );
-        assert_eq!(cert.capabilities, DeviceCapabilities::stand_in_approver());
-
-        // What the stand-in approves checks as a browser this page asked for.
-        let browser = SigningKey::from_bytes(&[7; 32]);
-        let issued_at = cert.issued_at_ns + 1;
-        let request = CertificationRequest {
-            version: CERTIFICATION_SCHEMA_VERSION,
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: browser.verifying_key().to_bytes(),
-            device_label: "Browser".into(),
-            requested: DeviceCapabilities::member(),
-            nonce: [8; 16],
-            invite: [0; 16],
-            issued_at_ns: issued_at,
-            expires_at_ns: issued_at + 60_000_000_000,
-            signature: [0; 64],
-        }
-        .sign(&browser)
-        .unwrap();
-        let issued = tilo_user_identity::issue_device_cert_as_stand_in(
-            &request,
-            &stand_in,
-            &cert,
-            &RevocationList::new(),
-            issued_at,
-        )
-        .unwrap();
-        verify_issued_cert(
-            &request,
-            &issued,
-            &CertificationPolicy::browser(),
-            &RevocationList::new(),
-            issued_at,
-        )
-        .unwrap();
-
-        assert_eq!(cert.expires_at_ns, Some(cert.issued_at_ns + 30 * day));
-        assert!(cert.issued_at_ns >= now);
-        for lifetime in [0, 30 * day + 1] {
-            assert!(matches!(
-                issue_stand_in(
-                    &root,
-                    stand_in.verifying_key().to_bytes(),
-                    "Stand-in",
-                    lifetime
-                )
-                .await,
-                Err(CertifyError::Request(_))
-            ));
-        }
-        assert!(matches!(
-            issue_stand_in(&root, root.verifying_key().to_bytes(), "Stand-in", day).await,
-            Err(CertifyError::Request(_))
-        ));
-    }
-
-    /// Revoking the host's stand-in once the person keeps their root with a
-    /// passkey refuses what it would approve from then on, and keeps every
-    /// device it approved before a device of theirs.
-    #[tokio::test]
-    async fn a_revoked_stand_in_approves_nothing_after_and_what_it_approved_before_stays_valid() {
-        let root = SigningKey::from_bytes(&[5; 32]);
-        let stand_in = SigningKey::from_bytes(&[6; 32]);
-        let day = 24 * 60 * 60 * 1_000_000_000;
-        let cert = issue_stand_in(
-            &root,
-            stand_in.verifying_key().to_bytes(),
-            "Stand-in on tilo.example",
-            30 * day,
-        )
-        .await
-        .unwrap();
-        let request = |key: u8, at: u64| {
-            let browser = SigningKey::from_bytes(&[key; 32]);
-            CertificationRequest {
-                version: CERTIFICATION_SCHEMA_VERSION,
-                user_public_key: root.verifying_key().to_bytes(),
-                device_public_key: browser.verifying_key().to_bytes(),
-                device_label: "Browser".into(),
-                requested: DeviceCapabilities::member(),
-                nonce: [key; 16],
-                invite: [0; 16],
-                issued_at_ns: at,
-                expires_at_ns: at + 60_000_000_000,
-                signature: [0; 64],
-            }
-            .sign(&browser)
-            .unwrap()
-        };
-        // A browser the stand-in approves while the root is still in this tab.
-        let before = request(7, cert.issued_at_ns + 1);
-        let approved = tilo_user_identity::issue_device_cert_as_stand_in(
-            &before,
-            &stand_in,
-            &cert,
-            &RevocationList::new(),
-            before.issued_at_ns,
-        )
-        .unwrap();
-
-        let revoked_at = cert.issued_at_ns + 2;
-        let entry = revoke_device(
-            &root,
-            stand_in.verifying_key().to_bytes(),
-            revoked_at,
-            RevocationReason::Retired,
-        )
-        .await
-        .unwrap();
-        tilo_user_identity::verify_revocation_entry(&entry).unwrap();
-        assert_eq!(entry.user_public_key, root.verifying_key().to_bytes());
-        assert_eq!(entry.reason, RevocationReason::Retired);
-        let mut revocations = RevocationList::new();
-        revocations.insert(entry).unwrap();
-
-        assert!(
-            !revocations.refuses(&approved),
-            "a device the stand-in approved before the revocation stays a device of the person"
-        );
-        assert!(revocations.refuses(&cert), "the stand-in itself is refused");
-        let later = request(8, revoked_at);
-        assert_eq!(
-            tilo_user_identity::issue_device_cert_as_stand_in(
-                &later,
-                &stand_in,
-                &cert,
-                &revocations,
-                later.issued_at_ns,
-            ),
-            Err(tilo_user_identity::CertificationError::Revoked),
-            "a revoked stand-in approves nothing from its revocation on"
-        );
-        assert!(matches!(
-            revoke_device(
-                &root,
-                root.verifying_key().to_bytes(),
-                1,
-                RevocationReason::Retired
-            )
-            .await,
-            Err(CertifyError::Request(_))
-        ));
     }
 }

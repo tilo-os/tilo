@@ -231,3 +231,20 @@
 (allow local_login_t unconfined_service_t (unix_stream_socket (connectto)))
 (allow sshd_session_t var_run_t (sock_file (getattr write)))
 (allow sshd_session_t unconfined_service_t (unix_stream_socket (connectto)))
+
+; Wine's 32-bit Windows libraries are PE files with relocations, so loading
+; one writes to its private mapping and makes it executable again (execmod).
+; /usr is composefs over overlayfs, and overlayfs checks that access twice:
+; once as the program against the file it opened, with the label the image's
+; policy gives its path (lib_t for Wine's libraries), and once as the mounter
+; (kernel_t, the initrd mounts /usr) against the backing object in the
+; composefs store. That second check denied every 32-bit program in a Wine
+; capsule and the Wine Mono setup's 32-bit helpers ("avc: denied { execmod }
+; comm=rundll32.exe scontext=kernel_t tcontext=usr_t path=/4d/<object>").
+; The store's objects are content-addressed and shared by every path with the
+; same bytes, so they all carry one label: no file context can single Wine's
+; out, and labelling its directory changes only the first check. The rule is
+; scoped instead by its subject: kernel_t is the mounter's identity, and no
+; program runs in it once the policy is loaded; each program's own execmod
+; check against its path's label still decides.
+(allow kernel_t usr_t (file (execmod)))

@@ -30,6 +30,8 @@ runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal" }
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+# The document diff an action's answer names the text it wrote by.
+tilo-doc = { path = "../../doc/tilo-doc" }
 # Dates and clocks as the person set them, which the session hands over the API: the toolkit
 # writes them the same way, so a sentence here and a view there read alike.
 tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
@@ -79,6 +81,8 @@ tilolang-process = { path = ".", features = ["test-support"] }
 # The person's clock held at a moment, and the zone the test's process reads: a day is only
 # today's or tomorrow's against a clock and a zone a test says.
 tilo-clock = { version = "0.1.0", path = "../tilo-clock", features = ["test-support"] }
+# A named zone read from the database built into Tilo, as the runtime resolves the host's zone.
+tilo-recurrence = { version = "0.1.0", path = "../../sdk/tilo-recurrence" }
 tilo-test-env = { path = "../../dev/test-env" }
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
 tilolang = { path = "../../lang/tilolang" }

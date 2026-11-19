@@ -10,26 +10,15 @@ description = "The Disk Usage Analyzer model as the WebAssembly module its packa
 crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
-[profile.release]
-# A package carries these bytes to every device: short, and nothing in them a
-# reader can use but the ABI.
-opt-level = "s"
-panic = "abort"
-codegen-units = 1
-lto = true
-strip = "symbols"
-
 [dependencies]
 disk-usage-model = { path = "../disk-usage-model" }
 tilo-model-guest = { path = "../../crates/sdk/tilo-model-guest" }
 
-# Not a member of the repository's workspace: a package carries it built for
-# wasm32 (`tilo-app model`), never for the machine that packages it.
-[workspace]
+# The workspace-hack's native feature set does not build for wasm32 (it turns
+# on getrandom's browser backend, mio, ...), and a model module is only ever
+# built for wasm32 (tools/policy/check_wasm_workspace_hack.py).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
 
-# The module links no browser glue: getrandom takes its custom backend here,
-# which 0.4.3 needs one cfg arm fixed to compile beside the `wasm_js` feature
-# the rest of the repository enables for wasm targets
-# (`vendor/getrandom/TILO-PATCH.md`).
-[patch.crates-io]
-getrandom = { path = "../../vendor/getrandom" }
+[lints]
+workspace = true

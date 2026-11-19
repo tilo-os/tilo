@@ -24,6 +24,12 @@ class ExampleScenariosTest(unittest.TestCase):
                 destination = root / manifest.relative_to(ROOT)
                 destination.parent.mkdir(parents=True)
                 shutil.copyfile(manifest, destination)
+            # The driver builds through tools/test-env.sh --build and runs its scenarios under
+            # tools/test-env.sh. Here both are the command given, and the driver marks its own
+            # second pass.
+            wrapper = root / "tools/test-env.sh"
+            wrapper.write_text('#!/bin/sh\n[ "${1:-}" = --build ] && shift\nexec "$@"\n')
+            wrapper.chmod(0o755)
             bin_dir = root / "bin"
             bin_dir.mkdir()
             cargo = bin_dir / "cargo"

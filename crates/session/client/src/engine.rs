@@ -22,7 +22,6 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
 use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
@@ -45,6 +44,8 @@ use tilo_workspace_keys::{KeyAccess, KeyProvider};
 use crate::identity;
 use crate::membership_check::MembershipCheck;
 use crate::workspace_keys;
+
+mod resources;
 
 /// The engine's record, under this device's state directory: the name an earlier build kept it
 /// under, so the state it wrote is still read.
@@ -208,12 +209,15 @@ pub struct Engine {
     /// workspace's hosts send only once asked is asked for here, and the peer network is gone while this
     /// is `None` .
     link: std::sync::Mutex<Option<Arc<workspace_keys::KeyLink>>>,
-    /// The layout's workspaces this device could not found here: founding one is asked for again only
-    /// by a later session, not by every pass over the layout.
-    unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
     /// The layout's workspaces being founded now: a pass that comes while one is signed founds it
     /// no second time.
     founding: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
+    /// The founded generation at which a workspace's founding last failed: founding it is tried
+    /// again when the next founding ends, not on every pass over the layout.
+    failed_at: std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, u64>>,
+    /// Ticks whenever a founding ends, founded or not: what an ask of a workspace being founded
+    /// waits on ([`Self::ask_holder`]).
+    founded: tokio::sync::watch::Sender<u64>,
     /// What lands here from the workspaces' other devices: what a read waiting for a record it
     /// holds none of wakes on.
     arrivals: Arc<crate::arrivals::Arrivals>,
@@ -227,13 +231,19 @@ pub struct Engine {
     group_keys: std::sync::Mutex<RouteKeys>,
     /// Sealed records as this device last opened them for a reader, so the next read opens only
     /// what was sealed since: a record its apps follow is opened once per write, not whole per read.
-    kept: std::sync::Mutex<KeptRecords>,
+    kept: std::sync::Mutex<KeptResources>,
     /// Where this device's own workspace service keeps the workspaces it holds, under the state
     /// the engine was opened on; `None` for an engine that keeps no state.
     service_root: Option<std::path::PathBuf>,
-    /// Where a workspace this device makes is founded: its own workspace service, once it is open
-    /// ([`Self::serve_founding`]).
-    founder: std::sync::OnceLock<Arc<dyn Founder>>,
+    /// Where a workspace this device makes is founded: this session's handoff of its own
+    /// workspace service, handed when the engine is opened and filled once the service is open
+    /// ([`Founders::serve`]).
+    founders: Arc<Founders>,
+    /// When the links out of each workspace lapse, as its holder lists them: a joiner redeeming
+    /// one dials this device, which stays dialable while one is open ([`Self::invitations_open`]).
+    open_links: std::sync::Mutex<std::collections::BTreeMap<WorkspaceId, Vec<u64>>>,
+    /// Each workspace's resources, as the store holds them ([`resources`]).
+    stores: resources::Stores,
 }
 
 /// One holder of a workspace, as a member's device reads it off the holder's
@@ -251,6 +261,9 @@ pub struct Holder {
     /// Whether the machine under it is rented from a cloud provider, whose
     /// operator can read what it holds.
     pub cloud: bool,
+    /// Whether it has a moderation agent for the workspace, which a person
+    /// who governs the workspace may turn on.
+    pub moderates: bool,
 }
 
 /// One member's delegation of their own work to a server, as the workspace
@@ -274,13 +287,19 @@ pub struct Delegation {
     pub revocable: bool,
 }
 
-/// What this device's own workspace service answers an ask, once it has.
+/// What a workspace's holder answers an ask of its governance, once it has.
+#[cfg(not(target_arch = "wasm32"))]
 pub type ServiceAnswer =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>>;
 
-/// What this device asks its own workspace service, once it is open: founding a workspace this
-/// device made there, and asking a workspace held there one of its governance actions as this
-/// device, a member of it.
+/// What a workspace's holder answers an ask of its governance, once it has.
+#[cfg(target_arch = "wasm32")]
+pub type ServiceAnswer =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>>>>;
+
+/// What this device asks of the workspace services, once its own is open: founding a workspace
+/// this device made there, and asking a workspace one of its governance actions as this device,
+/// a member of it, of whichever service holds it.
 pub trait Founder: Send + Sync {
     /// Found `workspace` under `name`, answered once this device holds it.
     fn found(
@@ -289,19 +308,63 @@ pub trait Founder: Send + Sync {
         name: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
 
-    /// Ask `workspace`'s governance action `action` with `arguments`, when the service holds
-    /// `workspace`; `None` when it does not.
+    /// Ask `workspace`'s governance action `action` with `arguments` of its holder: this
+    /// device's own service when it holds `workspace`, else the holder its enrollment names, on
+    /// the device action service. `None` when this device reaches no holder of it.
     fn ask(
         &self,
         workspace: WorkspaceId,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer>;
+
+    /// Ask the host itself its own operation `action` (`machine.plan` and the
+    /// rest the person's own device answers, `tilo.host`) with `arguments`;
+    /// `None` when this device has no workspace service open.
+    fn ask_host(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<ServiceAnswer> {
+        let _ = (action, arguments);
+        None
+    }
 }
 
-/// The sealed records this device keeps opened, by workspace, app and record, with the keys that
-/// opened each.
-type KeptRecords = BTreeMap<(WorkspaceId, String, String), (KeysUsed, KeptDocument)>;
+/// Where a session hands its own workspace service to its engine: a workspace this device makes
+/// is founded there, and it is the holder its other governance asks reach. The service starts
+/// after the engine, which holds its channel keys, so the engine is opened with this handoff and
+/// the session fills it once the service serves ([`Self::serve`]).
+#[derive(Default)]
+pub struct Founders(std::sync::OnceLock<Arc<dyn Founder>>);
+
+impl Founders {
+    /// Found the workspaces this device makes through `founder` from now on: its own workspace
+    /// service, once it is open. The first one handed stays.
+    pub fn serve(&self, founder: Arc<dyn Founder>) {
+        let _ = self.0.set(founder);
+    }
+
+    fn get(&self) -> Option<Arc<dyn Founder>> {
+        self.0.get().cloned()
+    }
+
+    /// Whether this device's own workspace service is open.
+    #[must_use]
+    pub fn served(&self) -> bool {
+        self.0.get().is_some()
+    }
+}
+
+/// The sealed resources this device keeps opened, by workspace, app and document id, with the
+/// keys that opened each. Each is behind a lock of its own, held while it is read: a second read
+/// of the same resource waits for the first and goes on from what it opened, rather than opening
+/// it whole beside it.
+type KeptResources = BTreeMap<(WorkspaceId, String, String), Arc<std::sync::Mutex<KeptResource>>>;
+
+/// One sealed resource as this device last opened it, with the keys that opened it; `None` until
+/// a read opened it.
+type KeptResource = Option<(KeysUsed, KeptDocument)>;
 
 /// The keys a sealed record was opened with: the channel and epoch of the record's own keys and of
 /// the channel's history keys. A rotation moves the epoch.
@@ -314,6 +377,25 @@ fn kept_under<K: Default>(kept: Option<(KeysUsed, K)>, used: &KeysUsed) -> K {
         Some((opened_with, kept)) if opened_with == *used => kept,
         _ => K::default(),
     }
+}
+
+/// Read a document with what this device kept of it, holding `opening`, the lock a second read
+/// of the same resource waits on, until what the read opened is kept under `used`.
+fn opened_under<T>(
+    opening: Option<&std::sync::Mutex<KeptResource>>,
+    used: &KeysUsed,
+    read: impl FnOnce(&mut KeptDocument) -> T,
+) -> T {
+    let Some(opening) = opening else {
+        return read(&mut KeptDocument::default());
+    };
+    let mut held = opening.lock_recover();
+    let mut kept = kept_under(held.take(), used);
+    let value = read(&mut kept);
+    if kept.is_open() {
+        *held = Some((*used, kept));
+    }
+    value
 }
 
 /// Keys, by workspace.
@@ -459,6 +541,7 @@ impl Engine {
         shown: Arc<Shown>,
         identity: DeviceIdentity,
         ownership: Arc<dyn MembershipCheck>,
+        founders: Arc<Founders>,
     ) -> Self {
         let keys = KeyProvider::default();
         let handed = Arc::<std::sync::Mutex<RouteKeys>>::default();
@@ -473,15 +556,18 @@ impl Engine {
             keys,
             ownership,
             link: std::sync::Mutex::new(None),
-            unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
             founding: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            failed_at: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            founded: tokio::sync::watch::Sender::new(0),
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
             handed,
             group_keys: std::sync::Mutex::default(),
             held: HeldWrites::default(),
             kept: std::sync::Mutex::default(),
             service_root: None,
-            founder: std::sync::OnceLock::new(),
+            founders,
+            open_links: std::sync::Mutex::default(),
+            stores: std::sync::Mutex::default(),
         }
     }
 
@@ -503,7 +589,13 @@ impl Engine {
             workspaces.into_iter().collect(),
         )));
         let owner = open_file_with(&path, Arc::clone(&shown) as Arc<dyn FileHost>)?;
-        let mut engine = Self::holding(owner, shown, identity, ownership);
+        let mut engine = Self::holding(
+            owner,
+            shown,
+            identity,
+            ownership,
+            Arc::new(Founders::default()),
+        );
         engine.service_root = Some(state.join("tilo").join("workspace-service"));
         Ok(engine)
     }
@@ -582,7 +674,7 @@ impl Engine {
                     host: hint
                         .map(|hint| hint.host.device_label.clone())
                         .unwrap_or_default(),
-                    here: hint.is_some_and(|hint| hint.host.device_public_key == own),
+                    here: hint.is_some_and(|hint| hint.host.is_of_device(&own)),
                     admitted: Admission::of(view, own) == Admission::Admitted,
                 })
             })
@@ -902,9 +994,8 @@ impl Engine {
         // what they carry; the channel's own history keys open the rest.
         let mut unopened = false;
         let key = (workspace, app.to_owned(), record.to_owned());
-        // Taken out while it is read: a read of the same record meanwhile opens it whole. What was
-        // opened under other keys than these — the channel rotated, as removing a member rotates
-        // it — is let go, and the record opens whole under the keys held now.
+        // What was opened under other keys than these — the channel rotated, as removing a member
+        // rotates it — is let go, and it opens whole under the keys held now.
         let used: KeysUsed = [
             keys.as_ref()
                 .map(tilo_workspace_keys::HistoryKeys::generation),
@@ -913,34 +1004,41 @@ impl Engine {
                 .and_then(|history| history.as_ref().ok())
                 .map(tilo_workspace_keys::HistoryKeys::generation),
         ];
-        let mut kept = kept_under(self.kept.lock_recover().remove(&key), &used);
-        let read = read(
-            workspace,
-            &mut |write| {
-                let opened = match (&keys, &history) {
-                    (Some(keys), Some(Ok(history))) => {
-                        keys.open(write).or_else(|_| history.open(write))
-                    }
-                    (Some(keys), _) => keys.open(write),
-                    (None, Some(history)) => history.as_ref().map_err(Clone::clone)?.open(write),
-                    (None, None) => Err("this session's channel service is not running".into()),
-                };
-                unopened |= opened.is_err();
-                opened
-            },
-            &mut kept,
-        );
-        // The person's other devices may hold the key the workspace's host has not handed this one
-        // yet, or cannot, being away: they are asked for the group's frames from the epoch held.
+        // A sealed resource another read is opening now is waited for, and read on from what that
+        // one opened: taking it out while it was read made the second reader open it whole, which
+        // for a chain part of a thousand items costs the second caller most of a second.
+        let opening = sealed.then(|| {
+            let mut kept = self.kept.lock_recover();
+            if !kept.contains_key(&key) && kept.len() >= KEPT_RECORDS {
+                kept.pop_first();
+            }
+            Arc::clone(kept.entry(key).or_default())
+        });
+        let read = opened_under(opening.as_deref(), &used, |kept| {
+            read(
+                workspace,
+                &mut |write| {
+                    let opened = match (&keys, &history) {
+                        (Some(keys), Some(Ok(history))) => {
+                            keys.open(write).or_else(|_| history.open(write))
+                        }
+                        (Some(keys), _) => keys.open(write),
+                        (None, Some(history)) => {
+                            history.as_ref().map_err(Clone::clone)?.open(write)
+                        }
+                        (None, None) => Err("this session's channel service is not running".into()),
+                    };
+                    unopened |= opened.is_err();
+                    opened
+                },
+                kept,
+            )
+        });
+        // The person's other devices may hold the key the workspace's server has not handed this
+        // one yet, or cannot, being away: they are asked for the group's frames from the epoch
+        // held.
         if unopened && let (Some(link), Some(Ok(history))) = (self.link(), &history) {
             link.want_frames(workspace, history.generation().1);
-        }
-        if sealed && kept.is_open() {
-            let mut records = self.kept.lock_recover();
-            if records.len() >= KEPT_RECORDS {
-                records.pop_first();
-            }
-            records.insert(key, (used, kept));
         }
         match read {
             Err(_) if unopened => Ok(None),
@@ -1097,12 +1195,12 @@ impl Engine {
         self.link.lock_recover().as_ref().map(|link| link.replays())
     }
 
-    /// Whether this device is `workspace`'s own host: everything the workspace retains is here,
-    /// and no other device replays any of it.
+    /// Whether `workspace` is held on this device, by its own workspace service: everything the
+    /// workspace retains is here, and no other device replays any of it.
     #[must_use]
-    pub fn hosts_itself(&self, workspace: &str) -> bool {
+    pub fn is_holder(&self, workspace: &str) -> bool {
         WorkspaceId::parse(workspace).is_some_and(|workspace| {
-            self.host_of(workspace) == Some(self.identity.device_cert.device_public_key)
+            self.holder_of(workspace) == Some(self.identity.device_cert.device_public_key)
         })
     }
 
@@ -1154,7 +1252,7 @@ impl Engine {
     /// does not hold lists nothing.
     /// # Errors
     /// The workspace is not held here, or its documents cannot be listed now.
-    pub fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+    pub fn documents(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
         let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         let mut records = self
             .owner
@@ -1188,9 +1286,8 @@ impl Engine {
     /// Write `changes` to `record` of `app` in `workspace` as this device's own write, and publish
     /// it to the workspace's other devices: the record's founding write when `founding` (the whole
     /// document, which the workspace must not hold yet), a change of it otherwise. Sealed under
-    /// `sealed` , the keys of the record's channel, where the workspace's records are its members'
-    /// sealed channels — a founding write as a checkpoint, so the record is sealed from the start —
-    /// and in the clear where they are documents this device commits.
+    /// `sealed` , the keys of the record's channel — a founding write as a checkpoint, so the
+    /// record is sealed from the start.
     /// Answers the write as this device's apps take a member's: their copies of the record follow
     /// it only once it is handed to them.
     /// # Errors
@@ -1200,7 +1297,32 @@ impl Engine {
     pub async fn write_resource(
         &self,
         workspace: WorkspaceId,
-        (app, record): (&str, &str),
+        document: (&str, &str),
+        changes: &[u8],
+        founding: bool,
+        sealed: Option<&key_group::ContentKeys>,
+    ) -> Result<tilo_peer_state::owner::AppWrite, tilo_peer_state::owner::WriteRefusal> {
+        self.write_resource_read_by(
+            workspace,
+            document,
+            collab_types::EVERY_MEMBER,
+            changes,
+            founding,
+            sealed,
+        )
+        .await
+    }
+
+    /// [`Self::write_resource`] of a document only `readers` read
+    /// ([`collab_types::Readers`]): sealed under `sealed`, the keys of that reader set's group,
+    /// for the document as those readers read it ([`collab_types::content_artifact_id`]).
+    /// # Errors
+    /// As [`Self::write_resource`].
+    pub(crate) async fn write_resource_read_by(
+        &self,
+        workspace: WorkspaceId,
+        (app, doc): (&str, &str),
+        readers: &str,
         changes: &[u8],
         founding: bool,
         sealed: Option<&key_group::ContentKeys>,
@@ -1208,7 +1330,11 @@ impl Engine {
         use tilo_broker_core::owner_service::OwnerService as _;
         let device = self.identity.device_cert.device_public_key;
         let now = tilo_clock::wall();
-        let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
+        let artifact = collab_types::content_artifact_id(
+            &workspace.to_string(),
+            readers,
+            &collab_types::app_document_id(app, doc),
+        );
         let frame = if founding {
             collab_types::DocumentMutation::Snapshot(changes.to_vec())
         } else {
@@ -1218,8 +1344,8 @@ impl Engine {
         .map_err(|error| error.to_string())?;
         let mut author = None;
         let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
-            if founding && view.peer().document(app, record).is_some() {
-                return Err(format!("{record} of {app} is in the workspace already"));
+            if founding && view.peer().document(app, doc).is_some() {
+                return Err(format!("{doc} of {app} is in the workspace already"));
             }
             if Admission::of(view, device) != Admission::Admitted {
                 return Err("the workspace has not admitted this device yet".to_owned());
@@ -1240,7 +1366,7 @@ impl Engine {
                 }
             });
             let op = view.peer().draft_write(
-                (app, record),
+                (app, doc),
                 &frame,
                 seal.as_mut()
                     .map(|seal| seal as &mut tilo_peer_state::SealCheckpoint<'_>),
@@ -1252,9 +1378,9 @@ impl Engine {
                 workspace: workspace.to_string(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                     app: app.to_owned(),
-                    document: record.to_owned(),
+                    document: doc.to_owned(),
                     envelope: Box::new(op),
-                    own: view.peer().own_write(app, record, &device),
+                    own: view.peer().own_write(app, doc, &device),
                 },
             }])
         };
@@ -1278,7 +1404,7 @@ impl Engine {
             peer: neighbour_wire::peer_handle(&device),
             app_id: app.to_owned(),
             cluster_id: workspace.to_string(),
-            document_id: record.to_owned(),
+            document_id: doc.to_owned(),
             author: author.ok_or_else(|| {
                 tilo_peer_state::owner::WriteRefusal::Refused("the write was not made".to_owned())
             })?,
@@ -1333,6 +1459,32 @@ impl Engine {
                 return Err("the workspace removed this device from its group".to_owned());
             }
             Some(KeyAccess::NoSecretStore) => SealKeys::NoSecretStore,
+        })
+    }
+
+    /// The keys this device seals a document only `readers` read with, in `workspace`: the
+    /// workspace's own for every member, else the group of that reader set
+    /// ([`collab_types::reader_group`]), whose keys only its people's devices hold.
+    /// # Errors
+    /// As [`Self::seal_keys`], and when `readers` names no set.
+    pub fn reader_keys(&self, workspace: WorkspaceId, readers: &str) -> Result<SealKeys, String> {
+        if readers == collab_types::EVERY_MEMBER {
+            return self.seal_keys(workspace);
+        }
+        let keys = self
+            .keys
+            .get()
+            .ok_or("this session's key service is not running")?;
+        let group = keys
+            .reader_group(workspace, readers)
+            .ok_or("the reader set names no one")?;
+        Ok(match keys.access(group).0 {
+            KeyAccess::Ready(keys) => SealKeys::Here(keys),
+            KeyAccess::Waiting | KeyAccess::Unavailable => SealKeys::Waiting,
+            KeyAccess::Removed => {
+                return Err("the reader set's group removed this device".to_owned());
+            }
+            KeyAccess::NoSecretStore => SealKeys::NoSecretStore,
         })
     }
 
@@ -1617,23 +1769,21 @@ impl Engine {
         &self.owner
     }
 
-    /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
+    /// Where `workspace`'s holder is reached and the device its enrollment pins: the address its
     /// live session is dialled at.
     #[cfg(target_os = "linux")]
-    pub fn workspace_host(
+    pub fn holder_address(
         &self,
         workspace: WorkspaceId,
     ) -> Option<([u8; 32], iroh_base::EndpointAddr)> {
         self.owner.host_addr(workspace)
     }
 
-    /// The device hosting `workspace`: the one whose host orders its commits,
+    /// The device holding `workspace`: the one whose workspace service orders its commits,
     /// which is where the person's other devices enter it.
-    pub fn host_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
+    pub fn holder_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
         self.owner
-            .with_current(workspace, |view| {
-                Ok(view.workspace_host().device_public_key)
-            })
+            .with_current(workspace, |view| Ok(view.workspace_host().writes_for()))
             .ok()
     }
 
@@ -1663,6 +1813,7 @@ impl Engine {
                     },
                     reads: payload.holds_keys,
                     cloud: payload.cloud,
+                    moderates: payload.moderates,
                 })
             })
             .collect();
@@ -1768,79 +1919,162 @@ impl Engine {
 
     /// Found `workspace`, made on this layout under `name`, when this device made it and nothing
     /// here holds it yet: it is placed on this device's own workspace service, and this device
-    /// holds it as a member from then on. A workspace this device may not own, or one that could
-    /// not be placed, stays the layout's own.
+    /// holds it as a member from then on. A workspace this device may not own is refused by the
+    /// service, as is one it cannot place: the workspace stays unheld, and the session asks again.
+    ///
+    /// # Errors
+    /// This device's workspace service is not open, or it refused the workspace: why.
     #[cfg(target_os = "linux")]
-    pub async fn found(&self, workspace: WorkspaceId, name: &str) {
-        if self.holds(workspace)
-            || self.unfounded.lock_recover().contains(&workspace)
-            || !self.founding.lock_recover().insert(workspace)
-        {
-            return;
+    pub async fn found(&self, workspace: WorkspaceId, name: &str) -> Result<(), String> {
+        if self.holds(workspace) || !self.founding.lock_recover().insert(workspace) {
+            return Ok(());
         }
-        self.found_here(workspace, name).await;
+        // A workspace whose founding failed is tried again once another founding ended, not on
+        // every pass over the layout.
+        let current = *self.founded.borrow();
+        let tried = {
+            let failed_at = self.failed_at.lock_recover();
+            failed_at.get(&workspace) == Some(&current)
+        };
+        if tried {
+            self.founding.lock_recover().remove(&workspace);
+            return Ok(());
+        }
+        let founded = self.found_here(workspace, name).await;
         self.founding.lock_recover().remove(&workspace);
+        self.founded
+            .send_modify(|ended| *ended = ended.wrapping_add(1));
+        let mut failed_at = self.failed_at.lock_recover();
+        match &founded {
+            Ok(()) => {
+                failed_at.remove(&workspace);
+            }
+            // Tried again when the next founding ends: what this one ended already.
+            Err(_) => {
+                failed_at.insert(workspace, *self.founded.borrow());
+            }
+        }
+        founded
     }
 
     /// [`Self::found`] once nothing else founds `workspace`.
     #[cfg(target_os = "linux")]
-    async fn found_here(&self, workspace: WorkspaceId, name: &str) {
-        if !self.identity().device_cert.capabilities.can_own_workspaces {
-            return;
-        }
-        let Some(founder) = self.founder.get().cloned() else {
-            tracing::warn!(%workspace, "this device's workspace service is not open, so the workspace stays the layout's own");
-            return;
-        };
+    async fn found_here(&self, workspace: WorkspaceId, name: &str) -> Result<(), String> {
+        let founder = self.founders.get().ok_or(
+            "this device's workspace service is not open, so a workspace it makes cannot be founded",
+        )?;
         // Founding redeems the service's invitation into this workspace, and an enrollment installs
         // only into a workspace on this device's layout: it is put there before the service is
         // asked, as a join puts the workspace it installs into. One made since the session started
         // is on no layout the engine opened with, and would be refused as gone.
         self.bind(workspace);
-        match founder.found(workspace, name.to_owned()).await {
-            Ok(()) => {}
-            Err(error) => {
-                tracing::warn!(%error, %workspace, "the workspace was not founded here");
-                self.unfounded.lock_recover().insert(workspace);
-            }
-        }
+        founder.found(workspace, name.to_owned()).await
     }
 
-    /// Whether a founder is handed ([`Self::serve_founding`]): this device's own workspace service
-    /// is open.
+    /// Where this session's own workspace service is handed once it is open ([`Founders::serve`]):
+    /// what a workspace this device makes is founded on.
+    #[must_use]
+    pub fn founders(&self) -> &Arc<Founders> {
+        &self.founders
+    }
+
+    /// Whether this device's own workspace service is open: every workspace this device makes is
+    /// founded on it, so a session that makes one without it has none to found it on.
     #[must_use]
     pub fn founds(&self) -> bool {
-        self.founder.get().is_some()
+        self.founders.served()
     }
 
-    /// Found workspaces through `founder` from now on: this device's own workspace service, once
-    /// it is open. The first one handed stays.
-    pub fn serve_founding(&self, founder: Arc<dyn Founder>) {
-        let _ = self.founder.set(founder);
-    }
-
-    /// Ask `workspace`'s governance action `action` with `arguments` of this device's own
-    /// workspace service, when it holds `workspace`.
+    /// Ask `workspace`'s governance action `action` with `arguments` of its holder, as this
+    /// device ([`Founder::ask`]). A workspace this device is founding now is asked once the
+    /// founding ended: until then it has no holder.
     #[must_use]
-    pub fn ask_own_service(
-        &self,
+    pub fn ask_holder(
+        self: &Arc<Self>,
         workspace: WorkspaceId,
         action: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Option<ServiceAnswer> {
-        self.founder.get()?.ask(workspace, action, arguments)
+        let mut ended = self.founded.subscribe();
+        if !self.founding.lock_recover().contains(&workspace) {
+            return self.founders.get()?.ask(workspace, action, arguments);
+        }
+        let (engine, action) = (Arc::clone(self), action.to_owned());
+        Some(Box::pin(async move {
+            while engine.founding.lock_recover().contains(&workspace) {
+                if ended.changed().await.is_err() {
+                    break;
+                }
+            }
+            match engine
+                .founders
+                .get()
+                .and_then(|founder| founder.ask(workspace, &action, arguments))
+            {
+                Some(asked) => asked.await,
+                None => Err("this device reaches no holder of the workspace".to_owned()),
+            }
+        }))
+    }
+
+    /// Ask this device's own workspace service its host operation `action`
+    /// (`machine.plan` and the rest, `tilo.host`) with `arguments`, when it is
+    /// open: what this device's own person plans and reads there, whether or
+    /// not it holds the workspace yet.
+    #[must_use]
+    pub fn ask_own_host(
+        &self,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<ServiceAnswer> {
+        self.founders.get()?.ask_host(action, arguments)
     }
 
     /// Whether this device holds a link into a workspace that still admits someone: a person who
-    /// redeems it dials this device, so its relays stay up until the link is taken back or lapses.
+    /// redeems it dials this device, which stays dialable until the link is taken back or lapses.
     #[must_use]
-    #[cfg(target_os = "linux")]
     pub fn invitations_open(&self, now: SystemTime) -> bool {
-        self.workspaces().into_iter().any(|workspace| {
-            self.owner
-                .pending_invitations(workspace, now)
-                .is_ok_and(|pending| !pending.is_empty())
-        })
+        let now = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        self.open_links
+            .lock_recover()
+            .values()
+            .any(|lapses| lapses.iter().any(|until| u128::from(*until) > now))
+    }
+
+    /// Note the links into `workspace` its holder's list names, each open until it lapses: in
+    /// place of what was noted before.
+    pub fn note_invitations(&self, workspace: WorkspaceId, listed: &serde_json::Value) {
+        if !self.dials_for(workspace) {
+            return;
+        }
+        let lapses = listed
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|link| link["expires_at_ns"].as_u64())
+            .collect();
+        self.open_links.lock_recover().insert(workspace, lapses);
+    }
+
+    /// Note the link into `workspace` that is open until `until`: one more beside the ones its
+    /// holder listed.
+    pub fn note_link(&self, workspace: WorkspaceId, until: u64) {
+        if !self.dials_for(workspace) {
+            return;
+        }
+        self.open_links
+            .lock_recover()
+            .entry(workspace)
+            .or_default()
+            .push(until);
+    }
+
+    /// Whether a person redeeming a link into `workspace` dials this device: it holds the
+    /// workspace as its holder. One held elsewhere is answered by that device.
+    fn dials_for(&self, workspace: WorkspaceId) -> bool {
+        self.holder_of(workspace) == Some(self.identity.device_cert.device_public_key)
     }
 
     /// Put the workspace a join is installing into on this device's layout: an enrollment only
@@ -1860,18 +2094,6 @@ impl Engine {
 /// canonical copy of every workspace it holds, and what it commits leaves on the peer network's session
 /// with the workspace's host.
 impl tilo_broker_core::owner_service::OwnerService for Engine {
-    /// A held workspace whose host takes part in no channels: its records are documents the owner
-    /// commits, never sealed channels.
-    fn commits_documents(&self, workspace_id: WorkspaceId) -> bool {
-        self.holds(workspace_id)
-            && self
-                .owner
-                .with_current(workspace_id, |view| {
-                    Ok(!view.workspace_host().capabilities.holds_workspace_keys())
-                })
-                .unwrap_or(false)
-    }
-
     fn projects_workspace(&self, workspace_id: WorkspaceId) -> bool {
         self.holds(workspace_id)
     }
@@ -2088,6 +2310,157 @@ mod tests {
 
             assert!(!engine.may_delete(WorkspaceId::new()));
         }
+    }
+
+    /// A link out of a workspace this device holds keeps it dialable for whoever redeems it, and
+    /// only until the link lapses; a link into a workspace another device holds moves nothing.
+    #[test]
+    fn a_link_out_of_a_held_workspace_keeps_this_device_dialable_until_it_lapses() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let now = tilo_clock::wall();
+        let lapses = tilo_clock::unix_now_ns().saturating_add(60_000_000_000);
+        let workspace = {
+            let engine = engine(state.path(), identity);
+            let workspace = founded(&engine);
+            assert!(!engine.invitations_open(now), "no link is out");
+            engine.note_link(workspace, lapses);
+            assert!(engine.invitations_open(now), "one is");
+            assert!(
+                !engine.invitations_open(now + tilo_clock::time::Duration::from_secs(120)),
+                "it lapsed"
+            );
+            let listed = serde_json::json!([{ "expires_at_ns": lapses }]);
+            engine.note_invitations(workspace, &listed);
+            assert!(engine.invitations_open(now), "its holder lists it too");
+            engine.note_invitations(workspace, &serde_json::json!([]));
+            assert!(!engine.invitations_open(now), "the holder lists none");
+            workspace
+        };
+
+        let (copy, _) = device_of([0x44; 32], DeviceCapabilities::member());
+        let copy = engine(state.path(), copy);
+        copy.note_link(workspace, lapses);
+        assert!(
+            !copy.invitations_open(now),
+            "a joiner dials the holder, not this copy"
+        );
+    }
+
+    /// A workspace's store judges a peer's change by the types and verbs of every app surface this
+    /// process knows, including one named after the store first opened.
+    #[test]
+    fn a_workspace_store_declares_every_surface_this_process_knows() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (laptop, _) = identity(DeviceCapabilities::member());
+        let engine = engine(state.path(), laptop);
+        let workspace = founded(&engine);
+        let verbs = |engine: &Engine| {
+            engine.read_resources(workspace, |store, _| {
+                store
+                    .schema()
+                    .verb("rename-area")
+                    .map(|verb| verb.writes.keys().cloned().collect::<Vec<_>>())
+            })
+        };
+        assert!(verbs(&engine).is_none(), "no surface is named yet");
+        collab_types::app_surface::register_built_in(
+            "so.tilo.tasks",
+            include_bytes!("../../../../apps/tasks/surface.toml"),
+        );
+        let writes = verbs(&engine).expect("the tasks app's verb is declared");
+        assert!(!writes.is_empty(), "it writes the kinds its type holds");
+    }
+
+    /// A resource written through the store is this device's signed write of the document the store
+    /// placed it in, read back from the store at once, and by the next session from what the
+    /// replica kept.
+    #[test]
+    fn a_resource_written_through_the_store_is_kept_and_read_back() {
+        use tilo_resource_store::{Cell, Query, Resource, Stamp};
+        let state = tempfile::tempdir().expect("a state directory");
+        let (laptop, _) = identity(DeviceCapabilities::member());
+        let workspace = {
+            let engine = engine(state.path(), laptop.clone());
+            founded(&engine)
+        };
+        let keys = key_group::KeyGroup::create(
+            collab_types::WorkspaceId::parse(&workspace.to_string()).expect("a workspace id"),
+            key_group::MemberKey::generate("laptop").expect("a member key"),
+        )
+        .and_then(|group| group.content_keys())
+        .expect("the group's keys");
+        let stamp = Stamp {
+            verb: "add".to_owned(),
+            invoker: "ada".to_owned(),
+            invocation: "i1".to_owned(),
+            ..Stamp::default()
+        };
+        let issue = |title: &str, readers: &str| Resource {
+            readers: readers.to_owned(),
+            parent: Some("board".to_owned()),
+            order: Some("a0".to_owned()),
+            fields: [("title".to_owned(), Cell::One(title.into()))].into(),
+        };
+        let titles = |engine: &Engine| {
+            engine.read_resources(workspace, |store, may_read| {
+                store
+                    .query(&Query::of("tasks.issue", 10), may_read)
+                    .resources
+                    .into_iter()
+                    .map(|(_, held)| held.scalar("title"))
+                    .collect::<Vec<_>>()
+            })
+        };
+        {
+            let engine = engine(state.path(), laptop.clone());
+            engine.hand_keys(workspace, keys.clone());
+            for title in ["First", "Renamed"] {
+                pollster::block_on(engine.put_resource(
+                    workspace,
+                    "so.tilo.tasks",
+                    ("tasks.issue", "i-1"),
+                    issue(title, "*"),
+                    &stamp,
+                ))
+                .expect("the laptop writes the issue");
+            }
+            assert_eq!(titles(&engine), ["Renamed".into()]);
+            let ((), writes) = pollster::block_on(engine.edit_resource_content(
+                workspace,
+                "so.tilo.tasks",
+                ("tasks.issue", "i-1"),
+                &stamp,
+                |tx, root| {
+                    automerge::transaction::Transactable::put(tx, root, "body", "Steps")?;
+                    Ok(())
+                },
+            ))
+            .expect("the laptop writes the issue's body");
+            assert_eq!(writes.len(), 1, "one content document written");
+            let private = pollster::block_on(engine.put_resource(
+                workspace,
+                "so.tilo.tasks",
+                ("tasks.issue", "i-2"),
+                issue("Mine", "someone"),
+                &stamp,
+            ));
+            assert!(
+                matches!(
+                    private,
+                    Err(tilo_peer_state::owner::WriteRefusal::Refused(_))
+                ),
+                "a reader set whose keys are not here is written nowhere"
+            );
+        }
+
+        let engine = engine(state.path(), laptop);
+        engine.hand_keys(workspace, keys);
+        assert_eq!(
+            titles(&engine),
+            ["Renamed".into()],
+            "the next session reads it back"
+        );
     }
 
     /// A machine copied from a device, before the workspace admits it, reads what the copy holds,

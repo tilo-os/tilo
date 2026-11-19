@@ -172,7 +172,7 @@ async fn document_media_cold_range_performance_check() {
             .store(&photos, data)
             .await
             .expect("store media fixture");
-        store.store().shutdown().await.expect("close media store");
+        store.shutdown().await.expect("close media store");
         hash
     };
     let store = Arc::new(
@@ -220,7 +220,7 @@ async fn document_media_cold_range_performance_check() {
     let whole = store.local(hash).await.expect("whole media blob");
     assert_eq!(whole.len(), len);
     assert_eq!(store.read_bytes() - before, MAX_BLOB_BYTES);
-    store.store().shutdown().await.expect("close media store");
+    store.shutdown().await.expect("close media store");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

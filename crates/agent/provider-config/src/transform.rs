@@ -293,7 +293,7 @@ pub fn profile_answer(
     let request = ask.request();
     let api = wire::Api::of(profile);
     let response = if api.always_streams() {
-        let mut stream = wire::Stream::new(api);
+        let mut stream = wire::Stream::of(profile);
         let mut deltas = Vec::new();
         stream
             .push(body.as_bytes(), &mut deltas)

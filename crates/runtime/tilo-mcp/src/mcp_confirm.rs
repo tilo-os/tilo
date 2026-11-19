@@ -21,7 +21,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     async fn start(
         &self,
         request: InvokeRequest,
-        wait: std::time::Duration,
+        wait: crate::Hold,
         record: &mut Option<(tilo_actions::InvocationId, &RemoteActionTarget)>,
     ) -> Result<Admission, BridgeError> {
         // The workspace's own actions are admitted and started synchronously
@@ -40,10 +40,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .take()
             .filter(|_| !request.revision.as_deref().unwrap_or_default().is_empty());
         let revision = request.revision.clone().unwrap_or_default();
-        let patience = wait.max(HOST_ANSWER_WAIT);
-        let until = tokio::time::Instant::now()
-            .checked_add(patience)
-            .unwrap_or_else(tokio::time::Instant::now);
+        // A call held until its action has ended waits for its admission as long: no
+        // patience ends it. One that named a wait is answered as pending when it has passed.
+        let until = match wait.at_least(HOST_ANSWER_WAIT) {
+            crate::Hold::UntilEnded => None,
+            crate::Hold::For(patience) => Some((
+                tokio::time::Instant::now()
+                    .checked_add(patience)
+                    .unwrap_or_else(tokio::time::Instant::now),
+                patience,
+            )),
+        };
         // An answer that was lost on its way (the provider did not answer in time, or the
         // session carrying it gave it up) says nothing about whether the provider admitted the
         // invocation: it may be done already. The same invocation is asked again, which the
@@ -51,24 +58,28 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // the patience ending answers this call without it, as pending under its id.
         let answer = loop {
             let again = request.clone();
-            let Ok(answer) = tokio::time::timeout_at(
-                until,
-                self.at_host(blocking, move |host, caller| host.invoke(caller, again)),
-            )
-            .await
-            else {
-                return Ok(Admission::Unanswered(patience));
+            let admitting = self.at_host(blocking, move |host, caller| host.invoke(caller, again));
+            let answer = match until {
+                Some((until, patience)) => {
+                    let Ok(answer) = tokio::time::timeout_at(until, admitting).await else {
+                        return Ok(Admission::Unanswered(patience));
+                    };
+                    answer
+                }
+                None => admitting.await,
             };
             if !lost(answer.as_ref()) {
                 break answer;
             }
-            let pause = tokio::time::Instant::now()
-                .checked_add(ASK_AGAIN_PAUSE)
-                .unwrap_or(until);
-            if pause >= until {
-                return Ok(Admission::Unanswered(patience));
+            if let Some((until, patience)) = until {
+                let pause = tokio::time::Instant::now()
+                    .checked_add(ASK_AGAIN_PAUSE)
+                    .unwrap_or(until);
+                if pause >= until {
+                    return Ok(Admission::Unanswered(patience));
+                }
             }
-            tokio::time::sleep_until(pause).await;
+            tokio::time::sleep(ASK_AGAIN_PAUSE).await;
         };
         if let Some((invocation, target)) = asked {
             let effect = self.asked_effect(target, &revision).await;
@@ -96,7 +107,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     pub(super) async fn start_confirmed(
         &self,
         request: &mut InvokeRequest,
-        wait: std::time::Duration,
+        wait: crate::Hold,
         record: &mut Option<(tilo_actions::InvocationId, &RemoteActionTarget)>,
         edited: &mut Option<serde_json::Map<String, Value>>,
     ) -> Result<Admission, BridgeError> {

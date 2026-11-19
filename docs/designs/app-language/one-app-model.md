@@ -23,7 +23,8 @@ does in the one model, by the names in the code.
 | Today (Rust) | One model |
 |---|---|
 | One `#[resource(kind, label)]` model per app (`ResourceApp::Resource`) | Every `#[resource]` type is a resource type. Items in a collection are resources too, each with its own actions, as a tilolang type's items are. |
-| `LiveRow` rows (`tilo-app` `framework/rows.rs`): untyped, with app-internal effects (`TubeEffect::OpenCreator`) | Gone. A row is an item resource of a declared type. What a press does is one of the type's actions, or `open`. |
+| `LiveRow` rows (`tilo-app` `framework/rows.rs`): untyped, with app-internal effects (`TubeEffect::OpenCreator`) | Gone. A row is an item resource of a declared type: `LiveRow::typed::<Video>` of a `#[resource]` type, or of a plain struct declared `#[derive(Row)] #[row(kind = "…", label = "…", effects = E)]`. What a press does is one of the type's declared effects (`#[effect(on = Video)]`, its first field bound to the row's id) or `open`. |
+| `ResourceSpec::new`/`ActionSpec::typed` trees built in an app | The framework builds them from the declarations; a row's type offers its effects itself, so an app never chains `.operation(...)`/`.effect(...)` onto a row. |
 | `ResourceSpec::resource_type` set only by tilolang's publisher | Set for every published resource, from its declaration: noun = the type's name in words (refined in the catalogue, i18n.md), app = the app. |
 | The app's search pushed as indexed rows (`IndexedContent`) | Search matches published types and their fields (search.md). The app pushes nothing. |
 
@@ -108,6 +109,23 @@ fn page(c: &Channel, cx: &mut ViewCx) -> Node {
         p.list(c.videos.newest(), |v| ui::list_row(&v.title).presents(v));
     })
 }
+```
+
+```rust
+// A row for what lives outside any document: a fetched video, a process.
+#[derive(Row)]
+#[row(kind = "tube.video", label = "Video", effects = TubeEffect)]
+pub struct VideoRow;
+
+#[effect(operation = "tube.effects")]
+pub enum TubeEffect {
+    /// Open this video.
+    #[effect(on = VideoRow, kind = "read")]
+    OpenVideo { video: String },
+}
+
+// Published beneath the surface's resource; the type's effect is bound to the row.
+LiveRow::typed::<VideoRow>(video.id(), &video.title)
 ```
 
 The developer writes nothing for interop, search, places, windows or sync.

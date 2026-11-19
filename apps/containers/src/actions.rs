@@ -82,14 +82,33 @@ mod tests {
         assert_eq!(Containers::read(&doc).unwrap(), Containers::default());
     }
 
+    /// Every engine row the published tree carries.
+    fn engine_rows(
+        resources: &[ui::tilo_actions::ResourceSpec],
+        into: &mut Vec<ui::tilo_actions::ResourceSpec>,
+    ) {
+        for resource in resources {
+            if matches!(
+                resource.kind.as_str(),
+                "containers.container"
+                    | "containers.logs"
+                    | "containers.image"
+                    | "containers.volume"
+                    | "containers.distrobox"
+                    | "containers.job"
+            ) {
+                into.push(resource.clone());
+            }
+            engine_rows(&resource.children, into);
+        }
+    }
+
     #[test]
     fn engine_rows_are_effects_unavailable_offline() {
-        let rows: Vec<_> = ContainersApp::sample()
-            .state()
-            .engine_rows()
-            .into_iter()
-            .map(LiveRow::into_resource)
-            .collect();
+        let mut app = ui::prelude::TestApp::<crate::ContainersShell>::capture(None).unwrap();
+        let mut rows = Vec::new();
+        engine_rows(&app.harness().resources(), &mut rows);
+        assert!(!rows.is_empty(), "the sample engine's rows are published");
         let open = rows
             .iter()
             .flat_map(|row| &row.actions)

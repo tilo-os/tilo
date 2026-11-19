@@ -254,16 +254,19 @@ impl CollabClient {
     /// [`runtime_portal::DescriptorStreamSource`] handed it: on a host
     /// without descriptors the descriptor stream is empty and the client stays as it was.
     #[must_use]
-    pub fn with_optional_descriptors(mut self, sender: runtime_portal::Descriptors) -> Self {
+    pub fn with_optional_descriptors(self, sender: runtime_portal::Descriptors) -> Self {
         #[cfg(unix)]
         {
-            self.descriptors = sender;
+            Self {
+                descriptors: sender,
+                ..self
+            }
         }
         #[cfg(not(unix))]
         {
             let _ = sender;
+            self
         }
-        self
     }
 
     /// Resolves once the connection has ended.
@@ -348,12 +351,18 @@ impl CollabClient {
     /// The channel `handle` this connection holds.
     #[must_use]
     pub fn channel(&self, handle: Handle) -> ChannelHandle {
+        // Descriptors travel over the one connection, which each of its handles shares; a
+        // page without descriptor streams has nothing to share, the empty value being `Copy`.
+        #[cfg(unix)]
+        let descriptors = self.descriptors.clone();
+        #[cfg(not(unix))]
+        let descriptors = self.descriptors;
         ChannelHandle {
             channel: Arc::new(Channel {
                 client: self.client.clone(),
                 handle,
             }),
-            descriptors: self.descriptors.clone(),
+            descriptors,
         }
     }
 
@@ -553,6 +562,7 @@ impl ChannelHandle {
             .map_err(failure)?;
         Ok(Feed(Arc::new(FeedInner {
             channel: Arc::clone(&self.channel),
+            finish: Box::new(subscription.finisher()),
             subscription: tokio::sync::Mutex::new(subscription),
         })))
     }
@@ -630,6 +640,23 @@ impl ChannelHandle {
     pub async fn realtime_command(&self, command_json: &[u8]) -> Result<Vec<u8>, NotAvailable> {
         self.command(Service::Realtime, command_json.to_vec(), &[])
             .await
+    }
+
+    /// Ask the device's one store `command` for this app's resources: a write, or a read as the
+    /// person the app acts for may read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the device refuses the command, the connection fails, or
+    /// the answer is not one.
+    pub async fn resource_command(
+        &self,
+        command: &tilo_resource_store::wire::Command,
+    ) -> Result<tilo_resource_store::wire::Reply, NotAvailable> {
+        use tilo_resource_store::wire::MAX_WIRE_BYTES;
+        let body = encode_bounded_command("resource", command, true, MAX_WIRE_BYTES)?;
+        let reply = self.command(Service::Resources, body, &[]).await?;
+        decode_bounded_reply("resource", &reply, MAX_WIRE_BYTES, |_| true)
     }
 
     /// Submit one bounded Nearby Send control command. File contents stay on
@@ -1286,6 +1313,8 @@ impl ChannelHandle {
 struct FeedInner {
     /// Keeps the channel open while its stream is read.
     channel: Arc<Channel>,
+    /// Asks the broker to end the subscription once it handed over what it holds.
+    finish: Box<dyn Fn() + Send + Sync>,
     subscription: tokio::sync::Mutex<Subscription>,
 }
 
@@ -1365,6 +1394,13 @@ impl ActionCatalogueStream {
 pub struct InvocationStream(Feed);
 
 impl InvocationStream {
+    /// Take no more invocations: the broker hands over the ones it already
+    /// addressed to this stream and then ends it, so a reader that reads on
+    /// until [`Self::read`] fails has every invocation it was ever handed.
+    pub fn finish(&self) {
+        (self.0.0.finish)();
+    }
+
     /// The next invocation.
     pub async fn read(&self) -> Result<Invocation, NotAvailable> {
         match self.0.event().await? {
@@ -1770,9 +1806,6 @@ impl ContextStream {
             ContextUpdate::SnapshotRequested => context.snapshot_requested = true,
             ContextUpdate::Handoff(handoff) => context.handoff = Some(handoff),
             ContextUpdate::ResourcesArrived(records) => context.resources_arrived = records,
-            // Retired: a conversation is an ordinary record, carried by the
-            // workspace like any other and never named here.
-            ContextUpdate::RetiredPersonPairs | ContextUpdate::RetiredHistoryAgents => {}
         }
         Ok(context)
     }

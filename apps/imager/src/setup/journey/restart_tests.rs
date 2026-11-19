@@ -126,7 +126,7 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     env.set("XDG_STATE_HOME", root.join("state"));
     env.set("XDG_CONFIG_HOME", root.join("config"));
     let picture = root.join("picture.png");
@@ -136,7 +136,8 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
     let metadata = identity.metadata().unwrap();
     let identity_directory = identity.ownership_directory().to_owned();
     let bytes = std::fs::read(identity_directory.join("primary.json")).unwrap();
-    let signer = runtime_identity::load_from_path(identity_directory.join("primary.json")).unwrap();
+    let signer =
+        tilo_identity::store::load_from_path(identity_directory.join("primary.json")).unwrap();
     let signature = signer.sign(b"restart verification").unwrap();
     drop(original);
     drop(identity);
@@ -186,7 +187,7 @@ fn reopening_guided_installer_recovers_exact_name_photo_and_signer_only_after_ex
         })
         .unwrap();
     let recovered =
-        runtime_identity::load_from_path(identity_directory.join("primary.json")).unwrap();
+        tilo_identity::store::load_from_path(identity_directory.join("primary.json")).unwrap();
     assert_eq!(recovered.group_public_key(), signer.group_public_key());
     assert_eq!(recovered.sign(b"restart verification").unwrap(), signature);
     assert_eq!(
@@ -321,7 +322,7 @@ fn resumed_draft_without_account_checkpoint_requires_review_before_bulk_import()
     let source_bytes = b"[Files]\ntype=webdav\nurl=https://files.example.test/dav\nuser=ada\npass=AAECAwQFBgcICQoLDA0OD2f2H1FyoCWnrFF4SHSBvFFHjlw9\n";
     std::fs::write(&source, source_bytes).unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     env.set("HOME", &home);
     env.set("XDG_STATE_HOME", root.join("state"));
     env.set("XDG_CONFIG_HOME", &config);
@@ -489,7 +490,7 @@ fn guided_reopen_authenticates_connections_before_advancing_and_empty_selection_
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().canonicalize().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     env.set("XDG_STATE_HOME", root.join("state"));
     env.set("XDG_CONFIG_HOME", root.join("config"));
     let home = root.join("home");

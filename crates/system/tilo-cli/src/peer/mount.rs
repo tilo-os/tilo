@@ -67,6 +67,8 @@ pub(crate) struct Parts<'a> {
     pub(crate) content: Arc<SessionContent>,
     pub(crate) actor: fs_protocol::FileActor,
     pub(crate) writers: Arc<tilo_fs::writer::WriterResolver>,
+    /// What the workspace takes of the writes made through it.
+    pub(crate) admission: Arc<tilo_fs::admission::FileAdmission>,
     /// Where its availability, staged writes and unsaved bytes are kept.
     pub(crate) state: &'a Path,
 }
@@ -90,6 +92,7 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
         .with_eviction_queue(Arc::new(tokio::sync::Mutex::new(evictions)))
         .with_actor(parts.actor)
         .with_writers(Arc::clone(&parts.writers))
+        .with_admission(Arc::clone(&parts.admission))
         .with_pinned_hydration();
     fs.resume_pending_evictions();
     let fs = match tilo_fs::unsaved::UnsavedStore::open(parts.state.join("unsaved-writes")) {
@@ -108,13 +111,13 @@ pub(crate) fn filesystem(parts: &Parts<'_>) -> std::io::Result<QuickFS> {
 
 /// Show the filesystem `make` makes at `at`: mounted when `mount` and this
 /// user can mount FUSE, else as a folder synced both ways, its sync state
-/// kept in `state`.
+/// kept in `state`. What may be written is the filesystem's admission's to
+/// answer, write by write.
 pub(crate) fn show(
     make: impl Fn() -> std::io::Result<QuickFS>,
     at: &Path,
     state: &Path,
     mount: bool,
-    read_only: bool,
 ) -> std::io::Result<Showing> {
     // A mount a peer that ended left behind answers ENOTCONN, which no
     // folder can be made at.
@@ -128,7 +131,7 @@ pub(crate) fn show(
             std::env::var_os("PATH").as_deref(),
         )
     {
-        match mounted(make()?, at, read_only) {
+        match mounted(make()?, at) {
             Ok(session) => {
                 return Ok(Showing {
                     at: at.to_path_buf(),
@@ -154,14 +157,10 @@ pub(crate) fn show(
 }
 
 #[cfg(target_os = "linux")]
-fn mounted(fs: QuickFS, at: &Path, read_only: bool) -> std::io::Result<fuser::BackgroundSession> {
+fn mounted(fs: QuickFS, at: &Path) -> std::io::Result<fuser::BackgroundSession> {
     tilo_fs::fuse_session::clear_stale_mount(at)?;
     let mut config = fuser::Config::default();
     config.mount_options = vec![fuser::MountOption::FSName("tilo".into())];
-    // A member who may only read gets a folder the kernel refuses every write to.
-    if read_only {
-        config.mount_options.push(fuser::MountOption::RO);
-    }
     // Owner-only needs no system FUSE policy; the kernel refuses every other user.
     config.acl = fuser::SessionACL::Owner;
     fuser::spawn_mount(fs, at, &config)

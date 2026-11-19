@@ -14,7 +14,7 @@
 # An entry that no longer matches anything fails the check.
 
 [[allow]]
-file = "apps/chat/src/host_model.rs"
+file = "apps/chat/src/model_stream.rs"
 text = "Continue the interrupted answer. Do not repeat or perform actions."
 reason = "What Chat tells the model when a person continues an interrupted answer, never shown in a window."
 
@@ -50,7 +50,7 @@ reason = "What the outline tool answers an agent, never shown in a window."
 
 [[allow]]
 file = "crates/sdk/tilo-app/src/framework/chain/reading.rs"
-text = "What this holds as typed data: the items of its parts, the newest part first, a page at \\\n         a time with `cursor` passing on where a page ended, each row with its item's address, \\\n         its name and the fields asked for (`fields`), only the items `where` holds of; an \\\n         item's own content when the read is of that item."
+text = "What this holds as typed data: the items of its parts, the newest part first, a page at \\\n         a time with `cursor` passing on where a page ended, each as its collection holds it \\\n         (`{id, value}`, the value kept to the fields asked for in `fields`), only the items \\\n         `where` holds of; an item's own content when the read is of that item, by its id."
 reason = "What a chain's read answers an agent: what the item of a part holds, and how the parts page."
 
 [[allow]]
@@ -189,11 +189,6 @@ reason = "A service's name, spelled the same in every language."
 file = "apps/browser/src/service_sessions.rs"
 text = "Discord"
 reason = "A service's name, spelled the same in every language."
-
-[[allow]]
-file = "apps/file-explorer/src/files_app.rs"
-text = "Personal cloud"
-reason = "A label a capture scenario paints, which no one reads."
 
 [[allow]]
 file = "apps/store/src/app.rs"

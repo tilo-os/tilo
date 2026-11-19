@@ -39,6 +39,8 @@ impl InstallerPreview {
             t("installer-pairing-name-heading")
         } else if j.page == Page::Accounts {
             self.accounts.heading()
+        } else if j.page == Page::Devices && j.destination == Some(Destination::Another) {
+            t("installer-preview-devices-another-heading")
         } else {
             t(&format!("installer-preview-{key}-heading"))
         };
@@ -54,6 +56,13 @@ impl InstallerPreview {
             t("installer-restart-unlock-intro")
         } else if j.page == Page::Accounts {
             self.accounts.subheading()
+        } else if j.page == Page::Devices && j.destination == Some(Destination::Another) {
+            t("installer-preview-devices-another-intro")
+        } else if j.page == Page::Migration
+            && j.destination == Some(Destination::Another)
+            && j.plan.os() == machine::Os::TiloServer
+        {
+            t("installer-preview-migration-server-intro")
         } else if j.page == Page::Belongings && j.destination == Some(Destination::Desktop) {
             t("installer-desktop-belongings-intro")
         } else if j.page == Page::Belongings
@@ -390,7 +399,11 @@ impl InstallerPreview {
                         if !self.category_available(index) || (!j.details && !j.categories[index]) {
                             continue;
                         }
-                        let title = if index == 0 && j.destination == Some(Destination::Computer) {
+                        let plan_server = j.destination == Some(Destination::Another)
+                            && j.plan.os() == machine::Os::TiloServer;
+                        let title = if index == 0 && plan_server {
+                            t("installer-preview-files-server-title")
+                        } else if index == 0 && j.destination == Some(Destination::Computer) {
                             t("installer-preview-files-shared-title")
                         } else if index == 1
                             && j.categories[0]
@@ -431,6 +444,8 @@ impl InstallerPreview {
                             }
                         } else if self.live && self.belongings.home_unavailable {
                             t("installer-preview-home-unavailable")
+                        } else if index == 0 && plan_server {
+                            t("installer-preview-files-server-body")
                         } else if index == 0 && j.destination == Some(Destination::Computer) {
                             t("installer-preview-files-shared-body")
                         } else if index == 1 && j.destination == Some(Destination::Computer) {
@@ -815,28 +830,34 @@ impl InstallerPreview {
                 }
             }
             Page::Method => {
+                body = body.push(Box::new(self.plan_choice(
+                    "installer.plan.delivery",
+                    "installer-preview-delivery-heading",
+                    true,
+                    &[
+                        ("usb", j.plan.delivery == machine::Delivery::Usb),
+                        ("netboot", j.plan.delivery == machine::Delivery::Netboot),
+                        ("alongside", j.plan.delivery == machine::Delivery::Alongside),
+                    ],
+                )));
+            }
+            Page::Machine => {
                 body = body
                     .with_rhythm(Rhythm::Section)
-                    .push(Box::new(self.plan_section(
-                        "delivery",
-                        &[
-                            ("usb", j.plan.delivery == machine::Delivery::Usb),
-                            ("netboot", j.plan.delivery == machine::Delivery::Netboot),
-                            ("alongside", j.plan.delivery == machine::Delivery::Alongside),
-                        ],
-                    )))
-                    .push(Box::new(
-                        self.plan_section("name", &[("name-open", j.plan.name_open)]),
-                    ))
-                    .push(Box::new(self.plan_section(
-                        "network",
+                    .push(Box::new(self.plan_name_field()))
+                    .push(Box::new(self.plan_choice(
+                        "installer.plan.network",
+                        "installer-preview-network-heading",
+                        true,
                         &[
                             ("network-dhcp", j.plan.network.is_some()),
                             ("network-open", j.plan.network.is_none()),
                         ],
                     )))
-                    .push(Box::new(self.plan_section(
-                        "unlock",
+                    .push(Box::new(self.plan_choice(
+                        "installer.plan.unlock",
+                        "installer-preview-unlock-heading",
+                        true,
                         &[
                             (
                                 "unlock-tpm",
@@ -853,8 +874,10 @@ impl InstallerPreview {
                             ("unlock-open", j.plan.unlock.is_none()),
                         ],
                     )))
-                    .push(Box::new(self.plan_section(
-                        "updates",
+                    .push(Box::new(self.plan_choice(
+                        "installer.plan.updates",
+                        "installer-preview-updates-heading",
+                        true,
                         &[
                             (
                                 "updates-stable",
@@ -868,8 +891,10 @@ impl InstallerPreview {
                         ],
                     )));
                 if j.plan.os() == machine::Os::TiloServer {
-                    body = body.push(Box::new(self.plan_section(
-                        "hosting",
+                    body = body.push(Box::new(self.plan_choice(
+                        "installer.plan.hosting",
+                        "installer-preview-hosting-heading",
+                        true,
                         &[
                             (
                                 "hosting-none",
@@ -901,45 +926,49 @@ impl InstallerPreview {
                     ));
                 }
                 let destination = j.destination.unwrap_or(Destination::Computer);
+                let plan_server =
+                    destination == Destination::Another && j.plan.os() == machine::Os::TiloServer;
                 let mut setup = page::related()
                     .push(Box::new(
                         Text::new(&t("installer-review-setup"))
                             .with_role(TextRole::Subheading)
                             .with_heading_level(2),
                     ))
-                    .push(Box::new(self.review_identity_row()))
-                    .push(Box::new(self.review_device_row()))
-                    .push(Box::new(
-                        self.review_row(
-                            "destination",
-                            t(&format!("installer-preview-{}-title", destination.key())),
-                            t(
-                                if destination == Destination::Computer
-                                    && !self.direct_route_enabled()
-                                {
-                                    "installer-preview-computer-usb-body"
-                                } else {
-                                    match destination {
-                                        Destination::Computer => "installer-preview-computer-body",
-                                        Destination::Another => "installer-preview-another-body",
-                                        Destination::Desktop => "installer-preview-desktop-body",
-                                    }
-                                },
-                            ),
-                        )
-                        .icon(match destination {
-                            Destination::Computer => Icon::Monitor,
-                            Destination::Another => Icon::Usb,
-                            Destination::Desktop => Icon::MonitorSmartphone,
-                        }),
-                    ));
+                    .push(Box::new(self.review_identity_row()));
+                if destination != Destination::Another {
+                    setup = setup.push(Box::new(self.review_device_row()));
+                }
+                setup = setup.push(Box::new(
+                    self.review_row(
+                        "destination",
+                        t(&format!("installer-preview-{}-title", destination.key())),
+                        t(
+                            if destination == Destination::Computer && !self.direct_route_enabled()
+                            {
+                                "installer-preview-computer-usb-body"
+                            } else {
+                                match destination {
+                                    Destination::Computer => "installer-preview-computer-body",
+                                    Destination::Another => "installer-preview-another-body",
+                                    Destination::Desktop => "installer-preview-desktop-body",
+                                }
+                            },
+                        ),
+                    )
+                    .icon(match destination {
+                        Destination::Computer => Icon::Monitor,
+                        Destination::Another => Icon::Usb,
+                        Destination::Desktop => Icon::MonitorSmartphone,
+                    }),
+                ));
                 if destination == Destination::Another {
+                    setup = setup.push(Box::new(self.plan_name_row()));
                     setup = setup.push(Box::new(
                         self.review_selection_row(
                             "target",
-                            "destination",
-                            self.target.review_title(),
-                            self.target.review_summary(),
+                            "target",
+                            t("installer-preview-target-model-label"),
+                            self.target.review_plan_summary(),
                         )
                         .icon(Icon::Monitor),
                     ));
@@ -955,8 +984,12 @@ impl InstallerPreview {
                 }
                 if destination != Destination::Desktop && self.sensitive_handoff_deferred() {
                     setup = setup.push(Box::new(
-                        Text::new(&t("installer-preview-deferred-handoff"))
-                            .with_id("installer.review.handoff"),
+                        Text::new(&t(if plan_server {
+                            "installer-preview-deferred-handoff-server"
+                        } else {
+                            "installer-preview-deferred-handoff"
+                        }))
+                        .with_id("installer.review.handoff"),
                     ));
                 }
                 if let Some(state) = &self.source_state {
@@ -1076,7 +1109,9 @@ impl InstallerPreview {
                     .push(Box::new(self.review_selection_row(
                         "migration",
                         "belongings",
-                        t(if j.migrate == Some(true) {
+                        t(if j.migrate == Some(true) && plan_server {
+                            "installer-preview-migrate-server-title"
+                        } else if j.migrate == Some(true) {
                             "installer-preview-migrate-title"
                         } else {
                             "installer-preview-fresh-title"
@@ -1104,12 +1139,13 @@ impl InstallerPreview {
                             && (index >= 2 || j.destination != Some(Destination::Desktop))
                             && (index != 2 || self.accounts.has_prepared_connections())
                         {
-                            let title =
-                                if index == 0 && j.destination == Some(Destination::Computer) {
-                                    t("installer-preview-files-shared-title")
-                                } else {
-                                    t(&format!("installer-preview-{key}-title"))
-                                };
+                            let title = if index == 0 && plan_server {
+                                t("installer-preview-files-server-title")
+                            } else if index == 0 && j.destination == Some(Destination::Computer) {
+                                t("installer-preview-files-shared-title")
+                            } else {
+                                t(&format!("installer-preview-{key}-title"))
+                            };
                             belongings = belongings.push(Box::new(self.review_selection_row(
                                 key,
                                 "belongings-details",
@@ -1217,7 +1253,7 @@ impl InstallerPreview {
                         .push(Box::new(
                             Text::new(command).with_id("installer.plan.command"),
                         ));
-                    let questions = machine::questions(&created.plan, None);
+                    let questions = machine::questions(&created.plan, &[]);
                     if !questions.is_empty() {
                         plan = plan.push(Box::new(
                             Text::new(&t("installer-plan-open-heading"))
@@ -1241,8 +1277,10 @@ impl InstallerPreview {
     /// What the other computer installs: Tilo OS or Tilo Server, two destination
     /// OSes, never a purpose question.
     fn plan_os(&self) -> ui::widget::Column {
-        self.plan_section(
-            "plan-os",
+        self.plan_choice(
+            "installer.plan.os",
+            "installer-preview-plan-os-heading",
+            true,
             &[
                 ("os", self.journey.plan.os() == machine::Os::TiloOs),
                 ("server", self.journey.plan.os() == machine::Os::TiloServer),
@@ -1253,8 +1291,10 @@ impl InstallerPreview {
     /// Which drive the other computer installs to: a rule, because its real
     /// drives are only known when it installs.
     fn disk_choice(&self) -> ui::widget::Column {
-        self.plan_section(
-            "disk",
+        self.plan_choice(
+            "installer.plan.disk",
+            "installer-preview-disk-heading",
+            false,
             &[
                 (
                     "disk-largest",
@@ -1273,29 +1313,19 @@ impl InstallerPreview {
         )
     }
 
-    /// One of the plan's choices: a heading, then the answers the person picks
-    /// between now or leaves to the computer.
-    fn plan_section(&self, group: &str, options: &[(&str, bool)]) -> ui::widget::Column {
-        let mut section = page::related();
-        if group != "disk" {
-            // The disk page's own heading already asks its question.
+    /// The other computer's name: the name the plan carries, and the way to
+    /// leave it for the computer to answer when it installs.
+    fn plan_name_field(&self) -> ui::widget::Column {
+        let mut section = page::related().push(Box::new(self.field(
+            "device-name",
+            &self.journey.device_name,
+            TextInputKind::Name,
+        )));
+        if self.journey.device_name.trim().is_empty() {
             section = section.push(Box::new(
-                Text::new(&t(&format!("installer-preview-{group}-heading")))
-                    .with_role(TextRole::Subheading)
-                    .with_heading_level(2)
-                    .with_id(format!("installer.plan.{group}")),
+                Text::new(&t("installer-preview-name-open-body"))
+                    .with_id("installer.plan.name-open"),
             ));
-        }
-        if group == "name" {
-            section = section.push(Box::new(self.select_named(
-                "name-use",
-                self.journey.device_name.clone(),
-                t("installer-preview-name-use-body"),
-                !self.journey.plan.name_open,
-            )));
-        }
-        for (key, selected) in options {
-            section = section.push(Box::new(self.select(key, *selected)));
         }
         section
     }
@@ -1569,6 +1599,10 @@ impl InstallerPreview {
                 "installer-preview-restart",
                 InstallerPreviewEffect::RestartPreview,
             ),
+            Page::Review if self.journey.destination == Some(Destination::Another) => (
+                "installer-plan-make",
+                InstallerPreviewEffect::ContinuePreview,
+            ),
             Page::Review => (
                 "installer-preview-finish",
                 InstallerPreviewEffect::ContinuePreview,
@@ -1640,7 +1674,10 @@ impl InstallerPreview {
             ));
         }
         let frame = page::Frame::new(content).with_cursor(self.cursor);
-        let frame = if self.journey.page == Page::Devices {
+        let frame = if matches!(self.journey.page, Page::Devices | Page::Review) {
+            // A review is a page of many rows: it starts at the top like every
+            // page with content to read, never floated to the middle of a tall
+            // window.
             frame
         } else {
             frame.center_short_body()

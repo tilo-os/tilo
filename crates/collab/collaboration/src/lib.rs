@@ -102,6 +102,8 @@ pub mod action_directory;
 pub mod document;
 pub mod document_routes;
 pub mod history_source;
+mod incoming;
+pub use incoming::Incoming;
 pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
@@ -242,11 +244,13 @@ mod portable_committed {
         pub fn was_refused(&self) -> bool {
             match self.never {}
         }
-        pub fn take_into<D, T, E>(
+        pub fn with_incoming<T>(
             &self,
-            _document: &mut D,
-            _merge: impl FnOnce(&mut D, &collab_types::DocumentMutation) -> Result<T, E>,
-        ) -> Option<T> {
+            _apply: impl FnOnce(crate::Incoming<'_>) -> T,
+        ) -> Result<T, String> {
+            match self.never {}
+        }
+        pub fn take_into(&self, _document: &mut automerge::AutoCommit) -> Option<bool> {
             match self.never {}
         }
     }
@@ -624,6 +628,12 @@ pub enum CollabRequest {
         app_id: String,
         package_root: Option<String>,
         on_behalf_of: Option<tilo_actions::InvocationId>,
+    },
+    /// Write or read this app's resources in the device's one store, which answers with
+    /// [`CollabEvent::ResourceCommandResult`]. The app holds no store of its own.
+    ResourceCommand {
+        request_id: u64,
+        command: tilo_resource_store::wire::Command,
     },
 }
 
@@ -1335,6 +1345,45 @@ impl CollaborationManager {
         .map_err(|error| Uncertain(error.to_string()))
     }
 
+    /// Take no more invocations: the broker hands over the ones it already
+    /// addressed to this connection, then ends its streams, which
+    /// [`Self::invocations_stopped`] reports once every one handed over was
+    /// taken. What an app asks before it closes, so it answers every
+    /// invocation it was handed.
+    ///
+    /// # Errors
+    ///
+    /// The transport cannot stop its invocations, or is closed.
+    pub fn stop_invocations(&mut self) -> Result<(), TransportError> {
+        match &mut self.backend {
+            Backend::Disabled(_) => Err(TransportError::Closed),
+            Backend::Transport(transport) => transport.stop_invocations(),
+        }
+    }
+
+    /// Whether the invocations stopped after [`Self::stop_invocations`]:
+    /// every one handed over has been taken.
+    pub fn invocations_stopped(&self) -> bool {
+        match &self.backend {
+            Backend::Disabled(_) => true,
+            Backend::Transport(transport) => transport.invocations_stopped(),
+        }
+    }
+
+    /// Take invocations again after [`Self::stop_invocations`]: what earlier
+    /// asked this window to stop and answered yes takes it back. Nothing
+    /// reaches a connection without a transport either way.
+    ///
+    /// # Errors
+    ///
+    /// The transport is closed.
+    pub fn resume_invocations(&mut self) -> Result<(), TransportError> {
+        match &mut self.backend {
+            Backend::Disabled(_) => Ok(()),
+            Backend::Transport(transport) => transport.resume_invocations(),
+        }
+    }
+
     /// Ask the transport for a completion receipt covering every document
     /// mutation submitted before this call. The receipt reports that the
     /// transport finished publishing them, not that peers applied them.
@@ -1830,18 +1879,12 @@ pub fn install_channel_settings() {
 /// document's life and **distinct** between people, or one person's
 /// Ctrl+Z reverts another's work.
 ///
-/// Mirrors the shell-side `local_user_id` ladder rung for rung (plus a
-/// sandboxed-app rung) so a compositor-granted capability and an
-/// app-stamped undo entry always name the same subject:
+/// The rungs, in the order a process knows who it is:
 ///
-/// 1. `TILO_USER_ID` — explicit override; the shell reads it first too.
-/// 2. The launcher-bound runtime identity (`TILO_USER_IDENTITY`) — the
-///    rung a packaged app actually lands on, since `/var/lib/tilo` is
-///    outside its sandbox.
-/// 3. `$XDG_CONFIG_HOME/tilo/identity/primary.json`, for the shell's
-///    own unsandboxed in-process apps.
-/// 4. `/var/lib/tilo/user-identity/pubkey.bin`.
-/// 5. The OS account name, then a constant.
+/// 1. The local identity this process resolves: its installed source (the
+///    session's own identity records, for its in-process apps), else the
+///    workspace identity service its launcher bound it to.
+/// 2. The OS account name, then a constant.
 ///
 /// Not memoised — see `auto_hello_env_uncached`: a process hosting
 /// more than one identity must not be frozen into the first one.
@@ -1868,19 +1911,10 @@ fn local_account() -> String {
 }
 
 fn resolve_local_user_id() -> String {
-    let environment = crate::process::environment();
-    if let Some(v) = environment.identity.user_id.clone() {
-        return v;
-    }
     if let Some(id) = crate::local_identity::load() {
         return person_id_from_key(id.group_public_key);
     }
-    if let Ok(bytes) = std::fs::read("/var/lib/tilo/user-identity/pubkey.bin")
-        && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
-    {
-        return person_id_from_key(key);
-    }
-    environment
+    crate::process::environment()
         .identity
         .account_name
         .clone()
@@ -2031,6 +2065,7 @@ mod local_document_report_tests {
                     label: Some("Private work".into()),
                     kind: "issue".into(),
                     declared_id: None,
+                    session: None,
                 }),
                 source_invocation: Some(tilo_actions::InvocationId(uuid::Uuid::from_bytes(
                     [2; 16],

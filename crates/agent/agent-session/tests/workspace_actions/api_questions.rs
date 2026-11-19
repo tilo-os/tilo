@@ -31,7 +31,7 @@ struct Person {
 impl QuestionSheet for Person {
     fn ask(&mut self, question: &PendingConfirmation) {
         self.seen.asked.lock().unwrap().push(question.clone());
-        let _ = self.answered.send((question.id, self.answer));
+        let _ = self.answered.send((question.id, self.answer.clone()));
     }
 
     fn withdraw(&mut self, id: [u8; 32]) {
@@ -69,7 +69,7 @@ async fn answered_by_page(
     answer: ConfirmationAnswer,
 ) -> (Value, Seen) {
     let page = MemberQuestions {
-        host,
+        server: host,
         root,
         device: None,
     };
@@ -80,7 +80,7 @@ async fn answered_by_page(
 /// a page holding their root, a page or computer paired to them.
 async fn answered_on(
     mcp: &mut Mcp<'_>,
-    mut host: impl tilo_server_client::questions::QuestionHost,
+    mut host: impl tilo_server_client::questions::QuestionServer,
     answer: ConfirmationAnswer,
 ) -> (Value, Seen) {
     let seen = Seen::default();
@@ -113,7 +113,7 @@ async fn answered_on(
 
 /// Ada's workspace for a customer, with one book on its shelf and the agent
 /// her backend minted a key for there: the agent's MCP session.
-async fn agent_with_a_book<'a>(
+pub(super) async fn agent_with_a_book<'a>(
     on_server: &'a super::api_on_server::OnServer,
     ada: &SigningKey,
 ) -> Mcp<'a> {
@@ -172,7 +172,7 @@ async fn a_device_paired_to_the_person_answers_what_the_agent_asks() {
     let phone = enrol(&ada, "Ada's phone", DeviceCapabilities::member());
     let host = MemberApprover::new(on_server.server_host());
     let on_phone = MemberQuestions {
-        host: &host,
+        server: &host,
         root: &phone.key,
         device: Some(&phone.cert),
     };

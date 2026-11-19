@@ -24,8 +24,6 @@ default view board for Board
 
 default view note_page for Note
 
-default view item_page for Item
-
 row view note_row for Note
 
 row view item_row for Item
@@ -108,16 +106,6 @@ view board(b: Board) {
 /// A note in a list: its title.
 view note_row(n: Note) {
     row(n.title)
-}
-
-/// An item's page: what it is, and what it is about when it is about a note.
-view item_page(i: Item) {
-    std.document(i) {
-        text(i.title)
-        if let n = i.about {
-            text(n.title)
-        }
-    }
 }
 
 /// An item in a list: its title.

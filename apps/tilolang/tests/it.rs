@@ -24,6 +24,10 @@ mod history_window;
 mod board;
 #[path = "forms.rs"]
 mod forms;
+#[path = "gallery_frames.rs"]
+mod gallery_frames;
+#[path = "gallery_sidebar.rs"]
+mod gallery_sidebar;
 #[path = "interaction.rs"]
 mod interaction;
 #[path = "mentions.rs"]

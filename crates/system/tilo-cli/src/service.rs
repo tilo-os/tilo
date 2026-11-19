@@ -9,12 +9,17 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 
 /// The unit's name, and the launchd agent's label.
 const UNIT: &str = "tilo-peer.service";
 const LABEL: &str = "so.tilo.peer";
+
+/// How long a stop gives the holder to exit before it is killed. The holder's own waits add up
+/// to less than this (`mcp::held`), so a stop ends by itself rather than being killed.
+pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The environment the service carries over from the login that installed
 /// it: where the device is kept, and what a test's HTTPS trusts.
@@ -23,6 +28,23 @@ const CARRIED: &[&str] = &[
     crate::login::TEST_CA_ENV,
     "XDG_STATE_HOME",
 ];
+
+/// Set in the service's environment: the holder it starts knows itself as the service's, the one
+/// that lasts for as long as the person is logged in ([`crate::mcp::held::Claim`]).
+const SERVICE_ENV: &str = "TILO_PEER_SERVICE";
+
+/// Whether this process is the holder the user service started.
+pub(crate) fn running_as_service() -> bool {
+    std::env::var_os(SERVICE_ENV).is_some_and(|value| value == "1")
+}
+
+/// Start the installed user service, when it is installed for this login: what an agent's or a
+/// command's `tilo` does when no holder listens, so the device's holder is the service's rather
+/// than a process of theirs. `false` when there is no service for this login, or it did not
+/// start, and the caller starts a holder itself.
+pub(crate) fn start_installed() -> bool {
+    installed_for_this_login() && start_unit().is_ok()
+}
 
 /// How the peer runs.
 #[derive(Debug, PartialEq, Eq)]
@@ -93,8 +115,9 @@ fn unit(exe: &Path, environment: &[(&str, String)]) -> String {
     let mut unit = format!(
         "[Unit]\nDescription=Tilo: your workspaces' files at ~/Tilo, kept in sync\n\
          After=network-online.target\n\n[Service]\nExecStart=\"{}\" mcp --hold\n\
-         Restart=on-failure\nRestartSec=5\n",
-        exe.display()
+         Restart=on-failure\nRestartSec=5\nTimeoutStopSec={}\nEnvironment=\"{SERVICE_ENV}=1\"\n",
+        exe.display(),
+        STOP_TIMEOUT.as_secs()
     );
     for (name, value) in environment {
         let _ = writeln!(
@@ -115,7 +138,7 @@ fn agent(exe: &Path, environment: &[(&str, String)]) -> String {
             .replace('<', "&lt;")
             .replace('>', "&gt;")
     };
-    let mut variables = String::new();
+    let mut variables = format!("    <key>{SERVICE_ENV}</key><string>1</string>\n");
     for (name, value) in environment {
         let _ = writeln!(
             variables,
@@ -169,6 +192,37 @@ fn install(exe: &Path) -> Result<()> {
     quiet(Command::new("systemctl").args(["--user", "restart", UNIT]))
 }
 
+/// Whether this login's service is installed: its unit is there, carrying this command's own
+/// device directory, so the holder it starts is this device's.
+#[cfg(target_os = "linux")]
+fn installed_for_this_login() -> bool {
+    let Ok(text) = unit_path().and_then(|path| Ok(std::fs::read_to_string(path)?)) else {
+        return false;
+    };
+    let carried_by_unit: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("Environment="))
+        .filter(|line| {
+            CARRIED.iter().any(|name| {
+                line.trim_start_matches('"')
+                    .starts_with(&format!("{name}="))
+            })
+        })
+        .collect();
+    let expected = unit(Path::new(""), &carried());
+    let carried_here: Vec<&str> = expected
+        .lines()
+        .filter_map(|line| line.strip_prefix("Environment="))
+        .filter(|line| !line.contains(SERVICE_ENV))
+        .collect();
+    carried_by_unit == carried_here
+}
+
+#[cfg(target_os = "linux")]
+fn start_unit() -> Result<()> {
+    quiet(Command::new("systemctl").args(["--user", "start", UNIT]))
+}
+
 #[cfg(target_os = "linux")]
 fn uninstall() {
     if let Ok(path) = unit_path()
@@ -208,6 +262,16 @@ fn install(exe: &Path) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
+fn installed_for_this_login() -> bool {
+    agent_path().is_ok_and(|path| path.exists())
+}
+
+#[cfg(target_os = "macos")]
+fn start_unit() -> Result<()> {
+    quiet(Command::new("launchctl").args(["kickstart", &format!("{}/{LABEL}", domain())]))
+}
+
+#[cfg(target_os = "macos")]
 fn uninstall() {
     if let Ok(path) = agent_path()
         && path.exists()
@@ -226,6 +290,16 @@ fn install(_exe: &Path) -> Result<()> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn uninstall() {}
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const fn installed_for_this_login() -> bool {
+    false
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn start_unit() -> Result<()> {
+    anyhow::bail!("no user service manager here")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,7 +315,15 @@ mod tests {
             "{unit}"
         );
         assert!(unit.contains("Environment=\"TILO_DEVICE_DIR=/home/ada/state/tilo/device\"\n"));
+        assert!(
+            unit.contains(&format!("TimeoutStopSec={}\n", STOP_TIMEOUT.as_secs())),
+            "a stop is given its whole budget before the holder is killed: {unit}"
+        );
         assert!(unit.contains("WantedBy=default.target"));
+        assert!(
+            unit.contains("Environment=\"TILO_PEER_SERVICE=1\"\n"),
+            "the holder it starts knows itself as the service's: {unit}"
+        );
     }
 
     #[test]
@@ -254,5 +336,6 @@ mod tests {
             "<string>/Users/you&amp;co/tilo</string><string>mcp</string><string>--hold</string>"
         ));
         assert!(agent.contains("<key>XDG_STATE_HOME</key><string>/s&lt;t&gt;</string>"));
+        assert!(agent.contains("<key>TILO_PEER_SERVICE</key><string>1</string>"));
     }
 }

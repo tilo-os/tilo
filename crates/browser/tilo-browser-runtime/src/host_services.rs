@@ -153,8 +153,7 @@ impl ServerTurns {
         sink: &mut dyn FnMut(StreamEvent),
     ) -> Result<ModelResponse, ModelError> {
         use tilo_actions::remote::{
-            ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark,
-            settle_with,
+            Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, settle_with,
         };
         let unreachable = || ModelError {
             kind: ErrorKind::Unavailable,
@@ -457,9 +456,6 @@ use tilo_session::platform::notice::Toolkit;
 thread_local! {
     static NOTIFIER: RefCell<Option<Arc<AppNotifier>>> = const { RefCell::new(None) };
     static BACKGROUND: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
-    /// The browser's notifications themselves, beside the desktop's: what the page tells the
-    /// person directly while they are elsewhere.
-    static BROWSER: RefCell<Option<Arc<dyn ui::notify::Notifier>>> = const { RefCell::new(None) };
     /// The request queues of the desktops this page shows, by mount: where a
     /// link an app opens lands when an app here claims it, so the page shows
     /// it in that app's window ([`crate::shell::HostRequest::OpenLink`]).
@@ -543,7 +539,6 @@ pub fn install(wake: Arc<dyn Fn() + Send + Sync>) {
     crate::page_theme::install(Arc::clone(&wake));
     WAKE.with_borrow_mut(|slot| *slot = Some(Arc::clone(&wake)));
     let system = ui::process::ProcessServices::system(None);
-    BROWSER.with_borrow_mut(|slot| *slot = Some(Arc::clone(&system.notifications)));
     let notifier = Arc::new(AppNotifier::new(
         Arc::clone(&system.notifications),
         BACKGROUND.with(Arc::clone),
@@ -581,19 +576,6 @@ pub fn notification_inbox() -> Option<AppInbox> {
 pub fn set_hidden(hidden: bool) {
     let forward = hidden && notification_permission().as_deref() == Some("granted");
     BACKGROUND.with(|background| background.store(forward, Ordering::Release));
-}
-
-/// Show `notification` in the browser's notifications, only while the page
-/// is out of view and the person allows them: the shell tells them of it
-/// itself otherwise.
-pub(crate) fn tell_browser(notification: &ui::notify::Notification) {
-    if !notifies_browser() {
-        return;
-    }
-    let browser = BROWSER.with_borrow(Clone::clone);
-    if let Some(Err(error)) = browser.map(|browser| browser.show(notification)) {
-        tracing::debug!(%error, "no browser notification");
-    }
 }
 
 /// Whether notifications go to the browser's now: the page is out of view

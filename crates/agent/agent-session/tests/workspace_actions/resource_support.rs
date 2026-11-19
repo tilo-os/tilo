@@ -1,5 +1,5 @@
 //! Certified admission for resource fixtures; no owner-only workspace entry.
-use super::{Browser, Device, Host, Hosted, RevocationList, ready, start_peer};
+use super::{Browser, Device, Hosted, RevocationList, ServerAddress, ready, start_peer};
 use tilo_peer_state::join::{Role, decode_and_verify_invitation};
 use tilo_server::workspaces::IssueInvitationRequest;
 use tilo_session_client::{Cmd, Outbox};
@@ -24,7 +24,7 @@ pub(super) async fn open_admitted_at(
 ) -> Browser {
     let workspace = tilo_server_protocol::WorkspaceId::parse(cluster_id).unwrap();
     let peer = start_peer(
-        Host::at(server.node_addr()),
+        ServerAddress::at(server.node_addr()),
         device.cert.clone(),
         holder.cert.clone(),
         device.key.clone(),
@@ -169,7 +169,7 @@ pub(super) fn notes_part_docs(
 ) -> Vec<(u64, automerge::AutoCommit)> {
     let chain = notes::note_list::chain();
     let mut parts: Vec<(u64, automerge::AutoCommit)> = engine
-        .records(workspace)
+        .documents(workspace)
         .unwrap_or_default()
         .into_iter()
         .filter(|(app, _)| app == ui::apps::NOTES)

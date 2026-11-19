@@ -34,14 +34,14 @@ pub enum IdentityStorage {
 /// Set (to anything), it keeps every identity secret of the session in
 /// [`IdentityStorage::Files`], out of the user's login Keychain: for tests,
 /// and for a release built without a Developer ID signature
-/// ([`runtime_identity::file_secrets_requested`]).
-pub use runtime_identity::FILE_SECRETS_ENV;
+/// ([`crate::store::file_secrets_requested`]).
+pub use crate::store::FILE_SECRETS_ENV;
 
 impl IdentityStorage {
     /// What this session keeps its identity secrets in.
     #[must_use]
     pub fn for_session() -> Self {
-        if !runtime_identity::file_secrets_requested() {
+        if !crate::store::file_secrets_requested() {
             return Self::Platform;
         }
         // A test asks for files and needs no word about it; anyone else is
@@ -80,9 +80,9 @@ impl IdentityStorage {
     }
 }
 
-fn identity_load_error(error: runtime_identity::NotAvailable) -> io::Error {
+fn identity_load_error(error: tilo_identity_client::NotAvailable) -> io::Error {
     match error {
-        runtime_identity::NotAvailable::ConnectionFailed(error) => error,
+        tilo_identity_client::NotAvailable::ConnectionFailed(error) => error,
         other => io::Error::new(io::ErrorKind::InvalidData, other.to_string()),
     }
 }
@@ -148,6 +148,8 @@ pub fn login_account_display_name() -> String {
 /// what the runtime identity broker migrates and what `DiskIdentityStore`
 /// writes via the UI's identity-flow ceremony.
 pub const PRIMARY_IDENTITY_FILE: &str = "primary.json";
+/// The id of [`PRIMARY_IDENTITY_FILE`] in the store.
+const PRIMARY_IDENTITY_ID: &str = "primary";
 
 /// Sequence for same-directory temporary owner-claim files.  The final claim
 /// is a hard link, not this name; `create_new` simply prevents a stale temp
@@ -276,8 +278,47 @@ fn create_named_primary_identity(
     let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let pubkey_hex = hex::encode(identity.group_public_key().as_bytes());
-    let mut record = IdentityRecord::from_threshold_identity(
+    import_whole_identity(identity_dir, &identity, display_name, avatar_color, storage)?;
+    Ok(ProvisionOutcome::Created { pubkey_hex })
+}
+
+/// Keep a person's whole root, opened elsewhere (a page's root envelope, a
+/// person made by the command line), as this account's single-device
+/// identity: `<identity_dir>/primary.json`, made active, its secret in
+/// `storage`. The store is the one home of a root: nothing else keeps it.
+///
+/// # Errors
+///
+/// The directory is not private to this account, an identity is already
+/// there, or the identity cannot be written and secured.
+pub fn import_single_device_root(
+    identity_dir: &Path,
+    root: &ed25519_dalek::SigningKey,
+    display_name: &str,
+    storage: IdentityStorage,
+) -> io::Result<PathBuf> {
+    prepare_identity_directory(identity_dir)?;
+    let identity = ThresholdIdentity::from_single_device_seed(&Zeroizing::new(root.to_bytes()));
+    let path = import_whole_identity(
+        identity_dir,
         &identity,
+        display_name,
+        crate::store::DEFAULT_AVATAR_COLOR,
+        storage,
+    )?;
+    crate::store::set_active_identity(identity_dir, PRIMARY_IDENTITY_ID)?;
+    Ok(path)
+}
+
+fn import_whole_identity(
+    identity_dir: &Path,
+    identity: &ThresholdIdentity,
+    display_name: &str,
+    avatar_color: [u8; 3],
+    storage: IdentityStorage,
+) -> io::Result<PathBuf> {
+    let mut record = IdentityRecord::from_threshold_identity(
+        identity,
         display_name,
         avatar_color,
         std::time::SystemTime::now(),
@@ -288,8 +329,7 @@ fn create_named_primary_identity(
     let bytes = Zeroizing::new(
         encoded.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?,
     );
-    import_primary_identity(identity_dir, &bytes, storage)?;
-    Ok(ProvisionOutcome::Created { pubkey_hex })
+    import_primary_identity(identity_dir, &bytes, storage)
 }
 
 fn ensure_primary_identity_in_context(
@@ -320,7 +360,7 @@ fn ensure_primary_identity_in_context(
     let record = IdentityRecord::from_threshold_identity(
         &identity,
         &display_name,
-        runtime_identity::DEFAULT_AVATAR_COLOR,
+        crate::store::DEFAULT_AVATAR_COLOR,
         std::time::SystemTime::now(),
     )
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
@@ -476,7 +516,7 @@ pub fn install_joined_device(
 struct JoinedPresentation<'a> {
     display_name: &'a str,
     color: [u8; 3],
-    photo: Option<runtime_identity::ProfilePhoto>,
+    photo: Option<tilo_identity_client::ProfilePhoto>,
 }
 
 fn install_joined_device_presented(
@@ -519,9 +559,9 @@ fn install_joined_device_presented(
         .join(".config/tilo/identity");
     prepare_identity_directory(&identity_dir)?;
     let record_id = public_record_id(&identity_id);
-    let record = runtime_identity::public_member_record_with_presentation(
+    let record = crate::store::public_member_record_with_presentation(
         if presentation.display_name.trim().is_empty() {
-            runtime_identity::UNNAMED_DISPLAY_NAME
+            crate::store::UNNAMED_DISPLAY_NAME
         } else {
             presentation.display_name.trim()
         },
@@ -601,14 +641,14 @@ pub fn enroll_from_local_identity(
     device_label: &str,
     now_ns: u64,
 ) -> Result<DeviceCert, io::Error> {
-    let path =
-        runtime_identity::resolve_active_identity(layout.local_identity_dir).ok_or_else(|| {
+    let path = tilo_identity_client::resolve_active_identity(layout.local_identity_dir)
+        .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 "this machine has no active personal identity to enroll",
             )
         })?;
-    let identity = runtime_identity::load_from_path(path).map_err(identity_load_error)?;
+    let identity = crate::store::load_from_path(path).map_err(identity_load_error)?;
     if !identity.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -657,14 +697,14 @@ pub fn complete_enrolled_device(
     let record_id = public_record_id(&identity_id);
     let record_path = identity_dir.join(format!("{record_id}.json"));
     if !record_path.exists() {
-        let record = runtime_identity::public_member_record(
-            runtime_identity::UNNAMED_DISPLAY_NAME,
+        let record = crate::store::public_member_record(
+            crate::store::UNNAMED_DISPLAY_NAME,
             [88, 101, 242],
             cert.user_public_key,
         )?;
         tilo_files::native::atomic::write_with_mode(&record_path, &record, 0o600)?;
     }
-    if runtime_identity::resolve_active_identity(identity_dir).is_none() {
+    if tilo_identity_client::resolve_active_identity(identity_dir).is_none() {
         tilo_files::native::atomic::write_with_mode(
             &identity_dir.join("active"),
             format!("{record_id}\n").as_bytes(),
@@ -831,7 +871,7 @@ fn mint_throwaway_test_identity(
     validate_throwaway_identity_paths(paths)?;
     prepare_identity_directory(identity_dir)?;
     let marker = identity_dir.join(THROWAWAY_TEST_IDENTITY_MARKER);
-    if runtime_identity::resolve_active_identity(identity_dir).is_some() {
+    if tilo_identity_client::resolve_active_identity(identity_dir).is_some() {
         if !marker.is_file() {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -862,7 +902,6 @@ fn validate_throwaway_identity_paths(paths: &IdentityPaths) -> io::Result<()> {
         .unwrap_or_else(|_| shared.to_path_buf());
     for path in [
         &paths.user_pubkey,
-        &paths.user_privkey,
         &paths.device_privkey,
         &paths.device_cert,
     ] {
@@ -988,11 +1027,11 @@ fn ensure_collaboration_identity_in_context(
             // the join, or a config tree reset while the enrollment
             // survived. Take the person up again here rather than report an
             // identity that nothing can read.
-            if runtime_identity::resolve_active_identity(identity_dir).is_none() {
+            if tilo_identity_client::resolve_active_identity(identity_dir).is_none() {
                 complete_enrolled_device(identity_dir, paths, now_ns)?;
             }
-            if let Some(record) = runtime_identity::resolve_active_identity(identity_dir)
-                && let Ok(signer) = runtime_identity::load_from_path(record)
+            if let Some(record) = tilo_identity_client::resolve_active_identity(identity_dir)
+                && let Ok(signer) = crate::store::load_from_path(record)
             {
                 prove_local_person(identity_dir, &signer, paths);
             }
@@ -1004,7 +1043,7 @@ fn ensure_collaboration_identity_in_context(
 
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     let (selected_path, outcome) =
-        if let Some(path) = runtime_identity::resolve_active_identity(identity_dir) {
+        if let Some(path) = tilo_identity_client::resolve_active_identity(identity_dir) {
             if context != IdentityProvisioningContext::LegacyLinuxHost {
                 protect_identity_record_at(identity_dir, &path, storage)?;
             }
@@ -1014,7 +1053,7 @@ fn ensure_collaboration_identity_in_context(
             (primary_path, outcome)
         };
 
-    let signer = runtime_identity::load_from_path(selected_path).map_err(identity_load_error)?;
+    let signer = crate::store::load_from_path(selected_path).map_err(identity_load_error)?;
     if !signer.is_single_device() {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -1060,7 +1099,7 @@ fn ensure_collaboration_identity_in_context(
 /// to who is signed in.
 fn prove_local_person(
     identity_dir: &Path,
-    signer: &runtime_identity::SigningIdentity,
+    signer: &crate::store::SigningIdentity,
     paths: &IdentityPaths,
 ) {
     let uid = rustix::process::geteuid().as_raw();
@@ -1183,14 +1222,14 @@ fn read_claimed_owner(path: &Path) -> io::Result<[u8; 32]> {
 /// Only public material is read — the active record's metadata, the owner
 /// claim and the certificate — so the answer needs no unlocked secret.
 pub fn active_identity_owns_device(identity_dir: &Path, paths: &IdentityPaths) -> io::Result<bool> {
-    let Some(record) = runtime_identity::resolve_active_identity(identity_dir) else {
+    let Some(record) = tilo_identity_client::resolve_active_identity(identity_dir) else {
         return Ok(false);
     };
     if !paths.user_pubkey.exists() {
         return Ok(false);
     }
     let owner = read_claimed_owner(&paths.user_pubkey)?;
-    let identity = runtime_identity::load_metadata_from_path(&record)
+    let identity = tilo_identity_client::load_metadata_from_path(&record)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
     if identity.group_public_key != owner {
         return Ok(false);
@@ -1214,7 +1253,7 @@ pub fn ensure_device_certificate_for_record(
     record_path: &Path,
     paths: &IdentityPaths,
 ) -> Result<PathBuf, io::Error> {
-    let identity = runtime_identity::load_from_path(record_path.to_path_buf())
+    let identity = crate::store::load_from_path(record_path.to_path_buf())
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     ensure_device_certificate_for_identity(&identity, paths, "This device", DeviceClass::Native)
 }
@@ -1230,7 +1269,7 @@ pub fn ensure_device_certificate_for_record(
 /// none is held or the held one is due for renewal, and then written to
 /// every place at once.
 fn ensure_device_certificate_for_identity(
-    identity: &runtime_identity::SigningIdentity,
+    identity: &crate::store::SigningIdentity,
     paths: &IdentityPaths,
     device_label: &str,
     class: DeviceClass,
@@ -1299,7 +1338,7 @@ fn ensure_device_certificate_for_identity(
 }
 
 fn issue_device_certificate(
-    identity: &runtime_identity::SigningIdentity,
+    identity: &crate::store::SigningIdentity,
     device_public_key: [u8; 32],
     device_label: &str,
     class: DeviceClass,
@@ -1314,7 +1353,7 @@ fn issue_device_certificate(
 }
 
 fn issue_device_certificate_at(
-    identity: &runtime_identity::SigningIdentity,
+    identity: &crate::store::SigningIdentity,
     device_public_key: [u8; 32],
     device_label: &str,
     class: DeviceClass,
@@ -1357,7 +1396,7 @@ pub fn verify_collaboration_identity(
     // follow the same resolver as provisioning/runtime startup or a freshly
     // imported host identity is created successfully and then immediately
     // reported missing.
-    let primary_path = runtime_identity::resolve_active_identity(identity_dir)
+    let primary_path = tilo_identity_client::resolve_active_identity(identity_dir)
         .unwrap_or_else(|| identity_dir.join(PRIMARY_IDENTITY_FILE));
     #[cfg(unix)]
     {
@@ -1382,7 +1421,7 @@ pub fn verify_collaboration_identity(
     // names the identity, and its certificate binds this device's key to it.
     let joined = persist::joined_device_is_ready(paths, now_ns).map_err(joined_device_unusable)?;
     if joined {
-        let metadata = runtime_identity::load_metadata_from_path(&primary_path)
+        let metadata = tilo_identity_client::load_metadata_from_path(&primary_path)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         let root_public = persist::read_public_key(&paths.user_pubkey)
             .map_err(|e| io::Error::other(e.to_string()))?;
@@ -1394,7 +1433,7 @@ pub fn verify_collaboration_identity(
         }
         return Ok(());
     }
-    let identity = runtime_identity::load_from_path(primary_path)
+    let identity = crate::store::load_from_path(primary_path)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     if !identity.is_single_device() {
         return Err(io::Error::new(
@@ -1447,16 +1486,16 @@ fn import_primary_identity(
 ) -> io::Result<PathBuf> {
     match storage {
         IdentityStorage::Files => {
-            let provider = runtime_identity::BrokerFileProvider::new(identity_dir);
-            runtime_identity::import_identity_with_provider(
+            let provider = crate::store::BrokerFileProvider::new(identity_dir);
+            crate::store::import_identity_with_provider(
                 identity_dir,
-                "primary",
+                PRIMARY_IDENTITY_ID,
                 bytes,
                 &provider,
             )
         }
         IdentityStorage::Platform => {
-            runtime_identity::import_identity(identity_dir, "primary", bytes)
+            crate::store::import_identity(identity_dir, PRIMARY_IDENTITY_ID, bytes)
         }
     }
 }
@@ -1480,11 +1519,11 @@ fn protect_identity_record_at(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "identity has no valid id"))?;
     match storage {
         IdentityStorage::Files => {
-            let provider = runtime_identity::BrokerFileProvider::new(identity_dir);
-            runtime_identity::secure_identity_with_provider(identity_dir, id, &provider)?;
+            let provider = crate::store::BrokerFileProvider::new(identity_dir);
+            crate::store::secure_identity_with_provider(identity_dir, id, &provider)?;
         }
         IdentityStorage::Platform => {
-            runtime_identity::secure_identity(identity_dir, id)?;
+            crate::store::secure_identity(identity_dir, id)?;
         }
     }
     Ok(())
@@ -1542,7 +1581,7 @@ mod tests {
         phase installer_device_label_is_signed_once_and_existing_ownership_is_unchanged;
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            env.set(crate::store::FILE_SECRETS_ENV, "1");
             let temp = tempfile::tempdir().unwrap();
             let identity = temp.path().join("identity");
             let paths = IdentityPaths::under(temp.path().join("system"));
@@ -1647,7 +1686,7 @@ mod tests {
             ));
             let path = root.path().join(PRIMARY_IDENTITY_FILE);
             let original = std::fs::read(&path).unwrap();
-            let metadata = runtime_identity::load_metadata_from_path(&path).unwrap();
+            let metadata = tilo_identity_client::load_metadata_from_path(&path).unwrap();
             assert_eq!(metadata.display_name, "Ada");
             assert_eq!(metadata.avatar_color, [1, 2, 3]);
             for name in ["Replacement", "", "Ada\nOther"] {
@@ -1657,7 +1696,7 @@ mod tests {
                 assert_eq!(std::fs::read(&path).unwrap(), original);
             }
             assert_eq!(
-                runtime_identity::load_metadata_from_path(&path)
+                tilo_identity_client::load_metadata_from_path(&path)
                     .unwrap()
                     .group_public_key,
                 metadata.group_public_key
@@ -1685,9 +1724,9 @@ mod tests {
             // record: an `Existing` with nothing to resolve strands the session
             // in recovery although the enrollment is sound.
             let held_by_account = || {
-                let record = runtime_identity::resolve_active_identity(&identity_dir)
+                let record = tilo_identity_client::resolve_active_identity(&identity_dir)
                     .expect("the joined person has a record the account resolves");
-                runtime_identity::load_metadata_from_path(&record)
+                tilo_identity_client::load_metadata_from_path(&record)
                     .unwrap()
                     .group_public_key
             };
@@ -1695,7 +1734,6 @@ mod tests {
             assert_eq!(outcome, ProvisionOutcome::Existing);
             assert_eq!(held_by_account(), root.verifying_key().to_bytes());
             assert!(!identity_dir.join(PRIMARY_IDENTITY_FILE).exists());
-            assert!(!paths.user_privkey.exists());
             assert!(persist::joined_device_is_ready(&paths, tilo_clock::unix_now_ns()).unwrap());
 
             // The account's config is reset while the system-wide enrollment
@@ -1704,7 +1742,6 @@ mod tests {
             let outcome = ensure_collaboration_identity(&identity_dir, &paths).unwrap();
             assert_eq!(outcome, ProvisionOutcome::Existing);
             assert_eq!(held_by_account(), root.verifying_key().to_bytes());
-            assert!(!paths.user_privkey.exists());
         }
 
         phase only_the_identity_that_claimed_the_device_owns_it;
@@ -1760,7 +1797,7 @@ mod tests {
                 let record = identity_dir.join("identity-joined.json");
                 fs::write(
                     &record,
-                    runtime_identity::public_member_record("Member", [1, 2, 3], root_public).unwrap(),
+                    crate::store::public_member_record("Member", [1, 2, 3], root_public).unwrap(),
                 )
                 .unwrap();
                 fs::set_permissions(&record, fs::Permissions::from_mode(0o600)).unwrap();
@@ -1815,11 +1852,10 @@ mod tests {
                 .load_reconciled()
                 .unwrap();
             assert_eq!(registry.default_identity, Some(hex::encode(user)));
-            let fleet = crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths.clone())
+            let fleet = crate::device_fleet::DeviceFleetStore::at(&identity_dir, paths)
                 .load(&hex::encode(user))
                 .unwrap();
             assert!(fleet.certificates.contains(&cert));
-            assert!(!paths.user_privkey.exists());
         }
     }
 
@@ -1926,7 +1962,12 @@ mod tests {
         assert!(
             persist::joined_device_is_ready(&target_system, tilo_clock::unix_now_ns()).unwrap()
         );
-        assert!(!target_system.user_privkey.exists());
+        assert!(
+            !dir.path()
+                .join("var/home/quser/.config/tilo/identity/secrets")
+                .exists(),
+            "the joined device holds no root secret"
+        );
         let identity_dir = dir.path().join("var/home/quser/.config/tilo/identity");
         let registry = crate::registry::IdentityRegistryStore::at(&identity_dir)
             .load_reconciled()
@@ -2044,8 +2085,8 @@ mod tests {
         let local_identity = dir.path().join("local-identity");
         let local_system = IdentityPaths::under(dir.path().join("local-system"));
         ensure_collaboration_identity(&local_identity, &local_system).unwrap();
-        let photo = runtime_identity::ProfilePhoto::new(1, 1, vec![15, 80, 210, 255]).unwrap();
-        runtime_identity::update_identity_presentation(
+        let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![15, 80, 210, 255]).unwrap();
+        crate::store::update_identity_presentation(
             &local_identity,
             "primary",
             "Ada",
@@ -2094,10 +2135,16 @@ mod tests {
         assert!(
             persist::joined_device_is_ready(&target_system, tilo_clock::unix_now_ns()).unwrap()
         );
-        assert!(!target_system.user_privkey.exists());
+        assert!(
+            !dir.path()
+                .join("var/home/quser/.config/tilo/identity/secrets")
+                .exists(),
+            "the joined device holds no root secret"
+        );
         let target_identity = dir.path().join("var/home/quser/.config/tilo/identity");
-        let target_record = runtime_identity::resolve_active_identity(&target_identity).unwrap();
-        let presentation = runtime_identity::load_metadata_from_path(&target_record).unwrap();
+        let target_record =
+            tilo_identity_client::resolve_active_identity(&target_identity).unwrap();
+        let presentation = tilo_identity_client::load_metadata_from_path(&target_record).unwrap();
         assert_eq!(presentation.profile_photo, Some(photo));
         assert_eq!(presentation.avatar_color, [3, 4, 5]);
         assert_eq!(presentation.group_public_key, local_cert.user_public_key);
@@ -2243,7 +2290,7 @@ mod tests {
                 ProvisionOutcome::Created { .. }
             ));
             assert!(is_throwaway_test_identity(&personal));
-            let identity = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+            let identity = crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
                 .expect("load throwaway identity");
             assert_eq!(identity.display_name(), THROWAWAY_TEST_IDENTITY_NAME);
             assert!(
@@ -2347,7 +2394,7 @@ mod tests {
                     panic!("expected Created on empty dir, got {other:?}")
                 }
             }
-            let identity = runtime_identity::load_from_path(dir.join(PRIMARY_IDENTITY_FILE))
+            let identity = crate::store::load_from_path(dir.join(PRIMARY_IDENTITY_FILE))
                 .expect("load created identity");
             assert_eq!(
                 identity.display_name(),
@@ -2372,7 +2419,7 @@ mod tests {
                     .expect("provision host identity"),
                 ProvisionOutcome::Created { .. }
             ));
-            let identity = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+            let identity = crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
                 .expect("load host identity");
             assert_eq!(identity.display_name(), login_account_display_name());
         }
@@ -2415,7 +2462,7 @@ mod tests {
         // personal record and owner claim landed, but reading the device key
         // through /home -> /var/home failed before cert creation.
         ensure_primary_identity(&personal).expect("seed personal identity");
-        let signer = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+        let signer = crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
             .expect("load seeded identity");
         let linked_root = tmp.path().join("home/alice/.local/share/tilo");
         let paths = IdentityPaths::under(&linked_root);
@@ -2432,7 +2479,7 @@ mod tests {
         verify_collaboration_identity(&personal, &paths, cert.issued_at_ns)
             .expect("resumed identity chain verifies");
         assert_eq!(
-            runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+            crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
                 .expect("reload personal identity")
                 .group_public_key(),
             signer.group_public_key(),
@@ -2442,7 +2489,7 @@ mod tests {
     }
 
     fn device_certificates(paths: &IdentityPaths, personal: &Path) -> [(PathBuf, DeviceCert); 2] {
-        let root = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+        let root = crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
             .unwrap()
             .group_public_key();
         [paths.device_cert.clone(), paths.device_cert_for_user(&root)].map(|path| {
@@ -2465,15 +2512,11 @@ mod tests {
                 ensure_collaboration_identity(&personal, &paths).expect("provision identity"),
                 ProvisionOutcome::Created { .. }
             ));
-            let signer = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+            let signer = crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
                 .expect("load protected identity");
             let device = persist::read_device_key(&paths.device_privkey).unwrap();
             let cert = persist::read_device_cert(&paths.device_cert).unwrap();
 
-            assert!(
-                !paths.user_privkey.exists(),
-                "new installs must not duplicate the user-root private key"
-            );
             assert_eq!(cert.user_public_key, signer.group_public_key());
             assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
             tilo_user_identity::verify_device_cert(&cert).unwrap();
@@ -2530,7 +2573,7 @@ mod tests {
             let imported = personal.join("identity-imported.json");
             std::fs::rename(personal.join(PRIMARY_IDENTITY_FILE), &imported)
                 .expect("give imported identity its managed name");
-            runtime_identity::set_active_identity(&personal, "identity-imported")
+            crate::store::set_active_identity(&personal, "identity-imported")
                 .expect("select imported identity");
 
             assert_eq!(
@@ -2543,7 +2586,7 @@ mod tests {
                 "repair must not mint a second personal identity"
             );
             let signer =
-                runtime_identity::load_from_path(imported).expect("load imported identity");
+                crate::store::load_from_path(imported).expect("load imported identity");
             let cert =
                 persist::read_device_cert(&paths.device_cert_for_user(&signer.group_public_key()))
                     .expect("identity-specific certificate");
@@ -2637,7 +2680,7 @@ mod tests {
 
             for identity_dir in [&alice, &bob] {
                 let signer =
-                    runtime_identity::load_from_path(identity_dir.join(PRIMARY_IDENTITY_FILE))
+                    crate::store::load_from_path(identity_dir.join(PRIMARY_IDENTITY_FILE))
                         .expect("load user identity");
                 let cert = persist::read_device_cert(
                     &paths.device_cert_for_user(&signer.group_public_key()),

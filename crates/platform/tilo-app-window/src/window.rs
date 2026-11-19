@@ -1076,6 +1076,14 @@ impl AppWindow {
             _ => composed,
         };
         let composed = crate::shell::header_rules(composed);
+        // Where the person is now, not where the last frame laid them out: a place chosen in this
+        // very input put its page in front, and the shell its choice builds anew keeps it there.
+        // A shell never laid out has no screen in front yet.
+        if self.front.is_some()
+            && let Some(shell) = self.shell()
+        {
+            self.front = Some(shell.front_pane());
+        }
         // A window that had nothing at all to list and now lists something shows its columns again,
         // and opens on the screen it would have opened on: the front of a column that was gone is
         // no screen to keep (a notebook staged after its window opened keeps its tree in front on a

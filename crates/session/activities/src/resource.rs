@@ -29,6 +29,7 @@ impl Activities {}
 #[effect(operation = "so.tilo.activities")]
 pub enum ActivityEffect {
     /// Press control
+    #[effect(kind = "outside")]
     #[effect(own_device, attended, icon = "play")]
     Control {
         #[param("The app showing the activity")]
@@ -39,7 +40,8 @@ pub enum ActivityEffect {
         control: String,
     },
     /// Close activity
-    #[effect(own_device, icon = "x")]
+    #[effect(kind = "outside")]
+    #[effect(own_device, icon = "x", on = ActivityCard)]
     Close {
         #[param("The app showing the activity")]
         app: String,
@@ -47,6 +49,7 @@ pub enum ActivityEffect {
         activity: String,
     },
     /// Collapse activity card
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Collapse {
         #[param("The app showing the activity")]
@@ -55,6 +58,13 @@ pub enum ActivityEffect {
         activity: String,
     },
 }
+
+/// One activity card on screen, as a row of a declared type: what an agent
+/// reads to find the activity to act on, and closes through
+/// [`ActivityEffect::Close`].
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "activities.card", label = "Activity card", effects = ActivityEffect)]
+pub struct ActivityCard;
 
 /// The layer app: the activity cards over [`Activities`].
 pub struct ActivitiesApp;

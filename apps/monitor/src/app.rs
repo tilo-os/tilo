@@ -3,7 +3,6 @@
 //! of them. The shared table layout is the document's; the tab, filter and
 //! selection belong to this window, and the process list never leaves this machine.
 
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -16,11 +15,12 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::framework::{Dispatcher, Effected, Live, LiveRow, Publishes, Setting, ViewCx};
+use ui::framework::{
+    Dispatcher, EffectStatus, Effected, Live, LiveRow, Publishes, Setting, ViewCx,
+};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_resource::{self, Model};
 use ui::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::ToastKind;
@@ -28,8 +28,9 @@ use ui::widget::{
     AppModel, Element, InspectorPlacement, ModelPath, NavShell, Switch, TaffyTreeExt, Widget,
 };
 
-use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo};
+use crate::model::{MonitorModel, Process, ProcessDataStatus, ProcessInfo};
 use crate::prefs::{MonitorPreferences, Prefs};
+pub use crate::resource::SortKey;
 use crate::resource::{Monitor, MonitorEffect};
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
@@ -69,26 +70,6 @@ impl Tab {
     }
 }
 
-/// The column the process table sorts by.
-#[derive(Model, Default, Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SortKey {
-    Pid,
-    Name,
-    User,
-    #[default]
-    Cpu,
-    Mem,
-    Threads,
-}
-
-impl SortKey {
-    /// Numeric columns default to descending, text columns to ascending.
-    fn default_desc(self) -> bool {
-        !matches!(self, SortKey::Name | SortKey::User)
-    }
-}
-
 /// Published rows stay bounded; other processes resolve on demand through
 /// [`Widget::resource`].
 const MAX_CONTEXT_PROCESS_RESOURCES: usize = 64;
@@ -118,26 +99,11 @@ fn process_resource_label(process: &ProcessInfo) -> String {
 /// One process row, bound to its PID generation.
 pub(crate) fn process_row(process: &ProcessInfo) -> LiveRow {
     let id = process_resource_id(process.pid, process.started_at);
-    let row = LiveRow::new(
-        id.clone(),
-        "monitor.process",
-        process_resource_label(process),
-    );
-    [
-        MonitorEffect::Inspect {
-            process: id.clone(),
-        },
-        MonitorEffect::CopyPid {
-            process: id.clone(),
-        },
-        MonitorEffect::EndProcess {
-            process: id.clone(),
-        },
-        MonitorEffect::Kill { process: id },
-    ]
-    .into_iter()
-    .chain(process.app.clone().map(|app| MonitorEffect::EndApp { app }))
-    .fold(row, |row, effect| row.effect(&effect))
+    let row = LiveRow::typed::<Process>(id, process_resource_label(process));
+    match process.app.clone() {
+        Some(app) => row.effect(&MonitorEffect::EndApp { app }),
+        None => row,
+    }
 }
 
 fn indexed_text(value: &str) -> String {
@@ -777,6 +743,35 @@ impl MonitorState {
             .map(process_row)
     }
 
+    /// A kernel thread cannot be ended or killed, however it is offered:
+    /// its row says so, so the palette, agents and the API refuse it with
+    /// the reason rather than queueing a signal the kernel ignores.
+    pub(crate) fn row_status(&self, id: &str) -> Vec<EffectStatus> {
+        let Some((pid, started_at)) = parse_process_resource_id(id) else {
+            return Vec::new();
+        };
+        let kernel = self.model.processes.iter().any(|process| {
+            process.pid == pid && process.started_at == started_at && process.kernel
+        });
+        if !kernel {
+            return Vec::new();
+        }
+        vec![
+            EffectStatus::unavailable(
+                MonitorEffect::END_PROCESS,
+                "kernel_thread",
+                "This process is a kernel thread; the kernel owns it and it cannot be ended",
+            )
+            .on(id),
+            EffectStatus::unavailable(
+                MonitorEffect::KILL,
+                "kernel_thread",
+                "This process is a kernel thread; the kernel owns it and it cannot be killed",
+            )
+            .on(id),
+        ]
+    }
+
     fn commit_tab(&mut self, tab: Tab) {
         if self.tab == tab {
             return;
@@ -1408,12 +1403,19 @@ pub(crate) fn window(cx: &ViewCx<Monitor>, mut window: MonitorApp) -> Element {
             }
         });
     }
-    let (rows, row, entries) = (Rc::clone(&state), Rc::clone(&state), state);
+    let (rows, row, entries, statuses) = (
+        Rc::clone(&state),
+        Rc::clone(&state),
+        Rc::clone(&state),
+        state,
+    );
     cx.publishing(
         Publishes::new()
             // The processes on this machine: inspect, copy the PID, stop or kill one.
             .live_rows(move || rows.borrow().live_process_rows())
             .live_row(move |id| row.borrow().live_process_row(id))
+            // A kernel thread's row says it cannot be ended.
+            .row_status(move |id| statuses.borrow().row_status(id))
             // Every process here, also beyond the published rows.
             .search_entries(move || entries.borrow().process_search_entries())
             // A closed Monitor leaves nothing in the search index to open into a process
@@ -2320,7 +2322,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn served_machine(notes_running: bool) -> tilo_system_stats::protocol::Snapshot {
         use tilo_system_stats::protocol::{
-            CpuStats, HostInfo, MemoryStats, ProcessState, ProcessStats, Snapshot, SystemStats,
+            CpuStats, MemoryStats, ProcessState, ProcessStats, ServerInfo, Snapshot, SystemStats,
         };
         let process =
             |pid: u32, name: &str, app: Option<&str>, user: &str, cpu: f32| ProcessStats {
@@ -2356,7 +2358,7 @@ mod tests {
             taken_ms: 1,
             window_ms: 1500,
             system: Some(SystemStats {
-                host: HostInfo {
+                host: ServerInfo {
                     hostname: "ada-laptop".into(),
                     kernel: "7.0.9".into(),
                     cpu_model: Some("Test CPU 9000".into()),

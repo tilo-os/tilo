@@ -83,7 +83,7 @@ fn content_arrival(state: ContentState) -> crate::arriving::Arrival<(), ContentU
     match state {
         ContentState::Resolved => Arrival::Ready(()),
         ContentState::Pending | ContentState::Waiting => Arrival::Pending {
-            from: crate::workspace_sync::source(),
+            from: crate::arriving::Source::Remote,
         },
         ContentState::Unavailable => Arrival::Failed(ContentUnavailable),
     }

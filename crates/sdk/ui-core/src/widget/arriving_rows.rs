@@ -85,7 +85,7 @@ impl<K: Clone + Eq + Hash> ArrivingRows<K> {
     }
 
     #[must_use]
-    pub fn face(&self, key: &K, shape: SkeletonShape, now: Instant) -> Option<ArrivalFace<'_>> {
+    pub fn face(&self, key: &K, shape: SkeletonShape, now: Instant) -> Option<ArrivalFace> {
         self.rows.face(*self.slots.get(key)?, shape, now)
     }
 
@@ -100,7 +100,7 @@ impl<K: Clone + Eq + Hash> ArrivingRows<K> {
         key: &K,
         shape: SkeletonShape,
         now: Instant,
-    ) -> Option<(ArrivalFace<'_>, f32)> {
+    ) -> Option<(ArrivalFace, f32)> {
         self.rows.outgoing_face(*self.slots.get(key)?, shape, now)
     }
 
@@ -195,10 +195,6 @@ struct RowArrivals {
     rows: Vec<Option<RowArrival>>,
     free: Vec<usize>,
     drawn_at: Option<Instant>,
-    /// The sources named in the frame painted at the instant it holds: the
-    /// rows are one region, so each source is named on its first pending
-    /// row painted, not on every row.
-    named: std::cell::RefCell<(Option<Instant>, crate::widget::NamedOnce)>,
 }
 
 impl RowArrivals {
@@ -273,7 +269,7 @@ impl RowArrivals {
         stays
     }
 
-    fn face(&self, slot: usize, shape: SkeletonShape, now: Instant) -> Option<ArrivalFace<'_>> {
+    fn face(&self, slot: usize, shape: SkeletonShape, now: Instant) -> Option<ArrivalFace> {
         let row = self.row(slot)?;
         (row.showing == Showing::Placeholder).then(|| {
             let step = match row.clock.step(now) {
@@ -281,19 +277,8 @@ impl RowArrivals {
                 Step::Shown => row.clock.replaced_step(),
                 step => step,
             };
-            self.named_once(ArrivalFace::at_step(shape, step, row.clock.source()), now)
+            ArrivalFace::at_step(shape, step)
         })
-    }
-
-    /// `face`, naming its source if no row painted before it at `now` did:
-    /// a placeholder or the face an answer fades out, so the line that
-    /// named the source stays as the answer lands.
-    fn named_once<'a>(&self, face: ArrivalFace<'a>, now: Instant) -> ArrivalFace<'a> {
-        let mut named = self.named.borrow_mut();
-        if named.0 != Some(now) {
-            *named = (Some(now), crate::widget::NamedOnce::default());
-        }
-        face.named_once(&mut named.1)
     }
 
     fn fade(&self, slot: usize, now: Instant) -> Option<RowFade> {
@@ -315,13 +300,9 @@ impl RowArrivals {
         slot: usize,
         shape: SkeletonShape,
         now: Instant,
-    ) -> Option<(ArrivalFace<'_>, f32)> {
+    ) -> Option<(ArrivalFace, f32)> {
         let (step, opacity) = self.fade(slot, now)?.outgoing?;
-        let row = self.row(slot)?;
-        Some((
-            self.named_once(ArrivalFace::at_step(shape, step, row.clock.source()), now),
-            opacity,
-        ))
+        Some((ArrivalFace::at_step(shape, step), opacity))
     }
 
     fn paint(

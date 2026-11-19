@@ -14,8 +14,8 @@ pub struct ProgressBarProps {
     /// The share done, from 0 to 1; without it the bar has no known end.
     #[component(positional)]
     pub value: Option<f64>,
-    /// What is under way ("Uploading"); a named bar announces its progress without taking
-    /// focus.
+    /// What is under way ("Uploading"), shown over the track; a named bar announces its
+    /// progress without taking focus.
     pub label: Option<String>,
     /// A status the fill means: a failed transfer stays danger.
     pub tone: Option<Tone>,
@@ -55,8 +55,10 @@ impl Described for ProgressBar {
             None => Self::indeterminate(),
         };
         bar.fill = fill;
-        bar.label = props.label;
-        bar
+        match props.label {
+            Some(label) => bar.with_shown_label(label),
+            None => bar,
+        }
     }
 
     fn set_props(&mut self, props: ProgressBarProps) -> bool {
@@ -66,6 +68,9 @@ impl Described for ProgressBar {
         }
         if let Some(value) = props.value {
             self.set_progress(share(value));
+        }
+        if props.label.is_some() != self.label_shown {
+            return false;
         }
         self.label = props.label;
         true

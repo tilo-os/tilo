@@ -25,5 +25,5 @@ fn main() {
     ui::framework::run::<browser::BrowserShell>();
     // Every tab of this profile browses through one Chromium host; closing the
     // window must not take the other tabs' pages down with it.
-    ui::webview::chromium::serve_shared_until_idle();
+    tilo_webview::chromium::serve_shared_until_idle();
 }

@@ -2245,12 +2245,7 @@ impl Widget for TileHost {
             );
         }
         if let Some(step) = self.arrival_step(crate::time::now()) {
-            let local = crate::arriving::Source::Local;
-            let source = self
-                .arrival
-                .as_ref()
-                .map_or(&local, |arrival| arrival.clock().source());
-            let face = super::ArrivalFace::at_step(self.arrival_shape(), step, source)
+            let face = super::ArrivalFace::at_step(self.arrival_shape(), step)
                 .with_progress(self.arrival_progress());
             let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group);
             let title = match &self.content {
@@ -2959,14 +2954,9 @@ impl TileHost {
         theme: &Theme,
         step: crate::arriving::Step,
     ) {
-        let local = crate::arriving::Source::Local;
-        let source = self
-            .arrival
-            .as_ref()
-            .map_or(&local, |arrival| arrival.clock().source());
         let margin = f64::from(theme.tokens.spacing.rhythm.group);
         let page = self.rect.inset(-margin);
-        super::ArrivalFace::at_step(self.arrival_shape(), step, source)
+        super::ArrivalFace::at_step(self.arrival_shape(), step)
             .with_progress(self.arrival_progress())
             .paint(
                 &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),

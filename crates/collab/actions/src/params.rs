@@ -384,6 +384,31 @@ impl ActionParam {
         self
     }
 
+    /// Call this parameter `title` where people read it *and* describe it so:
+    /// what a catalogue says of a parameter of a declared action or effect,
+    /// read in the reader's language.
+    #[must_use]
+    pub fn described(mut self, title: impl Into<String>) -> Self {
+        let title = title.into();
+        self.description = title.clone().into();
+        self.titled(title)
+    }
+
+    /// Offer `value` in this parameter's place: what the action's own state
+    /// knows it would be (a calendar's current colour), which a caller may
+    /// change. Its schema's `default`, so a surface fills the field without
+    /// binding anything.
+    #[must_use]
+    pub fn with_default(mut self, value: serde_json::Value) -> Self {
+        let mut schema = match self.schema.as_deref() {
+            Some(serde_json::Value::Object(schema)) => schema.clone(),
+            _ => serde_json::Map::new(),
+        };
+        schema.insert("default".to_owned(), value);
+        self.schema = Some(std::sync::Arc::new(serde_json::Value::Object(schema)));
+        self
+    }
+
     /// Retain an immutable schema already shared by the current type generation.
     /// Wire serialization and strict argument validation are unchanged.
     #[must_use]

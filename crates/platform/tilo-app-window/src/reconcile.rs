@@ -772,7 +772,7 @@ impl Reconciler {
             let old = crate::adapter::part_components(old_node, description, &part.name);
             let new = crate::adapter::part_components(new_node, description, &part.name);
             for child in &new {
-                let Some(part) = crate::adapter::description_of(child) else {
+                let Some(item) = crate::adapter::description_of(child) else {
                     continue;
                 };
                 let Some(before) = old
@@ -781,13 +781,13 @@ impl Reconciler {
                 else {
                     continue;
                 };
-                for of in part
+                for of in item
                     .parts
                     .iter()
                     .filter(|of| of.accepts == ui::component::Accepts::View)
                 {
-                    let old = crate::adapter::part_nodes(before, part, &of.name);
-                    let new = crate::adapter::part_nodes(child, part, &of.name);
+                    let old = crate::adapter::part_nodes(before, item, &of.name);
+                    let new = crate::adapter::part_nodes(child, item, &of.name);
                     if old == new {
                         continue;
                     }
@@ -1556,7 +1556,7 @@ impl Reconciler {
             .children
             .iter()
             .map(|item| {
-                let row = crate::rows::find_kind(item, &row_kind).unwrap_or(item);
+                let row = item.first_of_kind(&row_kind).unwrap_or(item);
                 self.build(row)
             })
             .collect();

@@ -805,6 +805,7 @@ pub struct Opaque {
 #[effect(operation = "test.shelf.cards", catalogue = "tests/locales")]
 pub enum CardEffect {
     /// Show a card.
+    #[effect(kind = "outside")]
     Show {
         card: CardKey,
         colour: Option<Colour>,
@@ -947,9 +948,11 @@ const PRINTED_TAG: &str = "test:printed";
 #[effect(operation = "test.shelf.press", catalogue = "tests/locales")]
 pub enum PressEffect {
     /// Print the shelf.
+    #[effect(kind = "outside")]
     #[effect(job, returns, host_render, tag = PRINTED_TAG)]
     Print,
     /// Count the cards.
+    #[effect(kind = "outside")]
     #[effect(returns)]
     Count,
     /// Export the shelf.
@@ -992,9 +995,10 @@ impl Book {
     }
 
     /// Remove a card.
-    #[action]
-    pub fn remove(&mut self, people: &Id) {
-        self.people.remove(people);
+    #[action(item = people)]
+    pub fn remove(person: &mut Person, cx: &mut ActionCx) {
+        let _ = person;
+        cx.remove_item();
     }
 
     /// Change a card's first name.
@@ -1171,6 +1175,14 @@ tilo_test_env::scenario! {
         let _ = value;
         assert_eq!(person.first, "Augusta");
         assert_eq!(person.last, "Lovelace");
+        // An item method removes its item alone, the card held aside unread.
+        let remove = Book::REMOVE.with(ids[0].clone()).build(0).unwrap();
+        tilo_actions::Action::apply(&remove, book.doc_mut()).unwrap();
+        assert!(
+            book.doc().get(&people, ids[0].as_str()).unwrap().is_none(),
+            "the card is removed"
+        );
+        assert!(book.doc().get(&people, ids[1].as_str()).unwrap().is_some());
     }
 
     phase an_edit_inside_a_missing_map_entry_starts_the_entry;
@@ -1412,12 +1424,14 @@ impl PrivateImport {
 #[effect(operation = "test.shelf.wipe", catalogue = "tests/locales")]
 pub enum WipeEffect {
     /// Wipe a drive. Offered on each drive.
+    #[effect(kind = "outside")]
     #[effect(row, destructive, phrase = "Self::drive")]
     Wipe {
         #[param("Device path of the drive")]
         device: String,
     },
     /// Rescan drives.
+    #[effect(kind = "outside")]
     Rescan,
 }
 

@@ -519,6 +519,7 @@ impl Widget for QuoteLines {
             fill: Some(rgba8(colors.text_tertiary)),
             edge: None,
             radius: Self::rule(theme) / 2.0,
+            inset: [0.0; 2],
         });
         let (strong, plain) = Self::styles(theme);
         let x = rect.x0 + Self::inset(theme);

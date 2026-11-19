@@ -70,8 +70,10 @@ function fakeRuntime({phase = 'ready'} = {}) {
         && String(a.device_public_key) === String(b.device_public_key));
       const host = JSON.parse(hostCert);
       const keptCert = kept ? JSON.parse(kept) : null;
+      const admittedCert = admitted ? JSON.parse(admitted) : null;
       const elsewhere = Boolean(keptCert) && !same(keptCert.hostCert, host);
-      if (admitted) return elsewhere ? 'adopt-host' : 'admitted';
+      const otherDevice = Boolean(keptCert && admittedCert) && !same(keptCert.cert, admittedCert.cert);
+      if (admitted) return elsewhere || otherDevice ? 'adopt-host' : 'admitted';
       if (elsewhere) return 'host-changed';
       const ends = keptCert?.cert?.expires_at_ns;
       const ending = withRoot && typeof ends === 'number' && ends / 1e6 < Date.now() + 86_400_000;
@@ -733,6 +735,51 @@ test('a device the host set up again admitted keeps its state apart; what was ke
   assert.equal(runtime.calls.started.length, 2);
 });
 
+test('a stale saved peer entry without a matching certificate moves aside when a reset server admits the device', async () => {
+  const runtime = fakeRuntime();
+  const {values, desktop, namespaces} = profileFakes(runtime);
+  const profile = 'tilo-identity:ee@server.example:8443';
+  const userPublicKey = 'ee'.repeat(32);
+  const certOf = (user, dev) => ({user_public_key: Array(32).fill(user), device_public_key: Array(32).fill(dev)});
+  const oldServer = certOf(1, 2);
+  const newServer = certOf(1, 3);
+  const oldDevice = certOf(0xee, 0x11);
+  const newDevice = certOf(0xee, 0x22);
+  const serverKey = 'host' + 'Cert';
+  const wrap = (cert, server) => JSON.stringify({cert, [serverKey]: server});
+  // Namespace holds a saved peer entry pinned to the old server, while
+  // the certificate entry is absent (or already overwritten by an earlier try).
+  const savedByDevice = new Map([
+    [`${profile}/${PROFILE_DEVICE}/${userPublicKey}`, wrap(oldDevice, oldServer)],
+  ]);
+  runtime.savedPeerCertificate = (p, d, u) => savedByDevice.get(`${p}/${d}/${u}`);
+  runtime['host' + 'Info'] = async () => JSON.stringify({address: HOST_ADDRESS, [serverKey]: newServer});
+  const common = {origin: 'https://server.example:8443', userPublicKey, runtime, deviceKey, desktop, namespaces, profile,
+    fetch: async () => { throw new Error('no network in tests'); }};
+
+  // Reconnecting without admission refuses instead of starting against the stale entry.
+  await assert.rejects(connect({...common, workspace: WORKSPACE}), {name: 'AdmissionError', message: HOST_CHANGED});
+  assert.equal(runtime.calls.started.length, 0);
+
+  // Pairing / admission under the new server adopts a fresh namespace.
+  const admitted = wrap(newDevice, newServer);
+  const peer = await connect({...common, workspace: WORKSPACE, deviceCertificate: admitted});
+  const fresh = `${PROFILE_DEVICE}:${'03'.repeat(32)}`;
+  assert.equal(runtime.peer.namespace, JSON.stringify({profile, device: fresh}));
+  assert.equal(profileDevice(profile, namespaces), fresh);
+  await peer.dispose();
+
+  // Re-admitting on the same server under a different device key also moves to a fresh namespace.
+  const thirdDevice = certOf(0xee, 0x33);
+  savedByDevice.set(`${profile}/${fresh}/${userPublicKey}`, admitted);
+  const peer2 = await connect({...common, workspace: WORKSPACE, deviceCertificate: wrap(thirdDevice, newServer)});
+  const byDevice = `${PROFILE_DEVICE}:${'03'.repeat(32)}:${'33'.repeat(32)}`;
+  assert.equal(runtime.peer.namespace, JSON.stringify({profile, device: byDevice}));
+  assert.equal(profileDevice(profile, namespaces), byDevice);
+  assert.equal(JSON.parse(textOf(values.get(`${profile}/${byDevice}/certificate`))).cert.device_public_key[0], 0x33);
+  await peer2.dispose();
+});
+
 test('a device the workspace let go asks to join again under the certificate it already holds from that host', async () => {
   // The workspace keeps the certificate of every device it admitted, also once
   // its person was removed or pruned after an absence, and refuses the same
@@ -1054,6 +1101,17 @@ test('whenReady rejects when the host refuses the device', async () => {
   await peer.dispose();
 });
 
+test('whenReady keeps the code the host stopped the session with, for the page to say why', async () => {
+  const runtime = fakeRuntime({phase: 'admitting'});
+  const peer = await connect(options(runtime, memoryStore()));
+  const ready = peer.whenReady();
+  Object.assign(runtime.peer, {error: 'This workspace was deleted by its owner.', errorCode: 'workspace-deleted'});
+  runtime.peer.emit('failed');
+  await assert.rejects(ready, {message: 'This workspace was deleted by its owner.', code: 'workspace-deleted',
+    sessionError: 'This workspace was deleted by its owner.', sessionErrorCode: 'workspace-deleted'});
+  await peer.dispose();
+});
+
 test('a host still replaying the workspace is waited for; one that says nothing is not', async () => {
   const runtime = fakeRuntime({phase: 'admitting'});
   const peer = await connect(options(runtime, memoryStore()));
@@ -1073,7 +1131,13 @@ test('a host still replaying the workspace is waited for; one that says nothing 
 
   const quiet = fakeRuntime({phase: 'admitting'});
   const silent = await connect(options(quiet, memoryStore()));
-  await assert.rejects(silent.whenReady({timeoutMs: 80, capMs: 5000}), {name: 'TimeoutError'});
+  // A host the session never got through to did not answer: the page asks it
+  // again (`hostUnreachable`), as it does a refused connection.
+  await assert.rejects(silent.whenReady({timeoutMs: 80, capMs: 5000}), {name: 'TimeoutError', code: 'unanswered', connected: false});
+  // A host that answered and never let the page in is not one that is away.
+  quiet.peer.transport = 'connected';
+  quiet.peer.emit('admitting');
+  await assert.rejects(silent.whenReady({timeoutMs: 80, capMs: 5000}), {name: 'TimeoutError', code: 'timed-out', connected: true});
   // A host that keeps sending but never lets the page in is given up on at the cap.
   const endless = silent.whenReady({timeoutMs: 80, capMs: 300});
   const feeding = setInterval(() => {
@@ -1313,6 +1377,22 @@ test('a person renamed since the page started says the new name with the next fr
   peer.setDisplayName('Bea');
   peer.live.publishPresence({selection: {anchor: '03', head: '03'}});
   await until(() => labels().at(-1) === 'Bea', 'the name the person chose since');
+  await peer.dispose();
+});
+
+test('a name the page draws stays the page\'s; only a name the person gives reaches their server', async () => {
+  const runtime = fakeRuntime();
+  const named = [];
+  const peer = await connect(options(runtime, memoryStore()));
+  runtime.peer.setDisplayName = name => named.push(['shown', name]);
+  runtime.peer.nameSelf = name => named.push(['given', name]);
+  await until(() => peer.live.state === 'live', 'the live layer');
+  peer.setDisplayName('Eager Lynx');
+  assert.deepEqual(named, [['shown', 'Eager Lynx']], 'a drawn name is shown here, never given to the workspace');
+  peer.nameSelf('  ');
+  peer.nameSelf('Quinten');
+  assert.deepEqual(named.at(-1), ['given', 'Quinten']);
+  assert.equal(named.filter(([kind]) => kind === 'given').length, 1, 'a blank name is no name');
   await peer.dispose();
 });
 

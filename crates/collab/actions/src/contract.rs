@@ -66,9 +66,9 @@ impl Availability {
     pub const PRIVATE_VIEW: &'static str = "private_view";
 
     /// An action that only changes what the person at its device sees (a
-    /// form it opens, a place it shows), as it is listed to an agent: told
-    /// it is that person's alone, rather than left to read its absence as
-    /// the app having no such action.
+    /// form it opens, a place it shows), as an agent that names it is told
+    /// of it: never listed to it, and refused as that person's alone rather
+    /// than as an action the app does not have.
     #[must_use]
     pub fn shown_here() -> Self {
         Self::Unavailable {
@@ -243,6 +243,14 @@ pub const UNTRUSTED_CONTENT_TAG: &str = "content:untrusted";
 /// invocation; a caller that cannot classify arguments treats the action as
 /// requiring confirmation (see [`ActionContract::advertised_confirmation`]).
 pub const ARGUMENT_RISK_TAG: &str = "confirmation:by-argument";
+
+/// [`ActionContract::tags`] entry of an action that carries its resource's
+/// other actions (a generic typed edit, a group of edits) and is no verb of
+/// its own: what it does is what it carries. Whoever decides for such an
+/// action or words it for a person reads the actions it carries; a lasting
+/// permission is for the action that asked, never for what carried it. See
+/// [`ActionSpec::carrying`](crate::ActionSpec::carrying).
+pub const CARRIER_TAG: &str = "carries:actions";
 
 /// The parameter of a generic field edit that carries the edit.
 pub const FIELD_EDIT_PARAM: &str = "edit";
@@ -621,23 +629,13 @@ impl ResultSpec {
             Self::None | Self::Job if declared.is_none() => Ok(()),
             Self::None => Err("action declared no result but returned one".into()),
             // An absent value is `null`: a result its schema lets be null may be
-            // left out by an executor with nothing to report. An answer whose
-            // every field is what the write made ([`MADE_FIELDS`]) declared no
-            // field of its own, and is the empty answer the action returned.
-            Self::Json { schema } => {
-                let declared = declared.or_else(|| {
-                    output
-                        .value
-                        .as_ref()
-                        .filter(|value| value.is_object())
-                        .map(|_| serde_json::Value::Object(serde_json::Map::new()))
-                });
-                match declared {
-                    Some(value) => crate::params::validate_schema(&value, schema),
-                    None => crate::params::validate_schema(&serde_json::Value::Null, schema)
-                        .map_err(|_| "action did not return its declared JSON result".to_string()),
-                }
-            }
+            // left out by an executor with nothing to report. An answer that
+            // holds only what the write made is still the object it answered.
+            Self::Json { schema } => match declared.or_else(|| output.value.clone()) {
+                Some(value) => crate::params::validate_schema(&value, schema),
+                None => crate::params::validate_schema(&serde_json::Value::Null, schema)
+                    .map_err(|_| "action did not return its declared JSON result".to_string()),
+            },
             Self::Resource { resource_kind }
                 if !output.resources.is_empty()
                     && output.resources.iter().all(|address| {
@@ -669,6 +667,13 @@ impl ResultSpec {
 /// their decision, so like an effect of [`OWN_DEVICE_SCOPE`] it needs only
 /// what reading needs and runs only on the device of whoever starts it.
 pub const ATTENDED_TAG: &str = "tilo.attended";
+
+/// The contract tag of an effect that only changes what is on the screen it is
+/// invoked on, as its app declares it (`#[effect(screen)]`): a form it opens, a
+/// panel or a place it shows. It reads and answers nothing. Only the person at
+/// that screen invokes it, and no agent is listed it: anyone else would move
+/// their window and learn nothing ([`ActionContract::only_shows`]).
+pub const SCREEN_TAG: &str = "tilo.screen";
 
 /// The contract tag of an effect whose whole scope is the invoking
 /// person's own device: it touches nothing a workspace shares and no one else
@@ -729,7 +734,7 @@ pub struct ActionContract {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offload: Option<Offload>,
     /// The kind of step it takes, as its declaration names it
-    /// ([`crate::StepKind`]): what presence and the activity card say in the
+    /// ([`crate::StepKind`]): what presence says in the
     /// reader's language ("Writing in Trip plan", "Schreibt in Trip plan").
     /// `None` for an action whose declaration names none, whose step reads as
     /// the part of the record it acts on.
@@ -941,15 +946,22 @@ impl ActionContract {
     }
 
     /// Whether an effect under this contract only changes what is on the
-    /// screen it is invoked on: it reads, answers nothing and asks no one (a
-    /// form it opens, a panel or a place it shows). Only the person at that
-    /// screen invokes it; for anyone else it would move their window and tell
-    /// the caller nothing.
+    /// screen it is invoked on, as its app declares ([`SCREEN_TAG`]): a form it
+    /// opens, a panel or a place it shows. Only the person at that screen
+    /// invokes it; for anyone else it would move their window and tell the
+    /// caller nothing. Nothing else about the contract decides it: an effect
+    /// that reads and answers nothing may still write, and is decided as
+    /// what it declares.
     pub fn only_shows(&self) -> bool {
-        self.kind == ActionKind::Read
-            && matches!(self.result, ResultSpec::None)
-            && !self.is_own_device()
-            && !self.is_attended()
+        self.tags.iter().any(|tag| tag == SCREEN_TAG)
+    }
+
+    /// Safe defaults for an effect that only changes what is on the screen it
+    /// is invoked on ([`Self::only_shows`]).
+    pub fn screen() -> Self {
+        let mut contract = Self::view();
+        contract.tags.push(SCREEN_TAG.to_owned());
+        contract
     }
 
     /// Who the action is listed for, as its tags record it. See [`Audience`].
@@ -1036,6 +1048,13 @@ impl ActionContract {
     /// own data. See [`UNTRUSTED_CONTENT_TAG`].
     pub fn carries_untrusted_content(&self) -> bool {
         self.tags.iter().any(|tag| tag == UNTRUSTED_CONTENT_TAG)
+    }
+
+    /// Whether the action carries its resource's other actions and is no
+    /// verb of its own. See [`CARRIER_TAG`].
+    #[must_use]
+    pub fn carries_actions(&self) -> bool {
+        self.tags.iter().any(|tag| tag == CARRIER_TAG)
     }
 
     /// The outside capabilities the action hands an effect to
@@ -1377,29 +1396,6 @@ mod tests {
                 })
                 .is_err(),
             "a result an action did not declare is still refused"
-        );
-        // A verb that answers what it made (`#[action(answers)]`) declares an
-        // object result, and answering only the text it wrote made no field of
-        // its own: it is the empty answer, not a missing one.
-        let object = serde_json::json!({"type": "object"});
-        assert!(
-            ResultSpec::Json {
-                schema: object.clone()
-            }
-            .validate(&crate::ActionOutput {
-                value: Some(serde_json::json!({
-                    "wrote": {"region": "body", "ranges": []},
-                })),
-                resources: Vec::new(),
-            })
-            .is_ok(),
-            "an answer of what the write made declares an empty object"
-        );
-        assert!(
-            ResultSpec::Json { schema: object }
-                .validate(&crate::ActionOutput::default())
-                .is_err(),
-            "an action that answered nothing declared no result"
         );
     }
 

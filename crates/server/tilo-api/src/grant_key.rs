@@ -30,6 +30,9 @@ pub struct GrantKey {
     cert: DeviceCert,
     scope: AgentScope,
     browser_pages: bool,
+    /// What its person approved it as ("Linear import"), when known: the
+    /// name its workspaces list it by.
+    name: Option<String>,
 }
 
 impl std::fmt::Debug for GrantKey {
@@ -115,6 +118,7 @@ impl GrantKey {
             browser_pages: cert.capabilities.browser_pages,
             cert,
             scope,
+            name: None,
         })
     }
 
@@ -165,6 +169,7 @@ impl GrantKey {
             browser_pages: false,
             cert,
             scope: AgentScope::AllWorkspaces,
+            name: None,
         })
     }
 
@@ -187,6 +192,23 @@ impl GrantKey {
     #[must_use]
     pub const fn cert(&self) -> &DeviceCert {
         &self.cert
+    }
+
+    /// The key, approved as `name`.
+    #[must_use]
+    pub fn named(self, name: &str) -> Self {
+        let name = name.trim();
+        Self {
+            name: (!name.is_empty()).then(|| name.to_owned()),
+            ..self
+        }
+    }
+
+    /// The name its workspaces list it by: the one its person approved it
+    /// as, else its certificate's label.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.cert.device_label)
     }
 
     /// The person, by their identity root key, hex.

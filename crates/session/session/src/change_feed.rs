@@ -78,7 +78,7 @@ impl Feeds {
         };
         let records: Vec<DocumentKey> =
             engine
-                .records(workspace)
+                .documents(workspace)
                 .map_err(|reason| ActionCallError::Unavailable {
                     reason: format!("the workspace's records are not read: {reason}"),
                 })?;

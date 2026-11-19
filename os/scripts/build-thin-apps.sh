@@ -79,10 +79,29 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/apps/*/tilo-runtime.toml; d
     # Package overrides reach both the executable and app-owned libraries.
     # They are visible to Cargo and compiler caches before the wrapper runs;
     # matching only the binary crate name misses differently named libraries.
+    # An app's own library beside it (apps/calculator -> apps/calculator-model,
+    # the resource its package also carries as a model module) is app code that
+    # only the tapp links, so it is compiled as the app is: the size profile
+    # here, and the wrapper's size flags through TILO_THIN_BIN_CRATES. Left at
+    # the profile's speed setting, the models made API Tester, Firewall,
+    # Diffmerge, Tasks and Tube 110 to 190 KB larger than the same code had
+    # been inside the app. Another app beside it is a package of its own here.
+    owned=("$package")
+    for sibling in $(sed -n 's/^[^#]*path *= *"\.\.\/\([^/"]*\)".*/\1/p' "$dir/Cargo.toml" | sort -u); do
+        manifest_of=$REPO/apps/$sibling/Cargo.toml
+        [ -f "$manifest_of" ] || continue
+        [ -f "$REPO/apps/$sibling/tilo-app.toml" ] && continue
+        library=$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$manifest_of" | head -1)
+        owned+=("$library")
+        lib_name=$(sed -n '/^\[lib\]/,/^\[/s/^name *= *"\([^"]*\)".*/\1/p' "$manifest_of" | head -1)
+        binary_crates+=("${lib_name:-${library//-/_}}")
+    done
     if [ "$optimize" = size ]; then
-        app_profiles+=(--config "profile.$PROFILE.package.\"$package\".opt-level=\"z\""
-                       --config "profile.$PROFILE.package.\"$package\".codegen-units=1"
-                       --config "profile.$PROFILE.package.\"$package\".strip=\"$strip\"")
+        for owned_package in "${owned[@]}"; do
+            app_profiles+=(--config "profile.$PROFILE.package.\"$owned_package\".opt-level=\"z\""
+                           --config "profile.$PROFILE.package.\"$owned_package\".codegen-units=1"
+                           --config "profile.$PROFILE.package.\"$owned_package\".strip=\"$strip\"")
+        done
     fi
     features+=("$package/thin")
     if [ "$BUILD_ROLE" = home-capture ] && [ "$package" = imager ]; then

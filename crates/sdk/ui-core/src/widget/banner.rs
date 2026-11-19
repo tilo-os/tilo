@@ -82,20 +82,38 @@ fn caption_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Caption)
 }
 
-/// The ground a banner stands on: a raised well in the content, washed with its kind's colour
-/// so a warning or an error reads as one before a word of it is read. A neutral notice keeps
-/// the plain well.
+/// The ground a banner stands on: the content's own ground washed with its kind's colour, so a
+/// warning or an error reads as one before a word of it is read. A neutral notice keeps the plain
+/// raised well. The wash goes over the content rather than over the raised well: the raised grey
+/// under a colour turns it to mud.
 fn well(theme: &Theme, kind: BannerKind) -> Color {
-    let raised = theme.tokens.colors.surfaces.raised;
+    let colors = &theme.tokens.colors.surfaces;
     match kind {
-        BannerKind::Neutral => raised,
-        _ => crate::tokens::colors::mix8(kind.color(theme), raised, 1.0 - WELL_WASH),
+        BannerKind::Neutral => colors.raised,
+        _ => crate::tokens::colors::mix8(colors.content, kind.color(theme), WELL_WASH),
+    }
+}
+
+/// The 1 px edge around a banner's well: its kind's colour, stronger than the wash, as a tinted
+/// chip wears it, so the banner keeps its bounds without a grey line around a coloured ground.
+fn well_edge(theme: &Theme, kind: BannerKind) -> Color {
+    match kind {
+        BannerKind::Neutral => crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
+        _ => crate::tokens::colors::mix8(
+            theme.tokens.colors.surfaces.content,
+            kind.color(theme),
+            WELL_EDGE,
+        ),
     }
 }
 
 /// How much of its kind's colour a banner's well takes: enough to tell a warning from a
 /// notice at a glance, little enough that the ink on it stays the theme's own.
 const WELL_WASH: f32 = 0.1;
+
+/// How much of its kind's colour a banner's edge takes: the tinted chip's edge, a little softer
+/// for a surface this much larger.
+const WELL_EDGE: f32 = 0.3;
 
 /// Input to [`Banner::paint`].
 #[derive(Clone, Debug)]
@@ -375,7 +393,7 @@ fn paint_well(ctx: &mut PaintCtx<'_>, rect: Rect, kind: BannerKind) {
     let radius = f64::from(theme.tokens.radii.control);
     let well = well(theme, kind);
     ctx.fill_round(rect, radius, well);
-    ctx.stroke_round(rect, radius, crate::surface::edge_on(well), 1.0);
+    ctx.stroke_round(rect, radius, well_edge(theme, kind), 1.0);
 }
 
 /// Where the body's icon and text go, in absolute coordinates.
@@ -533,8 +551,8 @@ impl BannerKind {
         match self {
             BannerKind::Neutral | BannerKind::Info => Icon::Info,
             BannerKind::Warning => Icon::TriangleAlert,
-            BannerKind::Success => Icon::Check,
-            BannerKind::Error => Icon::Ban,
+            BannerKind::Success => Icon::CircleCheck,
+            BannerKind::Error => Icon::CircleAlert,
         }
     }
 
@@ -646,8 +664,9 @@ impl Widget for BannerBody {
         cx.element("div");
         cx.ground(Ground {
             fill: Some(rgba8(well)),
-            edge: Some(rgba8(crate::surface::edge_on(well))),
+            edge: Some(rgba8(well_edge(theme, self.notice.kind))),
             radius: f64::from(theme.tokens.radii.control),
+            inset: [0.0; 2],
         });
         let content = self.content();
         // Its words stand where the banner's own geometry measures them.

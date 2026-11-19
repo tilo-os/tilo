@@ -22,6 +22,11 @@ struct Workspace {
 impl Workspace {
     /// A workspace whose members are the roots seeded with `members`.
     fn new(members: &[u8]) -> Self {
+        Self::serving(members, |services| services)
+    }
+
+    /// A workspace like [`Self::new`]'s, served what `serve` adds to its services.
+    fn serving(members: &[u8], serve: impl FnOnce(ProcessServices) -> ProcessServices) -> Self {
         let mut workspace = crate::apps::test_support::Workspace::new(
             crate::apps::test_support::WorkspaceId::from_u128(9),
             "Wire",
@@ -35,17 +40,19 @@ impl Workspace {
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let sink = Arc::new(RecordingSink::default());
-        let (state, bridge_rx) = AppBrokerState::new(
+        let (state, bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::new(sink.clone()),
-            Some(membership.clone()),
+            Some(membership.clone().authority()),
             Some(Arc::new(
                 members
                     .iter()
                     .map(|seed| device(*seed).verifying_key().to_bytes())
                     .collect(),
             )),
+            None,
+            serve(membership.services()),
         );
         fanout.attach_app_broker(state.clone());
         state.ensure_channel(&route.channel_key());
@@ -60,13 +67,13 @@ impl Workspace {
     }
 
     /// An endpoint of `seed`'s person on its own wire connection, holding
-    /// the workspace's channel.
+    /// the workspace's route.
     fn endpoint(&self, seed: u8) -> Endpoint {
         let (connection, outgoing, channel) = self.connection(seed);
         Endpoint::serve(connection, outgoing, channel)
     }
 
-    /// A connection of `seed`'s person holding the workspace's channel, not yet
+    /// A connection of `seed`'s person holding the workspace's route, not yet
     /// served.
     fn connection(
         &self,
@@ -106,7 +113,7 @@ impl Workspace {
         (connection, outgoing, channel)
     }
 
-    /// A connection that joins channels itself, served to an endpoint
+    /// A connection that joins routes itself, served to an endpoint
     /// holding none yet.
     fn joining_endpoint(&self) -> Endpoint {
         let peer_id = self.fanout.next_peer_id();
@@ -502,6 +509,74 @@ async fn a_join_opens_a_handle_the_endpoint_then_works_in() {
         .await;
 }
 
+/// A store that answers every count with how many it was asked, and keeps the app and workspace
+/// each command came from.
+#[derive(Default)]
+struct CountingStore(Mutex<Vec<(String, String)>>);
+
+impl crate::apps::services::ResourceServices for CountingStore {
+    fn command(
+        &self,
+        context: &crate::apps::services::ResourceRequestContext,
+        command: tilo_resource_store::wire::Command,
+    ) -> crate::apps::services::ResourceAnswer {
+        let mut asked = self.0.lock().unwrap();
+        asked.push((
+            context.app_id().to_owned(),
+            context.workspace_id().to_owned(),
+        ));
+        let answer = match command {
+            tilo_resource_store::wire::Command::Count { .. } => {
+                Ok(tilo_resource_store::wire::Reply::Count(asked.len()))
+            }
+            _ => Err("only counts are kept here".to_owned()),
+        };
+        drop(asked);
+        Box::pin(std::future::ready(answer))
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_apps_resource_command_reaches_the_store_as_its_route_certified() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let store = Arc::new(CountingStore::default());
+            let served = Arc::clone(&store);
+            let workspace = Workspace::serving(&[9], move |services| ProcessServices {
+                resources: Some(served),
+                ..services
+            });
+            let mut endpoint = workspace.endpoint(9);
+            let count = tilo_resource_store::wire::Command::Count {
+                kind: "tasks.issue".to_owned(),
+                filters: Vec::new(),
+            };
+            let answer = endpoint
+                .call(Operation::Command {
+                    channel: endpoint.channel,
+                    service: Service::Resources,
+                    body: serde_json::to_vec(&count).unwrap(),
+                    on_behalf_of: Vec::new(),
+                })
+                .await
+                .unwrap();
+            let Reply::Answer(bytes) = answer else {
+                panic!("a command is answered: {answer:?}");
+            };
+            let reply: tilo_resource_store::wire::Reply = serde_json::from_slice(&bytes).unwrap();
+            assert!(matches!(reply, tilo_resource_store::wire::Reply::Count(1)));
+            assert_eq!(
+                *store.0.lock().unwrap(),
+                [(
+                    workspace.route.app_id.clone(),
+                    workspace.route.cluster_id.clone()
+                )],
+                "the store is told the route's app and workspace, never the app's say"
+            );
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn a_service_command_is_answered_or_refused_on_its_call() {
     tokio::task::LocalSet::new()
@@ -512,7 +587,6 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             for service in [
                 Service::AudioOutput,
                 Service::NativeMedia,
-                Service::RetiredPersonChat,
                 Service::Speaker,
                 Service::Realtime,
                 Service::NearbyTransfer,
@@ -522,6 +596,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 Service::LocalFile,
                 Service::CommittedDocument,
                 Service::RemoteAction,
+                Service::Resources,
             ] {
                 let refused = endpoint
                     .call(Operation::Command {
@@ -537,7 +612,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 endpoint
                     .call(Operation::Command {
                         channel: Handle(77),
-                        service: Service::RetiredPersonChat,
+                        service: Service::RemoteAction,
                         body: Vec::new(),
                         on_behalf_of: Vec::new(),
                     })
@@ -694,21 +769,16 @@ async fn an_app_publishes_its_action_surface_as_a_change() {
                     .await,
                 Ok(Reply::Done)
             );
-            for publication in [
-                Publication::RetiredActions("[]".into()),
-                Publication::Surface("{}".into()),
-            ] {
-                assert!(
-                    endpoint
-                        .call(Operation::Publish {
-                            channel,
-                            publication: publication.clone(),
-                        })
-                        .await
-                        .is_err(),
-                    "{publication:?} is refused"
-                );
-            }
+            assert!(
+                endpoint
+                    .call(Operation::Publish {
+                        channel,
+                        publication: Publication::Surface("{}".into()),
+                    })
+                    .await
+                    .is_err(),
+                "a surface change that does not read is refused"
+            );
         })
         .await;
 }

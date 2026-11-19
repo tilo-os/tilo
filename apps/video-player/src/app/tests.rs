@@ -494,11 +494,18 @@ fn player_resources_and_transport_guards_are_published_honestly() {
             .map(ui::framework::LiveRow::into_resource)
             .collect();
         let kinds: Vec<&str> = rows.iter().map(|row| row.kind.as_str()).collect();
-        assert_eq!(kinds, ["media.video", "media.queue", "media.history"]);
+        assert_eq!(
+            kinds,
+            [
+                "video-player.video",
+                "video-player.queue",
+                "video-player.history"
+            ]
+        );
         let media = &rows[0];
         assert_eq!(media.label, "Demo clip");
         let tracks = &media.children[0];
-        assert_eq!(tracks.kind, "media.tracks");
+        assert_eq!(tracks.kind, "video-player.tracks");
         assert_eq!(
             tracks
                 .children
@@ -517,6 +524,32 @@ fn player_resources_and_transport_guards_are_published_honestly() {
                 .iter()
                 .all(|action| action.kind != ui::tilo_actions::OperationKind::Document)),
             "a live row never changes the document"
+        );
+        assert!(
+            tracks
+                .actions
+                .iter()
+                .any(|action| action.id == "subtitles-off"),
+            "a selected subtitle track offers turning subtitles off"
+        );
+        // A queued video's own effect acts on the entry, not on the opaque row
+        // id that keeps its source out of the published tree.
+        let queue = &rows[1];
+        let entry = &queue.children[0];
+        let play = entry
+            .actions
+            .iter()
+            .find(|action| action.id == "play-queued")
+            .expect("a queued video plays");
+        let encoded = play.build_json(&serde_json::Map::new()).unwrap();
+        let queued = app.player_rows().queue[0].id.clone();
+        assert_eq!(
+            <crate::actions::VideoEffect as ui::tilo_resource::Effect>::from_payload(
+                &encoded.payload
+            )
+            .unwrap(),
+            crate::actions::VideoEffect::PlayQueued { item: queued },
+            "the row hands its entry id to the effect"
         );
         let source_id = app.current_source_id.clone().unwrap();
         let chapter = crate::actions::chapter_resource_id(&source_id, "scene");
@@ -1200,7 +1233,7 @@ fn the_current_row_says_whether_the_video_plays_or_is_paused() {
         crate::actions::live_rows(&app.player_rows(), 32)
             .into_iter()
             .map(ui::framework::LiveRow::into_resource)
-            .find(|row| row.kind == "media.queue")
+            .find(|row| row.kind == "video-player.queue")
             .and_then(|queue| {
                 queue
                     .children

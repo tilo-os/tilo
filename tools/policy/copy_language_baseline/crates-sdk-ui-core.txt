@@ -1,11 +1,7 @@
 # Copy that still breaks a rule of tools/policy/check_copy_language.py.
 # Fix a message and delete its line; nothing may be added.
 de-DE format-range glyph
-de-DE member-agent glyph
-de-DE member-bot glyph
 de-DE member-shortcut glyph
 en-US format-day-range-in-month glyph
 en-US format-range glyph
-en-US member-agent glyph
-en-US member-bot glyph
 en-US member-shortcut glyph

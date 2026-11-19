@@ -26,15 +26,37 @@ const ENTRY_SEPARATOR: char = '/';
 #[effect(operation = "so.tilo.tray.item")]
 pub enum TrayAction {
     /// Do what clicking the item's icon does: usually show its window.
-    #[effect(own_device, row, icon = "app-window")]
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, icon = "app-window", on = TrayItemRow)]
     Activate,
     /// Choose an entry of the item's menu.
-    #[effect(own_device, row)]
+    #[effect(kind = "outside")]
+    #[effect(own_device, row, on = TrayEntryRow)]
     Choose {
         #[param("The entry's id in the item's menu")]
         entry: i64,
     },
 }
+
+/// The tray, as a declared type: every item the apps hold.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.tray", label = "Tray")]
+pub struct TrayRoot;
+
+/// One tray item, as a declared type: what clicking its icon does.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.tray.item", label = "Tray item", effects = TrayAction)]
+pub struct TrayItemRow;
+
+/// One enabled entry of an item's menu, as a declared type: choosing it does
+/// what the item's menu does.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.tray.entry",
+    label = "Tray menu entry",
+    effects = TrayAction
+)]
+pub struct TrayEntryRow;
 
 /// The token of the item at `key`: its bus name says which app holds it,
 /// which a published id must not.
@@ -45,41 +67,46 @@ fn token(key: &str) -> String {
 
 fn item_spec(item: &TrayItem) -> ResourceSpec {
     let token = token(&item.key);
-    let mut resource = ResourceSpec::new(
-        format!("{ITEM_PREFIX}{token}"),
-        ITEM_KIND,
-        item.title.clone(),
-    );
+    let id = format!("{ITEM_PREFIX}{token}");
+    let mut bindings = tilo_resource::RowBindings::new();
     if !item.item_is_menu {
-        let mut open = TrayAction::Activate.bound();
-        open.type_mut().description = Some(item.title.clone());
-        resource.actions.push(open);
+        bindings = bindings.offer(TrayAction::ACTIVATE);
+    }
+    let mut resource = tilo_resource::LiveRow::typed_with::<TrayItemRow>(
+        id.clone(),
+        item.title.clone(),
+        &bindings,
+    )
+    .into_resource();
+    for action in &mut resource.actions {
+        action.type_mut().description = Some(item.title.clone());
     }
     resource.children = item
         .menu
         .iter()
         .filter(|entry| entry.enabled)
         .map(|entry| {
-            let mut choose = TrayAction::Choose {
-                entry: i64::from(entry.id),
-            }
-            .bound();
-            let ty = choose.type_mut();
-            ty.label.clone_from(&entry.label);
-            ty.description = Some(item.title.clone());
-            if let Some(on) = entry.toggled {
-                ty.state = ActionState {
-                    badge: Some(if on { "On" } else { "Off" }.to_owned()),
-                    toggles: true,
-                    shortcut: None,
-                };
-            }
-            ResourceSpec::new(
-                format!("{ITEM_PREFIX}{token}{ENTRY_SEPARATOR}{}", entry.id),
-                ENTRY_KIND,
+            let bindings = tilo_resource::RowBindings::new()
+                .bind(TrayAction::CHOOSE, [("entry", i64::from(entry.id).into())]);
+            let mut child = tilo_resource::LiveRow::typed_with::<TrayEntryRow>(
+                format!("{id}{ENTRY_SEPARATOR}{}", entry.id),
                 entry.label.clone(),
+                &bindings,
             )
-            .with_action(choose)
+            .into_resource();
+            for choose in &mut child.actions {
+                let ty = choose.type_mut();
+                ty.label.clone_from(&entry.label);
+                ty.description = Some(item.title.clone());
+                if let Some(on) = entry.toggled {
+                    ty.state = ActionState {
+                        badge: Some(if on { "On" } else { "Off" }.to_owned()),
+                        toggles: true,
+                        shortcut: None,
+                    };
+                }
+            }
+            child
         })
         .collect();
     resource
@@ -103,7 +130,7 @@ impl TrayService {
 impl Service for TrayService {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            ResourceSpec::new(TRAY, TRAY_KIND, crate::i18n::name(TRAY_KIND, "Tray"))
+            tilo_resource::typed_resource::<TrayRoot>(TRAY, crate::i18n::name(TRAY_KIND, "Tray"))
                 .with_children(self.tray.snapshot().iter().map(item_spec)),
         ]
     }

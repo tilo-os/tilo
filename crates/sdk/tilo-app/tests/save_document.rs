@@ -34,9 +34,11 @@ impl Draft {
 #[effect(operation = "test.draft.effects", catalogue = "tests/locales")]
 pub enum DraftEffect {
     /// Save the document where the person chooses.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     SaveAs,
     /// Save a copy of the document somewhere else.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     Export,
 }

@@ -504,3 +504,50 @@ fn an_empty_value_leaves_the_message_that_needs_it_to_the_action() {
     assert_eq!(reader.sentence(&created()), "Created Deploy script");
     assert_eq!(reader.sentence(&untitled), "New snippet in Snippets");
 }
+
+/// A step names its item, and an id it carried, by the name the reader's app gives it now: a
+/// note typed after it was made reads as what it says, and an id nothing names says nothing.
+#[test]
+fn a_step_names_its_item_as_the_app_calls_it_now() {
+    struct Now;
+    impl Labels for Now {
+        fn item(&self, id: &str) -> Option<String> {
+            (id == NOTE).then(|| "Garden plan".to_owned())
+        }
+    }
+    const NOTE: &str = "9a8898a9-d93d-4cfd-8e57-3c79686c254b";
+    const GONE: &str = "1b8898a9-d93d-4cfd-8e57-3c79686c254b";
+    let notes = Catalogue::new(
+        "en-US",
+        &["notes-page-body = Edited “{ $item }”\nnotes-new-note = Created “{ $note }”"],
+    );
+    let app = |what: Described| {
+        ActionContext::for_resource("pages", "notes.pages", "Notes")
+            .with_app("so.tilo.notes", "Notes")
+            .with_described(what)
+    };
+    let body = Did::Edit(FieldEdit {
+        ty: "page".into(),
+        field: "body".into(),
+        path: vec![PathStep::Field("body".into())],
+        op: EditOp::Splice,
+        args: std::collections::BTreeMap::new(),
+        old: None,
+        new: None,
+    });
+    // An item with no name when the step was taken is recorded by its id.
+    let typed = app(Described::new(body).on(NOTE, NOTE));
+    let made = |note: &str| {
+        app(Described::new(Did::verb(
+            ActionKey::new("so.tilo.notes", "notes.pages", "new-note"),
+            [
+                ("note".to_owned(), Scalar::from(note)),
+                ("title".to_owned(), Scalar::from("")),
+            ],
+        )))
+    };
+    let reader = Reader::new("en-US").with_app(&notes).with_labels(&Now);
+    assert_eq!(reader.sentence(&typed), "Edited “Garden plan”");
+    assert_eq!(reader.sentence(&made(NOTE)), "Created “Garden plan”");
+    assert_eq!(reader.sentence(&made(GONE)), "New note in Notes");
+}

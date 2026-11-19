@@ -67,6 +67,11 @@ def count_file(text: str) -> int:
         open_index = match.end() - 1
         close = rust_source.matching(code, open_index)
         body = code[open_index:close]
+        # An impl written in a `macro_rules!` body takes its items from the
+        # invocation (`$impl_items`): there is no widget here, only the item
+        # list the expansion fills, and the invocations give it `html`.
+        if "$" in body:
+            continue
         # Only the impl's own items: a nested impl's `fn html` is not this
         # widget's.
         depth, own = 0, []

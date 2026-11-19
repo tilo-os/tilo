@@ -79,8 +79,6 @@ fn main() -> Result<(), String> {
             .await
             .map_err(|error| format!("{listen}: {error}"))?;
         tracing::info!(%listen, "API server listening");
-        // Said once at start, in the log, when the site serves no sign-in page.
-        let _ = server.sign_in_page().await;
         tilo_api::serve(server, listener).await;
         Ok(())
     })

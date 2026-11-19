@@ -197,6 +197,7 @@ macro_rules! decorator_trait {
         $(#[$impl_attr])*
         impl<T: Decorator> Widget for T {
             $($impl_items)*
+
             $(
                 $(#[$ref_attr])*
                 fn $ref(&self, $($ref_arg: $ref_ty),*) $(-> $ref_ret)? {
@@ -261,6 +262,7 @@ macro_rules! decorator_trait {
 
                     impl<$d ($d generic)*> Widget for $d ty {
                         $($impl_items)*
+
                         $(
                             $(#[$ref_attr])*
                             fn $ref(&self, $($ref_arg: $ref_ty),*) $(-> $ref_ret)? {
@@ -392,6 +394,12 @@ decorator_trait! {
     /// Every decorator is a widget: each method is the decorator's own, which
     /// forwards to the inner widget unless the decorator overrides it.
     impl {
+        /// What it shows, as its inner widget shows it: a decorator is its inner widget
+        /// plus what it adds.
+        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
+            Decorator::html(self, cx)
+        }
+
         #[doc(hidden)]
         fn concrete_type_name(&self) -> &'static str {
             Decorator::concrete_type_name(self)
@@ -399,10 +407,6 @@ decorator_trait! {
 
         fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
             Decorator::for_each_layout_child(self, visitor)
-        }
-
-        fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
-            Decorator::html(self, cx);
         }
 
         fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
@@ -638,8 +642,8 @@ decorator_trait! {
             state: &mut crate::widget::Edits<'_>,
             path: &ModelPath,
         ) -> bool;
-        fn start_deferred_text() -> Option<crate::webview::text_input::Receipt>;
-        fn commit_deferred_text(text: &str) -> Option<crate::webview::text_input::Receipt>;
+        fn start_deferred_text() -> Option<tilo_webview::text_input::Receipt>;
+        fn commit_deferred_text(text: &str) -> Option<tilo_webview::text_input::Receipt>;
         fn on_external_event(payload: &str, state: &mut crate::widget::Edits<'_>, root: &ModelPath);
         fn on_nav_gesture(
             dir: crate::gesture::NavDirection,

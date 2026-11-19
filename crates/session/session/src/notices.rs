@@ -551,6 +551,17 @@ pub(crate) fn workspaces_notice() -> Notice {
     )
 }
 
+/// The notice that a workspace this session made is not on this computer's workspace service yet:
+/// founding it there is asked for again, and until it lands the workspace exists only here.
+pub(crate) fn workspace_not_founded_notice(name: &str, reason: &str) -> Notice {
+    Notice::new(
+        t("workspaces-app-name"),
+        1,
+        t_args("workspace-not-founded-title", &[("name", name.into())]),
+        t_args("workspace-not-founded-body", &[("reason", reason.into())]),
+    )
+}
+
 /// The notice that the "Always allow" answers kept for the agents at this API do not read back;
 /// `agent` is the one it was given to, where the kept file still says.
 pub(crate) fn agent_bindings_notice(agent: Option<&str>) -> Notice {

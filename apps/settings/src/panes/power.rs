@@ -620,12 +620,14 @@ impl PowerArea {
 #[effect(operation = "settings.effect")]
 pub enum PowerEffect {
     /// Set this device's power profile.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetPowerProfile {
         #[param("The profile", choices = english(PROFILES))]
         profile: String,
     },
     /// Set how full this device's battery charges.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetChargeLimit {
         #[param("The cap, in percent")]

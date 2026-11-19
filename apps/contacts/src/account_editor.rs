@@ -6,7 +6,7 @@ use std::rc::Rc;
 use tilo_contact_directory::ContactDirectory;
 use ui::LocalState;
 use ui::framework::{Actions, Dispatcher, Effected, LiveRow, PersonResource, ViewCx};
-use ui::tilo_resource::{self, Effect, Id};
+use ui::tilo_resource::{self, Effect, Id, RowBindings};
 use ui::widget::{
     Button, Column, Dropdown, Element, ModelView, Property, PropertyList, Row, Scrollable, Text,
     TextInput,
@@ -45,12 +45,23 @@ pub enum AccountEffect {
     #[effect(view)]
     ReviewAccountRevocation { person: String, association: String },
     /// Confirm the exact pending account review.
-    #[effect(row, destructive)]
+    #[effect(kind = "outside")]
+    #[effect(row, destructive, on = AccountReviewRow)]
     ConfirmAccountReview { token: String },
     /// Cancel the pending review without changing any account association.
     #[effect(view, idempotent)]
     CancelAccountReview,
 }
+
+/// A pending account review, as Contacts publishes it: a row of the
+/// `contacts.account-review` type whose effect confirms the token it carries.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "contacts.account-review",
+    label = "Account review",
+    effects = AccountEffect
+)]
+pub struct AccountReviewRow;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Pending {
@@ -395,40 +406,41 @@ pub(crate) fn build(cx: &ViewCx<Contacts>) -> Element {
 
 pub(crate) fn review_rows(editor: &Editor) -> Vec<LiveRow> {
     editor.selection.get().pending.map_or_else(Vec::new, |p| {
-        vec![
-            LiveRow::new(
-                format!("contacts.account-review:{}", p.token),
-                "contacts.account-review",
-                CATALOG.t_args(
-                    "contacts-account-review-description",
-                    &[
-                        (
-                            "action",
-                            CATALOG
-                                .t(if p.revoke.is_some() {
-                                    "contacts-account-remove"
-                                } else {
-                                    "contacts-account-review"
-                                })
-                                .into(),
-                        ),
-                        ("person", p.person.clone().into()),
-                        ("service", p.service.clone().into()),
-                        ("recipient", p.recipient.clone().into()),
-                        ("scope", p.scope.clone().into()),
-                        ("revision", p.revision.clone().into()),
-                        (
-                            "previous",
-                            p.previous
-                                .as_ref()
-                                .map_or("", |old| old.revision.as_str())
-                                .into(),
-                        ),
-                    ],
-                ),
-            )
-            .effect(&AccountEffect::ConfirmAccountReview { token: p.token }),
-        ]
+        let bindings = RowBindings::new().bind(
+            AccountEffect::CONFIRM_ACCOUNT_REVIEW,
+            [("token", serde_json::Value::String(p.token.clone()))],
+        );
+        vec![LiveRow::typed_with::<AccountReviewRow>(
+            format!("contacts.account-review:{}", p.token),
+            CATALOG.t_args(
+                "contacts-account-review-description",
+                &[
+                    (
+                        "action",
+                        CATALOG
+                            .t(if p.revoke.is_some() {
+                                "contacts-account-remove"
+                            } else {
+                                "contacts-account-review"
+                            })
+                            .into(),
+                    ),
+                    ("person", p.person.clone().into()),
+                    ("service", p.service.clone().into()),
+                    ("recipient", p.recipient.clone().into()),
+                    ("scope", p.scope.clone().into()),
+                    ("revision", p.revision.clone().into()),
+                    (
+                        "previous",
+                        p.previous
+                            .as_ref()
+                            .map_or("", |old| old.revision.as_str())
+                            .into(),
+                    ),
+                ],
+            ),
+            &bindings,
+        )]
     })
 }
 

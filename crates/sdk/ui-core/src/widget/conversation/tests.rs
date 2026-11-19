@@ -13,6 +13,7 @@ use super::composer::{ComposerIntent, ComposerRule};
 use super::day::{ConversationClock, ConversationDay, DayBreaks, day_break_indices};
 use super::delivery::{DeliveryState, DeliveryStep};
 use super::draft::{self, DraftBook};
+use super::list::{CaptionShows, captions};
 use super::list::{ConversationLine, ConversationRole, ListFace, bubble_colors, run_breaks};
 use crate::theme::Theme;
 
@@ -481,6 +482,61 @@ tilo_test_env::scenario! {
             at("5", 3_780_000, "", ConversationRole::Outgoing),
         ];
         assert_eq!(run_breaks(&lines), vec![true, false, true, true, true]);
+    }
+
+    phase a_group_says_its_time_and_delivery_once_under_its_last_line;
+    {
+        let clock = clock_at(NOONISH);
+        let mine = |id: &str, secs: i64, state| {
+            ConversationLine::outgoing(id, NOONISH.saturating_add(secs) * 1_000, "x")
+                .with_delivery(state)
+        };
+        let none = CaptionShows::default();
+        let both = CaptionShows {
+            time: true,
+            delivery: true,
+        };
+        // Three lines sent the same minute and read together: one "Read" and one time, under
+        // the last.
+        let read_together = [
+            mine("a", 0, DeliveryState::Read),
+            mine("b", 10, DeliveryState::Read),
+            mine("c", 20, DeliveryState::Read),
+        ];
+        assert_eq!(captions(&read_together, clock), vec![none, none, both]);
+        // A later minute keeps its own time, but the shared state is said once.
+        let two_minutes = [
+            mine("a", 0, DeliveryState::Read),
+            mine("b", 120, DeliveryState::Read),
+        ];
+        let time_only = CaptionShows {
+            time: true,
+            delivery: false,
+        };
+        assert_eq!(captions(&two_minutes, clock), vec![time_only, both]);
+        // A read line followed by one only delivered says its own state.
+        let read_then_delivered = [
+            mine("a", 0, DeliveryState::Read),
+            mine("b", 10, DeliveryState::Delivered),
+        ];
+        let delivery_only = CaptionShows {
+            time: false,
+            delivery: true,
+        };
+        assert_eq!(
+            captions(&read_then_delivered, clock),
+            vec![delivery_only, both]
+        );
+        // The other person's answer ends the group, so each side says its own.
+        let answered = [
+            mine("a", 0, DeliveryState::Read),
+            ConversationLine::incoming("b", (NOONISH + 10) * 1_000, "Ada", "x"),
+            mine("c", 20, DeliveryState::Read),
+        ];
+        assert_eq!(
+            captions(&answered, clock),
+            vec![both, time_only, both]
+        );
     }
 
     phase the_list_reserves_exactly_what_it_paints_and_marks_every_day;

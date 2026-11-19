@@ -538,7 +538,7 @@ d-nljxfsom-target = Target
 d-nljxfsom-at = At
 
 d-zoqbhs7o = Seed
-    .doc = A shell that has never been arranged: the bar's parts and the dock's, in the order the default shell shows them.
+    .doc = What a new shell starts with: the bar's parts and the dock's, in the order the default shell shows them.
 
 d-vglzmkiy = Drop the power part
     .doc = A shell that kept the retired `power` part beside the status loses it.

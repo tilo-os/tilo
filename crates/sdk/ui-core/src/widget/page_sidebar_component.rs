@@ -1,7 +1,6 @@
 //! [`PageSidebar`] as a described component: a rail of page thumbnails. The rail is a list of
 //! pages: each thumbnail is the page's shape and its number, the page open lifted.
 
-use taffy::Style;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
@@ -161,22 +160,45 @@ impl crate::widget::Widget for DeclaredRail {
         self.report()
     }
 
+    /// A rail fills the height beside the viewer it stands with, at a rail's width; where
+    /// nothing gives it a height (a column that grows with what it holds) it stands as tall as
+    /// its pages, so the column grows to hold it rather than the rail painting over what follows.
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        _theme: &crate::theme::Theme,
+        theme: &crate::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
     ) -> taffy::NodeId {
-        taffy.widget_leaf(
-            Style {
-                size: taffy::Size::from_percent(1.0, 1.0),
-                flex_grow: 1.0,
-                flex_shrink: 1.0,
-                ..Style::default()
-            },
-            node_map,
-            self,
-        )
+        self.rail.adopt_theme(theme);
+        let width = theme.tokens.metrics.page_rail_width;
+        let mut style = crate::widget::layout::natural_filling();
+        style.size.width = taffy::Dimension::auto();
+        style.max_size.width = taffy::Dimension::length(width);
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        _text_renderer: &mut crate::text_render::TextRenderer,
+    ) -> taffy::Size<f32> {
+        let offered = match available.width {
+            taffy::AvailableSpace::Definite(width) => f64::from(width),
+            taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => {
+                self.rail.natural_width()
+            }
+        };
+        let width = known
+            .width
+            .map_or_else(|| offered.min(self.rail.natural_width()), f64::from);
+        #[allow(clippy::cast_possible_truncation, reason = "a rail's measures fit f32")]
+        taffy::Size {
+            width: width as f32,
+            height: known
+                .height
+                .unwrap_or(self.rail.natural_height(width, self.count) as f32),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
@@ -212,7 +234,55 @@ impl crate::widget::Widget for DeclaredRail {
         self.rail.render(scene, transform, text, theme, &mut thumb);
     }
 
-    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
+    /// A page pressed is chosen, a page dragged moves, a page's menu duplicates or deletes it,
+    /// the wheel scrolls a rail taller than its box, and Escape lets go of a drag or a menu.
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        use winit::event::{ElementState, MouseButton, MouseScrollDelta};
+        let changed = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = ctx.logical(position);
+                self.rail.on_motion(self.cursor)
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let inside = self.rect.contains(self.cursor);
+                match (state, button) {
+                    (ElementState::Pressed, MouseButton::Left) if inside => {
+                        self.rail.on_press(self.cursor)
+                    }
+                    (ElementState::Pressed, MouseButton::Right) if inside => {
+                        self.rail.on_right_press(self.cursor)
+                    }
+                    (ElementState::Released, MouseButton::Left) => self.rail.on_release(),
+                    _ => false,
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.cursor) => {
+                let dy = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => {
+                        -f64::from(*y) * crate::widget::wheel::line_of_wheel()
+                    }
+                    MouseScrollDelta::PixelDelta(at) => -at.y / ctx.scale_factor,
+                };
+                self.rail.on_wheel(dy)
+            }
+            WindowEvent::KeyboardInput { event: key, .. }
+                if key.state == ElementState::Pressed
+                    && key.logical_key
+                        == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) =>
+            {
+                self.rail.on_escape()
+            }
+            _ => false,
+        };
+        let fired = self.report();
+        if changed || fired {
+            *ctx.handled = true;
+        }
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.rail.is_dragging() || self.rail.is_pending_drag()
+    }
 
     fn get_rect(&self) -> Rect {
         self.rect
@@ -257,9 +327,50 @@ impl Described for DeclaredRail {
     }
 }
 
-#[allow(dead_code, reason = "a host that hit-tests the rail keeps its pointer")]
-impl DeclaredRail {
-    fn pointer(&mut self, at: Point) {
-        self.cursor = at;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::component::{Fired, Intent};
+
+    /// A rail a view declares answers the pointer: a page pressed is the page the view is told
+    /// was chosen.
+    #[test]
+    fn a_page_pressed_on_a_declared_rail_is_chosen() {
+        let queue = crate::Intents::<Fired>::default();
+        let rail = DeclaredRail::from_props(
+            "r",
+            PageSidebarProps {
+                aspect: 1.414,
+                count: 3,
+                current: 0,
+                select: Event::View(Intent::new(&queue, "r", "select")),
+                ..PageSidebarProps::default()
+            },
+        );
+        let mut harness = crate::headless::FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(rail),
+            (240, 900),
+            crate::theme::Theme::light(),
+        );
+        fn find(widget: &dyn crate::widget::Widget) -> Option<&DeclaredRail> {
+            widget
+                .as_any()
+                .and_then(|any| any.downcast_ref::<DeclaredRail>())
+                .or_else(|| widget.children().into_iter().find_map(find))
+        }
+        let second = find(harness.root_widget())
+            .and_then(|rail| rail.rail.thumb_rects().get(1).map(|(_, at)| *at))
+            .expect("the second page's thumbnail");
+        harness.click_at(second.center().x, second.center().y);
+        let fired: Vec<_> = queue
+            .take()
+            .into_iter()
+            .map(|fired| (fired.event, fired.value))
+            .collect();
+        assert!(
+            fired.contains(&("select".to_owned(), Some(Value::Int(1)))),
+            "the second page is chosen: {fired:?}"
+        );
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use chat::projection::ChatProjection as _;
 use collaboration::permissions::{Acting, KindSet, MemberId, Role, policy};
 use ed25519_dalek::{Signer, SigningKey};
 use std::{cell::RefCell, path::Path, process::Command};

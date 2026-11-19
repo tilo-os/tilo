@@ -48,6 +48,26 @@ impl DeviceFleetStore {
         }
     }
 
+    /// The store this device keeps `identity_id`'s fleet in: its account's
+    /// identity directory when that holds one, otherwise the identity root
+    /// that holds this device's key and certificate. A server has no identity
+    /// directory of its own, and the enrollment that admitted it wrote the
+    /// fleet into its identity root, so both sides find it there.
+    #[must_use]
+    pub fn of_device(identity_paths: IdentityPaths, identity_id: &str) -> Self {
+        if let Ok(store) = Self::from_env()
+            && store.fleet_file(identity_id).exists()
+        {
+            return store;
+        }
+        let root = identity_paths
+            .user_pubkey
+            .parent()
+            .and_then(Path::parent)
+            .map_or_else(PathBuf::new, Path::to_path_buf);
+        Self::at(root, identity_paths)
+    }
+
     /// The store of another account's identity directory, written by a root
     /// process acting for that account (uid): every write runs as them and
     /// only into a directory they own ([`crate::person_files::as_person`]).
@@ -619,7 +639,7 @@ impl DeviceFleetStore {
     /// This device's material of `identity_id`'s key, which signs only
     /// after the person approved what it signs
     /// ([`crate::certification_ceremony`]).
-    pub fn identity_key(&self, identity_id: &str) -> io::Result<runtime_identity::SigningIdentity> {
+    pub fn identity_key(&self, identity_id: &str) -> io::Result<crate::store::SigningIdentity> {
         self.identity(identity_id).map(|(key, _)| key)
     }
 
@@ -627,7 +647,7 @@ impl DeviceFleetStore {
         &self,
         identity_id: &str,
     ) -> io::Result<(
-        runtime_identity::SigningIdentity,
+        crate::store::SigningIdentity,
         crate::registry::IdentityProfile,
     )> {
         let store = crate::registry::IdentityRegistryStore::at(&self.identity_dir);
@@ -637,7 +657,7 @@ impl DeviceFleetStore {
             .get(identity_id)
             .cloned()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "identity is not registered"))?;
-        let identity = runtime_identity::load_from_path(profile.record_path.clone())
+        let identity = crate::store::load_from_path(profile.record_path.clone())
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
         if identity.group_public_key() != profile.user_public_key {
             return Err(io::Error::new(

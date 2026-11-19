@@ -192,11 +192,38 @@ pub struct Profile {
     pub available: bool,
 }
 
+/// The `sound` resource, as a declared type: the outputs, the inputs and the
+/// card's controls.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.audio.sound", label = "Sound")]
+pub struct SoundReading;
+
+/// One sound output, as a declared type: playing through it is
+/// [`SoundAction::RouteOutput`]'s.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.audio.output",
+    label = "Sound output",
+    effects = SoundAction
+)]
+pub struct OutputRow;
+
+/// One sound input, as a declared type: recording from it is
+/// [`SoundAction::SelectInput`]'s.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.audio.input",
+    label = "Sound input",
+    effects = SoundAction
+)]
+pub struct InputRow;
+
 /// The `sound` resource's actions; each changes this device only.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.audio.sound")]
 pub enum SoundAction {
     /// Set the volume.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -208,9 +235,11 @@ pub enum SoundAction {
         level: f64,
     },
     /// Turn the volume up by a step.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "volume-2", keywords = "louder, volume up, lauter")]
     VolumeUp,
     /// Turn the volume down by a step.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "volume-1",
@@ -218,20 +247,24 @@ pub enum SoundAction {
     )]
     VolumeDown,
     /// Mute or unmute the sound.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent, icon = "volume-x", keywords = "sound, silence")]
     SetMuted {
         #[param("Whether the sound is muted")]
         muted: bool,
     },
     /// Unmute the sound when it is muted, and mute it when it is not.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "volume-x", keywords = "mute, unmute, stumm")]
     ToggleMuted,
     /// Play sound through an output.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         row,
         idempotent,
         icon = "speaker",
+        on = OutputRow,
         keywords = "speakers, headphones"
     )]
     RouteOutput {
@@ -239,11 +272,13 @@ pub enum SoundAction {
         node: u32,
     },
     /// Record sound from an input.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         row,
         idempotent,
         icon = "mic",
+        on = InputRow,
         keywords = "microphone, input"
     )]
     SelectInput {
@@ -251,6 +286,7 @@ pub enum SoundAction {
         node: u32,
     },
     /// Mute or unmute the microphone.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -262,6 +298,7 @@ pub enum SoundAction {
         muted: bool,
     },
     /// Unmute the microphone when it is muted, and mute it when it is not.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "mic-off",
@@ -269,6 +306,7 @@ pub enum SoundAction {
     )]
     ToggleInputMuted,
     /// Set the microphone's level.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -281,6 +319,7 @@ pub enum SoundAction {
     },
     /// Play (or record) one application's stream through an output (or
     /// input), or release it to follow the default.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -294,6 +333,7 @@ pub enum SoundAction {
         device: Option<u32>,
     },
     /// Set one application's volume.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -307,6 +347,7 @@ pub enum SoundAction {
         level: f64,
     },
     /// Mute or unmute one application.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -321,6 +362,7 @@ pub enum SoundAction {
     },
     /// Use another profile of a sound card (high fidelity, a headset's
     /// microphone).
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -345,9 +387,8 @@ pub fn surface() -> tilo_resource::surface::Surface {
 /// The sound resource reading `sound`.
 #[must_use]
 pub fn resource(sound: &Sound) -> ResourceSpec {
-    let mut resource = offer::<SoundAction>(ResourceSpec::new(
+    let mut resource = offer::<SoundAction>(tilo_resource::typed_resource::<SoundReading>(
         SOUND,
-        "so.tilo.audio.sound",
         crate::i18n::name("so.tilo.audio.sound", "Sound"),
     ));
     if sound.output.is_none() {
@@ -394,20 +435,28 @@ pub fn resource(sound: &Sound) -> ResourceSpec {
         );
     }
     let outputs = sound.outputs.iter().map(|device| {
-        ResourceSpec::new(
+        let bindings = tilo_resource::RowBindings::new().bind(
+            SoundAction::ROUTE_OUTPUT,
+            [("node", u64::from(device.node).into())],
+        );
+        tilo_resource::LiveRow::typed_with::<OutputRow>(
             output_id(device.node),
-            "so.tilo.audio.output",
             device.label.clone(),
+            &bindings,
         )
-        .with_action(SoundAction::RouteOutput { node: device.node }.bound())
+        .into_resource()
     });
     let inputs = sound.inputs.iter().map(|device| {
-        ResourceSpec::new(
+        let bindings = tilo_resource::RowBindings::new().bind(
+            SoundAction::SELECT_INPUT,
+            [("node", u64::from(device.node).into())],
+        );
+        tilo_resource::LiveRow::typed_with::<InputRow>(
             format!("sound-input:{}", device.node),
-            "so.tilo.audio.input",
             device.label.clone(),
+            &bindings,
         )
-        .with_action(SoundAction::SelectInput { node: device.node }.bound())
+        .into_resource()
     });
     resource.with_children(outputs.chain(inputs))
 }

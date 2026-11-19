@@ -117,7 +117,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
         )?;
 
         let mut check =
-            Checkbox::new("d_check", "Share with peers").with_permission_scope(locked());
+            Checkbox::bound("d_check", "Share with peers").with_permission_scope(locked());
         stamp(
             &mut scene,
             &mut tr,
@@ -128,7 +128,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
             ctx,
         )?;
 
-        let mut toggle = Toggle::new("d_toggle", "Sync").with_permission_scope(locked());
+        let mut toggle = Toggle::bound("d_toggle", "Sync").with_permission_scope(locked());
         stamp(
             &mut scene,
             &mut tr,

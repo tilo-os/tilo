@@ -34,12 +34,14 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-session-client = { path = "../../session/client" }
+tilo-session-actions = { path = "../../session/session-actions" }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
 # HTTPS to the server and the site, as every client of the server makes its requests.
 tilo-server-client = { path = "../tilo-server-client" }
 tilo-server-session = { path = "../tilo-server-session" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
+tilo-device-mcp = { path = "../../runtime/device-mcp" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true

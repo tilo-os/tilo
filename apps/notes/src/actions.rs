@@ -50,28 +50,6 @@ pub(crate) fn find_pages(pages: &[PageMeta], title: &str) -> serde_json::Value {
     })
 }
 
-/// The note titled `title`: the exact title first, else the one equal
-/// ignoring case. Agents name notes by the titles a read showed them.
-pub(crate) fn page_titled(pages: &[PageMeta], title: &str) -> Result<PageId, String> {
-    let wanted = title.trim();
-    if let Some(page) = pages.iter().find(|page| page.title == wanted) {
-        return Ok(page.id);
-    }
-    let folded = wanted.to_lowercase();
-    let mut alike = pages
-        .iter()
-        .filter(|page| page.title.trim().to_lowercase() == folded);
-    match (alike.next(), alike.next()) {
-        (Some(page), None) => Ok(page.id),
-        (Some(_), Some(_)) => Err(format!(
-            "several notes are titled \u{201c}{wanted}\u{201d}: give its exact title"
-        )),
-        (None, _) => Err(format!(
-            "no note is titled \u{201c}{wanted}\u{201d}; read the notebook for the notes it holds"
-        )),
-    }
-}
-
 /// Every note as one Markdown file, in notebook order: each note's title a
 /// heading one level deeper than its parent's (at most six), its body
 /// beneath.

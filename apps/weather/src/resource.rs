@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use ui::prelude::*;
 use ui::tilo_resource::{Atom, JsonSchema, Refusal, SearchEntry};
 
+use crate::actions::WeatherEffect;
 pub use crate::model::Weather;
 #[cfg(feature = "samples")]
 use crate::model::WeatherModel;
@@ -43,7 +44,8 @@ impl Weather {
 #[resource(
     kind = "weather.locations",
     search = Weather::search,
-    read_content = Weather::read_document
+    read_content = Weather::read_document,
+    effects = WeatherEffect
 )]
 impl Weather {
     /// Save a place to follow.

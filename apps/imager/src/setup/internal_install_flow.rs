@@ -544,6 +544,8 @@ fn stage_request(
         profile: intent.profile,
         prepared_setup: intent.prepared_setup,
         migration,
+        install_plan: None,
+        token_file: None,
     })
 }
 
@@ -1123,6 +1125,8 @@ impl InternalInstall {
             profile: serde_json::Map::new(),
             prepared_setup: None,
             migration: None,
+            install_plan: None,
+            token_file: None,
         };
         self.link.set_state(RunState::Running {
             action,
@@ -1635,7 +1639,7 @@ pub(super) mod tests {
         use imager_backend::prepared_identity::PreparedIdentity;
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();

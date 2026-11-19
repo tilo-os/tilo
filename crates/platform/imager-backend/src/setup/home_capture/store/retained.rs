@@ -1,7 +1,8 @@
 //! Retained-source credential purpose. Serialized declarations are requests;
 use super::super::OriginalCallerFacts;
 use super::*;
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 use crate::setup::prepared_setup::PreparedSetupReview;
 use crate::setup::{
     home_capture::transport::{HostChannel, RetainedHomeInput},
@@ -418,7 +419,8 @@ impl RetainedSourceAuthority {
         UNKNOWN_SOURCE_RETIREMENT.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     pub(in crate::setup) fn review(
         setup: &PreparedSetupReview,
         active_person: &[u8; 32],

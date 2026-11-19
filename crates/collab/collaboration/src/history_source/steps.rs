@@ -832,6 +832,83 @@ impl StepIndex {
         steps
     }
 
+    /// The one step that `owns` claims and that the change `hash` is part of
+    /// (with the rest of its gesture), newest first. Walks the changes from
+    /// the newest, as [`Self::steps`] does, but stops at the step holding the
+    /// change: a history long after it is never read, and neither are the
+    /// steps before it.
+    pub fn step_of(
+        &mut self,
+        doc: &AutoCommit,
+        owns: &dyn Fn(&Version) -> bool,
+        same_step: &dyn Fn(&Version, &Version) -> bool,
+        hash: &ChangeHash,
+    ) -> Option<Vec<Version>> {
+        self.refresh(doc);
+        let at = self.position(hash)?;
+        let undone = undone(doc);
+        let mut superseded: HashSet<String> = HashSet::new();
+        let mut step: Vec<Version> = Vec::new();
+        // The newest change of the step being gathered, and its oldest
+        // change's place in causal order.
+        let mut newest = None;
+        let mut oldest = 0;
+        let mut gathered = false;
+        for index in (0..self.steps.len()).rev() {
+            let Some(version) = self.version_at(index) else {
+                continue;
+            };
+            if !owns(&version) {
+                continue;
+            }
+            let seen = version.hash.to_string();
+            match self.kind(doc, &version) {
+                Kind::Undo(_) | Kind::Bookkeeping => continue,
+                // Taken back again once what it brought back is undone.
+                Kind::Redo(brought_back)
+                    if brought_back.iter().all(|change| undone.contains(change)) =>
+                {
+                    continue;
+                }
+                Kind::Redo(brought_back) => superseded.extend(brought_back),
+                Kind::Edit if superseded.contains(&seen) => continue,
+                Kind::Edit => {}
+            }
+            if undone.contains(&seen) {
+                newest = None;
+                continue;
+            }
+            let Some(full) = self.full(doc, index) else {
+                continue;
+            };
+            if newest
+                .as_ref()
+                .is_some_and(|last| same_step(last, &version))
+            {
+                step.push(full);
+                oldest = index;
+                continue;
+            }
+            // Another step starts: the one gathered before it is complete,
+            // and every step after it was checked already.
+            if gathered {
+                if step.iter().any(|version| version.hash == *hash) {
+                    return Some(step);
+                }
+                if oldest <= at {
+                    // The change's own place was walked and it is no step.
+                    return None;
+                }
+            }
+            newest = Some(version);
+            step.clear();
+            step.push(full);
+            oldest = index;
+            gathered = true;
+        }
+        (gathered && step.iter().any(|version| version.hash == *hash)).then_some(step)
+    }
+
     /// The undos in effect that `owns` claims, newest first, at most
     /// `limit`: what `redo` brings back. A newer step of the same owner ends
     /// them.
@@ -880,6 +957,19 @@ pub fn steps_in_effect(
     limit: usize,
 ) -> Vec<Vec<Version>> {
     StepIndex::default().steps(doc, owns, &same_step, limit)
+}
+
+/// The one step in effect that `owns` claims and that the change `hash` is
+/// part of, newest first: what [`undo_step`] takes back. Stops at the
+/// change's own place in history, so the steps after it read their kinds and
+/// nothing before it is walked.
+#[must_use]
+pub fn step_in_effect(
+    doc: &AutoCommit,
+    owns: &dyn Fn(&Version) -> bool,
+    hash: &ChangeHash,
+) -> Option<Vec<Version>> {
+    StepIndex::default().step_of(doc, owns, &same_step, hash)
 }
 
 /// Whether `next`, the change after `last`, is a change of the same step: of
@@ -1073,10 +1163,7 @@ pub fn undo_step(
     words: &dyn HistoryWords,
 ) -> Result<Vec<Version>, String> {
     doc.get_heads();
-    let targets = steps_in_effect(doc, &|version| scope.owns(version), usize::MAX)
-        .into_iter()
-        .find(|step| step.iter().any(|version| version.hash == *hash))
-        .unwrap_or_default();
+    let targets = step_in_effect(doc, &|version| scope.owns(version), hash).unwrap_or_default();
     if targets.is_empty() {
         return Err(format!(
             "The step {} is undone already, or is not one this undo may take back.",

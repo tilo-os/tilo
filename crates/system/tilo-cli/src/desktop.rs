@@ -102,22 +102,15 @@ fn with_io(run: impl FnOnce(&mut Io<'_>) -> u8) -> ExitCode {
     exit(code)
 }
 
-/// Run one `action` subcommand, with examples spelled for `spelling`.
-pub fn run_action(cmd: ActionCmd, spelling: &Spelling) -> ExitCode {
+/// Answer one `action` subcommand, with examples spelled for `spelling`: an
+/// action done says its answer as typed JSON when `json`.
+pub fn run_action(cmd: ActionCmd, json: bool, spelling: &Spelling) -> ExitCode {
     let sockets = sockets();
     with_io(|io| match cmd {
         ActionCmd::List { filter } => front::list(&sockets, &filter.join(" "), spelling, io),
-        ActionCmd::Run { action, args } => front::run(&sockets, &action, &args, spelling, io),
+        ActionCmd::Run { action, args } => front::run(&sockets, &action, &args, json, spelling, io),
         ActionCmd::Show { action } => front::show(&sockets, &action, spelling, io),
     })
-}
-
-/// `tilo do NAME … --json` on this desktop: the action's answer as the typed
-/// JSON the API answers a hosted workspace with, so a script reads one shape
-/// wherever the action ran.
-pub fn do_json(action: &str, args: &[String], spelling: &Spelling) -> ExitCode {
-    let sockets = sockets();
-    with_io(|io| front::do_json(&sockets, action, args, spelling, io))
 }
 
 /// `tilo open APP [file|link…]` and `tilo app open …`.

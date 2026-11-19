@@ -37,6 +37,7 @@ const REMOVED: &str = "retired";
 #[effect(operation = "settings.effect")]
 pub enum DevicesAccessEffect {
     /// End a device's or an agent's access to everything of the person's, for good.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     RevokeDevice {
         #[param("The key, in hex")]
@@ -45,6 +46,7 @@ pub enum DevicesAccessEffect {
         reason: String,
     },
     /// End every tab's access of one browser of the person's, for good.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     RevokeBrowser {
         #[param("The browser's id, as the device list names it")]
@@ -53,12 +55,14 @@ pub enum DevicesAccessEffect {
         reason: String,
     },
     /// Take an agent's grant back: its sessions end now and it gets in no more.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     RevokeAgent {
         #[param("The grant's id, as the MCP server lists it")]
         grant: String,
     },
     /// End an agent's open session, keeping its grant so it can come back.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     StopSession {
         #[param("The grant's id, as the MCP server lists it")]
@@ -71,6 +75,7 @@ pub enum DevicesAccessEffect {
     /// do: its row asks for their confirmation ([`answering_risk`]), anyone
     /// acting for them asks them first, and an agent's or an automation's
     /// call lets nobody in.
+    #[effect(kind = "outside")]
     #[effect(job, row, attended)]
     AnswerDevice {
         #[param("The ask's id, as the list of asking devices names it")]
@@ -83,6 +88,7 @@ pub enum DevicesAccessEffect {
     /// Name a device of the person's: what their device lists read it by from
     /// then on. Two computers set up the same way enroll under one name, so
     /// the person tells them apart here.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     RenameDevice {
         #[param("The key, in hex")]
@@ -95,9 +101,11 @@ pub enum DevicesAccessEffect {
     // keeps who runs them what it was for a view: the person at this device
     // and those acting for them, needing no more of a workspace than reading.
     /// Show how an agent or another computer connects as the person.
+    #[effect(kind = "outside")]
     #[effect(job, own_device, idempotent, label = "settings-access-connect")]
     ShowConnect,
     /// Show the link another of your own devices joins with, as a code its camera reads.
+    #[effect(kind = "outside")]
     #[effect(job, own_device, idempotent, label = "settings-access-add-device")]
     ShowPairDevice,
 }

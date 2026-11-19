@@ -1,8 +1,50 @@
+[[allow]]
+reason = "The `tilo.host` provider's own operations, which a session serves to the person's windows and asks of its own workspace service in process (the machines their Servers workspace holds)."
+words = ["host"]
+paths = [
+    "crates/session/client/src/engine.rs",
+    "crates/session/session/src/pair_device.rs",
+    "crates/session/session/src/sync/client/own_service.rs",
+]
+
 # Uses of the words docs/glossary.md does not use that mean something outside
 # Tilo (tools/policy/check_glossary_words.py). Each rule names its `words`
 # ("*" for all) and where they are allowed: `paths`, as globs in which `*`
 # spans directories, or `identifiers`, the exact identifier the word is part
 # of. A use of Tilo's own concept never goes here: rename it.
+
+[[allow]]
+reason = "The identity registry's field naming the file an identity is kept in."
+words = ["record"]
+identifiers = ["record_path"]
+paths = ["crates/runtime/tilo-runtime/src/standalone/mcp_admission_tests.rs"]
+
+[[allow]]
+reason = "The native test pair's serving daemon runs under the profile `host`, which names its cache and identity directories."
+words = ["host"]
+paths = ["crates/system/fs/tests/native_tier1.rs", "crates/system/fs/tests/native_sync_bench.rs"]
+
+[[allow]]
+reason = "logind's seats a dev VM account's session sits on, and the running of commands in tilo-vm's command-line help."
+words = ["seat", "run"]
+paths = ["crates/dev/tilo-vm/src/cli.rs"]
+
+[[allow]]
+reason = "The dev app assembly's subprocess helper, `run`, and a test's stand-in for it."
+words = ["run"]
+identifiers = ["run", "fake_run"]
+paths = ["os/dev/assemble-app-runtime.py", "tools/tests/test_assemble_app_runtime_models.py"]
+
+[[allow]]
+reason = "A WAV recording's audio channels (left, right), not a Tilo channel."
+words = ["channel"]
+paths = ["crates/dev/tilo-vm/src/sound.rs"]
+
+[[allow]]
+reason = "The peer-state and workspace service APIs' own names a test that drives them calls: a device's own workspace service (`OwnHost`, `own_host`), the holders of a workspace (`hosts`) and a holder address's `host` field, the action that hands a workspace to another holder (`HOST_WORKSPACE`), and a link's `run`."
+words = ["host", "run"]
+identifiers = ["OwnHost", "own_host", "hosts", "host", "HOST_WORKSPACE", "run"]
+paths = ["crates/collab/tilo-peer-state/tests/adhoc_group.rs"]
 
 [[allow]]
 reason = "The dialer's name for the network host it reaches, which the glossary keeps as a network host name."
@@ -16,7 +58,9 @@ words = ["host"]
 identifiers = ["Hosted", "host", "connect_to_pinned_host"]
 paths = [
     "crates/server/tilo-server/tests/servers_operations.rs",
+    "crates/server/tilo-server/tests/machines.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/servers/attach.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers/tests.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers/tests/asked.rs",
     # The API-on-a-server fixture's own `host` field, the server device a
@@ -39,6 +83,18 @@ paths = [
     "crates/collab/tilo-unlock-protocol/src/opened.rs",
     "crates/system/tilo-auth/src/boot/mod.rs",
 ]
+
+[[allow]]
+reason = "The nearby check's per-machine working directories, named run_a, run_b and run_c."
+words = ["run"]
+identifiers = ["run_a", "run_b", "run_c"]
+paths = ["os/dev/test-nearby-pairing.sh", "os/dev/nearby-unlock-phase.sh", "os/dev/nearby-wake-phase.sh"]
+
+[[allow]]
+reason = "A check's `run` key: the shell command t, or the policy suite, starts for it."
+words = ["run"]
+identifiers = ["run"]
+paths = ["t.toml", "tools/policy/steps.toml"]
 
 [[allow]]
 reason = "The hosted-VM service's load of the machine running its VMs, which the glossary keeps as host."
@@ -118,6 +174,9 @@ paths = [
     "crates/server/tilo-server/src/daemon.rs",
     "crates/server/tilo-server/src/web_cli.rs",
     "crates/server/tilo-workspace-service/src/workspaces/servers/device.rs",
+    "crates/server/tilo-workspace-service/src/service.rs",
+    "crates/server/tilo-workspace-service/src/workspaces.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/hosts.rs",
     "crates/server/tilo-server/src/web/mod.rs",
     "crates/session/install-plan/src/lib.rs",
     "crates/server/tilo-workspace-service/Cargo.toml",
@@ -127,6 +186,7 @@ paths = [
     "crates/session/client/tests/invitation_entry.rs",
     "crates/session/client/tests/server_restart.rs",
     "crates/session/session/src/sync/client/mod.rs",
+    "crates/session/session/src/sync/client/network.rs",
     "crates/session/session/src/sync/client/own_service.rs",
     "crates/session/session/src/enrollment.rs",
     "crates/session/session/src/window_share.rs",
@@ -141,6 +201,8 @@ paths = [
     "docs/hosted-browser.md",
     "os/containers/tilo-lounge/README.md",
     "os/containers/tilo-lounge/entrypoint.sh",
+    "os/dev/nearby-unlock-phase.sh",
+    "os/dev/test-nearby-pairing.sh",
     "os/containers/tilo-server/Containerfile",
     "os/containers/tilo-sh/stack.sh",
     "os/dev-image/usr/lib/systemd/system/tilo-device-admin.service",
@@ -171,11 +233,11 @@ words = ["subject"]
 paths = [
     "apps/mail/*",
     "apps/tl/mail/*",
-    "crates/agent/agent-session/tests/mail_for_agents.rs",
     "crates/platform/mail-session/*",
     "crates/server/tilo-workspace-service/src/workspaces/mail_watch.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings.rs",
     "crates/server/tilo-workspace-service/src/workspaces/person_settings/sending.rs",
+    "crates/agent/agent-session/tests/mail_for_agents.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_assistant_tests.rs",
 ]
 
@@ -201,9 +263,9 @@ paths = ["crates/collab/threshold-identity/*"]
 reason = "An iCalendar or WhatsApp group participant."
 words = ["participant"]
 paths = [
-    "apps/calendar/src/ics.rs",
-    "apps/calendar/src/ics/tests.rs",
-    "apps/calendar/src/model.rs",
+    "apps/calendar-model/src/ics.rs",
+    "apps/calendar-model/src/ics/tests.rs",
+    "apps/calendar-model/src/model.rs",
     "apps/calendar/src/app.rs",
     "crates/system/messaging-protocol/src/supervisor/whatsapp/*",
 ]
@@ -241,11 +303,20 @@ reason = "Chat's channels, and the mentions read from a chat's messages."
 words = ["channel"]
 paths = [
     "apps/chat/*",
+    "apps/chat-model/*",
+    "apps/chat-model-wasm/*",
     "apps/tl/chat/*",
     "crates/agent/agent-session/tests/workspace_actions/carried_names.rs",
+    "crates/agent/agent-session/tests/workspace_actions/chat_group.rs",
+    "crates/agent/agent-session/tests/workspace_actions/held_roles.rs",
     "crates/sdk/ui-core/src/mentions.rs",
     "crates/session/session/src/mentions.rs",
 ]
+
+[[allow]]
+reason = "A test that opens Chat on the canvas names the conversation the way the session publishes it, `chat.workspace/channels/<id>`, as `canvas_point.rs` beside it does."
+words = ["channel"]
+paths = ["crates/session/session/tests/canvas_turn_open.rs"]
 
 [[allow]]
 reason = "The room speakers are calibrated in."
@@ -364,7 +435,7 @@ reason = "Words of other languages and Unicode planes."
 words = ["plane"]
 paths = [
     "apps/imager/locales/de-DE.ftl",
-    "crates/sdk/ui-core/src/webview/page/tests.rs",
+    "crates/sdk/tilo-webview/src/page/tests.rs",
     "tools/android/mediation/README.md",
 ]
 
@@ -383,7 +454,7 @@ reason = "Argon2's lanes: the parallelism a key derivation runs with."
 words = ["lane"]
 paths = [
     "apps/passwords/src/transfer.rs",
-    "crates/runtime/runtime-identity/src/backup.rs",
+    "crates/runtime/tilo-identity/src/store/backup.rs",
     "crates/system/tilo-auth/src/wrapper.rs",
     "crates/system/tilo-seal/src/envelope.rs",
 ]
@@ -413,11 +484,6 @@ paths = [
 ]
 
 [[allow]]
-reason = "The name a device's stored workspace entry of version 5 gives its join log: bytes devices hold, read and written by that name until the entry has a new version."
-words = ["ledger"]
-identifiers = ["join_ledger"]
-
-[[allow]]
 reason = "A size raise names the t run that measured it."
 words = ["run"]
 paths = ["tools/perf/tapp-size-budget/raises/*", "tools/perf/runtime-size-budget/raises/*"]
@@ -425,7 +491,7 @@ paths = ["tools/perf/tapp-size-budget/raises/*", "tools/perf/runtime-size-budget
 [[allow]]
 reason = "The push lint and the integration script start cargo, rustfmt, t and Git: a run there is one of those processes, and Python's subprocess.run names it."
 words = ["run"]
-paths = ["tools/integrate.sh", "tools/ci/pre_push_lint.py", "tools/ci/check-changed-rustfmt.sh", "tools/tests/test_pre_push_lint.py", "tools/tests/test_changed_rustfmt.py"]
+paths = ["tools/ci/pre_push_lint.py", "tools/ci/check-changed-rustfmt.sh", "tools/tests/test_pre_push_lint.py", "tools/tests/test_changed_rustfmt.py", "tools/tests/test_test_environment.py"]
 
 [[allow]]
 reason = "The installer backend's entry point starts the privileged tilo-install process and feeds it its secrets through stdin."
@@ -447,12 +513,6 @@ paths = ["crates/packaging/launcher/src/audio_graph.rs"]
 reason = "The cargo nextest command the wrapper starts, and nextest's own `run` subcommand."
 words = ["run"]
 paths = ["tools/tests/test_nextest_policy.py"]
-
-[[allow]]
-reason = "The nextest setup tests' helper that starts a setup script, and the `served_runs` module of a package whose filter a rule names."
-words = ["run"]
-identifiers = ["run_script", "served_runs"]
-paths = ["tools/tests/test_test_environment.py"]
 
 [[allow]]
 reason = "The launch error the framework returns when a new item cannot be made."
@@ -520,7 +580,10 @@ paths = ["crates/agent/agent-session/src/workspace_actions/index.rs"]
 reason = "The helper that names a document's action provider, as the action service knows it."
 words = ["record"]
 identifiers = ["record_provider"]
-paths = ["crates/agent/agent-session/tests/workspace_actions/search_beside_requests.rs"]
+paths = [
+    "crates/agent/agent-session/tests/workspace_actions/search_beside_requests.rs",
+    "crates/agent/agent-session/tests/workspace_actions/person_before_agent.rs",
+]
 
 [[allow]]
 reason = "A LUKS key slot: the one of a volume's keys a boot asks a sibling to unlock with."
@@ -554,12 +617,24 @@ paths = ["apps/tl/gallery/locales/en-US.ftl", "apps/tl/gallery/media.tl"]
 [[allow]]
 reason = "Tokio's oneshot channel: the pipe between the task that sends a call and the task that answers it."
 words = ["channel"]
-paths = ["crates/runtime/tilo-mcp/src/devices.rs"]
+paths = ["crates/runtime/device-mcp/src/lib.rs"]
 
 [[allow]]
 reason = "The helper that drives a test phase's async body on a current-thread runtime."
 words = ["run"]
-paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs", "crates/runtime/tilo-mcp/src/mcp_agent_tests.rs"]
+
+[[allow]]
+reason = "tokio's mpsc constructor, the queue a test's stand-in page answers through."
+words = ["channel"]
+identifiers = ["unbounded_channel"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/api_asks.rs"]
+
+[[allow]]
+reason = "The MCP server's accessor for its action provider (`McpServer::host`)."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_ask.rs"]
 
 [[allow]]
 reason = "tokio's LocalSet method that drives a future to completion."
@@ -612,6 +687,8 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces.rs",
     "crates/server/tilo-workspace-service/src/workspaces/device_actions.rs",
     "crates/server/tilo-workspace-service/src/workspaces/device_actions_tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/names.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/authority/tests.rs",
     "docs/architecture/workspace.md",
     "os/tests/host_image.sh",
     "os/tests/server_update_policy_test.sh"
@@ -675,6 +752,31 @@ identifiers = ["record_path"]
 paths = ["crates/server/tilo-server/src/enroll.rs"]
 
 [[allow]]
+reason = "iroh's packet relay, which is how a machine on another network reaches a device's enrollment endpoint: these files name iroh's relay map, relay URL and relay mode."
+words = ["relay"]
+paths = [
+    "crates/collab/tilo-enrollment/Cargo.toml",
+    "crates/collab/tilo-enrollment/src/*.rs",
+    "crates/session/session/Cargo.toml",
+    "crates/session/session/src/enrollment.rs",
+    "crates/session/session/src/enrollment_tests.rs",
+    "crates/session/install-plan/src/lib.rs",
+    "crates/server/tilo-server/tests/machines.rs",
+]
+
+[[allow]]
+reason = "std's message channel the test's fixture starts the serving thread by."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/session/session/src/enrollment_tests.rs"]
+
+[[allow]]
+reason = "The runtime identity crate's name for the public half of a member's identity, which an enrollment hands the joining device: its name, not Tilo's word."
+words = ["record"]
+identifiers = ["public_member_record"]
+paths = ["crates/collab/tilo-enrollment/src/lib.rs"]
+
+[[allow]]
 reason = "The crate that keeps a session's identity registry, by its name, in the test that reads the registry a join writes with the code that reads it."
 words = ["host"]
 identifiers = ["tilo_identity"]
@@ -716,6 +818,7 @@ paths = [
     "crates/windows/compat-service/src/plan.rs",
     "crates/windows/compat-service/src/resources.rs",
     "crates/session/session/src/apps/windows.rs",
+    "crates/packaging/launcher/tests/system_view.rs",
 ]
 
 [[allow]]
@@ -772,13 +875,36 @@ paths = [
     "os/Containerfile.host-base",
     "os/build-host.sh",
     "os/dev/derive-rpm-package-set.py",
+    "os/dev/hardware_profile.py",
+    "os/dev/README.md",
     "os/tests/containerfile_sources.sh",
+    "os/tests/installer_offline_target_test.py",
     "os/tests/no_openssl_runtime.sh",
     "os/tests/rpm_snapshot_invariants.sh",
+    "crates/system/board-successor/src/profile.rs",
     "tools/ci/publish/host-base.sh",
     "tools/ci/publish/host-build.sh",
+    "tools/ci/publish/host-seal.sh",
+    "tools/ci/publish/lib.sh",
+    "docs/security/boot-chain.md",
+    "os/tests/registry_update_check.sh",
     "tools/signing/release_trust.py",
 ]
+
+[[allow]]
+reason = "The installer-medium builder and its boot smoke keep the tools' own names: podman and qemu run commands, the scripts' TILO_RUN directory and build directories, the source file they record, tr's [:space:] class, the buildah network name host, and the image-host digest the medium preloads."
+words = ["host", "run", "record", "channel", "space"]
+paths = [
+    "tools/ci/build-os.sh",
+    "tools/ci/medium-in-worker-vm.sh",
+    "tools/ci/publish/installer-medium.sh",
+    "tools/ci/server-installer-smoke.sh",
+]
+
+[[allow]]
+reason = "The VM harness's run directory (TILO_RUN, boot-run), `podman run`, the system's /run, and code an image step does or does not execute while it holds keys: names those tools give them, not Tilo concepts."
+words = ["run"]
+paths = ["tools/ci/publish/host-seal.sh", "tools/ci/publish/lib.sh", "tools/ci/publish/sign-boot-loader.sh", "os/tests/registry_update_check.sh"]
 
 [[allow]]
 reason = "The wasm engine's names for what answers a module's imports (`Host`) and what one of them answers (`HostFail`): an ABI the engine crate fixes, not Tilo's concept."
@@ -796,6 +922,12 @@ reason = "The service's test fixture starts a certified device (`test_host`), a 
 words = ["host"]
 identifiers = ["test_host"]
 paths = ["crates/server/tilo-workspace-service/src/workspaces/packaged_model_tests.rs"]
+
+[[allow]]
+reason = "The service's test fixture starts a certified device (`test_host`), a name its other tests share."
+words = ["host"]
+identifiers = ["test_host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/governed_grants_tests.rs"]
 
 [[allow]]
 reason = "The domain bytes a genesis change is hashed under, fixed before the word was retired; a different domain forks every resource created since."
@@ -855,6 +987,7 @@ paths = [
     "crates/server/tilo-workspace-service/src/workspaces/hosted_use.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/turn_delegation_tests.rs",
     "crates/server/tilo-workspace-service/src/workspaces/actions/host/mail_reach_tests.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/calendar_reach_tests.rs",
 ]
 
 [[allow]]
@@ -885,10 +1018,19 @@ paths = [
 ]
 
 [[allow]]
+reason = "Tokio's mpsc hand-off: what a model writes goes from the thread its ask blocks to the turn's task that hears it."
+words = ["channel"]
+identifiers = ["unbounded_channel"]
+paths = ["crates/agent/agent-turn/src/hearing.rs"]
+
+[[allow]]
 reason = "The session tests' support helpers that start a test server for workspaces, by the names the other session tests import them under, and the server client's types for the address it dials."
 words = ["host"]
 identifiers = ["start_workspace_host", "start_workspace_host_relaying", "Host", "HostAddress"]
-paths = ["crates/session/client/tests/invitation_entry.rs"]
+paths = [
+    "crates/session/client/tests/invitation_entry.rs",
+    "crates/session/client/tests/voice_every_workspace.rs",
+]
 
 [[allow]]
 reason = "The url crate's name for a URL's host part: which computers can open a site is read from it."
@@ -939,15 +1081,22 @@ paths = ["crates/system/tilo-auth/tests/peer_enrol.rs"]
 reason = "The LUKS2 keyslot an enrolment adds, which cryptsetup and the header's own format name."
 words = ["slot"]
 paths = [
+    "crates/platform/imager-backend/src/destination/install.rs",
+    "crates/server/tilo-server/src/operations.rs",
+    "crates/server/tilo-server/src/operations/tests.rs",
     "crates/session/session/src/network.rs",
     "crates/session/session/src/network/unlock.rs",
     "crates/session/session/tests/network_unlock_enrolment.rs",
     "crates/system/tilo-auth/src/sibling/enrol.rs",
     "crates/system/tilo-auth/tests/peer_enrol.rs",
+    "docs/security/boot-chain.md",
+    "os/dev/nearby-unlock-phase.sh",
+    "os/tests/disk_encrypt_finish_sibling.sh",
+    "os/tests/server_firstboot_sibling.sh",
 ]
 
 [[allow]]
-reason = "A call's failure names the host's own error beside its text (`Failure::host`): these files tell a policy refusal from a call the app cannot answer."
+reason = "A call's failure names the host's own error beside its text (`Failure::host`): this file tells a policy refusal from a call the app cannot answer."
 words = ["host"]
 identifiers = ["host"]
 paths = [
@@ -956,38 +1105,337 @@ paths = [
 ]
 
 [[allow]]
-reason = "The model gateway's module of its wire types, named by the program it backs, not a Tilo concept."
+reason = "The API server's configuration names the servers it forwards to by its field `hosts`; a test that starts another API server sets it."
 words = ["host"]
-identifiers = ["host_backend"]
-paths = ["crates/agent/agent-session/tests/harness/written_out.rs"]
+identifiers = ["hosts"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/api_v1.rs"]
 
 [[allow]]
-reason = "The search registry's own two questions — whether an app opens on a desktop's platforms, and what a window says where it does not — whose names the tests that check them say."
+reason = "tokio's own name for whether two senders feed one queue."
+words = ["channel"]
+identifiers = ["same_channel"]
+paths = ["crates/server/tilo-workspace-service/src/apps/collab_app_broker.rs"]
+
+[[allow]]
+reason = "The server tests' fixture hands a device's own workspace service as `Hosted`, whose field is its `.host`: the test names what the fixture names, and no new use of the word is meant."
+words = ["host"]
+paths = ["crates/server/tilo-server/tests/machines.rs"]
+
+[[allow]]
+reason = "`tilo-control`'s own verb for doing one action, which the command calls by its name."
 words = ["run"]
-identifiers = ["runs_on", "runs_elsewhere"]
+identifiers = ["run"]
+paths = ["crates/system/tilo-cli/src/machine.rs"]
+
+[[allow]]
+reason = "The host's own action provider (`tilo.host`) and the session that answers it: the verb host, and the person's own device whose workspace service keeps their workspaces. These files name that provider and the service it belongs to."
+words = ["host"]
 paths = [
-    "crates/session/desktop-search/src/availability.rs",
-    "crates/session/desktop-search/src/providers.rs",
+    "apps/imager/src/setup/journey/machine.rs",
+    "crates/server/tilo-workspace-service/src/service_authority.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/host/machine.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/actions/server.rs",
+    "crates/session/install-plan/src/lib.rs",
 ]
 
 [[allow]]
-reason = "The UI toolkit's own names, which the marks test drives a window with: the harness's `send_host_event`, the toolkit's host event, and its report that a window wakes when a dwell runs out."
+reason = "A nextest filter names the ush test module `served_runs::`; the word is the module's own name, not the banned noun."
+words = ["run"]
+identifiers = ["served_runs"]
+paths = ["tools/tests/test_test_environment.py"]
+
+[[allow]]
+reason = "Chat's share-window names the shared document by its `record` argument, and the agent tools' last read names the document it read as `record`: the server's document-sharing step passes both on by those names."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/server/tilo-server/src/workspace_agents/shares.rs"]
+
+[[allow]]
+reason = "Camera's verb that keeps a scanned code, its action-id constant and the catalogue keys the action macro reads: renaming them is an action-id change of its own."
+words = ["record"]
+identifiers = ["record", "record_scan", "RECORD_SCAN"]
+paths = [
+    "apps/camera-model/src/camera.rs",
+    "apps/camera-model/locales/en-US.ftl",
+    "apps/camera-model/locales/de-DE.ftl",
+]
+
+[[allow]]
+reason = "A published container port's mapping names the machine's port as Docker does (host port); the record's field and its catalogue key keep that name."
 words = ["host"]
-paths = ["apps/tilolang/tests/hosted/marks.rs"]
+identifiers = ["host", "host_port", "containers-host-port"]
+paths = [
+    "apps/containers-model/src/model.rs",
+    "apps/containers-model/src/draft.rs",
+    "apps/containers-model/locales/en-US.ftl",
+    "apps/containers-model/locales/de-DE.ftl",
+]
 
 [[allow]]
-reason = "The marks suite's own word for an agent's task run, which this test names beside its neighbours' `run()` and `the_run_marks_...` cases."
-words = ["run"]
-paths = ["apps/tilolang/tests/hosted/marks.rs"]
+reason = "A holder's signed address names the device it holds a workspace from in the address type's own `host` field, beside its service key and signature."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/collab/tilo-peer-state/src/state/governance.rs"]
 
 [[allow]]
-reason = "The nearby check's per-machine working directories, named run_a, run_b and run_c."
-words = ["run"]
-identifiers = ["run_a", "run_b", "run_c"]
-paths = ["os/dev/test-nearby-pairing.sh", "os/dev/nearby-unlock-phase.sh", "os/dev/nearby-wake-phase.sh"]
+reason = "`MemberQuestions`'s `host` field and tokio's `unbounded_channel`: the client whose questions a page answers and the stream carrying the answers, named as the libraries name them."
+words = ["host", "channel"]
+identifiers = ["host", "unbounded_channel"]
+paths = ["crates/agent/agent-session/tests/workspace_actions/packaged_model.rs"]
 
 [[allow]]
-reason = "A check's `run` key: the shell command t, or the policy suite, starts for it."
+reason = "A lane of a commit graph, as the stored history names it: a column a commit sits in, outside Tilo's vocabulary."
+words = ["lane"]
+paths = ["apps/git-client-model/src/model.rs"]
+
+[[allow]]
+reason = "The machine a VM runs on and the machine's own files and network as the guest sees them, which the glossary keeps as host: tilo-vm builds images for it and boots guests on it."
+words = ["host"]
+paths = ["crates/dev/tilo-vm/*", "crates/dev/tilo-vmd/*"]
+
+[[allow]]
+reason = "The two sides of a Linux VM: the host machine runs the domain and speaks `HostMessage` to its guest, and the hosted-VM service places guests on the host it runs them on."
+words = ["host"]
+paths = [
+    "crates/runtime/linux-vm/*",
+    "crates/runtime/linux-vm-agent/*",
+    "crates/runtime/linux-vm-protocol/*",
+]
+
+[[allow]]
+reason = "The machine a container runs on, and the web host names the tilo.sh stack serves and checks: origins, `Host` headers and ssh `Host` entries, all network names."
+words = ["host"]
+paths = ["os/containers/*"]
+
+[[allow]]
+reason = "The two JSON field names a published page handoff already gives the server's device certificate, `host_cert` on `ServerInfo` and the page's `hostCert`: a page reads them as they are."
+words = ["host"]
+identifiers = ["host_cert", "hostCert"]
+paths = ["crates/server/tilo-server-protocol/src/web.rs"]
+
+[[allow]]
+reason = "A registry address's host, the network name a registry is reached at, which the glossary keeps as a network host name."
+words = ["host"]
+identifiers = ["host", "host_str"]
+paths = ["apps/publisher-model/src/lib.rs"]
+
+[[allow]]
+reason = "A place at a poker table: the game's own word for where a player sits, in the resource the app and its module share."
+words = ["seat"]
+identifiers = [
+    "seat", "seats", "SEATS", "seating", "seat_of", "free_seat", "button_seat", "seated",
+    "seats_are_taken", "poker-take-seat", "two_people_asking_for_one_seat_both_sit",
+]
+paths = [
+    "apps/poker-model/src/game.rs",
+    "apps/poker-model/src/cards.rs",
+    "apps/poker-model/locales/en-US.ftl",
+    "apps/poker-model/locales/de-DE.ftl",
+]
+
+[[allow]]
+reason = "A connection's host, the network host name a transport reaches, which the glossary keeps as a network host name."
+words = ["host"]
+identifiers = ["host", "host_part", "Host"]
+paths = [
+    "apps/remote-model/src/lib.rs",
+    "apps/remote-model/locales/en-US.ftl",
+    "apps/remote-model/locales/de-DE.ftl",
+]
+
+[[allow]]
+reason = "The model gateway's module of its wire types, named by the program it backs, not a Tilo concept."
+words = ["host"]
+identifiers = ["host_backend"]
+
+[[allow]]
+reason = "The `host-info` crate's name: facts about the machine a program runs on, such as whether a process is alive."
+words = ["host"]
+identifiers = ["host_info"]
+
+[[allow]]
+reason = "`podman run`, t's run of a publishing check and the publishing channel tools/ci/publish/lib.sh names (dev, release, branch): names those tools give them, not Tilo concepts."
+words = ["run", "channel"]
+paths = ["tools/ci/publish/extension-manifests.sh", "tools/ci/publish/windows-compat-sysext.sh"]
+
+[[allow]]
+reason = "The framework's `RunMode` says how a window is shown: live, a capture, or a past version."
 words = ["run"]
-identifiers = ["run"]
-paths = ["t.toml", "tools/policy/steps.toml"]
+identifiers = ["RunMode"]
+paths = ["apps/weather/src/app.rs"]
+
+[[allow]]
+reason = "iroh's packet relay: where a desktop's endpoint is reached, woken when a link into a workspace held here is handed out, so the link names an address another network dials."
+words = ["relay"]
+paths = [
+    "crates/session/session/src/sync/client/network.rs",
+    "crates/session/session/src/sync/client/own_service.rs",
+]
+
+[[allow]]
+reason = "The WebAssembly host: the embedder a guest module calls back into, the wasm engines' own word for it (wasmi's `HostError`, host functions), not Tilo's name for a machine, which is a device or a server."
+words = ["host"]
+identifiers = ["host", "Host", "hosts", "Hosts", "tilo_wasm_host"]
+paths = [
+    "Cargo.toml",
+    "crates/dev/workspace-unify/Cargo.toml",
+    "docs/codemap.md",
+    "docs/tilolang-engines.md",
+    "crates/lang/tilolang-runtime/Cargo.toml",
+    "crates/lang/tilolang-runtime/src/engine.rs",
+    "crates/lang/tilolang-runtime/src/engine/tests.rs",
+    "crates/lang/tilolang-runtime/src/engine/wasmi_backend.rs",
+    "crates/lang/tilolang-runtime/src/engine/wasmtime_backend.rs",
+    "crates/runtime/tilo-wasm-host/*",
+    "crates/sdk/theme-painter-wasm/Cargo.toml",
+    "crates/sdk/theme-painter-wasm/src/lib.rs",
+]
+
+[[allow]]
+reason = "The bridge's own names for the program a task's programs run in (`TaskHosts`, `with_task_hosts`), and the fixture a listing is asked of (`host`): a session's program, not a machine."
+words = ["host"]
+identifiers = ["TaskHosts", "with_task_hosts", "host"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_task_program_tests.rs"]
+
+[[allow]]
+reason = "The runtime bundle's names for the machine it is built on and verified for (`host_arch`, `host_minimal_paths_for`, a mismatch's `host` field), the registry snapshot's `channel_authorization` field, and the service's test fixture (`test_host`) a test of a runtime from another release builds on."
+words = ["host", "channel"]
+identifiers = ["host_arch", "host_minimal_paths_for", "host", "channel_authorization", "test_host"]
+paths = ["crates/packaging/app-cli/src/model_runtime.rs", "crates/packaging/runtime-bundle/src/lib.rs", "crates/server/tilo-workspace-service/src/workspaces/packaged_model_runtime_tests.rs"]
+
+[[allow]]
+reason = "A backup run is the completed attempt one stored snapshot records, and the row it is published as (`backups.run`, `Run`): the app's word for that attempt, not the shell's old name for running a record's action."
+words = ["run"]
+paths = ["apps/backups/src/actions.rs", "apps/backups/src/app.rs"]
+
+[[allow]]
+reason = "The Imager's shared probe-facts type is named `HostFacts`; the word is part of that existing model type name, which the staging probe returns, not a concept these functions introduce."
+words = ["host"]
+identifiers = ["HostFacts"]
+paths = [
+    "crates/platform/imager-backend/src/linux.rs",
+    "apps/imager/src/setup/staging/probe.rs",
+]
+
+[[allow]]
+reason = "The strip's own names: a drawing it records of a window group (`record_group`), and the windows of one display's run of the strip (`in_run`)."
+words = ["record", "run"]
+identifiers = ["record_group", "in_run"]
+paths = ["crates/sdk/ui-core/src/widget/group_row*.rs"]
+
+[[allow]]
+reason = "The overview's `OverviewHost`, the desktop it is drawn for, which its functions take as `host`."
+words = ["host"]
+identifiers = ["host", "OverviewHost"]
+paths = ["crates/session/desktop/src/overview.rs"]
+
+[[allow]]
+reason = "The signed holder address's own `host` field (`TransportHint::host`), the device that answers for a workspace: the field is the type's name, and no new use of the word is meant."
+words = ["host"]
+paths = [
+    "crates/collab/tilo-peer-state/src/state/governance.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/hosts.rs",
+]
+
+[[allow]]
+reason = "A workspace's kept entry as the code around it names it (`WorkspaceDocumentEntry`, its publications and the records it holds), moved here with its comments; the file is the typing of a workspace's first history, and no new name is meant."
+words = ["host", "record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/founding.rs"]
+
+[[allow]]
+reason = "The control front's own name for running one action at a given address (`front::run_address`), which the command asks the session's action API through."
+words = ["run"]
+identifiers = ["run_address"]
+paths = ["crates/system/tilo-cli/src/machine.rs"]
+
+[[allow]]
+reason = "The action API's own name for reading one invocation's arguments from the one string a host step is handed (`InvokeArgument::from_slot`)."
+words = ["slot"]
+identifiers = ["from_slot"]
+paths = ["crates/session/session/src/machine_steps.rs"]
+
+[[allow]]
+reason = "The broker's own name for the steps a host runs itself (`HostStepServices`, `HostStepRequest`, `HostStepOutcome`) and the session's reach to them (`ask_host`, `ask_own_host`, `hosts_itself`), under the `tilo.host` provider a device's workspace service answers."
+words = ["host"]
+paths = [
+    "crates/session/client/src/engine.rs",
+    "crates/session/session/src/machine_steps.rs",
+    "crates/session/session/src/pair_device.rs",
+    "crates/session/session/src/sync/client/own_service.rs",
+]
+
+[[allow]]
+reason = "The web desktop's mount calls for what only the page can do, `offerHostAction` and its answer `onHostAction`, which the tab's browser-notification offer uses; their uses elsewhere are counted until that page interface is renamed as a whole."
+words = ["host"]
+identifiers = ["offerHostAction", "onHostAction"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/entry.mjs",
+    "crates/browser/tilo-browser-runtime/web/tab-attention.mjs",
+    "crates/browser/tilo-browser-runtime/web/tab-attention.test.mjs",
+]
+
+[[allow]]
+reason = "The test's own name says a made workspace reaches the workspace service before the session writes its first document there: `record` is the name the service's own record API keeps for a document."
+words = ["record"]
+paths = ["crates/session/session/tests/invitations.rs"]
+
+[[allow]]
+reason = "SSH's own host vocabulary: the network host a saved connection reaches, the host key it presents on first contact, and the decisions a session offers on that key."
+words = ["host"]
+paths = ["apps/remote/src/*"]
+
+[[allow]]
+reason = "The workspace service's own names a member copy is written with: the holder and device address fields (`bootstrap.host`, `WorkspaceServices.host`), the `HostCommit` it writes through, the `TestHost` fixture and its `host()` accessor, the join protocol's endpoint constant, `content_for_host`, the device's key groups field (`channels`), the retention channel each write carries, and `Dialed::run`, which keeps the link up."
+words = ["host", "channel", "run"]
+identifiers = [
+    "host",
+    "HostCommit",
+    "TestHost",
+    "test_host",
+    "content_for_host",
+    "TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1",
+    "channel",
+    "channels",
+    "run",
+]
+paths = [
+    "crates/server/tilo-workspace-service/src/workspaces/member.rs",
+    "crates/server/tilo-workspace-service/src/workspaces/member_tests.rs",
+    "crates/server/tilo-workspace-service/src/service.rs",
+]
+
+[[allow]]
+reason = "The workspace service's own document store accessor (`WorkspaceServices::records`) and a governed workspace's `record` field, which a member copy reads and commits through."
+words = ["record"]
+identifiers = ["records", "record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/member.rs"]
+
+[[allow]]
+reason = "The service's test fixture starts a certified device holding given keys (`test_host_holding`), a name its other tests share."
+words = ["host"]
+identifiers = ["test_host_holding"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/resources/tests.rs"]
+
+[[allow]]
+reason = "The `record` field of the write the workspace's followers are told of (`ResourceWrite::record`), the type's own name for the document written."
+words = ["record"]
+identifiers = ["record"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/resources/tests.rs"]
+
+[[allow]]
+reason = "The workspace service's own name for where its embedder installs it to be served (`ServiceSlot`), which the service and a session call rather than rename."
+words = ["slot"]
+identifiers = ["ServiceSlot"]
+
+[[allow]]
+reason = "A test of a service's resource reads builds its service with the fixture main already names `test_host` and reads it back by `.host()`; its resource routes are named by the API main gives them (`CrdtRoute::record`)."
+words = ["host", "record"]
+identifiers = ["test_host", "test_host_taking_part", "host", "record"]
+paths = ["crates/server/tilo-workspace-service/src/apps/service_reads/tests.rs"]
+
+[[allow]]
+reason = "The app framework's own API names the page's Files window calls: `WorkspaceResource::record` (the stored document under a resource) and `ViewCx::window_host_effects` (effects whose completions reach the window)."
+words = ["record", "host"]
+identifiers = ["record", "window_host_effects"]
+paths = ["apps/file-explorer/src/tree.rs"]

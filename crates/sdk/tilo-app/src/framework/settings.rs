@@ -462,6 +462,33 @@ impl ViewStorage {
             .find_map(|api| Some(self.kept_where(api.id(), api.item(id)?)))
     }
 
+    /// The chains the app declared that `name` names by their id, kind or
+    /// label, each as its head part publishes it ([`ResourceApi::publish_head`]):
+    /// what a path's first segment costs, however many items the chains hold.
+    pub(crate) fn chains_named(&self, name: &str) -> Vec<tilo_actions::ResourceSpec> {
+        let same = |text: &str| text.trim().eq_ignore_ascii_case(name);
+        self.chain_heads()
+            .filter(|head| same(head.id.as_str()) || same(&head.kind) || same(&head.label))
+            .collect()
+    }
+
+    /// The chain `id` as its head part publishes it, without the items it
+    /// holds: what an address on the chain itself (its `create`, the kind of
+    /// its parts) is answered from, at the head's cost.
+    pub(crate) fn chain_head(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        super::chain_of_resource_id(id)?;
+        self.chain_heads().find(|head| head.id.as_str() == id)
+    }
+
+    /// Every chain the app declared, each as its head part publishes it.
+    fn chain_heads(&self) -> impl Iterator<Item = tilo_actions::ResourceSpec> + '_ {
+        self.chains
+            .apis()
+            .into_iter()
+            .filter(|api| super::chain_of_resource_id(api.id()).is_some())
+            .map(|api| self.kept_where(api.id(), api.publish_head()))
+    }
+
     /// `resource`, of the one `owner` names, with its actions carried out by
     /// the provider keeping `owner` when another one does.
     fn kept_where(

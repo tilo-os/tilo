@@ -9,7 +9,7 @@
 //! the device that opens it ([`crate::certification::watch_host`]). A workspace no host on the web
 //! keeps has no link: the sheet says to add the device nearby.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -58,15 +58,10 @@ pub(crate) struct Adding {
     copied: RefCell<Option<String>>,
     /// Where the link last shown sends a new device.
     waiting: RefCell<Option<Waiting>>,
-    /// Machines that asked to join over the internet while the sheet is up, and what tells the
-    /// person of each once.
-    serving: RefCell<Option<crate::enrollment::Serving>>,
+    /// The machines that asked to join, as the person's store holds them, and
+    /// what tells the person of each once.
+    machines: RefCell<Vec<crate::enrollment::Waiting>>,
     told: RefCell<std::collections::BTreeSet<String>>,
-    /// Machines approved by pasting their own line, until the helper is done with each.
-    dialing: RefCell<Vec<std::process::Child>>,
-    /// Whether answering machines was tried for this window: a device that
-    /// cannot answer says so once, not every pass.
-    attempted: Cell<bool>,
 }
 
 impl Adding {
@@ -77,10 +72,8 @@ impl Adding {
             clipboard,
             copied: RefCell::default(),
             waiting: RefCell::default(),
-            serving: RefCell::default(),
+            machines: RefCell::default(),
             told: RefCell::default(),
-            dialing: RefCell::default(),
-            attempted: Cell::new(false),
         }
     }
 
@@ -136,79 +129,33 @@ impl Adding {
         }
     }
 
-    /// The machines waiting for the person's answer now.
-    pub(crate) fn enrolling(&self) -> Vec<crate::enrollment::Waiting> {
-        self.serving
-            .borrow()
-            .as_ref()
-            .map(crate::enrollment::Serving::waiting)
-            .unwrap_or_default()
+    /// What the person's store holds now: the asks no device answered yet.
+    pub(crate) fn holding(&self, machines: Vec<crate::enrollment::Waiting>) {
+        *self.machines.borrow_mut() = machines;
     }
 
     /// The machines waiting for the person's answer, as the sheet lists them.
     fn waiting_machines(&self) -> Vec<tilo_sheets::pair_device::WaitingMachine> {
-        self.serving
+        self.machines
             .borrow()
-            .as_ref()
-            .map(|serving| {
-                serving
-                    .waiting()
-                    .into_iter()
-                    .map(|machine| tilo_sheets::pair_device::WaitingMachine {
-                        ask: machine.ask,
-                        label: machine.label,
-                        hardware: machine.hardware,
-                        code: machine.code,
-                    })
-                    .collect()
+            .iter()
+            .map(|machine| tilo_sheets::pair_device::WaitingMachine {
+                ask: machine.ask.clone(),
+                label: machine.label.clone(),
+                hardware: machine.hardware.clone(),
+                code: machine.code.clone(),
             })
-            .unwrap_or_default()
+            .collect()
     }
 
-    /// Answer machines over the internet while the sheet is up, and stop once it is taken down:
-    /// one window at a time, as one link is.
-    pub(crate) fn serve(&self, open: bool) {
-        let mut serving = self.serving.borrow_mut();
-        if !open {
-            if serving.take().is_some() || self.attempted.replace(false) {
-                self.told.borrow_mut().clear();
-            }
-            return;
-        }
-        if serving.is_some() || self.attempted.replace(true) {
-            return;
-        }
+    /// Let in the machine whose own `tilo://enroll?…` line the person pasted: this device dials
+    /// it and approves it there, answering as either kind of machine.
+    pub(crate) fn scan(link: &str) {
         let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() else {
             return;
         };
-        match crate::enrollment::Serving::start(&paths.root, &paths.dir) {
-            Ok(started) => *serving = Some(started),
-            Err(error) => tracing::info!(%error, "this session answers no machines"),
-        }
-    }
-
-    /// Answer the machine whose ask this is: `approve` admits it.
-    pub(crate) fn answer(&self, ask: &str, approve: bool) {
-        if let Some(serving) = self.serving.borrow_mut().as_mut()
-            && let Err(error) = serving.answer(ask, approve)
-        {
-            tracing::warn!(%error, "a machine was not answered");
-        }
-        self.told.borrow_mut().remove(ask);
-    }
-
-    /// Let in the machine whose own `tilo://enroll?…` line the person pasted.
-    pub(crate) fn scan(&self, link: &str) {
-        let Ok(paths) = tilo_identity::device_admin::PersonPaths::from_env() else {
-            return;
-        };
-        match crate::enrollment::scan(link, &paths.root, &paths.dir) {
-            Ok(child) => {
-                let mut dialing = self.dialing.borrow_mut();
-                dialing.retain_mut(|child| child.try_wait().ok().flatten().is_none());
-                dialing.push(child);
-            }
-            Err(error) => tracing::warn!(%error, "a machine's link was not approved"),
+        if let Err(error) = crate::enrollment::approve_line(link, paths.root, paths.dir) {
+            tracing::warn!(%error, "a machine's link was not approved");
         }
     }
 
@@ -234,16 +181,16 @@ impl Adding {
 
     /// Carry out what the person pressed in the sheet, and say the link is on the clipboard when it
     /// is.
-    pub(crate) fn take(&self, state: &AddDeviceState) {
+    pub(crate) fn take(&self, state: &AddDeviceState, answer: impl Fn(&str, bool)) {
         for effect in state.take_asked() {
             match effect {
                 PairDeviceEffect::Copy { link } => {
                     self.clipboard.copy(link.clone(), ON_CLIPBOARD_FOR);
                     *self.copied.borrow_mut() = Some(link);
                 }
-                PairDeviceEffect::Approve { ask } => self.answer(&ask, true),
-                PairDeviceEffect::Decline { ask } => self.answer(&ask, false),
-                PairDeviceEffect::Link { link } => self.scan(&link),
+                PairDeviceEffect::Approve { ask } => answer(&ask, true),
+                PairDeviceEffect::Decline { ask } => answer(&ask, false),
+                PairDeviceEffect::Link { link } => Self::scan(&link),
                 // Its own close: the sheet took itself down as it asked.
                 PairDeviceEffect::Done => {}
             }
@@ -270,13 +217,14 @@ const MINUTE_MS: u64 = 60_000;
 pub(crate) fn follow(
     state: Option<&AddDeviceState>,
     adding: &Adding,
+    answer: impl Fn(&str, bool),
     place: impl FnOnce() -> Result<Place, NoLink>,
     now_ms: u64,
 ) {
     let Some(state) = state else {
         return;
     };
-    adding.take(state);
+    adding.take(state, answer);
     if !state.presentation().is_open() {
         return;
     }
@@ -290,6 +238,7 @@ impl crate::Shared {
         let Some(state) = self.pair_device.as_ref() else {
             return;
         };
+        self.follow_enrolling();
         let now = ui::time::unix_now_ms();
         state.show(self.adding.device(self.pairing_place(), now));
         state.presentation().open(false);
@@ -302,6 +251,7 @@ impl crate::Shared {
         crate::pair_device::follow(
             self.pair_device.as_ref(),
             &self.adding,
+            |ask, approve| self.answer_enrolling(ask, approve),
             || self.pairing_place(),
             ui::time::unix_now_ms(),
         );
@@ -310,28 +260,91 @@ impl crate::Shared {
     }
 
     /// Put each machine that asks to join to the person once, and take back the asks that are
-    /// gone: the sheet answers machines while it is up, and a machine that joined or left the
-    /// window takes its notification with it.
+    /// gone: what the person's store holds is what every one of their devices shows, and an ask
+    /// any of them answered leaves them all at once.
     pub(crate) fn follow_enrolling(&self) {
-        let Some(state) = self.pair_device.as_ref() else {
+        let Some(personal) = self.sync.as_ref().and_then(|sync| sync.personal()) else {
             return;
         };
-        self.adding.serve(state.presentation().is_open());
-        let waiting = self.adding.enrolling();
-        for machine in &waiting {
+        let held = crate::enrollment::held(personal.sync());
+        self.adding.holding(held.waiting.clone());
+        for machine in &held.waiting {
             if self.adding.note_told(&machine.ask) {
                 self.telling().show(&crate::enrollment::notice(machine));
             }
         }
-        for ask in self.adding.gone(&waiting) {
+        for ask in self.adding.gone(&held.waiting) {
             self.telling().withdraw(&crate::enrollment::tag(&ask));
         }
     }
 
-    /// The person answered a machine that asked to join: approving admits it.
+    /// The person answered a machine that asked to join: approving admits it. The answer is
+    /// written to their store, and whichever of their devices serves the machine carries it out.
     pub(crate) fn answer_enrolling(&self, ask: &str, approve: bool) {
-        self.adding.answer(ask, approve);
+        let Some(personal) = self.sync.as_ref().and_then(|sync| sync.personal()) else {
+            return;
+        };
+        // A machine planned ahead comes with a token whose nonce names its entry in the person's
+        // Servers workspace; admitting it there is what makes its entry its own and hands it the
+        // workspace, so it reads its plan. Read before the answer leaves the store, which takes
+        // the ask with it.
+        let planned = approve
+            .then(|| {
+                crate::enrollment::held(personal.sync())
+                    .waiting
+                    .into_iter()
+                    .find(|waiting| waiting.ask == ask)
+            })
+            .flatten();
+        if let Err(error) = crate::enrollment::answer(personal.sync(), ask, approve) {
+            tracing::warn!(%error, "a machine was not answered");
+        }
+        if let Some(machine) = planned {
+            self.admit_planned(&machine);
+        }
         self.telling().withdraw(&crate::enrollment::tag(ask));
+    }
+
+    /// Take the machine `machine` the person approved into its waiting entry in their Servers
+    /// workspace, through this device's own workspace service: the entry becomes the machine's
+    /// under its device key, and the device that governs the workspace hands it over from there.
+    /// A machine that came with no token is no planned machine.
+    fn admit_planned(&self, machine: &crate::enrollment::Waiting) {
+        if machine.nonce.is_empty() {
+            return;
+        }
+        let Some(engine) = self.engine.clone() else {
+            return;
+        };
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("device".to_owned(), machine.device.clone().into());
+        arguments.insert("nonce".to_owned(), machine.nonce.clone().into());
+        let admin = tilo_server_protocol::servers::admin_workspace_id(
+            &engine.identity().device_cert.user_public_key,
+        );
+        drop(crate::landing::off_loop(async move {
+            // The device that planned the machine may be another of theirs:
+            // this one holds the Servers workspace from the moment it knows
+            // it, as every one of the person's devices does.
+            if !engine.is_holder(&admin) {
+                #[cfg(target_os = "linux")]
+                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&admin)
+                    && let Err(error) = engine.found(workspace, "Servers").await
+                {
+                    tracing::warn!(%error, "the servers workspace was not founded");
+                }
+            }
+            let Some(asked) = engine.ask_own_host("machine.admit", arguments) else {
+                tracing::info!(
+                    "this device's workspace service is not open, so the machine waits to be taken in where it is held"
+                );
+                return;
+            };
+            match asked.await {
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "a planned machine was not taken in"),
+            }
+        }));
     }
 
     /// When the sheet next changes on its own while it is up: its minutes count down, and the link
@@ -548,10 +561,153 @@ mod tests {
             let (adding, _) = adding();
             let state = AddDeviceState::default();
             state.presentation().open(false);
-            follow(Some(&state), &adding, || Ok(place()), START);
+            follow(Some(&state), &adding, |_, _| {}, || Ok(place()), START);
             let shown = state.device();
             assert_eq!(shown, adding.device(Ok(place()), START));
             assert!(shown.link.contains("?pair="));
         }
+    }
+
+    /// The person approves the machine they planned, and the session carries the
+    /// approval into the machine's entry: the entry the plan made under the
+    /// plan's id becomes the machine's, under its device key, in the Servers
+    /// workspace the session's own host holds. Nothing here is a fixture of the
+    /// service: the session asks its own host the same `machine.*` operations a
+    /// window of theirs does.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one test walks an identity, a session, its own workspace service and the person's approval"
+    )]
+    fn the_persons_approval_takes_a_planned_machine_into_its_entry() {
+        let root = tempfile::tempdir().expect("a directory for the identity");
+        let xdg = root.path().join("config");
+        let system = root.path().join("system");
+        let state = root.path().join("state");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &xdg)
+            .set("TILO_IDENTITY_ROOT", &system)
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity::provisioning::ensure_collaboration_identity(
+            &xdg.join("tilo/identity"),
+            &tilo_device_identity::IdentityPaths::under(&system),
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .expect("this computer's identity");
+        let mut session = crate::Session::headless(
+            crate::Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                collab: true,
+                state: Some(state),
+                ..crate::Options::default()
+            },
+            &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        )
+        .expect("a session");
+        let engine = session.shared.engine.clone().expect("this device's engine");
+        let person = engine.identity().device_cert.user_public_key;
+        let admin = tilo_server_protocol::servers::admin_workspace_id(&person);
+
+        // The machine's own key, as it enrolled with the token the plan names.
+        let machine = "cd".repeat(32);
+        let nonce = "ab".repeat(16);
+        let plan_id = "0123456789abcdef0123456789abcdef";
+        let plan = serde_json::json!({
+            "schema": 1,
+            "plan": plan_id,
+            "revision": 1,
+            "destination": "tilo-server",
+            "name": "cupboard",
+            "network": { "addressing": "dhcp" },
+            "disk": { "kind": "empty" },
+            "unlock": "tpm",
+            "updates": "stable",
+            "hosting": [],
+            "open": [],
+            "token": { "nonce": nonce, "expires_at_ns": u64::MAX },
+        })
+        .to_string();
+        let runtime = tilo_rt::try_app().expect("the app runtime");
+        let planned = runtime.block_on(
+            engine
+                .ask_own_host(
+                    "machine.plan",
+                    serde_json::Map::from_iter([
+                        ("plan".to_owned(), plan.into()),
+                        ("label".to_owned(), "cupboard".into()),
+                        ("token_file".to_owned(), "/tmp/cupboard.token".into()),
+                        ("installer_url".to_owned(), "https://tilo.sh".into()),
+                    ]),
+                )
+                .expect("this device holds its own Servers workspace"),
+        );
+        assert!(planned.is_ok(), "the plan is written: {planned:?}");
+
+        // The person's approval, as their device keeps it: the machine's ask
+        // carries the plan's nonce, so the session knows which entry it is.
+        let ask = "ef".repeat(16);
+        {
+            let personal = session
+                .shared
+                .sync
+                .as_ref()
+                .and_then(|sync| sync.personal())
+                .expect("the person's own store");
+            crate::enrollment::enter(
+                personal.sync(),
+                &tilo_enrollment::waiting::WaitingMachine {
+                    ask: ask.clone(),
+                    device: machine.clone(),
+                    service: "ef".repeat(32),
+                    label: "cupboard".into(),
+                    hardware: String::new(),
+                    code: "123-456".into(),
+                    nonce,
+                    recovery_key: None,
+                },
+            )
+            .expect("the ask is kept in the person's store");
+        }
+        session.shared.answer_enrolling(&ask, true);
+
+        // The entry is the machine's under its device key once the session
+        // carried the approval out: the plan's own id names the entry before
+        // that, and the machine's key only after.
+        let deadline = tilo_test_env::hang_deadline();
+        while std::time::Instant::now() < deadline {
+            session.step(std::time::Duration::from_millis(1)).ok();
+            let entry = runtime.block_on(
+                engine
+                    .ask_own_host(
+                        "machine.show",
+                        serde_json::Map::from_iter([("plan".to_owned(), machine.clone().into())]),
+                    )
+                    .expect("this device holds its own Servers workspace"),
+            );
+            if entry.is_ok() {
+                assert!(
+                    runtime
+                        .block_on(
+                            engine
+                                .ask_own_host(
+                                    "machine.show",
+                                    serde_json::Map::from_iter([(
+                                        "plan".to_owned(),
+                                        plan_id.into(),
+                                    )]),
+                                )
+                                .expect("this device holds its own Servers workspace"),
+                        )
+                        .is_ok(),
+                    "the plan still reads under its own id: the entry keeps it"
+                );
+                assert_eq!(
+                    admin,
+                    tilo_server_protocol::servers::admin_workspace_id(&person)
+                );
+                return;
+            }
+        }
+        panic!("the approval did not take the machine into its entry");
     }
 }

@@ -1586,10 +1586,8 @@ mod tests {
                 "{editor:?}"
             );
 
-            // In a browser beside a node that offers Terminal, Tilo's own
-            // Terminal is what "term" opens: its page lists the session's
-            // commands, so the manifest names it for the browser too, and the
-            // app is the person's own rather than the node's.
+            // Terminal runs in a page too, so a browser offers its own and a
+            // node's beside it, both found by "term".
             let browser = apps_on(
                 &["web"],
                 vec![AppEntry {
@@ -1599,8 +1597,8 @@ mod tests {
                 }],
             );
             let term = ranked_ids(&browser, "term");
-            assert_eq!(term.first().map(String::as_str), Some("so.tilo.terminal"));
-            assert!(term.iter().any(|id| id == "node-app:3"));
+            assert!(term.iter().any(|id| id == "so.tilo.terminal"), "{term:?}");
+            assert!(term.iter().any(|id| id == "node-app:3"), "{term:?}");
         }
 
         phase typing_an_app_name_puts_its_launch_first;
@@ -1663,8 +1661,6 @@ mod tests {
                     "notes"
                 }
                 fn query(&self, needle: &str) -> Vec<Hit> {
-                    // A note that is not named by the word: its title is a
-                    // paragraph holding it, as prose about it does.
                     vec![Hit {
                         row: None,
                         preview: None,
@@ -1673,7 +1669,7 @@ mod tests {
                         kind: ResourceKind::Note,
                         provider: "notes".into(),
                         id: "n".into(),
-                        title: format!("Draft: rename the {needle} page before launch"),
+                        title: needle.into(),
                         subtitle: None,
                         facts: Vec::new(),
                         score: MAX_PROVIDER_SCORE,

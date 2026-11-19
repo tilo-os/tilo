@@ -10,7 +10,6 @@
 
 use ed25519_dalek::SigningKey;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
-use web_time::SystemTime;
 
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
@@ -76,7 +75,7 @@ pub fn workspace(
     a: &(SigningKey, DeviceCert),
     roster: &[DeviceCert],
 ) -> StatePeer {
-    let now = SystemTime::now();
+    let now = tilo_clock::wall();
     let mut peer = StatePeer::new(
         workspace,
         a.1.clone(),

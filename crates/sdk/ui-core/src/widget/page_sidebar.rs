@@ -104,6 +104,8 @@ pub struct RailMetrics {
     pub menu_pad: f64,
     /// Inset of a menu row, and of the menu from the rail's edges (`spacing.s1`).
     pub menu_row_inset: f64,
+    /// Width the rail stands at where nothing else sets one (`metrics.page_rail_width`).
+    pub natural_width: f64,
 }
 
 impl RailMetrics {
@@ -120,6 +122,7 @@ impl RailMetrics {
         menu_sep_h: MENU_SEP_H,
         menu_pad: MENU_PAD,
         menu_row_inset: MENU_ROW_INSET,
+        natural_width: crate::tokens::Metrics::BASE.page_rail_width as f64,
     };
 
     /// The same geometry read from the theme's tokens. The add button is a
@@ -140,6 +143,7 @@ impl RailMetrics {
             menu_sep_h: f64::from(sp.s2),
             menu_pad: f64::from(sp.s2),
             menu_row_inset: f64::from(sp.s1),
+            natural_width: f64::from(theme.tokens.metrics.page_rail_width),
         }
     }
 }
@@ -391,6 +395,38 @@ impl PageSidebar {
 
     pub fn take_events(&mut self) -> Vec<PageSidebarEvent> {
         std::mem::take(&mut self.pending)
+    }
+
+    /// Take the geometry from `theme` for the next layout, before the frame that draws it.
+    pub(crate) fn adopt_theme(&mut self, theme: &Theme) {
+        self.m = RailMetrics::from_theme(theme);
+    }
+
+    /// The width the rail stands at where its container leaves it the choice.
+    pub(crate) fn natural_width(&self) -> f64 {
+        self.m.natural_width
+    }
+
+    /// How tall the rail stands at `width` to show `count` pages with nothing to scroll: its
+    /// header, the pages and the add button, as [`Self::begin_frame`] lays them out.
+    pub(crate) fn natural_height(&self, width: f64, count: usize) -> f64 {
+        let header = if self.draw_panel {
+            self.m.header_h
+        } else {
+            0.0
+        };
+        let add = if self.show_add {
+            self.m.add_h + 2.0 * self.m.add_margin
+        } else {
+            0.0
+        };
+        let thumb_w = (width - 2.0 * self.m.pad - self.m.num_gutter - SCROLLBAR_W).max(1.0);
+        let pages = if count == 0 {
+            0.0
+        } else {
+            f64_of_usize(count) * thumb_w * self.aspect + (f64_of_usize(count) - 1.0) * self.m.gap
+        };
+        header + 2.0 * self.m.pad + pages + add
     }
 
     /// [`Self::begin_frame`] with the geometry read from `theme`

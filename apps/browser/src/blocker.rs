@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ui::webview::{SharedEngine, WebViewCommand};
+use tilo_webview::{SharedEngine, WebViewCommand};
 
 /// Filter lists to fetch, as `(cache file name, URL)`: uBlock Origin's default
 /// set, restricted to the lists whose rules survive conversion to `WebKit`'s
@@ -296,7 +296,7 @@ pub fn load_list(name: &str, url: &str) -> Option<String> {
     }
 }
 
-fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), String> {
+fn load_and_compile() -> Result<(u64, tilo_webview::adblock::ChunkedFilter), String> {
     #[cfg(test)]
     let override_list = std::env::var("TILO_TEST_FILTER_LIST_URL").ok();
     #[cfg(test)]
@@ -315,9 +315,9 @@ fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), Stri
     // A stable id of the source rule set, so the engine can reuse the compiled
     // filters while the lists are unchanged.
     let version = source_version(&texts);
-    let filter = ui::webview::adblock::compile_filter_lists_chunked(
+    let filter = tilo_webview::adblock::compile_filter_lists_chunked(
         texts.iter().map(String::as_str),
-        ui::webview::adblock::MAX_RULES_PER_FILTER,
+        tilo_webview::adblock::MAX_RULES_PER_FILTER,
     )
     .map_err(|e| e.to_string())?;
     Ok((version, filter))

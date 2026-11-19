@@ -36,15 +36,17 @@ usage:
       and taken over by the app there, and --runtime BIN bakes the runtime binary into a signed
       runtime bundle installed in that session. See docs/tilolang-dev.md.
   tilolang profile [DIR] [--search DIR]... [--scenario NAME] [--seed N] [--size WxH]
-                   [--root NAME] [--then INTERACTION]...
+                   [--root NAME] [--then INTERACTION]... [--times]
       count what the app in DIR (default: .) costs to open and to use, in the language's own
       terms: each unit of its code by source line, with the calls it ran, the fuel it spent and
       what it read from the host, sorted by fuel. --seed N opens a workspace of N items (as
       `tilolang bench` seeds one); --scenario stages that scenario of the app (the app's first
       by default); --then runs an interaction after the app is open and counts that alone:
-      key:Tab, click:X,Y, type:TEXT or scroll:DX,DY, in logical pixels. --size is the window's
-      size (default 1280x800), --root the layer of a package with more than one root. The counts
-      are the same on any machine at any load.
+      key:Tab, click:X,Y, type:TEXT, scroll:DX,DY, press:NAME (a click on the widget the window
+      names so) or drag:X0,Y0,X1,Y1, in logical pixels. --size is the window's size (default
+      1280x800), --root the layer of a package with more than one root. The counts are the same
+      on any machine at any load; --times adds what each step took in the framework's named
+      scopes, which depends on the machine.
   tilolang describe [DIR] [--search DIR]...
       print what the app in DIR publishes as tilolang: its resources' types, enums and actions,
       a native app (its committed surface.toml) and a tilolang package alike
@@ -58,7 +60,7 @@ usage:
       directory or control socket). Each entry is a program
       run as one step: lets are kept, refs (n3) name what answers showed, a bulk change
       previews until `confirm`, `undo` takes a step back.
-  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump|--dump-findings WxH [--shots DIR [--theme NAME]... [--bar-at-rest]]] [--locale TAG]
+  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--strict] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump|--dump-findings WxH [--shots DIR [--theme NAME]... [--bar-at-rest] [--shot-height H]]] [--locale TAG]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
       report overflow, clipped text, overlapping siblings, hit targets below the minimum and
@@ -73,7 +75,9 @@ usage:
       and text scale 1) as each stage leaves it, light and dark, to PNGs in DIR. --theme takes
       them in that shipped theme (default, glass, block, ...) instead of the stock pair, light and
       dark each. --bar-at-rest takes them as a maximized window stands at rest, its bar hidden
-      until the person reaches for the top edge, instead of under the bar. --root lays out the
+      until the person reaches for the top edge, instead of under the bar. --shot-height takes
+      them in a window H tall at that width, so the lower part of a long page shows; the check
+      itself still reads the window at its size. --root lays out the
       layer a package with more than one root names (the shell's `Shell`, the one with the bar
       and the dock), instead of the package's first root.
       --state stages a view state at a value the app's own code names (`place=Task.today`, a
@@ -138,6 +142,7 @@ fn profile_command(args: &[String]) -> Result<(), String> {
         size: (1280, 800),
         root: None,
         then: Vec::new(),
+        times: false,
     };
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -164,6 +169,7 @@ fn profile_command(args: &[String]) -> Result<(), String> {
             }
             "--root" => options.root = Some(value(&mut iter, arg)?),
             "--then" => options.then.push(value(&mut iter, arg)?),
+            "--times" => options.times = true,
             flag if flag.starts_with("--") => return Err(format!("profile: no flag {flag}")),
             dir_arg => dir = PathBuf::from(dir_arg),
         }
@@ -224,6 +230,12 @@ fn layout_check_command(args: &[String]) -> ExitCode {
                 "--strict" => strict = true,
                 "--shots" => options.shots = Some(value(&mut iter, arg)?.into()),
                 "--bar-at-rest" => options.bar_at_rest = true,
+                "--shot-height" => {
+                    let height = value(&mut iter, arg)?;
+                    options.shot_height = Some(height.parse().map_err(|_| {
+                        format!("--shot-height takes a height in logical pixels, not {height}")
+                    })?);
+                }
                 "--theme" => options.themes.push(value(&mut iter, arg)?),
                 "--root" => options.root = Some(value(&mut iter, arg)?),
                 "--state" => options.states.push(value(&mut iter, arg)?),

@@ -397,12 +397,11 @@ impl Worker {
                 {
                     return Ok(());
                 }
-                let about = self.about(
-                    workspace_id,
-                    route,
-                    &descriptor,
-                    super::invoke_arguments(&request.argument),
-                );
+                let arguments = super::invoke_arguments(&request.argument);
+                // A command is an action of its own. One that carried its resource's other
+                // actions would be asked about as it stands: no name is looked up here.
+                let carries = super::carried::read(&descriptor, &arguments, |_| None);
+                let about = self.about(workspace_id, route, &descriptor, arguments, carries);
                 Err(self
                     .ask_person(workspace_id, caller, request, &about)
                     .unwrap_or_else(|| refused(ActionCallError::confirmation_required())))

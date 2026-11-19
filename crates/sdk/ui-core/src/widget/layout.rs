@@ -136,6 +136,55 @@ pub fn insets(top: f32, right: f32, bottom: f32, left: f32) -> taffy::Rect<Lengt
     }
 }
 
+/// The size of a view that takes the width it is given and a height from `aspect` (width over
+/// height) where nothing else gives it one: a player or a page in a column that grows with what
+/// it holds, which would otherwise stand zero tall there and paint over what follows.
+#[must_use]
+pub fn natural_shape(
+    known: taffy::Size<Option<f32>>,
+    available: taffy::Size<taffy::AvailableSpace>,
+    aspect: f32,
+) -> taffy::Size<f32> {
+    let width = known.width.or(match available.width {
+        taffy::AvailableSpace::Definite(width) => Some(width),
+        taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
+    });
+    // A pass that sizes the parent by its content asks before any width is known: the view asks
+    // for no width of its own there, and the height of a typical column's width.
+    // A reading column's width stands for the one not yet known.
+    let across = width.unwrap_or(crate::tokens::Metrics::BASE.reading_measure);
+    let height = known
+        .height
+        .unwrap_or(if aspect > 0.0 { across / aspect } else { 0.0 });
+    taffy::Size {
+        width: width.unwrap_or(0.0),
+        height,
+    }
+}
+
+/// The style of a view that fills what its parent gives it and, where its parent gives it no
+/// height, stands at the size its `measure` names (a player's or a page's [`natural_shape`]).
+///
+/// It is as wide as its parent, and its height is its own until a parent stretches, grows or
+/// shrinks it: a percentage height would resolve against a parent that grows with its content,
+/// and stand taller than that parent grew for it.
+#[must_use]
+pub fn natural_filling() -> taffy::Style {
+    taffy::Style {
+        size: taffy::Size {
+            width: taffy::Dimension::percent(1.0),
+            height: taffy::Dimension::auto(),
+        },
+        min_size: taffy::Size {
+            width: taffy::Dimension::length(0.0),
+            height: taffy::Dimension::length(0.0),
+        },
+        flex_grow: 1.0,
+        flex_shrink: 1.0,
+        ..Default::default()
+    }
+}
+
 /// `style` as a flex item that fills its share of what its parent's main axis leaves:
 /// grown by `weight` from a zero basis, and measured at that share rather than at its content's
 /// min-content size.
@@ -1466,6 +1515,97 @@ mod tests {
                     height: 20.0
                 },
                 "the block stands at the width it was given, at the height its text wraps to there"
+            );
+        }
+
+        phase a_min_content_size_its_content_lays_out_to_answers_that_width_without_a_solve;
+        {
+            use std::cell::Cell;
+            use taffy::geometry::Size;
+            use taffy::style::AvailableSpace;
+            use taffy::style_helpers::length;
+            // A paragraph whose narrowest wrapping is 40 px wide and three lines tall, and two
+            // lines at 80 px: what it measures under a min-content constraint is what it lays
+            // out to at 40 px.
+            let measured = Cell::new(0_u32);
+            let mut measure = |known: Size<Option<f32>>,
+                               available: Size<AvailableSpace>,
+                               _: taffy::NodeId,
+                               _: Option<&mut ()>,
+                               _: &taffy::Style| {
+                measured.set(measured.get().saturating_add(1));
+                let width = known.width.unwrap_or(match available.width {
+                    AvailableSpace::Definite(width) => width.clamp(40.0, 120.0),
+                    AvailableSpace::MinContent => 40.0,
+                    AvailableSpace::MaxContent => 120.0,
+                });
+                let lines = if width < 80.0 { 3.0 } else if width < 120.0 { 2.0 } else { 1.0 };
+                Size {
+                    width,
+                    height: lines * 20.0,
+                }
+            };
+            let mut tree: TaffyTree<()> = TaffyTree::new();
+            let paragraph = tree.new_leaf(taffy::Style::default()).expect("a leaf");
+            let card = tree
+                .new_with_children(
+                    taffy::Style {
+                        flex_direction: taffy::FlexDirection::Column,
+                        padding: taffy::Rect::length(4.0_f32),
+                        ..taffy::Style::default()
+                    },
+                    &[paragraph],
+                )
+                .expect("the card");
+            let column = tree
+                .new_with_children(
+                    taffy::Style {
+                        flex_direction: taffy::FlexDirection::Column,
+                        ..taffy::Style::default()
+                    },
+                    &[card],
+                )
+                .expect("the column");
+            let narrowest = Size {
+                width: AvailableSpace::MinContent,
+                height: AvailableSpace::MaxContent,
+            };
+            tree.compute_layout_with_measure(column, narrowest, &mut measure)
+                .expect("solves");
+            assert_eq!(
+                tree.layout(card).expect("laid out").size,
+                Size {
+                    width: 48.0,
+                    height: 68.0
+                }
+            );
+            // The column now stands at the card's own width: the card is asked for that width,
+            // and its min-content answer is the answer.
+            tree.set_style(
+                column,
+                taffy::Style {
+                    flex_direction: taffy::FlexDirection::Column,
+                    size: Size {
+                        width: length(48.0_f32),
+                        height: taffy::Dimension::auto(),
+                    },
+                    ..taffy::Style::default()
+                },
+            )
+            .expect("restyled");
+            measured.set(0);
+            tree.compute_layout_with_measure(column, narrowest, &mut measure)
+                .expect("solves");
+            assert_eq!(
+                (measured.get(), tree.layout(card).expect("laid out").size),
+                (
+                    0,
+                    Size {
+                        width: 48.0,
+                        height: 68.0
+                    }
+                ),
+                "the card at its own width is what its min-content solve came to"
             );
         }
 

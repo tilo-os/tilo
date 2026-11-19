@@ -368,6 +368,7 @@ mod section;
 mod settings;
 mod share_link;
 mod stage;
+mod status;
 mod surface;
 mod switch;
 // The test hosts discover native presentation, which the browser has not got.
@@ -383,6 +384,7 @@ mod window_bar_tests;
 mod workspace;
 mod workspace_emoji;
 
+pub use app::OtherWindow;
 pub use app::launch_spec;
 pub use app::{
     AppName, FolderHistory, OpeningCx, OpeningView, ResourceApp, SURFACE_FLAG, SeedCx, definition,

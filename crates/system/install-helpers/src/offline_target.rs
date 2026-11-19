@@ -21,7 +21,9 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 
 use crate::py::Dumps;
-use crate::target_transport::{is_digest, is_hex, loads, repository};
+use crate::target_transport::{
+    is_digest, is_hex, is_repository, is_update_origin, loads, oci_architecture,
+};
 use crate::{Error, Result, require};
 
 const OFFLINE_SCHEMA: &str = "tilo.installer-offline-target.v1";
@@ -146,36 +148,6 @@ fn development_target(host: &dyn Host, root: &Path) -> Result<Map<String, Value>
     crate::target_transport::verify(root, true)
 }
 
-/// `(repository)@(sha256:…)` of a signed target reference.
-fn split_reference(reference: &str) -> Option<(&str, &str)> {
-    let (repository_name, digest) = reference.split_once('@')?;
-    (matches!(
-        repository_name,
-        "registry.tilo.so/tilo/tilo" | "code.tilo.so/tilo/tilo"
-    ) && is_digest(digest))
-    .then_some((repository_name, digest))
-}
-
-fn is_generation(text: &str) -> bool {
-    let mut bytes = text.bytes();
-    bytes
-        .next()
-        .is_some_and(|first| matches!(first, b'1'..=b'9'))
-        && bytes.all(|b| b.is_ascii_digit())
-}
-
-fn valid_origin(profile: &str, origin: &str) -> bool {
-    match profile {
-        "lenovo-83ed" => origin
-            .strip_prefix("code.tilo.so/tilo/tilo:lenovo-83ed-")
-            .is_some_and(|revision| is_hex(revision, 40)),
-        "generic" => origin
-            .strip_prefix("registry.tilo.so/tilo/tilo:gen")
-            .is_some_and(is_generation),
-        _ => false,
-    }
-}
-
 /// The checked metadata and OCI layout of the staged target.
 pub fn read_target(host: &dyn Host, root: &Path) -> Result<(Map<String, Value>, PathBuf)> {
     require(!root.is_symlink(), "offline target directory is a symlink")?;
@@ -210,16 +182,17 @@ pub fn read_target(host: &dyn Host, root: &Path) -> Result<(Map<String, Value>, 
             && crate::py::sha256_hex(&manifest) == target_hex,
         "offline OCI manifest differs from pinned CI digest",
     )?;
-    check_config(&blobs, &loads(&manifest)?)?;
+    check_config(&blobs, &loads(&manifest)?, text(&metadata, "architecture"))?;
     Ok((metadata, layout))
 }
 
-/// The signed target's metadata: exactly its six string fields, pinning a
-/// supported child by digest, repository and update origin.
+/// The signed target's metadata: exactly its six string fields, naming its
+/// repository, digest, architecture and update origin explicitly. The
+/// hardware profile stays for the private-firmware proof a board target binds.
 fn signed_metadata(metadata: Value) -> Result<Map<String, Value>> {
     let keys = [
         "schema",
-        "target_ref",
+        "repository",
         "target_digest",
         "architecture",
         "hardware_profile",
@@ -239,15 +212,17 @@ fn signed_metadata(metadata: Value) -> Result<Map<String, Value>> {
         metadata.values().all(Value::is_string),
         "offline target metadata has invalid field types",
     )?;
+    let repository = text(&metadata, "repository");
     let profile = text(&metadata, "hardware_profile");
-    let reference = split_reference(text(&metadata, "target_ref"));
-    let identity = reference.is_some_and(|(repository_name, digest)| {
-        text(&metadata, "schema") == OFFLINE_SCHEMA
-            && text(&metadata, "target_digest") == digest
-            && text(&metadata, "architecture") == "aarch64"
-            && Some(repository_name) == repository(profile)
-            && valid_origin(profile, text(&metadata, "update_origin"))
-    });
+    let identity = text(&metadata, "schema") == OFFLINE_SCHEMA
+        && is_repository(repository)
+        && is_digest(text(&metadata, "target_digest"))
+        && oci_architecture(text(&metadata, "architecture")).is_some()
+        && matches!(profile, "generic" | "lenovo-83ed")
+        // A board target carries private firmware, so its image stays on the
+        // forge's private registry.
+        && (profile != "lenovo-83ed" || repository.starts_with("code.tilo.so/tilo/"))
+        && is_update_origin(repository, text(&metadata, "update_origin"));
     require(
         identity,
         "offline target metadata has invalid image identity",
@@ -292,8 +267,9 @@ fn target_descriptor(layout: &Path, target_digest: &str) -> Result<Map<String, V
     Ok((*descriptor).clone())
 }
 
-/// The manifest's config descriptor is exact and names a Linux ARM64 image.
-fn check_config(blobs: &Path, parsed: &Value) -> Result<()> {
+/// The manifest's config descriptor is exact and names a Linux image of the
+/// target's declared architecture.
+fn check_config(blobs: &Path, parsed: &Value, architecture: &str) -> Result<()> {
     let parsed = as_map(parsed, "manifest")?;
     let config = get(parsed, "config");
     let config_digest = config
@@ -324,12 +300,13 @@ fn check_config(blobs: &Path, parsed: &Value) -> Result<()> {
         "offline target config differs from pinned manifest",
     )?;
     let image_config = loads(&config_bytes)?;
+    let expected = oci_architecture(architecture).unwrap_or_default();
     require(
         image_config.as_object().is_some_and(|image| {
-            get(image, "architecture").as_str() == Some("arm64")
+            get(image, "architecture").as_str() == Some(expected)
                 && get(image, "os").as_str() == Some("linux")
         }),
-        "offline target image is not Linux ARM64",
+        "offline target image is not the declared Linux architecture",
     )
 }
 
@@ -446,12 +423,12 @@ fn firmware_binding(
                     .strip_prefix("code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:")
                     .is_some_and(|hex| is_hex(hex, 64))
             });
-        if get(external, "architecture").as_str() != Some("aarch64")
+        if get(external, "architecture").as_str() != Some(text(metadata, "architecture"))
             || get(external, "hardwareProfile").as_str() != Some("lenovo-83ed")
             || !manifest.is_some_and(|manifest| is_hex(manifest, 64))
             || external.contains_key("children")
             || text(metadata, "update_origin")
-                != format!("code.tilo.so/tilo/tilo:lenovo-83ed-{source}")
+                != format!("{}:lenovo-83ed-{source}", text(metadata, "repository"))
             || !firmware_ok
         {
             return None;
@@ -467,7 +444,7 @@ fn firmware_binding(
         "firmwareManifestSha256",
         "children",
     ];
-    (text(metadata, "update_origin") == format!("registry.tilo.so/tilo/tilo:gen{generation}")
+    (text(metadata, "update_origin") == format!("{}:gen{generation}", text(metadata, "repository"))
         && !unbound.iter().any(|key| external.contains_key(*key)))
     .then_some((Value::Null, Value::Null))
 }
@@ -574,10 +551,7 @@ fn signature_binds(row: &Map<String, Value>, metadata: &Map<String, Value>) -> R
     }
     let identity =
         sub_object(critical, "identity", &empty).ok_or_else(|| attribute_error("identity"))?;
-    Ok(
-        get(identity, "docker-reference").as_str()
-            == repository(text(metadata, "hardware_profile")),
-    )
+    Ok(get(identity, "docker-reference").as_str() == Some(text(metadata, "repository")))
 }
 
 /// Verifies the staged target and saves the receipt; a development target is

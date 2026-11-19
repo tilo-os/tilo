@@ -1,31 +1,35 @@
-//! A host's login codes and the person's stand-in approver, asked over its HTTPS routes
-//! ([`tilo_server_protocol::login_code`]): the one client of them, for the tab that makes a code
-//! and follows it, the computer that resolves it, reports its steps and claims it, and the root
-//! that keeps its stand-in. The page reaches it through the runtime, the CLI natively.
+//! A server's login codes, asked over its HTTPS routes ([`tilo_server_protocol::login_code`]):
+//! the one client of them, for the tab that makes a code and follows it, and the computer that
+//! resolves it, reports its steps, claims it and certifies the tab. The page reaches it through
+//! the runtime, the CLI natively.
 
 use tilo_server_protocol::login_code::{
-    CLAIM_ROUTE, CREATE_ROUTE, Claim, Claimed, CreateCode, Created, FOLLOW_ROUTE, Follow, Offer,
-    Polled, RESOLVE_ROUTE, Report, Resolve, Resolved, STAND_IN_ROUTE, STEP_ROUTE, StandInReply,
-    StandInRequest,
+    CERTIFY_ROUTE, CLAIM_ROUTE, CREATE_ROUTE, Certify, Claim, ClaimRefused, Claimed, CreateCode,
+    Created, FOLLOW_ROUTE, Follow, Offer, Polled, RESOLVE_ROUTE, Report, Resolve, Resolved,
+    STEP_ROUTE, WAITING_ROUTE, Waiting, WaitingRequest,
 };
 use tilo_server_protocol::web::API_PREFIX;
 
 use crate::https::HttpClient;
 use crate::signer::DeviceSigner;
 
-/// What a host answered instead of what a login code's route answers, or that it was not reached.
+/// What a server answered instead of what a login code's route answers, or that it was not reached.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, thiserror::Error)]
 #[error("{message}")]
 pub struct CodeRefusal {
-    /// The host's HTTP status; `0` when it was not reached, or answered something else.
+    /// The server's HTTP status; `0` when it was not reached, or answered something else.
     pub status: u16,
-    /// What happened, the host's own sentence where it gave one.
+    /// What happened, the server's own sentence where it gave one.
     pub message: String,
+    /// Why, as the server names it beside its sentence (a claim's
+    /// [`ClaimRefused`] reason), where it names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl CodeRefusal {
     /// What kind of refusal it is, as the screens that show it tell them apart: `unreachable`,
-    /// `not-a-device` (the host serves nobody for that person, or the device is not theirs),
+    /// `not-a-device` (the server serves nobody for that person, or the device is not theirs),
     /// `unknown` (a code that is not there: never made, used or expired), `too-many` (asked too
     /// often from here), or `refused`.
     #[must_use]
@@ -39,10 +43,18 @@ impl CodeRefusal {
         }
     }
 
+    /// Why a claim was refused, as the server named it.
+    #[must_use]
+    pub fn claim_refused(&self) -> Option<ClaimRefused> {
+        let reason = self.reason.as_deref()?;
+        serde_json::from_value(serde_json::Value::String(reason.to_owned())).ok()
+    }
+
     fn unreached(why: impl std::fmt::Display) -> Self {
         Self {
             status: 0,
-            message: format!("The host could not be reached: {why}"),
+            reason: None,
+            message: format!("The server could not be reached: {why}"),
         }
     }
 }
@@ -63,17 +75,23 @@ async fn post<T: serde::de::DeserializeOwned>(
         .await
         .map_err(CodeRefusal::unreached)?;
     if !(200..300).contains(&status) {
-        // The host says why in `{"error": "…"}`: that sentence is the reason.
+        // The server says why in `{"error": "…"}`: that sentence is the reason.
         #[derive(serde::Deserialize)]
         struct Said {
             error: String,
+            #[serde(default)]
+            reason: Option<String>,
         }
-        let said = serde_json::from_slice::<Said>(&answer).map(|said| said.error);
+        let said = serde_json::from_slice::<Said>(&answer).ok();
+        let reason = said.as_ref().and_then(|said| said.reason.clone());
         return Err(CodeRefusal {
             status,
+            reason,
             message: match said {
-                Ok(said) if !said.is_empty() => format!("The host answered {status}: {said}"),
-                _ => format!("The host answered {status}"),
+                Some(said) if !said.error.is_empty() => {
+                    format!("The server answered {status}: {}", said.error)
+                }
+                _ => format!("The server answered {status}"),
             },
         });
     }
@@ -84,7 +102,8 @@ async fn post<T: serde::de::DeserializeOwned>(
         .map(Some)
         .map_err(|error| CodeRefusal {
             status: 0,
-            message: format!("The host answered something else: {error}"),
+            reason: None,
+            message: format!("The server answered something else: {error}"),
         })
 }
 
@@ -96,7 +115,8 @@ async fn answered<T: serde::de::DeserializeOwned>(
 ) -> Result<T, CodeRefusal> {
     post(client, route, body).await?.ok_or_else(|| CodeRefusal {
         status: 0,
-        message: "The host answered nothing".to_owned(),
+        reason: None,
+        message: "The server answered nothing".to_owned(),
     })
 }
 
@@ -104,17 +124,17 @@ async fn answered<T: serde::de::DeserializeOwned>(
 /// (asking to be signed in by a device of the person).
 ///
 /// # Errors
-/// The host was not reached or refused.
+/// The server was not reached or refused.
 pub async fn create(client: &dyn HttpClient, link: Option<String>) -> Result<Created, CodeRefusal> {
     answered(client, CREATE_ROUTE, json(&CreateCode { link })?).await
 }
 
 /// Where the code `follow` (the secret only its tab holds) is. With the `offer` the code was made
-/// as ([`Created`] and the link it names), the host keeps the code if it does not yet: a code is
+/// as ([`Created`] and the link it names), the server keeps the code if it does not yet: a code is
 /// only offered until its tab first follows it.
 ///
 /// # Errors
-/// The host was not reached or refused.
+/// The server was not reached or refused.
 pub async fn follow(
     client: &dyn HttpClient,
     follow: &str,
@@ -134,7 +154,7 @@ pub async fn follow(
 /// What the code `code` names, spending it.
 ///
 /// # Errors
-/// The host was not reached, or the code is not there ([`CodeRefusal::code`] `unknown`).
+/// The server was not reached, or the code is not there ([`CodeRefusal::code`] `unknown`).
 pub async fn resolve(client: &dyn HttpClient, code: &str) -> Result<Resolved, CodeRefusal> {
     answered(
         client,
@@ -149,7 +169,7 @@ pub async fn resolve(client: &dyn HttpClient, code: &str) -> Result<Resolved, Co
 /// Tell the code's tab a step the computer took.
 ///
 /// # Errors
-/// The host was not reached or refused.
+/// The server was not reached or refused.
 pub async fn report(client: &dyn HttpClient, report: &Report) -> Result<(), CodeRefusal> {
     post::<serde_json::Value>(client, STEP_ROUTE, json(report)?)
         .await
@@ -157,11 +177,12 @@ pub async fn report(client: &dyn HttpClient, report: &Report) -> Result<(), Code
 }
 
 /// Claim the sign-in code resolved as `report` for the person `cert` (postcard, as hex) certifies
-/// this device of, `signer` holding its key.
+/// this device of, `signer` holding its key. The device may admit devices: it certifies the tab's
+/// request itself ([`waiting`], [`certify`]).
 ///
 /// # Errors
-/// The host was not reached, serves nobody for that person ([`CodeRefusal::code`]
-/// `not-a-device`), or refused.
+/// The server was not reached, or refused it (`403` with a [`ClaimRefused`] reason in
+/// [`CodeRefusal::claim_refused`]).
 pub async fn claim(
     client: &dyn HttpClient,
     report: &str,
@@ -173,6 +194,7 @@ pub async fn claim(
         tilo_server_protocol::login_code::claim_digest(report, signed_at_ns).map_err(|error| {
             CodeRefusal {
                 status: 0,
+                reason: None,
                 message: format!("This device did not sign the claim: {error}"),
             }
         })?;
@@ -181,6 +203,7 @@ pub async fn claim(
         .await
         .map_err(|error| CodeRefusal {
             status: 0,
+            reason: None,
             message: format!("This device did not sign the claim: {}", error.0),
         })?;
     answered(
@@ -196,125 +219,43 @@ pub async fn claim(
     .await
 }
 
-/// Ask the person's stand-in on the host for `request`.
+/// The tab's certification request (postcard, as hex) for the code this computer claimed as
+/// `report` to certify itself, once the tab asked.
 ///
 /// # Errors
-/// The host was not reached or refused.
-pub async fn stand_in(
-    client: &dyn HttpClient,
-    request: &StandInRequest,
-) -> Result<StandInReply, CodeRefusal> {
-    answered(client, STAND_IN_ROUTE, json(request)?).await
-}
-
-/// What a stand-in operation the root signs asks of the host.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StandInOp {
-    /// Make, or name again, the stand-in's key ([`StandInRequest::Key`]).
-    Key,
-    /// Forget it ([`StandInRequest::Retire`]).
-    Retire,
-}
-
-/// `op`, signed by the person's `root` at `signed_at_ns`.
-///
-/// # Errors
-/// The root did not sign.
-pub async fn signed_stand_in(
-    op: StandInOp,
-    root: &dyn DeviceSigner,
-    signed_at_ns: u64,
-) -> Result<StandInRequest, crate::SignError> {
-    let user = root.device_public_key();
-    let name = match op {
-        StandInOp::Key => "key",
-        StandInOp::Retire => "retire",
-    };
-    let digest = StandInRequest::signed_digest(name, &user, signed_at_ns)
-        .map_err(|error| crate::SignError(error.to_string()))?;
-    let signature = hex::encode(root.sign(digest.to_vec()).await?);
-    let user = hex::encode(user);
-    Ok(match op {
-        StandInOp::Key => StandInRequest::Key {
-            user,
-            signed_at_ns,
-            signature,
-        },
-        StandInOp::Retire => StandInRequest::Retire {
-            user,
-            signed_at_ns,
-            signature,
-        },
-    })
-}
-
-/// What a stand-in approver's certificate says it is.
-const STAND_IN_LABEL: &str = "Stand-in approver";
-
-/// Give the person whose root is `root` a stand-in on the host `client` reaches, so that losing
-/// the one place their root is (a tab) does not lose them: the host makes a key, the root
-/// certifies it as an approver of the person's new devices, for as long as a stand-in lasts, and
-/// the host keeps the certificate. Resolves to the stand-in's key, hex.
-///
-/// # Errors
-/// The host was not reached or refused, or the root did not certify the key.
-pub async fn keep_stand_in(
-    client: &dyn HttpClient,
-    root: &dyn DeviceSigner,
-) -> Result<String, CodeRefusal> {
-    let unsigned = |why: String| CodeRefusal {
-        status: 0,
-        message: format!("The root did not certify its stand-in: {why}"),
-    };
-    let asked = signed_stand_in(StandInOp::Key, root, tilo_clock::unix_now_ns())
-        .await
-        .map_err(|error| unsigned(error.0))?;
-    let StandInReply::Key { key } = stand_in(client, &asked).await? else {
-        return Err(CodeRefusal {
-            status: 0,
-            message: "The host named no stand-in key".to_owned(),
-        });
-    };
-    let stand_in_key: [u8; 32] = hex::decode(&key)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| unsigned("the host named no key".to_owned()))?;
-    let cert = crate::issue_stand_in(
-        root,
-        stand_in_key,
-        STAND_IN_LABEL,
-        tilo_user_identity::STAND_IN_LIFETIME_NS,
+/// The server was not reached or refused.
+pub async fn waiting(client: &dyn HttpClient, report: &str) -> Result<Option<String>, CodeRefusal> {
+    answered::<WaitingRequest>(
+        client,
+        WAITING_ROUTE,
+        json(&Waiting {
+            report: report.to_owned(),
+        })?,
     )
     .await
-    .map_err(|error| unsigned(error.to_string()))?;
-    let cert = tilo_user_identity::canonical::canonical_bytes(&cert)
-        .map_err(|error| unsigned(error.to_string()))?;
-    stand_in(
-        client,
-        &StandInRequest::Certify {
-            cert: hex::encode(cert),
-        },
-    )
-    .await?;
-    Ok(key)
+    .map(|waiting| waiting.request)
 }
 
-/// The person keeps their root another way now: the host forgets their stand-in's key. The root
-/// revokes the key itself, as it revokes any of the person's devices.
+/// Answer the tab's request for the code claimed as `report` with `cert`, the certificate of its
+/// device the claiming device signed (postcard, as hex).
 ///
 /// # Errors
-/// The host was not reached or refused, or the root did not sign.
-pub async fn retire_stand_in(
+/// The server was not reached or refused.
+pub async fn certify(
     client: &dyn HttpClient,
-    root: &dyn DeviceSigner,
+    report: &str,
+    cert: String,
 ) -> Result<(), CodeRefusal> {
-    let asked = signed_stand_in(StandInOp::Retire, root, tilo_clock::unix_now_ns())
-        .await
-        .map_err(|error| CodeRefusal {
-            status: 0,
-            message: format!("The root did not sign: {}", error.0),
-        })?;
-    stand_in(client, &asked).await.map(drop)
+    post::<serde_json::Value>(
+        client,
+        CERTIFY_ROUTE,
+        json(&Certify {
+            report: report.to_owned(),
+            cert,
+        })?,
+    )
+    .await
+    .map(drop)
 }
 
 #[cfg(test)]
@@ -331,7 +272,7 @@ mod tests {
         }
     }
 
-    /// A device key that refuses: no claim and no stand-in request is made.
+    /// A device key that refuses: no claim is made.
     struct Refusing;
 
     impl DeviceSigner for Refusing {
@@ -350,18 +291,11 @@ mod tests {
         assert!(matches!(claim, Err(refusal) if refusal.status == 0));
     }
 
-    #[tokio::test]
-    async fn a_refused_signature_asks_no_stand_in() {
-        for op in [StandInOp::Key, StandInOp::Retire] {
-            let asked = signed_stand_in(op, &Refusing, 1).await;
-            assert!(matches!(asked, Err(SignError(_))));
-        }
-    }
-
     #[test]
     fn each_refusal_says_what_kind_it_is() {
         let refusal = |status| CodeRefusal {
             status,
+            reason: None,
             message: String::new(),
         };
         assert_eq!(refusal(0).code(), "unreachable");

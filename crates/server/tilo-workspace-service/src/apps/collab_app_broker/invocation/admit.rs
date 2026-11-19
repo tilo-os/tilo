@@ -1,0 +1,549 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "one part of the broker module: the shared state, its imports and the other parts reach this through the parent glob"
+)]
+use super::*;
+
+impl AppBrokerState {
+    /// Shared semantic admission; a local mutation report is never delivered.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a freshly offered live action and its durable identity are consumed into one admission while all checks remain atomic"
+    )]
+    pub(in crate::apps::collab_app_broker) fn admit_invocation_from_offered_owned(
+        &self,
+        peer_id: u64,
+        offered: (PublishedSurface, PublishedAction),
+        inputs: InvocationInputs<'_>,
+        provenance: AdmissionProvenance<'_>,
+        local_report: Option<&crate::apps::local_document_action::Request>,
+    ) -> Result<StagedJob, String> {
+        if local_report.is_some()
+            && (!offered
+                .1
+                .operation_kind
+                .reports_a_change(offered.1.contract.need().kind)
+                || (offered.1.operation_kind != tilo_actions::OperationKind::Document
+                    && local_report.is_some_and(|report| !report.mutation_hashes.is_empty()))
+                || provenance.durable.is_some()
+                || !matches!(
+                    provenance.origin.as_ref(),
+                    Some(InvocationCaller::Local { .. })
+                ))
+        {
+            return Err(
+                "local action report requires authenticated document or read-only admission".into(),
+            );
+        }
+        if let Some(report) = local_report
+            && (report.bound_invocation()? != report.invocation
+                || inputs.requested != Some(tilo_actions::InvocationId(report.invocation)))
+        {
+            return Err("local report invocation does not bind capture".into());
+        }
+        let typed_local_arguments = local_report
+            .map(|report| report.typed_arguments(&offered.1.params))
+            .transpose()?;
+        let InvocationInputs {
+            original_request,
+            requested,
+            caller,
+            execution,
+            argument,
+            actor,
+            confirmation_token,
+            context,
+        } = inputs;
+        let AdmissionProvenance {
+            durable,
+            revision,
+            origin,
+            retained_time,
+        } = provenance;
+        if turns::is_answer(&offered.0.app_id, &offered.1) {
+            return Err("an agent answers a turn only when the host hands it one".into());
+        }
+        let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
+        let owner = match durable {
+            Some(context) => context.owner()?,
+            None => self.invocation_owner(origin.as_ref(), &offered.0.route.cluster_id, actor)?,
+        };
+        owner.validate()?;
+        // In native workspaces an agent acts only in an agent session that still goes, never on
+        // a workspace grant alone.
+        let session = self.agent_session_of(caller, origin.as_ref(), &offered.0.route.cluster_id);
+        if actor.is_agent() && !actor.is_app() && self.confines_agents(&offered.0.route.cluster_id)
+        {
+            match (durable, &session) {
+                (None, Some(Ok(_))) => {}
+                (None, Some(Err(ended))) => return Err(ended.clone()),
+                _ => return Err("an agent acts only in an agent session".into()),
+            }
+        }
+        // Never trust an envelope's invoker: the host sets it.
+        let context = invoker::host_set_invoker(context, actor, caller, execution.as_ref())?;
+        // Where an agent works from is what the host verified of its
+        // connection: an envelope names no device.
+        let context = invoker::working_from(
+            context,
+            match (durable, &session) {
+                (None, Some(Ok(going))) => going.origin.as_ref(),
+                _ => None,
+            },
+        );
+        // A certified local origin retains its original registered clock and
+        // exact person/workspace through an asynchronous directory lookup. Never
+        // recapture a replacement origin at dispatch or accept a payload actor.
+        let original_time = if let Some(InvocationCaller::Certified { caller, .. }) = &origin {
+            let admitted = self.current_action_caller(caller)?;
+            // The person the admission certifies, or the one agent it admitted
+            // for them (an MCP session their device handed over): never
+            // another actor.
+            let admitted_actor = match &admitted.agent_id {
+                Some(agent) => actor.member().agent_id() == Some(delegated_agent_name(agent)),
+                None => actor.member().person_id() == Some(admitted.actor_key.as_str()),
+            };
+            if caller.workspace != offered.0.route.cluster_id || !admitted_actor {
+                return Err("original caller does not match the invocation route or actor".into());
+            }
+            Some(
+                caller
+                    .policy_time
+                    .as_ref()
+                    .ok_or("original policy clock unavailable")?,
+            )
+        } else if let Some(InvocationCaller::NativePerson {
+            workspace,
+            certificate,
+            time,
+            ..
+        }) = &origin
+        {
+            self.current_native_person(workspace, certificate)?;
+            if workspace != &offered.0.route.cluster_id
+                || actor.member().person_id()
+                    != Some(person_id_for_root(certificate.user_public_key).as_str())
+            {
+                return Err(
+                    "original native person does not match the invocation route or actor".into(),
+                );
+            }
+            Some(time)
+        } else {
+            None
+        };
+        if original_time.is_some() && (durable.is_some() || retained_time.is_some()) {
+            return Err("duplicate original invocation ownership".into());
+        }
+        let local_time = if let Some(InvocationCaller::Local { time, .. }) = &origin {
+            self.checked_policy_time(time.as_ref())?;
+            time.as_ref()
+        } else {
+            None
+        };
+        let retained_time = original_time.or(retained_time);
+        let policy_time = match (durable, retained_time) {
+            (Some(context), None) => self.checked_policy_time(context.time())?.0,
+            (None, Some(original)) => self.checked_policy_time(Some(original))?.0,
+            (None, None) => match &origin {
+                Some(InvocationCaller::Local { .. }) => local_time.cloned(),
+                _ => self.registered_policy_time()?,
+            },
+            (Some(_), Some(_)) => return Err("duplicate original invocation time ownership".into()),
+        };
+        let now = self.checked_policy_time(policy_time.as_ref())?.1 / 1_000_000_000;
+
+        if offered.0.app_id == tilo_peer_state::owner_commit::desktop_command::APP_ID
+            && self
+                .pending_invocations
+                .lock()
+                .map_err(|_| "invocation registry unavailable")?
+                .values()
+                .filter(|pending| pending.peer_id == peer_id)
+                .count()
+                >= 32
+        {
+            return Err("desktop invocation capacity exhausted".into());
+        }
+        // A stream the app has dropped takes nothing: refuse before the
+        // journal admits what could never be delivered.
+        let sender = self.invocation_stream(peer_id);
+        if local_report.is_none() && sender.is_none() {
+            return Err("the application has no invocation stream".into());
+        }
+        if offered.0.route.cluster_id.is_empty() {
+            return Err("the application is not attached to a workspace".into());
+        }
+        if let tilo_actions::Availability::Unavailable { reason, .. } =
+            &offered.1.contract.availability
+        {
+            return Err(format!("the application action is unavailable: {reason}"));
+        }
+        // What the person allowed an agent session for every later step like
+        // one it asked about: decided with the workspace's grants, as an
+        // answer granted there is.
+        let answers = match (durable, session) {
+            (None, Some(Ok(going))) => going.answers,
+            _ => Vec::new(),
+        };
+        // Every check of this admission is decided on one committed sample,
+        // so a policy change cannot land between the action check and the
+        // record check.
+        let (asks, spent) = self
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_workspace(&offered.0.route.cluster_id, |workspace| {
+                let workspace = workspace.ok_or("workspace no longer hosted")?;
+                let answered;
+                let workspace = if answers.is_empty() {
+                    workspace
+                } else {
+                    let mut copy = workspace.clone();
+                    copy.policy.grants.extend(answers.iter().cloned());
+                    answered = copy;
+                    &answered
+                };
+                actor.admit_published_in(workspace, now, (&offered.0, &offered.1))
+            })??;
+
+        if (durable.is_some() || execution.is_some())
+            && !self
+                .stable_invocation_subscribers
+                .lock()
+                .map_err(|_| "application capability unavailable")?
+                .contains(&peer_id)
+        {
+            return Err("application_stable_identity_unavailable".into());
+        }
+        // A configured but unreadable/corrupt journal disables every new admission.
+        let mut journal_guard = self
+            .journal
+            .lock()
+            .map_err(|_| "invocation journal unavailable")?;
+        let journal = journal_guard.as_mut().map_err(|error| error.clone())?;
+        if (durable.is_some() || owner.verified_actor().is_some()) && journal.is_none() {
+            return Err("action_evidence_unavailable: admission journal unavailable".into());
+        }
+        // What this admission is, decided before the confirmation is looked
+        // at: an invocation the caller already had admitted under this id is
+        // answered from its record, never asked for another confirmation.
+        let id = self
+            .invocation_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| "invocation handle space exhausted")?;
+        let authoritative = durable
+            .map(DurableContext::invocation)
+            .or_else(|| execution.as_ref().map(ExecutionScope::invocation))
+            .or(match &origin {
+                Some(InvocationCaller::NativePerson { invocation, .. }) => Some(*invocation),
+                _ => None,
+            });
+        if requested.is_some_and(|requested| {
+            requested.0.is_nil() || authoritative.is_some_and(|held| held != requested)
+        }) {
+            return Err("requested invocation does not match admitted ownership".into());
+        }
+        let invocation = match durable {
+            Some(context) => context.invocation(),
+            None => requested.or(authoritative).unwrap_or_else(|| {
+                tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)))
+            }),
+        };
+        let mut receipt_context = tilo_actions::ActionContext::for_resource(
+            &offered.1.resource,
+            &offered.1.resource_kind,
+            &offered.1.resource_label,
+        )
+        .with_app(&offered.0.app_id, &offered.0.app_id)
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(
+                &offered.0.app_id,
+                &offered.1.resource_kind,
+                &offered.1.action,
+            ),
+            [],
+        )));
+        if let Some(ambient) = &context {
+            receipt_context = receipt_context.enriched_by(ambient);
+        }
+        let intent = match journal.as_ref() {
+            Some(_) => Some(Self::invocation_intent(
+                &offered,
+                IntentInputs {
+                    peer_id,
+                    actor,
+                    argument,
+                    revision,
+                    original_request,
+                    durable,
+                    local_report,
+                    typed_local_arguments: typed_local_arguments.as_ref(),
+                    receipt_context: &receipt_context,
+                },
+            )),
+            _ => None,
+        };
+        // Only what this connection's own admission decides has a record to
+        // answer from here; a peer's or a run's ownership carries its own, and
+        // a report is admitted through its own receipts.
+        if local_report.is_none()
+            && durable.is_none()
+            && let (Some(journal), Some(intent)) = (journal.as_ref(), intent.as_ref())
+            && let Some(record) = self.retained_invocation(
+                journal,
+                &offered.0.route.cluster_id,
+                &owner,
+                invocation,
+                actor,
+                now,
+            )?
+        {
+            if !record.admitted_intent_is(intent) {
+                return Err("invocation identity reused with different intent".into());
+            }
+            return Ok(self.retained_answer(&record));
+        }
+        // Where the workspace's grants ask first, the person's confirmation in
+        // the host is the answer: the invocation needs a confirmation token
+        // even when the action itself asks for none.
+        let confirmed = asks
+            || requires_store_approval(&offered.0.app_id, &offered.1.action)
+            || !matches!(
+                offered.1.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::None
+            );
+        if confirmed {
+            let token = confirmation_token.ok_or_else(|| {
+                "action_confirmation_required: request and present a one-use confirmation token"
+                    .to_string()
+            })?;
+            let grant = self
+                .confirmation_grants
+                .lock()
+                .map_err(|_| "the confirmation registry is unavailable".to_string())?
+                .remove(token)
+                .ok_or_else(|| "the confirmation token is unknown or already used".to_string())?;
+            if (requires_store_approval(&offered.0.app_id, &offered.1.action)
+                && grant.host_approved.is_none())
+                || grant.expires < tilo_clock::now()
+                || grant.peer_id != peer_id
+                || grant.resource != offered.1.resource
+                || grant.action != offered.1.action
+                || grant.argument_digest != argument_digest(argument)
+                || grant.actor != *actor.member()
+                || grant.host_approved.as_ref().is_some_and(|binding| {
+                    binding.workspace != offered.0.route.cluster_id
+                        || Some(binding.invocation)
+                            != requested
+                                .or_else(|| durable.map(DurableContext::invocation))
+                                .or_else(|| execution.as_ref().map(ExecutionScope::invocation))
+                                .or(match &origin {
+                                    Some(InvocationCaller::NativePerson { invocation, .. }) => {
+                                        Some(*invocation)
+                                    }
+                                    _ => None,
+                                })
+                        || binding.publication != self.approval_publication(&binding.provider)
+                        || match original_request {
+                            Some(request) => {
+                                binding.provider != request.target.provider
+                                    || binding.revision != request.revision
+                            }
+                            None => {
+                                binding.provider != peer_id.to_string()
+                                    || binding
+                                        .revision
+                                        .as_deref()
+                                        .is_some_and(|held| Some(held) != revision)
+                            }
+                        }
+                })
+            {
+                return Err(
+                    "the confirmation token is expired or does not match this invocation".into(),
+                );
+            }
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut admitted = invocation_journal::Durable::settled();
+        let journal_key = if let Some(journal) = journal.as_mut() {
+            let key = InvocationKey {
+                workspace: offered.0.route.cluster_id.clone(),
+                host: journal.host(),
+                invocation,
+                owner: owner.clone(),
+            };
+            let intent = intent.ok_or("invocation intent unavailable")?;
+            if let Some(context) = durable {
+                context.before_admission(
+                    self,
+                    peer_id,
+                    &offered,
+                    sender
+                        .as_ref()
+                        .ok_or("application invocation stream unavailable")?,
+                )?;
+            }
+            if local_report.is_some() {
+                self.local_report_receipts
+                    .lock()
+                    .map_err(|_| "local receipt cache unavailable")?
+                    .admit(key.clone(), &intent, id, peer_id)?;
+                Some(key)
+            } else {
+                let admission = if owner.verified_actor().is_some() {
+                    let facts = invocation_journal::evidence_facts(&key, &intent)?;
+                    Some(
+                        crate::apps::action_evidence::mint(facts, &intent).map_err(|_| {
+                            "action_evidence_unavailable: host signing identity unavailable"
+                                .to_string()
+                        })?,
+                    )
+                } else {
+                    // Actor-only legacy/system work is never upgraded into a certified person.
+                    None
+                };
+                let (fresh, durable) =
+                    journal.admit_with_evidence(key.clone(), intent, id, admission)?;
+                if !fresh {
+                    // A duplicate racing this admission: answer what the
+                    // journal now retains instead of admitting it twice.
+                    let record = journal.lookup(&key)?.ok_or("admitted invocation missing")?;
+                    return Ok(self.retained_answer(&record));
+                }
+                admitted = durable;
+                Some(key)
+            }
+        } else {
+            None
+        };
+        drop(journal_guard);
+        if local_report.is_some() {
+            // The app reports speculative local execution (possibly a read/no-op).
+            // Retain only admission, never execution, offload, or success evidence.
+            self.spend_once_grants(&offered.0.route.cluster_id, &spent);
+            return Ok(StagedJob {
+                admitted,
+                start: Admitted::Reported(InvocationJob { id, completion: rx }),
+            });
+        }
+        let sender = sender.ok_or("application invocation stream unavailable")?;
+        // Spent now, not once durable: a grant used once never admits twice,
+        // even should this admission fail.
+        self.spend_once_grants(&offered.0.route.cluster_id, &spent);
+        let untrusted = offered.1.contract.carries_untrusted_content();
+        // Admitted: an offloadable action may now run on a better-placed
+        // device, which the turn asks the route about. The device that runs it
+        // is sent this invocation, so it answers the invocation the person
+        // made rather than a second one of its own.
+        let offload = self.offload_request(
+            (&offered.0.route.cluster_id, &offered.0.app_id),
+            &offered.1,
+            tilo_actions::remote::InvokeRequest {
+                invocation,
+                target: tilo_actions::remote::application_action_target(
+                    &offered.0.route.cluster_id,
+                    &offered.0.app_id,
+                    offered.1.resource.clone(),
+                    offered.1.action.clone(),
+                ),
+                argument: tilo_actions::remote::InvokeArgument::from_slot(argument),
+                context: context.clone(),
+                // A device that runs it answers for the confirmation the
+                // person gave here, so a confirmed action is not run there
+                // unconfirmed.
+                confirmation: original_request.and_then(|request| request.confirmation.clone()),
+                revision: revision.map(str::to_owned),
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+            },
+        );
+        // What it was admitted to reach caps what its effect asks for: its
+        // own reach, narrowed by what it continues unless the person
+        // confirmed it.
+        let own = tilo_action_policy::Reach {
+            kind: offered.1.contract.kind,
+            privileged: offered.1.contract.need().privileged,
+        };
+        let reach = match actor.ceiling {
+            Some(ceiling) if !confirmed => own.narrowed(ceiling),
+            _ => own,
+        };
+        let pending = PendingInvocation {
+            reach,
+            caller: continuing,
+            activity: ActivityTarget::new(
+                execution.clone(),
+                (actor, caller, context.as_ref()),
+                &offered.0,
+                &offered.1,
+                argument,
+            ),
+            owner,
+            original: OriginalInvocationData::capture(
+                collaboration::invocation_scope::PublishedInvocationRequest {
+                    wire_id: id,
+                    invocation,
+                    address: tilo_actions::ActionAddress {
+                        resource: offered.1.resource.clone(),
+                        action: offered.1.action.clone(),
+                    },
+                    argument: argument.map(str::to_string),
+                    actor: actor.actor(),
+                    presence: invoker::invoker_presence(context.as_ref()),
+                },
+                offered.0.route.clone(),
+                &offered.1,
+                revision,
+                durable.map(DurableContext::origin).or(origin),
+                policy_time.clone(),
+                execution.as_ref().map(ExecutionScope::lease),
+            ),
+            policy_time,
+            journal_key,
+            peer_id,
+            tx,
+            update: tilo_actions::InvocationUpdate::Accepted { invocation },
+            prepared_effect: Arc::default(),
+            last_sequence: 0,
+            actor: actor.member().clone(),
+            cancellable: offered.1.contract.execution.cancellable(),
+            retryable_on_disconnect: matches!(
+                offered.1.contract.retry,
+                tilo_actions::RetryPolicy::Idempotent
+                    | tilo_actions::RetryPolicy::RetryWithInvocationId
+            ),
+            execution: offered.1.contract.execution.clone(),
+            result: offered.1.contract.result.clone(),
+            operation_kind: offered.1.operation_kind,
+            cluster_id: offered.0.route.cluster_id.clone(),
+            context: receipt_context,
+            last_activity: tilo_clock::now(),
+            cancellation_requested_at: None,
+            cancellation_fence: Arc::new(AtomicBool::new(false)),
+        };
+        let envelope = InvocationEnvelope {
+            id,
+            invocation,
+            resource: offered.1.resource,
+            action: offered.1.action,
+            argument: argument.map(str::to_string),
+            actor: actor.actor(),
+            context,
+        };
+        Ok(StagedJob {
+            admitted,
+            start: Admitted::Delivered(Box::new(Delivery {
+                id,
+                completion: rx,
+                pending,
+                envelope,
+                sender,
+                offload,
+                untrusted,
+            })),
+        })
+    }
+}

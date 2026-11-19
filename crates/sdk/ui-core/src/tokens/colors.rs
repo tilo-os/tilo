@@ -62,6 +62,30 @@ pub(crate) fn value_fill_on(accent_ink: Color, ground: Color, track: Color) -> C
     fill
 }
 
+/// [`Intents::value_track`] on `ground`, whose raised surface is `raised`: the raised tier's
+/// light neutral lift, painted on the ground so it is one opaque colour, and lifted less where a
+/// mark that fills it (`marks`: the value fill, the status tones) would not read on it at the
+/// non-text contrast floor.
+pub(crate) fn value_track_on(raised: Color, ground: Color, marks: &[Color]) -> Color {
+    use crate::a11y::contrast_ratio;
+    let mut alpha = VALUE_TRACK_ALPHA;
+    loop {
+        let track = composite(tier_on(raised, alpha), ground);
+        let reads = marks
+            .iter()
+            .all(|mark| contrast_ratio(*mark, track) >= NON_TEXT_MIN_CONTRAST);
+        if reads || alpha <= VALUE_TRACK_STEP {
+            return track;
+        }
+        alpha -= VALUE_TRACK_STEP;
+    }
+}
+
+/// How far a lighter track steps back toward the ground at a time.
+const VALUE_TRACK_STEP: u8 = 4;
+
+const VALUE_TRACK_ALPHA: u8 = 40;
+
 /// Composites `over` onto an opaque `ground`: a token's own RGBA says nothing about how
 /// it reads (`white/20` differs over black vs white), so every derivation below measures
 /// the composite, never the token.
@@ -272,6 +296,9 @@ pub struct Intents {
     /// mark ([`Self::accent_ink`]), held to the non-text contrast floor on the ground it
     /// stands on; never the text colour, so a filled bar never reads as a black slab.
     pub value_fill: Color,
+    /// The unfilled part of a progress indicator (a bar, a ring, a gauge): one light neutral
+    /// lift of the ground, the same under every one of them. What reads is the fill on it.
+    pub value_track: Color,
     pub selection: Color,
     pub selection_hover: Color,
     pub you: Color,
@@ -700,6 +727,16 @@ impl Colors {
                 on_state: oklch(on_state.lightness, on_state.chroma, ON_STATE_HUE),
                 on_state_mark: Color::WHITE,
                 value_fill: value_fill_on(accent_ink, content, lift(1.0, true)),
+                value_track: value_track_on(
+                    n(ladder.raised),
+                    content,
+                    &[
+                        value_fill_on(accent_ink, content, lift(1.0, true)),
+                        success,
+                        warning,
+                        danger,
+                    ],
+                ),
                 selection: lift(1.0, true),
                 selection_hover: lift(0.5, false),
                 you: you_colour,

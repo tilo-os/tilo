@@ -94,6 +94,28 @@ class PrimitivesTests(unittest.TestCase):
         errors = primitives.check(root, baseline)
         self.assertTrue(any("lower the count" in error for error in errors), errors)
 
+    def test_lowering_a_fixed_file_tightens_the_ratchet_and_never_raises(self):
+        root = self.fixture({"apps/demo/src/view.rs": HAND_ROLLED})
+        baseline = root / "baseline.txt"
+        baseline.write_text("glyph-join 2 apps/demo/src/view.rs\n", encoding="utf-8")
+        # The file has one glyph join: lowering takes the line to its count.
+        self.assertTrue(primitives.lower(root, baseline, ["apps/demo/src/view.rs"]))
+        self.assertEqual(baseline.read_text(), "glyph-join 1 apps/demo/src/view.rs\n")
+        # A count that grew is left alone, so raising it still fails the check.
+        baseline.write_text("glyph-join 0 apps/demo/src/view.rs\n", encoding="utf-8")
+        self.assertFalse(primitives.lower(root, baseline, ["apps/demo/src/view.rs"]))
+        self.assertEqual(baseline.read_text(), "glyph-join 0 apps/demo/src/view.rs\n")
+        # A rule its file no longer breaks drops the line instead of lowering it to 0.
+        (root / "apps/demo/src/view.rs").write_text("fn plain() {}\n", encoding="utf-8")
+        baseline.write_text("glyph-join 1 apps/demo/src/view.rs\n", encoding="utf-8")
+        self.assertTrue(primitives.lower(root, baseline, ["apps/demo/src/view.rs"]))
+        self.assertEqual(baseline.read_text(), "\n")
+        # A source the commit deletes drops its line too.
+        baseline.write_text("glyph-join 1 apps/demo/src/view.rs\n", encoding="utf-8")
+        (root / "apps/demo/src/view.rs").unlink()
+        self.assertTrue(primitives.lower(root, baseline, ["apps/demo/src/view.rs"]))
+        self.assertEqual(baseline.read_text(), "\n")
+
     def test_glyph_patterns(self):
         joins = ["{} · {}", "Enter to save • Esc", "a | b", "Offline — retry", "3 / 10"]
         fine = ["Mon–Fri", "read/write", "Search…", "{w}×{h}", "It's done, really."]

@@ -38,12 +38,17 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         public var sinceLeft: SinceLeft?
         /// Whether the person's Tilo answers and does not let this device in.
         public var joinStops = false
+        /// Which look the person's Tilo draws in, where it has said one.
+        public var look: Look?
 
         public init() {}
     }
 
     private let lock = NSLock()
     private let now: @Sendable () -> Date
+    /// How long after it is asked a conversation's pieces arrive, as a site's do a moment after
+    /// the window stands. Nothing: at once.
+    private let arrives: Duration?
     private let sessionNow: Broadcast<Session>
     private let reachNow = Broadcast<Reach>(.reachable)
     private let endedNow: Broadcast<String?>
@@ -61,6 +66,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private let setupNow: Broadcast<Setup>
     private let sinceNow: Broadcast<SinceLeft?>
     private let joinStopsNow: Broadcast<Bool>
+    private let lookNow: Broadcast<Look?>
     private var presses: [Press] = []
     private let offered: [ModelChoice]
     private let providerChoices: [ProviderChoice]
@@ -71,8 +77,9 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     private var files: [Attachment.ID: URL] = [:]
     private var made = 0
 
-    public init(_ content: Content = Content(), now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(_ content: Content = Content(), now: @escaping @Sendable () -> Date = { Date() }, arrives: Duration? = nil) {
         self.now = now
+        self.arrives = arrives
         sessionNow = Broadcast(content.session)
         endedNow = Broadcast(content.pairingEnded)
         endedDetailsNow = Broadcast(content.pairingEndedDetails)
@@ -89,6 +96,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         setupNow = Broadcast(content.setup)
         sinceNow = Broadcast(content.sinceLeft)
         joinStopsNow = Broadcast(content.joinStops)
+        lookNow = Broadcast(content.look)
         offered = content.offered
         providerChoices = content.providers
         var feeds: [Chat: Feed] = [.main: Feed(content.main)]
@@ -162,6 +170,11 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         joinStopsNow.set(joinStops)
     }
 
+    /// As if the person's Tilo said that it draws in this look now, or said none any more.
+    public func set(look: Look?) {
+        lookNow.set(look)
+    }
+
     /// Everything a conversation holds now.
     public func items(in chat: Chat = .main) -> [Item] {
         feed(chat)?.all ?? []
@@ -215,6 +228,7 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
 
     public func setup() -> AsyncStream<Setup> { setupNow.stream() }
     public func joinStops() -> AsyncStream<Bool> { joinStopsNow.stream() }
+    public func pageLook() -> AsyncStream<Look?> { lookNow.stream() }
 
     // MARK: Being told
 
@@ -292,7 +306,17 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
 
     public func conversation(_ chat: Chat) -> AsyncStream<ConversationChange> {
         guard let feed = feed(chat) else { return AsyncStream { $0.yield(.all([])) } }
-        return feed.stream()
+        guard let arrives else { return feed.stream() }
+        // The pieces come as a site's do: a moment after they were asked for.
+        return AsyncStream { continuation in
+            let coming = Task {
+                try? await Task.sleep(for: arrives)
+                guard !Task.isCancelled else { return }
+                for await change in feed.stream() { continuation.yield(change) }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in coming.cancel() }
+        }
     }
 
     public func earlier(in chat: Chat, before item: Item.ID) async throws -> [Item] {

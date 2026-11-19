@@ -34,6 +34,39 @@ thread_local! {
     static GENERATION: Cell<u64> = const { Cell::new(0) };
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
+thread_local! {
+    /// Whether the look the page said last on its root element is the dark
+    /// one; nothing while it has said none.
+    static LOOK_SAID: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// The attribute of the page's root element that names the look the page
+/// draws in, `dark` or `light`, for whoever frames the page: a native app's
+/// window around it draws its own parts in the same.
+#[cfg(target_arch = "wasm32")]
+pub(crate) const LOOK_ATTRIBUTE: &str = "data-look";
+
+/// The look `theme` draws in, as the page names it: `dark` or `light`.
+pub(crate) fn look(theme: &ui::Theme) -> &'static str {
+    if theme.document.is_dark() {
+        "dark"
+    } else {
+        "light"
+    }
+}
+
+/// Say which look a mount draws in now that it takes `theme`: `write` is
+/// handed the look's name when it is another than the one said last, so a
+/// look is said once per change and whoever listens hears no repeats.
+#[cfg(any(target_arch = "wasm32", test))]
+fn say_look(theme: &ui::Theme, write: impl FnOnce(&'static str)) {
+    let dark = theme.document.is_dark();
+    if LOOK_SAID.with(|said| said.replace(Some(dark))) != Some(dark) {
+        write(look(theme));
+    }
+}
+
 /// The theme as custom properties for the page (`--tilo-*`), with the
 /// `color-scheme` the browser draws its own parts in: what a page shown as
 /// HTML styles its native fields, scrollbars and selection with.
@@ -50,15 +83,7 @@ pub(crate) fn css_variables(theme: &ui::Theme) -> Vec<(&'static str, String)> {
         )
     };
     vec![
-        (
-            "color-scheme",
-            if theme.document.is_dark() {
-                "dark"
-            } else {
-                "light"
-            }
-            .to_owned(),
-        ),
+        ("color-scheme", look(theme).to_owned()),
         ("--tilo-ground", css(colors.surfaces.content)),
         ("--tilo-sidebar", css(colors.surfaces.sidebar)),
         ("--tilo-raised", css(colors.surfaces.raised)),
@@ -101,13 +126,33 @@ pub(crate) fn themed(
     )
 }
 
-/// The theme a mount draws in now.
+/// The theme a mount draws in now. Taking it names its look on the page's
+/// root element ([`LOOK_ATTRIBUTE`]), so what frames the page never draws
+/// in another look than the page.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn current() -> ui::Theme {
-    themed(
+    let theme = themed(
         ui::Theme::configured_from(&settings_store::load()),
         ui::process::environment().accessibility,
-    )
+    );
+    say_look(&theme, write_look);
+    theme
+}
+
+/// Write the look's name on the page's root element.
+#[cfg(target_arch = "wasm32")]
+fn write_look(look: &'static str) {
+    use wasm_bindgen::JsCast as _;
+    let root = js_sys::Reflect::get(&js_sys::global(), &"document".into())
+        .and_then(|document| js_sys::Reflect::get(&document, &"documentElement".into()));
+    let Ok(root) = root else {
+        return;
+    };
+    if let Ok(set) = js_sys::Reflect::get(&root, &"setAttribute".into())
+        && let Some(set) = set.dyn_ref::<js_sys::Function>()
+    {
+        let _ = set.call2(&root, &LOOK_ATTRIBUTE.into(), &look.into());
+    }
 }
 
 /// Which change of what the theme is built from the page is at. A theme's
@@ -381,6 +426,24 @@ mod tests {
             ui::theme::install_host_scheme(Some(true));
             assert!(ui::Theme::configured_from(&none).document.is_dark());
             assert_ne!(generation(), drawn, "the mounts draw the new scheme");
+        }
+
+        phase the_page_says_which_look_it_draws_in_once_per_change;
+        // Whoever frames the page (a native app's window around it) draws in
+        // the look the page names on its root element. A mount says it as it
+        // takes a theme: each look once, however the person came by it, by
+        // their own choice or by a browser that follows their system.
+        {
+            let said = std::cell::RefCell::new(Vec::new());
+            let take = |theme: &ui::Theme| say_look(theme, |look| said.borrow_mut().push(look));
+            let none = serde_json::Map::new();
+            take(&from_settings(&none, Some(true)));
+            take(&ui::Theme::dark());
+            take(&ui::Theme::light());
+            take(&from_settings(&none, Some(false)));
+            take(&from_settings(&none, Some(true)));
+            assert_eq!(*said.borrow(), ["dark", "light", "dark"]);
+            assert_eq!(look(&ui::Theme::light()), "light");
         }
     }
 }

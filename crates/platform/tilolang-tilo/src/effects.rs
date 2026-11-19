@@ -68,6 +68,7 @@ pub enum HostEffect {
     /// (the id `run-block` or a verb answered with), or a run waiting for approval (the run id
     /// answered with). Approving runs the action once, whoever asks and however
     /// many devices answer. Only a person decides: an agent cannot approve what it suggested.
+    #[effect(kind = "outside")]
     #[effect(returns, destructive)]
     Resolve {
         #[param("The suggested invocation's id, or the waiting run's id")]

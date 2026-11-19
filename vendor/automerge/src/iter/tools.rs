@@ -221,6 +221,19 @@ impl OpSetOrExId<'_> {
 }
 
 impl<'a> ExIdPromise<'a> {
+    /// TILO(model-device): the id the host of a model module's document named.
+    #[cfg(tilo_model_guest)]
+    pub(crate) fn resolved(id: ExId) -> ExIdPromise<'static> {
+        let op = match &id {
+            ExId::Root => OpId::new(0, 0),
+            ExId::Id(counter, _, actor) => OpId::new(*counter, *actor),
+        };
+        ExIdPromise {
+            id: op,
+            promise: OpSetOrExId::ExId(id),
+        }
+    }
+
     pub(crate) fn new(op_set: &'a OpSet, id: OpId) -> Self {
         Self {
             id,

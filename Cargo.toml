@@ -4,8 +4,8 @@
 exclude = [
     "vendor/leveldb-sys",
     "vendor/hexane",
-    "vendor/iroh-blobs",
     "vendor/buffa-build",
+    "vendor/swarm-discovery",
     "tools/web/wasm-split",
     "fuzz",
     # A wasm32 library `tilolang bench --library` runs; built by its own build.sh.
@@ -67,10 +67,13 @@ default-members = [
 ]
 members = [
     "crates/session/client",
+    "crates/session/session-actions",
     "crates/lang/tilolang",
     "crates/lang/tilolang-lex",
     "crates/lang/tilolang-cli",
     "apps/poker",
+    "apps/poker-model",
+    "apps/poker-model-wasm",
     "crates/browser/browser-continuity",
     "crates/browser/browser-continuity-core",
     "crates/platform/tilo-messaging",
@@ -98,65 +101,110 @@ members = [
     # Applications
     "apps/activity",
     "apps/activity-model",
+    "apps/activity-model-wasm",
     "apps/console",
     "apps/console-model",
+    "apps/console-model-wasm",
     "apps/agent",
     "apps/api-tester",
     "apps/api-tester-model",
+    "apps/api-tester-model-wasm",
     "apps/assistant",
     "apps/assistant-model",
+    "apps/assistant-model-wasm",
     "apps/backups",
     "apps/backups-model",
+    "apps/backups-model-wasm",
     "apps/browser",
+    "apps/browser-model",
+    "apps/browser-model-wasm",
     "apps/calculator",
     "apps/calculator-model",
+    "apps/calculator-model-wasm",
     "apps/calendar",
+    "apps/calendar-model",
+    "apps/calendar-model-wasm",
     "apps/camera",
+    "apps/camera-model",
+    "apps/camera-model-wasm",
     "apps/chat",
+    "apps/chat-model",
+    "apps/chat-model-wasm",
     "apps/discord",
     "apps/discord-model",
     "apps/moderation-model",
     "apps/discord/worker",
     "apps/messages",
     "apps/clocks",
+    "apps/clocks-model",
+    "apps/clocks-model-wasm",
     "apps/code-editor",
     "apps/chip-design",
     "apps/contacts",
+    "apps/contacts-model",
+    "apps/contacts-model-wasm",
     "apps/containers",
+    "apps/containers-model",
+    "apps/containers-model-wasm",
     "apps/db-client",
     "apps/db-client-model",
+    "apps/db-client-model-wasm",
     "apps/diffmerge",
     "apps/diffmerge-model",
+    "apps/diffmerge-model-wasm",
     "apps/disks",
     "apps/disks-model",
+    "apps/disks-model-wasm",
     "apps/disk-usage",
     "apps/disk-usage-model",
+    "apps/disk-usage-model-wasm",
     "apps/ebook",
     "apps/feeds",
     "apps/file-explorer",
+    "apps/file-explorer-model",
+    "apps/file-explorer-model-wasm",
     "apps/firewall",
     "apps/firewall-model",
+    "apps/firewall-model-wasm",
     "apps/git-client",
+    "apps/git-client-model",
+    "apps/git-client-model-wasm",
     "apps/hex-editor",
     "apps/hex-editor-model",
+    "apps/hex-editor-model-wasm",
     "apps/imager",
     "apps/launcher",
     "apps/logs",
     "apps/logs-model",
+    "apps/logs-model-wasm",
     "apps/mail",
     "apps/maps",
+    "apps/maps-model",
+    "apps/maps-model-wasm",
     "apps/model-providers",
     "apps/monitor",
+    "apps/monitor-model",
+    "apps/monitor-model-wasm",
     "apps/music",
     "apps/notes",
     "apps/osk",
     "apps/passwords",
+    "apps/passwords-model",
+    "apps/passwords-model-wasm",
     "apps/pdf-viewer",
     "apps/photos",
     "apps/print-centre",
+    "apps/print-centre-model",
+    "apps/print-centre-model-wasm",
     "apps/publisher",
+    "apps/publisher-model",
+    "apps/publisher-model-wasm",
     "apps/remote",
+    "apps/remote-model",
+    "apps/remote-model-wasm",
     "apps/scratchpad",
+    "apps/scratchpad-model",
+    "apps/scratchpad-model-wasm",
     "apps/speed-test",
     "apps/settings",
     "apps/sheets",
@@ -171,9 +219,11 @@ members = [
     "apps/tilolang",
     "apps/tasks",
     "apps/tasks-model",
+    "apps/tasks-model-wasm",
     "apps/totp",
     "apps/tube",
     "apps/tube-model",
+    "apps/tube-model-wasm",
     "apps/typst-editor",
     "apps/video-editor",
     "apps/video-player",
@@ -200,12 +250,15 @@ members = [
     "crates/sdk/tilo-history",
     "crates/sdk/tilo-cpu-raster",
     "crates/sdk/ui-kms",
+    "crates/sdk/tilo-webview",
     "crates/sdk/tilo-process-services",
     "crates/sdk/tilo-formats",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-component-scan",
     "crates/sdk/tilo-rich-edit",
     "crates/sdk/tilo-resource-macros",
+    "crates/sdk/tilo-model-guest",
+    "crates/sdk/tilo-models-wasm",
     "crates/sdk/tilo-recurrence",
     "crates/sdk/ui-macros",
     "crates/sdk/view-macros",
@@ -224,6 +277,7 @@ members = [
     "crates/collab/automation",
     "crates/collab/key-group",
     "crates/collab/collab-types",
+    "crates/collab/resource-store",
     "crates/collab/collaboration",
     "crates/collab/neighbour-wire",
     "crates/collab/reference",
@@ -232,6 +286,7 @@ members = [
     "crates/collab/moderation",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
+    "crates/collab/tilo-enrollment",
     "crates/collab/tilo-live",
     "crates/collab/tilo-unlock-protocol",
     "crates/collab/tilo-device-identity",
@@ -351,7 +406,6 @@ members = [
     "crates/platform/tilolang-youtube",
     "crates/platform/tilo-failure",
     "crates/platform/tilo-lock",
-    "crates/platform/tilo-settings-records",
     "crates/platform/tilo-sort",
     "crates/platform/tilo-selector",
     "crates/platform/tilo-face",
@@ -430,14 +484,16 @@ members = [
     "crates/runtime/runtime-fs",
     "crates/runtime/tilo-fs-client",
     "crates/runtime/runtime-fs-fuse",
-    "crates/runtime/runtime-identity",
     "crates/runtime/tilo-identity-client",
     "crates/runtime/runtime-portal",
     "crates/runtime/os-search",
     "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity",
     "crates/runtime/tilo-mcp",
+    "crates/runtime/device-mcp",
     "crates/runtime/tilo-runtime",
+    # The wasm host layer every wasm host in the tree runs its guests on.
+    "crates/runtime/tilo-wasm-host",
     "crates/runtime/environment",
     "crates/runtime/egress",
     "crates/runtime/ush",
@@ -611,8 +667,11 @@ ignored = ["workspace-hack", "tilo-winit-x11"]
 [workspace.lints.rust]
 # `tilo_no_js`: a wasm32-unknown-unknown build for a host that is not a
 # JavaScript page (a sandboxed format provider), which must link no
-# wasm-bindgen glue.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)"] }
+# wasm-bindgen glue. `tilo_model_split`: the build that links every app's model
+# into one module (crates/sdk/tilo-models-wasm), where `tilo_model_guest::model!`
+# names each app's entry by its app. `tilo_model_guest`: an app's model module,
+# whose documents its host keeps (vendor/automerge/src/model_device).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tilo_no_js)", "cfg(tilo_model_split)", "cfg(tilo_model_guest)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
@@ -815,17 +874,19 @@ zeroize = "1"
 # ---------------------------------------------------------------------------
 iroh = "1.0.3"
 iroh-base = "1.0.3"
-# Disable unused RPC support and its platform certificate dependencies.
-iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
-# iroh-blobs' BAO tree and RPC layer, for the content store's file-backed
-# provider (versions follow iroh-blobs).
-bao-tree = { version = "0.16", default-features = false, features = ["experimental-mixed"] }
+# Disable unused RPC support and its platform certificate dependencies. The
+# content store serves its own blobs, so the filesystem store is not built.
+iroh-blobs = { version = "0.103.0", default-features = false, features = ["hide-proto-docs"] }
+# iroh-blobs' BAO tree and RPC layer, for the content store's provider
+# (versions follow iroh-blobs). `fs` lets a whole blob's ranges be read from
+# its file instead of held in memory.
+bao-tree = { version = "0.16", default-features = false, features = ["experimental-mixed", "fs"] }
 irpc = { version = "0.17.0", default-features = false }
 ref-cast = "1.0.24"
 # Content-defined chunking for the native backend (normalised FastCDC).
 fastcdc = { version = "3.2", default-features = false }
-# Embedded metadata database of the storage daemon (already in the graph
-# through iroh-blobs' store).
+# The storage daemon's content area: its index, its inline blobs and every
+# whole blob's outboard.
 redb = "4.1.0"
 # ---------------------------------------------------------------------------
 # Media: images, codecs, capture and playback
@@ -870,7 +931,7 @@ wayland-client = "0.31.14"
 ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
 zbus = { version = "5.16", default-features = false }
 # X11, Windows and macOS only; Wayland clients use focus-gated wl_data_device
-# through smithay-clipboard (see crates/sdk/tilo-process-services/src/clipboard.rs).
+# on the app's own connection (see crates/platform/tilo-clipboard/src/wayland.rs).
 arboard = { version = "3.6.1", default-features = false }
 fuser = "0.18.0"
 # Defaults on: the only default is `macos_fsevent`, without which notify has no
@@ -1606,10 +1667,12 @@ leveldb-sys = { path = "vendor/leveldb-sys" }
 # vendor/hexane/TILO-PATCH.md.
 hexane = { path = "vendor/hexane" }
 # The content store's metadata database keeps the page cache its owner bounds, not redb's
-# default gigabyte. See vendor/iroh-blobs/TILO-PATCH.md.
-iroh-blobs = { path = "vendor/iroh-blobs" }
 # Build outputs must not become Cargo inputs; see vendor/buffa-build/PROVENANCE.md.
 buffa-build = { path = "vendor/buffa-build" }
+# A multicast send failure is said once, and again only when its cause
+# changes, so a network that refuses multicast does not bury the log. See
+# vendor/swarm-discovery/PROVENANCE.md.
+swarm-discovery = { path = "vendor/swarm-discovery" }
 # Verify Cast TLS handshake signatures and bound cancellation; identity
 # authentication remains a separate explicit trust decision. See provenance.
 fcast-sender-sdk = { path = "vendor/fcast-sender-sdk" }

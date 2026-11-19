@@ -53,7 +53,8 @@ impl MountedReadEpoch {
         state.verify(cancel)
     }
 
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     pub(super) fn reopen(
         primary: &SourceReadContext,
         proof: &MountedProof,

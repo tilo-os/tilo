@@ -928,7 +928,7 @@ fn tagging_a_note_damages_its_header_not_the_app() {
             type_text(app, &mut host, "Plan");
             let_the_save_land(app, &mut host);
             host.frames(app, 3);
-            let page = item_id(app, "pages", "Untitled");
+            let page = item_id(app, "pages", "Plan");
             // A note is tagged with the notebook's tags.
             for name in ["work", "home"] {
                 invoke_with(

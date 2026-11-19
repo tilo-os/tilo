@@ -21,9 +21,6 @@ impl OwnerCommitService for NativeEffects {
                 .unwrap();
         self.owner.with_current(workspace, |_| Ok(()))
     }
-    fn requires_workspace(&self, workspace: &str) -> bool {
-        workspace == tilo_peer_state::owner::testing::WORKSPACE
-    }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         let owner = self.owner.clone();
         let held = self.held.clone();
@@ -119,7 +116,7 @@ fn fixture() -> Fixture {
         workspace_id: workspace_id.into(),
         device_certificate: serde_json::to_vec(&certificate).unwrap(),
         proof: key
-            .sign(&runtime_identity::collaboration_join_digest(workspace_id).unwrap())
+            .sign(&tilo_identity_client::collaboration_join_digest(workspace_id).unwrap())
             .to_bytes()
             .to_vec(),
     }

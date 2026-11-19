@@ -198,20 +198,16 @@ fn file_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn write_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
-    tilo_files::native::atomic::write_with_mode(path, content, mode)
-        .map_err(|error| Error::os(&error, Some(path)))
-}
-
 pub(crate) fn write_json(path: &Path, value: &Value, mode: u32) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).at(parent)?;
     }
-    write_atomic(
+    tilo_files::native::atomic::write_with_mode(
         path,
         (py::Dumps::INDENTED.dumps(value) + "\n").as_bytes(),
         mode,
     )
+    .map_err(|error| Error::os(&error, Some(path)))
 }
 
 fn read_json(path: &Path) -> Map<String, Value> {
@@ -1058,12 +1054,12 @@ fn keep_manifest(layout: &Layout, ident: &str, base: &Base, fetched: &Fetched) -
     fs::create_dir_all(&directory).at(&directory)?;
     chmod(&layout.bases(ident), 0o755)?;
     chmod(&directory, 0o755)?;
-    write_atomic(
-        &directory.join(format!("manifest.json{}", layout.signature_suffix())),
-        &fetched.signature,
-        0o644,
-    )?;
-    write_atomic(&directory.join("manifest.json"), &fetched.data, 0o644)
+    let signature = directory.join(format!("manifest.json{}", layout.signature_suffix()));
+    tilo_files::native::atomic::write_with_mode(&signature, &fetched.signature, 0o644)
+        .map_err(|error| Error::os(&error, Some(&signature)))?;
+    let manifest = directory.join("manifest.json");
+    tilo_files::native::atomic::write_with_mode(&manifest, &fetched.data, 0o644)
+        .map_err(|error| Error::os(&error, Some(&manifest)))
 }
 
 fn kept_manifests(

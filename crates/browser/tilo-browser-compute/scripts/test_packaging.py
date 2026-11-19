@@ -19,7 +19,7 @@ class CanonicalPackaging(unittest.TestCase):
             tools = temp / 'bin'
             tools.mkdir()
             scripts = {
-                'cargo': '#!/bin/sh\nif [ "$1" = metadata ]; then printf \'{"target_directory":"%s"}\\n\' "$FAKE_TARGET"; else printf "%s\\n" "$*" >> "$FAKE_LOG"; fi\n',
+                'cargo': '#!/bin/sh\nif [ "$1" = metadata ]; then printf \'{"target_directory":"%s"}\\n\' "$CARGO_TARGET_DIR"; else printf "%s\\n" "$*" >> "$FAKE_LOG"; fi\n',
                 'wasm-bindgen': '#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\nif "--version" in sys.argv: print("wasm-bindgen 0.2.108");sys.exit()\na=sys.argv;out=Path(a[a.index("--out-dir")+1]);out.mkdir(parents=True,exist_ok=True);name=a[a.index("--out-name")+1]\n(out/(name+".js")).write_text("export default async()=>{};")\n(out/(name+"_bg.wasm")).write_bytes(bytes([0,97,115,109,1,0,0,0,5,5,1,1,18,128,32]) + (bytes([0,128,128,64])+bytes(1024*1024) if name=="tilo_browser_compute" else b""))\n',
                 'npm': '#!/bin/sh\nexit 0\n',
                 # The release profile names the commit it was built from; the fixture is its own
@@ -33,7 +33,7 @@ class CanonicalPackaging(unittest.TestCase):
                 path.write_text(source)
                 path.chmod(0o755)
             env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}',
-                       FAKE_TARGET=str(temp / 'target'), FAKE_LOG=str(temp / 'cargo.log'),
+                       CARGO_TARGET_DIR=str(temp / 'target'), FAKE_LOG=str(temp / 'cargo.log'),
                        REAL_NODE=shutil.which('node'), WASM_BINDGEN=str(tools / 'wasm-bindgen'))
             out = temp / 'bundle'
             subprocess.run(['bash', str(ROOT / 'crates/browser/tilo-browser-runtime/scripts/build.sh'),
@@ -92,14 +92,15 @@ class CanonicalPackaging(unittest.TestCase):
         wasm-bindgen and wasm-opt are the build's memory, not the compile's: a
         machine that sends its compile away still pays for them unless they go
         with it. The fake builder binds the module in a target dir of its own
-        and hands back only the directory `--fetch` names.
+        and hands back only the directory `--fetch` names, into the
+        `CARGO_TARGET_DIR` the job names.
         """
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)
             tools = temp / 'bin'
             tools.mkdir()
             scripts = {
-                'cargo': '#!/bin/sh\nif [ "$1" = metadata ]; then printf \'{"target_directory":"%s"}\\n\' "$CARGO_METADATA_TARGET"; fi\n',
+                'cargo': '#!/bin/sh\nif [ "$1" = metadata ]; then printf \'{"target_directory":"%s"}\\n\' "$CARGO_TARGET_DIR"; fi\n',
                 # Binding here is the failure this asks about: only the builder
                 # may spend the gigabytes, and only it sets FAKE_BUILDER.
                 'wasm-bindgen': '#!/usr/bin/env python3\nimport os,sys\nfrom pathlib import Path\n'
@@ -120,8 +121,8 @@ class CanonicalPackaging(unittest.TestCase):
                           'printf "%s\\n" "$fetch" >> "$FAKE_LOG"\n'
                           'CARGO=cargo CARGO_TARGET_DIR=$FAKE_BUILDER_TARGET FAKE_BUILDER=1 "$@"\n'
                           '[ -z "${FAKE_BUILDER_MISSING:-}" ] || exit 0\n'
-                          'rm -rf "$CARGO_METADATA_TARGET/$fetch"\nmkdir -p "$CARGO_METADATA_TARGET/$fetch"\n'
-                          'cp -R "$FAKE_BUILDER_TARGET/$fetch/." "$CARGO_METADATA_TARGET/$fetch/"\n',
+                          'rm -rf "$CARGO_TARGET_DIR/$fetch"\nmkdir -p "$CARGO_TARGET_DIR/$fetch"\n'
+                          'cp -R "$FAKE_BUILDER_TARGET/$fetch/." "$CARGO_TARGET_DIR/$fetch/"\n',
                 'npm': '#!/bin/sh\nexit 0\n',
                 'git': '#!/bin/sh\ncase "$1" in rev-parse) echo ' + 'a' * 40 + ' ;; esac\n',
                 'wasm-opt': '#!/bin/sh\n[ \"$1" != --version ] || echo wasm-opt-fixture\n',
@@ -135,7 +136,7 @@ class CanonicalPackaging(unittest.TestCase):
                 path.chmod(0o755)
             target = temp / 'target'
             env = dict(os.environ, PATH=f'{tools}:{os.environ["PATH"]}',
-                       CARGO_METADATA_TARGET=str(target), FAKE_BUILDER_TARGET=str(temp / 'builder-target'),
+                       CARGO_TARGET_DIR=str(target), FAKE_BUILDER_TARGET=str(temp / 'builder-target'),
                        FAKE_LOG=str(temp / 'steps.log'), REAL_NODE=shutil.which('node'),
                        WASM_BINDGEN=str(tools / 'wasm-bindgen'), CARGO=str(tools / 'builder-cargo'))
             out = temp / 'bundle'

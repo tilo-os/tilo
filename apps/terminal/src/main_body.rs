@@ -94,6 +94,20 @@ fn link_resource_label(url: &str) -> String {
     label
 }
 
+/// The row of the link `link_id` shows in `pane`: an item of the
+/// `terminal.link` type, offering to open it.
+fn link_row(pane: &TerminalWidget, link_id: u16, url: &str) -> ui::framework::LiveRow {
+    let bindings = ui::tilo_resource::RowBindings::new().bind(
+        crate::resource::TerminalEffect::OPEN_LINK,
+        [("url", url.into())],
+    );
+    ui::framework::LiveRow::typed_with::<crate::resource::Link>(
+        pane.terminal_link_resource_id(link_id),
+        link_resource_label(url),
+        &bindings,
+    )
+}
+
 /// A cell in the buffer: `row` absolute, scrollback included, `col` a grid column. `Ord` is row then
 /// column, the reading order the span walker steps in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -843,14 +857,7 @@ impl TerminalWidget {
             .links
             .get(&link_id)
             .filter(|url| is_public_web_link(url))?;
-        Some(
-            ui::framework::LiveRow::new(
-                self.terminal_link_resource_id(link_id),
-                "terminal.link",
-                link_resource_label(url),
-            )
-            .effect(&crate::resource::TerminalEffect::OpenLink { url: url.clone() }),
-        )
+        Some(link_row(self, link_id, url))
     }
 
     pub(crate) fn effect_statuses(&self) -> Vec<ui::framework::EffectStatus> {
@@ -5258,7 +5265,7 @@ fn ush_service_backend(
         USH_SERVICE.with_control(|stream| {
             let socket = stream
                 .try_clone()
-                .map(|stream| tilo_process::local_socket::ServiceSocket::from(stream))
+                .map(tilo_process::local_socket::ServiceSocket::from)
                 .map_err(|error| OpenError::Failed(error.to_string()))?;
             ush_backend_on(
                 &socket,

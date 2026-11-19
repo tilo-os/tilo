@@ -626,7 +626,13 @@ files-folder-remove-current-bookmark = Diesen Ordner aus Favoriten entfernen
 # mount of this device shows.
 files-workspace-window = Dateienfenster
 files-tree-up = Übergeordneter Ordner
-files-tree-empty = Dieser Arbeitsbereich hat noch keine Dateien
+files-tree-root = Arbeitsbereich
+files-tree-create = Erstellen
+files-tree-cancel = Abbrechen
+files-tree-upload-title = Dateien hochladen
+files-tree-upload-accept = Hochladen
+files-tree-upload-failed = { $name } konnte nicht hochgeladen werden
+files-tree-not-here = Die Dateien des Arbeitsbereichs sind noch nicht da. Versuche es gleich noch einmal.
 files-tree-open = Öffnen
 files-tree-open-detail = Die Datei in der App öffnen, die sie liest
 files-tree-download = Herunterladen

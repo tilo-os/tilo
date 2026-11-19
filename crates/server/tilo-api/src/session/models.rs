@@ -13,8 +13,7 @@ use super::{Reach, Session};
 use crate::server::ServerError;
 use serde_json::{Map, Value};
 use tilo_actions::remote::{
-    ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark,
-    person_models, settle_with,
+    Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, person_models, settle_with,
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_clock::time::Duration;
@@ -36,7 +35,7 @@ pub enum Written {
 
 /// An ask the server admitted, to follow ([`Self::follow`]).
 pub struct ModelAsk {
-    actions: tilo_session_client::remote::SessionActions,
+    actions: tilo_session_actions::SessionActions,
     caller: Caller,
     invocation: InvocationId,
 }

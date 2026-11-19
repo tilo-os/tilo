@@ -209,13 +209,15 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (inFlow) {
       // A flex item of its parent, at the size the shared layout gave it.
       css += `position:relative;flex:none;width:${w}px;height:${h}px;`;
-      // The room it keeps from its siblings, as its layout node keeps it.
+      // The room it keeps from its siblings, as its layout node keeps it, and none of the
+      // browser's own (a figure's, a paragraph's, a list's).
       const margin = /(?:^|;)margin:([^;]*)/.exec(node.layout ?? '')?.[1];
-      if (margin) css += `margin:${margin};`;
+      css += `margin:${margin || '0'};`;
     } else {
       const ox = outer ? outer.rect[0] : 0;
       const oy = outer ? outer.rect[1] - (scrolledBy ?? 0) : 0;
-      css += `position:absolute;left:${x - ox}px;top:${y - oy}px;width:${w}px;height:${h}px;`;
+      // Where the shared layout put it, with none of the browser's own margin moving it off.
+      css += `position:absolute;left:${x - ox}px;top:${y - oy}px;width:${w}px;height:${h}px;margin:0;`;
     }
     if (flows && node.layout) {
       // The container lays its children out itself, from its node's style;
@@ -231,6 +233,8 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       const shadows = node.floats ? [FLOATING_SHADOW] : [];
       if (edge) shadows.push(`inset 0 0 0 1px ${rgba(edge)}`);
       if (shadows.length) css += `box-shadow:${shadows.join(',')};`;
+      // A body set on a screen edge casts its shadow past its open side only.
+      if (node.floats && node.shadow_side) css += `clip-path:inset(${SHADOW_CLIP[node.shadow_side]});`;
       if (radius) css += `border-radius:${radius}px;`;
     }
     if (node.own?.kind === 'text') {
@@ -256,6 +260,14 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       const [ix, iy] = node.own.inset ?? [0, 0];
       css += textStyle(node.own.look) + `margin:0;padding:${iy}px ${ix}px;border:0;outline:none;font-family:inherit;resize:none;`;
       if (!node.ground) css += 'background:transparent;';
+    }
+    // A ground inset from the element's sides is clipped to it by a clear border, its corners
+    // drawn at the ground's own radius inside it; set last, over a face's own corners.
+    const inset = node.ground?.inset;
+    if (inset) {
+      const [ix, iy] = inset;
+      const r = node.ground.radius;
+      css += `border-style:solid;border-color:transparent;border-width:${iy}px ${ix}px;background-clip:padding-box;border-radius:${r + ix}px / ${r + iy}px;`;
     }
     write(element, 'css', css);
     // What it is, for assistive technology and for the page's own find,
@@ -362,6 +374,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     if (look.italic) css += 'font-style:italic;';
     if (look.color) css += `color:${rgba(look.color)};`;
     if (look.mono) css += 'font-family:var(--tilo-mono);';
+    if (look.struck) css += 'text-decoration:line-through;';
     css += `text-align:${look.align};`;
     return css;
   }
@@ -749,11 +762,15 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     write(item, '@aria-selected', role === 'radio' ? null : String(Boolean(option.selected)));
     if (role === 'radio' || role === 'option') write(item, '@aria-checked', role === 'radio' ? String(Boolean(option.selected)) : null);
     write(item, '@aria-disabled', option.disabled ? 'true' : null);
-    // A tool on a toolbar is its icon; its name is what a reader hears and a tooltip says.
+    // A tool on a toolbar is its icon, and a swatch its colour; the name is what a reader hears
+    // and a tooltip says, as the canvas draws a swatch without its code beside it.
     const iconOnly = role === 'button' && Boolean(option.icon);
-    write(item, '@aria-label', iconOnly ? option.label : null);
-    write(item, '@title', iconOnly ? option.label : null);
-    write(item, 'css', (iconOnly
+    const swatch = role === 'radio' && Boolean(option.colour);
+    write(item, '@aria-label', iconOnly || swatch ? option.label : null);
+    write(item, '@title', iconOnly || swatch ? option.label : null);
+    write(item, 'css', (swatch
+      ? 'all:unset;box-sizing:border-box;display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border-radius:8px;cursor:pointer;' + (option.selected ? 'box-shadow:inset 0 0 0 2px var(--tilo-text,currentColor);' : '')
+      : iconOnly
       ? 'display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border-radius:6px;cursor:pointer;' + (option.selected ? 'background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 14%,transparent);' : '')
       : 'display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' + (option.selected ? 'background:var(--tilo-raised,rgba(127,127,127,.16));' : ''))
       + (option.dot ? 'position:relative;' : '') + at);
@@ -761,11 +778,13 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     const shown = [];
     if (option.colour) {
       const dot = elementFor(`${path}:colour`, 'span', next);
-      write(dot, 'css', `flex:none;width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.35));background:${rgba(option.colour)};`);
+      write(dot, 'css', swatch
+        ? `flex:none;width:24px;height:24px;border-radius:6px;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.35));background:${rgba(option.colour)};`
+        : `flex:none;width:16px;height:16px;border-radius:50%;box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.35));background:${rgba(option.colour)};`);
       shown.push(dot);
     }
     if (option.icon) shown.push(glyph(`${path}:icon`, option.icon, next));
-    if (!iconOnly) {
+    if (!iconOnly && !swatch) {
       const label = elementFor(`${path}:label`, 'span', next);
       write(label, 'css', 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;');
       write(label, 'text', option.label);
@@ -778,10 +797,11 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       shown.push(detail);
     }
     if (option.dot) {
-      // Something new behind it: the accent dot at its corner, as painted.
+      // Something new behind it: the accent dot at its corner, cut out of the glyph by a
+      // ring of the ground, as painted.
       const dot = elementFor(`${path}:dot`, 'span', next);
       write(dot, '@aria-hidden', 'true');
-      write(dot, 'css', 'position:absolute;right:5px;top:5px;width:6px;height:6px;border-radius:50%;background:var(--tilo-accent,#2f6fed);');
+      write(dot, 'css', 'position:absolute;right:4px;top:4px;width:8px;height:8px;border-radius:50%;background:var(--tilo-accent,#2f6fed);box-shadow:0 0 0 1.5px var(--tilo-ground,#fff);');
       shown.push(dot);
     }
     place(item, shown);
@@ -920,6 +940,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
 }
 
 // The lift a window or a panel stands at over the shell.
+const SHADOW_CLIP = {top: '-96px 0 0 0', bottom: '0 0 -96px 0', left: '0 0 0 -96px', right: '0 -96px 0 0'};
 const FLOATING_SHADOW = '0 1px 3px rgba(0,0,0,.07),0 8px 22px rgba(0,0,0,.09)';
 
 // How the rendered composition looks beyond what each widget declares: the
@@ -999,9 +1020,10 @@ export const VIEW_CSS = `
 .tilo-view [data-widget=PasscodeKey]{box-sizing:border-box;background:var(--tilo-raised,rgba(127,127,127,.08));border-radius:var(--tilo-radius,8px);box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));display:flex;align-items:center;justify-content:center;}
 .tilo-view li{list-style:none;box-sizing:border-box;}
 .tilo-view li:has(>.tilo-words){display:flex;align-items:center;border-radius:var(--tilo-radius,8px);}
-.tilo-view li[aria-selected=true]:not([data-widget=NavRow]){background:var(--tilo-raised);}
+/* A list row lays its own lift under it, as painted; other items take the page's. */
+.tilo-view li[aria-selected=true]:not([data-widget=NavRow],[data-widget=ListRow]){background:var(--tilo-raised);}
 .tilo-view li[data-widget=NavRow][aria-selected=true]{background:transparent;}
-.tilo-view li:hover:not(:has(li:hover)){background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
+.tilo-view li:hover:not([data-widget=ListRow]):not(:has(li:hover)),.tilo-view li[data-widget=ListRow]:hover:not(:has(li:hover))>[data-widget=ListRowLift]{background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);border-radius:var(--tilo-radius,8px);}
 .tilo-words{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;}
 .tilo-view h1,.tilo-view h2,.tilo-view h3,.tilo-view h4,.tilo-view h5,.tilo-view h6,.tilo-view p,.tilo-view blockquote,.tilo-view pre{margin:0;}
 .tilo-view hr{border:0;border-top:1px solid var(--tilo-border,rgba(127,127,127,.25));margin:0;align-self:stretch;}

@@ -1,8 +1,8 @@
-//! What a page asks a host before it holds a session, over HTTPS through its
-//! `fetch`: the host's certificate and address, and joining a workspace.
+//! What a page asks a server before it holds a session, over HTTPS through its
+//! `fetch`: the server's certificate and address, and joining a workspace.
 //!
 //! Everything after that is the session, over iroh
-//! (`tilo_server_session::ServerClient`), dialled where [`crate::Host`] says.
+//! (`tilo_server_session::ServerClient`), dialled where [`crate::ServerAddress`] says.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -18,7 +18,7 @@ pub type HttpFuture<'a> = Pin<Box<dyn Future<Output = Result<(u16, Vec<u8>), Str
 #[cfg(target_family = "wasm")]
 pub type HttpFuture<'a> = Pin<Box<dyn Future<Output = Result<(u16, Vec<u8>), String>> + 'a>>;
 
-/// A host's or a site's whole answer: its status, the wait it asks for before the next try
+/// A server's or a site's whole answer: its status, the wait it asks for before the next try
 /// (`Retry-After`, seconds) and its body.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Answer {
@@ -34,10 +34,10 @@ pub type AnswerFuture<'a> = Pin<Box<dyn Future<Output = Result<Answer, String>> 
 #[cfg(target_family = "wasm")]
 pub type AnswerFuture<'a> = Pin<Box<dyn Future<Output = Result<Answer, String>> + 'a>>;
 
-/// `POST` to the host origin. The page implements it with `fetch`; native
-/// peers and tests with a Rust client. `Err` means the host was not reached.
+/// `POST` to the server origin. The page implements it with `fetch`; native
+/// peers and tests with a Rust client. `Err` means the server was not reached.
 pub trait HttpClient: crate::MaybeSendSync {
-    /// Post `body` to `path` (below the host origin).
+    /// Post `body` to `path` (below the server origin).
     fn post(&self, path: &str, body: Vec<u8>) -> HttpFuture<'_>;
 
     /// [`Self::post`], answered whole: with the wait the answer asks for. A client that reads no
@@ -61,11 +61,11 @@ pub fn retry_after(value: &str) -> Option<u64> {
     value.trim().parse().ok()
 }
 
-/// The longest body read from a host or a site; a page's fetch reads its own.
+/// The longest body read from a server or a site; a page's fetch reads its own.
 #[cfg(not(target_family = "wasm"))]
 const MAX_BODY: usize = 4 * 1024 * 1024;
 
-/// HTTPS to one host's or site's origin, as its routes take it: what a native peer posts through,
+/// HTTPS to one server's or site's origin, as its routes take it: what a native peer posts through,
 /// and the `GET` a site's `entry.json` takes.
 #[cfg(not(target_family = "wasm"))]
 #[derive(Clone)]
@@ -188,16 +188,16 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, LinkError> {
     postcard::to_allocvec(value).map_err(|error| LinkError::Malformed(error.to_string()))
 }
 
-/// What the host publishes before any session: its certificate.
-pub async fn host_info(
+/// What the server publishes before any session: its certificate.
+pub async fn server_info(
     client: &dyn HttpClient,
-) -> Result<tilo_server_protocol::web::HostInfo, LinkError> {
+) -> Result<tilo_server_protocol::web::ServerInfo, LinkError> {
     call(client, "/host", Vec::new()).await
 }
 
-/// Whether its owner deleted `workspace` (its id), as the host says to any device that names it
+/// Whether its owner deleted `workspace` (its id), as the server says to any device that names it
 /// ([`WORKSPACE_DELETED_PATH`](tilo_server_protocol::web::WORKSPACE_DELETED_PATH)): what a device
-/// the host no longer lets in learns about a workspace it was a member of.
+/// the server no longer lets in learns about a workspace it was a member of.
 pub async fn workspace_deleted(
     client: &dyn HttpClient,
     workspace: &str,
@@ -210,7 +210,7 @@ pub async fn workspace_deleted(
     .await
 }
 
-/// What `invitation` (its signed bytes) offers at the host, or why the host would not honour it
+/// What `invitation` (its signed bytes) offers at the server, or why the server would not honour it
 /// ([`INVITATION_PATH`](tilo_server_protocol::web::INVITATION_PATH)): what a page shows someone
 /// following a link before it makes them a person. Redeeming it is an entry on a session.
 pub async fn invitation(

@@ -19,6 +19,7 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use crate::support::App;
 use crate::x11::{X, servers};
+use tilo_test_env::SpawnUnderEnvLock as _;
 use x11rb::rust_connection::RustConnection;
 
 const BLUE: u32 = 0x0000_00ff;
@@ -211,7 +212,7 @@ impl Scene {
             .stdin(std::process::Stdio::null())
             .stdout(log.try_clone().expect("the log"))
             .stderr(log)
-            .spawn()
+            .spawn_locked()
             .expect("python3 starts");
         Gtk4 { child }
     }
@@ -830,7 +831,7 @@ fn gtk4() -> Result<(), String> {
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("LC_ALL", "C.UTF-8")
-        .output();
+        .output_locked();
     match probe {
         Ok(output) if output.status.success() => Ok(()),
         Ok(output) => Err(format!(

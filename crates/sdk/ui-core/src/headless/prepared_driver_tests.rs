@@ -197,7 +197,7 @@ fn prepared_driver_publishes_undo_status_and_guards_wakes() {
             .commit_action_authored_with_context(None, None, Some(author()), None);
         driver.state.undo_as(Some(&author()), None, None).unwrap();
         driver.relayout();
-        let outer_baseline = driver.state.undo_status(Some(&author()));
+        let outer_baseline = crate::undo::state_status(&driver.state, Some(&author()));
         assert!(!outer_baseline.can_undo && outer_baseline.can_redo);
         let node = *driver
             .node_map
@@ -221,7 +221,10 @@ fn prepared_driver_publishes_undo_status_and_guards_wakes() {
         assert!(driver.perform_redo());
         assert_eq!(body(&host.records, &checkout), "first second");
         assert_eq!(*outer.published.borrow(), outer_baseline);
-        assert_eq!(driver.state.undo_status(Some(&author())), outer_baseline);
+        assert_eq!(
+            crate::undo::state_status(&driver.state, Some(&author())),
+            outer_baseline
+        );
         driver.set_focused(None);
         assert_eq!(driver.undo_status(), outer_baseline);
     }

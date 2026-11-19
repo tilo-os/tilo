@@ -106,5 +106,6 @@ impl CompletedOriginalGeometry {
     }
 }
 
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 mod native_tests;

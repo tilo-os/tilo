@@ -107,13 +107,13 @@ impl ResourceApp for BackupsShell {
     }
 }
 
-/// What showing the search anchor `anchor` is: the snapshot it names.
+/// What showing the search anchor `anchor` is: opening the row it names.
 pub(crate) fn opened(anchor: &str) -> Result<BackupsEffect, ui::tilo_resource::Refusal> {
     anchor
         .strip_prefix("backups.snapshot:")
         .filter(|id| !id.is_empty())
-        .map(|id| BackupsEffect::ShowSnapshot {
-            snapshot_id: id.to_owned(),
+        .map(|_| BackupsEffect::Open {
+            row: anchor.to_owned(),
         })
         .ok_or_else(|| ui::tilo_resource::Refusal::new(format!("`{anchor}` is no backup snapshot")))
 }

@@ -112,7 +112,7 @@ impl NotesApp {
             NotesEffect::ImportNotionExport => Ok(self.choose_notion_export(cx)?),
             NotesEffect::ExportMarkdown { page } => self.export_markdown(&state, page, cx),
             NotesEffect::ExportMarkdownContent { page, title } => self
-                .export_markdown_content(&state, page, title.as_deref())
+                .export_markdown_content(&state, &parts, page, title.as_deref())
                 .map(Effected::value),
             NotesEffect::InsertImage { page } => {
                 state.get(page).ok_or("the note no longer exists")?;
@@ -309,12 +309,8 @@ impl NotesApp {
     }
 
     fn copy_link(&mut self, state: &Workspace, page: PageId) -> Result<(), String> {
-        let title = state
-            .get(page)
-            .ok_or("the note no longer exists")?
-            .title
-            .clone();
-        let label = crate::metadata::note_title(&title);
+        let meta = state.get(page).ok_or("the note no longer exists")?;
+        let label = state.name_of(meta);
         if !self
             .link_copy
             .watch(ui::try_clipboard_copy(&format!("[[{label}]]")))
@@ -426,8 +422,8 @@ impl NotesApp {
             let title = std::path::Path::new(&file.name)
                 .file_stem()
                 .and_then(|stem| stem.to_str())
-                .filter(|title| !title.trim().is_empty())
-                .map_or_else(|| CATALOG.t("notes-imported-untitled"), str::to_owned);
+                .unwrap_or_default()
+                .to_owned();
             let mut done = Vec::new();
             let imported = match markdown {
                 Ok(markdown) => import_note(&title, &markdown, &chain, &mut done),
@@ -472,12 +468,15 @@ impl NotesApp {
     fn export_markdown_content(
         &self,
         state: &Workspace,
+        parts: &[(u64, Rc<crate::note_list::NoteList>)],
         page: Option<PageId>,
         title: Option<&str>,
     ) -> Result<serde_json::Value, String> {
         let chosen = match (page, title.map(str::trim).filter(|title| !title.is_empty())) {
             (Some(page), _) => Some(state.get(page).ok_or("the note no longer exists")?.id),
-            (None, Some(title)) => Some(actions::page_titled(&state.data.pages, title)?),
+            (None, Some(title)) => crate::note_list::Pages::of(parts)
+                .titled(title)
+                .map(crate::notebook::page_of)?,
             (None, None) => None,
         };
         let (name, markdown, notes) = match chosen {

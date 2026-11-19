@@ -65,6 +65,8 @@ system-update-went-back-runs-before = die vorherige Version
 workspaces-app-name = Arbeitsbereiche
 workspaces-unreadable-title = Deine Arbeitsbereiche ließen sich nicht lesen
 workspaces-unreadable-body = Die Liste deiner eigenen Arbeitsbereiche, die dieser Computer aufbewahrt hat, ließ sich nicht lesen, deshalb beginnt er die Liste neu. Nichts wurde entfernt: deine Arbeitsbereiche sind weiterhin auf diesem Computer und auf deinen anderen Geräten.
+workspace-not-founded-title = { $name } ließ sich nicht im Arbeitsbereichsdienst dieses Computers speichern
+workspace-not-founded-body = Der Arbeitsbereich ist vorerst nur auf diesem Computer, und diese Sitzung versucht es erneut. { $reason }
 
 ## Der gespeicherte Schreibtisch dieses Geräts ließ sich nicht öffnen: der
 ## eigene Schreibtisch liegt weiterhin auf der Platte, und diese Sitzung startet
@@ -555,6 +557,7 @@ so-tilo-desktop-window-menu-open = Das Fenstermenü öffnen
 machines-waiting-source = Deine Geräte
 machines-waiting-title = Ein neues Gerät wartet
 machines-waiting-body = { $machine } möchte beitreten und zeigt Code { $code }
+machines-waiting-body-hardware = { $machine } ({ $hardware }) möchte beitreten und zeigt Code { $code }
 machines-waiting-review = Ansehen, was beitreten will
 machines-waiting-approve = { $code } bestätigen
 machines-waiting-decline = Ablehnen

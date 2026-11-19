@@ -10,6 +10,7 @@ use crate::diag::{Diagnostic, Span};
 use crate::ir::{self, Ek, FuncKind, Stmt};
 use crate::resolve::{Env, ParamInfo, TypeInfo};
 use crate::types::{Ty, TypeKey};
+use std::collections::BTreeSet;
 
 pub use crate::host::RESOURCE_TYPE_NAME;
 
@@ -39,6 +40,7 @@ pub fn check_program(
         env,
         diags,
         st: FnState::default(),
+        inserted: BTreeSet::new(),
         synth: Vec::new(),
         synth_base: 0,
         states: Vec::new(),

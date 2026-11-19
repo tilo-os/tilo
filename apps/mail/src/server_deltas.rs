@@ -7,7 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::model::{AccountConfig, Folder, Message, MessageId};
+use crate::model::{Folder, Message, MessageId};
 use crate::state::MailState;
 
 pub(super) fn server_changes(
@@ -116,9 +116,6 @@ pub(super) fn take_found(
     }
 }
 
-pub(super) fn first_fetch(config: &AccountConfig) -> ui::arriving::ArrivalClock {
-    ui::arriving::ArrivalClock::new(
-        ui::time::now(),
-        ui::arriving::Source::host(config.imap_host.clone()),
-    )
+pub(super) fn first_fetch() -> ui::arriving::ArrivalClock {
+    ui::arriving::ArrivalClock::new(ui::time::now(), ui::arriving::Source::Remote)
 }

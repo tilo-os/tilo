@@ -13,6 +13,7 @@
 //! already had the slot (an OEM image, an update) does not keep opening it against a `db` that
 //! has grown since.
 
+use crate::token::RollbackToken;
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -327,6 +328,30 @@ pub fn load_enrollment(state_path: &Path) -> Option<AnchorDigest> {
         .get("anchors")
         .and_then(serde_json::Value::as_str)
         .map(|a| AnchorDigest(a.to_owned()))
+}
+
+/// The authority digest a PIN-less unlock is judged against: what enrollment wrote
+/// beside the rollback state when the encrypted root is readable, otherwise the one a
+/// PIN-less token carries from enrollment. The initramfs unlock happens before that
+/// root is open, so the token's copy is the only one there is; tokens that disagree
+/// yield nothing, and the keyslot then waits for the typed secret.
+pub fn recorded_anchor_for_boot(
+    state_path: &Path,
+    tokens: &[(u32, RollbackToken)],
+) -> Option<AnchorDigest> {
+    load_enrollment(state_path).or_else(|| {
+        let mut recorded: Vec<&str> = tokens
+            .iter()
+            .filter(|(_, token)| !token.pin)
+            .filter_map(|(_, token)| token.anchors.as_deref())
+            .collect();
+        recorded.sort_unstable();
+        recorded.dedup();
+        match recorded.as_slice() {
+            [only] => Some(AnchorDigest((*only).to_owned())),
+            _ => None,
+        }
+    })
 }
 
 pub fn save_enrollment(state_path: &Path, enrollment: &Enrollment) -> Result<()> {

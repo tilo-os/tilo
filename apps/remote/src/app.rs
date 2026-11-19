@@ -30,8 +30,8 @@ use ui::widget::{
 };
 
 use crate::model::{
-    AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Remote, Screen,
-    Workspace,
+    AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, DraftProblem, Remote,
+    Screen, Workspace,
 };
 use crate::resource::CATALOG;
 use crate::session::{SessionStatus, TransportReadiness, connection_readiness};
@@ -877,8 +877,13 @@ pub(crate) fn window(cx: &ViewCx<Remote>, mut window: RemoteApp) -> Element {
             store.borrow_mut().staged = Some(Staged(scenario.map(str::to_owned)));
         });
     }
+    let statuses = Rc::clone(&store);
     cx.publishing(
-        Publishes::new().live_rows(move || store.borrow().live_connection_rows()),
+        Publishes::new()
+            .live_rows(move || store.borrow().live_connection_rows())
+            // Whether this device can open a connection, and what the open
+            // session offers beside disconnecting.
+            .row_status(move |id| statuses.borrow().row_status(id)),
         Box::new(window),
     )
 }
@@ -1249,7 +1254,7 @@ impl Store {
     /// Commit the form's draft through the resource, and its credential into
     fn save_form(&mut self) {
         self.read_fields();
-        let problems = self.draft.problems();
+        let problems = crate::model::draft_problems(&self.draft);
         if !problems.is_empty() {
             self.problems = sort_problems(problems);
             self.validating = true;
@@ -1297,7 +1302,7 @@ impl Store {
             return;
         }
         self.read_fields();
-        let problems = sort_problems(self.draft.problems());
+        let problems = sort_problems(crate::model::draft_problems(&self.draft));
         if problems != self.problems {
             self.problems = problems;
             self.dirty = true;
@@ -1642,17 +1647,20 @@ pub(crate) fn save_invoke(
     )
 }
 
-fn sort_problems(problems: Vec<String>) -> FormProblems {
+fn sort_problems(problems: Vec<(DraftProblem, String)>) -> FormProblems {
     let mut sorted = FormProblems::default();
-    for problem in problems {
-        if problem.starts_with("Name") {
-            sorted.name.get_or_insert(problem);
-        } else if problem.starts_with("Host") || problem.starts_with("Tilo device node") {
-            sorted.host.get_or_insert(problem);
-        } else if problem.starts_with("Port") {
-            sorted.port.get_or_insert(problem);
-        } else {
-            sorted.other.push(problem);
+    for (problem, words) in problems {
+        match problem {
+            DraftProblem::Name => {
+                sorted.name.get_or_insert(words);
+            }
+            DraftProblem::Address | DraftProblem::ProfileIssue("remote-issue-tilo-endpoint") => {
+                sorted.host.get_or_insert(words);
+            }
+            DraftProblem::Port => {
+                sorted.port.get_or_insert(words);
+            }
+            DraftProblem::ProfileIssue(_) => sorted.other.push(words),
         }
     }
     sorted

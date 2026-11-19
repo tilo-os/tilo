@@ -4,11 +4,11 @@
 //! (`window.opener`), which a tab of its own could not, and usually closes itself. The
 //! panel names the popup's site, so a person can tell the real sign-in page from a
 //! lookalike.
+use tilo_webview::{SharedEngine, WebViewEvent};
 use ui::{
     LocalState,
     icons::Icon,
     tokens::TextRole,
-    webview::{SharedEngine, WebViewEvent},
     widget::{Button, Column, Container, Row, Spacer, Text, Widget},
 };
 
@@ -23,7 +23,7 @@ const MIN_SIZE: (f32, f32) = (200.0, 150.0);
 pub struct PagePopups {
     /// The engine the popups were asked of; another engine is asked again, and the old
     /// one's popups close.
-    asked: Option<std::sync::Weak<dyn ui::webview::WebViewEngine>>,
+    asked: Option<std::sync::Weak<dyn tilo_webview::WebViewEngine>>,
     open: Option<Open>,
     close: LocalState<bool>,
 }
@@ -181,7 +181,7 @@ fn site_of(url: &str) -> String {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use ui::webview::test_engine::TestEngine;
+    use tilo_webview::test_engine::TestEngine;
 
     fn page() -> (Arc<TestEngine>, SharedEngine) {
         let engine = TestEngine::new();

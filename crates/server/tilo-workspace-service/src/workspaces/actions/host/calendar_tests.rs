@@ -85,6 +85,9 @@ impl Ada {
         let (key, owner) = governor();
         let holder = test_holder(dir.path(), &key, &owner).await;
         let workspaces = holder.workspaces().clone();
+        // Her calendar server is this machine: the operator lets the server
+        // call its own network, which it is otherwise kept from.
+        workspaces.call_private_model_addresses(true);
         let actions = HolderActions::new();
         actions.attach(workspaces.clone());
         let device = key_of(&SigningKey::from_bytes(&rand::random()), "studio");
@@ -772,7 +775,10 @@ impl Answering {
 impl AsksPeople for Answering {
     fn ask(&self, person: [u8; 32], question: PendingConfirmation) -> PersonAnswer {
         self.questions.lock().unwrap().push((person, question));
-        let answer = self.answer.ok_or_else(|| "nobody answered".to_owned());
+        let answer = self
+            .answer
+            .clone()
+            .ok_or_else(|| "nobody answered".to_owned());
         Box::pin(async move { answer })
     }
 }

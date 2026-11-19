@@ -43,14 +43,18 @@ pub(crate) mod press;
 /// The resource the person's devices are published under.
 pub const RESOURCE: &str = "session:devices";
 
-/// What kind of resource [`RESOURCE`] is.
-pub const KIND: &str = "session.devices";
+/// The person's devices as the session publishes them: its declared type, whose reading the
+/// panel and the page show and whose press the session carries out.
+#[derive(tilo_resource::Row)]
+#[row(kind = "session.devices", label = "Devices")]
+pub struct Devices;
 
 /// What the resource offers beside its reading: a press on one of its rows.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.session.devices")]
 pub enum DevicesAction {
     /// Press one of the person's devices
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Press {
         /// The row's key, as the reading lists it.
@@ -62,6 +66,7 @@ pub enum DevicesAction {
         part: RowPart,
     },
     /// Move a paired Bluetooth accessory to another of the person's devices
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     HandOff {
         /// The accessory's address.
@@ -240,8 +245,10 @@ impl Served {
 
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
-        let mut resource =
-            offer::<DevicesAction>(ResourceSpec::new(RESOURCE, KIND, t("session-devices")));
+        let mut resource = offer::<DevicesAction>(
+            tilo_resource::LiveRow::typed::<Devices>(RESOURCE, t("session-devices"))
+                .into_resource(),
+        );
         // The panel keeps the words the rest of the desktop names them by.
         for spec in &mut resource.actions {
             if spec.id == "press" {

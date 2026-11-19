@@ -338,7 +338,7 @@ fn import_identity(
         .file_stem()
         .and_then(|value| value.to_str())
         .ok_or_else(|| "imported identity has no valid runtime id".to_string())?;
-    runtime_identity::set_active_identity(import_dir, runtime_id)
+    tilo_identity::store::set_active_identity(import_dir, runtime_id)
         .map_err(|error| error.to_string())?;
     // Restoring on a fresh machine must provision the exact same
     // complete root -> device chain as minting. The narrower
@@ -361,7 +361,7 @@ type WordsImporter = Box<dyn Fn(&str) -> Result<MintedIdentity, String> + Send>;
 
 type BackupCapability = Box<dyn Fn(&Path) -> Result<bool, String> + Send>;
 fn canonical_backup_capability(path: &Path) -> Result<bool, String> {
-    runtime_identity::load_from_path(path.to_owned())
+    tilo_identity::store::load_from_path(path.to_owned())
         .map(|identity| identity.is_single_device())
         .map_err(|error| error.to_string())
 }
@@ -784,7 +784,7 @@ impl OnboardingView {
                 import_identity(&import_dir, paths, source, passphrase)
             }),
             Box::new(move |identity, destination, passphrase| {
-                runtime_identity::export_portable_backup(identity, destination, passphrase)
+                tilo_identity::store::export_portable_backup(identity, destination, passphrase)
                     .map(|_| ())
                     .map_err(|error| error.to_string())
             }),
@@ -800,7 +800,7 @@ impl OnboardingView {
         if recovery_only {
             view.recovery_problem = crate::identity::IdentityProblem::from_recovery_env();
         }
-        view.expected_identity = runtime_identity::recovery_expected_identity(&identity_dir)
+        view.expected_identity = tilo_identity::store::recovery_expected_identity(&identity_dir)
             .ok()
             .flatten();
         view.session = session;
@@ -832,7 +832,7 @@ impl OnboardingView {
                 && !view.flow.is_done()
                 && let Some(directory) = view.identity_dir.as_ref()
             {
-                let active = runtime_identity::resolve_active_identity(directory)
+                let active = tilo_identity_client::resolve_active_identity(directory)
                     .unwrap_or_else(|| directory.join("primary.json"));
                 if let Ok(identity) = crate::identity::existing_identity_at(&active) {
                     view.flow.resume_created(identity);
@@ -1128,7 +1128,7 @@ impl OnboardingView {
     ///
     /// Refuses missing, changed or completed declarations and unusable identities.
     pub fn new_for_migration_resume(identity_dir: PathBuf) -> Result<Self, String> {
-        let active = runtime_identity::resolve_active_identity(&identity_dir)
+        let active = tilo_identity_client::resolve_active_identity(&identity_dir)
             .ok_or_else(|| t("onboarding-portable-home-unavailable"))?;
         let identity = crate::identity::existing_identity_at(&active)
             .map_err(|_| t("onboarding-portable-home-unavailable"))?;
@@ -1195,7 +1195,7 @@ impl OnboardingView {
             Ok(None) => return,
             Err(error) => (PersistedStage::IdentityReady, Some(error.to_string())),
         };
-        let identity_path = runtime_identity::resolve_active_identity(identity_dir)
+        let identity_path = tilo_identity_client::resolve_active_identity(identity_dir)
             .unwrap_or_else(|| identity_dir.join("primary.json"));
         match crate::identity::existing_identity_at(&identity_path) {
             Ok(identity) => {
@@ -2693,7 +2693,7 @@ mod tests {
         env.set("HOME", home.path());
         env.set("XDG_CONFIG_HOME", home.path().join(".config"));
         env.set("TILO_IDENTITY_ROOT", home.path().join("system"));
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let projection =
             crate::browser::fixtures::certified_projection(home.path(), &directory, &declaration);
         let original = std::fs::read(directory.join("primary.json")).unwrap();
@@ -2880,7 +2880,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
         let home = tempfile::tempdir().unwrap();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("XDG_CONFIG_HOME", home.path().join(".config"));
         let identity = home.path().join(".config/tilo/identity");
         std::fs::create_dir_all(&identity).unwrap();
@@ -2898,7 +2898,7 @@ mod tests {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
-        runtime_identity::set_active_identity(&identity, "primary").unwrap();
+        tilo_identity::store::set_active_identity(&identity, "primary").unwrap();
         let source = uuid::Uuid::new_v4().to_string();
         let stage = uuid::Uuid::new_v4().to_string();
         let plans = home.path().join(".local/state/tilo/migration-handoff");
@@ -2915,7 +2915,7 @@ mod tests {
             )
             .unwrap();
         }
-        let person = runtime_identity::load_from_path(identity.join("primary.json"))
+        let person = tilo_identity::store::load_from_path(identity.join("primary.json"))
             .unwrap()
             .group_public_key();
         let plan = serde_json::json!({"schema":1,"operation_id":source,
@@ -3011,9 +3011,9 @@ mod tests {
     #[test]
     fn deferred_portable_home_remains_semantically_resumable_without_blocking_first_use() {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let (home, directory, declaration) = crate::portable_home::fixtures::fixture();
-        let signer = runtime_identity::load_from_path(directory.join("primary.json")).unwrap();
+        let signer = tilo_identity::store::load_from_path(directory.join("primary.json")).unwrap();
         let mut view = OnboardingView::with_minter(Box::new(|| Err("must not mint".into())));
         view.portable_home = Some(
             crate::portable_home::Pending::open(home.path().into(), directory.clone(), declaration)
@@ -3036,7 +3036,7 @@ mod tests {
         assert!(setup_actions_pending(&view));
         assert_eq!(view.migration_status().unwrap()["state"], "pending");
         assert_eq!(
-            runtime_identity::load_from_path(directory.join("primary.json"))
+            tilo_identity::store::load_from_path(directory.join("primary.json"))
                 .unwrap()
                 .group_public_key(),
             signer.group_public_key()
@@ -3046,7 +3046,7 @@ mod tests {
     #[test]
     fn settings_reentry_resumes_attested_deferred_files_for_the_same_identity() {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let (home, directory, declaration) = crate::portable_home::fixtures::fixture();
         env.set("HOME", home.path());
         let before = std::fs::read(directory.join("primary.json")).unwrap();
@@ -3340,7 +3340,7 @@ mod tests {
             let record = identity_dir.join("identity-joined.json");
             std::fs::write(
                 &record,
-                runtime_identity::public_member_record("Member", [1, 2, 3], [7; 32]).expect("record"),
+                tilo_identity::store::public_member_record("Member", [1, 2, 3], [7; 32]).expect("record"),
             )
             .expect("write record");
             std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o600))
@@ -3427,7 +3427,7 @@ mod tests {
 
             // A restart resumes on the same ready screen, knowing the device
             // joined from its identity record alone.
-            runtime_identity::set_active_identity(&identity_dir, "identity-joined")
+            tilo_identity::store::set_active_identity(&identity_dir, "identity-joined")
                 .expect("select the joined identity");
             let (mut resumed, _) = self::view();
             resumed.identity_dir = Some(identity_dir);
@@ -4845,7 +4845,7 @@ mod tests {
             Box::new(|| Err("unused minter".into())),
             Box::new(|_, _| Err("unused importer".into())),
             Box::new(|identity, destination, passphrase| {
-                runtime_identity::export_portable_backup(identity, destination, passphrase)
+                tilo_identity::store::export_portable_backup(identity, destination, passphrase)
                     .map(|_| ())
                     .map_err(|error| error.to_string())
             }),
@@ -4915,7 +4915,7 @@ mod tests {
                 .env("XDG_CONFIG_HOME", fixture.path().join("config"))
                 .env("XDG_STATE_HOME", fixture.path().join("state"))
                 .env("TILO_IDENTITY_ROOT", fixture.path().join("system"))
-                .env(runtime_identity::FILE_SECRETS_ENV, "1");
+                .env(tilo_identity::store::FILE_SECRETS_ENV, "1");
             unsafe {
                 command.pre_exec(move || {
                     let flags = libc::fcntl(fd, libc::F_GETFD);
@@ -4939,7 +4939,7 @@ mod tests {
             assert!(status.success());
             return;
         }
-        let directory = runtime_identity::identity_dir_from_env().unwrap();
+        let directory = tilo_identity::store::identity_dir_from_env().unwrap();
         let paths = crate::firstboot::collaboration_identity_paths();
         let minted = crate::identity::mint_into(&directory, &paths).unwrap();
         let original = std::fs::read(&minted.path).unwrap();
@@ -5002,10 +5002,10 @@ mod tests {
         // The backup is written off the loop; take its report as a frame would.
         sync_journaled(&mut view, &AutoCommit::new());
         let proof =
-            runtime_identity::verify_portable_backup(&backup, passphrase.as_bytes()).unwrap();
+            tilo_identity::store::verify_portable_backup(&backup, passphrase.as_bytes()).unwrap();
         assert_eq!(
             proof.group_public_key,
-            runtime_identity::load_from_path(directory.join("primary.json"))
+            tilo_identity::store::load_from_path(directory.join("primary.json"))
                 .unwrap()
                 .group_public_key()
         );
@@ -5135,7 +5135,7 @@ mod tests {
             .verifying_key()
             .to_bytes();
         let record =
-            runtime_identity::public_member_record("Tour person", [128; 3], public).unwrap();
+            tilo_identity::store::public_member_record("Tour person", [128; 3], public).unwrap();
         write_private_member_fixture(&directory, &record);
         let mut view = real_backup_view(&directory);
         let doc = AutoCommit::new();
@@ -5266,7 +5266,7 @@ mod tests {
                 .verifying_key()
                 .to_bytes();
             let record =
-                runtime_identity::public_member_record("Existing person", [128; 3], public).unwrap();
+                tilo_identity::store::public_member_record("Existing person", [128; 3], public).unwrap();
             let path = directory.join("primary.json");
             write_private_member_fixture(&directory, &record);
             let mut view = OnboardingView::with_all_handlers(
@@ -5304,7 +5304,7 @@ mod tests {
                 .verifying_key()
                 .to_bytes();
             let record =
-                runtime_identity::public_member_record("Paired person", [128; 3], public).unwrap();
+                tilo_identity::store::public_member_record("Paired person", [128; 3], public).unwrap();
             write_private_member_fixture(&directory, &record);
             let mut view = real_backup_view(&directory);
             assert!(!view.backup_export_available);

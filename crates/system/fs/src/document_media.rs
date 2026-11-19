@@ -47,8 +47,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt as _};
+use iroh_blobs::Hash;
 use iroh_blobs::api::blobs::BlobStatus;
-use iroh_blobs::{BlobFormat, Hash, HashAndFormat};
 use runtime_fs::blobs::{
     BlobBackend, BlobChunks, BlobError, BlobFuture, BlobRef, BlobScope, MAX_BLOB_BYTES, PublicRead,
     ReadOutcome,
@@ -72,10 +72,7 @@ fn reference_tag(scope: &BlobScope, hash: Hash) -> String {
 
 /// Does this device's index record `scope`'s workspace as referencing `hash`?
 async fn references(store: &ContentStore, scope: &BlobScope, hash: Hash) -> bool {
-    matches!(
-        store.store().tags().get(reference_tag(scope, hash)).await,
-        Ok(Some(info)) if info.hash == hash && info.format == BlobFormat::Raw
-    )
+    store.reference(&reference_tag(scope, hash)).await == Some(hash)
 }
 
 async fn document_reference(store: &ContentStore, scope: &BlobScope, hash: Hash) -> Result<()> {
@@ -83,13 +80,7 @@ async fn document_reference(store: &ContentStore, scope: &BlobScope, hash: Hash)
 }
 
 async fn document_reference_tag(store: &ContentStore, tag: String, hash: Hash) -> Result<()> {
-    store
-        .store()
-        .tags()
-        .set(tag, HashAndFormat::raw(hash))
-        .await?;
-    store.store().sync_db().await?;
-    Ok(())
+    store.set_reference(&tag, hash).await
 }
 
 pub struct DocumentMedia {
@@ -219,7 +210,7 @@ impl DocumentMedia {
         if !references(&self.store, scope, hash).await {
             return None;
         }
-        match self.store.store().blobs().status(hash).await {
+        match self.store.blob_status(hash).await {
             Ok(BlobStatus::Complete { size }) => Some(size),
             _ => None,
         }

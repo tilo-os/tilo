@@ -1,0 +1,35 @@
+[package]
+name = "tilo-wasm-host"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license = "MIT"
+description = "The wasm host layer every guest in Tilo executes on: per-call fuel, memory and table limits, module loading, one failure type, and the rule that an instance whose call failed is never called again."
+
+[dependencies]
+thiserror.workspace = true
+# The interpreter: every host's engine, and the browser build's only one.
+wasmi = { version = "1.1", default-features = false, features = ["std"] }
+# The compiled tier a native runtime executes beside the interpreter. Off unless a host asks for
+# it, so the browser build stays wasmi only.
+wasmtime = { version = "50.0.0", optional = true, default-features = false, features = [
+    "cranelift",
+    "runtime",
+    "std",
+    "winch",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[features]
+# A host that executes wasmtime beside wasmi. Never enabled in a wasm32 build.
+wasmtime = ["dep:wasmtime"]
+
+[dev-dependencies]
+# The modules the tests bound and refuse, written as WAT.
+wat = "1"
+
+[lints]
+workspace = true

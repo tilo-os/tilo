@@ -3,15 +3,15 @@ use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
 };
+use tilo_webview::{
+    CredentialAccount, CredentialAction, CredentialForm, CredentialReply, CredentialRequest,
+    SharedEngine, WebViewCommand,
+};
 use ui::{
     LocalState,
     icons::Icon,
     text_render::TextKind,
     tokens::TextRole,
-    webview::{
-        CredentialAccount, CredentialAction, CredentialForm, CredentialReply, CredentialRequest,
-        SharedEngine, WebViewCommand,
-    },
     widget::{
         Actions, Button, ButtonRole, Column, Container, ListRow, Row, ScrollAxis, Scrollable,
         Section, SectionHeader, Spacer, Text, Widget,

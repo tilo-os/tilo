@@ -330,9 +330,17 @@ impl ChannelSession {
                     let reply = channel.remote_action_dispatch(body);
                     Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
                 }
-                // Retired with the private person-chat store it served.
-                Service::RetiredPersonChat => {
-                    Err("the private conversation service is retired".to_owned())
+                Service::Resources => {
+                    channel
+                        .resources_dispatch(body)
+                        .map_err(failed)
+                        .map(|reply| -> Answering {
+                            Box::pin(async move {
+                                let reply = reply.await?;
+                                serde_json::to_vec(&reply)
+                                    .map_err(|_| "the store's answer cannot be encoded".to_owned())
+                            })
+                        })
                 }
             };
         Box::pin(async move { Ok(Reply::Answer(answer?.await?)) })
@@ -362,8 +370,7 @@ impl JoinedChannel {
         // and carries it to their other devices; no workspace's owner holds it, so nothing of one
         // commits it.
         let owner_required = state.personal_route(&route).is_none()
-            && (state.durable_owner_required
-                || state.publisher.requires_owner_for(&route.cluster_id));
+            && (state.durable_owner_required || state.publisher.has_owner());
         let _owner_order = if owner_required {
             Some(state.owner_commit_order.lock().await)
         } else {
@@ -1071,10 +1078,12 @@ impl JoinedChannel {
 
     /// Start handing this app the invocations of its published actions,
     /// replacing any stream it held; `stable` asks for stable invocation ids.
+    /// The stream comes with what ends it once the app asks for no more
+    /// ([`InvocationFeedEnd`]).
     pub(super) fn invocation_feed(
         &self,
         stable: bool,
-    ) -> Result<InvocationStreamServer, BrokerError> {
+    ) -> Result<(InvocationStreamServer, InvocationFeedEnd), BrokerError> {
         self.state
             .revalidate_admission(&self.route(), &self.verified_identity)?;
         // Stream replacement and resolved dispatch share the admission boundary:
@@ -1105,6 +1114,11 @@ impl JoinedChannel {
             ));
         }
         let (tx, rx) = mpsc::unbounded_channel();
+        let end = InvocationFeedEnd {
+            state: Arc::clone(&self.state),
+            peer_id: self.peer_id,
+            sender: tx.downgrade(),
+        };
         if let Ok(mut subscribers) = self.state.invocation_subscribers.lock() {
             subscribers.insert(self.peer_id, tx);
         } else {
@@ -1127,10 +1141,13 @@ impl JoinedChannel {
                 |app| (app.app_id.clone(), app.workspace_id.clone()),
             );
         let delivered = invocation_delivery_notice(&self.state.services, app, workspace);
-        Ok(InvocationStreamServer {
-            rx: invocation_queue(self.peer_id, rx),
-            delivered,
-        })
+        Ok((
+            InvocationStreamServer {
+                rx: invocation_queue(self.peer_id, rx),
+                delivered,
+            },
+            end,
+        ))
     }
 
     /// What the app says, or asks, of the invocation `id` it was handed.
@@ -1167,15 +1184,12 @@ impl JoinedChannel {
         let route = self.route();
         let identity = self.verified_identity.clone();
         Box::pin(async move {
-            let _owner_order = if state.durable_owner_required
-                || state.publisher.requires_owner_for(&route.cluster_id)
-            {
+            let _owner_order = if state.durable_owner_required || state.publisher.has_owner() {
                 Some(state.owner_commit_order.lock().await)
             } else {
                 None
             };
-            if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
-            {
+            if state.durable_owner_required || state.publisher.has_owner() {
                 state.revalidate_admission(&route, &identity)?;
             }
             let completion = InvocationCompletion { code, message };
@@ -1229,8 +1243,7 @@ impl JoinedChannel {
             state
                 .commit_effect_before_terminal(&staged, &update)
                 .await?;
-            if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
-            {
+            if state.durable_owner_required || state.publisher.has_owner() {
                 state.revalidate_admission(&route, &identity)?;
             }
             state
@@ -1650,6 +1663,8 @@ pub(super) struct WireConnection {
     subscriptions: RefCell<HashMap<u64, (Handle, tokio::task::AbortHandle)>>,
     /// The workspace control sessions subscriptions hold, for their input.
     controls: RefCell<HashMap<u64, Rc<dyn crate::apps::services::WorkspaceControlSession>>>,
+    /// What ends each invocation subscription once its app asks for no more.
+    invocation_ends: RefCell<HashMap<u64, InvocationFeedEnd>>,
     /// The host's asks of the endpoint waiting for its answer.
     asks: RefCell<HashMap<u64, tokio::sync::oneshot::Sender<Result<Answered, String>>>>,
     next_ask: Cell<u64>,
@@ -1694,6 +1709,7 @@ impl WireConnection {
             next_handle: Cell::new(1),
             subscriptions: RefCell::default(),
             controls: RefCell::default(),
+            invocation_ends: RefCell::default(),
             asks: RefCell::default(),
             next_ask: Cell::new(1),
             frames,
@@ -2021,10 +2037,6 @@ impl WireConnection {
                 Ok(Reply::Done)
             }
             Operation::Publish {
-                publication: Publication::RetiredActions(_),
-                ..
-            } => Err("a whole surface is published as a reset change".into()),
-            Operation::Publish {
                 channel,
                 publication: Publication::Surface(delta),
             } => {
@@ -2106,7 +2118,8 @@ impl WireConnection {
                         }))
                     }
                     Topic::Invocations { stable_ids } => {
-                        let stream = session.invocation_feed(stable_ids).map_err(failed)?;
+                        let (stream, end) = session.invocation_feed(stable_ids).map_err(failed)?;
+                        self.invocation_ends.borrow_mut().insert(id, end);
                         tokio::task::spawn_local(pump_pulled(stream, id, frames, Event::Invocation))
                     }
                     Topic::Catalogue => {
@@ -2209,6 +2222,14 @@ impl WireConnection {
                 Ok(Reply::Done)
             }
             Operation::Unsubscribe { subscription } => {
+                // An app that asks for no more invocations is still handed every one already
+                // addressed to it, then told the stream ended: it answers them before it goes,
+                // so none is left with an outcome nobody knows.
+                if let Some(end) = self.invocation_ends.borrow_mut().remove(&subscription) {
+                    end.finish();
+                    self.subscriptions.borrow_mut().remove(&subscription);
+                    return Ok(Reply::Done);
+                }
                 if let Some(control) = self.controls.borrow_mut().remove(&subscription) {
                     close_control(control);
                 }

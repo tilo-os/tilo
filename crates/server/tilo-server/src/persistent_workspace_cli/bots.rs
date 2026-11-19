@@ -18,7 +18,7 @@ use super::{BotSpec, PersistentArgs, input_value};
 async fn link_discord(
     workspaces: &Workspaces,
     workspace: &str,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
     spec: &BotSpec,
     bot: &mut tilo_server::workspace_bots::installed::InstalledBot,
     connectors: &tilo_server::workspace_bots::installed::ConnectorHost,
@@ -27,7 +27,7 @@ async fn link_discord(
     tilo_server::workspace_bots::discord::link_bridge(
         workspaces,
         workspace,
-        host_cert,
+        server_cert,
         &spec.inputs,
         bot,
         public,
@@ -42,7 +42,7 @@ async fn link_discord(
 pub(super) async fn start_bots(
     workspaces: &Workspaces,
     workspace: &str,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
     root: &SigningKey,
     bots: &[BotSpec],
     connector_host: &tilo_server::workspace_bots::installed::ConnectorHost,
@@ -84,7 +84,7 @@ pub(super) async fn start_bots(
             match link_discord(
                 workspaces,
                 workspace,
-                host_cert,
+                server_cert,
                 spec,
                 &mut bot,
                 connector_host,
@@ -143,7 +143,7 @@ pub(super) async fn start_bots(
         runners.extend(run_bot(
             workspaces,
             workspace,
-            host_cert,
+            server_cert,
             root,
             (dir, bot),
             &started,
@@ -157,7 +157,7 @@ pub(super) async fn start_bots(
 fn run_bot(
     workspaces: &Workspaces,
     workspace: &str,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
     root: &SigningKey,
     (dir, bot): (
         std::path::PathBuf,
@@ -178,7 +178,7 @@ fn run_bot(
     let runner = BotRunner::new(
         workspaces.clone(),
         workspace.to_owned(),
-        host_cert.clone(),
+        server_cert.clone(),
         certifier.device_key(&bot.installation),
         bot.clone(),
         own,
@@ -189,7 +189,7 @@ fn run_bot(
         tokio::spawn(tilo_server::workspace_bots::membership::keep_renewed(
             workspaces.clone(),
             workspace.to_owned(),
-            host_cert.clone(),
+            server_cert.clone(),
             certifier,
             bot,
         )),

@@ -259,7 +259,7 @@ tilo_test_env::scenario! {
         let one = height(&mut text, "Book the van", 1);
         let several = height(&mut text, long, wrapped);
         assert!(
-            (44.0..=56.0).contains(&one),
+            (60.0..=70.0).contains(&one),
             "a card of one title line and its facts is {one} tall"
         );
         assert!(
@@ -1399,7 +1399,7 @@ fn a_trailing_control_stands_before_the_disclosure_chevron_not_over_it() {
     let theme = Theme::light();
     let row = ListRow::new("vpn", "Office")
         .secondary("Connected")
-        .trailing(Box::new(crate::widget::Toggle::new("vpn-toggle", "vpn")))
+        .trailing(Box::new(crate::widget::Toggle::bound("vpn-toggle", "vpn")))
         .disclosure();
     let h = FrameHarness::for_root(crate::State::new(), row, (720, 120), theme.clone());
     let row = h.root::<ListRow>();
@@ -1472,7 +1472,10 @@ fn a_trailing_control_reserves_its_width_and_wraps_under_narrow_text() {
     let layout = |width: u32| {
         let row = ListRow::new("wifi", "Wi-Fi")
             .secondary("Home network")
-            .trailing(Box::new(crate::widget::Toggle::new("wifi-toggle", "wifi")));
+            .trailing(Box::new(crate::widget::Toggle::bound(
+                "wifi-toggle",
+                "wifi",
+            )));
         let harness = FrameHarness::new(
             crate::State::new(),
             Box::new(Column::new().with_no_padding().push(Box::new(row))),
@@ -2072,7 +2075,7 @@ fn a_row_holds_the_name_and_description_of_the_control_it_carries() {
         .subtitle("External display")
         .secondary("How bright standard content is")
         .description("How bright standard content is")
-        .trailing(Box::new(crate::widget::Toggle::new("sdr", "sdr")));
+        .trailing(Box::new(crate::widget::Toggle::bound("sdr", "sdr")));
     assert_eq!(
         Widget::accessibility_child_name(&row, 1).as_deref(),
         Some("Brightness")

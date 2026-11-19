@@ -45,7 +45,7 @@ impl NativeSignalWorkingProfile {
     /// Refuses retired authority or a different service package/workspace.
     pub(crate) fn configure_launch(
         &self,
-        options: &mut launcher::run::RunOptions,
+        options: &mut launcher::run::LaunchOptions,
     ) -> Result<(), SendError> {
         self.guard.check()?;
         if options.app_id.as_deref() != Some(SERVICE_PACKAGE)

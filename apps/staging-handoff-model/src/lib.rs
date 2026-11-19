@@ -46,6 +46,11 @@ pub struct Handoff {
     pub original_boot_order: Vec<String>,
     #[serde(deserialize_with = "deserialize_profile")]
     pub profile: serde_json::Map<String, serde_json::Value>,
+    /// The install plan this staging was made for, when every choice is made:
+    /// the machine installs it with nobody at its screen. Secret-free, like
+    /// every plan, so it may travel in the ESP's handoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<install_profile_model::plan::Plan>,
     /// Optional secret-free retained-source hint; never source access authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migration: Option<Migration>,
@@ -177,6 +182,19 @@ impl Handoff {
             return Err("staged firmware state is malformed".into());
         }
         validate_profile(&self.profile)?;
+        if let Some(plan) = &self.plan {
+            if !plan.complete() {
+                return Err(
+                    "staged installation's plan still asks the person's devices for a choice"
+                        .into(),
+                );
+            }
+            if plan.destination != install_profile_model::plan::SERVER {
+                return Err(
+                    "only a Tilo Server installs from a staged plan without a person".into(),
+                );
+            }
+        }
         if let Some(migration) = &self.migration {
             migration.validate_in_handoff(self)?;
         }
@@ -339,6 +357,7 @@ mod tests {
             owned_boot_entry: "0104".into(),
             original_boot_order: vec!["0001".into()],
             profile: serde_json::Map::new(),
+            plan: None,
             migration: None,
         }
     }
@@ -600,6 +619,57 @@ mod tests {
             assert_ne!(json, bad);
             assert!(Handoff::parse(bad.as_bytes()).is_err());
         }
+    }
+
+    fn complete_server_plan() -> install_profile_model::plan::Plan {
+        serde_json::from_value(serde_json::json!({
+            "schema": 1,
+            "plan": "0123456789abcdef0123456789abcdef",
+            "revision": 1,
+            "destination": "tilo-server",
+            "name": "cupboard",
+            "network": {"addressing": "dhcp", "addresses": "", "gateway": "", "dns": ""},
+            "disk": {"kind": "largest", "identity": ""},
+            "unlock": "owner-device",
+            "updates": "stable",
+            "hosting": [],
+            "open": [],
+            "token": {"nonce": "00112233445566778899aabbccddeeff",
+                      "expires_at_ns": 1_700_000_000_000_000_000_u64}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_carried_install_plan_is_complete_and_a_server() {
+        let mut handoff = handoff();
+        handoff.plan = Some(complete_server_plan());
+        let bytes = handoff.to_padded(8192).unwrap();
+        let parsed = Handoff::parse(&bytes).unwrap();
+        assert_eq!(parsed.plan, handoff.plan);
+
+        let mut open = handoff.clone();
+        let mut plan = complete_server_plan();
+        plan.open = vec!["name".to_owned()];
+        plan.name.clear();
+        open.plan = Some(plan);
+        assert!(
+            open.validate().unwrap_err().contains("still asks"),
+            "a plan with an open choice is not unattended"
+        );
+        assert!(Handoff::parse(&serde_json::to_vec(&open).unwrap()).is_err());
+
+        let mut desktop = handoff.clone();
+        let mut plan = complete_server_plan();
+        plan.destination = "tilo-os".to_owned();
+        desktop.plan = Some(plan);
+        assert!(desktop.validate().unwrap_err().contains("Tilo Server"));
+
+        let mut unknown = handoff;
+        unknown.plan = Some(complete_server_plan());
+        let mut value = serde_json::to_value(&unknown).unwrap();
+        value["plan"]["purpose"] = "computer".into();
+        assert!(Handoff::parse(&serde_json::to_vec(&value).unwrap()).is_err());
     }
 
     #[test]

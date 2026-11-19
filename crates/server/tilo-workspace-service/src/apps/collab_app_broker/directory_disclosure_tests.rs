@@ -41,7 +41,7 @@ impl Person {
             device_certificate: serde_json::to_vec(&self.certificate).unwrap(),
             proof: self
                 .device
-                .sign(&runtime_identity::collaboration_join_digest(workspace).unwrap())
+                .sign(&tilo_identity_client::collaboration_join_digest(workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }
@@ -891,7 +891,7 @@ fn a_read_of_the_record_discloses_it_to_agents_and_a_private_view_does_not() {
 
 /// A control the window draws is its person's pointer and keyboard: an agent is never listed it,
 /// whatever its contract. An effect that only changes what the publisher's screen shows is not
-/// the agent's either, and is listed to it by name as the publisher's.
+/// listed to it either; an agent naming it is told it is the publisher's.
 #[test]
 fn an_agent_is_never_offered_a_drawn_control_and_hears_whose_a_shown_effect_is() {
     let row = |kind: &str, contract: ActionContract, governing: OperationKind| {
@@ -920,19 +920,29 @@ fn an_agent_is_never_offered_a_drawn_control_and_hears_whose_a_shown_effect_is()
     let control = row("tilo.control", write.clone(), OperationKind::Effect);
     let question = directory_row_question(&control).unwrap();
     assert!(!question.disclosed_to(&agent, Some("publisher")));
-    assert!(!question.refused_by_name_to(&agent), "never listed");
+    assert!(!question.refused_by_name_to(&agent), "never named either");
     assert!(question.disclosed_to(&publisher, Some("publisher")));
     let shown = row(
         "tasks.tracker",
-        ActionContract::view(),
+        ActionContract::screen(),
         OperationKind::Effect,
     );
     let question = directory_row_question(&shown).unwrap();
     assert!(!question.disclosed_to(&agent, Some("publisher")));
     assert!(
         question.refused_by_name_to(&agent),
-        "listed by name as the publisher's"
+        "named, it is the publisher's"
     );
+    // A read that answers nothing but is not declared screen-only is the agent's like any read:
+    // what it answers says nothing of whose it is.
+    let undeclared = row(
+        "tasks.tracker",
+        ActionContract::view(),
+        OperationKind::Effect,
+    );
+    let question = directory_row_question(&undeclared).unwrap();
+    assert!(question.disclosed_to(&agent, Some("publisher")));
+    assert!(!question.refused_by_name_to(&agent));
     let real = row("tasks.tracker", write, OperationKind::Effect);
     assert!(
         directory_row_question(&real)

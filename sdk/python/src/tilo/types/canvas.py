@@ -585,7 +585,7 @@ ForgetArgs = TypedDict("ForgetArgs", {
 
 class Artwork(Resource):
     """Artwork — `canvas.artwork`."""
-    __surface__ = "so.tilo.canvas@c1cf5232af16e7da"
+    __surface__ = "so.tilo.canvas@3bdabc6586889ec5"
     title: str
     width: float
     height: float
@@ -1292,7 +1292,7 @@ class Artwork(Resource):
 
 class RecentArtworks(Resource):
     """Recent artworks — `canvas.recent-artworks`."""
-    __surface__ = "so.tilo.canvas@c1cf5232af16e7da"
+    __surface__ = "so.tilo.canvas@3bdabc6586889ec5"
     devices: dict[str, Any]
 
     def remember(self,

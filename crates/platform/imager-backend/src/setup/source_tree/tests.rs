@@ -548,18 +548,21 @@ tilo_test_env::scenario! {
         let home = fixture.path().canonicalize().unwrap().join("home");
         fs::create_dir(&home).unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set("XDG_CONFIG_HOME", home.join(".config"));
+        environment
+            .set("XDG_CONFIG_HOME", home.join(".config"))
+            .set("XDG_DATA_HOME", home.join(".local/share"));
         // The setup's settings store holds its profile in this Home: its
         // documents, the lock each one leases and the socket it serves.
-        let records =
-            tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
-        let [lock, socket] = records.runtime_files();
-        fs::create_dir_all(lock.parent().unwrap()).unwrap();
-        fs::write(&lock, b"").unwrap();
-        let device = records.dir().join("device");
+        let data = home.join(".local/share");
+        let person = data.join(tilo_paths::SETTINGS_PERSON);
+        let device = data.join(tilo_paths::SETTINGS_DEVICE);
+        fs::create_dir_all(&person).unwrap();
+        fs::write(person.join("canonical.lock"), b"").unwrap();
         fs::create_dir_all(&device).unwrap();
         fs::write(device.join("canonical.lock"), b"").unwrap();
         fs::write(device.join("state.automerge"), b"settings").unwrap();
+        let socket = home.join(".config/tilo").join(tilo_paths::PROFILE_SOCKET);
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let _socket = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let tree = discover_home(&home, &SteamCatalog::builtin()).unwrap();
         assert_eq!(tree.totals.local_files, 0, "{:?}", tree.totals);

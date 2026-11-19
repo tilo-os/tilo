@@ -3,9 +3,9 @@
 
 use super::{
     ARRIVING_RESULTS, Affine, BlendMode, ButtonFace, ButtonRole, CardFace, ControlSize, EmptyState,
-    EmptyStateContent, Fill, GEOCODER, Hit, Icon, Interaction, LatLon, ListRowFace, MapsApp,
-    PaintCtx, Panel, Place, Point, RESULT_ROW, Rect, RowLeading, Scene, TextRenderer, TextRole,
-    Theme, draw, failure, geo, on_panel,
+    EmptyStateContent, Fill, Hit, Icon, Interaction, LatLon, ListRowFace, MapsApp, PaintCtx, Panel,
+    Place, Point, RESULT_ROW, Rect, RowLeading, Scene, TextRenderer, TextRole, Theme, draw,
+    failure, geo, on_panel,
 };
 
 impl MapsApp {
@@ -284,14 +284,9 @@ impl MapsApp {
         let step = clock.step(ui::time::now());
         let h = RESULT_ROW.height(tr, theme);
         let mut ctx = PaintCtx::new(scene, t, tr, theme);
-        for row in 0..ARRIVING_RESULTS {
-            ui::widget::ArrivalFace::at_step(
-                ui::widget::SkeletonShape::Row(RESULT_ROW),
-                step,
-                clock.source(),
-            )
-            .naming(row == 0)
-            .paint(&mut ctx, Rect::new(content.x0, y, content.x1, y + h));
+        for _ in 0..ARRIVING_RESULTS {
+            ui::widget::ArrivalFace::at_step(ui::widget::SkeletonShape::Row(RESULT_ROW), step)
+                .paint(&mut ctx, Rect::new(content.x0, y, content.x1, y + h));
             y += h;
         }
         self.mark_edge(y);
@@ -302,7 +297,7 @@ impl MapsApp {
         let (_, asked) = self.search_asked.as_ref()?;
         Some(ui::arriving::ArrivalClock::new(
             *asked,
-            ui::arriving::Source::host(GEOCODER),
+            ui::arriving::Source::Remote,
         ))
     }
 

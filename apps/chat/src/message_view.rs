@@ -85,7 +85,7 @@ pub struct View {
     /// Which writing of it this is: 1, then one more each time its author
     /// writes it again.
     pub version: u32,
-    /// When this version was written, in seconds since the epoch.
+    /// When this version was written, in milliseconds since the epoch.
     pub at: i64,
     /// The forms before this one, oldest first.
     pub earlier: Vec<Earlier>,
@@ -97,6 +97,7 @@ pub struct Earlier {
     pub version: u32,
     pub source: String,
     pub reads: Vec<String>,
+    /// When this form was written, in milliseconds since the epoch.
     pub at: i64,
 }
 

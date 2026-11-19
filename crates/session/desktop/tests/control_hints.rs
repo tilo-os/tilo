@@ -18,8 +18,7 @@ use tilo_desktop::control_hints::{ControlHints, HINTS, HintFrame, HintsFeed};
 use tilo_desktop::desktop_host::{DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    FloatCorner, FloatPlace, Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId,
+    Layout, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::control_hints::Learned;
@@ -205,99 +204,6 @@ fn nothing_is_taught_while_the_person_may_not_learn() {
     }
 }
 
-/// A strip of `windows` windows with the window `group` lifted as a card over the shell, at `dx`
-/// from the left of the work area.
-fn shell_with_card(windows: u64, group: u64, dx: i32) -> Layout {
-    let mut tree = layout_tree(windows);
-    tree.workspaces[0].layout.set_float(
-        group,
-        Some(FloatPlace::new(FloatCorner::TopLeft, dx, 160, 360, 520)),
-    );
-    tree
-}
-
-/// The record of someone who has learned every hint but the one that teaches resizing.
-fn learning_resize_only() -> Learned {
-    let mut learned = Learned::default();
-    for spec in HINTS.iter().filter(|spec| spec.id != "resize-window") {
-        learned.learn(spec.id);
-    }
-    learned
-}
-
-/// A hint is taught beside the strip's own windows, and points at a handle that is there to take:
-/// a card over the shell is another surface, so no hint is anchored to it, and none is
-/// drawn over its content.
-#[test]
-fn no_hint_points_at_a_card_nor_covers_one() {
-    // The card holds the person's attention: a card's header does not take it as a strip window's
-    // bar does, and its edge resizes nothing.
-    let feed = HintsFeed::default();
-    feed.set_record(learning_resize_only());
-    feed.set_context(None, true, Vec::new());
-    let mut tree = shell_with_card(3, 5, 400);
-    tree.active_group.insert(StripId(2), 5);
-    let (mut frame, handle) = chrome_over(&tree, &feed);
-    assert_eq!(
-        handle.hint_places().windows,
-        2,
-        "the card is no strip window"
-    );
-    assert_eq!(handle.hint_places().focused_edge, None, "a card's edge");
-    with_chrome(&mut frame, |chrome| {
-        assert!(
-            !chrome.hints().is_showing(),
-            "nothing points at a card, nor at a window a card covers"
-        );
-    });
-
-    // The card stands on the shell away from the handle: the hint is taught beside the handle and
-    // keeps off the card's content.
-    let feed = HintsFeed::default();
-    feed.set_record(learning_resize_only());
-    feed.set_context(None, true, Vec::new());
-    let (mut frame, handle) = chrome_over(&shell_with_card(3, 5, 0), &feed);
-    let cards = handle.hint_places().over;
-    assert_eq!(cards.len(), 1, "the card over the shell: {cards:?}");
-    with_chrome(&mut frame, |chrome| {
-        let painted = chrome
-            .hints()
-            .card_rect()
-            .expect("a free shell shows the hint beside the handle");
-        for card in &cards {
-            assert!(
-                !painted.overlaps(*card),
-                "a hint {painted:?} stands over the card {card:?}"
-            );
-        }
-    });
-
-    // The card stands over the handle: there is nothing there to take, so nothing is taught, and
-    // no card's content is covered.
-    let feed = HintsFeed::default();
-    feed.set_record(learning_resize_only());
-    feed.set_context(None, true, Vec::new());
-    let (mut frame, handle) = chrome_over(&shell_with_card(3, 5, 700), &feed);
-    let cards = handle.hint_places().over;
-    assert_eq!(cards.len(), 1, "the card over the shell: {cards:?}");
-    let (line, _) = handle
-        .hint_places()
-        .focused_edge
-        .expect("fixture: the handle is on screen");
-    assert!(
-        cards[0].overlaps(Rect::from_points(line.p0, line.p1)),
-        "fixture: the card covers the handle: {}",
-        cards[0]
-    );
-    with_chrome(&mut frame, |chrome| {
-        assert!(
-            chrome.hints().card_rect().is_none(),
-            "a handle under a card teaches nothing: {:?}",
-            chrome.hints().card_rect()
-        );
-    });
-}
-
 /// A shell whose bar is busy: a long workspace name on its left and many people on its right.
 fn busy_shell() -> Layout {
     let mut tree = layout_tree(2);
@@ -352,42 +258,29 @@ fn draw_shell(shell: &mut FrameHarness) {
     surface.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
 }
 
-/// The desktop's own bar laid out over `tree`: the room it keeps beside its clock for a control
-/// hint, and the rects it draws there itself, which no hint may cover.
-fn bar_geometry(tree: &Layout, width: u32) -> (Option<Rect>, Vec<(String, Rect)>) {
-    let feed = HintsFeed::default();
-    let (mut frame, _handle) = chrome_over_at(tree, &feed, width);
-    let chrome = frame.root_mut::<DesktopChrome>();
-    let controls = ui::widget::Widget::test_rects(chrome.bar())
-        .into_iter()
-        // The hit rects are deliberately larger than what the bar paints.
-        .filter(|(name, rect)| !rect.is_zero_area() && !name.ends_with("_hit"))
-        .collect();
-    (chrome.bar().hint_room(), controls)
-}
-
 /// The card the hint `unlearned` paints over `tree`, as the chrome drives it, with the strip's own
-/// places and the room the real bar keeps beside its clock: the real geometry the hint is placed
-/// against. `cues` are what the person did just before it, for a hint whose moment is one of those;
-/// they are noted here, after the shell's own frames have drawn, since a frame of the chrome reads
-/// and keeps what was noted before it.
+/// places: the real geometry the hint is placed against, and the desktop under the bar it may be
+/// placed in. `cues` are what the person did just before it, for a hint whose moment is one of
+/// those; they are noted here, after the shell's own frames have drawn, since a frame of the chrome
+/// reads and keeps what was noted before it.
 fn painted_hint(
     tree: &Layout,
     unlearned: &str,
     cues: &[Performed],
     wait: ui::time::Duration,
     width: u32,
-) -> (Option<Rect>, ui::widget::HintPlaces, Option<Rect>) {
+) -> (Option<Rect>, ui::widget::HintPlaces, Rect) {
     let (_, row) = shell_below_the_bar(tree, width);
-    let (room, _) = bar_geometry(tree, width);
+    let bar = f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX);
+    let viewport = row.viewport;
+    let area = Rect::new(viewport.x0, viewport.y0.max(bar), viewport.x1, viewport.y1);
     let mut hints = ControlHints::new(record_learning_all_but(unlearned));
     for cue in cues {
         performed::note(*cue);
     }
     let frame = HintFrame {
         row: row.clone(),
-        area: row.viewport,
-        hint_room: room,
+        area,
         search_keys: vec!["Ctrl".to_owned(), "K".to_owned()],
         avatar: None,
         colour: None,
@@ -408,139 +301,77 @@ fn painted_hint(
         &ui::Theme::dark(),
         start + wait,
     );
-    (hints.card_rect(), row, room)
+    (hints.card_rect(), row, area)
 }
 
-/// A hint never stands over a window's content nor over an app's activity cards, whatever the shell
-/// holds: a gesture with no control on screen is taught in the bar, right beside its clock, inside
-/// the room the bar keeps there and clear of the controls it draws itself; and the one for a
-/// window's edge covers no window, the one it teaches included: it stands beside the edge where
-/// that is clear, else in the bar's room while the edge lights.
+/// The height of a hint's card: its picture's tile with the padding around it. A hint is always
+/// that card, never a line-tall label.
+const CARD_HEIGHT: f64 = 56.0;
+
+/// Every hint is a card over the desktop, under the bar and never in it, whatever the bar holds:
+/// search comes down at the middle of the desktop just under the bar, the view's hint sits at the
+/// edge the windows hide past, and the move and resize hints sit at the bar and edge they teach.
 #[test]
-fn no_hint_stands_over_a_window_or_an_apps_cards() {
-    let mut crowded = 0;
-    for (tree, width) in [
-        (layout_tree(0), 1280),
-        (layout_tree(1), 1280),
-        (layout_tree(2), 1280),
-        (maximised(3), 1280),
-        // A busy bar: a long workspace name on its left, many people on its right, and one too
-        // narrow to keep the clock's room whole.
-        (busy_shell(), 1280),
-        (busy_shell(), 640),
-    ] {
-        let (painted, row, room) = painted_hint(
+fn every_hint_is_a_card_over_the_desktop_at_its_gesture() {
+    for tree in [layout_tree(0), layout_tree(2), maximised(3), busy_shell()] {
+        let (painted, _, area) = painted_hint(
             &tree,
             "open-from-search",
             &[],
             ui::time::Duration::from_secs(18),
-            width,
+            1280,
         );
-        let Some(room) = room else {
-            assert!(
-                painted.is_none(),
-                "no room beside the clock, yet {painted:?} shows"
-            );
-            crowded += 1;
-            continue;
-        };
-        let Some(painted) = painted else {
-            // The room is narrower than the pill, which stands whole or not at all.
-            crowded += 1;
-            continue;
-        };
-        assert_eq!(
-            painted.x0, room.x0,
-            "immediately beside the clock: {painted:?} in {room:?}"
-        );
+        let card = painted.expect("the search hint shows");
+        assert!(card.y0 >= area.y0, "under the bar, not in it: {card:?}");
+        assert!(card.y0 - area.y0 < 48.0, "just under the bar: {card:?}");
         assert!(
-            room.contains_rect(painted),
-            "in the room the bar keeps beside its clock: {painted:?} in {room:?}"
+            (card.center().x - area.center().x).abs() < 1.0,
+            "at the desktop's middle: {card:?} in {area:?}"
         );
-        for (name, rect) in &bar_geometry(&tree, width).1 {
-            assert!(
-                !painted.overlaps(*rect),
-                "the search hint {painted:?} stands over the bar's {name} {rect:?}"
-            );
-        }
-        let content: Vec<Rect> = row
-            .windows_on_strip
-            .iter()
-            .map(|(_, content)| *content)
-            .collect();
-        for card in HintFrame::cards_over(&row).into_iter().chain(content) {
-            assert!(
-                !painted.overlaps(card),
-                "the search hint {painted:?} stands over content {card:?}"
-            );
-        }
+        assert_eq!(card.height(), CARD_HEIGHT, "the card with its picture");
     }
-    assert!(crowded >= 1, "a crowded bar leaves the pill no room whole");
-    // The resize hint covers no window's content, the window whose edge it teaches included, nor
-    // the cards its app stands in a corner: beside the edge where that is clear, else in the bar's
-    // room. (A maximised window has no handle to take: no hint.)
-    for tree in [layout_tree(2), layout_tree(3)] {
-        let (painted, row, room) =
-            painted_hint(&tree, "resize-window", &[], ui::time::Duration::ZERO, 1280);
-        let painted = painted.expect("the resize hint shows");
-        for (_, content) in &row.windows_on_strip {
-            assert!(
-                !painted.overlaps(*content),
-                "the resize hint {painted:?} stands over a window's content {content:?}"
-            );
-        }
-        for card in HintFrame::cards_over(&row) {
-            assert!(
-                !painted.overlaps(card),
-                "the resize hint {painted:?} stands over a card {card:?}"
-            );
-        }
-        let (line, _) = row.focused_edge.expect("fixture: a handle to point at");
-        let at = line.p0.lerp(line.p1, 0.5);
-        let in_room = room.is_some_and(|room| room.contains_rect(painted));
-        assert!(
-            in_room || painted.inflate(16.0, 16.0).contains(at),
-            "the hint stands beside its handle {line:?} or in the bar's room: {painted:?}"
-        );
-    }
-}
-
-/// The move hint covers no window's content either, the window whose bar it teaches included: it
-/// hung below the bar, into the window itself, over what the window showed. It stands beside the
-/// bar where a side of it is clear, else in the room the bar keeps beside its clock, and the bar
-/// lights along its underside where the person holds it.
-#[test]
-fn the_move_hint_covers_no_windows_content_its_own_included() {
-    let tree = layout_tree(3);
-    // Its moment: a window's bar was hovered and a window opened, as the shell notes them.
-    let (painted, row, room) = painted_hint(
-        &tree,
+    let (painted, row, area) = painted_hint(
+        &layout_tree(4),
+        "pan-view",
+        &[],
+        ui::time::Duration::from_secs(60),
+        1280,
+    );
+    assert!(row.beyond.1, "fixture: windows lie past the trailing edge");
+    let card = painted.expect("the pan hint shows");
+    assert!(
+        area.x1 - card.x1 < 40.0,
+        "at the edge the windows hide past: {card:?} in {area:?}"
+    );
+    assert!(
+        (card.center().y - area.center().y).abs() < 1.0,
+        "halfway down that edge: {card:?}"
+    );
+    assert_eq!(card.height(), CARD_HEIGHT);
+    let (painted, row, _) = painted_hint(
+        &layout_tree(2),
+        "resize-window",
+        &[],
+        ui::time::Duration::ZERO,
+        1280,
+    );
+    let card = painted.expect("the resize hint shows");
+    let (line, _) = row.focused_edge.expect("fixture: an edge to take");
+    assert!(
+        card.x0 > line.p0.x && card.x0 - line.p0.x < 24.0,
+        "right beside the edge it teaches: {card:?} by {line:?}"
+    );
+    let (painted, row, _) = painted_hint(
+        &layout_tree(3),
         "move-window",
         &[Performed::HoveredWindowBar, Performed::OpenedWindow],
         ui::time::Duration::ZERO,
         1280,
     );
-    let painted = painted.expect("the move hint shows");
-    for (_, content) in &row.windows_on_strip {
-        assert!(
-            !painted.overlaps(*content),
-            "the move hint {painted:?} stands over a window's content {content:?}"
-        );
-    }
-    for (name, rect) in &bar_geometry(&tree, 1280).1 {
-        assert!(
-            !painted.overlaps(*rect),
-            "the move hint {painted:?} stands over the bar's {name} {rect:?}"
-        );
-    }
+    let card = painted.expect("the move hint shows");
     let bar = row.focused_bar.expect("fixture: a bar to take");
-    let in_room = room.is_some_and(|room| room.contains_rect(painted));
-    // The pill stands in the bar's free ground, between the title and the buttons, whole inside
-    // it: clear of every control beside it, which the loop above proves, and over no window's
-    // content.
-    let in_handle = row.bar_room.is_some_and(|room| room.contains_rect(painted));
     assert!(
-        in_room || in_handle || painted.inflate(16.0, 16.0).contains(bar.center()),
-        "the hint stands beside its bar {bar:?} or in the bar's room: {painted:?}"
+        card.y0 > bar.y1 && card.y0 - bar.y1 < 24.0,
+        "just below the bar it teaches: {card:?} under {bar:?}"
     );
 }

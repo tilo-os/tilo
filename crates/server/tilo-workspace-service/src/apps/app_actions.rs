@@ -187,12 +187,6 @@ impl AppActionAnswer {
     pub const fn allowed(&self) -> bool {
         self.lifetime.is_some()
     }
-
-    /// The person's edits where they allowed it; none where they declined.
-    #[must_use]
-    pub fn allowed_edits(&self) -> &[tilo_actions::DraftEdit] {
-        if self.allowed() { &self.edits } else { &[] }
-    }
 }
 
 impl From<tilo_action_policy::Lifetime> for AppActionAnswer {

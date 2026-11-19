@@ -7,7 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 #[test]
 fn selected_website_session_preparation_is_separate_authenticated_ownership() {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let root = tempfile::Builder::new()
         .permissions(fs::Permissions::from_mode(0o700))
         .tempdir()
@@ -96,7 +96,7 @@ fn selected_website_session_preparation_is_separate_authenticated_ownership() {
 fn excluded_parent_accounts_prepares_authenticated_media_without_reading_or_declaring_session_material()
  {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let root = tempfile::Builder::new()
         .permissions(fs::Permissions::from_mode(0o700))
         .tempdir()

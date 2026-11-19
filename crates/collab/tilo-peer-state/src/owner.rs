@@ -50,7 +50,6 @@ pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_fi
 #[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
 pub use journaled::{JournalParts, Journaled};
-pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES};
 pub use publication::{
     DocumentWrites, HostAnswer, NativeOutgoing, NativeOutgoingEntry, SealedHistoryKeys,
     outgoing_bytes, ownership_name_between, ownership_run_name, validate_file_layout,
@@ -79,13 +78,14 @@ fn policy_changed() {
     tilo_identity::policy_change::announce();
 }
 
-/// Whether `hint` names this device, `device`, as the workspace's host: a workspace
-/// placed on this device, whose host runs in this process. Such a workspace is
-/// joined over the host's in-process carrier, never dialled: an endpoint
-/// cannot dial itself.
+/// Whether `hint` names this device, `device`, or the workspace service it
+/// certified, as the workspace's holder: a workspace placed on this device,
+/// whose service is in this process. Such a workspace is joined over the
+/// service's in-process carrier, never dialled: an endpoint cannot dial
+/// itself.
 #[must_use]
 pub fn hosted_by(hint: &crate::join::TransportHint, device: &[u8; 32]) -> bool {
-    &hint.host.device_public_key == device
+    hint.host.is_of_device(device)
 }
 
 /// Check `hint` as the address of `device`'s own host of `workspace_id`: the
@@ -107,7 +107,7 @@ pub(crate) fn validate_host_hint(
     if payload.workspace_id != workspace_id {
         return Err("the workspace's host hint names another workspace".into());
     }
-    if payload.device_certificate != *device {
+    if payload.device_certificate != hint.host {
         return Err("the workspace's host hint is not the host's own signed address".into());
     }
     Ok(())
@@ -296,6 +296,19 @@ impl NativeCommittedView {
         *self.holders.lock_recover() = Some((at_ns, holders.clone()));
         Ok(holders)
     }
+    /// The devices of `people` among [`Self::key_holders`] at `now`: who holds
+    /// the keys of a group only those people read
+    /// (as its governance's `reader_key_holders` decides it).
+    ///
+    /// # Errors
+    /// The view's governance cannot be read.
+    pub fn reader_key_holders(
+        &self,
+        people: &std::collections::BTreeSet<[u8; 32]>,
+        now: web_time::SystemTime,
+    ) -> Result<std::collections::BTreeSet<[u8; 32]>, String> {
+        self.peer.governance().reader_key_holders(people, now)
+    }
     /// The replica as the record published it.
     #[must_use]
     pub fn peer(&self) -> &StatePeer {
@@ -338,10 +351,23 @@ impl NativeCommittedView {
     pub fn workspace_host(&self) -> &DeviceCert {
         &self.record.workspace_host
     }
-    /// Whether this device created the workspace, and so founds its MLS group.
+    /// Whether this device created the workspace, itself or through the
+    /// workspace service it certified, and so founds its MLS group: that
+    /// service takes part in the group with this device's keys.
     #[must_use]
     pub fn founded_here(&self) -> bool {
-        self.peer.governance().founder() == Some(self.device().device_public_key)
+        let Some(founder) = self.peer.governance().founding_device() else {
+            return false;
+        };
+        let device = &self.device().device_public_key;
+        // The founder's certificate writes for this device: it is this device's, or that of the
+        // workspace service this device certified.
+        founder == *device
+            || self
+                .peer
+                .certificates()
+                .iter()
+                .any(|cert| cert.device_public_key == founder && cert.is_of_device(device))
     }
     /// Whether this device entered a workspace that existed before it: it
     /// redeemed an invitation, or a host vouched for it as a further device of
@@ -638,6 +664,20 @@ impl NativeWorkspaceOwner {
         read(&*self.view(workspace)?)
     }
 
+    /// Let `written`, what a store's journal of `workspace` goes on from, go on
+    /// from the parts the restored replica encodes itself in, so its next
+    /// entry carries what that write changed. `false` when the workspace is
+    /// not held here or its replica encodes other bytes: the store writes a
+    /// snapshot first then.
+    pub(crate) fn resume_journal(
+        &self,
+        workspace: WorkspaceId,
+        written: &mut journal::Written,
+    ) -> bool {
+        self.with_current(workspace, |view| view.peer().durable_layout())
+            .is_ok_and(|parts| written.resume(parts))
+    }
+
     /// This device's live replica of `workspace`: what its direct link admits
     /// into, and what [`Self::persist`] publishes.
     ///
@@ -679,7 +719,7 @@ impl NativeWorkspaceOwner {
         let durable = {
             let live = view.live();
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            stored::DurablePeer::from(live.durable_parts()?)
+            stored::DurablePeer::from(live.durable_layout()?)
         };
         if durable == record.peer && record.publication == previous {
             return Ok(());
@@ -809,7 +849,7 @@ impl NativeWorkspaceOwner {
             publication::settle(&mut record, self.0.store.as_ref())?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            let durable = stored::DurablePeer::from(live.durable_parts()?);
+            let durable = stored::DurablePeer::from(live.durable_layout()?);
             // Authentication and causal admission still run for every replay.
             // Reuse the actual committed barrier only when both durable peer
             // state and outgoing ownership are byte-for-byte unchanged. In
@@ -950,7 +990,7 @@ impl NativeWorkspaceOwner {
             let live = replica.lock();
             publication::settle(&mut record, self.0.store.as_ref())?;
             publication::refresh_governance_checkpoint(&live, &mut record)?;
-            record.peer = live.durable_parts()?.into();
+            record.peer = live.durable_layout()?.into();
             Self::snapshot(&live, &mut record)?
         };
         self.install_snapshot(workspace, replica, record, snapshot, enrollment)
@@ -1013,8 +1053,6 @@ impl NativeWorkspaceOwner {
                 }
             }
         };
-        limits::preflight_document(&record, limits::MAX_AUTHORITY_BYTES)
-            .map_err(|e| e.to_string())?;
         if changed {
             record.continuity = record
                 .continuity

@@ -283,9 +283,8 @@ tilo_test_env::scenario! {
         let _ = super::tests::lay_out(&mut list, 300.0);
         let column = list.lead;
         assert!(
-            (column - list.bleed).abs() < 0.5,
-            "nothing of the first level folds, so its rows keep no column: {column} in from {}",
-            list.bleed
+            column.abs() < 0.5,
+            "nothing of the first level folds, so its rows keep no column: {column} in from the edge"
         );
 
         list.update_model(|model| model.keys = vec![0, 1, 2]);
@@ -410,11 +409,9 @@ tilo_test_env::scenario! {
         assert_eq!(list.row_depth(&0), 0);
         assert!(!list.row_is_branch(&0));
         assert!(
-            (list.lead - list.bleed).abs() < 0.5,
-            "no chevron stands in front of the first level, so its rows keep no column: \
-             {} in from {}",
-            list.lead,
-            list.bleed
+            list.lead.abs() < 0.5,
+            "no chevron stands in front of the first level, so its rows keep no column: {}",
+            list.lead
         );
 
         let marks = Rc::new(TreeMarks::default());
@@ -438,10 +435,9 @@ tilo_test_env::scenario! {
         .with_tree(Rc::clone(&marks));
         let _ = super::tests::lay_out(&mut list, 300.0);
         assert!(
-            list.lead > list.bleed + 0.5,
-            "a row with subtasks hands its chevron a column: {} in from {}",
-            list.lead,
-            list.bleed
+            list.lead > 0.5,
+            "a row with subtasks hands its chevron a column: {}",
+            list.lead
         );
     }
 
@@ -474,9 +470,8 @@ tilo_test_env::scenario! {
         let _ = super::tests::lay_out(&mut list, 300.0);
         let column = list.lead;
         assert!(
-            column > list.bleed + 0.5,
-            "a row with subtasks hands its chevron a column: {column} in from {}",
-            list.bleed
+            column > 0.5,
+            "a row with subtasks hands its chevron a column: {column}"
         );
 
         list.update_model(|model| model.keys = vec![0, 2]);
@@ -493,10 +488,9 @@ tilo_test_env::scenario! {
         });
         let _ = super::tests::lay_out(&mut list, 300.0);
         assert!(
-            (list.lead - list.bleed).abs() < 0.5,
-            "rows read anew with nothing to fold keep no column: {} in from {}",
-            list.lead,
-            list.bleed
+            list.lead.abs() < 0.5,
+            "rows read anew with nothing to fold keep no column: {}",
+            list.lead
         );
 
         list.update_model(|model| {
@@ -587,7 +581,7 @@ tilo_test_env::scenario! {
 
         let (chevron, folded) = list
             .chevrons()
-            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, false)
+            .rect(&marks.marks, &Theme::dark(), &ListKey::new(0u64), row, false)
             .expect("the row folds the subtask under it");
         assert!(!folded, "the group starts open");
         assert!(
@@ -613,7 +607,7 @@ tilo_test_env::scenario! {
         let narrow = list.row_box(0).expect("the first row on a phone");
         let (chevron, _) = list
             .chevrons()
-            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), narrow, false)
+            .rect(&marks.marks, &Theme::dark(), &ListKey::new(0u64), narrow, false)
             .expect("the row folds the subtask under it");
         assert!(
             (chevron.center().y - narrow.center().y).abs() < 0.5,
@@ -626,7 +620,7 @@ tilo_test_env::scenario! {
         let row = list.row_box(0).expect("the first row stands somewhere");
         let (chevron, _) = list
             .chevrons()
-            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, false)
+            .rect(&marks.marks, &Theme::dark(), &ListKey::new(0u64), row, false)
             .expect("the row folds the subtask under it");
         press(
             &mut list,
@@ -643,7 +637,7 @@ tilo_test_env::scenario! {
         let row = list.row_box(0).expect("the folded row stands somewhere");
         let (chevron, folded) = list
             .chevrons()
-            .rect(&(Rc::clone(&marks) as Rc<dyn super::typed::KeyedMarks>), &Theme::dark(), &ListKey::new(0u64), row, list.row_folded(&0))
+            .rect(&marks.marks, &Theme::dark(), &ListKey::new(0u64), row, list.row_folded(&0))
             .expect("a folded row still shows its disclosure");
         assert!(folded, "the chevron points at what it folded away");
         assert!(
@@ -674,12 +668,13 @@ tilo_test_env::scenario! {
             leaf.x0
         );
 
-        let column = branch.x0 + list.lead;
+        // The lift hangs past the list's edge; the rows' column is measured from the edge itself.
+        let edge = list.rect.x0;
+        let column = edge + list.lead;
         assert!(
-            (column - (branch.x0 + TREE_INDENT)).abs() < 0.5,
+            (column - (edge + TREE_INDENT)).abs() < 0.5,
             "the top level stands one step in from the list's leading edge, not two: {column} \
-             from {}",
-            branch.x0
+             from {edge}"
         );
         let chevron = list
             .disclosure_rect(&0)

@@ -66,6 +66,20 @@ impl Text {
         }
     }
 
+    /// The text and its marks, as a model module and its host pass it.
+    pub(crate) fn parts(&self) -> (String, &HashMap<String, ScalarValue>) {
+        (self.value.make_string(), &self.marks)
+    }
+
+    /// Text of these parts, as a model module and its host pass it.
+    pub(crate) fn from_parts(text: &str, marks: HashMap<String, ScalarValue>) -> Self {
+        Self {
+            value: ConcreteTextValue::new(text, TextEncoding::platform_default()),
+            marks,
+            written_marks: Vec::new(),
+        }
+    }
+
     pub fn new<S: AsRef<str>>(text_encoding: TextEncoding, text: S) -> Self {
         Self {
             value: ConcreteTextValue::new(text.as_ref(), text_encoding),

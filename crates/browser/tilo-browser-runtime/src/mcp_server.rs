@@ -23,7 +23,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_desktop_surface::session::DesktopSession;
 use tilo_lock::MutexRecover as _;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 /// The keys the person took back here, for the page's root to sign.
 pub(crate) type Revoked = Arc<Mutex<Vec<Revoking>>>;

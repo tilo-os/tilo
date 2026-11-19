@@ -40,6 +40,8 @@ pub struct EditableLabel {
     family: Option<FontChoice>,
     role: crate::tokens::TextRole,
     style: TextStyle,
+    /// The smallest target a pointer is given here: a finger's on a touchscreen.
+    target: f32,
     idle_color: Option<vello::peniko::Color>,
     rect: Rect,
     last_pointer: Point,
@@ -86,6 +88,7 @@ impl EditableLabel {
             placeholder: None,
             edit_request: None,
             measured: None,
+            target: crate::tokens::Metrics::default().min_pointer_target,
             blank_clears: false,
             edits: None,
             seen: 0,
@@ -241,11 +244,13 @@ impl EditableLabel {
             style = style.with_family(family.clone());
         }
         self.style = style;
+        self.target = theme.tokens.metrics.min_pointer_target;
     }
 
-    /// The label's band: the role's line, never under the minimum target.
+    /// The label's band: the role's line, never under the smallest target a pointer is given,
+    /// so a finger renames it as surely as a mouse.
     fn band(&self) -> f32 {
-        self.style.line_height_px().max(28.0)
+        self.style.line_height_px().max(self.target)
     }
 
     /// Hide the insertion caret beneath a modal without committing an edit.
@@ -987,8 +992,26 @@ mod tests {
             let height = tree.style(node).unwrap().size.height;
             assert_eq!(
                 height,
-                Dimension::length(style.line_height_px().max(28.0)),
+                Dimension::length(
+                    style
+                        .line_height_px()
+                        .max(theme.tokens.metrics.min_pointer_target)
+                ),
                 "the band is the role's scaled line"
+            );
+        }
+
+        phase a_finger_gets_the_touchscreens_target;
+        {
+            let mut theme = Theme::light();
+            theme.tokens.metrics.min_pointer_target = 48.0;
+            let mut label = EditableLabel::new("Groceries");
+            let mut tree = TaffyTree::new();
+            let node = label.build_layout(&mut tree, &theme, &mut HashMap::new());
+            assert_eq!(
+                tree.style(node).unwrap().size.height,
+                Dimension::length(48.0),
+                "a label a finger renames is a finger's target tall"
             );
         }
 

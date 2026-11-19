@@ -161,12 +161,20 @@ pub fn sentences(grants: &[Grant], labels: &dyn Labels) -> String {
                 "{}{}: {}.",
                 describe_node(&grant.node, labels),
                 lifetime_suffix(grant.lifetime),
-                grant_clauses(grant)
-            )
+                grant_clauses(grant),
+            ) + if grant.denies_reading_within_workspace() {
+                HIDDEN_NOT_SEALED
+            } else {
+                ""
+            }
         })
         .collect::<Vec<_>>()
         .join(" ")
 }
+
+/// What a sentence adds for a grant refusing reading inside a workspace: Tilo keeps it from them,
+/// but their devices hold the workspace's keys ([`Grant::denies_reading_within_workspace`]).
+const HIDDEN_NOT_SEALED: &str = " Tilo keeps it from them, but it is not encrypted apart: their devices hold the workspace's keys, so only the workspace itself keeps content from someone.";
 
 /// What one grant answers for each kind of action it covers: "everything
 /// allowed", "reading allowed", "undoable changes and outside effects allowed".

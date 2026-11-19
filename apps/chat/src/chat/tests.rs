@@ -1,3 +1,5 @@
+use crate::model::ChannelKind;
+use crate::projection::ChatProjection as _;
 use tilo_actions::policy::MemberId;
 use ui::tilo_actions::ApiError;
 use ui::tilo_resource::{Id, Invoke, Replica, Resource};
@@ -89,7 +91,12 @@ impl Talk {
             &ui::tilo_actions::ActionInvoker::person("tester"),
         )
         .map_err(ApiError::Failed)?;
-        self.part.apply_action(&action).map(drop)
+        let applied = self.part.apply_action(&action).map(drop);
+        if applied.is_ok() {
+            // The next change stands a millisecond after this one, as a person's does.
+            self.set_now_ms(self.now_ms.saturating_add(1));
+        }
+        applied
     }
 
     pub(super) fn messages(&self) -> Messages {
@@ -177,7 +184,7 @@ tilo_test_env::scenario! {
         .unwrap();
         assert_eq!(
             ada.rows("c_chat")[0].ts,
-            1234,
+            1_234_000,
             "only a message a bot brings over keeps when it was written"
         );
     }
@@ -1272,7 +1279,7 @@ tilo_test_env::scenario! {
         assert_eq!(
             row.history,
             [crate::model::EditEntry {
-                ts: 20,
+                ts: 20_000,
                 text: "teh plan".into(),
             }],
             "an unchanged edit records nothing"
@@ -1510,7 +1517,7 @@ tilo_test_env::scenario! {
         assert_eq!(rows.len(), 1);
         let message = &rows[0];
         assert_eq!(message.author, MemberId::person(ADA), "the poster is whoever invoked");
-        assert_eq!(message.ts, 1234, "the time is the action's");
+        assert_eq!(message.ts, 1_234_000, "the time is the action's");
         assert_eq!(message.mentions.len(), 1);
         assert_eq!(message.mentions[0].user, MemberId::person(BO));
         assert_eq!(chat.unread(&ada.messages(), "c_chat", &MemberId::person(BO)), 1);
@@ -1828,7 +1835,7 @@ fn a_moved_message_shows_its_author_there_at_its_time_and_stays_the_movers() {
     let (message_id, message) = state.messages.iter().next().unwrap();
     assert_eq!(message.origin.as_ref(), Some(&origin));
     assert_eq!(
-        message.ts, 1_741_000_000,
+        message.ts, 1_741_000_000_000,
         "it stands where it was written there"
     );
     assert_eq!(

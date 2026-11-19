@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tilo_actions::remote::{InvocationState, Pending, ReceiptStatus, RemoteActionMessage};
 use tilo_actions::{ActionFailure, InvocationId, InvocationUpdate};
+use tilo_agent_turn::logged::offered_name;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::McpServer;
 use tokio::task::futures::TaskLocalFuture;
@@ -165,17 +166,6 @@ pub(super) fn looked(id: &InvocationId, state: Option<&InvocationState>) {
     }
 }
 
-/// `tool` as the log names it: a name a server's tools can have, or `other` for anything else
-/// a model wrote in its place.
-pub(super) fn offered_name(tool: &str) -> &str {
-    let plain = !tool.is_empty()
-        && tool.len() <= 48
-        && tool
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
-    if plain { tool } else { "other" }
-}
-
 fn millis(time: Duration) -> u64 {
     u64::try_from(time.as_millis()).unwrap_or(u64::MAX)
 }
@@ -308,27 +298,5 @@ impl Step {
             pending = !unended.is_empty(),
             "timing tool"
         );
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::offered_name;
-
-    #[test]
-    fn a_name_no_tool_can_have_is_not_written() {
-        for name in ["tilo_ls", "answer_with_view", "learned"] {
-            assert_eq!(offered_name(name), name);
-        }
-        for name in [
-            "",
-            "tilo_ls notes/Budget",
-            "Tilo_Read",
-            "a/b",
-            "the-quarter's-figures",
-            &"x".repeat(49),
-        ] {
-            assert_eq!(offered_name(name), "other", "{name:?}");
-        }
     }
 }

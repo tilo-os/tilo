@@ -9,30 +9,25 @@
 //! naming it, and what it names is what the workspace's apps read back as the
 //! records they may open.
 //!
-//! Search offers every index on the device, as the worker last read them, so
-//! a record made elsewhere — another workspace's note, a file-backed document,
-//! one a peer brought into a workspace — is found by its name. Bringing it
-//! here is then one write, a reference into the workspace in front: no bytes
-//! move between the two workspaces' documents and no id is minted, because
-//! the id is the record. [`ui::resource::index::duplicate`] is the deliberate
-//! act of copying one instead.
+//! Search offers every index the workspaces on this device hold, as the worker last read them
+//! from where they are held (the engine on a computer, the page's replicated store on the web),
+//! so a record made elsewhere — another workspace's note, a file-backed document, one a peer
+//! brought into a workspace — is found by its name. Bringing it here is then one write, a
+//! reference into the workspace in front: no bytes move between the two workspaces' documents
+//! and no id is minted, because the id is the record. [`ui::resource::index::duplicate`] is the
+//! deliberate act of copying one instead.
 //!
-//! Reading happens away from the session's loop: the indexes are small files
-//! in the stores of apps this process does not own, and one of them being
-//! slow to read must not hold up a frame. A worker reads them once and again
-//! whenever the change stream says a record of this device moved — this
-//! session naming one in an index writes the store that feeds the stream, and
-//! so does the app that names it in its own process, whose write the store's
-//! files report to it — and the loop takes what it last read.
+//! Reading happens away from the session's loop where the host has threads, and again whenever
+//! the change stream says a record of this device moved; the loop takes what it last read.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 #[cfg(target_os = "linux")]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::platform::Store;
-use crate::platform::records::{Reading, Watch};
+use crate::platform::records::{Changes, Reading, Source, Watch};
 use durable_store::DurableStore;
 use tilo_desktop_search::providers::records::HeldDocument;
 use ui::resource::DocumentCheckout;
@@ -58,26 +53,25 @@ struct Held {
     part: Option<String>,
 }
 
+/// Name a record in a workspace, in the index of an app: `(workspace, package, record)`. Whether
+/// it is named.
+#[cfg(target_os = "linux")]
+type Bring = Box<dyn Fn(&str, &str, &DocumentCheckout) -> bool>;
+
 /// The device's record indexes, as search offers them.
 pub struct Records {
-    /// Where the indexes are, and where this session's own references are written; `None` for a
-    /// host whose records reach it from one workspace, which brings none of another here. A page
-    /// is such a host.
-    #[cfg(target_os = "linux")]
-    root: Option<PathBuf>,
-    /// The store the records are in, noting every write of one in the change stream: the session's
-    /// one store for the workspaces' records, read by the activity and the person's mentions.
+    /// The session's own store, where the activity and the mentions keep what this device saw.
     store: Store,
-    /// The one stream of record changes this device's store feeds: what this session writes, and
-    /// what the apps of the workspaces write in their own processes.
-    changes: crate::platform::records::Changes,
-    /// The watch telling the change stream what the apps of the workspaces write from their own
-    /// processes; dropping it stops the news.
-    #[cfg(target_os = "linux")]
-    _followed: Option<tilo_files::native::ChangeWatch>,
+    /// The one stream of record changes of this device.
+    changes: Changes,
     /// The indexes as last read, read again whenever the change stream says a record of this
-    /// device moved: the one watcher there is.
-    reading: Reading<Vec<Held>>,
+    /// device moved: nothing until the records are read from where they are held.
+    reading: RefCell<Option<Reading<Vec<Held>>>>,
+    /// Where a record is named in a workspace when it is brought here; `None` for a host whose
+    /// records reach it from one workspace, which brings none of another here. A page is such a
+    /// host.
+    #[cfg(target_os = "linux")]
+    bring: RefCell<Option<Bring>>,
     /// The name the shell gives each workspace, as of its last frame: a record held elsewhere is
     /// offered under the name of the workspace that holds it, and a workspace id alone names
     /// nothing a person knows.
@@ -85,21 +79,12 @@ pub struct Records {
 }
 
 impl Records {
-    /// The records this device keeps, in the store rooted at `root`: the same documents the apps
-    /// of its workspaces write, read now and followed from then on, in this process or theirs.
+    /// The session's own store at `root`: the records the workspaces hold are read once the
+    /// session holds them ([`Self::read_from`]).
     #[cfg(target_os = "linux")]
     #[must_use]
     pub fn of(root: PathBuf) -> Self {
-        let changes = crate::platform::records::Changes::default();
-        let plain: Store = Arc::new(app_state::FsStore::new(&root));
-        let store = crate::platform::records::noting(plain, changes.clone());
-        Self {
-            _followed: crate::platform::records::follow(&root, &store, &changes),
-            root: Some(root),
-            // The session's index of what apps hold answers for their content
-            // ([`crate::resource_index`]): the records are offered by name.
-            ..Self::read(store, changes, false)
-        }
+        Self::new(app_state::shared_store(root), Changes::default())
     }
 
     /// The records of the workspace whose records `store` keeps as they reach this host, read
@@ -114,36 +99,57 @@ impl Records {
     /// reading it would open every document the page holds each time one of them changed: the
     /// rows are offered by name from the workspace's indexes instead.
     #[must_use]
-    pub fn over(store: Store, changes: crate::platform::records::Changes, contents: bool) -> Self {
-        Self::read(store, changes, contents)
+    pub fn over(store: Store, changes: Changes, contents: bool) -> Self {
+        let records = Self::new(Store::clone(&store), changes.clone());
+        let kept = crate::platform::records::Kept::over(Store::clone(&store), changes);
+        #[cfg(target_os = "linux")]
+        let source: Source = Arc::new(kept);
+        #[cfg(not(target_os = "linux"))]
+        let source: Source = std::rc::Rc::new(kept);
+        *records.reading.borrow_mut() =
+            Some(reading(source, &records.changes, contents.then_some(store)));
+        records
     }
 
-    fn read(store: Store, changes: crate::platform::records::Changes, contents: bool) -> Self {
-        // What the indexes name is read again whenever a record of this device moves: an app of a
-        // workspace naming one writes the store this stream hears, in this process or its own, and
-        // so does this session.
-        let reading = reading(store.clone(), &changes, contents);
+    fn new(store: Store, changes: Changes) -> Self {
         Self {
-            #[cfg(target_os = "linux")]
-            root: None,
             store,
             changes,
+            reading: RefCell::default(),
             #[cfg(target_os = "linux")]
-            _followed: None,
-            reading,
+            bring: RefCell::default(),
             names: RefCell::default(),
         }
     }
 
-    /// The store the workspaces' records are kept in, as this session reads them.
+    /// Read the workspaces' records from `engine` , where they are held, from now on, as the change
+    /// stream says they move, and name a
+    /// record brought here through the session's copies of them (`named` ) as `person` . The
+    /// session's index of what apps hold answers for their content ([`crate::resource_index`]):
+    /// the records are offered by name.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn read_from(
+        &self,
+        engine: &Arc<crate::engine::Engine>,
+        named: crate::engine_records::EngineRecords,
+        person: String,
+    ) {
+        let held = crate::platform::records::Held::over(Arc::clone(engine), self.changes.clone());
+        *self.reading.borrow_mut() = Some(reading(Arc::new(held), &self.changes, None));
+        *self.bring.borrow_mut() = Some(Box::new(move |workspace, package, record| {
+            named.reference(workspace, package, record, &person)
+        }));
+    }
+
+    /// The session's own store.
     #[must_use]
     pub fn store(&self) -> Store {
         Store::clone(&self.store)
     }
 
-    /// The one stream of record changes this device's store feeds.
+    /// The one stream of record changes of this device.
     #[must_use]
-    pub fn changes(&self) -> crate::platform::records::Changes {
+    pub fn changes(&self) -> Changes {
         self.changes.clone()
     }
 
@@ -192,26 +198,12 @@ impl Records {
     }
 
     /// Name `record` in the workspace `workspace` , in the index of `package` : the reference it
-    /// holds from then on, and the whole of what bringing a record here does. Written away from the
-    /// loop, through the one store the records are in, whose write notes the change in the stream
-    /// the activity and the mentions follow. Whether this host brings records here at all.
-    pub fn bring_here(&self, workspace: &str, package: &str, record: DocumentCheckout) -> bool {
+    /// holds from then on, and the whole of what bringing a record here does, written into the
+    /// workspace as its app's windows write it. Whether this host brings records here at all.
+    pub fn bring_here(&self, workspace: &str, package: &str, record: &DocumentCheckout) -> bool {
         #[cfg(target_os = "linux")]
-        if let Some(root) = self.root.clone() {
-            let (workspace, package) = (workspace.to_owned(), package.to_owned());
-            let changes = self.changes.clone();
-            let (keeping, held) = (workspace.clone(), package.clone());
-            let named = std::thread::Builder::new()
-                .name("tilo-search-bring".into())
-                .spawn(move || {
-                    if name_in(&root, &workspace, &package, record) {
-                        changes.note(&keeping, &held, "", false);
-                    }
-                });
-            if let Err(error) = named {
-                tracing::warn!(%error, "a record is not brought here");
-            }
-            return true;
+        if let Some(bring) = self.bring.borrow().as_ref() {
+            return bring(workspace, package, record);
         }
         let _ = (workspace, package, record);
         false
@@ -219,50 +211,32 @@ impl Records {
 
     /// The indexes as last read.
     fn latest(&self) -> Arc<Vec<Held>> {
-        self.reading.following(&self.changes, &Watch::Any)
+        self.reading
+            .borrow()
+            .as_ref()
+            .map_or_else(Arc::default, |reading| {
+                reading.following(&self.changes, &Watch::Any)
+            })
     }
 }
 
-/// Name `record` in the index of `package` in `workspace` , as its app would. Whether it is named.
+/// The indexes `source` holds, read now and again whenever the records of this device move; with
+/// what each record holds as its app tells search where `contents` is the store they are kept in.
 #[cfg(target_os = "linux")]
-fn name_in(root: &Path, workspace: &str, package: &str, record: DocumentCheckout) -> bool {
-    let DocumentCheckout { id, kind, .. } = record;
-    let store: std::rc::Rc<dyn DurableStore> =
-        std::rc::Rc::new(app_state::FsStore::new(root.to_path_buf()));
-    let key = durable_store::StorageKey::workspace_index(package, workspace);
-    let mut index = match app_state::DocStore::shared(store, key) {
-        Ok(index) => index,
-        Err(error) => {
-            tracing::warn!(%error, package, %workspace, "a record is not brought here");
-            return false;
-        }
-    };
-    let mut doc = index.load_or_new();
-    if !ui::resource::index::reference(&mut doc, &id, &kind) {
-        return true;
-    }
-    match index.append(&mut doc) {
-        Ok(_) => true,
-        Err(error) => {
-            tracing::warn!(%error, package, %workspace, "a record's reference is not kept");
-            false
-        }
-    }
-}
-
-/// The indexes in `store` , read now and again whenever the records of this device move.
-#[cfg(target_os = "linux")]
-fn reading(
-    store: Store,
-    changes: &crate::platform::records::Changes,
-    contents: bool,
-) -> Reading<Vec<Held>> {
+fn reading(source: Source, changes: &Changes, contents: Option<Store>) -> Reading<Vec<Held>> {
     let read = Contents::default();
     Reading::start(
         "tilo-search-records",
         changes.clone(),
         Watch::Any,
-        move || read_indexes(store.as_ref(), contents.then_some(&read)),
+        move || {
+            read_indexes(
+                source.as_ref(),
+                contents
+                    .as_ref()
+                    .map(|store| (store.as_ref() as &dyn DurableStore, &read)),
+            )
+        },
         || {},
     )
 }
@@ -270,14 +244,15 @@ fn reading(
 /// [`reading`] where this host has one thread: read when search asks, if the stream says they
 /// moved since.
 #[cfg(not(target_os = "linux"))]
-fn reading(
-    store: Store,
-    changes: &crate::platform::records::Changes,
-    contents: bool,
-) -> Reading<Vec<Held>> {
+fn reading(source: Source, changes: &Changes, contents: Option<Store>) -> Reading<Vec<Held>> {
     let read = Contents::default();
     Reading::read(changes, &Watch::Any, move || {
-        read_indexes(store.as_ref(), contents.then_some(&read))
+        read_indexes(
+            source.as_ref(),
+            contents
+                .as_ref()
+                .map(|store| (store.as_ref() as &dyn DurableStore, &read)),
+        )
     })
 }
 
@@ -295,44 +270,27 @@ type ReadContents = (
 /// How the storage key of a part of a chain starts ([`ui::resource::DocumentId::part`]).
 const CHAIN_PART: &str = "derived_part.";
 
-/// Every record the indexes in `store` name, by id, with the workspaces that name it, and with
-/// what each holds as its app tells search where `contents` keeps it. A record two workspaces
-/// hold is one entry here: it is one record.
-fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<Held> {
-    let indexes = match store.workspace_indexes() {
-        Ok(indexes) => indexes,
-        Err(error) => {
-            tracing::warn!(%error, "the workspace indexes of this device are not listed");
-            return Vec::new();
-        }
-    };
+/// Every record the indexes `source` holds name, by id, with the workspaces that name it, and
+/// with what each holds as its app tells search where `contents` keeps it. A record two
+/// workspaces hold is one entry here: it is one record.
+fn read_indexes(
+    source: &dyn crate::platform::records::Records,
+    contents: Option<(&dyn DurableStore, &Contents)>,
+) -> Vec<Held> {
     let mut held: BTreeMap<String, Held> = BTreeMap::new();
     let primary = ui::resource::DocumentId::package_primary();
-    for (package, workspace) in indexes {
-        // The app's own record in the workspace (Notes' notebook, Tasks' tracker) is the document
-        // that keeps the index, which names the other records and not itself: what it holds is
-        // found as theirs is, where this host reads what records hold.
-        if contents.is_some() {
-            held.insert(
-                format!("{package}\u{1f}{workspace}"),
-                Held {
-                    id: primary.as_str().to_owned(),
-                    kind: String::new(),
-                    name: None,
-                    package: package.clone(),
-                    workspaces: vec![workspace.clone()],
-                    contents: Arc::from([]),
-                    part: None,
-                },
-            );
-            // The parts of the chains the app keeps beside its own record (Notes' notes,
-            // Tasks' issues) are named by no index: what they hold is found as the app's own.
-            for stored in store.documents(&package, &workspace).unwrap_or_default() {
-                if !stored.starts_with(CHAIN_PART) {
-                    continue;
-                }
+    for workspace in source.workspaces() {
+        for (package, route) in source.held(&workspace) {
+            // The app's own record of the workspace is the document that keeps its index.
+            if !route.is_empty() {
+                continue;
+            }
+            // The app's own record in the workspace (Notes' notebook, Tasks' tracker) names the
+            // other records and not itself: what it holds is found as theirs is, where this host
+            // reads what records hold.
+            if let Some((store, _)) = contents {
                 held.insert(
-                    format!("{package}\u{1f}{workspace}\u{1f}{stored}"),
+                    format!("{package}\u{1f}{workspace}"),
                     Held {
                         id: primary.as_str().to_owned(),
                         kind: String::new(),
@@ -340,35 +298,55 @@ fn read_indexes(store: &dyn DurableStore, contents: Option<&Contents>) -> Vec<He
                         package: package.clone(),
                         workspaces: vec![workspace.clone()],
                         contents: Arc::from([]),
-                        part: Some(stored),
+                        part: None,
                     },
                 );
+                // The parts of the chains the app keeps beside its own record (Notes' notes,
+                // Tasks' issues) are named by no index: what they hold is found as the app's own.
+                for stored in store.documents(&package, &workspace).unwrap_or_default() {
+                    if !stored.starts_with(CHAIN_PART) {
+                        continue;
+                    }
+                    held.insert(
+                        format!("{package}\u{1f}{workspace}\u{1f}{stored}"),
+                        Held {
+                            id: primary.as_str().to_owned(),
+                            kind: String::new(),
+                            name: None,
+                            package: package.clone(),
+                            workspaces: vec![workspace.clone()],
+                            contents: Arc::from([]),
+                            part: Some(stored),
+                        },
+                    );
+                }
             }
-        }
-        for (record, name) in crate::platform::records::named_checkouts(store, &package, &workspace)
-            .unwrap_or_default()
-        {
-            let entry = held
-                .entry(record.id.as_str().to_owned())
-                .or_insert_with(|| Held {
-                    id: record.id.as_str().to_owned(),
-                    kind: record.kind.as_str().to_owned(),
-                    name: None,
-                    package: package.clone(),
-                    workspaces: Vec::new(),
-                    contents: Arc::from([]),
-                    part: None,
-                });
-            if entry.name.is_none() {
-                entry.name = name;
-            }
-            if !entry.workspaces.contains(&workspace) {
-                entry.workspaces.push(workspace.clone());
+            let Some(index) = source.document(&package, &workspace, "") else {
+                continue;
+            };
+            for record in ui::resource::index::discoverable_references(&index) {
+                let entry = held
+                    .entry(record.id.as_str().to_owned())
+                    .or_insert_with(|| Held {
+                        id: record.id.as_str().to_owned(),
+                        kind: record.kind.as_str().to_owned(),
+                        name: None,
+                        package: package.clone(),
+                        workspaces: Vec::new(),
+                        contents: Arc::from([]),
+                        part: None,
+                    });
+                if entry.name.is_none() {
+                    entry.name = ui::resource::index::name_of(&index, &record.id);
+                }
+                if !entry.workspaces.contains(&workspace) {
+                    entry.workspaces.push(workspace.clone());
+                }
             }
         }
     }
     let mut held: Vec<Held> = held.into_values().collect();
-    if let Some(contents) = contents {
+    if let Some((store, contents)) = contents {
         let mut kept = contents
             .0
             .lock()
@@ -416,95 +394,211 @@ fn resource_document(store: &dyn DurableStore, record: &Held) -> Option<automerg
     crate::platform::records::document(store, &record.package, workspace, &route)
 }
 
+/// This device as search's tests start from it: an engine holding workspaces, and the session's
+/// copies of their records, through which a test writes an app's index as its windows do.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use automerge::AutoCommit;
-    use durable_store::{StorageKey, WriteOp};
+#[cfg(target_os = "linux")]
+pub(crate) mod testing {
+    use std::sync::Arc;
+
+    use ed25519_dalek::SigningKey;
+    use ui::permissions::MemberId;
     use ui::resource::{DocumentId, ResourceType};
 
+    use crate::engine::Engine;
+    use crate::engine_records::EngineRecords;
+    use crate::platform::records::{Changes, Held, Records as _};
+
+    /// Who writes the indexes and brings the records here.
+    const PERSON: &str = "ada";
+    /// The kind of every app's own record in these tests: the record that keeps its index.
+    const OWN: &str = "notes.notebook";
+
+    pub(crate) struct Device {
+        engine: Arc<Engine>,
+        records: EngineRecords,
+        changes: Changes,
+        /// Search's records of this device, until a test takes them.
+        found: std::cell::RefCell<Option<super::Records>>,
+        _state: tempfile::TempDir,
+    }
+
+    impl Device {
+        /// A device holding each of `workspaces` , with their keys.
+        pub(crate) fn holding(workspaces: &[&str]) -> Self {
+            let state = tempfile::tempdir().expect("a state directory");
+            let root = SigningKey::from_bytes(&[0x30; 32]);
+            let key = SigningKey::from_bytes(&[0x31; 32]);
+            let cert = tilo_peer_state::owner::testing::certificate(&root, &key, "Laptop");
+            let engine = Arc::new(
+                Engine::open(
+                    tilo_identity::identity_store::DeviceIdentity::kept(cert.clone(), key.clone()),
+                    Some(state.path()),
+                    std::iter::empty(),
+                    crate::platform::membership_check::of_this_session(),
+                )
+                .expect("this device's engine opens"),
+            );
+            for workspace in workspaces {
+                let id = tilo_desktop_model::WorkspaceId::parse(workspace).expect("a workspace");
+                tilo_peer_state::owner::testing::enroll_interactive_governor_in(
+                    engine.owner(),
+                    &key,
+                    &cert,
+                    workspace,
+                )
+                .expect("the workspace is held here");
+                engine.bind(id);
+                let keys = key_group::KeyGroup::create(
+                    id,
+                    key_group::MemberKey::generate("owner").expect("a member key"),
+                )
+                .expect("the workspace's group")
+                .content_keys()
+                .expect("the workspace's keys");
+                engine.hand_keys(id, keys);
+            }
+            let found = super::Records::of(state.path().join("data"));
+            let changes = found.changes();
+            let records = EngineRecords::new(Arc::new(|| {}));
+            records.attach(Arc::clone(&engine), &changes, None);
+            found.read_from(&engine, records.clone(), PERSON.to_owned());
+            Self {
+                engine,
+                records,
+                changes,
+                found: std::cell::RefCell::new(Some(found)),
+                _state: state,
+            }
+        }
+
+        /// Search's records of this device, read where the workspaces hold them, bringing a record
+        /// here through the session's copies, as the session reads and brings them. Taken once.
+        pub(crate) fn search(&self) -> super::Records {
+            self.found
+                .borrow_mut()
+                .take()
+                .expect("search's records, taken once")
+        }
+
+        /// `app`'s index of `workspace` names `rows` (id, kind, name) and nothing else, written as
+        /// its windows write it and taken by the workspace.
+        pub(crate) fn name(&self, app: &str, workspace: &str, rows: &[(&str, &str, Option<&str>)]) {
+            let index = self
+                .records
+                .in_workspace(workspace, MemberId::person(PERSON.to_owned()))
+                .open_primary(app, OWN, &|_| Ok(()))
+                .expect("the app's own record");
+            index
+                .edit(false, |doc| {
+                    for held in ui::resource::index::references(doc) {
+                        ui::resource::index::unreference(doc, &held.id);
+                    }
+                    for (id, kind, name) in rows {
+                        let id = DocumentId::parse(id).expect("a record id");
+                        ui::resource::index::reference(doc, &id, &ResourceType::new(*kind));
+                        ui::resource::index::set_name(doc, &id, *name);
+                    }
+                    Ok(())
+                })
+                .expect("the index is written");
+            index.flush();
+            let mut named: Vec<String> = rows.iter().map(|row| row.0.to_owned()).collect();
+            named.sort();
+            let started = std::time::Instant::now();
+            while self.names(app, workspace) != named {
+                assert!(
+                    started.elapsed() < tilo_test_env::hang_bound(),
+                    "the workspace's index names {:?}, not {named:?}; the session's copy names {:?}",
+                    self.names(app, workspace),
+                    index.read(ui::resource::index::references),
+                );
+                self.records.replicate();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+
+        /// The records `app`'s index of `workspace` names, as the workspace holds it.
+        pub(crate) fn names(&self, app: &str, workspace: &str) -> Vec<String> {
+            let held = Held::over(Arc::clone(&self.engine), self.changes.clone());
+            let mut named: Vec<String> = held
+                .document(app, workspace, "")
+                .map(|index| ui::resource::index::references(&index))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|checkout| checkout.id.as_str().to_owned())
+                .collect();
+            named.sort();
+            named
+        }
+
+        /// Replicate the session's copies until `done`.
+        pub(crate) fn until(&self, done: impl Fn() -> bool) {
+            let started = std::time::Instant::now();
+            while !done() {
+                assert!(
+                    started.elapsed() < tilo_test_env::hang_bound(),
+                    "the workspace never took what the session wrote"
+                );
+                self.records.replicate();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod tests {
+    use super::testing::Device;
+    use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
+
     const NOTES: &str = ui::apps::NOTES;
-    const WORKSPACE: &str = "6d1c1f36-0000-4000-8000-000000000001";
+    const KITCHEN: &str = "6d1c1f36-0000-4000-8000-000000000001";
+    const STUDIO: &str = "6d1c1f36-0000-4000-8000-000000000002";
     const NOTE: &str = "tab:00000000000000a1";
 
-    /// A record an app names in its workspace index and writes is one search offers: the list
-    /// follows the change stream every write of the records lands in, not a directory of its own.
+    /// A record one workspace's app names is found from another workspace under the name of the
+    /// workspace holding it, and brought here is named in this workspace's index: what the app's
+    /// windows here read as the records the workspace holds.
     #[test]
-    fn a_record_an_app_writes_through_the_store_is_one_search_finds() {
-        let dir = tempfile::tempdir().expect("a store");
-        let records = Records::of(dir.path().to_path_buf());
-        let store = records.store();
-        assert!(
-            records.held(WORKSPACE).is_empty(),
-            "the list starts as the store holds it"
-        );
+    fn a_record_of_another_workspace_is_found_and_brought_here() {
+        let device = Device::holding(&[KITCHEN, STUDIO]);
+        device.name(NOTES, KITCHEN, &[(NOTE, "document", Some("Groceries"))]);
+        let records = device.search();
+        records.set_workspaces(vec![
+            (KITCHEN.to_owned(), "Kitchen".to_owned()),
+            (STUDIO.to_owned(), "Studio".to_owned()),
+        ]);
 
-        // The app names its record in the workspace's index, and writes the record.
-        let (id, kind) = (
-            DocumentId::parse(NOTE).expect("a record id"),
-            ResourceType::new("notes.notebook"),
-        );
-        let mut index = AutoCommit::new();
-        assert!(ui::resource::index::reference(&mut index, &id, &kind));
-        assert!(ui::resource::index::set_name(
-            &mut index,
-            &id,
-            Some("Groceries")
-        ));
-        index.commit();
-        write(
-            &store,
-            &StorageKey::workspace_index(NOTES, WORKSPACE),
-            &mut index,
-        );
-        let mut note = AutoCommit::new();
-        ui::resource::init(&mut note, &id, &kind, WORKSPACE);
-        write(
-            &store,
-            &StorageKey::document(NOTES, WORKSPACE, id.storage_key()),
-            &mut note,
-        );
-
-        // The list is read again on its worker, off the change the writes made: search finds the
-        // record by the name its index gave it.
-        let found = wait_for(&records, |records| !records.held(WORKSPACE).is_empty());
-        let row = found.first().expect("search offers the record");
-        assert_eq!(row.id, NOTE, "{found:?}");
-        assert_eq!(row.kind, "notes.notebook");
-        assert_eq!(row.package, NOTES);
+        // Search reads the indexes again once the session's write is noted as taken.
+        device.until(|| records.holds(NOTE));
+        let found = records.held(STUDIO);
+        let row = found
+            .iter()
+            .find(|row| row.id == NOTE)
+            .unwrap_or_else(|| panic!("search offers the note: {found:?}"));
         assert_eq!(
             row.name.as_deref(),
             Some("Groceries"),
             "named as its index names it"
         );
-        assert!(row.here, "the workspace in front holds it: {found:?}");
-    }
+        assert_eq!(row.package, NOTES);
+        assert!(!row.here, "the workspace in front does not hold it yet");
+        assert_eq!(row.workspace.as_deref(), Some("Kitchen"), "{row:?}");
 
-    /// The list `read` answers once it shows what the test waits for, or what it last showed.
-    fn wait_for(
-        records: &Records,
-        done: impl Fn(&Records) -> bool,
-    ) -> Vec<tilo_desktop_search::providers::records::HeldDocument> {
-        let until = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_secs(2))
-            .expect("the wait's bound fits in an Instant");
-        loop {
-            let held = records.held(WORKSPACE);
-            if done(records) || std::time::Instant::now() > until {
-                return held;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    }
-
-    /// Write `doc` at `key` through `store`, as an app of the workspace does.
-    fn write(store: &Store, key: &StorageKey, doc: &mut AutoCommit) {
-        let lease = store.lease(key).expect("the key is this test's");
-        let bytes = doc.save();
-        store
-            .write(key, WriteOp::Replace(bytes), None)
-            .expect("the document is written");
-        store.flush(Some(key)).expect("the document is kept");
-        drop(lease);
+        let note = DocumentCheckout::new(
+            DocumentId::parse(NOTE).expect("a record id"),
+            ResourceType::new("document"),
+        );
+        assert!(records.bring_here(STUDIO, NOTES, &note));
+        device.until(|| device.names(NOTES, STUDIO) == [NOTE]);
+        // The write the workspace took is news to search, which reads the indexes again.
+        device.until(|| {
+            records
+                .held(STUDIO)
+                .iter()
+                .any(|row| row.id == NOTE && row.here)
+        });
     }
 }

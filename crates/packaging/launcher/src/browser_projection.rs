@@ -9,9 +9,9 @@ use std::path::{Component, Path};
 use browser_continuity::{MAX_PLAN_BYTES, PLAN_FILE, PROFILES_DIRECTORY, Plan};
 
 use crate::manifest::ManifestView;
-use crate::run::{LaunchMode, RunError, RunOptions};
+use crate::run::{LaunchError, LaunchMode, LaunchOptions};
 
-pub(crate) fn eligible(manifest: &ManifestView, options: &RunOptions) -> bool {
+pub(crate) fn eligible(manifest: &ManifestView, options: &LaunchOptions) -> bool {
     manifest.package_id == "so.tilo.browser"
         && matches!(options.mode, LaunchMode::Gui)
         && options.browser_continuity_host_path.is_some()
@@ -216,8 +216,8 @@ fn materialize(path: &Path, home: &Path) -> io::Result<tempfile::TempDir> {
 pub(crate) fn splice(
     argv: &mut Vec<String>,
     manifest: &ManifestView,
-    options: &RunOptions,
-) -> Result<Option<tempfile::TempDir>, RunError> {
+    options: &LaunchOptions,
+) -> Result<Option<tempfile::TempDir>, LaunchError> {
     if !eligible(manifest, options) {
         return Ok(None);
     }

@@ -162,10 +162,9 @@ pub(crate) struct ToolbarRow {
     compact: bool,
     strip: strip::NoticeStrip,
     reactions: reactions::RowReactions,
-    /// The window can be carried by its bar (it stands on a canvas): a press
-    /// on the location acts when it ends, so a press that becomes a carry
-    /// never starts an edit or goes somewhere ([`Self::cancel_press`]).
-    carriable: bool,
+    /// The location was pressed while the bar lifts the window: it acts when
+    /// it ends, so a press that becomes a carry never starts an edit or goes
+    /// somewhere ([`Self::cancel_press`]).
     location_press: Option<Point>,
     labels: Vec<crate::window_toolbar::BarLabel>,
 }
@@ -210,7 +209,6 @@ impl ToolbarRow {
             compact: false,
             strip: strip::NoticeStrip::default(),
             reactions: reactions::RowReactions::default(),
-            carriable: false,
             location_press: None,
             labels: Vec::new(),
         }
@@ -218,13 +216,6 @@ impl ToolbarRow {
 
     pub(crate) fn painted_labels(&self) -> &[crate::window_toolbar::BarLabel] {
         &self.labels
-    }
-
-    pub(crate) fn set_carriable(&mut self, carriable: bool) {
-        self.carriable = carriable;
-        if !carriable {
-            self.location_press = None;
-        }
     }
 
     pub(crate) fn cancel_press(&mut self) {
@@ -1523,13 +1514,15 @@ impl ToolbarRow {
         }
     }
 
-    pub(crate) fn press(&mut self, p: Point) -> bool {
+    /// A press on the row: `lifts` whether the bar lifts the window, so a press on the location
+    /// acts when it ends rather than starting an edit ([`TabBar::lifts_the_window`]).
+    pub(crate) fn press(&mut self, p: Point, lifts: bool) -> bool {
         let part = self.hit_part(p);
         if self.field.is_some() && part != Some(Part::Location) {
             self.abandon_edit();
         }
         match part {
-            Some(Part::Location) if self.field.is_none() && self.carriable => {
+            Some(Part::Location) if self.field.is_none() && lifts => {
                 self.pressed = Some(Part::Location);
                 self.location_press = Some(p);
                 true

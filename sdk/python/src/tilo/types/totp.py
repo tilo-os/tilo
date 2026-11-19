@@ -55,7 +55,7 @@ DeleteArgs = TypedDict("DeleteArgs", {
 
 class Vault(Resource):
     """Authenticator — `totp.vault`."""
-    __surface__ = "so.tilo.totp@78ecd43e7f72fa75"
+    __surface__ = "so.tilo.totp@1beb8a5e2e56189e"
     accounts: list[Entry[StoredAccount]]
 
     def move_up(self, *, account: str) -> None:
@@ -86,20 +86,8 @@ class Vault(Resource):
         """Runs the app's action."""
         return self.action("add-account")
 
-    def open_account(self, *, account: str) -> None:
-        """Runs the app's action."""
-        return self.action("open-account", account=account)
-
-    def copy_code(self, *, account: str) -> None:
-        """Runs the app's action."""
-        return self.action("copy-code", account=account)
-
-    def set_up_local(self, *, account: str) -> None:
-        """Runs the app's action."""
-        return self.action("set-up-local", account=account)
-
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"move_up", "move_up_many", "move_down", "move_down_many", "delete", "delete_many", "add_account", "open_account", "copy_code", "set_up_local"})
+    __actions__ = frozenset({"move_up", "move_up_many", "move_down", "move_down_many", "delete", "delete_many", "add_account"})
 
 

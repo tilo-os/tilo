@@ -50,13 +50,71 @@ def content_issues(data):
     return ["non-LF line endings"] if b"\r" in data else []
 
 
+def staged_entries(root):
+    """The index entries this commit changes against HEAD, with their modes.
+
+    A file the commit leaves as HEAD has it was judged by the commit that added
+    it, and the whole tree is judged by the policy suite and by CI on every
+    pushed head. Reading only the change is what keeps the hook's cost with the
+    size of the commit instead of the size of the tree.
+    """
+    output = git(root, "diff", "--cached", "--raw", "-z", "--no-abbrev", "--diff-filter=ACMR")
+    fields = output.split(b"\0")
+    entries = []
+    index = 0
+    while index < len(fields):
+        header = fields[index]
+        index += 1
+        if not header.startswith(b":"):
+            continue
+        parts = header[1:].split()
+        if len(parts) != 5:
+            continue
+        _old_mode, new_mode, _old_oid, new_oid, status = (part.decode() for part in parts)
+        if status[:1] in ("R", "C"):
+            # A rename or copy names its source first; the entry is the destination.
+            index += 1
+        if index >= len(fields):
+            break
+        entries.append((new_oid, fields[index].decode(), new_mode))
+        index += 1
+    return entries
+
+
+def inherited_ids(root, parents, path):
+    """The blob ids ``parents`` hold for ``path``: a merge inherits its assets.
+
+    Only an exact parent blob is inherited, so editing an exception cannot
+    admit new bytes.
+    """
+    found = set()
+    for parent in parents:
+        try:
+            found.add(git(root, "rev-parse", "--verify", "--quiet", f"{parent}:{path}").decode().strip())
+        except subprocess.CalledProcessError:
+            continue
+    return found
+
+
 def audit(root, staged=False):
     if staged:
-        records = git(root, "ls-files", "--stage", "-z").split(b"\0")
+        entries = []
+        for oid, path, mode in staged_entries(root):
+            if mode == "160000":
+                raise ValueError("uninspected submodule: " + path)
+            entries.append((oid, path))
         manifest = git(root, "show", ":" + EXCEPTIONS)
     else:
         tree = committed_tree(root)
-        records = git(root, "ls-tree", "-r", "-z", tree).split(b"\0")
+        entries = []
+        for entry in git(root, "ls-tree", "-r", "-z", tree).split(b"\0"):
+            if not entry:
+                continue
+            metadata, path = entry.split(b"\t", 1)
+            mode, _kind, oid = metadata.decode().split()
+            if mode == "160000":
+                raise ValueError("uninspected submodule: " + path.decode())
+            entries.append((oid, path.decode()))
         manifest = git(root, "show", tree + ":" + EXCEPTIONS)
     exceptions = json.loads(manifest)
     allowed = {}
@@ -65,18 +123,7 @@ def audit(root, staged=False):
         if key in allowed or not entry["reason"].strip():
             raise ValueError("duplicate or unexplained asset exception: " + key)
         allowed[key] = entry["oid"]
-    entries = []
-    for record in records:
-        if not record:
-            continue
-        metadata, path = record.split(b"\t", 1)
-        mode, second, third = metadata.decode().split()
-        if staged and third != "0":
-            raise ValueError("unmerged index entry: " + path.decode())
-        if mode == "160000":
-            raise ValueError("uninspected submodule: " + path.decode())
-        entries.append((second if staged else third, path.decode()))
-    previous = {}
+    parents = []
     if staged:
         head = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", "HEAD"], capture_output=True)
         if head.returncode not in (0, 1):
@@ -92,11 +139,6 @@ def audit(root, staged=False):
             parents.extend(merge_path.read_text().splitlines())
         except FileNotFoundError:
             pass
-        for parent in parents:
-            for record in git(root, "ls-tree", "-r", "-z", parent).split(b"\0"):
-                if record:
-                    metadata, path = record.split(b"\t", 1)
-                    previous.setdefault(path.decode(), set()).add(metadata.decode().split()[2])
     failures = []
     with subprocess.Popen(
         ["git", "-C", str(root), "cat-file", "--batch"],
@@ -121,7 +163,7 @@ def audit(root, staged=False):
                 if len(data) != size or process.stdout.read(1) != b"\n":
                     raise ValueError("incomplete blob: " + path)
                 issues = content_issues(data)
-                changed_exception = staged and issues and oid not in previous.get(path, set())
+                changed_exception = staged and issues and oid not in inherited_ids(root, parents, path)
                 if issues and (allowed.get(path) != oid or changed_exception):
                     failures.append(path + ": " + ", ".join(issues) + ("; new/modified non-text or non-LF blobs are forbidden" if changed_exception else ""))
         process.stdin.close()

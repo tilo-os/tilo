@@ -101,7 +101,8 @@ pub struct Interface {
     pub addressing: String,
     /// Its addresses as `address/prefix`, comma separated; empty for DHCP.
     pub addresses: String,
-    /// Its gateway; empty for none.
+    /// Its default gateways, at most one for each address family, comma
+    /// separated; empty for none.
     pub gateway: String,
     /// Its DNS servers, comma separated; empty for none.
     pub dns: String,
@@ -254,19 +255,7 @@ pub(crate) fn valid_interface(
             "a dhcp interface takes no addresses of its own",
         ));
     }
-    if !gateway.is_empty() {
-        let gateway_address = gateway
-            .parse::<IpAddr>()
-            .map_err(|_| Refusal::new("a gateway is an IP address"))?;
-        if !numbers
-            .iter()
-            .any(|address| address.is_ipv4() == gateway_address.is_ipv4())
-        {
-            return Err(Refusal::new(
-                "a gateway has the family of one of the interface's addresses",
-            ));
-        }
-    }
+    let gateways = parse_gateways(&gateway, &numbers)?;
     if vlan > 0 {
         let Some((parent, _)) = name.rsplit_once('.') else {
             return Err(Refusal::new(
@@ -287,7 +276,7 @@ pub(crate) fn valid_interface(
     Ok(Interface {
         addressing: addressing.to_owned(),
         addresses,
-        gateway,
+        gateway: gateways,
         dns: dns
             .iter()
             .map(ToString::to_string)
@@ -392,6 +381,41 @@ fn parse_addresses(text: &str) -> Result<Vec<Address>, Refusal> {
     Ok(addresses)
 }
 
+/// The gateways `text` names, comma separated and normalized: an IP address
+/// each, at most one for each family, and only for a family one of the
+/// interface's `addresses` has, so a dual-stack link gets its IPv4 and its
+/// IPv6 default route at once.
+fn parse_gateways(text: &str, addresses: &[Address]) -> Result<String, Refusal> {
+    let mut gateways: Vec<IpAddr> = Vec::new();
+    for gateway in text.split(',').map(str::trim).filter(|one| !one.is_empty()) {
+        let address = gateway
+            .parse::<IpAddr>()
+            .map_err(|_| Refusal::new("a gateway is an IP address"))?;
+        if gateways
+            .iter()
+            .any(|known| known.is_ipv4() == address.is_ipv4())
+        {
+            return Err(Refusal::new(
+                "an interface has one gateway for each address family",
+            ));
+        }
+        if !addresses
+            .iter()
+            .any(|held| held.is_ipv4() == address.is_ipv4())
+        {
+            return Err(Refusal::new(
+                "a gateway has the family of one of the interface's addresses",
+            ));
+        }
+        gateways.push(address);
+    }
+    Ok(gateways
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
 fn parse_dns(text: &str) -> Result<Vec<IpAddr>, Refusal> {
     text.split(',')
         .map(str::trim)
@@ -454,7 +478,12 @@ pub fn write(entry: &Server, paths: &Paths) -> Result<Option<String>, String> {
     if std::fs::read(&paths.request).ok().as_deref() == Some(document.as_bytes()) {
         return Ok(None);
     }
-    write_atomic(&paths.request, document.as_bytes())?;
+    tilo_files::native::atomic::write_creating_parent_with_mode(
+        &paths.request,
+        document.as_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())?;
     Ok(Some(revision))
 }
 
@@ -508,7 +537,13 @@ pub async fn confirm(paths: Paths, endpoint: iroh::Endpoint, revision: String) {
         return;
     }
     let confirmation = format!("revision\t{revision}\n");
-    if let Err(error) = write_atomic(&paths.confirmed, confirmation.as_bytes()) {
+    if let Err(error) = tilo_files::native::atomic::write_creating_parent_with_mode(
+        &paths.confirmed,
+        confirmation.as_bytes(),
+        0o600,
+    )
+    .map_err(|error| error.to_string())
+    {
         tracing::warn!(%error, %revision, "the device configuration was not confirmed");
     }
 }
@@ -517,14 +552,6 @@ pub async fn confirm(paths: Paths, endpoint: iroh::Endpoint, revision: String) {
 fn names(path: &Path, revision: &str) -> bool {
     std::fs::read_to_string(path).ok().as_deref()
         == Some(format!("revision\t{revision}\n").as_str())
-}
-
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-    }
-    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
-        .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -567,6 +594,17 @@ mod tests {
         let paths = Paths::under(dir.path());
         let mut entry = server();
         entry.device.hostname = "nas".into();
+        // A link addressed in both families keeps a default route for each.
+        let dual = valid_interface(
+            "enp3s0",
+            STATIC,
+            "65.108.204.148/26,2a01:4f9:1a:a083::2/64",
+            "65.108.204.129,fe80::1",
+            "185.12.64.1,185.12.64.2",
+            "",
+        )
+        .expect("one gateway for each family");
+        entry.device.network.push(Id::from_raw("enp3s0"), dual);
         let revision = write(&entry, &paths)
             .map_err(std::io::Error::other)?
             .expect("the first write changes the request");
@@ -574,7 +612,9 @@ mod tests {
             std::fs::read_to_string(&paths.request)?,
             format!(
                 "revision|{revision}\nhostname|nas\ndisk|system|SN123|0\n\
-                 interface|enp2|static|10.0.0.5/24|10.0.0.1|1.1.1.1,9.9.9.9|bond0|0\n"
+                 interface|enp2|static|10.0.0.5/24|10.0.0.1|1.1.1.1,9.9.9.9|bond0|0\n\
+                 interface|enp3s0|static|65.108.204.148/26,2a01:4f9:1a:a083::2/64|\
+                 65.108.204.129,fe80::1|185.12.64.1,185.12.64.2||0\n"
             )
         );
         assert_eq!(revision.len(), 32);
@@ -685,6 +725,20 @@ mod tests {
             }
         );
         assert!(valid_interface("eno1", DHCP, "", "", "1.1.1.1", "").is_ok());
+        let dual_stack = valid_interface(
+            "enp3s0",
+            STATIC,
+            "65.108.204.148/26,2a01:4f9:1a:a083::2/64",
+            "65.108.204.129,fe80::1",
+            "185.12.64.1,185.12.64.2",
+            "",
+        );
+        assert_eq!(
+            dual_stack
+                .expect("one gateway for each family at once")
+                .gateway,
+            "65.108.204.129,fe80::1"
+        );
         let tagged = valid_interface("eno1.20", STATIC, "10.0.0.5/24", "", "", "");
         assert_eq!(tagged.unwrap().vlan, 20, "the name carries the VLAN");
         assert!(valid_interface("bond0", DHCP, "", "", "", "").is_ok());
@@ -696,6 +750,22 @@ mod tests {
             ("enp2", STATIC, "10.0.0.5/24", "", "", "bond0"),
             ("enp2.20", DHCP, "", "", "", "bond0"),
             ("enp2", STATIC, "10.0.0.5/24", "2001:db8::1", "", ""),
+            (
+                "enp2",
+                STATIC,
+                "10.0.0.5/24,2001:db8::5/64",
+                "10.0.0.1,10.0.0.2",
+                "",
+                "",
+            ),
+            (
+                "enp2",
+                STATIC,
+                "10.0.0.5/24,2001:db8::5/64",
+                "10.0.0.1,2001:db8::1,fe80::1",
+                "",
+                "",
+            ),
             ("enp2", STATIC, "10.0.0.5", "", "", ""),
             ("enp2", STATIC, "10.0.0.5/0", "", "", ""),
             ("enp2.4095", DHCP, "", "", "", ""),
@@ -732,7 +802,12 @@ mod tests {
     fn a_confirmation_names_the_revision() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
         let paths = Paths::under(dir.path());
-        write_atomic(&paths.applied_at, b"revision\tone\n").map_err(std::io::Error::other)?;
+        tilo_files::native::atomic::write_creating_parent_with_mode(
+            &paths.applied_at,
+            b"revision\tone\n",
+            0o600,
+        )
+        .map_err(std::io::Error::other)?;
         assert!(names(&paths.applied_at, "one"));
         assert!(!names(&paths.applied_at, "two"));
         Ok(())

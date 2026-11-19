@@ -35,6 +35,7 @@
     reason = "a rehearsal fixture: a failed step is the answer, and it says which check failed"
 )]
 
+use chat::projection::ChatProjection as _;
 use std::io::{BufRead, BufReader, Write as _};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
@@ -47,7 +48,7 @@ use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_server_protocol::workspaces::{Role, WorkspacesReply, WorkspacesRequest};
@@ -101,10 +102,10 @@ struct Lounge {
     stdin: Option<ChildStdin>,
     /// The workspace's UUID.
     workspace: String,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     /// Where the host's iroh endpoint answers: what a page's session dials,
     /// which is what `/host` publishes.
-    address: tilo_server_protocol::web::HostAddress,
+    address: tilo_server_protocol::web::ServerAddress,
     /// The snapshot's owner root: the workspace's owner, from the volume.
     owner_root: SigningKey,
     _state: tempfile::TempDir,
@@ -290,10 +291,10 @@ impl Lounge {
         let entry = Arc::new(Plain(plain.trim_end_matches('/').to_owned()));
         let info = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
-                .block_on(tilo_server_client::https::host_info(entry.as_ref()))
+                .block_on(tilo_server_client::https::server_info(entry.as_ref()))
         })
         .expect("the host's certificate");
-        let host_cert = info.host_cert;
+        let server_cert = info.server_cert;
         let address = info.address.expect("the host publishes its iroh endpoint");
         let link = address
             .web
@@ -308,7 +309,7 @@ impl Lounge {
             child,
             stdin,
             workspace,
-            host_cert,
+            server_cert,
             address,
             owner_root,
             _state: state,
@@ -388,12 +389,13 @@ impl Lounge {
     ) -> Link {
         // A page reaches its host over WebTransport, at the listener `/host`
         // names: exactly what a browser in the Lounge has.
-        let host = Host::published(&self.address).over(tilo_server_client::Carrier::WebTransport);
+        let host =
+            ServerAddress::published(&self.address).over(tilo_server_client::Carrier::WebTransport);
         tilo_session_client::start_session(
             tilo_session_client::PeerConfig {
                 host,
                 cert: who.cert.clone(),
-                host_cert: self.host_cert.clone(),
+                server_cert: self.server_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
                 entering,
             },
@@ -439,10 +441,10 @@ async fn person(name: &str) -> Person {
 async fn fresh_page(lounge: &Lounge, who: &Person, invitation: &[u8]) -> Link {
     let held = tilo_session_client::device::Held {
         cert: who.cert.clone(),
-        host_cert: Some(lounge.host_cert.clone()),
+        server_cert: Some(lounge.server_cert.clone()),
     };
     let (_, entering) = tilo_session_client::device::invitation_entry(
-        &lounge.host_cert,
+        &lounge.server_cert,
         invitation,
         &who.key,
         tilo_session_client::device::Entering {
@@ -809,7 +811,7 @@ async fn an_agents_bridge_keeps_nothing_of_a_busy_workspaces_presence() {
     let actions = tilo_session_client::device::Device::of(
         bridge.clone(),
         agent.cert.clone(),
-        lounge.host_cert.clone(),
+        lounge.server_cert.clone(),
         "Claude Code",
     )
     .actions(workspace_id);

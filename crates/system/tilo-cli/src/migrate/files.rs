@@ -391,7 +391,7 @@ pub fn land(
                     .join("\n  ")
             );
         }
-        lander.note(&format!("folder:{}", item.key))?;
+        lander.note([format!("folder:{}", item.key)])?;
     }
     let elapsed = started.elapsed();
     // The rate in whole bytes a second: a size to read, not a float's rounding of one.

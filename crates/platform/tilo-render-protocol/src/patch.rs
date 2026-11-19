@@ -120,6 +120,26 @@ impl Node {
         self.children.iter().find_map(|child| child.find(key))
     }
 
+    /// Every node of `kind` under this one (this one included), in drawing order.
+    #[must_use]
+    pub fn of_kind(&self, kind: &str) -> Vec<&Self> {
+        let mut out = Vec::new();
+        let mut at = vec![self];
+        while let Some(node) = at.pop() {
+            if node.kind == kind {
+                out.push(node);
+            }
+            at.extend(node.children.iter().rev());
+        }
+        out
+    }
+
+    /// The first node of `kind` under this one (this one included), in drawing order.
+    #[must_use]
+    pub fn first_of_kind(&self, kind: &str) -> Option<&Self> {
+        self.of_kind(kind).into_iter().next()
+    }
+
     /// How many nodes the tree holds, this one included.
     #[must_use]
     pub fn count(&self) -> usize {

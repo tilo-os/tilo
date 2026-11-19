@@ -368,7 +368,7 @@ async fn put(
         agent,
         carrier: ACTION.to_owned(),
         kept: serde_json::to_value(&action).map_err(|error| error.to_string())?,
-        always: Some(asked.asked),
+        always: asked.asked,
         words: Words {
             place,
             ..asked.words
@@ -520,9 +520,7 @@ pub(super) fn waiting_in(
                     id: agent.id.0.clone(),
                     name: agent.name.clone(),
                 },
-                asked_at_ms: u64::try_from(message.ts)
-                    .unwrap_or_default()
-                    .saturating_mul(1_000),
+                asked_at_ms: u64::try_from(message.ts).unwrap_or_default(),
                 answers,
             };
             Some((person, waiting))

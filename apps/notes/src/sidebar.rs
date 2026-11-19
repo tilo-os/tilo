@@ -419,11 +419,8 @@ impl PageList {
         let mut titles: HashMap<PageId, (String, Option<PageId>)> = HashMap::new();
         for page in workspace.pages() {
             children.entry(page.parent).or_default().push(page.id);
-            // A note nobody named reads as the word for one, so its row is never blank.
-            titles.insert(
-                page.id,
-                (crate::metadata::note_title(&page.title), page.parent),
-            );
+            // A note nobody titled reads as its first line, so its row is never blank.
+            titles.insert(page.id, (workspace.name_of(page), page.parent));
         }
         let mut list = Self {
             rows: Vec::with_capacity(titles.len()),
@@ -461,10 +458,25 @@ impl PageList {
         Some(self.row(index)?.page)
     }
 
-    /// Whether the hierarchy is `other`'s: the rows, their titles and their
+    /// Whether the rows stand as `other`'s: the same notes, in the same
     /// places.
-    fn same_shape(&self, other: &Self) -> bool {
-        self.rows == other.rows
+    fn same_notes(&self, other: &Self) -> bool {
+        self.rows.len() == other.rows.len()
+            && self
+                .rows
+                .iter()
+                .zip(&other.rows)
+                .all(|(row, next)| row.page == next.page && row.parent == next.parent)
+    }
+
+    /// The notes whose row reads differently in `other`: a renamed note.
+    fn renamed(&self, other: &Self) -> Vec<PageId> {
+        self.rows
+            .iter()
+            .zip(&other.rows)
+            .filter(|(row, next)| row.page == next.page && row.title != next.title)
+            .map(|(row, _)| row.page)
+            .collect()
     }
 
     /// The note `page` stands under; `None` for a top-level note.
@@ -602,7 +614,7 @@ impl PageSidebar {
         let depths = Rc::clone(&marks);
         let tree = VirtualList::new(
             PageList::build(&Workspace::default()),
-            ui::tokens::Metrics::BASE.row_single,
+            ui::widget::TREE_ROW_HEIGHT,
             move |model, index, page| {
                 let Some(row) = model.row(index) else {
                     return Box::new(ListRow::new(format!("note-{page}"), "")) as Element;
@@ -637,7 +649,11 @@ impl PageSidebar {
         .with_accessible_name(CATALOG.t("notes-title"))
         .with_tree(Rc::clone(&marks))
         .with_indent_guides()
+        // The page tree is its column's body, as a window's navigation list is: its rows keep
+        // the column's gutter, and the scroll bar floats over them while it is wanted.
         .filling()
+        .in_column()
+        .overlay_scrollbar()
         .selection_follows_focus()
         .rename_on_double_click()
         .tab_indents(true)
@@ -847,10 +863,19 @@ impl PageSidebar {
 
     /// Mirror the workspace into the tree. Cheap when nothing changed; a
     /// changed hierarchy rebuilds the snapshot and the list reconciles it
-    /// against the notes' stable keys.
+    /// against the notes' stable keys, while a rename reads again in the
+    /// rows that show it.
     pub fn sync_from_workspace(&mut self, workspace: &Workspace) {
         let next = PageList::build(workspace);
-        if !next.same_shape(self.tree.model()) {
+        if next.same_notes(self.tree.model()) {
+            let renamed = self.tree.model().renamed(&next);
+            if !renamed.is_empty() {
+                self.tree.update_model_changes(
+                    &[ui::widget::virtual_list::ListModelChange::RowsChanged { keys: renamed }],
+                    |model| *model = next,
+                );
+            }
+        } else {
             self.tree.update_model(|model| *model = next);
         }
         let mut reveal = None;
@@ -1428,6 +1453,24 @@ mod tests {
             tree.sync_from_workspace(&ws);
             assert!(tree.scroll_offset().abs() < f64::EPSILON);
         }
+    }
+
+    /// A note nobody titled is listed by its first line, an empty one as a new note.
+    #[test]
+    fn a_row_names_an_untitled_note_by_its_first_line() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut ws = Workspace::new();
+        let written = ws.create_page(None);
+        ws.create_page(None);
+        let line =
+            crate::actions::stored_block(ui::rich_edit::BlockContent::paragraph("", "Garden plan"));
+        std::sync::Arc::make_mut(&mut ws.bodies)
+            .insert(written, vec![std::sync::Arc::new(line)].into());
+        let mut tree = PageSidebar::new();
+        tree.sync_from_workspace(&ws);
+        place(&mut tree, Rect::new(0.0, 0.0, 240.0, 400.0), 1.0);
+        let names: Vec<&str> = (0..2).filter_map(|row| Some(tree.row(row)?.1)).collect();
+        assert_eq!(names, ["Garden plan", "New note"]);
     }
 
     #[test]

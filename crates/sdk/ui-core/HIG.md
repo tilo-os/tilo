@@ -1158,7 +1158,7 @@ tab: the floating material (blur and 72 % panel-ground tint, as menus and
 the palette) over the shell behind it. Windows never overlap, so that is
 all that is behind a strip: the session holds one wallpaper source
 (`ui::backdrop::wallpaper::Source`), which the backdrop drawing the shell
-fills and every surface standing on the shell reads, and the strip is an
+fills and every surface resting on the shell reads, and the strip is an
 ordinary image fill of the blurred picture, so it costs no blur pass per
 frame, a tab's hover damages only the tab, and a strip panned as a retained
 layer carries its frosting along until it rests. On a light palette the active tab rises
@@ -1370,7 +1370,7 @@ edge kept at full strength, so rest and disabled never look the same.
 | Toggle | off `intent.selection`, on `intent.inverted` | `edge_on(track)`; on, the knob is `on_inverted`; off, a raised white knob with a ring that clears 3:1 on a light material and `text_dim` on a dark one |
 | Slider | unfilled `intent.selection`, filled `intent.value_fill` (the accent as a mark, 3:1 on its ground, never the text colour) | `edge_on(unfilled)`; the thumb is a raised white disc on a light material, its fill setting it off the filled half and its ring off the unfilled half, and primary ink ringed in the ground on a dark one; never collapses below six knob widths |
 | Checkbox | unchecked `surfaces.raised`, checked `intent.on_state`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
-| ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.value_fill`, `radii.detail` | none |
+| ProgressBar | track `intent.value_track` (the one light neutral every bar, ring and gauge stands on), fill `intent.value_fill` at 3:1 on the track and the ground, `radii.detail`; a component's label shows over the track as a gauge's name does | none |
 | TimePicker | value cells `surfaces.raised` at `radii.control`; step arrows are `Icon::ChevronUp` / `ChevronDown`, lifted under the pointer | `edge_on(raised)`; the focused cell `border_focus` |
 | Scroll thumb | `text_tertiary` at rest (a third lighter on a light ground), `text_dim` active stepped to 3:1 on the ground; `metrics.scroll_thumb` thick, centred in its area | none; a `Scrollable` (or a painted `ScrollRegion`) keeps `metrics.scrollbar_gutter` (thumb plus `s1` each side) free on its trailing edge while its content overflows, and on its bottom edge for a horizontal bar |
 | DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |
@@ -1451,7 +1451,10 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
 - Panel width: 320 for a utility Panel (quick settings,
   `panel_width_utility`; an overlay drawer is the same width,
   `drawer_width`), 360 for a roster or list Panel (`panel_width_list`), 560
-  for a sheet with a form in it (`panel_width_sheet`).
+  for a sheet with a form in it (`panel_width_sheet`). A document's page rail
+  stands 192 wide where its container leaves it the choice
+  (`page_rail_width`), so its thumbnails read at a glance and the viewer
+  beside it keeps the rest.
 - **The window shell (`NavShell`) reads every size from the metrics**; an app
   passes none:
 

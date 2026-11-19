@@ -539,7 +539,7 @@ done
 engine_tree=$build_out/chromium-engine
 if [[ -x $engine_tree/tilo-chromium-host ]]; then
     engine_version=$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\(.*\)";$/\1/p' \
-        "$repo_root/crates/sdk/ui-core/src/webview/chromium/runtime.rs")
+        "$repo_root/crates/sdk/tilo-webview/src/chromium/runtime.rs")
     [[ -n $engine_version ]] || die "the Chromium runtime names no RUNTIME_VERSION"
     engine_key=$( { printf '%s\n' "$engine_version" "$pubkey"; find "$engine_tree" -type f -print0 \
         | sort -z | xargs -0 sha256sum; } | sha256sum | cut -c1-64)

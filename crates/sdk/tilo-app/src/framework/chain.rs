@@ -830,7 +830,23 @@ impl ChainCore {
             ));
         }
         drop(kept);
-        let mut published = route(head.head.clone(), &self.id);
+        let published = self.head_resource(&head.head);
+        if !hidden.is_empty() {
+            items.retain(|item| !hidden.contains(item.id()));
+        }
+        let items = nest(items, tree);
+        ui_core::published::SharedResource::new(
+            published,
+            ui_core::published::SharedChildren::new(items),
+        )
+    }
+
+    /// The chain's own resource as [`Self::publish`] carries it: the head
+    /// part's resource, the chain's read and its edit verbs, without the
+    /// items it holds. What a name the app's level carries is answered with,
+    /// at the head's cost and never the whole chain's.
+    fn head_resource(&self, head: &tilo_actions::ResourceSpec) -> tilo_actions::ResourceSpec {
+        let mut published = route(head.clone(), &self.id);
         published
             .actions
             .push(read_spec(self.part.label, &self.id, None));
@@ -845,14 +861,7 @@ impl ChainCore {
                 .filter(|spec| !named.contains(&spec.id))
                 .map(|spec| super::resources::route_operation(spec, CHAIN_ACTION_TYPE, &self.id)),
         );
-        if !hidden.is_empty() {
-            items.retain(|item| !hidden.contains(item.id()));
-        }
-        let items = nest(items, tree);
-        ui_core::published::SharedResource::new(
-            published,
-            ui_core::published::SharedChildren::new(items),
-        )
+        published
     }
 
     /// Answer the read the chain publishes ([`read_spec`]) from the parts this
@@ -1028,16 +1037,20 @@ impl ChainCore {
                     context,
                 )
                 .map(|envelope| {
-                    // What it minted, a group's members' together, in order.
+                    // What it minted, a group's members' together, in order, put back once the
+                    // part's items are worked out: whoever invoked the write answers what it made
+                    // from the same list.
                     let minted = tilo_resource::take_minted();
                     written(doc, &before);
-                    ui_core::bound_dispatch::minted_items(
+                    let items = ui_core::bound_dispatch::minted_items(
                         doc,
                         self.part.kind,
                         &minted,
                         &envelope,
                         &before,
-                    )
+                    );
+                    tilo_resource::restore_minted(minted);
+                    items
                 })
                 .map_err(|error| ActionError::Refused(error.to_string()));
                 // Nobody's undo step: a part's edits are kept in its
@@ -1149,14 +1162,23 @@ impl ChainCore {
         if self.workspace.store.workspace_answered(&head) {
             return false;
         }
-        // A store written at this moment cannot say which part is the newest: the head is
-        // waited for rather than taken as the workspace's word that there is none.
-        matches!(
-            self.workspace
-                .store
-                .try_open_resource(&DocumentCheckout::new(head, self.kind.clone())),
-            Err(ResourceOpenError::Arriving | ResourceOpenError::Busy)
-        )
+        match self
+            .workspace
+            .store
+            .try_open_resource(&DocumentCheckout::new(head.clone(), self.kind.clone()))
+        {
+            Err(ResourceOpenError::Arriving) => true,
+            // A store written at this moment (a chain opened in a view's sync) cannot say
+            // which part is the newest: the head is waited for rather than taken as the
+            // workspace's word that there is none, and asked for now. Opening it would have
+            // asked; without this nothing asked until a write needed it, and that write
+            // found the head still on its way.
+            Err(ResourceOpenError::Busy) => {
+                self.workspace.store.want(head);
+                true
+            }
+            _ => false,
+        }
     }
 
     fn moved(&self) {
@@ -2117,9 +2139,17 @@ impl ChainState {
         self.publish_shared().to_resource()
     }
 
-    /// [`Self::publish`] without its items: what a table of the chain's own actions reads.
+    /// [`Self::publish`] without its items: what a table of the chain's own
+    /// actions reads, and what a name the app's level carries is answered
+    /// with — the head part's resource, never a read of every part the chain
+    /// holds.
     pub(crate) fn publish_head(&self) -> tilo_actions::ResourceSpec {
-        self.publish_shared().head().clone()
+        let part = self.part();
+        let head = match self.parts().last() {
+            Some((_index, head)) => (part.publish_head)(&self.core.id, &**head),
+            None => (part.publish)(&self.core.id, &*self.empty),
+        };
+        self.core.head_resource(&head)
     }
 
     /// [`Self::publish`] as a shared tree ([`ChainCore::publish`]).

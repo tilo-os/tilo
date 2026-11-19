@@ -10,12 +10,11 @@ use vello::peniko::{Brush, Color, Fill, Gradient};
 
 use crate::paint::{PaintCtx, with_alpha};
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::{centered_text_top, text_band, type_line_height};
 
 /// Alpha (0–255) of the translucent area fill under a series line. Matches
 /// the concept's `bg-<color>/18` area treatment.
@@ -25,7 +24,6 @@ const SPARK_FILL_ALPHA: u8 = 54;
 const GRID_DIVISIONS: usize = 4;
 const LINE_WIDTH: f64 = 1.8;
 const SPARK_LINE_WIDTH: f64 = 1.5;
-const HEADER_H: f64 = 22.0;
 
 #[derive(Clone)]
 pub struct Series {
@@ -515,26 +513,26 @@ impl Chart {
             theme,
         } = ctx.reborrow();
         let tokens = &theme.tokens;
-        // The header band holds the title's line plus the smallest step, so
-        // at 2× the title no longer clips and the legend clears the top axis
-        // label; `HEADER_H` at the default text scale.
-        let header_h = if style.header {
-            text_band(
-                HEADER_H,
-                type_line_height(&tokens.typography, TextRole::Caption),
-                f64::from(tokens.spacing.s1),
-            )
+        // The title, then the series' legend under it, as every chart writes them.
+        let named: Vec<&Series> = series.iter().filter(|s| !s.legend.is_empty()).collect();
+        let header = if style.header {
+            let rows = crate::widget::chart_legend::rows(
+                named.iter().map(|s| s.legend.as_str()),
+                rect.x0,
+                rect.x1,
+            );
+            crate::widget::plot::Margins::header(theme, labels.title, rows)
         } else {
-            0.0
+            crate::widget::plot::Margins::default()
         };
-        if rect.width() <= 0.0 || rect.height() <= header_h {
+        if rect.width() <= 0.0 || rect.height() <= header.top {
             return;
         }
         let legend_style = tokens.typography.style(TextRole::Caption);
         // The axis labels sit in a gutter at the plot's trailing edge, each
         // centred on its gridline, never over a series. The plot keeps half
-        // a label line clear above its top rule (and a step under the
-        // legend) and below its bottom rule, so the labels stay whole.
+        // a label line clear above its top rule and below its bottom rule,
+        // so the labels stay whole.
         let label_w = [labels.axis_hi, labels.axis_lo]
             .into_iter()
             .filter(|label| !label.is_empty())
@@ -551,61 +549,38 @@ impl Chart {
         } else {
             0.0
         };
-        let legend_gap = if style.header {
-            f64::from(tokens.spacing.s2)
-        } else {
-            0.0
-        };
+        let top = rect.y0 + header.top + half_line;
         let plot = Rect::new(
             rect.x0,
-            rect.y0 + header_h + legend_gap + half_line,
+            top,
             (rect.x1 - gutter).max(rect.x0 + 1.0),
-            (rect.y1 - half_line).max(rect.y0 + header_h + legend_gap + half_line + 1.0),
+            (rect.y1 - half_line).max(top + 1.0),
         );
 
         if style.header {
-            // Title, legend labels and legend dots share the header band's
-            // centre line, each placed by its measured line box.
-            let title_style = tokens.typography.style(TextRole::Caption);
-            if !labels.title.is_empty() {
-                let (_, title_h) = text_renderer.measure_style(
-                    labels.title,
-                    None,
-                    &title_style.clone().with_weight(style.title_weight),
-                );
-                text_renderer.draw_style(
+            crate::widget::chart_navigation::draw_title(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                labels.title,
+            );
+            let entries = crate::widget::chart_legend::layout(
+                named.iter().map(|s| s.legend.as_str()),
+                rect.x0,
+                rect.x1,
+                rect.y0 + header.legend,
+            );
+            for (item, s) in entries.into_iter().zip(&named) {
+                crate::widget::chart_legend::paint_series(
                     scene,
-                    labels.title,
-                    tokens.colors.text_primary,
-                    transform.pre_translate(
-                        (rect.x0, centered_text_top(rect.y0, header_h, title_h)).into(),
-                    ),
-                    None,
-                    &title_style.clone().with_weight(style.title_weight),
+                    transform,
+                    text_renderer,
+                    theme,
+                    item,
+                    (&s.legend, s.color, false),
                 );
-            }
-
-            let dot_gap = f64::from(tokens.spacing.s2);
-            let entry_gap = f64::from(tokens.spacing.s3);
-            let mut lx = rect.x1;
-            for s in series.iter().rev() {
-                if s.legend.is_empty() {
-                    continue;
-                }
-                let (tw, th) = text_renderer.measure_style(&s.legend, None, &legend_style);
-                lx -= f64::from(tw);
-                text_renderer.draw_style(
-                    scene,
-                    &s.legend,
-                    tokens.colors.text_dim,
-                    transform.pre_translate((lx, centered_text_top(rect.y0, header_h, th)).into()),
-                    None,
-                    &legend_style,
-                );
-                lx -= dot_gap;
-                let dot = Circle::new(Point::new(lx, rect.y0 + header_h / 2.0), 3.0);
-                scene.fill(Fill::NonZero, transform, s.color, None, &dot);
-                lx -= entry_gap;
             }
         }
 
@@ -665,7 +640,6 @@ pub struct ChartStyle {
     pub grid_divisions: usize,
     pub grid_color: Option<Color>,
     pub header: bool,
-    pub title_weight: TextWeight,
 }
 
 impl Default for ChartStyle {
@@ -675,7 +649,6 @@ impl Default for ChartStyle {
             grid_divisions: GRID_DIVISIONS,
             grid_color: None,
             header: true,
-            title_weight: TextWeight::Regular,
         }
     }
 }

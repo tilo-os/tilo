@@ -50,6 +50,7 @@ pub mod installation;
 /// Running an offloadable invocation on another device, through the offer
 /// round.
 pub mod offload;
+mod ordered;
 mod postcard_sink;
 pub mod replica;
 /// A workspace's retained sealed history: the frames a store device keeps
@@ -69,23 +70,27 @@ pub use state::DelegatedWork;
 /// A state of a workspace's governance, kept to ask which heads it holds.
 pub use state::GovernanceHeads;
 pub use state::mail_send_lease;
+pub use state::person_workspace_seed;
 /// The person's own documents between their devices, with no host in between.
-pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync, device_resource, resource_owner};
+pub use state::{
+    AdmittedFrame, MachineRecovery, PERSONAL_ALPN, PersonalSync, device_resource, machines,
+    resource_owner, store_path, update_person_resource,
+};
 pub use state::{
     BOT_SCHEDULES_KEY, CLOCK_SKEW_NS, COPY_POLICY_KEY, CopyPolicy, CopyRole, CopyStatus,
-    DEVICE_FACTS, DONE_KEY, DelegateInactive, DocumentRow, Done, GovernedAccess, GovernedAgent,
-    GovernedDelegateRow, HELD_COPIES_KEY, HeldCopy, HolderCopy, InstalledApp, InstalledBot,
-    KeptDocument, LEASES_KEY, Lease, LeaseClaim, MAX_HELD_BYTES, MAX_HELD_INPUTS, Member, MemberId,
-    MemberList, MembershipError, Missing, NativePublicationCut, NotAdmitted, OpenedDocument,
-    OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance,
-    PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut,
-    PeerPersonal, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
-    PersonalStore, ReceiveOutcome, RequestedBot, Reseal, RowError, SETTINGS_KIND, SealCheckpoint,
-    SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
-    WIFI_KIND, WORKSPACE_KEEPING_DEVICES_KEY, WORKSPACES_KIND, committed_document_revision,
-    decide_with_surfaces, default_surfaces, holder_role, keeping_devices_of, peer_handle,
-    seed_workspace, trigger_mark, unranked, work_delegations_of, workspace_grants_of,
-    workspace_host_actor, workspace_seed,
+    DEVICE_FACTS, DONE_KEY, DelegateInactive, DocumentRow, Done, ENROLLMENT_KIND, GovernedAccess,
+    GovernedAgent, GovernedDelegateRow, HELD_COPIES_KEY, HeldCopy, HolderCopy, InstalledApp,
+    InstalledBot, KeptDocument, LEASES_KEY, Lease, LeaseClaim, MAX_HELD_BYTES, MAX_HELD_INPUTS,
+    Member, MemberId, MemberList, MembershipError, Missing, NativePublicationCut, NotAdmitted,
+    OpenedDocument, OpenedHistory, OpenedWrite, PeerDocumentCapture, PeerDocumentReadError,
+    PeerGovernance, PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox,
+    PeerOutboxMut, PeerPersonal, PeerPublication, PeerPublicationMut, PeerWorkspace,
+    PeerWorkspaceMut, PersonalStore, ReceiveOutcome, RequestedBot, Reseal, RowError, SETTINGS_KIND,
+    SealCheckpoint, SeedDocument, SeedState, Shortfall, StatePeer, TransportOrigin, UnmergedReason,
+    UnmergedWrite, WIFI_KIND, WORKSPACE_KEEPING_DEVICES_KEY, WORKSPACES_KIND,
+    committed_document_revision, decide_with_surfaces, default_surfaces, holder_role,
+    keeping_devices_of, peer_handle, seed_workspace, seed_workspace_at, trigger_mark, unranked,
+    work_delegations_of, workspace_grants_of, workspace_host_actor, workspace_seed,
 };
 pub use state::{DEVICE_ANSWERS_KIND, DeviceAnswer, DeviceGrants, Kept, Refusal};
 pub use state::{vm_lease, vm_rank};

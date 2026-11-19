@@ -18,7 +18,7 @@ use crate::tokens::TextRole;
 use crate::widget::chart_geometry;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct RadarAxis {
@@ -179,49 +179,38 @@ impl RadarChart {
 }
 
 impl RadarMarks {
-    /// Where the legend's entries stand: above the chart's bottom edge, clear
-    /// of the labels around it. `None` while the chart shows no legend.
+    /// Where the legend's entries stand: under the title, as on every chart. `None` while the
+    /// chart shows no legend.
     fn legend_area(&self) -> Option<Rect> {
-        if !self.style.legend.visible {
-            return None;
-        }
-        let left = self.frame.rect.x0 + 12.0;
-        let right = self.frame.rect.x1 - 12.0;
-        let rows = chart_legend::rows(
-            self.series.iter().map(|series| series.name.as_str()),
-            left,
-            right,
-        );
-        let top = self.frame.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT;
-        Some(Rect::new(left, top, right, top))
+        self.style.legend.visible.then(|| self.frame.legend_area())
     }
 
-    fn geometry(&self) -> (Point, f64) {
-        let top = if self.frame.title.is_empty() {
-            10.0
-        } else {
-            42.0
-        };
+    /// The title and legend over the web, and its axes' labels around it, a step from the
+    /// outer ring.
+    fn measure_margins(&self, tr: &mut TextRenderer, theme: &Theme) -> Margins {
         let legend_rows = if self.style.legend.visible {
-            chart_legend::rows(
-                self.series.iter().map(|series| series.name.as_str()),
-                self.frame.rect.x0 + 12.0,
-                self.frame.rect.x1 - 12.0,
-            )
+            self.frame
+                .legend_rows(self.series.iter().map(|series| series.name.as_str()))
         } else {
             0
         };
-        let bottom = if legend_rows == 0 {
-            8.0
-        } else {
-            crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + 8.0
-        };
-        let area = Rect::new(
-            self.frame.rect.x0 + 70.0,
-            self.frame.rect.y0 + top + 30.0,
-            self.frame.rect.x1 - 70.0,
-            self.frame.rect.y1 - bottom - 30.0,
+        let step = crate::widget::plot::step(theme);
+        let line = crate::widget::plot::caption_line(theme);
+        let widest = crate::widget::plot::widest(
+            tr,
+            theme,
+            self.axes.iter().map(|axis| axis.label.as_str()),
         );
+        let mut margins = Margins::header(theme, &self.frame.title, legend_rows);
+        margins.top += line + step;
+        margins.bottom = line + step;
+        margins.left = (widest + step).min(self.frame.rect.width() / 4.0);
+        margins.right = margins.left;
+        margins
+    }
+
+    fn geometry(&self) -> (Point, f64) {
+        let area = self.frame.inside();
         (area.center(), area.width().min(area.height()) / 2.0)
     }
     fn angle(&self, axis: usize) -> f64 {
@@ -363,7 +352,8 @@ impl PlotMarks for RadarMarks {
     fn series_of(&self, hovered: &Hovered) -> Option<&str> {
         Some(self.series.get(hovered.series)?.id.as_str())
     }
-    fn place(&mut self, _tr: &mut TextRenderer, _theme: &Theme) {
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.frame.margins = self.measure_margins(tr, theme);
         self.toggles.place(
             self.series
                 .iter()
@@ -423,7 +413,12 @@ impl PlotMarks for RadarMarks {
                 &Line::new(center, outer),
             );
             if let Some(spec) = self.axes.get(axis) {
-                let label_point = chart_geometry::polar(center, radius + 20.0, self.angle(axis));
+                let line = crate::widget::plot::caption_line(theme);
+                let label_point = chart_geometry::polar(
+                    center,
+                    radius + crate::widget::plot::step(theme) + line / 2.0,
+                    self.angle(axis),
+                );
                 let (width, _) =
                     tr.measure_style(&spec.label, None, &theme.text(TextRole::Caption));
                 tr.draw_style(
@@ -433,7 +428,7 @@ impl PlotMarks for RadarMarks {
                     transform
                         * Affine::translate((
                             label_point.x - f64::from(width) / 2.0,
-                            label_point.y - 6.0,
+                            label_point.y - line / 2.0,
                         )),
                     None,
                     &theme.text(TextRole::Caption),

@@ -736,6 +736,7 @@ fn cmd_enroll(
             floor,
             predictions: &predictions,
             pin: pin_bytes,
+            anchors: verified.as_ref().map(|v| v.anchors.0.as_str()),
         },
         &recovery,
     )?;
@@ -881,20 +882,6 @@ fn verify_enrollment_if_running(
     Ok(running)
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700));
-        }
-    }
-    tilo_files::native::atomic::write_with_mode(path, bytes, 0o600)
-        .with_context(|| format!("atomically writing {}", path.display()))?;
-    Ok(())
-}
-
 /// Which tokens this boot is allowed to try, and why not when one is skipped.
 ///
 /// A token sealed without a PIN opens the volume with nothing typed, so it is only tried on a boot
@@ -917,7 +904,10 @@ fn tokens_openable_now(
     if pin_less.is_empty() {
         return (openable, None);
     }
-    let recorded = verified::load_enrollment(state_path);
+    // What enrollment wrote about the boot it approved lives on the encrypted root,
+    // which this boot has not opened yet; a PIN-less token carries the same authority
+    // digest for exactly this moment, and the root's copy is preferred when it is there.
+    let recorded = verified::recorded_anchor_for_boot(state_path, tokens);
     match verified::AutomaticUnlock::decide(&verified::BootFacts::read(), recorded.as_ref()) {
         verified::AutomaticUnlock::Yes => {
             let mut all = pin_less;
@@ -977,7 +967,7 @@ fn cmd_unlock(
         ) {
             Ok(Some(secret)) => {
                 if let Some(p) = output {
-                    write_private(p, &secret)?;
+                    tilo_files::native::atomic::write_private(p, &secret)?;
                     eprintln!(
                         "tilo-rollback: generation {} unsealed to {}",
                         t.generation,
@@ -989,7 +979,7 @@ fn cmd_unlock(
                 }
                 // Keep it for `confirm`, which runs later in the same boot and cannot re-unseal without the PIN.
                 if let Some(pf) = proof_file {
-                    write_private(pf, &secret)?;
+                    tilo_files::native::atomic::write_private(pf, &secret)?;
                 }
                 return Ok(());
             }

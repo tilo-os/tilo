@@ -125,14 +125,8 @@ clocks-collection-add-minute = Add one minute
 clocks-collection-remove-timer = Remove timer
 clocks-collection-start-stopwatch = Start the stopwatch
 clocks-collection-pause-stopwatch = Pause the stopwatch
-clocks-collection-lap = Record a lap
+clocks-collection-lap = Keep a lap
 clocks-collection-reset-stopwatch = Reset the stopwatch
-clocks-effects-open-alarm = Open alarm here
-clocks-effects-show = Show a section
-clocks-effects-dismiss-notice = Dismiss notice
-clocks-effects-snooze-alarm = Snooze alarm
-clocks-effects-float-timer = Float timer
-clocks-effects-float-stopwatch = Float stopwatch
 clocks-on-devices = Clocks on each device
 clocks-on-devices-keep = Keep this device's clocks
 

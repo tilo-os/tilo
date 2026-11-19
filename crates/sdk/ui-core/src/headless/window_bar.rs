@@ -750,7 +750,7 @@ impl FrameHarness {
             })
             .ok_or_else(|| format!("no notice button {index} stands in the bar at {width} px"))?;
         let row = bar.toolbar_row_mut();
-        if !(row.press(at) && row.release(at)) {
+        if !(row.press(at, false) && row.release(at)) {
             return Err(format!("the notice button {index} took no press at {at:?}"));
         }
         self.deliver_bar_events(&mut bar)
@@ -2148,7 +2148,10 @@ mod tests {
             .expect("the action stands in the bar")
             .center();
         let row = window_bar.toolbar_row_mut();
-        assert!(row.press(at) && row.release(at), "the bar takes its press");
+        assert!(
+            row.press(at, false) && row.release(at),
+            "the bar takes its press"
+        );
         assert!(
             window_bar
                 .take_toolbar_events()

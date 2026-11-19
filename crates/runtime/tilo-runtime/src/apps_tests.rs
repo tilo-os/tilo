@@ -299,7 +299,7 @@ tilo_test_env::scenario! {
         environment
             .remove("TILO_APPS_SYSTEM_DIR")
             .set("TILO_APPS_DATA_DIR", &store.root);
-        let options = launcher::run::RunOptions {
+        let options = launcher::run::LaunchOptions {
             expected_package_hash: Some(original.package_hash),
             app_id: Some(VIEWER.into()),
             ..Default::default()

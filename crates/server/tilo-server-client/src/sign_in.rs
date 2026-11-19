@@ -64,8 +64,8 @@ pub fn grant_label(client: &str, audience: &str) -> String {
     } else {
         printable
     };
-    let host = cut(host(audience), MAX_CERTIFICATION_LABEL_BYTES / 2);
-    let suffix = format!(" via {host}");
+    let server = cut(server(audience), MAX_CERTIFICATION_LABEL_BYTES / 2);
+    let suffix = format!(" via {server}");
     let workspace = MAX_CERTIFICATION_LABEL_BYTES.saturating_sub(suffix.len());
     let who = cut(who.trim(), workspace);
     if who.is_empty() {
@@ -75,17 +75,17 @@ pub fn grant_label(client: &str, audience: &str) -> String {
     }
 }
 
-/// The host of an origin: what a label calls a service. The origin has been
+/// The server of an origin: what a label calls a service. The origin has been
 /// checked by whoever asked (the route that builds a label skips what it
 /// cannot check), so this only has to read one.
-fn host(audience: &str) -> &str {
+fn server(audience: &str) -> &str {
     let authority = audience
         .split_once("://")
         .map_or(audience, |(_scheme, rest)| rest);
     let authority = authority.split(['/', '?', '#']).next().unwrap_or(authority);
     authority
         .rsplit_once('@')
-        .map_or(authority, |(_userinfo, host)| host)
+        .map_or(authority, |(_userinfo, server)| server)
 }
 
 /// `text`, cut to at most `max` bytes without splitting the character at the

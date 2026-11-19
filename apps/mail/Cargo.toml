@@ -32,11 +32,14 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+# The page reader displays a web engine's frames through the toolkit; it talks to the engine through this client.
+tilo-webview = { version = "0.1.0", path = "../../crates/sdk/tilo-webview" }
 # A page builds MIME too (drafts, and the sends a capable device delivers),
 # but has no hostname to read: the `live` build names Message-IDs from it, and
 # Mail names every Message-ID itself.
 mail-builder = { version = "0.4.4", default-features = false }
 tilo-mime = { path = "../../crates/platform/tilo-mime" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-sort = { path = "../../crates/platform/tilo-sort" }
 fnv.workspace = true
 hex.workspace = true
@@ -99,7 +102,7 @@ account-credentials = { path = "../../crates/system/account-credentials", defaul
 # Live IMAP and SMTP for the account engine. These are optional and guarded by
 # `live`; the default build uses the offline backend.
 async-imap = { workspace = true, optional = true }
-lettre = { version = "0.11", optional = true, default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
+lettre = { version = "0.11.24", optional = true, default-features = false, features = ["smtp-transport", "tokio1-rustls", "ring", "rustls-native-certs", "tokio1"] }
 # Async runtime and rustls backend used by the live engine; roots come from the
 # Tilo system bundle through `tilo-net`, never OpenSSL.
 tokio = { workspace = true, optional = true, features = ["rt", "net", "io-util", "time", "macros"] }

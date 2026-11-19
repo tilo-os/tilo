@@ -539,7 +539,7 @@ jobs:
         run: >-
           bash tools/ci/measure.sh "example scenarios shard ${{ matrix.shard }}" --
           bash scripts/ci-run.sh "tilo-app scenario run (examples, shard ${{ matrix.shard }})" --
-          bash tools/test-env.sh bash tools/ci/example-scenarios.sh ${{ matrix.test_packages }}
+          bash tools/ci/example-scenarios.sh ${{ matrix.test_packages }}
 
       # A package reached only through outside inputs its manifest entry
       # scopes (tools/ci/suites.toml) runs just the tests that read them, with

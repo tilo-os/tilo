@@ -209,24 +209,32 @@ fn a_direct_message_is_one_notice_that_names_who_wrote() {
     }
     assert_eq!(told.len(), 2, "each message is one notice: {told:?}");
     // Choosing Open on the notice of her second message opens Chat at that message on his laptop,
-    // as the banner's button does.
+    // as the banner's button does. Chat's windows are the workspace's, so his laptop shows one for
+    // every window anyone opened: the conversation opens in one of them, which the window's title
+    // names, and that window comes forward.
     let second = told
         .iter()
         .find(|notice| notice["body"] == json!("did you see?"))
         .expect("the second message's notice");
-    let before = chat_title(&studio.bob_laptop);
     assert!(
-        !before.starts_with(&ada_name),
-        "his laptop's Chat does not show their conversation before he chooses: {before:?}"
+        chat_windows(&studio.bob_laptop, &ada_name).is_empty(),
+        "his laptop's Chat does not show their conversation before he chooses: {:?}",
+        chat_titles(&studio.bob_laptop)
     );
     choose(&studio.bob_laptop, second, "open");
-    // Chat shows their conversation, which the window's title names.
     let deadline = tilo_test_env::hang_deadline();
-    while !chat_title(&studio.bob_laptop).starts_with(&ada_name) {
+    loop {
+        let named = chat_windows(&studio.bob_laptop, &ada_name);
+        if let [window] = named.as_slice()
+            && window["active"] == json!(true)
+        {
+            break;
+        }
         assert!(
             Instant::now() < deadline,
-            "choosing the notice never opens the conversation with {ada_name:?}: Chat shows {:?}\n{}",
-            chat_title(&studio.bob_laptop),
+            "choosing the notice never opens the conversation with {ada_name:?} in one window, \
+             brought forward: Chat shows {:?}\n{}",
+            chat_titles(&studio.bob_laptop),
             studio.bob_laptop.diagnostic()
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -262,19 +270,36 @@ fn choose(device: &Device, notice: &Value, action: &str) {
     );
 }
 
-/// The title of this device's Chat window: what it shows, as the session names it.
-fn chat_title(device: &Device) -> String {
+/// The Chat windows this device shows whose title starts with `name`: the one that shows the
+/// conversation with the person, as the window's title names it.
+fn chat_windows(device: &Device, name: &str) -> Vec<Value> {
+    chat_titles(device)
+        .into_iter()
+        .filter(|window| {
+            window["title"]
+                .as_str()
+                .is_some_and(|title| title.starts_with(name))
+        })
+        .collect()
+}
+
+/// This device's Chat windows as the session lists them: each row's title, and whether it is the
+/// one in front of its group.
+fn chat_titles(device: &Device) -> Vec<Value> {
     let windows = device.ask(&json!({"op": "windows"}));
     windows["answer"]["windows"]
         .as_array()
         .into_iter()
         .flatten()
-        .find(|window| window["app_id"] == json!("so.tilo.chat"))
-        .and_then(|window| window["title"].as_str())
-        .map_or_else(
-            || panic!("{} shows no Chat window: {windows}", device.label),
-            str::to_owned,
-        )
+        .filter(|window| window["app_id"] == json!("so.tilo.chat"))
+        .map(|window| {
+            json!({
+                "title": window["title"],
+                "active": window["active"],
+                "tab": window["tab"],
+            })
+        })
+        .collect()
 }
 
 /// The notifications this device's session shows now, as its state dump lists them: the banners up

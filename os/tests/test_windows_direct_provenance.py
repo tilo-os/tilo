@@ -139,7 +139,7 @@ class ProvenanceTests(unittest.TestCase):
                          "installed_update_origin": "ostree-unverified-image:docker://" + origin,
                          "target_uki_sha256": "b" * 64, "disk_guid": disk, "partuuids": ids,
                          "selected_target": {"schema": "tilo.installer-offline-target.v1",
-                             "target_ref": image, "target_digest": target,
+                             "repository": image.split("@", 1)[0], "target_digest": target,
                              "architecture": "aarch64", "hardware_profile": "lenovo-83ed",
                              "update_origin": origin,
                              "provenance": {"source_revision": revision,
@@ -177,7 +177,7 @@ class ProvenanceTests(unittest.TestCase):
                 generic["first_boot_verified"] = True
                 selected = generic["guest_proof"]["selected_target"]
                 selected["hardware_profile"] = "generic"
-                selected["target_ref"] = "registry.tilo.so/tilo/tilo@" + target
+                selected["repository"] = "registry.tilo.so/tilo/tilo"
                 selected["update_origin"] = "registry.tilo.so/tilo/tilo:gen7"
                 selected["provenance"].update(generation=7, firmware_candidate=None,
                                               firmware_manifest_sha256=None)
@@ -243,7 +243,7 @@ class ProvenanceTests(unittest.TestCase):
                 native = {"schema": "tilo.vm-install-image-proof.v2", "architecture": "arm64",
                           "installed_image_digest": image.split("@", 1)[1],
                           "selected_target": {"schema": "tilo.installer-offline-target.v1",
-                                              "target_ref": image,
+                                              "repository": image.split("@", 1)[0],
                                               "target_digest": image.split("@", 1)[1],
                                               "hardware_profile": "lenovo-83ed"}}
                 ci_proof = root / "native.json"

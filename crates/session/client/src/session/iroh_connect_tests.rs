@@ -34,9 +34,9 @@ async fn dial_error(server: &Endpoint) -> TestResult<LinkError> {
     let device = SigningKey::from_bytes(&[2; 32]);
     let host = SigningKey::from_bytes(&[3; 32]);
     let config = PeerConfig {
-        host: Host::at(server.addr()),
+        host: ServerAddress::at(server.addr()),
         cert: cert(&root, &device)?,
-        host_cert: cert(&root, &host)?,
+        server_cert: cert(&root, &host)?,
         revocations: RevocationList::new(),
         entering: None,
     };
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
         // Answers another attempt cannot change.
         assert!(!transient(&LinkError::Sign("locked".into())));
         assert!(!transient(&LinkError::Malformed("bad ack".into())));
-        assert!(!transient(&LinkError::HostChanged));
+        assert!(!transient(&LinkError::ServerChanged));
         assert!(!transient(&LinkError::PeerVersion { theirs: 0 }));
         assert!(!transient(&LinkError::DeviceRevoked));
     }
@@ -199,9 +199,9 @@ async fn a_session_beside_the_devices_own_dials_from_the_devices_endpoint() {
     let host = SigningKey::from_bytes(&[3; 32]);
     let server = endpoint(b"dummy-alpn/1").await.unwrap();
     let config = PeerConfig {
-        host: Host::at(server.addr()),
+        host: ServerAddress::at(server.addr()),
         cert: cert(&root, &device).unwrap(),
-        host_cert: cert(&root, &host).unwrap(),
+        server_cert: cert(&root, &host).unwrap(),
         revocations: RevocationList::new(),
         entering: None,
     };
@@ -279,11 +279,11 @@ async fn a_session_beside_the_devices_own_holds_no_keys() {
     let device = SigningKey::from_bytes(&[2; 32]);
     let host = SigningKey::from_bytes(&[3; 32]);
     let config = PeerConfig {
-        host: Host::at(iroh::EndpointAddr::new(
+        host: ServerAddress::at(iroh::EndpointAddr::new(
             iroh::SecretKey::from_bytes(&host.to_bytes()).public(),
         )),
         cert: cert(&root, &device).unwrap(),
-        host_cert: cert(&root, &host).unwrap(),
+        server_cert: cert(&root, &host).unwrap(),
         revocations: RevocationList::new(),
         entering: None,
     };
@@ -321,11 +321,11 @@ async fn a_session_beside_the_devices_own_reads_with_the_devices_keys() {
     let device = SigningKey::from_bytes(&[2; 32]);
     let host = SigningKey::from_bytes(&[3; 32]);
     let config = PeerConfig {
-        host: Host::at(iroh::EndpointAddr::new(
+        host: ServerAddress::at(iroh::EndpointAddr::new(
             iroh::SecretKey::from_bytes(&host.to_bytes()).public(),
         )),
         cert: cert(&root, &device).unwrap(),
-        host_cert: cert(&root, &host).unwrap(),
+        server_cert: cert(&root, &host).unwrap(),
         revocations: RevocationList::new(),
         entering: None,
     };

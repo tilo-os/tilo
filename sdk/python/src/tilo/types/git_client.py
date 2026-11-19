@@ -32,7 +32,7 @@ __all__ = [
     "Stash",
     "Tag",
     "Repo",
-    "RecordRepositoryArgs",
+    "StoreRepositoryArgs",
 ]
 
 class Branch(TypedDict):
@@ -102,27 +102,27 @@ class Tag(TypedDict):
     target: str
     message: str | None
 
-RecordRepositoryArgs = TypedDict("RecordRepositoryArgs", {
+StoreRepositoryArgs = TypedDict("StoreRepositoryArgs", {
     "shared": "SharedRepo",
 })
-"""The arguments of `record-repository`."""
+"""The arguments of `store-repository`."""
 
 class Repo(Resource):
     """Repository — `git_client.repo`."""
-    __surface__ = "so.tilo.git-client@6d8bc9cabb47c522"
+    __surface__ = "so.tilo.git-client@0368dff8fb39f175"
     repository: str
     @property
     def shared(self) -> Any:
         """Read only."""
         return self.fields["shared"]
 
-    def record_repository(self, *, shared: SharedRepo) -> None:
+    def store_repository(self, *, shared: SharedRepo) -> None:
         """Runs the app's action."""
-        return self.action("record-repository", shared=shared)
+        return self.action("store-repository", shared=shared)
 
-    def record_repository_many(self, items: list[RecordRepositoryArgs]) -> list[dict[str, Any]]:
-        """Runs `record-repository` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("record-repository", items)
+    def store_repository_many(self, items: list[StoreRepositoryArgs]) -> list[dict[str, Any]]:
+        """Runs `store-repository` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("store-repository", items)
 
     def diff_layout(self) -> None:
         """Runs the app's action."""
@@ -142,6 +142,6 @@ class Repo(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"record_repository", "record_repository_many", "diff_layout", "syntax_highlight", "show_whitespace", "wrap_lines"})
+    __actions__ = frozenset({"store_repository", "store_repository_many", "diff_layout", "syntax_highlight", "show_whitespace", "wrap_lines"})
 
 

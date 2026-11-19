@@ -297,6 +297,7 @@ fn entry((spec, declared): &(ResourceSpec, Option<Declared>), instances: bool) -
             verbs,
             fields: Vec::new(),
             types: types.into_types(),
+            shows: Vec::new(),
         },
     }
 }

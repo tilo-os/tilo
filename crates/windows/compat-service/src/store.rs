@@ -3,7 +3,6 @@ use std::fs;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -490,13 +489,18 @@ impl CapsuleStore {
                     .and_then(|stem| stem.to_str())
                     .unwrap_or_default();
                 let lower = stem.to_ascii_lowercase();
+                let relative_lower = relative.to_string_lossy().to_ascii_lowercase();
                 if lower.starts_with("unins") || lower.contains("uninstall") {
-                    if uninstaller.is_none() {
+                    // Wine's own `C:\windows\system32\uninstaller.exe` is in every prefix; the
+                    // uninstaller is the one setup put beside what it installed.
+                    if uninstaller.is_none()
+                        && !relative_lower.starts_with("drive_c/windows/")
+                        && !is_wine_placeholder(&entry_path)
+                    {
                         uninstaller = Some(relative);
                     }
                     continue;
                 }
-                let relative_lower = relative.to_string_lossy().to_ascii_lowercase();
                 let installed_location = relative_lower.contains("program files")
                     || (relative_lower.contains("appdata") && relative_lower.contains("local"));
                 if !installed_location
@@ -504,6 +508,7 @@ impl CapsuleStore {
                     || relative_lower.starts_with("drive_c/windows/")
                     || is_helper_executable(&lower)
                     || candidates.len() >= MAX_PROGRAMS
+                    || is_wine_placeholder(&entry_path)
                 {
                     continue;
                 }
@@ -554,29 +559,9 @@ impl CapsuleStore {
     pub fn save(&self, state: &CapsuleState) -> Result<(), CapsuleError> {
         state.validate()?;
         let directory = self.capsule_directory(&state.id, true)?;
-        let base = fd_path(&directory);
-        let temp = base.join(format!(
-            ".state.{}.{}.tmp",
-            std::process::id(),
-            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let path = base.join("state.json");
+        let path = fd_path(&directory).join("state.json");
         let bytes = serde_json::to_vec_pretty(state)?;
-        {
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW)
-                .open(&temp)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-        }
-        if let Err(error) = fs::rename(&temp, &path) {
-            let _ = fs::remove_file(&temp);
-            return Err(error.into());
-        }
-        let _ = directory.sync_all();
+        tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600)?;
         Ok(())
     }
 
@@ -824,6 +809,24 @@ fn executable_display_name(stem: &str) -> String {
     }
 }
 
+/// Whether `path` is one of the stand-ins Wine writes into every prefix it sets up (Internet
+/// Explorer, Windows Media Player, `WordPad` under `Program Files`): they belong to Wine, not to
+/// what the person installed, and listing them made every installed app arrive with three
+/// strangers. Wine marks them in the DOS stub, right after the 64-byte header.
+fn is_wine_placeholder(path: &Path) -> bool {
+    const MARKS: [&[u8]; 2] = [b"Wine builtin DLL", b"Wine placeholder DLL"];
+    let mut head = Vec::with_capacity(128);
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    if file.take(128).read_to_end(&mut head).is_err() {
+        return false;
+    }
+    MARKS
+        .iter()
+        .any(|mark| head.windows(mark.len()).any(|window| window == *mark))
+}
+
 fn is_helper_executable(lower_stem: &str) -> bool {
     [
         "crash",
@@ -1053,6 +1056,54 @@ mod tests {
                 Err(CapsuleError::InvalidExecutable)
             ));
         }
+    }
+
+    /// What setup installed is listed; the stand-ins Wine writes into every prefix are not.
+    #[test]
+    fn programs_are_what_setup_installed_not_what_wine_placed() {
+        let directory = TempDir::new().unwrap();
+        let store = CapsuleStore::new(directory.path()).unwrap();
+        let state = store.ensure_for_plan(&plan()).unwrap();
+        let program_files = store.prefix_path(&state.id).join("drive_c/Program Files");
+        let mut placeholder = b"MZ".to_vec();
+        placeholder.resize(0x40, 0);
+        placeholder.extend_from_slice(b"Wine builtin DLL\0\0\0\0in DOS mode");
+        for (folder, name, bytes) in [
+            ("Internet Explorer", "iexplore.exe", placeholder.clone()),
+            ("Windows NT/Accessories", "wordpad.exe", placeholder.clone()),
+            ("../windows/system32", "uninstaller.exe", placeholder),
+            (
+                "Notepad++",
+                "notepad++.exe",
+                b"MZ an installed program".to_vec(),
+            ),
+        ] {
+            fs::create_dir_all(program_files.join(folder)).unwrap();
+            fs::write(program_files.join(folder).join(name), bytes).unwrap();
+        }
+        let (_, uninstaller) = store
+            .discover_programs(&state.id, &ApplicationQuery::default())
+            .unwrap();
+        assert_eq!(uninstaller, None, "Wine's own uninstaller is not the app's");
+        fs::write(
+            program_files.join("Notepad++/uninstall.exe"),
+            b"MZ its uninstaller",
+        )
+        .unwrap();
+        let (programs, uninstaller) = store
+            .discover_programs(&state.id, &ApplicationQuery::default())
+            .unwrap();
+        assert!(uninstaller.is_some_and(|path| path.ends_with("Notepad++/uninstall.exe")));
+        let names: Vec<&str> = programs
+            .iter()
+            .map(|program| program.display_name.as_str())
+            .collect();
+        assert_eq!(programs.len(), 1, "only what setup installed: {names:?}");
+        assert!(
+            programs[0]
+                .prefix_relative_executable
+                .ends_with("Notepad++/notepad++.exe")
+        );
     }
 
     #[test]

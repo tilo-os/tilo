@@ -112,6 +112,17 @@ impl Subscription {
         self.id
     }
 
+    /// What asks the broker to end this subscription once it has handed over
+    /// what it holds: what it sends until then still arrives.
+    pub fn finisher(&self) -> impl Fn() + Send + Sync + 'static {
+        let (id, shared) = (self.id, Weak::clone(&self.shared));
+        move || {
+            if let Some(shared) = shared.upgrade() {
+                shared.notify(Operation::Unsubscribe { subscription: id });
+            }
+        }
+    }
+
     /// The next delivery; `None` once it ended and its end was delivered.
     pub async fn next(&mut self) -> Option<Delivery> {
         self.deliveries.recv().await

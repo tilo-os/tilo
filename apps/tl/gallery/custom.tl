@@ -16,7 +16,7 @@ view custom(g: Gallery) {
                 role: .caption,
                 secondary: true,
             )
-            row(gap: .section, wrap: true) {
+            row(gap: .section, wrap: true, align: .stretch) {
                 person_card("Ada Lovelace", "Leads the release", online: true) {
                     ui.Chip("Design", icon: .tag)
                     on message: set(last, "You messaged Ada")
@@ -105,7 +105,7 @@ view custom(g: Gallery) {
                 total: .some("88 hours"),
             )
             ui.GraphCanvas(
-                name: .some("Release pipeline"),
+                title: .some("Release pipeline"),
                 connections: [
                     .connection(from: "fetch", to: "build"),
                     .connection(from: "build", to: "test"),

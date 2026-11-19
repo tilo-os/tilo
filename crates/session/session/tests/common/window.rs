@@ -41,7 +41,9 @@ use wayland_client::protocol::{
     wl_shm_pool::WlShmPool,
     wl_surface::WlSurface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{
+    Connection, Dispatch, EventQueue, Proxy as _, QueueHandle, WEnum, delegate_noop,
+};
 use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface},
     xdg_toplevel::{self, XdgToplevel},
@@ -82,8 +84,12 @@ pub struct Seen {
     pub toplevels: Vec<Toplevel>,
     /// Whether the keyboard is on one of this client's surfaces.
     pub keyboard_focused: bool,
+    /// The surface the keyboard is on.
+    pub keyboard_on: Option<wayland_client::backend::ObjectId>,
     /// Every key the client was delivered, as the window sees it.
     pub keys: Vec<(u32, bool)>,
+    /// The surface each of [`Self::keys`] was delivered to.
+    pub keys_on: Vec<Option<wayland_client::backend::ObjectId>>,
     /// Every pointer button the client was delivered as pressed, in evdev codes.
     pub buttons: Vec<u32>,
     /// How many times the pointer came onto a window of this client.
@@ -287,6 +293,29 @@ impl Client {
         let _ = self.connection.flush();
     }
 
+    /// Show the toplevel at `shown` at the size it was configured to and destroy the toplevel at
+    /// `gone`, in one message to the session: a program's next page replacing the one before.
+    pub fn replace(&mut self, shown: usize, gone: usize, colour: [u8; 4]) {
+        let (width, height) = self.seen.size_at(shown).unwrap_or((400, 300));
+        self.commit_buffer(shown, width, height, colour);
+        self.windows
+            .get(gone)
+            .expect("the client opened it")
+            .1
+            .destroy();
+        let _ = self.connection.flush();
+    }
+
+    /// The surface of the toplevel at `index`: what the keyboard is on when the window has it.
+    #[track_caller]
+    pub fn surface_id(&self, index: usize) -> wayland_client::backend::ObjectId {
+        self.windows
+            .get(index)
+            .expect("the client opened it")
+            .0
+            .id()
+    }
+
     /// The toplevel at `index` , for a test that asks it something (a popup's parent, a rectangle
     /// to grab).
     #[track_caller]
@@ -299,6 +328,13 @@ impl Client {
     /// # Panics
     /// The client heard no shared memory, or opened no toplevel at `index`.
     pub fn show(&mut self, index: usize, width: i32, height: i32, colour: [u8; 4]) {
+        self.commit_buffer(index, width, height, colour);
+        let _ = self.connection.flush();
+    }
+
+    /// Attach a buffer of `colour` to the toplevel at `index` and commit it, sent with what the
+    /// client sends next.
+    fn commit_buffer(&mut self, index: usize, width: i32, height: i32, colour: [u8; 4]) {
         let qh = self.queue.handle();
         let stride = width * 4;
         let len = usize::try_from(stride * height).expect("a window's size");
@@ -320,7 +356,6 @@ impl Client {
         surface.damage_buffer(0, 0, width, height);
         surface.commit();
         pool.destroy();
-        let _ = self.connection.flush();
         self.buffers.push(buffer);
     }
 
@@ -582,11 +617,18 @@ impl Dispatch<WlKeyboard, ()> for Seen {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            wl_keyboard::Event::Enter { .. } => seen.keyboard_focused = true,
-            wl_keyboard::Event::Leave { .. } => seen.keyboard_focused = false,
+            wl_keyboard::Event::Enter { surface, .. } => {
+                seen.keyboard_focused = true;
+                seen.keyboard_on = Some(surface.id());
+            }
+            wl_keyboard::Event::Leave { .. } => {
+                seen.keyboard_focused = false;
+                seen.keyboard_on = None;
+            }
             wl_keyboard::Event::Key { key, state, .. } => {
                 let pressed = state == WEnum::Value(wl_keyboard::KeyState::Pressed);
                 seen.keys.push((key, pressed));
+                seen.keys_on.push(seen.keyboard_on.clone());
             }
             _ => {}
         }

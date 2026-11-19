@@ -42,7 +42,8 @@ pub fn seal(bytes: &[u8], role: HandoffRole) -> io::Result<File> {
     }
 }
 
-#[cfg(all(test, not(target_os = "linux")))]
+#[cfg(test)]
+#[cfg(not(target_os = "linux"))]
 mod tests {
     use super::*;
 

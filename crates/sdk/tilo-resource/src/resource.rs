@@ -2204,12 +2204,15 @@ pub(crate) fn group_param(vocabulary: &Vocabulary) -> ActionParam {
 pub const APPLY_MEMBER: &str =
     "One action value, as the `apply` action's `apply` parameter describes it";
 
+/// What the value of a `field-edit` member of a group is: the schema it is
+/// checked against is published once, on `field-edit` itself.
+pub const FIELD_EDIT_MEMBER: &str =
+    "A field edit, as the `field-edit` action's `edit` parameter describes it";
+
 /// The schema of a group of the actions `ids`, `apply`, and field edits when
 /// `edits`: one function for every resource.
 fn group_schema(ids: &[&str], edits: bool) -> serde_json::Value {
-    use crate::schema::{
-        array, constant, describe, nullable, object, one_of, string_enum, undescribed,
-    };
+    use crate::schema::{array, constant, describe, nullable, object, one_of, string_enum};
     let mut members = Vec::new();
     if !ids.is_empty() {
         members.push(describe(
@@ -2233,7 +2236,7 @@ fn group_schema(ids: &[&str], edits: bool) -> serde_json::Value {
                     "args",
                     object(vec![(
                         EDIT_PARAM,
-                        undescribed(&<Edit<()> as crate::JsonSchema>::json_schema()),
+                        describe(serde_json::json!({"type": "object"}), FIELD_EDIT_MEMBER),
                         true,
                     )]),
                     true,

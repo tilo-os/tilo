@@ -123,13 +123,14 @@ view controls(g: Gallery) {
         ui.Section("Days and times") {
             form {
                 field("Starts") {
-                    ui.DateField(bind: g.controls_starts, label: "Starts", optional: false)
+                    ui.DateField(bind: g.controls_starts, label: "Starts", optional: false) {
+                        time: {
+                            ui.TimeField(bind: g.controls_clock)
+                        }
+                    }
                 }
                 field("Ends") {
                     ui.DateField(bind: g.controls_ends, label: "Ends", optional: true)
-                }
-                field("At") {
-                    ui.TimeField(bind: g.controls_clock)
                 }
             }
             ui.DatePicker(bind: g.controls_starts, label: "Starts")
@@ -212,7 +213,6 @@ view controls(g: Gallery) {
 /// The controls' page, with a report a week from starting, looked after by Mia.
 scenario "controls" {
     let g = root Gallery
-    fill(g)
     g.controls_owner = .some(person("Mia"))
     g.controls_starts = 2026-11-03
     g.controls_clock = 2026-11-03T09:30Z

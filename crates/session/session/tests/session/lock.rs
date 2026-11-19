@@ -1487,3 +1487,205 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
         "the readout is on the screen's foot, over the lock: {top}..{bottom}"
     );
 }
+
+/// How long the lock screen is left alone to go quiet: past the twenty seconds it waits for input,
+/// and past the fade that follows.
+pub(super) const GONE_QUIET: Duration = Duration::from_secs(23);
+
+/// Step the session for `span` of the clock with nobody touching it: what a person who walked away
+/// leaves the lock screen to.
+pub(super) fn left_alone(session: &mut Session, span: Duration) {
+    let until = Instant::now() + span;
+    while Instant::now() < until {
+        session.step(REFRESH).expect("a turn of the session");
+    }
+}
+
+/// The screen locks while the person is typing: what they type as it comes up lands on the lock,
+/// whatever shows it, and the lock still takes their password after it has gone quiet. No timing of
+/// a key against the lock leaves the person with a screen nothing they press reaches.
+#[test]
+fn a_lock_that_came_up_while_the_person_typed_takes_their_password_after_it_went_quiet() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let mut session = lockable_session(
+        &home.path().join("collab.sock"),
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+        std::sync::Arc::new(Sesame),
+    );
+    let _client = mapped(&mut session, "org.example.Terminal");
+    let shots = pictures(&mut session, &[DISPLAY]);
+    // Typing into the terminal, and the screen locks under the keys.
+    type_word(&mut session, "ms");
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    type_and_enter(&mut session, "wrong");
+    pump(&mut session, &mut [], |session, _| {
+        let reading = session.read(LOCK).expect("the session publishes the lock");
+        reading["error"].as_str() == Some(tilo_sheets::lock::wrong_password().as_str())
+    });
+    until_drawn(&mut session, &[DISPLAY], &shots);
+
+    // The person went away, and the screen went quiet.
+    left_alone(&mut session, GONE_QUIET);
+
+    // They come back and type their password: it unlocks.
+    type_and_enter(&mut session, "sesame");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
+}
+
+/// A pointer event, as the person's mouse sends it, and a turn of the session after it.
+fn pointer(session: &mut Session, event: InputEvent) {
+    session
+        .compositor()
+        .input(event)
+        .expect("the pointer's event");
+    session
+        .step(Duration::from_millis(1))
+        .expect("a turn of the session");
+}
+
+/// The left button.
+const LEFT: u32 = 0x110;
+
+/// A window that opens behind the lock, or asks for the keyboard there, never takes it from the
+/// lock: the password the person types still reaches what unlocks.
+#[test]
+fn a_window_that_opens_behind_the_lock_leaves_the_keyboard_to_it() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let mut session = lockable_session(
+        &home.path().join("collab.sock"),
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+        std::sync::Arc::new(Sesame),
+    );
+    let _client = mapped(&mut session, "org.example.Terminal");
+    let shots = pictures(&mut session, &[DISPLAY]);
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    pump(&mut session, &mut [], |session, _| {
+        session.compositor().locked()
+    });
+    until_drawn(&mut session, &[DISPLAY], &shots);
+
+    // An app opens a window while the screen is locked.
+    let _late = mapped(&mut session, "org.example.Editor");
+    left_alone(&mut session, Duration::from_millis(200));
+
+    type_and_enter(&mut session, "sesame");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
+}
+
+/// The screen locks while the pointer moves, and while a button is held in a drag: the pointer's
+/// events go on arriving through the lock, and a click and the password still unlock it.
+#[test]
+fn a_lock_that_came_up_under_a_moving_pointer_and_a_drag_still_unlocks() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let mut session = lockable_session(
+        &home.path().join("collab.sock"),
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+        std::sync::Arc::new(Sesame),
+    );
+    let _client = mapped(&mut session, "org.example.Terminal");
+    let shots = pictures(&mut session, &[DISPLAY]);
+    // A drag under way over the window, the pointer still moving as the screen locks.
+    pointer(
+        &mut session,
+        InputEvent::PointerMotion { x: 300.0, y: 300.0 },
+    );
+    pointer(
+        &mut session,
+        InputEvent::PointerButton {
+            button: LEFT,
+            pressed: true,
+        },
+    );
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    for step in 0..20_u32 {
+        let x = 300.0 + f64::from(step) * 10.0;
+        pointer(&mut session, InputEvent::PointerMotion { x, y: 320.0 });
+    }
+    pointer(
+        &mut session,
+        InputEvent::PointerButton {
+            button: LEFT,
+            pressed: false,
+        },
+    );
+    pump(&mut session, &mut [], |session, _| {
+        session.compositor().locked()
+    });
+    until_drawn(&mut session, &[DISPLAY], &shots);
+
+    // A click on the lock, as a person does to find the field, then the password.
+    let middle = (f64::from(WIDTH) / 2.0, f64::from(HEIGHT) / 2.0);
+    pointer(
+        &mut session,
+        InputEvent::PointerMotion {
+            x: middle.0,
+            y: middle.1,
+        },
+    );
+    for pressed in [true, false] {
+        pointer(
+            &mut session,
+            InputEvent::PointerButton {
+                button: LEFT,
+                pressed,
+            },
+        );
+    }
+    type_and_enter(&mut session, "sesame");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
+}
+
+/// A finger reaches the session's own view of the lock, which stands over everything while it
+/// shows, as a click does: a press on its ground brings up the keyboard it draws for a finger.
+#[test]
+fn a_finger_reaches_the_sessions_own_view_of_the_lock() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let _clock = tilo_test_env::held_wall_clock();
+    let home = private_home();
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+        Options {
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            collab: false,
+            app_socket: AppSocket::At(home.path().join("collab.sock")),
+            surfaces: Vec::new(),
+            ..Options::default()
+        },
+    );
+    let _client = mapped(&mut session, "org.example.Terminal");
+    let shots = pictures(&mut session, &[DISPLAY]);
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    pump(&mut session, &mut [], |session, _| {
+        session.compositor().locked()
+    });
+    until_drawn(&mut session, &[DISPLAY], &shots);
+    let before = pictures(&mut session, &[DISPLAY]);
+
+    // A finger on the screen's ground, above the prompt.
+    let ground = (f64::from(WIDTH) / 2.0, f64::from(HEIGHT) / 8.0);
+    super::keyboard::finger(&mut session, ground);
+    left_alone(&mut session, Duration::from_millis(300));
+    let after = pictures(&mut session, &[DISPLAY]);
+    assert!(
+        apart(&after[0], &before[0]) > CLOSE,
+        "the finger brings up the lock's own keyboard"
+    );
+    type_and_enter(&mut session, "sesame");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
+}

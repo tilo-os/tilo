@@ -1586,5 +1586,6 @@ mod media_purpose_tests {
     }
 }
 
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 pub(in crate::setup::home_capture) mod mounted_native;

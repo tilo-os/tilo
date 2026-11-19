@@ -25,7 +25,7 @@ tilo_test_env::scenario! {
     phase a_freshly_provisioned_device_holds_one_certificate_in_both_places;
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(crate::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let identity = temp.path().join("identity");
         let paths = IdentityPaths::under(temp.path().join("system"));
@@ -41,7 +41,7 @@ tilo_test_env::scenario! {
     phase a_device_holding_two_different_certificates_keeps_its_own_in_both_places;
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(crate::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let identity = temp.path().join("identity");
         let paths = IdentityPaths::under(temp.path().join("system"));
@@ -52,7 +52,7 @@ tilo_test_env::scenario! {
         // A second certificate for the same key, valid and issued separately,
         // sits in the owner's place, as devices provisioned before were left.
         let signer =
-            runtime_identity::load_from_path(identity.join(PRIMARY_IDENTITY_FILE)).expect("identity");
+            crate::store::load_from_path(identity.join(PRIMARY_IDENTITY_FILE)).expect("identity");
         let other = issue_device_certificate_at(
             &signer,
             first.device_public_key,
@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
     {
         use tilo_device_identity::branch::{self, Branch, Certification, Machine, Settled};
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(crate::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let identity = temp.path().join("identity");
         let paths = IdentityPaths::under(temp.path().join("system"));

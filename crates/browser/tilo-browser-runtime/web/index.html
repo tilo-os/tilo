@@ -37,7 +37,10 @@ var hash=location.hash,mark=hash.indexOf('?'),found={},order=['invite','ticket',
 // A sealed invitation's link carries its key alone after the `#`, at the
 // site's `/i/<handle>` (sealed-link.mjs): it is the invitation's `invite`,
 // and leaves the address the same way.
-var sealed=/^\/i\/[A-Za-z0-9_-]{16}$/.test(location.pathname)&&/^#[A-Za-z0-9_-]{43}$/.test(hash);
+var sealedLink=function(pathname,fragment){
+ return /^\/i\/[A-Za-z0-9_-]{16}$/.test(pathname)&&/^#[A-Za-z0-9_-]{43}$/.test(fragment);
+};
+var sealed=sealedLink(location.pathname,hash);
 if(sealed){
  found.invite=hash.slice(1);
  history.replaceState(history.state,'',location.pathname+location.search);
@@ -55,6 +58,22 @@ if(sealed){
 }
 if(bad)found.malformed=true;
 Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found),configurable:true});
+// A link followed in a tab already on the site changes only its fragment, and
+// the secrets this load read are read once: the page loads again with them, as
+// opening the link in a tab of its own would.
+var carrying=function(){
+ var now=location.hash,start=now.indexOf('?'),pieces=start<0?[]:now.slice(start+1).split('&');
+ for(var i=0;i<pieces.length;i++){
+  var at=pieces[i].indexOf('=');
+  if(order.indexOf(at<0?pieces[i]:pieces[i].slice(0,at))>=0)return true;
+ }
+ return false;
+};
+if(typeof addEventListener==='function'){
+ var followed=function(){if(carrying()||sealedLink(location.pathname,location.hash))location.reload();};
+ addEventListener('hashchange',followed);
+ addEventListener('popstate',followed);
+}
 })();
 </script>
 <script>
@@ -668,6 +687,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run #first-run-retry { display: none; margin-top: 20px; }
     [data-first-run=expired] #first-run #first-run-retry, [data-first-run=failed] #first-run #first-run-retry { display: inline-flex; }
     [data-first-run=expired] #first-run-steps, [data-first-run=failed] #first-run-steps, [data-first-run=expired] #first-run-left, [data-first-run=failed] .fr-well { display: none; }
+    /* It did not work: one sentence saying why, and Try again. */
+    [data-first-run=failed] #first-run :is(.fr-swap, .fr-leads, #first-run-left, #first-run-net) { display: none; }
+    [data-first-run=failed] #first-run .fr-for-expired, html:not([data-first-run=failed]) #first-run .fr-for-failed { display: none; }
+    [data-first-run=failed] #first-run-problem { margin: 0; font-size: 17px; line-height: 1.5; color: var(--fr-ink); max-width: 520px; }
     .fr-expired { display: none; margin: 12px 0 0; font-size: 14px; color: var(--fr-muted); }
     [data-first-run=expired] .fr-expired { display: block; }
     .fr-links.fr-for-wait { margin-top: 28px; }
@@ -713,7 +736,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
         <p id="first-run-left" class="fr-for-wait"></p>
         <p id="first-run-net" class="fr-for-wait"></p>
         <p class="fr-expired">That prompt ran out before an agent used it. Here is a fresh one.</p>
-        <button id="first-run-retry" class="fr-primary" type="button">Copy a new prompt</button>
+        <button id="first-run-retry" class="fr-primary" type="button"><span class="fr-for-expired">Copy a new prompt</span><span class="fr-for-failed">Try again</span></button>
         <div class="fr-links fr-for-start"><button id="first-run-manual-toggle" class="fr-quiet" type="button" aria-expanded="false" aria-controls="first-run-manual">Set up manually</button><button id="first-run-skip" class="fr-quiet" type="button">Skip for now</button></div>
         <div class="fr-links fr-for-wait"><button id="first-run-back" class="fr-quiet" type="button">Back</button><button id="first-run-skip-wait" class="fr-quiet fr-for-setup" type="button">Skip for now</button></div>
         <div id="first-run-manual" class="fr-manual fr-for-start">

@@ -129,7 +129,18 @@ impl<'a> ModuleWithRelocations<'a> {
     }
 
     fn build_data_call_graph(&mut self) -> Result<()> {
-        let data_relocations = self.collect_relocations_from_section("reloc.DATA")?;
+        // A module whose static data holds no address has no data
+        // relocations, and the linker writes no section for none.
+        let data_relocations = if self
+            .module
+            .customs
+            .iter()
+            .any(|(_, c)| c.name() == "reloc.DATA")
+        {
+            self.collect_relocations_from_section("reloc.DATA")?
+        } else {
+            Vec::new()
+        };
         let mut relocations = data_relocations.iter().peekable();
 
         let symbols_sorted = self

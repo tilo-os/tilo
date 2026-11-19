@@ -28,8 +28,8 @@ use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_server_client::CertificationOutcome;
 use tilo_server_client::invite::guest_certificate;
-use tilo_server_client::{CertifyError, Host, answer_pairing, certify, pending_pairings};
-use tilo_server_client::{MemberApprover, MemberHost as _};
+use tilo_server_client::{CertifyError, ServerAddress, answer_pairing, certify, pending_pairings};
+use tilo_server_client::{MemberApprover, MemberServer as _};
 use tilo_server_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval, PendingCertification,
 };
@@ -57,7 +57,7 @@ struct Asking {
     answer: JoinHandle<Result<(DeviceCert, DeviceCert, String), CertifyError>>,
 }
 
-fn ask_to_pair(host: &Host, person: [u8; 32], label: &str) -> Asking {
+fn ask_to_pair(host: &ServerAddress, person: [u8; 32], label: &str) -> Asking {
     let key = new_key();
     let (shown, code) = tokio::sync::oneshot::channel();
     let answer = tokio::spawn({
@@ -123,7 +123,7 @@ fn refused(reply: &ApproverReply) -> bool {
 
 /// Check what `certify` handed back: a browser of `person` for exactly the
 /// asking device, and the host to pin.
-fn assert_paired(cert: &DeviceCert, host_cert: &DeviceCert, person: [u8; 32], key: &SigningKey) {
+fn assert_paired(cert: &DeviceCert, server_cert: &DeviceCert, person: [u8; 32], key: &SigningKey) {
     assert_eq!(cert.user_public_key, person);
     assert_eq!(cert.device_public_key, key.verifying_key().to_bytes());
     assert_eq!(cert.device_label, "Phone");
@@ -134,7 +134,7 @@ fn assert_paired(cert: &DeviceCert, host_cert: &DeviceCert, person: [u8; 32], ke
         Some(CertificationPolicy::browser().lifetime_ns)
     );
     tilo_user_identity::verify_device_cert(cert).unwrap();
-    assert!(host_cert.capabilities.can_own_workspaces);
+    assert!(server_cert.capabilities.can_own_workspaces);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -180,9 +180,9 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         .await
         .unwrap();
     let phone_key = phone.key.clone();
-    let (cert, host_cert, _) = phone.answer().await.unwrap();
-    assert_paired(&cert, &host_cert, user, &phone_key);
-    assert_eq!(host_cert, host_device.cert);
+    let (cert, server_cert, _) = phone.answer().await.unwrap();
+    assert_paired(&cert, &server_cert, user, &phone_key);
+    assert_eq!(server_cert, host_device.cert);
     assert!(
         pending_pairings(&approver, &root).await.unwrap().is_empty(),
         "an answered request no longer waits"
@@ -194,7 +194,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     let phone_peer = start_peer_with_store(
         page.clone(),
         cert.clone(),
-        host_cert.clone(),
+        server_cert.clone(),
         phone_key.clone(),
         store.clone(),
     );
@@ -220,7 +220,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     // pairing.
     phone_peer.close();
     assert_eq!(store.load().unwrap().cert.as_ref(), Some(&cert));
-    let reloaded = start_peer_with_store(page, cert, host_cert, phone_key, store);
+    let reloaded = start_peer_with_store(page, cert, server_cert, phone_key, store);
     reloaded
         .join_placed(crate::support::WORKSPACE, "Workspace")
         .unwrap();
@@ -431,8 +431,8 @@ async fn an_unanswered_request_expires_between_the_roots(process: tilo_clock::te
     assert_eq!(waiting_for(&approver, &bob).await, waiting);
     answer_pairing(&approver, &bob, digest, true).await.unwrap();
     let phone_key = phone.key.clone();
-    let (cert, host_cert, _) = phone.answer().await.unwrap();
-    assert_paired(&cert, &host_cert, person(&bob), &phone_key);
+    let (cert, server_cert, _) = phone.answer().await.unwrap();
+    assert_paired(&cert, &server_cert, person(&bob), &phone_key);
 
     // Dave's root is on no device here: a request naming him is queued,
     // shows its code, waits for its lifetime and then expires, and is gone.
@@ -615,10 +615,10 @@ async fn a_device_paired_through_the_entry_enters_the_workspace_as_the_person() 
         .await
         .unwrap();
     let phone_key = phone.key.clone();
-    let (cert, host_cert, _) = phone.answer().await.unwrap();
-    assert_paired(&cert, &host_cert, user, &phone_key);
+    let (cert, server_cert, _) = phone.answer().await.unwrap();
+    assert_paired(&cert, &server_cert, user, &phone_key);
     assert_eq!(
-        host_cert, host_device.cert,
+        server_cert, host_device.cert,
         "the host is Alice's, not Bob's"
     );
 
@@ -628,7 +628,7 @@ async fn a_device_paired_through_the_entry_enters_the_workspace_as_the_person() 
         entry_grant(&host, &alice, &host_device, &workspace.workspace, user).await,
         &cert,
         &phone_key,
-        &host_cert,
+        &server_cert,
         workspace.workspace_id,
     )
     .await;

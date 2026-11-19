@@ -20,7 +20,9 @@
 //!
 //! A writer's writes are changes of the tree that name it as their invoker
 //! ([`Writer::invoker`]), for the person at this device: an agent session, a Tilo
-//! app or another program. It grants nothing: the device vouches for the name.
+//! app or another program. It grants nothing: the device vouches for the name. A
+//! program writes with the person's own access, through it; an agent with the
+//! delegation the person handed it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -101,13 +103,17 @@ impl Writer {
                     title.as_deref().unwrap_or_else(|| harness.name()),
                 )))
             }
-            // A Tilo app goes by the name its catalogue gives it.
+            // A program the person uses writes as the person through it: an editor saving
+            // into the folder has the person's access, and history names the program. A
+            // Tilo app goes by the name its catalogue gives it.
             Self::App { id } => {
-                tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::by_app(bounded(id)))
+                return Some(tilo_actions::ActionInvoker::admitted(&through(person, id)));
             }
             Self::Program { id, name } => {
-                tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::by_app(bounded(id)))
-                    .named(Some(bounded(name)))
+                return Some(
+                    tilo_actions::ActionInvoker::admitted(&through(person, id))
+                        .named(Some(bounded(name))),
+                );
             }
             Self::Person => return None,
         };
@@ -115,6 +121,15 @@ impl Writer {
             Some(person) => invoker.acting_for(person),
             None => invoker,
         })
+    }
+}
+
+/// The person at this device acting through the program `id`; the program by itself while
+/// the mount knows no person, which holds no grants.
+fn through(person: Option<&str>, id: &str) -> tilo_actions::Acting {
+    match person {
+        Some(person) => tilo_actions::Acting::person(person).in_app(bounded(id)),
+        None => tilo_actions::Acting::by_app(bounded(id)),
     }
 }
 

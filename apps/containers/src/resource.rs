@@ -1,45 +1,19 @@
-//! Containers as a resource: the new-container draft is the resource, and the engine's
-//! containers, images, volumes and distroboxes are live rows. Where the window is
-//! belongs to the window, offered to every caller as effects.
+//! Containers' window: the screens, the form, the captures and the effects that move around
+//! the app. The resource and its verb are the model crate's.
 
 use ui::framework::{Fixture, ResourceApp, ViewCx};
 use ui::i18n::EmbeddedCatalog;
-use ui::tilo_resource::{self, Effect, Invoke, Model, resource};
+use ui::tilo_resource::{self, Effect, Invoke};
 use ui::widget::Element;
 
 use crate::app::{Confirm, ConfirmTarget, ContainersApp, ContainersState, Prompt, PromptKind};
-use crate::draft::{CreateDraft, CreateField};
+use crate::draft::CreateField;
 use crate::model::{DetailTab, Engine, Section};
+use crate::rows::{ContainerLogs, ContainerRow, DistroboxRow, ImageRow, VolumeRow};
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
-#[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Containers {
-    /// New container
-    pub draft: CreateDraft,
-}
-
-impl Containers {
-    /// What the resource holds: the new-container draft.
-    pub fn read_document(
-        &self,
-        item: Option<&tilo_resource::Id>,
-    ) -> Result<serde_json::Value, String> {
-        tilo_resource::read::fields(self, item)
-    }
-}
-
-#[resource(
-    kind = "containers.engine",
-    read_content = Containers::read_document
-)]
-impl Containers {
-    /// Clear new container
-    #[action]
-    pub fn clear_create(&mut self) {
-        self.draft = CreateDraft::default();
-    }
-}
+pub use containers_model::Containers;
 
 /// Moving around the app, for every caller: none of it changes the document.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
@@ -50,7 +24,7 @@ pub enum ContainersEffect {
         #[param("containers | images | volumes | distrobox")]
         section: String,
     },
-    #[effect(view, kind = "read")]
+    #[effect(view, kind = "read", on = ContainerRow)]
     SelectContainer {
         #[param("Container id, or omit to clear the selection")]
         id: Option<String>,
@@ -60,56 +34,71 @@ pub enum ContainersEffect {
         #[param("logs | stats | inspect | terminal")]
         tab: String,
     },
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Create,
     /// What one container is and how it stands: its name, image, state, command,
     /// creation time, ports, mounts, environment names, labels and latest use. It is
     /// the row's read, so its other verbs are offered to whoever may read it.
-    #[effect(view, row, returns, idempotent)]
+    #[effect(
+        view,
+        row,
+        returns,
+        idempotent,
+        on = ContainerRow,
+        tag = ui::tilo_actions::DOCUMENT_READ_TAG
+    )]
     ReadContainer {
         #[param("Container id")]
         container: String,
     },
-    #[effect(view, row)]
+    #[effect(view, row, on = ContainerLogs)]
     OpenLogs {
         #[param("Container id")]
         container: String,
     },
-    #[effect(row, idempotent, privileged)]
+    #[effect(kind = "outside")]
+    #[effect(row, idempotent, privileged, on = ContainerRow)]
     Start {
         #[param("Container id")]
         container: String,
     },
-    #[effect(row, idempotent, privileged)]
+    #[effect(kind = "outside")]
+    #[effect(row, idempotent, privileged, on = ContainerRow)]
     Stop {
         #[param("Container id")]
         container: String,
     },
-    #[effect(row, privileged)]
+    #[effect(kind = "outside")]
+    #[effect(row, privileged, on = ContainerRow)]
     Restart {
         #[param("Container id")]
         container: String,
     },
-    #[effect(row, idempotent, privileged)]
+    #[effect(kind = "outside")]
+    #[effect(row, idempotent, privileged, on = ContainerRow)]
     Pause {
         #[param("Container id")]
         container: String,
     },
-    #[effect(row, idempotent, privileged)]
+    #[effect(kind = "outside")]
+    #[effect(row, idempotent, privileged, on = ContainerRow)]
     Unpause {
         #[param("Container id")]
         container: String,
     },
-    #[effect(row, destructive)]
+    #[effect(kind = "outside")]
+    #[effect(row, destructive, on = ContainerRow)]
     RemoveContainer {
         #[param("Container id")]
         container: String,
     },
-    #[effect(row, privileged)]
+    #[effect(kind = "outside")]
+    #[effect(row, privileged, on = ContainerRow)]
     Shell {
         #[param("Container id")]
         container: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, idempotent)]
     PullImage {
         #[param("Image reference")]
@@ -120,7 +109,8 @@ pub enum ContainersEffect {
         #[param("Image reference")]
         image: String,
     },
-    #[effect(row, destructive)]
+    #[effect(kind = "outside")]
+    #[effect(row, destructive, on = ImageRow)]
     RemoveImage {
         #[param("Image reference")]
         image: String,
@@ -132,7 +122,8 @@ pub enum ContainersEffect {
         #[param("Image reference")]
         image: String,
     },
-    #[effect(row, destructive)]
+    #[effect(kind = "outside")]
+    #[effect(row, destructive, on = VolumeRow)]
     RemoveVolume {
         #[param("Volume name")]
         volume: String,
@@ -144,7 +135,8 @@ pub enum ContainersEffect {
         #[param("Volume name")]
         volume: String,
     },
-    #[effect(row, privileged)]
+    #[effect(kind = "outside")]
+    #[effect(row, privileged, on = DistroboxRow)]
     EnterDistrobox {
         #[param("Distrobox name")]
         distrobox: String,
@@ -243,7 +235,7 @@ impl ContainersState {
     pub(crate) fn read_container(&self, id: &str) -> Result<serde_json::Value, String> {
         let container = self
             .engine
-            .find(id)
+            .find(&Self::engine_id(id, "container:"))
             .ok_or_else(|| format!("there is no container `{id}`"))?;
         Ok(serde_json::json!({
             "id": container.id,
@@ -265,6 +257,14 @@ impl ContainersState {
         }))
     }
 
+    /// The id `value` names, as the engine knows it: a row publishes it as
+    /// `container:abc` (or `container:abc:logs` for its logs), `image:x`,
+    /// `volume:y` or `distrobox:z`, and a control names it plainly.
+    fn engine_id(value: &str, prefix: &str) -> String {
+        let value = value.strip_prefix(prefix).unwrap_or(value);
+        value.strip_suffix(":logs").unwrap_or(value).to_owned()
+    }
+
     pub(crate) fn perform_effect(&mut self, effect: ContainersEffect) -> Result<(), String> {
         match effect {
             ContainersEffect::SetSection { section } => {
@@ -274,7 +274,7 @@ impl ContainersState {
             }
             ContainersEffect::SelectContainer { id } => {
                 let id = id
-                    .map(|id| id.trim().to_owned())
+                    .map(|id| Self::engine_id(id.trim(), "container:"))
                     .filter(|id| !id.is_empty());
                 if let Some(id) = &id
                     && self.engine.find(id).is_none()
@@ -290,10 +290,10 @@ impl ContainersState {
             }
             ContainersEffect::Create => self.open_create(),
             ContainersEffect::ReadContainer { container } => {
-                self.read_container(&container)?;
+                self.read_container(&Self::engine_id(&container, "container:"))?;
             }
             ContainersEffect::OpenLogs { container } => {
-                self.select_container(Some(container));
+                self.select_container(Some(Self::engine_id(&container, "container:")));
                 self.show_tab(DetailTab::Logs);
             }
             ContainersEffect::PullImage { image } => self.start_pull(&image),
@@ -311,6 +311,7 @@ impl ContainersState {
                 target: ConfirmTarget::Volume { name: volume },
             }),
             ContainersEffect::EnterDistrobox { distrobox } => {
+                let distrobox = Self::engine_id(&distrobox, "distrobox:");
                 if self.engine.live {
                     self.run_engine_operation("containers.distrobox", "enter", &distrobox)?;
                 } else if self.live {
@@ -321,7 +322,13 @@ impl ContainersState {
             }
             engine => {
                 if let Some((kind, verb, target)) = engine.engine_operation() {
-                    self.run_engine_operation(kind, verb, target)?;
+                    let prefix = match kind {
+                        "containers.image" => "image:",
+                        "containers.volume" => "volume:",
+                        "containers.distrobox" => "distrobox:",
+                        _ => "container:",
+                    };
+                    self.run_engine_operation(kind, verb, &Self::engine_id(target, prefix))?;
                 }
             }
         }

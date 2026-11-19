@@ -39,7 +39,7 @@ use ui_core::automerge::transaction::Transactable;
 use tilo_actions::{
     ActionFailure, ActionOutput, ActionSpec, Availability, InvocationId, InvocationUpdate,
 };
-use tilo_resource::{ActionRef, Effect, Id, Outbox, Path, Resource, Settled};
+use tilo_resource::{Effect, Id, Outbox, Path, Resource, Settled};
 use ui_core::WakeHandle;
 use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::invocation_scope::{ResourceEffectScope, ResourceInvocationScope};
@@ -1366,65 +1366,7 @@ impl JobQueue {
     }
 }
 
-/// What an effect, or one of the resource's own actions, looks like to
-/// callers right now, when it differs from its declaration: unavailable
-/// while the engine is offline, labelled "Stop recording" while recording.
-#[derive(Clone, Debug, PartialEq)]
-pub struct EffectStatus {
-    id: &'static str,
-    availability: Option<Availability>,
-    label: Option<String>,
-}
-
-impl EffectStatus {
-    /// `effect` cannot be invoked now: `code` names why for programs,
-    /// `reason` for people.
-    pub fn unavailable<E, A>(
-        effect: ActionRef<E, A>,
-        code: impl Into<String>,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            id: effect.id,
-            availability: Some(Availability::Unavailable {
-                code: code.into(),
-                reason: reason.into(),
-            }),
-            label: None,
-        }
-    }
-
-    /// `effect` is offered as `label` now.
-    pub fn labelled<E, A>(effect: ActionRef<E, A>, label: impl Into<String>) -> Self {
-        Self {
-            id: effect.id,
-            availability: None,
-            label: Some(label.into()),
-        }
-    }
-
-    /// Offer the effect as `label` too.
-    #[must_use]
-    pub fn with_label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
-        self
-    }
-
-    /// The id of the action or effect this status is about.
-    pub(crate) fn id(&self) -> &'static str {
-        self.id
-    }
-
-    /// Show `spec` as this status says it is right now.
-    pub(crate) fn overlay(&self, spec: &mut ActionSpec) {
-        if let Some(availability) = &self.availability {
-            spec.type_mut().contract.availability = availability.clone();
-        }
-        if let Some(label) = &self.label {
-            spec.type_mut().label.clone_from(label);
-        }
-    }
-}
+pub use super::status::EffectStatus;
 
 /// The specs last built for one vocabulary, as callers saw them then: the
 /// locale and statuses they were built at, kept so a publication that finds
@@ -1470,7 +1412,10 @@ fn overlaid(specs: Vec<ActionSpec>, statuses: &[EffectStatus]) -> Vec<ActionSpec
         .into_iter()
         .map(|mut spec| {
             let id = spec.id.clone();
-            for status in statuses.iter().filter(|status| status.id == id) {
+            for status in statuses
+                .iter()
+                .filter(|status| status.item().is_none() && status.id() == id)
+            {
                 status.overlay(&mut spec);
             }
             require_host(&mut spec, host_lacks);

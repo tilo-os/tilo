@@ -326,7 +326,7 @@ ciphertext and MLS control material without decoding either.
 
 ### Key loss and identity backups
 
-A `tilo-seal` identity backup (`runtime-identity::backup`) holds the root
+A `tilo-seal` identity backup (`tilo_identity::store` backup) holds the root
 identity record. It does not hold device keys, device certificates, the
 fleet, the Secret Service master key or any MLS state. Restoring it on a
 replacement machine brings back the person's root identity, and onboarding

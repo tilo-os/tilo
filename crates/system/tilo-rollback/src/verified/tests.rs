@@ -277,4 +277,65 @@ tilo_test_env::scenario! {
             );
         }
     }
+
+}
+
+/// A token as `cryptsetup token export` shows it: only the fields this decision reads
+/// are set, so a PIN-less keyslot's anchor is testable without a TPM.
+fn token(pin: bool, anchors: Option<&str>) -> RollbackToken {
+    RollbackToken {
+        token_type: crate::token::TOKEN_TYPE.into(),
+        keyslots: vec!["1".into()],
+        version: crate::token::TOKEN_VERSION,
+        generation: 1,
+        nv_index: crate::counter::DEFAULT_NV_INDEX,
+        nv_operand: 1,
+        nv_base: 0,
+        pcr_bank: "sha256".into(),
+        pcrs: vec![11],
+        platform_pcrs: vec![7],
+        pin,
+        anchors: anchors.map(str::to_owned),
+        sealed_public: String::new(),
+        sealed_private: String::new(),
+        key_name: String::new(),
+        policy_digest: String::new(),
+        predictions: Vec::new(),
+    }
+}
+
+#[test]
+fn a_pin_less_unlock_is_judged_by_the_anchor_its_own_token_carries() {
+    let state = tempfile::tempdir().unwrap();
+    let state_path = state.path().join("rollback/state.json");
+    // The encrypted root holds no such state before this boot has opened it, which is
+    // the moment the decision is made: the token's own copy is what the boot compares.
+    let tokens = vec![
+        (0, token(true, None)),
+        (1, token(false, Some("aa"))),
+        (2, token(false, Some("aa"))),
+    ];
+    assert_eq!(
+        recorded_anchor_for_boot(&state_path, &tokens),
+        Some(AnchorDigest("aa".into()))
+    );
+    // Tokens that disagree yield nothing, and the keyslot waits for the typed secret.
+    let disagreeing = vec![(1, token(false, Some("aa"))), (2, token(false, Some("bb")))];
+    assert_eq!(recorded_anchor_for_boot(&state_path, &disagreeing), None);
+    // What enrollment wrote on the root wins once it is readable.
+    std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    verified_in(&state_path.with_file_name("verified-boot.json"), "cc");
+    assert_eq!(
+        recorded_anchor_for_boot(&state_path, &tokens),
+        Some(AnchorDigest("cc".into()))
+    );
+}
+
+/// Write what enrollment writes, without a verified boot to read.
+fn verified_in(path: &Path, anchors: &str) {
+    std::fs::write(
+        path,
+        serde_json::json!({"anchors": anchors, "authorities": []}).to_string(),
+    )
+    .unwrap();
 }

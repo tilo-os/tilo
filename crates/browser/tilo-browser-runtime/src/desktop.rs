@@ -16,13 +16,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_actions::InvocationId;
-use tilo_actions::remote::ActionProvider as _;
 use tilo_app::linked_accounts::ActionAnswer;
 use tilo_desktop_model::{IdMinter, Layout, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_lock::MutexRecover as _;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 use tilo_session_core::layout::{LayoutDocument, Store};
 use ui::application::{
     AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
@@ -347,6 +346,11 @@ pub(crate) struct Shared {
     /// before the record itself arrived, or the tab's application is still
     /// loading.
     waiting: Rc<RefCell<std::collections::HashSet<TabId>>>,
+    /// Why the workspace cannot answer what windows wait for now, as the page's link to it says
+    /// ([`tilo_session_client::link::PeerStatus::unanswerable`]): a window whose resource is on its
+    /// way shows that failure instead of waiting for an answer that cannot come, and waits again
+    /// once the workspace can answer.
+    unanswerable: Rc<RefCell<Option<String>>>,
     /// The tabs whose window could not open what it names, with what the window says instead
     /// ([`crate::window_states`]).
     pub(crate) unopened: Rc<RefCell<HashMap<TabId, String>>>,
@@ -369,12 +373,6 @@ pub(crate) struct Shared {
     /// The agent run that opened each window an agent opened, by tab, as the
     /// workspace's shell last said.
     pub opened_by: Rc<RefCell<BTreeMap<TabId, tilo_desktop_model::ownership::OpenedBy>>>,
-    /// The name this page last asked its host to give the workspace, until the workspace's
-    /// governance takes it: a rename it asked for is no news to it.
-    pub asked_name: Rc<RefCell<Option<String>>>,
-    /// The name the workspace's governance recorded when this page last projected it onto the
-    /// shell: a different one since is a rename.
-    pub projected_name: Rc<RefCell<Option<String>>>,
     /// The governance's revision and the shell's when the page last projected the governance onto
     /// it: a projection is due when either moved.
     pub projected_at: Rc<std::cell::Cell<Option<(u64, u64)>>>,
@@ -429,11 +427,9 @@ pub(crate) struct Shared {
     pub workspace: String,
     /// The workspace's agents, as Chat's agents resource names each: an agent is a member of
     /// the workspace like a person is, so a page names it to its windows whether or not a
-    /// device of its works here now. `None` until the workspace delivers the document: the
-    /// page asks again each frame (`Mount::place_agents`).
-    pub agents: Option<
-        tilo_app::framework::WorkspaceResource<tilo_app::tilo_workspace_agent::WorkspaceAgents>,
-    >,
+    /// device of its works here now. `None` until the code that reads them is in and the
+    /// workspace delivered them: the page asks again each frame (`Mount::place_agents`).
+    pub agents: Option<Rc<dyn crate::workspace_resources::Agents>>,
     /// The owners the workspace's documents open through, by the app that keeps each.
     pub owners: Option<ResourceOwners>,
 }
@@ -465,6 +461,25 @@ impl Shared {
     pub fn wake(&self) {
         self.woken.store(true, Ordering::Release);
         crate::browser::wake_desktops();
+    }
+
+    /// The workspace cannot answer this page now, for `cause`, or can again (`None`): the windows
+    /// waiting for a resource are built again, showing the failure or waiting once more.
+    pub fn follow_unanswerable(&self, cause: Option<String>, handle: &DesktopHandle) {
+        if *self.unanswerable.borrow() == cause {
+            return;
+        }
+        *self.unanswerable.borrow_mut() = cause;
+        self.retry_waiting(handle);
+    }
+
+    /// What a window whose resource is still on its way from the workspace shows: its arrival, or,
+    /// while the workspace cannot answer, why ([`Self::follow_unanswerable`]).
+    fn awaiting_resource(&self) -> Unready {
+        match self.unanswerable.borrow().clone() {
+            Some(cause) => Unready::Failed(cause),
+            None => Unready::Arriving,
+        }
     }
 
     /// A record arrived: build the tabs still waiting for theirs again.
@@ -591,6 +606,26 @@ impl Shared {
         apps
     }
 
+    /// Code the page fetched is in: the windows waiting for it are built again.
+    pub(crate) fn code_arrived(&self) {
+        self.arrived.set(true);
+        self.wake();
+    }
+
+    /// The stores the page keeps of the workspace, opened as `author`.
+    pub(crate) fn page_stores(
+        &self,
+        author: &str,
+    ) -> Option<crate::workspace_resources::PageStores> {
+        Some(crate::workspace_resources::PageStores {
+            owners: self.owners.clone()?,
+            stores: Rc::clone(&self.stores),
+            workspace: self.workspace.clone(),
+            author: author.to_owned(),
+            replicated: self.resource_actions.peer.is_some(),
+        })
+    }
+
     /// Whether an application finished loading since the last call.
     pub fn take_arrived(&self) -> bool {
         self.arrived.replace(false)
@@ -647,8 +682,7 @@ impl Shared {
         if !loaded {
             self.failed.borrow_mut().insert(id.to_owned());
         }
-        self.arrived.set(true);
-        self.wake();
+        self.code_arrived();
         notify();
     }
 
@@ -1048,7 +1082,7 @@ impl Tiles {
                 // loading, not broken, and the window is built again once it is here.
                 Unbuilt::Arriving => {
                     self.shared.waiting.borrow_mut().insert(tab.id);
-                    Unready::Arriving
+                    self.shared.awaiting_resource()
                 }
                 Unbuilt::Failed(detail) => Unready::Failed(detail),
             })?;
@@ -1075,6 +1109,11 @@ impl Tiles {
         (instance, embedded): (TabId, bool),
         restore: RestoreInput,
     ) -> Result<AppComponent, Unbuilt> {
+        // What the window opens beside its own resource: until its code is in, the window shows
+        // its app arriving, and is built again once it is.
+        let resources = crate::workspace_resources::WORKSPACE_RESOURCES
+            .get()
+            .ok_or(Unbuilt::Arriving)?;
         let inputs = ProcessContextInputs {
             records: store,
             views: Rc::clone(&self.inputs.views),
@@ -1104,14 +1143,9 @@ impl Tiles {
                 crate::content_open::opened_file(&hash, &self.inputs.content, name.as_deref())?;
             context.provide_open_file(file);
         }
-        context.provide_workspace_resources(crate::workspace_resources::in_page(
-            &self.inputs.owners,
-            &self.shared.stores,
-            &self.inputs.workspace,
-            self.inputs.author.clone(),
-            self.shared.resource_actions.peer.is_some(),
-        ));
-        crate::person_resources::provide(&mut context, &self.inputs.store)?;
+        if let Some(page) = self.shared.page_stores(&self.inputs.author) {
+            (resources.beside)(&mut context, &page, &self.inputs.store)?;
+        }
         crate::host_services::provide_provider_admin(
             &mut context,
             self.inputs.provider_admin.clone(),
@@ -1207,17 +1241,6 @@ fn embed_instance(view: &ResourceView) -> TabId {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     view.hash(&mut hasher);
     hasher.finish() | (1 << 63)
-}
-
-/// Where an app's code comes from: the host that served this page, by
-/// the name its address gives it. A window showing its app arrive says it.
-pub(crate) fn code_host() -> ui::arriving::Source {
-    let host = js_sys::Reflect::get(&js_sys::global(), &"location".into())
-        .and_then(|location| js_sys::Reflect::get(&location, &"host".into()))
-        .ok()
-        .and_then(|host| host.as_string())
-        .unwrap_or_default();
-    ui::arriving::Source::host(host)
 }
 
 /// Why a window cannot show its app yet.
@@ -1363,7 +1386,7 @@ impl Tiles {
     fn unopened(&self, tab: TabId, error: &ui::resource::ResourceOpenError) -> Unready {
         if matches!(error, ui::resource::ResourceOpenError::Arriving) {
             self.shared.waiting.borrow_mut().insert(tab);
-            return Unready::Arriving;
+            return self.shared.awaiting_resource();
         }
         Unready::Notice(error.to_string())
     }
@@ -1451,11 +1474,11 @@ impl TileSource for Tiles {
                 self.shared.landed.borrow_mut().remove(&tab.id);
                 let TileContent::LocalApp { app_id, .. } = &tab.tile else {
                     return TileHost::new(ui::widget::TileContent::Arriving)
-                        .arriving_from(code_host());
+                        .arriving_from(ui::arriving::Source::Remote);
                 };
                 let shape = ui::application::registry::declared_arrival_shape(app_id);
                 TileHost::new(ui::widget::TileContent::Arriving)
-                    .arriving_from(code_host())
+                    .arriving_from(ui::arriving::Source::Remote)
                     .with_arrival_shape(shape)
             }
             Err(Unready::Notice(detail)) => {
@@ -1551,7 +1574,7 @@ impl TileSource for Tiles {
         })
     }
 
-    fn window_record(&self, tab: TabId) -> Option<(String, String)> {
+    fn window_resource(&self, tab: TabId) -> Option<(String, String)> {
         self.shared.records.borrow().get(&tab).map(|checkout| {
             (
                 checkout.id.route().to_owned(),
@@ -1954,14 +1977,6 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
         shared.role = SharedRole::unknown();
     }
     shared.linked = linked_accounts(&shared, notify);
-    if inputs.peer.is_some() {
-        shared.agents = crate::page_agents::open(
-            &inputs.owners,
-            &shared.stores,
-            &inputs.workspace,
-            inputs.author.clone(),
-        );
-    }
     shared
 }
 

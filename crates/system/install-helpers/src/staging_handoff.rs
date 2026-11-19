@@ -436,6 +436,7 @@ pub struct Handoff {
     pub owned_boot_entry: String,
     pub original_boot_order: Vec<String>,
     pub profile: Map<String, Value>,
+    pub plan: Option<Value>,
     pub migration: Option<Value>,
 }
 
@@ -456,6 +457,11 @@ impl Handoff {
             "original_boot_order": self.original_boot_order,
             "profile": self.profile,
         });
+        if let Some(plan) = &self.plan
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert("plan".into(), plan.clone());
+        }
         if let Some(migration) = &self.migration
             && let Some(object) = value.as_object_mut()
         {
@@ -479,8 +485,11 @@ impl Handoff {
 /// Validates a parsed handoff against schema 1.
 pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
     let Some(raw) = raw.as_object().filter(|map| {
-        (map.len() == HANDOFF_KEYS.len()
-            || (map.len() == HANDOFF_KEYS.len().saturating_add(1) && map.contains_key("migration")))
+        let optional = ["migration", "plan"]
+            .iter()
+            .filter(|key| map.contains_key(**key))
+            .count();
+        map.len() == HANDOFF_KEYS.len().saturating_add(optional)
             && HANDOFF_KEYS.iter().all(|key| map.contains_key(*key))
     }) else {
         return refuse("handoff fields differ from schema 1");
@@ -537,6 +546,7 @@ pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
         owned_boot_entry: entry,
         original_boot_order: order,
         profile: profile.clone(),
+        plan: None,
         migration: None,
     };
     let (esp, root, target) = (
@@ -559,6 +569,7 @@ pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
             return refuse(format!("handoff {label} overlap"));
         }
     }
+    validate_plan(raw, &mut handoff)?;
     if let Some(raw_migration) = raw.get("migration") {
         let migration: staging_handoff_model::Migration =
             serde_json::from_value(raw_migration.clone())
@@ -571,6 +582,19 @@ pub fn validate_handoff(raw: &Value) -> Result<Handoff> {
         handoff.migration = Some(raw_migration.clone());
     }
     Ok(handoff)
+}
+
+/// A carried install plan is the typed model's, so the model's own rules
+/// decide what it may say; it must be complete and a Tilo Server plan to be
+/// carried for an unattended install.
+fn validate_plan(raw: &Map<String, Value>, handoff: &mut Handoff) -> Result<()> {
+    let Some(raw_plan) = raw.get("plan") else {
+        return Ok(());
+    };
+    handoff.plan = Some(raw_plan.clone());
+    let typed: staging_handoff_model::Handoff =
+        serde_json::from_value(handoff.json()).map_err(|e| Fail::Refusal(e.to_string()))?;
+    typed.validate().map_err(Fail::Refusal)
 }
 
 fn validate_profile(profile: &Map<String, Value>) -> Result<()> {
@@ -1350,13 +1374,6 @@ pub fn check_mounts_command(host: &dyn Host, handoff_path: &Path, disk: &str) ->
     check_mounts(&handoff, &partitions, root)
 }
 
-/// Replaces `path` with `data` at exactly `mode`, atomically and durably.
-fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
-    Ok(tilo_files::native::atomic::write_with_mode(
-        path, data, mode,
-    )?)
-}
-
 fn canonical(document: &Value) -> Vec<u8> {
     let mut text = Dumps::CANONICAL.dumps(document);
     text.push('\n');
@@ -1407,7 +1424,7 @@ pub fn detect(host: &dyn Host, out: &Path, error: &Path) -> Result<Printed> {
     match recognised {
         Ok(None) => Ok(Printed::default()),
         Err(Fail::Refusal(reason)) => {
-            write_atomic(
+            tilo_files::native::atomic::write_with_mode(
                 error,
                 format!("Staged installation was not recognised: {reason}\n").as_bytes(),
                 0o644,
@@ -1419,7 +1436,7 @@ pub fn detect(host: &dyn Host, out: &Path, error: &Path) -> Result<Printed> {
         }
         Err(other) => Err(other),
         Ok(Some(handoff)) => {
-            write_atomic(out, &canonical(&handoff.json()), 0o644)?;
+            tilo_files::native::atomic::write_with_mode(out, &canonical(&handoff.json()), 0o644)?;
             Ok(Printed {
                 stdout: format!(
                     "tilo-staging-handoff: staged installation for disk {} recognised\n",
@@ -1486,7 +1503,7 @@ pub fn write_reclaim_record(
         .recursive(true)
         .mode(0o755)
         .create(&directory)?;
-    write_atomic(
+    tilo_files::native::atomic::write_with_mode(
         &directory.join("staging-reclaim.json"),
         &canonical(&record),
         0o600,

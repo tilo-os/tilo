@@ -72,11 +72,8 @@ impl OwnerWrites {
 }
 
 impl OwnerCommitService for NativeOwnerCommits {
-    fn requires_workspace(&self, workspace: &str) -> bool {
-        WorkspaceId::parse(workspace).is_some_and(|id| self.ownership.commits_documents(id))
-    }
     /// A held workspace's effect receipts are this device's own to record in
-    /// it, whichever model its records follow.
+    /// it.
     fn records_effects(&self, workspace: &str) -> bool {
         WorkspaceId::parse(workspace)
             .is_some_and(|workspace| self.ownership.projects_workspace(workspace))
@@ -86,15 +83,11 @@ impl OwnerCommitService for NativeOwnerCommits {
             .opened_owner("native durable owner unavailable")?
             .health()
     }
-    /// An effect's receipt; a document write commits through
-    /// [`Self::commit_local_document`].
+    /// An effect's receipt. A record's write is committed through
+    /// [`Self::commit_local_document`], which the broker calls directly.
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
         match &request.operation {
             CommitOperation::EffectReceipt { .. } => {}
-            CommitOperation::Document { .. } => {
-                let committed = self.commit_local_document(request, None);
-                return Box::pin(async move { Ok(committed.await?.1) });
-            }
             _ => {
                 return Box::pin(std::future::ready(Err(
                     "unsupported native owner commit family".into(),

@@ -16,6 +16,26 @@ pub(crate) struct CacheEntry<T> {
     available_space: Size<AvailableSpace>,
     /// The cached size and baselines of the item
     content: T,
+    /// Which of the sizes it came to its content alone does not give back at that size (see
+    /// [`answers`])
+    tainted: Taint,
+}
+
+/// Per axis, whether a node solved with that dimension open came to a size that laying it out
+/// at that size does not reproduce.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct Taint {
+    /// A measurement or a minimum width stood the node wider than its content's wrapping.
+    pub width: bool,
+    /// A minimum height stood the node taller than its content, or a child's height resolves
+    /// against the node's only once that is known.
+    pub height: bool,
+}
+
+impl Taint {
+    /// Both axes tainted: an entry that answers only the space it was measured under.
+    pub const ALL: Self = Self { width: true, height: true };
 }
 
 /// A cache for caching the results of a sizing a Grid Item or Flexbox Item
@@ -40,14 +60,18 @@ impl Default for Cache {
 /// `available_space`.
 ///
 /// An entry answers when it was solved with the dimensions the query knows. Where the query
-/// knows a dimension the entry left out, the entry answers only if it came to that size under
-/// the space the query offers: the size alone is no answer, because a node measured under a
-/// min-content constraint wraps its content into other lines than the same node at the same
-/// width it is later given. A card whose content is as wide as the column it stands in came to
-/// that width at its min-content wrapping, and handing that height to a definite-width query
-/// stood it three times as tall as its content in a row that centres it.
-fn answers(
-    entry: &CacheEntry<impl Copy>,
+/// knows a dimension the entry left open, the entry came to that size by itself, and it answers
+/// when laying the node out at that size gives the same result: always when it was measured under
+/// the space the query offers, and under other space only when that axis is not tainted. Under
+/// a min-content constraint a block of text wraps into its narrowest lines, so a card holding it
+/// comes to the height of that wrapping; a card whose content names a width it will not go under
+/// (`min-width: 400px`) comes to that same width there, and its height at that width is another.
+/// The solve that stored such an entry saw a measurement or a minimum width come to a width its
+/// content's wrapping does not fill, and tainted it. An untainted entry is what the node lays out
+/// to at its own size, and answering with it keeps a nested grid or flex container from solving
+/// its subtree again for each constraint its parents probe it under.
+fn answers<T: Copy>(
+    entry: &CacheEntry<T>,
     known_dimensions: Size<Option<f32>>,
     available_space: Size<AvailableSpace>,
     cached_size: Size<f32>,
@@ -56,8 +80,10 @@ fn answers(
                         entry_known: Option<f32>,
                         cached: f32,
                         entry_available: AvailableSpace,
-                        available: AvailableSpace| {
-        known == entry_known || (known == Some(cached) && entry_available.is_roughly_equal(available))
+                        available: AvailableSpace,
+                        relaxed: bool| {
+        known == entry_known
+            || (known == Some(cached) && (relaxed || entry_available.is_roughly_equal(available)))
     };
 
     axis_answers(
@@ -66,12 +92,14 @@ fn answers(
         cached_size.width,
         entry.available_space.width,
         available_space.width,
+        !entry.tainted.width,
     ) && axis_answers(
         known_dimensions.height,
         entry.known_dimensions.height,
         cached_size.height,
         entry.available_space.height,
         available_space.height,
+        !entry.tainted.height,
     ) && (known_dimensions.width.is_some() || entry.available_space.width.is_roughly_equal(available_space.width))
         && (known_dimensions.height.is_some() || entry.available_space.height.is_roughly_equal(available_space.height))
 }
@@ -149,6 +177,12 @@ impl Cache {
     /// Try to retrieve a cached result from the cache
     #[inline]
     pub fn get(&self, input: &LayoutInput) -> Option<LayoutOutput> {
+        self.get_tainted(input).map(|(output, _)| output)
+    }
+
+    /// A cached result for `input`, and whether it is tainted (see [`answers`]).
+    #[inline]
+    pub fn get_tainted(&self, input: &LayoutInput) -> Option<(LayoutOutput, Taint)> {
         let known_dimensions = input.known_dimensions;
         let available_space = input.available_space;
 
@@ -156,11 +190,11 @@ impl Cache {
             RunMode::PerformLayout => self
                 .final_layout_entry
                 .filter(|entry| answers(entry, known_dimensions, available_space, entry.content.size))
-                .map(|e| e.content),
+                .map(|e| (e.content, e.tainted)),
             RunMode::ComputeSize => {
                 for entry in self.measure_entries.iter().flatten() {
                     if answers(entry, known_dimensions, available_space, entry.content) {
-                        return Some(LayoutOutput::from_outer_size(entry.content));
+                        return Some((LayoutOutput::from_outer_size(entry.content), entry.tainted));
                     }
                 }
 
@@ -172,19 +206,25 @@ impl Cache {
 
     /// Store a computed size in the cache
     pub fn store(&mut self, input: &LayoutInput, layout_output: LayoutOutput) {
+        self.store_tainted(input, layout_output, Taint::ALL);
+    }
+
+    /// Store a computed size in the cache, tainted or not (see [`answers`]).
+    pub fn store_tainted(&mut self, input: &LayoutInput, layout_output: LayoutOutput, tainted: Taint) {
         let known_dimensions = input.known_dimensions;
         let available_space = input.available_space;
 
         match input.run_mode {
             RunMode::PerformLayout => {
                 self.is_empty = false;
-                self.final_layout_entry = Some(CacheEntry { known_dimensions, available_space, content: layout_output })
+                self.final_layout_entry =
+                    Some(CacheEntry { known_dimensions, available_space, content: layout_output, tainted })
             }
             RunMode::ComputeSize => {
                 self.is_empty = false;
                 let cache_slot = Self::compute_cache_slot(known_dimensions, available_space);
                 self.measure_entries[cache_slot] =
-                    Some(CacheEntry { known_dimensions, available_space, content: layout_output.size });
+                    Some(CacheEntry { known_dimensions, available_space, content: layout_output.size, tainted });
             }
             RunMode::PerformHiddenLayout => {}
         }

@@ -100,7 +100,7 @@ impl FrameHarness {
         }
         let mut bar = self.painted_window_bar(width);
         let row = bar.toolbar_row_mut();
-        if !(row.press(at) && row.release(at)) {
+        if !(row.press(at, false) && row.release(at)) {
             return Err(format!("the sidebar button took no press at {at:?}"));
         }
         self.deliver_bar_events(&mut bar)

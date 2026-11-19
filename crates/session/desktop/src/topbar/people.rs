@@ -1,5 +1,5 @@
-//! Who is here, in the bar: the others' faces (a "+N" badge when crowded),
-//! the people button, and the invite button.
+//! Who is here, in the bar: the person's own face, then the others' (a "+N"
+//! badge when crowded), the people button, and the invite button after them.
 //!
 //! One who's-here bar. Each face is the person as everyone looking sees
 //! them (one initials rule, one colour source) and opens their card. The
@@ -8,7 +8,8 @@
 //! invite button stays beside them however many people are present, and
 //! invites in one step: the host's own invite flow, not the list.
 use super::{
-    Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, Scene, TextRenderer, Theme, TopBarChrome, t,
+    Affine, BAR_CONTROL_PX, ChromeIntent, Color, Point, Rect, Scene, TextRenderer, Theme,
+    TopBarChrome, t,
 };
 
 /// The people button's glyph: the cluster of who is here.
@@ -197,9 +198,12 @@ impl TopBarChrome {
         // A phone-wide bar with someone else here keeps its room for who is here: the face of the
         // one who did something last beside the people button, and the clock. The invite waits in
         // the panel that button opens ("Invite people"), and comes back once nobody else is here.
+        // It waits there too while the ask about the person stands open, which a phone's bar fits
+        // only beside the person's own face.
         if !self.can_invite()
             || !self.invite_clears_the_area(text_renderer, theme, right_x)
-            || (self.phone_wide() && self.anyone_else())
+            || (self.phone_wide()
+                && (self.anyone_else() || self.chrome_avatar_ask().is_some_and(|ask| ask.open)))
         {
             self.invite_rect = Rect::ZERO;
             return right_x;
@@ -211,10 +215,11 @@ impl TopBarChrome {
         pill.x0 - f64::from(theme.tokens.spacing.s2)
     }
 
-    /// Where the others' faces stand in reading order, then the "+N" badge last, the whole stack
-    /// ending at `stack_right_x`. Returns where the stack stands (zero when nobody else is here).
-    /// Every face is the shared [`ui::presence::FaceStack`]: an agent wears its client's hue as a
-    /// rounded square and a person a circle, at every scale the desktop shows people.
+    /// Where the faces stand in reading order, the person's own first, then the others' and the
+    /// "+N" badge last, the whole stack ending at `stack_right_x`. Returns where the others' faces
+    /// stand (zero when nobody else is here). Every face is the shared [`ui::presence::FaceStack`]:
+    /// an agent wears its client's hue as a rounded square and a person a circle, at every scale
+    /// the desktop shows people.
     pub(super) fn place_avatar_chips(
         &mut self,
         theme: &Theme,
@@ -247,11 +252,17 @@ impl TopBarChrome {
                 self.center_area.y1,
             )
         };
-        let (anchor, room) = if middle.is_zero_area() {
+        let own = self.own_face();
+        let own_n = usize::from(own.is_some());
+        let least = stack.width_of(
+            own_n.saturating_add(usize::from(!self.face_names.is_empty())),
+            0,
+        );
+        let (anchor, span) = if middle.is_zero_area() {
             (stack_right_x, stack_right_x - pill_right)
         } else {
             let right_of_middle = stack_right_x - middle.x1 - gap;
-            if right_of_middle >= stack.width_of(1, 0) {
+            if right_of_middle >= least {
                 (stack_right_x, right_of_middle)
             } else {
                 let before_middle = (middle.x0 - gap).max(pill_right);
@@ -261,37 +272,61 @@ impl TopBarChrome {
         let (most, past) = stack.split(self.face_names.len());
         let mut shown: Vec<usize> = (0..most).collect();
         let mut more = past;
-        while !shown.is_empty() && stack.width_of(shown.len(), more) > room {
+        while !shown.is_empty() && stack.width_of(own_n.saturating_add(shown.len()), more) > span {
             shown.pop();
             more = more.saturating_add(1);
         }
-        if stack.width_of(0, more) > room {
+        if stack.width_of(own_n, more) > span {
             more = 0;
         }
-        let faces: Vec<ui::presence::Face<'_>> =
-            shown.iter().map(|&i| self.face_of(i, theme)).collect();
-        let (rects, badge) = stack.layout((anchor, center_y), (&faces, more));
-        drop(faces);
         let count = shown.len();
         self.faces_shown = count;
-        self.shown_faces.clone_from(&shown);
         self.face_overflow = more;
-        self.face_rects = Self::faces_drawn(rects);
-        self.placed.faces = Some(super::placed::FacesPlaced {
-            shown,
-            more,
-            anchor: (anchor, center_y),
-        });
-        if count == 0 && badge.is_none() {
+        self.stand_faces(own.as_ref(), shown, more, (anchor, center_y), theme);
+        if count == 0 && more == 0 {
             return Rect::ZERO;
         }
-        let width = stack.width_of(count, more);
+        let width = stack.width_of(own_n.saturating_add(count), more)
+            - f64::from(u8::from(own.is_some())) * stack.step();
         Rect::new(
             anchor - width,
             center_y - BAR_CONTROL_PX / 2.0,
             anchor,
             center_y + BAR_CONTROL_PX / 2.0,
         )
+    }
+
+    /// Stand the person's `own` face, then the others' `shown` and a badge counting `more`, ending at
+    /// `anchor`: where each is pressed, and what painting them reads.
+    fn stand_faces(
+        &mut self,
+        own: Option<&(String, String, Color)>,
+        shown: Vec<usize>,
+        more: usize,
+        anchor: (f64, f64),
+        theme: &Theme,
+    ) {
+        let faces: Vec<ui::presence::Face<'_>> = own
+            .map(|(name, identity, colour)| ui::presence::Face::new(name, identity, *colour))
+            .into_iter()
+            .chain(shown.iter().map(|&i| self.face_of(i, theme)))
+            .collect();
+        let (rects, _) = ui::presence::FaceStack::BAR.layout(anchor, (&faces, more));
+        drop(faces);
+        let mut rects = Self::faces_drawn(rects);
+        self.own_avatar_rect = if own.is_some() {
+            rects.remove(0)
+        } else {
+            Rect::ZERO
+        };
+        self.face_rects = rects;
+        self.shown_faces.clone_from(&shown);
+        self.placed.faces = Some(super::placed::FacesPlaced {
+            own: own.is_some(),
+            shown,
+            more,
+            anchor,
+        });
     }
 
     /// Paint the faces where [`Self::place_avatar_chips`] stood them, over the bar's own ground
@@ -307,16 +342,17 @@ impl TopBarChrome {
         let Some(placed) = self.placed.faces.as_ref() else {
             return;
         };
-        let faces: Vec<ui::presence::Face<'_>> = placed
-            .shown
+        let own = placed.own.then(|| self.own_face()).flatten();
+        let faces: Vec<ui::presence::Face<'_>> = own
             .iter()
-            .map(|&i| self.face_of(i, theme))
+            .map(|(name, identity, colour)| ui::presence::Face::new(name, identity, *colour))
+            .chain(placed.shown.iter().map(|&i| self.face_of(i, theme)))
             .collect();
         let _ = ui::presence::FaceStack::BAR.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             placed.anchor,
             (&faces, placed.more),
-            theme.tokens.colors.surfaces.base,
+            super::bar_ground(theme),
         );
     }
 
@@ -336,7 +372,7 @@ impl TopBarChrome {
         };
         ui::presence::Face {
             dimmed: look.is_some_and(|look| look.dimmed),
-            in_call: look.and_then(|look| look.call),
+            active: look.and_then(|look| look.active),
             scale: look.map_or(1.0, |look| look.scale),
             ..face
         }
@@ -374,35 +410,30 @@ impl TopBarChrome {
             .face_ids
             .len()
             .saturating_sub(usize::from(self.following));
-        let room = right_x - left;
+        let span = right_x - left;
+        let own = self.own_face();
+        let own_n = usize::from(own.is_some());
         let latest: Vec<usize> = self.latest_active.into_iter().collect();
         let past_latest = others.saturating_sub(latest.len());
-        let (shown, more) = if stack.width_of(latest.len(), past_latest) <= room {
-            (latest, past_latest)
-        } else if others > 0 && stack.width_of(0, others) <= room {
-            (Vec::new(), others)
-        } else {
-            (Vec::new(), 0)
-        };
+        let (shown, more) =
+            if stack.width_of(own_n.saturating_add(latest.len()), past_latest) <= span {
+                (latest, past_latest)
+            } else if others > 0 && stack.width_of(own_n, others) <= span {
+                (Vec::new(), others)
+            } else {
+                (Vec::new(), 0)
+            };
         self.faces_shown = shown.len();
         self.face_overflow = if shown.is_empty() && more == 0 {
             others
         } else {
             more
         };
-        let faces: Vec<ui::presence::Face<'_>> =
-            shown.iter().map(|&i| self.face_of(i, theme)).collect();
-        let (rects, _) = stack.layout((right_x, center_y), (&faces, more));
-        drop(faces);
-        self.face_rects = Self::faces_drawn(rects);
-        let width = stack.width_of(shown.len(), more);
-        self.shown_faces.clone_from(&shown);
-        self.placed.faces = Some(super::placed::FacesPlaced {
-            shown,
-            more,
-            anchor: (right_x, center_y),
-        });
-        if width <= 0.0 {
+        let width = stack.width_of(own_n.saturating_add(shown.len()), more)
+            - f64::from(u8::from(own.is_some())) * stack.step();
+        let nobody = shown.is_empty() && more == 0;
+        self.stand_faces(own.as_ref(), shown, more, (right_x, center_y), theme);
+        if nobody {
             return Rect::ZERO;
         }
         Rect::new(
@@ -438,7 +469,7 @@ impl TopBarChrome {
     }
 
     /// Where the people cluster stands, right to left from `right_x`: the invite button, then the
-    /// others' faces. The faces open who is here themselves, so the
+    /// faces, the person's own first. The faces open who is here themselves, so the
     /// people button stands only where someone is here and not even the "+N" badge has room.
     /// Returns its left edge, where the controls before it end.
     pub(super) fn place_people_cluster(
@@ -463,6 +494,7 @@ impl TopBarChrome {
         }
         self.place_people_count(theme, text_renderer);
         [
+            self.own_avatar_rect,
             self.avatar_stack_rect,
             self.people_button_rect,
             self.invite_rect,
@@ -481,7 +513,7 @@ impl TopBarChrome {
         theme: &Theme,
         text_renderer: &mut TextRenderer,
     ) {
-        let ground = theme.tokens.colors.surfaces.base;
+        let ground = super::bar_ground(theme);
         if !self.invite_rect.is_zero_area() {
             let name = t("topbar-invite");
             let _ = self.invite_chip(&name).paint(
@@ -623,31 +655,42 @@ mod tests {
         }
 
         phase this_person_appears_once_drawn_as_everyone_is;
-        // This person appears once on their bar: their avatar at the far right, never also among
-        // the faces, however the host lists them; and it is drawn as the faces are, at their size.
+        // This person appears once on their bar, never also among the others however the roster
+        // lists them: who is here is one group, their face first, then people, then agents, every
+        // face one size whatever its shape, and the invite after the group.
         {
-            let tree = shell(&[(MemberId::person("ada"), "Ada Lovelace"), (MemberId::person("me-root"), "Jo Doe")]);
+            let tree = shell(&[
+                (MemberId::agent("cc"), "Claude Code"),
+                (MemberId::person("ada"), "Ada Lovelace"),
+                (MemberId::person("me-root"), "Jo Doe"),
+            ]);
             let chrome = FixtureChrome::new(tree.clone());
             chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
                 name: "Jo Doe".into(),
                 rgb: (247, 133, 125),
                 identity: "me-root".into(),
             });
+            chrome.borrow_mut().can_invite = true;
             let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
             bar.sync_from_tree(&tree);
             super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
-            assert!(bar.face_rect("me-root").is_none(), "not among the others");
-            assert_eq!(bar.face_ids, vec!["ada".to_owned()]);
+            assert_eq!(bar.face_ids, ["ada", "cc"], "not among the others");
             let own = bar.own_avatar_rect();
-            assert!(!own.is_zero_area(), "their own avatar stands");
             let ada = bar.face_rect("ada").expect("Ada's face");
+            let cc = bar.face_rect("cc").expect("the agent's face");
+            for face in [ada, cc] {
+                assert_eq!(face.size(), own.size(), "one size for every face");
+            }
             assert!(
-                (own.width() - ada.width()).abs() < 0.01 && (own.height() - ada.height()).abs() < 0.01,
-                "one size for every face: {own:?} and {ada:?}"
+                bar.right_side_x() <= own.x0 && own.x0 < ada.x0 && ada.x0 < cc.x0,
+                "you, the person, then the agent: {own:?} {ada:?} {cc:?}"
             );
-            assert!(
-                bar.right_side_x() < own.x0 && own.x1 <= bar.tray_pill_rect().x0,
-                "their avatar stands right of who is here, before the notifications"
+            assert!(own.x1 > ada.x0, "one stack, overlapping");
+            assert!(cc.x1 <= bar.invite_rect().x0, "the invite after the group");
+            assert_eq!(
+                bar.face_at(Point::new(own.x1 - 1.0, own.center().y)).as_deref(),
+                Some("ada"),
+                "a press where Ada's face is drawn over theirs is Ada's"
             );
         }
 
@@ -749,15 +792,15 @@ mod tests {
     }
 
     /// An agent here wears its face on the bar whether or not it works, and while it works its
-    /// ring breathes, as a person's does in a call.
+    /// ring sweeps, as a person's does in a call.
     #[test]
-    fn an_agent_at_work_breathes_and_one_at_rest_stays() {
+    fn an_agent_at_work_sweeps_and_one_at_rest_stays() {
         let mut tree = agent_and_person();
         let (mut bar, _chrome) = bar_over(&tree, true);
         let rings = |bar: &TopBarChrome| -> Vec<bool> {
             bar.face_looks
                 .iter()
-                .map(|look| look.call.is_some())
+                .map(|look| look.active.is_some())
                 .collect()
         };
         assert_eq!(rings(&bar), [false, false], "at rest, no ring");
@@ -770,7 +813,11 @@ mod tests {
         assert_eq!(
             rings(&bar),
             [false, true],
-            "the agent at work breathes, not Ada"
+            "the agent at work sweeps, not Ada"
+        );
+        assert!(
+            ui::widget::Widget::update(&mut bar, &(), &()),
+            "and the bar repaints for the arc to move"
         );
     }
 
@@ -1057,8 +1104,8 @@ mod tests {
                 "the +1 stands in the stack beside the face at {width}: {stack:?} {face:?}"
             );
             assert!(
-                stack.x1 < bar.own_avatar_rect.x0,
-                "and clear of the avatar after it at {width}: {stack:?}"
+                bar.own_avatar_rect.x0 < stack.x0,
+                "after the person's own face at {width}: {stack:?}"
             );
             assert!(
                 bar.invite_rect().is_zero_area(),

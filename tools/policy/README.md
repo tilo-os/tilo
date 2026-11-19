@@ -1,11 +1,18 @@
 # Repository policy tooling
 
 This directory owns fast, deterministic checks of repository structure and
-cross-cutting contracts. Run the complete local and CI policy suite with:
+cross-cutting contracts. `t` carries the suite on a build server, one step per
+job, and CI carries it whole as its quality job:
 
 ```sh
-tools/policy/run.sh
+t test policy            # the whole suite
+t test policy/<step>     # one step
 ```
+
+[`run.sh`](run.sh) is the same steps side by side, for CI. On a development machine
+it refuses and names the way to hand the suite to `t`; its `--local` flag takes it
+here anyway, for a machine with no server to hand it to. Dozens of checks at once
+take the machine they are on, and that work belongs on the server.
 
 Build selection and execution helpers belong in `tools/ci/`; application
 publication tooling belongs in `tools/apps/`.
@@ -28,4 +35,17 @@ a commit cannot introduce a violation in a file it does not stage. A rule that
 counts or compares across the tree keeps judging the tree, and says why. Keep
 both modes reporting the same thing about the same files:
 `tools/tests/test_staged_judgement.py` holds each check to it.
+
+Three rules judge a set that is fixed or derivable from the change, and take
+`--staged` without `judged.py`, because their verdict still depends on the
+files themselves: `check_image_interpreters.py` judges the overlay scripts and
+installs the commit adds or changes and leaves the baseline inventory to the
+suite; `check_workspace_members.py` judges the crate manifests it stages; and
+`check_session_copy_contract.py` judges the copy files the commit touches. Each
+one's whole-tree half — a baselined path that no longer ships, a crate no
+manifest stages, a copy file left alone — is an inventory the suite keeps.
+
+The rest compare files with each other (catalogue coverage, app copy
+resolution, the session loop's blocking rules, wire attributes, interface
+versions), so they judge the whole tree and the hook leaves them to the suite.
 

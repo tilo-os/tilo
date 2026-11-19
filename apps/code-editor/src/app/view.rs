@@ -33,16 +33,6 @@ pub(crate) struct Shown {
 }
 
 impl Shown {
-    fn file_row(&self, id: &str, row: &LiveRow) -> LiveRow {
-        match &self.open {
-            Some((open, true)) if open == id => row.clone().effect(&CodeEditorEffect::Save {
-                file: Some(id.to_owned()),
-                path: None,
-            }),
-            _ => row.clone(),
-        }
-    }
-
     fn live_rows(&self) -> Vec<LiveRow> {
         let open = self.open.as_ref().map(|(open, _)| open.as_str());
         let files = self
@@ -54,7 +44,7 @@ impl Shown {
                     .iter()
                     .filter(|(id, _)| Some(id.as_str()) != open),
             )
-            .map(|(id, row)| self.file_row(id, row))
+            .map(|(_, row)| row.clone())
             .take(ROW_LIMIT);
         let symbols = self.symbols.iter().take(ROW_LIMIT).map(symbol_row);
         let results = self.results.iter().take(ROW_LIMIT).map(result_row);
@@ -67,7 +57,7 @@ impl Shown {
                 .files
                 .iter()
                 .find(|(id, _)| id == file.as_str())
-                .map(|(id, row)| self.file_row(id, row));
+                .map(|(_, row)| row.clone());
         }
         if let Some(symbol) = self
             .symbols

@@ -1194,6 +1194,37 @@ fn a_toggle_that_lands_at_once_reaches_the_screen() {
     assert!((geometry(&h).sidebar_column.width() - open).abs() < 0.5);
 }
 
+/// The sidebar's rows reach its trailing edge: the grip that resizes it stands past the edge, so a
+/// press or a hover at a row's far end is the row's.
+#[test]
+fn the_sidebar_edge_takes_nothing_from_the_rows_beside_it() {
+    let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
+    settle(&mut h, 1400, 800);
+    let g = geometry(&h);
+    let y = g.resize_handle.center().y;
+    let on_row = Point::new(g.sidebar_column.x1 - 1.0, y);
+    assert!(
+        g.resize_handle.width() > 0.0,
+        "the docked sidebar has an edge to drag"
+    );
+    assert!(
+        !g.resize_handle.contains(on_row),
+        "the grip {:?} reaches into the sidebar {:?}",
+        g.resize_handle,
+        g.sidebar_column
+    );
+    assert_ne!(
+        crate::widget::cursor::in_tree(h.root_widget(), on_row),
+        Some(winit::window::CursorIcon::ColResize),
+        "a row's far end shows no resize pointer"
+    );
+    assert_eq!(
+        crate::widget::cursor::in_tree(h.root_widget(), g.resize_handle.center()),
+        Some(winit::window::CursorIcon::ColResize),
+        "the grip does"
+    );
+}
+
 #[test]
 fn dragging_the_trailing_edge_resizes_and_below_its_minimum_hides() {
     let mut h = harness(mail_shell(), 1400, 800, Theme::dark());

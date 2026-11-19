@@ -13,15 +13,18 @@ use crate::{Service, Services, Started, Worker, decode, offer, reading, unavaila
 #[effect(operation = "test.lamp", catalogue = "tests/locales")]
 enum Lamp {
     /// Turn the lamp on or off.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     SetOn {
         #[param("Whether it is on")]
         on: bool,
     },
     /// Dim the lamp.
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Dim,
     /// Smash the lamp.
+    #[effect(kind = "outside")]
     #[effect(own_device, destructive)]
     Smash,
 }
@@ -287,4 +290,80 @@ fn a_child_process_is_a_service() {
         Ok(Started::Accepted)
     );
     drop(process);
+}
+
+/// A service whose one child row says what it may do now.
+struct RowService;
+
+impl Service for RowService {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        let mut root = offer::<Lamp>(ResourceSpec::new("lamp", "test.lamp", "Lamp"));
+        root.children.push(offer::<Lamp>(ResourceSpec::new(
+            "lamp:child",
+            "test.lamp",
+            "Child",
+        )));
+        vec![root]
+    }
+
+    fn read(&self, _resource: &str) -> Option<Value> {
+        None
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        _arguments: &Map<String, Value>,
+    ) -> Result<Started, ApiError> {
+        Err(ApiError::Unknown(tilo_actions::ActionAddress::new(
+            resource, action,
+        )))
+    }
+
+    fn row_status(&self, row: &str) -> Vec<tilo_actions::RowStatus> {
+        (row == "lamp:child")
+            .then(|| tilo_actions::RowStatus {
+                action: "dim".to_owned(),
+                availability: tilo_actions::Availability::Unavailable {
+                    code: "foreign".to_owned(),
+                    reason: "this one is not yours to dim".to_owned(),
+                },
+            })
+            .into_iter()
+            .collect()
+    }
+}
+
+/// What a service says of one row reaches the catalogue the palette, agents
+/// and scripts read, without it building a refused spec itself.
+#[test]
+fn a_services_row_status_reaches_its_published_tree() {
+    let mut services = Services::default();
+    services.add(Box::new(RowService));
+    let published = services.resources();
+    let child = published[0]
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == "lamp:child")
+        .expect("the child is published");
+    let dim = child
+        .actions
+        .iter()
+        .find(|action| action.id == "dim")
+        .expect("the child offers dim");
+    assert_eq!(
+        dim.contract.availability,
+        tilo_actions::Availability::Unavailable {
+            code: "foreign".to_owned(),
+            reason: "this one is not yours to dim".to_owned(),
+        }
+    );
+    let root = &published[0];
+    assert!(
+        root.actions
+            .iter()
+            .all(|action| action.contract.availability.is_available()),
+        "a row's status never reaches the resource above it"
+    );
 }

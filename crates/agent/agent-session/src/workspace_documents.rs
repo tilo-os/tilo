@@ -87,9 +87,6 @@ pub(crate) struct WorkspaceDocuments {
     opened: HashSet<DocumentRoute>,
     /// When each record last changed, as a count of landings seen.
     arrived: HashMap<DocumentRoute, u64>,
-    /// The documents a write landed in since the last refresh took them: what
-    /// a refresh merges into what it holds mounted, and nothing else.
-    changed_since: HashSet<DocumentRoute>,
     /// The documents search has no entries for, as of the last listing and
     /// every write since: what an index pass asks for.
     unindexed: HashSet<DocumentRoute>,
@@ -122,7 +119,6 @@ impl WorkspaceDocuments {
             workspace: workspace.to_owned(),
             opened: HashSet::new(),
             arrived: HashMap::new(),
-            changed_since: HashSet::new(),
             unindexed: HashSet::new(),
             listed: false,
             landings: 0,
@@ -139,7 +135,6 @@ impl WorkspaceDocuments {
     pub(crate) fn landed(&mut self, route: &DocumentRoute) {
         self.landings = self.landings.wrapping_add(1);
         self.arrived.insert(route.clone(), self.landings);
-        self.changed_since.insert(route.clone());
         if !self.opened.contains(route) {
             self.unindexed.insert(route.clone());
         }
@@ -242,12 +237,6 @@ impl WorkspaceDocuments {
         }
     }
 
-    /// The documents a write landed in since this was last taken: what a
-    /// refresh merges into what it holds mounted, and nothing else.
-    pub(crate) fn take_changed(&mut self) -> HashSet<DocumentRoute> {
-        std::mem::take(&mut self.changed_since)
-    }
-
     /// Whether the document at `route` still wants entries: it has none, and the index has not
     /// given up on it since it last moved.
     fn indexes(&self, route: &DocumentRoute) -> bool {
@@ -260,7 +249,7 @@ impl WorkspaceDocuments {
 
     /// The records of the workspace not held open.
     pub(crate) fn routes(&self) -> Vec<DocumentRoute> {
-        match self.engine.records(&self.workspace) {
+        match self.engine.documents(&self.workspace) {
             Ok(records) => records
                 .into_iter()
                 .map(|(app_id, record)| DocumentRoute {

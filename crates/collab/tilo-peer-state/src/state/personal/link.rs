@@ -481,6 +481,41 @@ fn admitted_frame(message: &NeighbourMsg) -> Option<AdmittedFrame> {
     })
 }
 
+/// Change one of the person's own resources in `sync`'s store and hand the
+/// change to their other devices: `edit` writes into the document the store
+/// holds under `kind`, which starts empty when this device holds none.
+///
+/// A resource written on the store's own thread is signed with the device key
+/// it already signs its sessions with, exactly as a session's own documents
+/// are: one path for the person's devices, the session and the workspace
+/// service alike.
+///
+/// # Errors
+///
+/// The document kept there does not read, or `edit` refused what it was
+/// asked to write.
+pub fn update_person_resource(
+    sync: &PersonalSync,
+    kind: &str,
+    edit: impl FnOnce(&mut automerge::AutoCommit) -> Result<(), String>,
+) -> Result<(), String> {
+    let held = sync.read(|store| store.person_resource(kind));
+    let mut doc = match held.as_deref().map(automerge::AutoCommit::load) {
+        Some(Ok(doc)) => doc,
+        Some(Err(error)) => return Err(format!("the person's {kind} does not read: {error}")),
+        None => automerge::AutoCommit::new(),
+    };
+    let base = doc.get_heads();
+    edit(&mut doc)?;
+    let mutation = if held.is_some() {
+        collab_types::DocumentMutation::Incremental(doc.save_after(&base))
+    } else {
+        collab_types::DocumentMutation::Snapshot(doc.save())
+    };
+    sync.publish(|store, key, now| store.publish_person_resource(kind, &mutation, key, now))
+        .map(drop)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 impl ProtocolHandler for PersonalSync {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {

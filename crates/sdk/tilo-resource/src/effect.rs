@@ -115,10 +115,18 @@
 //! `outside_with = "path"` (an effect of `kind = "read"` that reaches outside
 //! the record only when that parameter is given: an export that writes the
 //! file it names, else keeps what it made as content; each invocation is
-//! admitted as what it does)
+//! admitted as what it does),
+//! `item = field` (offered on each item of the collection, its first
+//! parameter bound to the item's id, beside the item's own verbs) or
+//! `on = RowType` (offered on each row of a `#[derive(Row)]` type, its first
+//! parameter bound to the row's id; `LiveRow::typed` publishes them; write it
+//! more than once to offer the effect on several types, and leave the effect
+//! without parameters to offer it on the type as it is)
 //! and
 //! `kind = "read"` (an effect that only reads, which whoever may read may
-//! invoke; an effect reaches outside the record by default, a view reads),
+//! invoke), `kind = "undoable"` (an undoable change) or `kind = "outside"`
+//! (a change checked against the caller's grants: every effect states its
+//! kind, while a `view` reads and an `edit` is undoable),
 //! and `offload(app = "…", entrypoint = "…", cpu_ms = N, memory_mb = N,
 //! output_mb = N, gpu)` (a `content`, `kind = "read"` transform of content
 //! inputs whose outputs depend on the inputs alone: the system may run it on
@@ -311,13 +319,47 @@ pub trait Effect: Sized + 'static {
     /// (`#[effect(item = field)]`), each with its first parameter bound to
     /// the item and the rest still asked.
     fn item_specs(field: &str, item: &crate::Id) -> Vec<ActionSpec> {
-        item_specs(
+        target_specs(
             check::<Self>,
             std::any::TypeId::of::<Self>(),
             Self::OPERATION,
             Self::declarations,
-            field,
+            |target| target.is_field(field),
             item,
+        )
+    }
+
+    /// The effects offered on the row `row` of the
+    /// [`RowType`](crate::words::RowType) `kind` (`#[effect(on = Row)]`),
+    /// each with its first parameter bound to the row and the rest still
+    /// asked. [`RowType::effects`](crate::words::RowType::effects) calls it.
+    fn row_specs(kind: &'static str, row: &crate::Id) -> Vec<ActionSpec> {
+        target_specs(
+            check::<Self>,
+            std::any::TypeId::of::<Self>(),
+            Self::OPERATION,
+            Self::declarations,
+            |target| target.is_row(kind),
+            row,
+        )
+    }
+
+    /// The effects offered on the row `row` of the
+    /// [`RowType`](crate::words::RowType) `kind`, those `bindings` names
+    /// among them, each with exactly the arguments they give bound and the
+    /// rest still asked. [`RowType::effects_with`](crate::words::RowType::effects_with)
+    /// calls it.
+    fn row_specs_with(
+        kind: &'static str,
+        _row: &crate::Id,
+        bindings: &crate::row::RowBindings,
+    ) -> Vec<ActionSpec> {
+        target_specs_with(
+            check::<Self>,
+            Self::OPERATION,
+            Self::declarations,
+            |target| target.is_row(kind),
+            bindings,
         )
     }
 
@@ -505,21 +547,14 @@ fn kept_specs(
 }
 
 fn offered_specs(check: Check, decls: Vec<EffectDecl>, operation: &'static str) -> Vec<ActionSpec> {
+    // Offered on an item or a row (`item = field`, `on = Row`) as well as
+    // here: the declaration's own audience, unchanged. Whether a listing
+    // shows the unbound action beside the bound ones is the listing's, never
+    // a silent change of who the action is for.
     decls
         .into_iter()
         .filter(|decl| !decl.row)
-        .map(|decl| {
-            let mut spec = decl.spec_checked(operation, check);
-            // Offered on each item it acts on (`item = field`), its item
-            // bound, it stays published here for scripts that name the item,
-            // out of the palette's way, as an item verb does.
-            if decl.item.is_some() && spec.audience() == tilo_actions::Audience::Everyone {
-                spec.type_mut()
-                    .contract
-                    .set_audience(tilo_actions::Audience::Agents);
-            }
-            spec
-        })
+        .map(|decl| decl.spec_checked(operation, check))
         .collect()
 }
 
@@ -574,38 +609,120 @@ fn params_from(params: &[ActionParam]) -> Vec<ActionParam> {
     params.to_vec()
 }
 
-/// [`Effect::item_specs`] of the vocabulary `key`, whose declarations
-/// `declarations` are: each type is kept per field, bound here to `item`.
-fn item_specs(
+/// [`Effect::item_specs`] and [`Effect::row_specs`] of the vocabulary `key`,
+/// whose declarations `declarations` are: every effect `matches` offers on an
+/// entity, its first parameter bound here to `entity` — or, for an effect
+/// with no parameters, offered as it is, since the entity changes nothing
+/// about it. Each type is kept per target, so offering the same effect on
+/// many items costs one type.
+fn target_specs(
     check: Check,
     key: std::any::TypeId,
     operation: &'static str,
     declarations: fn() -> Vec<EffectDecl>,
-    field: &str,
-    item: &crate::Id,
+    matches: impl Fn(&EffectTarget) -> bool,
+    entity: &crate::Id,
 ) -> Vec<ActionSpec> {
     declarations()
         .into_iter()
-        .filter(|decl| decl.item == Some(field))
         .filter_map(|decl| {
-            let first = decl.params.first()?.name.to_string();
-            let ty = kept_type((key, decl.id, Some(decl.item?)), || {
+            let target = *decl.items.iter().find(|target| matches(target))?;
+            let mut refused = None;
+            let bound = match decl.params.first() {
+                Some(first) => BoundArguments::from_iter([(
+                    first.name.to_string(),
+                    match (target, decl.row_id) {
+                        (EffectTarget::Row(_), Some(parse)) => match parse(entity.as_str()) {
+                            Ok(value) => value,
+                            // The row's id is not what the effect acts on: it
+                            // is published, refused with the reason, so an
+                            // agent sees why rather than a broken call.
+                            Err(reason) => {
+                                refused = Some(reason);
+                                serde_json::Value::String(entity.as_str().to_owned())
+                            }
+                        },
+                        _ => serde_json::Value::String(entity.as_str().to_owned()),
+                    },
+                )]),
+                None => BoundArguments::new(),
+            };
+            let ty = kept_type((key, decl.id, Some(target.key())), || {
                 let rest = params_from(decl.params.get(1..).unwrap_or_default());
                 let build = encoder(check, operation, decl.id, Bound::OverCaller);
                 Arc::clone(decl.spec_with(operation, rest, build).action_type())
             });
-            let bound = BoundArguments::from_iter([(
-                first,
-                serde_json::Value::String(item.as_str().to_owned()),
-            )]);
-            let fixed = bound.clone().into_iter().collect();
-            Some(ty.bind(Target::new(bound)).with_bound(fixed))
+            let fixed: Vec<(String, serde_json::Value)> = bound.clone().into_iter().collect();
+            let arguments: serde_json::Map<String, serde_json::Value> =
+                fixed.iter().cloned().collect();
+            let mut spec = ty.bind(Target::new(bound)).with_bound(fixed);
+            if let Some(phrase) = decl.phrase {
+                spec = asking_phrase(spec, phrase(&arguments));
+            }
+            if let Some(reason) = refused {
+                spec.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
+                    code: "row_id".to_owned(),
+                    reason,
+                };
+            }
+            Some(spec)
+        })
+        .collect()
+}
+
+/// [`Effect::row_specs_with`] of the vocabulary `key`, whose declarations
+/// `declarations` are: every effect `matches` offers on an entity that
+/// `bindings` names among them, with exactly the arguments it gives bound and
+/// the rest asked.
+fn target_specs_with(
+    check: Check,
+    operation: &'static str,
+    declarations: fn() -> Vec<EffectDecl>,
+    matches: impl Fn(&EffectTarget) -> bool,
+    bindings: &crate::row::RowBindings,
+) -> Vec<ActionSpec> {
+    declarations()
+        .into_iter()
+        .filter(|decl| decl.items.iter().any(&matches))
+        .filter_map(|decl| {
+            let given = bindings.arguments(decl.id)?;
+            let mut bound = BoundArguments::new();
+            for (name, value) in given {
+                if decl
+                    .params
+                    .iter()
+                    .any(|param| param.name.as_ref() == name.as_str())
+                {
+                    bound.insert(name.clone(), value.clone());
+                }
+            }
+            let asked = params_from(
+                &decl
+                    .params
+                    .iter()
+                    .filter(|param| !bound.contains_key(param.name.as_ref()))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            let build = encoder(check, operation, decl.id, Bound::OverCaller);
+            let fixed: Vec<(String, serde_json::Value)> = bound.clone().into_iter().collect();
+            let arguments: serde_json::Map<String, serde_json::Value> =
+                fixed.iter().cloned().collect();
+            let mut spec = decl.spec_with(operation, asked, build);
+            if let Some(phrase) = decl.phrase {
+                spec = asking_phrase(spec, phrase(&arguments));
+            }
+            Some(
+                spec.action_type()
+                    .bind(Target::new(bound))
+                    .with_bound(fixed),
+            )
         })
         .collect()
 }
 
 /// Where a kept effect type is offered: the vocabulary, the effect, and for
-/// an item effect the collection field whose items offer it.
+/// an offered effect the field or row kind whose entities offer it.
 type TypeKey = (std::any::TypeId, &'static str, Option<&'static str>);
 
 /// The action type `key` names, kept once per thread and generation of app
@@ -617,6 +734,40 @@ fn kept_type(key: TypeKey, build: impl FnOnce() -> Arc<ActionType>) -> Arc<Actio
             std::cell::RefCell::default();
     }
     crate::kept::kept_type(&KEPT, key, build)
+}
+
+/// What an effect is offered on, bound to it: a collection's items, or a
+/// declared row type's rows. The two are one thing — an effect offered on an
+/// entity of a declared type, with the entity's id bound — declared either
+/// beside the document that holds the items, or on the type of rows that live
+/// outside any document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectTarget {
+    /// The collection field whose items the effect is offered on
+    /// (`#[effect(item = connections)]`).
+    Field(&'static str),
+    /// The kind of the [`RowType`](crate::words::RowType) whose rows the
+    /// effect is offered on (`#[effect(on = Process)]`).
+    Row(&'static str),
+}
+
+impl EffectTarget {
+    /// The key the offered type is kept under: the field or the row kind.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Field(field) | Self::Row(field) => field,
+        }
+    }
+
+    /// Whether this is the collection `field`.
+    fn is_field(self, field: &str) -> bool {
+        matches!(self, Self::Field(named) if named == field)
+    }
+
+    /// Whether this is the row type of kind `kind`.
+    fn is_row(self, kind: &str) -> bool {
+        matches!(self, Self::Row(named) if named == kind)
+    }
 }
 
 /// One effect of a derived vocabulary, as a constant: its declaration but for
@@ -660,11 +811,32 @@ pub struct EffectRow {
     pub presence: bool,
     pub edits: bool,
     pub member: bool,
-    pub item: Option<&'static str>,
+    /// The kinds of entity its rows are offered on
+    /// ([`EffectTarget`]): none for an effect offered on the resource alone.
+    pub items: &'static [EffectTarget],
+    /// How the row id becomes the first parameter's value when the effect is
+    /// offered on a row (`#[effect(on = Row)]`): the row id parsed as that
+    /// field's own type (`u64` counts, an identity parses), so a row whose id
+    /// is not one is offered unavailable with the reason. Absent for an
+    /// effect offered on a collection's items, whose id is bound as it is.
+    pub row_id: Option<RowIdOf>,
+    /// The phrase its caller types for a bound invocation (offered on a row
+    /// or an item), from the arguments it is bound with, when the effect
+    /// declares `phrase`: `#[effect(phrase = "Self::data_name")]` names what
+    /// one invocation loses wherever the effect is offered.
+    pub phrase: Option<PhraseOf>,
     pub offload: Option<EffectOffload>,
     pub tags: &'static [&'static str],
     pub outside_with: Option<&'static str>,
 }
+
+/// The phrase a bound invocation's caller types, from the arguments it is
+/// bound with: what one invocation loses.
+pub type PhraseOf = fn(&serde_json::Map<String, serde_json::Value>) -> Option<String>;
+
+/// An effect's row id read as the field it acts with: the value bound, or
+/// why this row's id is not one.
+pub type RowIdOf = fn(&str) -> Result<serde_json::Value, String>;
 
 /// An effect's `#[effect(offload(...))]`: the signed package entrypoint
 /// that performs the same content transform on another of the invoker's
@@ -801,10 +973,21 @@ pub struct EffectDecl {
     /// themselves on the workspace's record (`#[effect(member)]`,
     /// [`tilo_actions::MEMBER_OWN_TAG`]): it runs there as that member.
     pub member: bool,
-    /// The collection field whose items the effect is offered on
-    /// (`#[effect(item = connections)]`), its first parameter bound to the
-    /// item's id: published on each item resource, as an item verb is.
-    pub item: Option<&'static str>,
+    /// What the effect is offered on, its first parameter bound to it: the
+    /// collection field whose items offer it (`#[effect(item = connections)]`,
+    /// published on each item resource as an item verb is), or the kind of a
+    /// [`RowType`](crate::words::RowType) whose rows offer it
+    /// (`#[effect(on = Process)]`, published on each of the type's rows). An
+    /// effect declared on several of them (`#[effect(on = QueueItem, on =
+    /// HistoryItem)]`) is offered on each, bound to the row it was offered on;
+    /// one with no parameters is offered on them as it is.
+    pub items: &'static [EffectTarget],
+    /// How a row id becomes the first parameter's value, when the effect is
+    /// offered on rows ([`EffectRow::row_id`]).
+    pub row_id: Option<RowIdOf>,
+    /// The phrase its caller types for a bound invocation
+    /// ([`EffectRow::phrase`]).
+    pub phrase: Option<PhraseOf>,
     /// A content transform the system may run on the invoker's best-placed
     /// device (`#[effect(offload(...))]`); the handler is its local run.
     pub offload: Option<EffectOffload>,
@@ -918,7 +1101,9 @@ impl EffectDecl {
             presence: row.presence,
             edits: row.edits,
             member: row.member,
-            item: row.item,
+            items: row.items,
+            row_id: row.row_id,
+            phrase: row.phrase,
             offload: row.offload,
             tags: row.tags,
             outside_with: row.outside_with,
@@ -1239,6 +1424,7 @@ mod tests {
     #[effect(operation = "test.effects", catalogue = "tests/locales")]
     enum Sample {
         /// Reload everything.
+        #[effect(kind = "outside")]
         Reload,
         /// Rename a thing.
         ///
@@ -1249,12 +1435,14 @@ mod tests {
             thing: String,
             label: Option<String>,
         },
+        #[effect(kind = "outside")]
         #[effect(job, cancellable, destructive)]
         Wipe { passes: u32 },
         /// Copy a thing's key.
         #[effect(privileged, kind = "read")]
         CopyKey { thing: String },
         /// Paint a thing.
+        #[effect(kind = "outside")]
         Paint {
             #[param("The colour", choices = ["red", "green"])]
             colour: String,
@@ -1263,6 +1451,7 @@ mod tests {
             shade: Option<String>,
         },
         /// Widen a column.
+        #[effect(kind = "outside")]
         Widen {
             #[param(decimal, "The column")]
             column: String,
@@ -1611,6 +1800,7 @@ mod tests {
         #[effect(view, row)]
         Open { item: String },
         /// Connect to an item.
+        #[effect(kind = "outside")]
         #[effect(row, job, idempotent)]
         Connect { item: String },
         /// Search.
@@ -1624,6 +1814,7 @@ mod tests {
     #[effect(operation = "test.exports", catalogue = "tests/locales")]
     enum Exports {
         /// Export the address book.
+        #[effect(kind = "outside")]
         #[effect(job, sensitive)]
         ExportBook,
     }
@@ -1633,6 +1824,7 @@ mod tests {
     #[effect(operation = "test.secrets", catalogue = "tests/locales")]
     enum Pairing {
         /// Pair a device.
+        #[effect(kind = "outside")]
         Pair {
             #[param(secret, "The invite the other device shows")]
             invite: String,
@@ -1645,6 +1837,7 @@ mod tests {
     #[effect(operation = "test.files", catalogue = "tests/locales")]
     enum Files {
         /// Save a copy.
+        #[effect(kind = "outside")]
         SaveCopy {
             #[param("Where to write it")]
             path: crate::AbsolutePath,

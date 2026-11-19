@@ -1127,9 +1127,9 @@ impl Hosted {
             changed |= self.take_step(&asked);
         }
         // Where the person is and whether they write there, as the views now stand.
-        let record = &mut self.record;
+        let document = &mut self.record;
         self.presence.say(&self.instance, |request| {
-            if !record.manager_mut().send(request) {
+            if !document.manager_mut().send(request) {
                 tracing::debug!("the connection did not take the person's presence");
             }
         });
@@ -1835,6 +1835,27 @@ impl Hosted {
         (address.clone(), encoded)
     }
 
+    /// `output`, its answer naming the characters written since `before` (the document's heads):
+    /// the window draws them in the writer's colour, ending at the writer's caret. Blocks name
+    /// the resource the window publishes the item under.
+    fn naming_written(
+        &self,
+        before: &[automerge::ChangeHash],
+        resource: &str,
+        mut output: tilo_actions::ActionOutput,
+    ) -> tilo_actions::ActionOutput {
+        let mut doc = self.record.doc();
+        let after = doc.get_heads();
+        let changes = doc.diff(before, &after);
+        if let Some(wrote) = tilo_doc::written::written_by(&doc, &changes) {
+            output.value = tilo_actions::ActionOutput::noting_wrote(
+                output.value,
+                &published_in(resource, wrote),
+            );
+        }
+        output
+    }
+
     /// Build the action `address` names for `invoker`, through the spec the instance publishes
     /// now, and run it: a document action is applied as the invoker's step; the host's own
     /// vocabulary is answered by the runtime, and what it commits is the invoker's.
@@ -1909,10 +1930,13 @@ impl Hosted {
         if encoded.type_id == ACTION_TYPE {
             let action: DynAction = serde_json::from_slice(&encoded.payload)
                 .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
+            let mut before_doc = self.record.doc();
+            let before = before_doc.get_heads();
             self.record
                 .apply_invoked(&mut self.instance, &action, &invoker, ambient)
                 .map_err(|error| Refused::new("action_failed", error.to_string()))?;
-            return Ok(returned(&host, &action));
+            let output = returned(&host, &action);
+            return Ok(self.naming_written(&before, &address.resource, output));
         }
         if address.resource == HOST_RESOURCE
             && encoded.type_id == <HostEffect as tilo_resource::Effect>::OPERATION
@@ -2300,8 +2324,8 @@ struct Used {
 
 /// The other apps `bundle`'s app uses ([`Spec::installed`]), each joined on `document`'s connection
 /// and read through its own package.
-fn used_apps(spec: &Spec, bundle: &Bundle, record: &mut InstanceDocument) -> Vec<Used> {
-    let workspace = record.route().cluster_id;
+fn used_apps(spec: &Spec, bundle: &Bundle, document: &mut InstanceDocument) -> Vec<Used> {
+    let workspace = document.route().cluster_id;
     bundle
         .imports
         .iter()
@@ -2314,7 +2338,7 @@ fn used_apps(spec: &Spec, bundle: &Bundle, record: &mut InstanceDocument) -> Vec
                 })
                 .ok()?;
             let route = crate::route_under(&import.meta, records, workspace, &spec.person);
-            let mut read = ReadDocument::join(route, record.manager_mut(), &import.meta.resource_type());
+            let mut read = ReadDocument::join(route, document.manager_mut(), &import.meta.resource_type());
             read.hold_in(app.host());
             Some(Used {
                 record: read,
@@ -2509,6 +2533,23 @@ fn api_code(error: &tilo_actions::ApiError) -> &'static str {
 
 /// What the action `action` answers: the resource it returned, by its published id, which a
 /// task's program goes on with.
+/// `wrote` with its blocks named as the window draws the item's text: the resource the window
+/// publishes it under (`tl:app:document/item`), not the item's own id.
+fn published_in(
+    resource: &str,
+    wrote: tilo_actions::InteractionAnchor,
+) -> tilo_actions::InteractionAnchor {
+    let tilo_actions::InteractionAnchor::Text { region, mut ranges } = wrote else {
+        return wrote;
+    };
+    for range in &mut ranges {
+        if !range.block.is_empty() && resource.ends_with(&range.block) {
+            range.block.clone_from(&resource.to_owned());
+        }
+    }
+    tilo_actions::InteractionAnchor::Text { region, ranges }
+}
+
 fn returned(host: &tilolang_tilo::host::Host, action: &DynAction) -> tilo_actions::ActionOutput {
     let returned = host
         .take_returned(&action.action_id)

@@ -181,7 +181,7 @@ fn manual_account(scale: f32) -> Element {
                 .with_heading_level(2),
         ))
         .child(Box::new(
-            Checkbox::new("updates", "updates").with_label(UPDATES),
+            Checkbox::bound("updates", "updates").with_label(UPDATES),
         ))
         .child(Box::new(Button::new("cancel", "Cancel")))
         .child(Box::new(
@@ -209,7 +209,7 @@ fn account() -> Form {
                 ),
         )
         .section(FormSection::new("Preferences").content(Box::new(
-            Checkbox::new("updates", "updates").with_label(UPDATES),
+            Checkbox::bound("updates", "updates").with_label(UPDATES),
         )))
         .with_actions(
             Actions::new(Button::new("save", "Save account changes").role(ButtonRole::Primary))
@@ -251,7 +251,7 @@ fn manual_in_automatic() -> Element {
         "A manually positioned standard-control region.",
     )))
     .child(Box::new(
-        Checkbox::new("manual-updates", "updates").with_label(UPDATES),
+        Checkbox::bound("manual-updates", "updates").with_label(UPDATES),
     ));
     Box::new(
         FormPage::new(

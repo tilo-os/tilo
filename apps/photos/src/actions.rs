@@ -26,6 +26,11 @@ pub enum PhotosEffect {
     #[effect(view)]
     #[effect(label = "photos-search-library")]
     ViewLibrary,
+    /// Show the library from a search status row: what the index would have
+    /// shown, browsable while its refresh is refused.
+    #[effect(view, row, on = crate::app::PhotoSearchStatus)]
+    #[effect(label = "photos-search-library")]
+    ShowLibrary,
     /// Open the chronological timeline, optionally at one canonical calendar
     /// boundary. Capture metadata remains untouched.
     #[effect(view, row)]
@@ -63,11 +68,13 @@ pub enum PhotosEffect {
     ManagePeopleRecognition,
     /// Enable private People recognition on this device. Changes no shared
     /// metadata and begins no scan.
+    #[effect(kind = "outside")]
     #[effect(row)]
     EnablePeopleRecognition,
     /// Scan local library for faces: the next bounded local batch, with the
     /// separately signed face model. Suggestions stay on this device until
     /// approved.
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable)]
     AnalyzePeopleLibrary,
     /// Open photo analysis: local model availability, library coverage,
@@ -88,16 +95,20 @@ pub enum PhotosEffect {
     ReadLibraryAnalysis,
     /// Analyze unprocessed photographs on this device. Pixels stay local;
     /// each bounded result is shared with `SetImageAnalysis`.
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable, sensitive)]
     #[effect(label = "photos-analysis-start")]
     AnalyzeLibrary,
     /// Pause photo analysis after the photograph in progress.
+    #[effect(kind = "outside")]
     #[effect(row, returns)]
     PauseLibraryAnalysis,
     /// Resume photo analysis without widening the queue.
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable, sensitive)]
     ResumeLibraryAnalysis,
     /// Retry failed photographs from the bounded failure report.
+    #[effect(kind = "outside")]
     #[effect(row, job, cancellable, sensitive)]
     #[effect(label = "photos-analysis-retry")]
     RetryLibraryAnalysisFailures,
@@ -116,40 +127,27 @@ pub enum PhotosEffect {
     /// View place: one shared place cluster, without sending its location
     /// anywhere.
     #[effect(view, row)]
-    ViewPlace {
-        place_key: String,
-    },
+    ViewPlace { place_key: String },
     /// View album.
     #[effect(view)]
-    ViewAlbum {
-        album_id: String,
-    },
+    ViewAlbum { album_id: String },
     /// View folder: the photographs filed under this folder label.
     #[effect(view, row)]
-    ViewFolder {
-        folder: String,
-    },
+    ViewFolder { folder: String },
     /// View person: the photographs carrying this person label.
     #[effect(view, row)]
-    ViewPerson {
-        person: String,
-    },
+    ViewPerson { person: String },
     /// View tag: the photographs carrying this tag.
     #[effect(view, row)]
-    ViewTag {
-        tag: String,
-    },
+    ViewTag { tag: String },
     /// View object: the photographs analysis shared this object for.
     #[effect(view, row)]
-    ViewObject {
-        object: String,
-    },
+    ViewObject { object: String },
     /// View pet: the photographs analysis shared this pet for.
     #[effect(view, row)]
-    ViewPet {
-        pet: String,
-    },
+    ViewPet { pet: String },
     /// Import photograph into the library and show it.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     Import {
         #[param("Absolute filesystem path; omit to use the system file picker")]
@@ -158,6 +156,7 @@ pub enum PhotosEffect {
     /// Import photo folder: recursively index a folder with bounded
     /// real-file reads. Paths never enter collaboration and EXIF GPS is never
     /// uploaded.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, tag = tilo_actions::REQUIRES_NATIVE_PATHS_TAG)]
     #[effect(label = "photos-import-pick-accept")]
     ImportDirectory {
@@ -168,13 +167,12 @@ pub enum PhotosEffect {
     },
     /// Import Camera media: a verified Camera photograph whose bytes are on
     /// this device.
+    #[effect(kind = "outside")]
     #[effect(returns)]
-    ImportCameraMedia {
-        media_id: String,
-        name: String,
-    },
+    ImportCameraMedia { media_id: String, name: String },
     /// Reindex photo folder: refresh metadata re-read from a folder's files
     /// without overwriting deliberate organization.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, tag = tilo_actions::REQUIRES_NATIVE_PATHS_TAG)]
     ReindexDirectory {
         #[param("Absolute authorised local folder path")]
@@ -182,6 +180,7 @@ pub enum PhotosEffect {
         #[param("Retain GPS read from imported files; defaults to true")]
         retain_exif_location: Option<bool>,
     },
+    #[effect(kind = "outside")]
     Copy,
     /// Produce edited image content: render the photograph's crop and
     /// rotation, as they are now, into immutable PNG content.
@@ -210,12 +209,14 @@ pub enum PhotosEffect {
         photos: Vec<Bytes>,
     },
     /// Save edited photograph: the photograph this window shows.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Save {
         #[param("Absolute filesystem path; omit to ask where with the Save chooser")]
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Recognize text locally and share only bounded text and provenance.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, sensitive)]
     AnalyzeText {
         resource_id: String,
@@ -223,22 +224,26 @@ pub enum PhotosEffect {
     },
     /// Analyze image locally with the signed local model; share only the
     /// bounded result.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, sensitive)]
-    AnalyzeImage {
-        resource_id: String,
-    },
+    AnalyzeImage { resource_id: String },
     /// Rotate left: turn the photograph this window shows a quarter turn
     /// anticlockwise.
+    #[effect(kind = "outside")]
     #[effect(label = "photos-command-rotate-left")]
     RotateShownLeft,
     /// Rotate right: turn the photograph this window shows a quarter turn
     /// clockwise.
+    #[effect(kind = "outside")]
     #[effect(label = "photos-command-rotate-right")]
     RotateShownRight,
     /// Crop to view: keep what this window frames of its photograph.
+    #[effect(kind = "outside")]
     #[effect(label = "photos-command-crop")]
     CropShownToView,
+    #[effect(kind = "outside")]
     ResetShownEdits,
+    #[effect(kind = "outside")]
     ShareShown,
     /// New album: start naming one and choosing its photographs.
     #[effect(view)]
@@ -255,6 +260,7 @@ pub enum PhotosEffect {
     #[effect(view)]
     NextLibraryPage,
     /// Save album: the name and photographs being edited.
+    #[effect(kind = "outside")]
     #[effect(label = "photos-a11y-save-album")]
     SaveAlbumDraft,
     /// Cancel album editing.
@@ -266,8 +272,10 @@ pub enum PhotosEffect {
     #[effect(label = "photos-delete-album")]
     DeleteAlbumDraft,
     /// Confirm deleting the album being edited. Its photographs stay.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     ConfirmAlbumDelete,
+    #[effect(kind = "outside")]
     SaveDetails,
     /// Cancel editing photograph details.
     #[effect(view)]
@@ -328,6 +336,7 @@ pub enum PhotosEffect {
     /// Next page of places.
     #[effect(view)]
     NextPlacesPage,
+    #[effect(kind = "outside")]
     StopImport,
     /// Details of the folder import.
     #[effect(view)]
@@ -338,49 +347,49 @@ pub enum PhotosEffect {
     /// Back from a person or suggestion to People.
     #[effect(view)]
     PeopleBack,
+    #[effect(kind = "outside")]
     TogglePeopleRecognition,
+    #[effect(kind = "outside")]
     CancelPeopleScan,
     /// View photos of an approved person.
     #[effect(view)]
-    OpenApprovedPerson {
-        person: String,
-    },
+    OpenApprovedPerson { person: String },
     /// Review a private suggestion.
     #[effect(view)]
-    OpenSuggestion {
-        cluster: String,
-    },
+    OpenSuggestion { cluster: String },
     /// Browse approved people.
     #[effect(view)]
     BrowseApprovedPeople,
     /// Save the name typed for the person reviewed.
+    #[effect(kind = "outside")]
     #[effect(label = "photos-people-save-name")]
     SavePersonName,
     /// Merge: choose a person to merge the one shown into.
     #[effect(view)]
     BeginPeopleMerge,
-    MergeApprovedInto {
-        person: String,
-    },
+    #[effect(kind = "outside")]
+    MergeApprovedInto { person: String },
+    #[effect(kind = "outside")]
     ApproveSuggestion,
+    #[effect(kind = "outside")]
     RejectSuggestion,
+    #[effect(kind = "outside")]
     HideSuggestion,
+    #[effect(kind = "outside")]
     RestoreSuggestion,
-    MergeSuggestionWith {
-        person: String,
-    },
+    #[effect(kind = "outside")]
+    MergeSuggestionWith { person: String },
     /// Show or hide hidden suggestions.
     #[effect(view)]
     ToggleHiddenSuggestions,
     /// Another page of People suggestions.
     #[effect(view)]
-    PeoplePage {
-        forward: bool,
-    },
+    PeoplePage { forward: bool },
     /// Delete local People data: ask to confirm.
     #[effect(view)]
     DeleteLocalPeopleData,
     /// Confirm deleting this device's private People data.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     ConfirmDeleteLocalPeopleData,
 }

@@ -173,6 +173,24 @@ impl InputMethodHandle {
         (data.new_popup)(state, popup);
     }
 
+    /// Give the keyboard back to the input method's grab, when the input method still holds one:
+    /// what a compositor that took the keyboard from it for a while (a session lock) does once
+    /// the input method may have it again.
+    pub fn restore_keyboard_grab<D: SeatHandler + 'static>(
+        &self,
+        state: &mut D,
+        keyboard: &KeyboardHandle<D>,
+    ) {
+        let grab = {
+            let inner = self.inner.lock().unwrap();
+            let held = inner.keyboard_grab.inner.lock().unwrap().grab.is_some();
+            held.then(|| inner.keyboard_grab.clone())
+        };
+        if let Some(grab) = grab {
+            keyboard.set_grab(state, grab, SERIAL_COUNTER.next_serial());
+        }
+    }
+
     /// Deactivate the active input method.
     ///
     /// The `done` is always send when deactivating IME.

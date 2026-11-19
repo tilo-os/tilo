@@ -189,7 +189,7 @@ impl DragRun {
         self
     }
 
-    /// Where the run's items pack along it: its leading edge (the default), its centre, its
+    /// Where the items pack along it: its leading edge (the default), its centre, its
     /// trailing edge, or spread between its ends.
     #[must_use]
     pub fn distribute(mut self, distribute: Distribute) -> Self {
@@ -198,7 +198,7 @@ impl DragRun {
         self
     }
 
-    /// Where the run's items pack across it.
+    /// Where the items pack across it.
     #[must_use]
     pub fn align(mut self, align: Align) -> Self {
         self.align = align;
@@ -216,7 +216,7 @@ impl DragRun {
         self
     }
 
-    /// What the run is, for assistive technology.
+    /// What it is, for assistive technology.
     #[must_use]
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
@@ -232,7 +232,7 @@ impl DragRun {
             .collect()
     }
 
-    /// Add `item` at the end of the run.
+    /// Add `item` after the last item.
     #[must_use]
     pub fn push(mut self, item: RunItem) -> Self {
         self.keys.push(Keys {
@@ -277,7 +277,7 @@ impl DragRun {
         true
     }
 
-    /// What the run was told it is.
+    /// What it was told it is.
     pub(crate) fn name_of(&self) -> Option<&str> {
         self.name.as_deref()
     }
@@ -297,7 +297,7 @@ impl DragRun {
         self.align
     }
 
-    /// The item known by `key`, by its place in the run.
+    /// The item known by `key`, by its place among the items.
     pub(crate) fn index_of(&self, key: &str) -> Option<usize> {
         self.keys.iter().position(|keys| keys.key == key)
     }
@@ -585,23 +585,61 @@ impl DragRun {
                 (row, groups, false)
             }
             RunAxis::Vertical => {
-                let all: Vec<usize> = (0..self.keys.len()).collect();
-                let mut column = FlexStack::stack().gap(Rhythm::Sibling).align(self.align);
-                let mut held = Vec::with_capacity(all.len());
-                for index in all {
+                // Stacked items stretched across are a list a person reorders: its rows stand
+                // on one ground, ruled apart, each with a grip at its trailing end that says it
+                // moves. A column of tiles (a dock on a side edge) stays loose.
+                let list = self.is_list();
+                let mut column = if list {
+                    FlexStack::stack().gap(Rhythm::None).padding(Rhythm::Tight)
+                } else {
+                    FlexStack::stack().gap(Rhythm::Sibling)
+                }
+                .align(self.align);
+                let mut groups = Vec::with_capacity(self.keys.len() * 2);
+                for index in 0..self.keys.len() {
                     let Some(view) = views.get_mut(index).and_then(Option::take) else {
                         continue;
                     };
-                    column = column.push(item(view));
-                    held.push(index);
+                    if list {
+                        if !groups.is_empty() {
+                            column = column.push(Box::new(crate::widget::Divider::horizontal()));
+                            groups.push(None);
+                        }
+                        column = column.push(Box::new(
+                            FlexRow::row()
+                                .gap(Rhythm::Related)
+                                .padding(Rhythm::Related)
+                                .align(Align::Center)
+                                .push_fit(view, crate::widget::arrange::Fit::fill(1.0))
+                                .push(Box::new(
+                                    crate::widget::IconWidget::new(
+                                        crate::icons::Icon::GripVertical,
+                                    )
+                                    .sized(crate::widget::IconSize::Small)
+                                    .dim(),
+                                )),
+                        ));
+                    } else {
+                        column = column.push(item(view));
+                    }
+                    groups.push(Some(vec![index]));
                 }
                 for view in trailing {
                     column = column.push(item(view));
                 }
-                let groups = held.iter().map(|index| Some(vec![*index])).collect();
                 (Box::new(column), groups, false)
             }
         }
+    }
+
+    /// Stacked, with its items stretched across: a list of rows on one ground.
+    fn is_list(&self) -> bool {
+        self.axis == RunAxis::Vertical && self.align == Align::Stretch
+    }
+
+    /// The ground a list's rows stand on, at the radius a card takes.
+    fn list_ground(theme: &Theme) -> (vello::peniko::Color, f64) {
+        (theme.tokens.colors.surfaces.raised, theme.radius_standard)
     }
 
     fn item_rects(&self) -> Vec<Rect> {
@@ -917,6 +955,15 @@ impl Widget for DragRun {
     /// The things that can be dragged, each where the run puts it.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("div");
+        if self.is_list() {
+            let (raised, radius) = Self::list_ground(cx.theme());
+            cx.ground(crate::composition::Ground {
+                fill: Some(crate::composition::rgba8(raised)),
+                edge: Some(crate::composition::rgba8(crate::surface::edge_on(raised))),
+                radius,
+                inset: [0.0; 2],
+            });
+        }
         cx.children();
     }
 
@@ -975,6 +1022,11 @@ impl Widget for DragRun {
             style.flex_shrink = 1.0;
             let _ = taffy.set_style(node, style);
         }
+        // A list's ground is its own: the node stands for the list, so a page composed from
+        // the layout asks the list, not its column, what the node shows.
+        if self.is_list() {
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        }
         node
     }
 
@@ -992,6 +1044,20 @@ impl Widget for DragRun {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.is_list() {
+            let (raised, radius) = Self::list_ground(theme);
+            let rect = self.get_rect();
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                crate::surface::selectable_card(
+                    scene,
+                    transform,
+                    (rect, radius),
+                    raised,
+                    false,
+                    theme,
+                );
+            }
+        }
         if let Some(items) = &mut self.items {
             DrawChild::draw_child(&mut **items, scene, transform, text, theme, presence);
         }
@@ -1348,6 +1414,58 @@ mod tests {
             (a.center().x + 400.0, a.center().y),
         );
         assert!(host.root_mut::<DragRun>().take_drops().is_empty());
+    }
+
+    /// Stacked rows stretched across are a list: each row spans the list inside its inset with
+    /// a grip at its trailing end, rows are ruled apart, the list's ground is an element of its
+    /// own on the web, and dragging the first row onto the last's lower half moves it to the end.
+    #[test]
+    fn a_stacked_list_gives_each_row_a_grip_and_a_rule_between_rows() {
+        let mut frame = harness(
+            DragRun::new("list")
+                .axis(RunAxis::Vertical)
+                .align(Align::Stretch)
+                .push(item("a", 48.0))
+                .push(item("b", 48.0))
+                .push(item("c", 48.0)),
+        );
+        let list = frame.root::<DragRun>();
+        let rects = list.item_rects();
+        let whole = list.get_rect();
+        assert_eq!(rects.len(), 3, "the rules are not items: {rects:?}");
+        let rows = list.children()[0].children();
+        let rules = rows.iter().filter(|row| row.name() == "Divider").count();
+        assert_eq!(rules, 2, "a rule between each two rows");
+        let grips = rows
+            .iter()
+            .filter(|row| {
+                row.children()
+                    .last()
+                    .is_some_and(|grip| grip.name() == "IconWidget")
+            })
+            .count();
+        assert_eq!(grips, 3, "each row ends in a grip");
+        for rect in &rects {
+            assert!(
+                (rect.width() - (whole.width() - 8.0)).abs() < 0.5,
+                "a row spans the list inside its inset: {rects:?} in {whole:?}"
+            );
+        }
+        fn grounded(node: &crate::composition::Composed, at: [f64; 4]) -> bool {
+            (node.rect == at && node.ground.is_some())
+                || node.children.iter().any(|child| grounded(child, at))
+        }
+        let at = [whole.x0, whole.y0, whole.width(), whole.height()];
+        assert!(
+            grounded(&frame.composition().root, at),
+            "its rows stand on one ground on the web too"
+        );
+        let (a, c) = (rects[0], rects[2]);
+        frame.drag_at((a.center().x, a.center().y), (c.center().x, c.y1 - 2.0));
+        let drops = frame.root_mut::<DragRun>().take_drops();
+        assert_eq!(drops.len(), 1, "one move: {drops:?}");
+        assert_eq!(drops[0].moved, "a");
+        assert_eq!(drops[0].before, None, "past the last row");
     }
 
     #[test]

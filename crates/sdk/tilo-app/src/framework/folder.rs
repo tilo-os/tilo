@@ -96,13 +96,10 @@ impl FolderVersions for WorkspaceFolder {
             };
             if !listed.contains(&chunk) {
                 // A node made in a chunk nobody made yet: the tree's own document lists it first,
-                // as every writer of the tree does.
+                // with the tree's own action, as every writer of the tree does.
                 self.tree
-                    .record()
-                    .try_edit(true, |doc| {
-                        fs_protocol::tree::list_chunk(doc, chunk).map_err(|error| error.to_string())
-                    })
-                    .map_err(|error| error.to_string())??;
+                    .act_as(invoker, &fs_protocol::FileAction::ListChunk { chunk })
+                    .map_err(|error| error.to_string())?;
             }
             self.document(chunk)
                 .ok_or("the folder's chunk is not open here")?

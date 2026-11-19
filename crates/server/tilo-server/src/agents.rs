@@ -56,6 +56,9 @@ const APPROVAL_WAIT_NS: u64 = 10 * 60 * 1_000_000_000;
 
 /// How long an agent's question about one invocation waits for its person.
 const CONFIRMATION_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
+/// How long a question an agent asks in its own words waits for its person:
+/// a decision or something only they know may take them a while.
+const ASK_WAIT_NS: u64 = 30 * 60 * 1_000_000_000;
 
 /// The server as an agent supervisor sees it.
 #[derive(Clone)]
@@ -741,8 +744,19 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             kind: question.kind,
             undoable: question.undoable,
             workspace: question.workspace,
-            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(if question.ask.is_some() {
+                ASK_WAIT_NS
+            } else {
+                CONFIRMATION_WAIT_NS
+            }),
             page: None,
+            ask: question
+                .ask
+                .map(|ask| tilo_server_protocol::certify::AgentAsk {
+                    question: ask.question,
+                    choices: ask.choices,
+                    typed: ask.typed,
+                }),
         };
         let (completer, answer) = tilo_actions::remote::pending();
         let certification = self.certification.clone();
@@ -760,6 +774,9 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                     Ok(tilo_actions::remote::ConfirmationReply::AllowOnce)
                 }
                 Ok(ConfirmationAnswer::Deny) => Ok(tilo_actions::remote::ConfirmationReply::Deny),
+                Ok(ConfirmationAnswer::Reply(reply)) => {
+                    Ok(tilo_actions::remote::ConfirmationReply::Replied(reply))
+                }
                 Err(_) => Err(ActionCallError::confirmation_required()),
             });
         });
@@ -856,6 +873,14 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         )
     }
 
+    fn key_revoked(&self, workspace: WorkspaceId, caller: &tilo_actions::remote::Caller) -> bool {
+        let Some(workspaces) = self.workspaces.as_ref() else {
+            return false;
+        };
+        self.runtime
+            .block_on(workspaces.key_revoked(workspace, caller))
+    }
+
     fn view_document(
         &self,
         workspace: WorkspaceId,
@@ -901,6 +926,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
     ) -> Result<Option<serde_json::Value>, String> {
         let PackagedCall {
             app,
+            kind,
             document,
             package,
             action,
@@ -924,6 +950,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
                 workspaces.governor(),
                 tilo_workspace_service::workspaces::PackagedAction {
                     app,
+                    kind,
                     document,
                     package,
                     action,
@@ -937,17 +964,12 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
             .map_err(|error| error.to_string())
     }
 
-    fn packaged_action(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        action: &str,
-    ) -> Option<tilo_actions::surface::VerbSurface> {
+    fn packaged_surface(&self, workspace: WorkspaceId, app: &str) -> Option<Vec<u8>> {
         let workspaces = self.workspaces.as_ref()?;
         let package = self
             .runtime
             .block_on(workspaces.installed_package(&workspace.to_string(), app))?;
-        tilo_workspace_service::workspaces::packaged_action_verb(&package, app, action).ok()
+        tilo_workspace_service::workspaces::package_surface(&package, app).ok()
     }
 
     fn view_locator(
@@ -959,7 +981,7 @@ impl WorkspaceDocumentsLink for ServerRecordsLink {
         Some(tilo_actions::remote::ResourceViewLocator {
             origin: (*origin).clone(),
             workspace: workspace.to_owned(),
-            host_device: hex::encode(self.host_device.endpoint.host_cert.device_public_key),
+            host_device: hex::encode(self.host_device.endpoint.server_cert.device_public_key),
             provider: provider.to_owned(),
             web_entry: self.web_entry.clone(),
         })
@@ -1055,7 +1077,7 @@ pub async fn start_serving_documents_and_events(
     ),
     ServerError,
 > {
-    let host_cert = identity.device_cert.clone();
+    let server_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(catalogue, browsers.as_ref());
     cfg.services.app_serving = true;
     let events_state = cfg.state_root.join("person-events");
@@ -1072,7 +1094,7 @@ pub async fn start_serving_documents_and_events(
     attach_resources(
         &app_server.actions,
         &server,
-        &host_cert,
+        &server_cert,
         web_entry,
         (feedback_reviewer, shell, browsers),
         None,
@@ -1102,7 +1124,7 @@ pub async fn start_serving_documents_and_events(
 fn attach_resources(
     actions: &WorkspaceActions,
     server: &Server,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
     web_entry: Option<String>,
     (feedback_reviewer, shell, browsers): Lent,
     sessions: Option<tilo_agent_session::AgentSessions>,
@@ -1121,7 +1143,7 @@ fn attach_resources(
         let (key, cert) = server.stand_in(&user).unwrap_or_else(|| {
             (
                 server.workspace_documents().signing_key().clone(),
-                host_cert.clone(),
+                server_cert.clone(),
             )
         });
         browsers.serve_from(crate::hosted_browser::Authority {
@@ -1157,7 +1179,7 @@ fn attach_resources(
             certification: server.web_context().certification.clone(),
             runtime: tokio::runtime::Handle::current(),
             host_device: HostDevice {
-                endpoint: HostEndpoint::iroh(server.node_addr(), host_cert.clone()),
+                endpoint: HostEndpoint::iroh(server.node_addr(), server_cert.clone()),
                 key: server.workspace_documents().signing_key().clone(),
                 runtime: tokio::runtime::Handle::current(),
             },
@@ -1195,7 +1217,7 @@ async fn start_inner(
     options: AgentOptions,
     relay_mode: Option<iroh::RelayMode>,
 ) -> Result<(Server, AgentHost), ServerError> {
-    let host_cert = identity.device_cert.clone();
+    let server_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(options.catalogue, options.browsers.as_ref());
     let content = crate::content::stores(&cfg.state_root);
     let mut agents = AgentHost::new(
@@ -1228,7 +1250,7 @@ async fn start_inner(
     attach_resources(
         &host_actions.host.actions,
         &server,
-        &host_cert,
+        &server_cert,
         web_entry,
         (options.feedback_reviewer, options.shell, options.browsers),
         Some(agents.agent_sessions()),
@@ -1236,7 +1258,7 @@ async fn start_inner(
     drop(host_actions);
     agents
         .start(
-            HostEndpoint::iroh(server.node_addr(), host_cert),
+            HostEndpoint::iroh(server.node_addr(), server_cert),
             Arc::new(server.agent_link()),
         )
         .map_err(ServerError::Identity)?;

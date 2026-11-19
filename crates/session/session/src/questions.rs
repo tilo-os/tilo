@@ -91,6 +91,9 @@ enum Plan {
     Secrets { remember: Option<bool> },
     /// The sheet asks nothing this can answer: a code on show.
     Nothing,
+    /// An agent's question in its own words: the choice picked, or what was
+    /// typed where it takes typing ([`tilo_sheets::portal::AgentAsk`]).
+    Ask { choices: usize, typed: bool },
     /// Taking back the allowance the person just gave.
     Revoke {
         app_id: String,
@@ -637,6 +640,23 @@ impl Shown {
                 choice: Some(0),
                 ..Answer::default()
             }),
+            Plan::Ask { choices, typed } => {
+                let entry = state.text(Field::Answer);
+                let entry = entry.trim();
+                let choice = (dialog.selected < *choices).then_some(dialog.selected);
+                if choice.is_none() && (entry.is_empty() || !typed) {
+                    return Err(word("agent-ask-pick-or-type"));
+                }
+                Ok(Answer {
+                    choice,
+                    values: if *typed && !entry.is_empty() {
+                        vec![zeroize::Zeroizing::new(entry.to_owned())]
+                    } else {
+                        Vec::new()
+                    },
+                    ..Answer::default()
+                })
+            }
             Plan::Entry => {
                 let typed = state.text(Field::Answer);
                 let entry = typed.trim();
@@ -918,7 +938,11 @@ fn admitted(handle: &str, who: &str, details: Value) -> Option<(Dialog, Plan)> {
 /// An agent's question on a workspace host, on the sheet a page shows it on too.
 fn agent_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: tilo_sheets::portal::AgentQuestion = serde_json::from_value(details).ok()?;
-    Some((asked.dialog(handle), Plan::Confirm))
+    let plan = asked.ask.as_ref().map_or(Plan::Confirm, |ask| Plan::Ask {
+        choices: ask.choices.len(),
+        typed: ask.typed,
+    });
+    Some((asked.dialog(handle), plan))
 }
 
 /// What an agent's run asks before a step its grants leave to the person, or an app before it takes

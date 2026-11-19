@@ -888,7 +888,7 @@ pub(super) fn apply(
     use crate::navigation::Admitted;
     let handled = match command {
         Admitted::MoveToStrip(ids, strip, before) => move_to_strip(shared, *ids, *strip, *before),
-        Admitted::JoinGroup(ids, into) => join_group(shared, *ids, *into),
+        Admitted::JoinGroup(ids, into) => join_group(shared, *ids, ids.strip, *into),
         Admitted::MoveToWorkspace(ids, to) => move_to_workspace(shared, *ids, *to),
         Admitted::MoveToDisplay(ids, display) => move_to_display(shared, ids.group, *display),
         Admitted::WidthPreset(ids, width) => width_preset(shared, *ids, *width, ops),
@@ -959,45 +959,68 @@ fn move_to_strip(
     moved
 }
 
-/// Put the tab at `ids` into the window `into` of its own strip, its tab last there.
-fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
+/// Put the tab at `ids` into the window `into` of `into_strip` , its tab last there. A tab of
+/// another workspace comes to the one `into_strip` stands in, as a window sent to that workspace
+/// does.
+fn join_group(shared: &mut Shared, ids: RouteIds, into_strip: StripId, into: GroupId) -> bool {
     let Shared { tree, minter, .. } = shared;
-    let moved = tree
-        .workspaces
-        .iter_mut()
-        .find(|workspace| workspace.id() == ids.workspace)
-        .is_some_and(|workspace| {
-            let command = DesktopCommand::MoveTab {
-                location: TabLocation {
-                    strip: ids.strip.0,
-                    group: ids.group,
-                    tab: ids.tab,
-                },
-                placement: TabPlacement::InGroup {
-                    strip: ids.strip.0,
-                    group: into,
-                    after: None,
-                },
-            };
-            apply_command(
-                workspace,
-                &command,
-                &mut || Ok(minter.mint()),
-                &mut |_, _| Err("a join opens no window".into()),
-            )
-            .is_ok()
-        });
+    let same_workspace = tree
+        .active_workspace()
+        .is_some_and(|workspace| workspace.id() == ids.workspace);
+    let moved = if same_workspace {
+        tree.workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id() == ids.workspace)
+            .is_some_and(|workspace| {
+                let command = DesktopCommand::MoveTab {
+                    location: TabLocation {
+                        strip: ids.strip.0,
+                        group: ids.group,
+                        tab: ids.tab,
+                    },
+                    placement: TabPlacement::InGroup {
+                        strip: into_strip.0,
+                        group: into,
+                        after: None,
+                    },
+                };
+                apply_command(
+                    workspace,
+                    &command,
+                    &mut || Ok(minter.mint()),
+                    &mut |_, _| Err("a join opens no window".into()),
+                )
+                .is_ok()
+            })
+    } else {
+        tree.move_tab_across_strips(
+            ids.strip,
+            into_strip,
+            ids.tab,
+            minter.mint(),
+            tilo_desktop_model::topology::DropTarget::ExistingGroup {
+                group_id: into,
+                tab_index: usize::MAX,
+            },
+        )
+        .is_some()
+    };
     if moved {
         // The window the tab joined is the one in front, showing the tab that just arrived: the
         // window it left may have gone with its last tab, so the shell would be left with nothing in
         // front.
-        tree.active_strip.insert(ids.workspace, ids.strip);
-        tree.set_active_group(ids.strip, into);
+        if let Some(active) = tree
+            .active_workspace()
+            .map(tilo_desktop_model::Workspace::id)
+        {
+            tree.active_strip.insert(active, into_strip);
+        }
+        tree.set_active_group(into_strip, into);
         if let Some(group) = tree
             .workspaces
             .iter_mut()
             .flat_map(|workspace| &mut workspace.strips)
-            .filter(|strip| strip.id == ids.strip)
+            .filter(|strip| strip.id == into_strip)
             .flat_map(|strip| &mut strip.window_groups)
             .find(|group| group.id == into)
         {
@@ -1006,6 +1029,48 @@ fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
     }
     shared.replaced |= moved;
     moved
+}
+
+/// Put the place showing `resource` into the window `into` of the shown strip, in front there:
+/// what a window's bar let go over a window does, on this device and when another of the person's
+/// devices carried the window here. A place already the window's comes to the front and stays
+/// where it is. The place is in any workspace of the layout, which is where this device keeps it.
+pub(super) fn join_place(
+    shared: &mut Shared,
+    resources: &std::collections::BTreeMap<TabId, String>,
+    strip: StripId,
+    into: GroupId,
+    resource: &str,
+) -> bool {
+    let Some(ids) = shared.tree.workspaces.iter().find_map(|workspace| {
+        let held = workspace.id();
+        workspace.strips.iter().find_map(|strip| {
+            strip.window_groups.iter().find_map(|group| {
+                let tab = group.tabs.iter().find(|tab| {
+                    resources
+                        .get(&tab.id)
+                        .is_some_and(|shown| shown.as_str() == resource)
+                })?;
+                Some(RouteIds {
+                    workspace: held,
+                    strip: strip.id,
+                    group: group.id,
+                    tab: tab.id,
+                })
+            })
+        })
+    }) else {
+        return false;
+    };
+    if ids.group == into && ids.strip == strip {
+        shared.tree.set_active_group(strip, into);
+        if let Some(group) = super::find_group(&mut shared.tree, strip, into) {
+            group.activate_tab(ids.tab);
+        }
+        shared.replaced = true;
+        return true;
+    }
+    join_group(shared, ids, strip, into)
 }
 
 /// Carry the tab at `ids` into workspace `to` , with a window of its own.

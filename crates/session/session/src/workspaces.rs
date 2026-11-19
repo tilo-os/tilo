@@ -37,6 +37,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
@@ -598,7 +599,7 @@ impl Personal {
         self.hosts = engine
             .workspaces()
             .into_iter()
-            .filter_map(|workspace| Some((workspace, engine.host_of(workspace)?)))
+            .filter_map(|workspace| Some((workspace, engine.holder_of(workspace)?)))
             .collect();
     }
 
@@ -1035,10 +1036,29 @@ impl crate::Shared {
                 // named keeps no name of its own, and a workspace is founded under a name, so
                 // the word the session reads for it stands in until one is given.
                 let name = tilo_desktop_surface::names::workspace(&workspace.name);
-                let founded = crate::landing::off_loop(async move {
-                    engine.found(id, &name).await;
+                let told = name.clone();
+                let founded =
+                    crate::landing::off_loop(async move { engine.found(id, &name).await });
+                // A founding that failed is tried again when the next one ends, and the person
+                // hears why the workspace is not on the service yet: never a silent sole copy on
+                // this layout.
+                let sync = self.sync.clone();
+                self.landings.then(founded, {
+                    let notifications = Rc::clone(&self.notifications);
+                    move |outcome| match outcome {
+                        Some(Err(error)) => notifications
+                            .borrow()
+                            .tell(&crate::notices::workspace_not_founded_notice(&told, &error)),
+                        Some(Ok(())) => {
+                            // The workspace is held here now, as one joined is: its live session
+                            // opens, so this device says who is here in it and hears who else is.
+                            if let Some(sync) = &sync {
+                                sync.workspace_arrived();
+                            }
+                        }
+                        None => {}
+                    }
                 });
-                self.landings.then(founded, drop);
             }
             if workspace
                 .owner()
@@ -1463,7 +1483,7 @@ impl crate::Shared {
                     else {
                         continue;
                     };
-                    if hint.host.device_public_key == device {
+                    if hint.host.is_of_device(&device) {
                         continue;
                     }
                     let name = self
@@ -1478,7 +1498,7 @@ impl crate::Shared {
                     enter.push(ToEnter {
                         workspace,
                         name,
-                        host: hint.host.device_public_key,
+                        host: hint.host.writes_for(),
                         held: true,
                     });
                 }
@@ -1652,7 +1672,9 @@ impl crate::Shared {
             );
             return None;
         };
-        if opened.host != hint.host.device_public_key {
+        // The address is signed by the service of the device the list names, under the service's own
+        // key: it names that device all the same.
+        if !hint.host.is_of_device(&opened.host) {
             tracing::debug!(
                 %workspace,
                 listed = %hex::encode(opened.host),
@@ -1919,6 +1941,7 @@ mod tests {
                 runs_work: false,
                 label: String::new(),
                 cloud: false,
+                moderates: false,
                 workspace_id: tilo_peer_state::join::WorkspaceId::parse(&workspace).expect("an id"),
                 endpoint_addr: iroh::EndpointAddr::new(
                     iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)

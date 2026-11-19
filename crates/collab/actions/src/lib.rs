@@ -173,15 +173,18 @@ pub mod noun;
 pub mod offload;
 pub mod outcome;
 pub mod params;
+pub mod prefill;
 pub mod protocol;
 pub mod published;
 pub mod registry;
 pub mod remote;
 pub mod resource;
+pub mod row_status;
 pub mod run;
 pub mod schema;
 pub mod selection;
 pub mod selectors;
+pub mod send_to;
 pub mod step;
 pub mod surface;
 pub mod task_step;
@@ -189,7 +192,7 @@ pub mod terminal_text;
 
 pub use action::{
     Action, ActionError, ActionId, Declined, Doc, EncodedAction, ExecutionLocus, MAX_TEXT_BYTES,
-    OperationKind, asks_first, codes, undo_takes_back,
+    OperationKind, RECALL_SUMMARY_BYTES, asks_first, codes, undo_takes_back,
 };
 pub use agent_disclosure::hidden_from_agents;
 pub use api::{ActionAddress, ActionDescriptor, ApiError, InputSpec, ResourceViewDescriptor};
@@ -204,13 +207,13 @@ pub use context::{
 };
 pub use contract::{
     AGENTS_AUDIENCE_TAG, ARGUMENT_RISK_TAG, ATTENDED_TAG, ActionContract, ActionKind, ActionNeed,
-    Audience, Availability, COMPENSATED_UNDO_TAG, ConfirmationPolicy, DOCUMENT_READ_TAG,
-    ExecutionMode, HOST_RENDER_TAG, HOST_UNSUPPORTED_CODE, HOUSEKEEPING_TAG,
+    Audience, Availability, CARRIER_TAG, COMPENSATED_UNDO_TAG, ConfirmationPolicy,
+    DOCUMENT_READ_TAG, ExecutionMode, HOST_RENDER_TAG, HOST_UNSUPPORTED_CODE, HOUSEKEEPING_TAG,
     INCOMING_MESSAGE_FACET, INCOMING_MESSAGE_TAG, IRREVERSIBLE_TAG, MAX_OFFLOAD_CPU_TIME_MS,
     MAX_OFFLOAD_MEMORY_BYTES, MAX_OFFLOAD_OUTPUT_BYTES, MEMBER_OWN_TAG, MIN_OFFLOAD_MEMORY_BYTES,
     OPENS_PATH_EXTENSION_PREFIX, OPENS_PATH_TAG, OUTSIDE_CAPABILITY_PREFIX, OWN_DEVICE_SCOPE,
     OWN_RESOURCE_SCOPE, Offload, PEOPLE_AUDIENCE_TAG, REQUIRES_HOST_PREFIX,
-    REQUIRES_NATIVE_PATHS_TAG, RESOURCE_READ_TAG, ResultSpec, RetryPolicy, RiskLevel,
+    REQUIRES_NATIVE_PATHS_TAG, RESOURCE_READ_TAG, ResultSpec, RetryPolicy, RiskLevel, SCREEN_TAG,
     UNTRUSTED_CONTENT_TAG, action_node, phrase_is_meaningful, resource_node,
 };
 pub use draft::{Draft, DraftEdit, DraftField, DraftLayout, DraftValue, MessageRole};
@@ -219,6 +222,7 @@ pub use entry::{
     Scalar, VerbCall,
 };
 pub use envelope::ActionEnvelope;
+pub use executor::Changes;
 pub use executor::{
     ActionTransport, CompensatingScope, Dispatched, EntryReader, HostDecision, LocalTransport,
     UNDONE_KEY, Verified, apply_local, apply_local_by, apply_local_with_context,
@@ -260,6 +264,7 @@ pub use resource::{
     in_words, kind_is_a_drawn_control, kind_mirrors_a_control, listed_for_people, listed_row,
     listed_row_problems, plural, singular, sole_text_argument,
 };
+pub use row_status::{RowStatus, apply_row_statuses};
 pub use schema::{
     CatalogueSchemaEntry, ContextRequirement, PRESENCE_VIEW_TAG, REQUIRES_TAG_PREFIX,
     catalogue_schema, catalogue_schema_bytes,
@@ -268,6 +273,7 @@ pub use selection::{
     BOUND_RESOURCE_PREFIX, MAX_EXCERPT_BYTES, MAX_EXCERPT_CHARS, MAX_SELECTED_ITEMS,
     SelectionAnchor, SelectionPlace, SelectionSubject, excerpt_of, logical_resource_id,
 };
+pub use send_to::{Recipient, RecipientKind, recipients_matching};
 pub use step::{Step, StepKind};
 /// Grants and the decisions over them, as apps read and show them.
 pub use tilo_action_policy as policy;

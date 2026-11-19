@@ -488,7 +488,7 @@ fn verb_button(
         .with_icon(icon)
         .with_enabled(model.controls && !model.busy);
     let binding = (model.live_engine && verb_id != "remove")
-        .then(|| crate::app::container_row(c, true))
+        .then(|| crate::rows::container_row(c))
         .and_then(|row| ui::tilo_actions::ActionBinding::unit_for(&row, verb_id).ok());
     match binding {
         Some(binding) => button.on_action(binding),

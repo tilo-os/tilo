@@ -59,7 +59,8 @@ pub struct OriginalRequest {
     inventory_bytes: Option<Vec<u8>>,
 }
 impl OriginalRequest {
-    #[cfg(all(test, feature = "native-capture-qualification"))]
+    #[cfg(test)]
+    #[cfg(feature = "native-capture-qualification")]
     pub fn channel_for_registration(&self) -> &Rendezvous {
         &self.channel
     }

@@ -2097,7 +2097,7 @@
     "/v1/workspaces/{workspace}/members/name": {
       "post": {
         "operationId": "namePerson",
-        "summary": "The name the key's own person goes by in the workspace",
+        "summary": "The name the key's own person goes by, in this workspace and every other one its server keeps",
         "tags": [
           "Members"
         ],
@@ -2123,7 +2123,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The name the key's own person goes by in the workspace",
+            "description": "The name the key's own person goes by, in this workspace and every other one its server keeps",
             "content": {
               "application/json": {
                 "schema": {
@@ -3350,6 +3350,13 @@
             "items": {
               "$ref": "#/components/schemas/Workspace"
             }
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The listing as a person reads it ([`super::lines`]): what `tilo`\nprints."
           }
         },
         "required": [
@@ -3573,6 +3580,13 @@
             "items": {
               "$ref": "#/components/schemas/KeyRow"
             }
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The listing as a person reads it ([`super::lines`]): what `tilo`\nprints."
           }
         },
         "required": [
@@ -3745,7 +3759,13 @@
           },
           "has_children": {
             "type": "boolean",
+            "description": "Whether a query with this row as its parent answers rows the workspace\nholds now. An app holding no document here says no, though listing it\nwould start it on a new one; a walk reads what is there and starts\nnothing.",
             "default": false
+          },
+          "reads": {
+            "type": "boolean",
+            "description": "Whether a read answers the row as a resource of its own. A row that is\nonly a place inside it (an option or a choice, like a reading font or a\nbuilt-in folder) is part of what lists it and is never read alone; a\nlisting that does not say is read as it always was, every row read.",
+            "default": true
           },
           "actions": {
             "type": "array",
@@ -4239,7 +4259,7 @@
       "Members": {
         "type": "object",
         "additionalProperties": true,
-        "description": "The workspace's people, each with their role, and the invitations still\nopen."
+        "description": "The workspace's people, each with their role, and the invitations still\nopen, with `text`: the listing as a person reads it."
       },
       "NewInvitation": {
         "type": "object",
@@ -4295,7 +4315,7 @@
       "WaitList": {
         "type": "object",
         "additionalProperties": true,
-        "description": "The addresses left at the workspace's entry while it takes people by\ninvitation, oldest first, and whether the entry mails invitations."
+        "description": "The addresses left at the workspace's entry while it takes people by\ninvitation, oldest first, and whether the entry mails invitations, with\n`text`: the listing as a person reads it."
       },
       "Servers": {
         "type": "object",
@@ -4319,6 +4339,13 @@
           },
           "copies": {
             "description": "How many copies the workspace wants kept and where they stand."
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The listing as a person reads it ([`super::lines`]): what `tilo`\nprints."
           }
         },
         "required": [
@@ -5022,16 +5049,6 @@
           "url",
           "status",
           "duration_ms"
-        ],
-        "description": ""
-      },
-      "backups.workspace.verify.Arguments": {
-        "type": "object",
-        "properties": {
-          "snapshot_id": {}
-        },
-        "required": [
-          "snapshot_id"
         ],
         "description": ""
       },
@@ -9553,6 +9570,12 @@
       "chat.messages.post.Arguments": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "channel": {
             "type": "string"
           },
@@ -11376,6 +11399,12 @@
               "array",
               "null"
             ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -12558,6 +12587,22 @@
         "required": [],
         "description": ""
       },
+      "clocks.collection.show.Arguments": {
+        "type": "object",
+        "properties": {
+          "section": {}
+        },
+        "required": [
+          "section"
+        ],
+        "description": ""
+      },
+      "clocks.collection.dismiss-notice.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "clocks.on-devices.keep.Arguments": {
         "type": "object",
         "properties": {
@@ -13020,7 +13065,7 @@
               "null"
             ]
           },
-          "run": {
+          "id": {
             "type": "string"
           }
         },
@@ -13034,7 +13079,7 @@
           "tool",
           "undoable",
           "items",
-          "run"
+          "id"
         ],
         "description": ""
       },
@@ -15732,16 +15777,6 @@
         "required": [],
         "description": ""
       },
-      "disks.system.select.Arguments": {
-        "type": "object",
-        "properties": {
-          "device": {}
-        },
-        "required": [
-          "device"
-        ],
-        "description": ""
-      },
       "disks.system.show-tab.Arguments": {
         "type": "object",
         "properties": {
@@ -17075,15 +17110,9 @@
       "files.tree.new-folder.Arguments": {
         "type": "object",
         "properties": {
-          "parent": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "document": {
-            "type": "string"
-          }
+          "parent": {},
+          "name": {},
+          "document": {}
         },
         "required": [
           "parent",
@@ -17094,15 +17123,9 @@
       "files.tree.new-file.Arguments": {
         "type": "object",
         "properties": {
-          "parent": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "document": {
-            "type": "string"
-          }
+          "parent": {},
+          "name": {},
+          "document": {}
         },
         "required": [
           "parent",
@@ -17113,15 +17136,9 @@
       "files.tree.move.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
-          },
-          "parent": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
+          "node": {},
+          "parent": {},
+          "name": {}
         },
         "required": [
           "node",
@@ -17133,15 +17150,9 @@
       "files.tree.write.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
-          },
-          "content": {
-            "type": "string"
-          },
-          "size": {
-            "type": "integer"
-          }
+          "node": {},
+          "content": {},
+          "size": {}
         },
         "required": [
           "node",
@@ -17153,9 +17164,7 @@
       "files.tree.trash.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
-          }
+          "node": {}
         },
         "required": [
           "node"
@@ -17165,12 +17174,20 @@
       "files.tree.restore.Arguments": {
         "type": "object",
         "properties": {
-          "node": {
-            "type": "string"
-          }
+          "node": {}
         },
         "required": [
           "node"
+        ],
+        "description": ""
+      },
+      "files.tree.list-chunk.Arguments": {
+        "type": "object",
+        "properties": {
+          "chunk": {}
+        },
+        "required": [
+          "chunk"
         ],
         "description": ""
       },
@@ -17322,7 +17339,7 @@
         ],
         "description": ""
       },
-      "git_client.repo.record-repository.Arguments": {
+      "git_client.repo.store-repository.Arguments": {
         "type": "object",
         "properties": {
           "shared": {
@@ -17790,12 +17807,6 @@
         "required": [],
         "description": ""
       },
-      "imager.sources.status.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "imager.sources.export-config.Arguments": {
         "type": "object",
         "properties": {},
@@ -17836,16 +17847,6 @@
           "enabled": {}
         },
         "required": [],
-        "description": ""
-      },
-      "logs.journal.select-entry.Arguments": {
-        "type": "object",
-        "properties": {
-          "entry_id": {}
-        },
-        "required": [
-          "entry_id"
-        ],
         "description": ""
       },
       "mail.mailbox.server-applied.Arguments": {
@@ -19810,16 +19811,6 @@
         "required": [],
         "description": ""
       },
-      "maps.workspace.search.Arguments": {
-        "type": "object",
-        "properties": {
-          "query": {}
-        },
-        "required": [
-          "query"
-        ],
-        "description": ""
-      },
       "maps.workspace.locate.Arguments": {
         "type": "object",
         "properties": {},
@@ -19830,46 +19821,6 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": ""
-      },
-      "maps.workspace.open-place.Arguments": {
-        "type": "object",
-        "properties": {
-          "place": {}
-        },
-        "required": [
-          "place"
-        ],
-        "description": ""
-      },
-      "maps.workspace.directions.Arguments": {
-        "type": "object",
-        "properties": {
-          "place": {}
-        },
-        "required": [
-          "place"
-        ],
-        "description": ""
-      },
-      "maps.workspace.open-poi.Arguments": {
-        "type": "object",
-        "properties": {
-          "poi": {}
-        },
-        "required": [
-          "poi"
-        ],
-        "description": ""
-      },
-      "maps.workspace.poi-directions.Arguments": {
-        "type": "object",
-        "properties": {
-          "poi": {}
-        },
-        "required": [
-          "poi"
-        ],
         "description": ""
       },
       "maps.workspace.show-point.Arguments": {
@@ -19884,23 +19835,13 @@
         ],
         "description": ""
       },
-      "maps.workspace.delete-offline-area.Arguments": {
-        "type": "object",
-        "properties": {
-          "area": {}
-        },
-        "required": [
-          "area"
-        ],
-        "description": ""
-      },
       "maps.workspace.clear-offline-areas.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
         "description": ""
       },
-      "maps.offline-areas.record.Arguments": {
+      "maps.offline-areas.remember.Arguments": {
         "type": "object",
         "properties": {
           "device": {
@@ -20227,26 +20168,6 @@
           "query": {}
         },
         "required": [],
-        "description": ""
-      },
-      "monitor.processes.inspect.Arguments": {
-        "type": "object",
-        "properties": {
-          "process": {}
-        },
-        "required": [
-          "process"
-        ],
-        "description": ""
-      },
-      "monitor.processes.copy-pid.Arguments": {
-        "type": "object",
-        "properties": {
-          "process": {}
-        },
-        "required": [
-          "process"
-        ],
         "description": ""
       },
       "music.library.create-playlist.Arguments": {
@@ -21523,16 +21444,6 @@
         "required": [],
         "description": ""
       },
-      "passwords.vault.deny-access.Arguments": {
-        "type": "object",
-        "properties": {
-          "proposal": {}
-        },
-        "required": [
-          "proposal"
-        ],
-        "description": ""
-      },
       "passwords.vault.add.Arguments": {
         "type": "object",
         "properties": {},
@@ -21551,16 +21462,6 @@
         "required": [],
         "description": ""
       },
-      "passwords.vault.copy.Arguments": {
-        "type": "object",
-        "properties": {
-          "item": {}
-        },
-        "required": [
-          "item"
-        ],
-        "description": ""
-      },
       "passwords.vault.copy-identity.Arguments": {
         "type": "object",
         "properties": {
@@ -21572,16 +21473,6 @@
         "description": ""
       },
       "passwords.vault.copy-origins.Arguments": {
-        "type": "object",
-        "properties": {
-          "item": {}
-        },
-        "required": [
-          "item"
-        ],
-        "description": ""
-      },
-      "passwords.vault.reveal.Arguments": {
         "type": "object",
         "properties": {
           "item": {}
@@ -23754,6 +23645,38 @@
         "required": [],
         "description": ""
       },
+      "settings.root.set-source-options-visible.Arguments": {
+        "type": "object",
+        "properties": {
+          "visible": {}
+        },
+        "required": [
+          "visible"
+        ],
+        "description": ""
+      },
+      "settings.root.set-source-inspection-visible.Arguments": {
+        "type": "object",
+        "properties": {
+          "visible": {}
+        },
+        "required": [
+          "visible"
+        ],
+        "description": ""
+      },
+      "settings.root.open-source-picker.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "settings.root.show-live-keyboard-map.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "settings.root.storage-summary.Arguments": {
         "type": "object",
         "properties": {},
@@ -23779,6 +23702,12 @@
         "required": [
           "model"
         ],
+        "description": ""
+      },
+      "settings.root.toggle-microphone-test.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
         "description": ""
       },
       "settings.root.discover-thunderbird-accounts.Arguments": {
@@ -27007,16 +26936,6 @@
         "required": [],
         "description": ""
       },
-      "store.catalog.browse-remote.Arguments": {
-        "type": "object",
-        "properties": {
-          "remote": {}
-        },
-        "required": [
-          "remote"
-        ],
-        "description": ""
-      },
       "store.catalog.set-category.Arguments": {
         "type": "object",
         "properties": {
@@ -27031,16 +26950,6 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": ""
-      },
-      "store.catalog.show-details.Arguments": {
-        "type": "object",
-        "properties": {
-          "app": {}
-        },
-        "required": [
-          "app"
-        ],
         "description": ""
       },
       "store.catalog.show-runtime-details.Arguments": {
@@ -27074,18 +26983,6 @@
         "description": ""
       },
       "store.catalog.show-catalogue.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "store.catalog.show-remotes.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "store.catalog.show-trust.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -28632,7 +28529,7 @@
               "null"
             ]
           },
-          "run": {
+          "id": {
             "type": "string"
           }
         },
@@ -28646,7 +28543,7 @@
           "tool",
           "undoable",
           "items",
-          "run"
+          "id"
         ],
         "description": ""
       },
@@ -28745,16 +28642,6 @@
         "type": "object",
         "properties": {},
         "required": [],
-        "description": ""
-      },
-      "terminal.session.open-link.Arguments": {
-        "type": "object",
-        "properties": {
-          "url": {}
-        },
-        "required": [
-          "url"
-        ],
         "description": ""
       },
       "terminal.history.remember.Arguments": {
@@ -28984,36 +28871,6 @@
         "required": [],
         "description": ""
       },
-      "totp.vault.open-account.Arguments": {
-        "type": "object",
-        "properties": {
-          "account": {}
-        },
-        "required": [
-          "account"
-        ],
-        "description": ""
-      },
-      "totp.vault.copy-code.Arguments": {
-        "type": "object",
-        "properties": {
-          "account": {}
-        },
-        "required": [
-          "account"
-        ],
-        "description": ""
-      },
-      "totp.vault.set-up-local.Arguments": {
-        "type": "object",
-        "properties": {
-          "account": {}
-        },
-        "required": [
-          "account"
-        ],
-        "description": ""
-      },
       "tube.library.reply-to-comment.Arguments": {
         "type": "object",
         "properties": {
@@ -29046,36 +28903,6 @@
         ],
         "description": ""
       },
-      "tube.library.open-video.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {}
-        },
-        "required": [
-          "video"
-        ],
-        "description": ""
-      },
-      "tube.library.open-creator.Arguments": {
-        "type": "object",
-        "properties": {
-          "creator": {}
-        },
-        "required": [
-          "creator"
-        ],
-        "description": ""
-      },
-      "tube.library.open-playlist.Arguments": {
-        "type": "object",
-        "properties": {
-          "playlist": {}
-        },
-        "required": [
-          "playlist"
-        ],
-        "description": ""
-      },
       "tube.library.search.Arguments": {
         "type": "object",
         "properties": {
@@ -29103,42 +28930,6 @@
         "description": ""
       },
       "tube.library.skip-segment.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "tube.library.share.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {}
-        },
-        "required": [
-          "video"
-        ],
-        "description": ""
-      },
-      "tube.library.mark-watched.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {}
-        },
-        "required": [
-          "video"
-        ],
-        "description": ""
-      },
-      "tube.library.forget-watched.Arguments": {
-        "type": "object",
-        "properties": {
-          "video": {}
-        },
-        "required": [
-          "video"
-        ],
-        "description": ""
-      },
-      "tube.library.clear-history.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
@@ -30253,12 +30044,6 @@
         "required": [],
         "description": ""
       },
-      "video-player.library.clear-recent.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "video-player.recent.keep.Arguments": {
         "type": "object",
         "properties": {
@@ -30387,41 +30172,10 @@
         ],
         "description": ""
       },
-      "weather.locations.refresh.Arguments": {
+      "weather.locations.refresh-all.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": ""
-      },
-      "weather.locations.refresh-location.Arguments": {
-        "type": "object",
-        "properties": {
-          "location": {}
-        },
-        "required": [
-          "location"
-        ],
-        "description": ""
-      },
-      "weather.locations.open-location.Arguments": {
-        "type": "object",
-        "properties": {
-          "location": {}
-        },
-        "required": [
-          "location"
-        ],
-        "description": ""
-      },
-      "windows.manager.open-file.Arguments": {
-        "type": "object",
-        "properties": {
-          "app": {},
-          "path": {}
-        },
-        "required": [
-          "app"
-        ],
         "description": ""
       },
       "word-processor.document.append-paragraph.Arguments": {
@@ -31170,12 +30924,6 @@
       "resource": "api-tester.workspace",
       "action": "record-sent",
       "arguments": "#/components/schemas/api-tester.workspace.record-sent.Arguments"
-    },
-    {
-      "app": "so.tilo.backups",
-      "resource": "backups.workspace",
-      "action": "verify",
-      "arguments": "#/components/schemas/backups.workspace.verify.Arguments"
     },
     {
       "app": "so.tilo.browser",
@@ -32295,6 +32043,18 @@
     },
     {
       "app": "so.tilo.clocks",
+      "resource": "clocks.collection",
+      "action": "show",
+      "arguments": "#/components/schemas/clocks.collection.show.Arguments"
+    },
+    {
+      "app": "so.tilo.clocks",
+      "resource": "clocks.collection",
+      "action": "dismiss-notice",
+      "arguments": "#/components/schemas/clocks.collection.dismiss-notice.Arguments"
+    },
+    {
+      "app": "so.tilo.clocks",
       "resource": "clocks.on-devices",
       "action": "keep",
       "arguments": "#/components/schemas/clocks.on-devices.keep.Arguments"
@@ -32914,12 +32674,6 @@
     {
       "app": "so.tilo.disks",
       "resource": "disks.system",
-      "action": "select",
-      "arguments": "#/components/schemas/disks.system.select.Arguments"
-    },
-    {
-      "app": "so.tilo.disks",
-      "resource": "disks.system",
       "action": "show-tab",
       "arguments": "#/components/schemas/disks.system.show-tab.Arguments"
     },
@@ -33291,6 +33045,12 @@
     },
     {
       "app": "so.tilo.file-explorer",
+      "resource": "files.tree",
+      "action": "list-chunk",
+      "arguments": "#/components/schemas/files.tree.list-chunk.Arguments"
+    },
+    {
+      "app": "so.tilo.file-explorer",
       "resource": "files.recent",
       "action": "note",
       "arguments": "#/components/schemas/files.recent.note.Arguments"
@@ -33358,8 +33118,8 @@
     {
       "app": "so.tilo.git-client",
       "resource": "git_client.repo",
-      "action": "record-repository",
-      "arguments": "#/components/schemas/git_client.repo.record-repository.Arguments"
+      "action": "store-repository",
+      "arguments": "#/components/schemas/git_client.repo.store-repository.Arguments"
     },
     {
       "app": "so.tilo.git-client",
@@ -33424,12 +33184,6 @@
     {
       "app": "so.tilo.imager",
       "resource": "imager.sources",
-      "action": "status",
-      "arguments": "#/components/schemas/imager.sources.status.Arguments"
-    },
-    {
-      "app": "so.tilo.imager",
-      "resource": "imager.sources",
       "action": "export-config",
       "arguments": "#/components/schemas/imager.sources.export-config.Arguments"
     },
@@ -33462,12 +33216,6 @@
       "resource": "logs.journal",
       "action": "set-live-tail",
       "arguments": "#/components/schemas/logs.journal.set-live-tail.Arguments"
-    },
-    {
-      "app": "so.tilo.logs",
-      "resource": "logs.journal",
-      "action": "select-entry",
-      "arguments": "#/components/schemas/logs.journal.select-entry.Arguments"
     },
     {
       "app": "so.tilo.mail",
@@ -33748,12 +33496,6 @@
     {
       "app": "so.tilo.maps",
       "resource": "maps.workspace",
-      "action": "search",
-      "arguments": "#/components/schemas/maps.workspace.search.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "maps.workspace",
       "action": "locate",
       "arguments": "#/components/schemas/maps.workspace.locate.Arguments"
     },
@@ -33766,38 +33508,8 @@
     {
       "app": "so.tilo.maps",
       "resource": "maps.workspace",
-      "action": "open-place",
-      "arguments": "#/components/schemas/maps.workspace.open-place.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "maps.workspace",
-      "action": "directions",
-      "arguments": "#/components/schemas/maps.workspace.directions.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "maps.workspace",
-      "action": "open-poi",
-      "arguments": "#/components/schemas/maps.workspace.open-poi.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "maps.workspace",
-      "action": "poi-directions",
-      "arguments": "#/components/schemas/maps.workspace.poi-directions.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "maps.workspace",
       "action": "show-point",
       "arguments": "#/components/schemas/maps.workspace.show-point.Arguments"
-    },
-    {
-      "app": "so.tilo.maps",
-      "resource": "maps.workspace",
-      "action": "delete-offline-area",
-      "arguments": "#/components/schemas/maps.workspace.delete-offline-area.Arguments"
     },
     {
       "app": "so.tilo.maps",
@@ -33808,8 +33520,8 @@
     {
       "app": "so.tilo.maps",
       "resource": "maps.offline-areas",
-      "action": "record",
-      "arguments": "#/components/schemas/maps.offline-areas.record.Arguments"
+      "action": "remember",
+      "arguments": "#/components/schemas/maps.offline-areas.remember.Arguments"
     },
     {
       "app": "so.tilo.maps",
@@ -33996,18 +33708,6 @@
       "resource": "monitor.processes",
       "action": "filter",
       "arguments": "#/components/schemas/monitor.processes.filter.Arguments"
-    },
-    {
-      "app": "so.tilo.monitor",
-      "resource": "monitor.processes",
-      "action": "inspect",
-      "arguments": "#/components/schemas/monitor.processes.inspect.Arguments"
-    },
-    {
-      "app": "so.tilo.monitor",
-      "resource": "monitor.processes",
-      "action": "copy-pid",
-      "arguments": "#/components/schemas/monitor.processes.copy-pid.Arguments"
     },
     {
       "app": "so.tilo.music",
@@ -34222,12 +33922,6 @@
     {
       "app": "so.tilo.passwords",
       "resource": "passwords.vault",
-      "action": "deny-access",
-      "arguments": "#/components/schemas/passwords.vault.deny-access.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "passwords.vault",
       "action": "add",
       "arguments": "#/components/schemas/passwords.vault.add.Arguments"
     },
@@ -34246,12 +33940,6 @@
     {
       "app": "so.tilo.passwords",
       "resource": "passwords.vault",
-      "action": "copy",
-      "arguments": "#/components/schemas/passwords.vault.copy.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "passwords.vault",
       "action": "copy-identity",
       "arguments": "#/components/schemas/passwords.vault.copy-identity.Arguments"
     },
@@ -34260,12 +33948,6 @@
       "resource": "passwords.vault",
       "action": "copy-origins",
       "arguments": "#/components/schemas/passwords.vault.copy-origins.Arguments"
-    },
-    {
-      "app": "so.tilo.passwords",
-      "resource": "passwords.vault",
-      "action": "reveal",
-      "arguments": "#/components/schemas/passwords.vault.reveal.Arguments"
     },
     {
       "app": "so.tilo.passwords",
@@ -34594,6 +34276,30 @@
     {
       "app": "so.tilo.settings",
       "resource": "settings.root",
+      "action": "set-source-options-visible",
+      "arguments": "#/components/schemas/settings.root.set-source-options-visible.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "set-source-inspection-visible",
+      "arguments": "#/components/schemas/settings.root.set-source-inspection-visible.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "open-source-picker",
+      "arguments": "#/components/schemas/settings.root.open-source-picker.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "show-live-keyboard-map",
+      "arguments": "#/components/schemas/settings.root.show-live-keyboard-map.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
       "action": "storage-summary",
       "arguments": "#/components/schemas/settings.root.storage-summary.Arguments"
     },
@@ -34608,6 +34314,12 @@
       "resource": "settings.root",
       "action": "show-hub-model",
       "arguments": "#/components/schemas/settings.root.show-hub-model.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "toggle-microphone-test",
+      "arguments": "#/components/schemas/settings.root.toggle-microphone-test.Arguments"
     },
     {
       "app": "so.tilo.settings",
@@ -35482,12 +35194,6 @@
     {
       "app": "so.tilo.store",
       "resource": "store.catalog",
-      "action": "browse-remote",
-      "arguments": "#/components/schemas/store.catalog.browse-remote.Arguments"
-    },
-    {
-      "app": "so.tilo.store",
-      "resource": "store.catalog",
       "action": "set-category",
       "arguments": "#/components/schemas/store.catalog.set-category.Arguments"
     },
@@ -35496,12 +35202,6 @@
       "resource": "store.catalog",
       "action": "clear-filters",
       "arguments": "#/components/schemas/store.catalog.clear-filters.Arguments"
-    },
-    {
-      "app": "so.tilo.store",
-      "resource": "store.catalog",
-      "action": "show-details",
-      "arguments": "#/components/schemas/store.catalog.show-details.Arguments"
     },
     {
       "app": "so.tilo.store",
@@ -35526,18 +35226,6 @@
       "resource": "store.catalog",
       "action": "show-catalogue",
       "arguments": "#/components/schemas/store.catalog.show-catalogue.Arguments"
-    },
-    {
-      "app": "so.tilo.store",
-      "resource": "store.catalog",
-      "action": "show-remotes",
-      "arguments": "#/components/schemas/store.catalog.show-remotes.Arguments"
-    },
-    {
-      "app": "so.tilo.store",
-      "resource": "store.catalog",
-      "action": "show-trust",
-      "arguments": "#/components/schemas/store.catalog.show-trust.Arguments"
     },
     {
       "app": "so.tilo.store",
@@ -35829,12 +35517,6 @@
     },
     {
       "app": "so.tilo.terminal",
-      "resource": "terminal.session",
-      "action": "open-link",
-      "arguments": "#/components/schemas/terminal.session.open-link.Arguments"
-    },
-    {
-      "app": "so.tilo.terminal",
       "resource": "terminal.history",
       "action": "remember",
       "arguments": "#/components/schemas/terminal.history.remember.Arguments"
@@ -35906,24 +35588,6 @@
       "arguments": "#/components/schemas/totp.vault.add-account.Arguments"
     },
     {
-      "app": "so.tilo.totp",
-      "resource": "totp.vault",
-      "action": "open-account",
-      "arguments": "#/components/schemas/totp.vault.open-account.Arguments"
-    },
-    {
-      "app": "so.tilo.totp",
-      "resource": "totp.vault",
-      "action": "copy-code",
-      "arguments": "#/components/schemas/totp.vault.copy-code.Arguments"
-    },
-    {
-      "app": "so.tilo.totp",
-      "resource": "totp.vault",
-      "action": "set-up-local",
-      "arguments": "#/components/schemas/totp.vault.set-up-local.Arguments"
-    },
-    {
       "app": "so.tilo.tube",
       "resource": "tube.library",
       "action": "reply-to-comment",
@@ -35934,24 +35598,6 @@
       "resource": "tube.library",
       "action": "retract",
       "arguments": "#/components/schemas/tube.library.retract.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "open-video",
-      "arguments": "#/components/schemas/tube.library.open-video.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "open-creator",
-      "arguments": "#/components/schemas/tube.library.open-creator.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "open-playlist",
-      "arguments": "#/components/schemas/tube.library.open-playlist.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -35976,30 +35622,6 @@
       "resource": "tube.library",
       "action": "skip-segment",
       "arguments": "#/components/schemas/tube.library.skip-segment.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "share",
-      "arguments": "#/components/schemas/tube.library.share.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "mark-watched",
-      "arguments": "#/components/schemas/tube.library.mark-watched.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "forget-watched",
-      "arguments": "#/components/schemas/tube.library.forget-watched.Arguments"
-    },
-    {
-      "app": "so.tilo.tube",
-      "resource": "tube.library",
-      "action": "clear-history",
-      "arguments": "#/components/schemas/tube.library.clear-history.Arguments"
     },
     {
       "app": "so.tilo.tube",
@@ -36399,12 +36021,6 @@
     },
     {
       "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "clear-recent",
-      "arguments": "#/components/schemas/video-player.library.clear-recent.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
       "resource": "video-player.recent",
       "action": "keep",
       "arguments": "#/components/schemas/video-player.recent.keep.Arguments"
@@ -36442,26 +36058,8 @@
     {
       "app": "so.tilo.weather",
       "resource": "weather.locations",
-      "action": "refresh",
-      "arguments": "#/components/schemas/weather.locations.refresh.Arguments"
-    },
-    {
-      "app": "so.tilo.weather",
-      "resource": "weather.locations",
-      "action": "refresh-location",
-      "arguments": "#/components/schemas/weather.locations.refresh-location.Arguments"
-    },
-    {
-      "app": "so.tilo.weather",
-      "resource": "weather.locations",
-      "action": "open-location",
-      "arguments": "#/components/schemas/weather.locations.open-location.Arguments"
-    },
-    {
-      "app": "so.tilo.windows",
-      "resource": "windows.manager",
-      "action": "open-file",
-      "arguments": "#/components/schemas/windows.manager.open-file.Arguments"
+      "action": "refresh-all",
+      "arguments": "#/components/schemas/weather.locations.refresh-all.Arguments"
     },
     {
       "app": "so.tilo.word-processor",

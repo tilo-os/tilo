@@ -13,6 +13,12 @@ use crate::{EarlierIds, KindSet, TreePath};
 #[serde(rename_all = "snake_case")]
 pub enum Answer {
     /// Refuse.
+    ///
+    /// Refusing to read is an access rule, not secrecy: every member device decrypts the
+    /// workspace's content with the same workspace keys, so a Deny on reading one resource keeps it
+    /// out of every Tilo read path for the grantee, while another member's device still holds what
+    /// it needs to read the bytes ([`Grant::denies_reading_within_workspace`]). The workspace is the
+    /// boundary of confidentiality.
     Deny,
     /// Pause for the person's approval, approved by the host on their device.
     Ask,
@@ -396,6 +402,20 @@ pub struct Grant {
 }
 
 impl Grant {
+    /// Whether this grant refuses reading something inside a workspace rather than the workspace
+    /// itself: a rule every Tilo read path enforces, never a seal. Its grantee's devices hold the
+    /// workspace's keys like every member's, so whoever sets one is told so ([`Answer::Deny`]).
+    #[must_use]
+    pub fn denies_reading_within_workspace(&self) -> bool {
+        self.answer == Answer::Deny
+            && self.kinds.contains(crate::ActionKind::Read)
+            && self.node.segments().iter().any(|segment| {
+                segment
+                    .level()
+                    .is_some_and(|level| level > crate::Level::Workspace)
+            })
+    }
+
     /// A grant until revoked, given by `granted_by`.
     #[must_use]
     pub fn new(

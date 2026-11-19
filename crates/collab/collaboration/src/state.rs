@@ -11,8 +11,10 @@ use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use tilo_sort::CompactSort as _;
 
 mod built_on;
+mod replica;
 mod sequence_replay;
 mod undo_log;
+pub use replica::{DocumentFrontier, DocumentReplica, State, WritingActors, changes_beyond};
 use sequence_replay::SequenceReplay;
 #[doc(hidden)]
 pub use undo_log::{HistoryMoment, OwnedActionAttribution, OwnedActionReceipt, same_frontier};

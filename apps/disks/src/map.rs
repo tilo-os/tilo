@@ -350,7 +350,7 @@ impl Widget for PartitionMap {
         if let Some(clock) = &self.pending {
             use ui::arriving::Step;
             let step = clock.step(ui::motion::frame_now());
-            if matches!(step, Step::Skeleton | Step::Named) {
+            if step == Step::Skeleton {
                 Self::paint_pending(&mut ctx, &geometry, origin);
             }
             self.drawn_step = Some(step);

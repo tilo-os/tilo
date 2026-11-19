@@ -20,7 +20,9 @@ use tilo_peer_state::owner::{
     NativeWorkspaceOwner,
     session::{Connect, Holder, Input, Link, Linked, Reach, Scope, hold},
 };
-use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
+use tilo_peer_state::owner_commit::{
+    CommitFuture, LocalDocumentFuture, OwnerCommitRequest, OwnerCommitService,
+};
 use tilo_workspace_service::apps::{
     collab_broker::FanoutState,
     collab_core::BrokerChannels,
@@ -180,6 +182,16 @@ impl Joined {
         );
         let refused = desktop_enrolled(profile)?;
         Self::open(profile, identity, endpoint, refused, broker)
+    }
+
+    /// This device as the workspace service's member copies act: the
+    /// certificate its host admitted when it joined, and the signer of its
+    /// key.
+    pub(super) fn service_device(&self) -> tilo_workspace_service::workspaces::MemberDevice {
+        tilo_workspace_service::workspaces::MemberDevice {
+            cert: self.identity.device_cert.clone(),
+            signer: std::sync::Arc::clone(&self.identity.signer),
+        }
     }
 
     /// What signs as this device, as its action service signs every request it makes.
@@ -421,6 +433,29 @@ impl Joined {
         let holders = self
             .owner
             .with_current(workspace, |view| view.key_holders(at))
+            .ok()?;
+        Some(
+            holders
+                .into_iter()
+                .map(collab_types::Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
+    }
+
+    /// The devices of `people` among [`Self::key_holders`]: who holds the keys
+    /// of a group of `workspace` only those people read.
+    pub(super) fn reader_key_holders(
+        &self,
+        workspace: WorkspaceId,
+        people: &std::collections::BTreeSet<[u8; 32]>,
+        now: u64,
+    ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
+        let at = std::time::SystemTime::UNIX_EPOCH
+            .checked_add(tilo_workspace_service::apps::workspace_keys::policy_instant(now))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let holders = self
+            .owner
+            .with_current(workspace, |view| view.reader_key_holders(people, at))
             .ok()?;
         Some(
             holders
@@ -757,14 +792,6 @@ impl Joined {
 }
 
 impl OwnerCommitService for Joined {
-    /// Every workspace this profile joined, and the workspaces the desktop session
-    /// governs here, whose writes are refused.
-    fn requires_workspace(&self, workspace: &str) -> bool {
-        WorkspaceId::parse(workspace).is_some_and(|workspace| {
-            self.owner.contains_workspace(workspace) || self.refused.contains(&workspace)
-        })
-    }
-
     /// A workspace hosted here keeps its effect receipts in the profile's own
     /// workspace record.
     fn records_effects(&self, workspace: &str) -> bool {
@@ -783,31 +810,43 @@ impl OwnerCommitService for Joined {
         request: OwnerCommitRequest,
         resource_type: Option<String>,
     ) -> CommitFuture {
+        let committed = self.commit_local_document(request, resource_type);
+        Box::pin(async move { Ok(committed.await?.1) })
+    }
+
+    /// A write committed here is answered as the owner took it: this device's
+    /// local writers sign before the owner's turn, and one whose sequence a
+    /// later write took is signed again above the document's own. Only the
+    /// resulting committed request, with the receipt that binds it, says what
+    /// the owner did.
+    fn commit_local_document(
+        &self,
+        request: OwnerCommitRequest,
+        resource_type: Option<String>,
+    ) -> LocalDocumentFuture {
         let workspace = WorkspaceId::parse(&request.workspace);
         if workspace.is_some_and(|workspace| self.refused.contains(&workspace)) {
             return Box::pin(std::future::ready(Err(
                 "the desktop session's workspace is read only in the runtime".into(),
             )));
         }
+        let this = self.this.clone();
         if let Some(workspace) = workspace.filter(|workspace| self.hosted_here(*workspace)) {
-            let Some(this) = self.this.upgrade() else {
-                return Box::pin(std::future::ready(Err(
-                    "the joined workspaces closed".into()
-                )));
-            };
-            return Box::pin(
-                async move { this.commit_hosted(workspace, request, resource_type).await },
-            );
+            return Box::pin(async move {
+                let Some(this) = this.upgrade() else {
+                    return Err("the joined workspaces closed".to_string());
+                };
+                // The server keeps the write as it was signed: its receipt
+                // binds exactly this request.
+                let receipt = this
+                    .commit_hosted(workspace, request.clone(), resource_type)
+                    .await?;
+                Ok((request, receipt))
+            });
         }
-        // Drafted again past its record's floor when this device's local writers signed out of
-        // the order the owner takes them, for this device's ownership to sign.
-        let (owner, signer, this) = (
-            self.owner.clone(),
-            Arc::clone(&self.identity.signer),
-            self.this.clone(),
-        );
+        let (owner, signer) = (self.owner.clone(), Arc::clone(&self.identity.signer));
         Box::pin(async move {
-            let (_, receipt) = owner
+            let (committed, receipt) = owner
                 .commit_local_document(request, signer.as_ref(), SystemTime::now())
                 .await?;
             if let Some(workspace) = workspace
@@ -815,7 +854,7 @@ impl OwnerCommitService for Joined {
             {
                 this.wake(workspace);
             }
-            Ok(receipt)
+            Ok((committed, receipt))
         })
     }
 

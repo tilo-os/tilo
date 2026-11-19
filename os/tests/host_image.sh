@@ -32,6 +32,7 @@ inside skopeo --version >/dev/null || die 'no skopeo'
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside setpriv --help >/dev/null || die 'no setpriv'
 inside bootc --version >/dev/null || die 'no bootc'
+inside efibootmgr --version >/dev/null || die 'no efibootmgr, so a server cannot change its boot order'
 
 # The programs, at the paths their units and scripts name.
 for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
@@ -45,6 +46,7 @@ for bin in usr/libexec/tilo/tilo-server usr/libexec/tilo/tilo-server-admin \
   usr/libexec/tilo-hosted-prepare usr/libexec/tilo-hosted-serve \
   usr/libexec/tilo-update-channel usr/libexec/tilo-update-policy-set \
   usr/libexec/tilo-server-update-policy usr/libexec/tilo-server-control \
+  usr/libexec/tilo-default-start \
   usr/libexec/tilo-server-device-config \
   usr/libexec/tilo-image-trust-staged \
   usr/libexec/tilo-esp-mount; do
@@ -88,10 +90,8 @@ for module in 91tilo-rollback; do
 done
 [[ -d $root/usr/share/tilo/pcr-predictions ]] \
   || die 'no /usr/share/tilo/pcr-predictions, where a signed PCR prediction is read from'
-# The installed machine boots the initramfs this image carries: without one built
-# with the unlock module, the kernel sees a LUKS device it cannot open.
-initrd=$(echo "$root"/usr/lib/modules/*/initramfs.img)
-[[ -s $initrd ]] || die 'the image carries no initramfs, so its root cannot be opened at boot'
+# The initramfs the UKI below carries was built with the unlock module: without
+# it, the kernel sees a LUKS device it cannot open.
 grep -qx tilo-rollback "$root/usr/lib/tilo/initramfs-modules.txt" \
   || die 'the initramfs was not built with the unlock module (91tilo-rollback)'
 for t in cryptsetup tpm2_createprimary; do
@@ -194,19 +194,32 @@ grep -q '^ExecStartPost=-/usr/libexec/tilo-deployment entries' \
   "$root/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-tilo-boot-entries.conf" \
   || die 'a staged update gets no try counter before its reboot'
 
-# This image boots split kernel/initrd entries, which the boot-entry pass accepts
-# only from an image that says which layout it boots; `server`, not `dev`, so
-# nothing treats it as a development image.
-[[ $(cat "$root/usr/lib/tilo/image-flavour") == server ]] || die 'the image does not name its boot layout'
+# `server`, not `dev`, so nothing treats it as a development image.
+[[ $(cat "$root/usr/lib/tilo/image-flavour") == server ]] || die 'the image does not say it is a server'
 
-# Boot hardening: the kernel arguments bootc writes into the boot entry, no
-# extension merged over /usr at boot, nobody signing in at a console, sudo the
-# only setuid program, no listener of the base's left and no port the firewall
-# opens for one.
-for karg in lockdown=integrity init_on_alloc=1 slab_nomerge vsyscall=none \
-  systemd.import_credentials=no; do
-  grep -qs "\"$karg\"" "$root"/usr/lib/bootc/kargs.d/*.toml || die "the boot entry would not carry $karg"
+# The image is sealed: one UKI under /boot carries the kernel, the initramfs and
+# the command line, and the rootfs keeps neither of the first two, so nothing
+# boots it but the UKI. Its command line names the generation the image carries,
+# the composefs digest it mounts and the hardening arguments.
+shopt -s nullglob
+ukis=("$root"/boot/EFI/Linux/*.efi)
+shopt -u nullglob
+(( ${#ukis[@]} == 1 )) || die "the image carries ${#ukis[@]} UKIs under /boot/EFI/Linux, not one"
+leftover=$(cd "$root" && find usr/lib/modules -maxdepth 2 \( -name vmlinuz -o -name initramfs.img \) | sort)
+[[ -z $leftover ]] || die "the rootfs still carries a kernel or initramfs beside the UKI: $leftover"
+cmdline=$(inside /usr/libexec/tilo-uki-cmdline show "/boot/EFI/Linux/${ukis[0]##*/}")
+generation=$(cat "$root/usr/lib/tilo/generation")
+[[ $generation =~ ^[1-9][0-9]*$ ]] || die "the image carries no generation: '$generation'"
+for karg in "tilo.generation=$generation" root=tilo-auto lockdown=integrity init_on_alloc=1 \
+  slab_nomerge vsyscall=none systemd.import_credentials=no console=ttyS0,115200; do
+  grep -qw -- "$karg" <<<"$cmdline" || die "the sealed command line does not carry $karg: $cmdline"
 done
+grep -Eq '(^| )composefs=[0-9a-f]{128}( |$)' <<<"$cmdline" \
+  || die "the sealed command line names no composefs digest: $cmdline"
+
+# Boot hardening besides: no extension merged over /usr at boot, nobody signing
+# in at a console, sudo the only setuid program, no listener of the base's left
+# and no port the firewall opens for one.
 for unit in systemd-sysext.service systemd-confext.service systemd-sysext.socket \
   avahi-daemon.service avahi-daemon.socket; do
   [[ $(readlink "$root/etc/systemd/system/$unit") == /dev/null ]] || die "$unit is not masked"

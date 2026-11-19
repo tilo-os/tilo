@@ -21,7 +21,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::membership_check::PeerStore as _;
 use tilo_session_client::{Cmd, Link, MemoryPeerStore, Outbox as _};
@@ -35,15 +35,15 @@ fn new_key() -> SigningKey {
 
 /// A device of `name` entering `workspace` through its entry, its session over `store`.
 async fn arrive(
-    host: Host,
-    host_cert: &tilo_user_identity::DeviceCert,
+    host: ServerAddress,
+    server_cert: &tilo_user_identity::DeviceCert,
     workspace: &str,
     name: &str,
     store: Arc<MemoryPeerStore>,
 ) -> Link {
     let (root, key) = (new_key(), new_key());
     let (cert, entry) = entry_request(
-        host_cert,
+        server_cert,
         workspace,
         &key,
         Entering {
@@ -56,7 +56,7 @@ async fn arrive(
     )
     .await
     .unwrap();
-    enter_page(host, cert, host_cert.clone(), key, store, entry)
+    enter_page(host, cert, server_cert.clone(), key, store, entry)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -84,7 +84,8 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
         .unwrap();
     let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
-    let host_at = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
+    let server_at =
+        || ServerAddress::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let files = DocumentRoute {
         app_id: "so.tilo.chat".into(),
         cluster_id: lounge.workspace.clone(),
@@ -95,7 +96,7 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
     let session_only = Arc::new(MemoryPeerStore::for_session());
     let profile = Arc::new(MemoryPeerStore::default());
     let computer = arrive(
-        host_at(),
+        server_at(),
         &host_device.cert,
         &lounge.workspace,
         "Computer",
@@ -103,7 +104,7 @@ async fn a_session_over_a_store_for_it_alone_keeps_no_copy_of_its_workspaces() {
     )
     .await;
     let page = arrive(
-        host_at(),
+        server_at(),
         &host_device.cert,
         &lounge.workspace,
         "Page",

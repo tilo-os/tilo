@@ -59,7 +59,7 @@ impl DesktopSurface {
                 .tabs()
                 .filter_map(|tab| {
                     let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
-                    let (record, kind) = self.tiles.window_record(tab.id)?;
+                    let (resource, kind) = self.tiles.window_resource(tab.id)?;
                     let app_title = match &tab.tile {
                         tilo_desktop_model::TileContent::LocalApp { label, .. } => label.clone(),
                         _ => tab.app_title.clone().unwrap_or_else(|| tab.title.clone()),
@@ -81,7 +81,7 @@ impl DesktopSurface {
                         app: app.as_str().to_owned(),
                         app_title,
                         title,
-                        record,
+                        record: resource,
                         kind,
                         item,
                     })

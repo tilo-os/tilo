@@ -13,6 +13,10 @@
 #   TILO_CHROMIUM_ENGINE  what `--chromium` left: the engine taken from there
 #                      instead of built again; `apart` leaves it out of OUT, for an
 #                      image build given it beside the tree (os/dev/build-image.sh)
+#   TILO_APP_MODELS    the modules `tools/ci/app-models.sh` built for every app
+#                      that keeps a model (the app-models check's output), taken
+#                      instead of building them here; the packing below ships
+#                      them inside each app's package
 #   TILO_GITHUB_ASSET_CACHE  the checksum-pinned external assets (default
 #                      os/external-assets/cache), for the CEF distribution
 #
@@ -251,7 +255,7 @@ case "$TILO_RUST_LTO" in \
          DESKTOP_RELEASE_ARGS="-p tilo-session --bin tilo-session -p tilo-runtime --bin tilo-runtime-mcp -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
     && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p greeter -p imager -p runtime-bundle -p tilo-rollback -p tilo-auth -p tilo-boot-signin -p tilo-esp-write -p tilo-extension -p tilo-staging-reclaim -p tilo-install-helpers -p tilo-boot-order -p tilo-image-policy-check -p tilo-board-successor -p tilo-firstboot-files -p tilo-crypto -p tilo-user-identity -p tilo-device-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-flight-log -p tilo-pdf -p tilo-app-package-cli -p tilo-control -p install -p cli-shim -p package-service -p local-model-service -p tilo-model-gateway -p tilo-secret-service -p system-extension -p compat-service -p account-credentials -p linux-vm -p tilo-ntfs-mount -p tilo-device-vpn -p tilo-net-answers -p tilo-app-keeper -p tilo-audio-service -p tilo-messaging-service -p tilo-identity -p tilo-window-menu -p tilo-lock-screen -p tilo-quick-settings -p osk -p tilolang-process" \
-    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-model-http --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-package-service --bin tilo-rollback --bin tilo-authd --bin tilo-auth --bin tilo-boot-signin --bin tilo-esp-write --bin tilo-extension --bin tilo-staging-reclaim --bin tilo-install-handoff-copy --bin tilo-install-dev-ssh --bin tilo-vm-bootc-copy-cache --bin tilo-installer-offline-target --bin tilo-staging-handoff --bin tilo-vm-install-proof --bin tilo-boot-order --bin tilo-image-policy-check --bin tilo-board-successor --bin tilo-firstboot-files --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-flight-recorder --bin tilo-session-report --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-server --bin tilo-server-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-linux-vm --bin tilo-account-credential --bin tilo-ntfs-mount --bin tilo-device-vpn --bin tilo-net-answers --bin tilo-app-keeper --bin tilo-audio --bin tilo-messaging --bin tilo-identity --bin tilo-window-menu --bin tilo-lock-screen --bin tilo-quick-settings --bin osk --bin tilolang-process" \
+    && RELEASE_BINS="--bin fs --bin tilo-model-manager --bin tilo-speech-worker --bin tilo-model-gateway --bin tilo-model-http --bin tilo-secret-service --bin tilo-greeter --bin tilo-installer --bin tilo-firstboot-home-seeds --bin tilo-installer-prepared-setup-extract --bin tilo-prepared-setup --bin tilo-runtime-bundle --bin tilo-package-service --bin tilo-rollback --bin tilo-authd --bin tilo-auth --bin tilo-boot-signin --bin tilo-esp-write --bin tilo-extension --bin tilo-staging-reclaim --bin tilo-install-handoff-copy --bin tilo-install-dev-ssh --bin tilo-vm-bootc-copy-cache --bin tilo-installer-offline-target --bin tilo-staging-handoff --bin tilo-vm-install-proof --bin tilo-boot-order --bin tilo-default-start --bin tilo-image-policy-check --bin tilo-board-successor --bin tilo-firstboot-files --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-control --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-flight-recorder --bin tilo-session-report --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-server --bin tilo-server-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-linux-vm --bin tilo-account-credential --bin tilo-ntfs-mount --bin tilo-device-vpn --bin tilo-net-answers --bin tilo-app-keeper --bin tilo-audio --bin tilo-messaging --bin tilo-identity --bin tilo-window-menu --bin tilo-lock-screen --bin tilo-quick-settings --bin osk --bin tilolang-process" \
     && build_thin_apps() { \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          APP_FEATURES="${APP_FEATURES}" \
@@ -286,7 +290,7 @@ case "$TILO_RUST_LTO" in \
        cargo build --release -p pam-tilo --lib \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in tilo-session tilo-runtime-mcp tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-server tilo-server-admin tilo-enroll tilo-home-peer-control tilo-linux-vm tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-package-service tilo-unlock-helper tilo-rollback tilo-authd tilo-auth tilo-boot-signin tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-vm-bootc-copy-cache tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-ntfs-mount tilo-device-vpn tilo-net-answers tilo-app-keeper tilo-audio tilo-messaging tilo-identity tilo-window-menu tilo-lock-screen tilo-quick-settings osk tilolang-process; do \
+    && for b in tilo-session tilo-runtime-mcp tilo-projector tilo-flight-recorder tilo-session-report tilo-pdf-helper fs tilo-server tilo-server-admin tilo-enroll tilo-home-peer-control tilo-linux-vm tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-model-http tilo-secret-service tilo-greeter tilo-installer tilo-firstboot-home-seeds tilo-installer-prepared-setup-extract tilo-prepared-setup tilo-runtime-bundle tilo-launcher tilo-package-service tilo-unlock-helper tilo-rollback tilo-authd tilo-auth tilo-boot-signin tilo-esp-write tilo-extension tilo-staging-reclaim tilo-install-handoff-copy tilo-install-dev-ssh tilo-vm-bootc-copy-cache tilo-installer-offline-target tilo-staging-handoff tilo-vm-install-proof tilo-boot-order tilo-default-start tilo-image-policy-check tilo-board-successor tilo-firstboot-files tilo-crypto tilo-image-trust tilo-device-key-init tilo app tilo-app-package tilo-control tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime tilo-account-credential tilo-ntfs-mount tilo-device-vpn tilo-net-answers tilo-app-keeper tilo-audio tilo-messaging tilo-identity tilo-window-menu tilo-lock-screen tilo-quick-settings osk tilolang-process; do \
          case "${TILO_PREBUILT_DESKTOP}:$b" in 1:tilo-session|1:tilo-launcher|1:tilo-unlock-helper|1:tilo-runtime-mcp) continue ;; esac; \
          if [ ! -x "$target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
@@ -349,6 +353,7 @@ case "$TILO_RUST_LTO" in \
           $target/release/tilo-staging-handoff \
           $target/release/tilo-vm-install-proof \
           $target/release/tilo-boot-order \
+          $target/release/tilo-default-start \
           $target/release/tilo-image-policy-check \
           $target/release/tilo-board-successor \
           $target/release/tilo-firstboot-files \
@@ -423,7 +428,15 @@ case "$TILO_RUST_LTO" in \
          && while IFS= read -r engine; do cp "$target/thin-app/$engine" "$out"/; done < "$out"/runtime-engines \
          && LIBSTD="$(find "$(rustc --print target-libdir)" -maxdepth 1 -name 'libstd-*.so' -print -quit)" \
          && [ -n "${LIBSTD}" ] \
-         && cp "${LIBSTD}" "$out"/; \
+         && cp "${LIBSTD}" "$out"/ \
+         && build_phase rust-app-models \
+         && rm -rf "$out/app-models" \
+         && if [ -n "${TILO_APP_MODELS:-}" ]; then \
+              cp -a "${TILO_APP_MODELS}" "$out"/app-models; \
+            else \
+              bash tools/ci/app-models.sh \
+              && cp -a "$target/app-models" "$out"/app-models; \
+            fi; \
        fi \
     && build_phase rust-boot-greeter \
     && cp Cargo.lock "$scratch/Cargo.lock" \

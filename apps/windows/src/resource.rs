@@ -134,6 +134,9 @@ const SCENARIOS: &[&str] = &[
     "appliance",
     "appliance-setup",
     "pending-install",
+    "support-missing",
+    "support-installing",
+    "support-failed",
 ];
 
 impl ResourceApp for WindowsShell {
@@ -172,7 +175,8 @@ impl ResourceApp for WindowsShell {
         match scenario.unwrap_or("wide") {
             "detail" | "error-compact" | "vm-detail" | "confirm-delete" => (480, 800),
             "running" | "closed" | "ended-with-error" | "ended-overview" | "could-not-open"
-            | "vm-running" | "long-name" | "error" | "pending-install" => (1000, 760),
+            | "vm-running" | "long-name" | "error" | "pending-install" | "support-missing"
+            | "support-installing" | "support-failed" => (1000, 760),
             _ => (1280, 800),
         }
     }

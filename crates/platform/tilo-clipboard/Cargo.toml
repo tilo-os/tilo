@@ -40,11 +40,9 @@ arboard = { workspace = true, features = ["image-data"] }
 arboard = { workspace = true, features = ["image-data"], optional = true }
 image = { workspace = true, features = ["png"] }
 libc.workspace = true
-# `smithay-clipboard` reads over the app's own `wl_display`; the image and
-# text publisher uses the regular focus-guarded `wl_data_device` protocol
-# through smithay-client-toolkit, because data-control would bypass Tilo's
-# focus/privilege boundary.
-smithay-clipboard = "0.7"
+# The worker attaches to the app's own `wl_display`, which needs the system
+# (libwayland) client backend.
+wayland-backend = { version = "0.3", default-features = false, features = ["client_system"] }
 # Without default features: `xkbcommon` makes sctk's build script demand the
 # libxkbcommon development package, and the clipboard never decodes keys.
 smithay-client-toolkit = { version = "0.20.0", default-features = false, features = ["calloop"] }

@@ -163,6 +163,9 @@ fn two_peoples_own_desktops_see_each_other_come_and_go_without_a_site() {
     let workspace = ada_desktop
         .showing()
         .expect("the workspace Ada's shell made");
+    // The device founds it on its own workspace service off the loop: its invitations are the
+    // service's to make once it holds the workspace.
+    ada_desktop.wait_holding(&workspace);
     let invitation = crate::common::people::shared_invitation(&ada_desktop, "editor", bob.public);
     bob_desktop.join(&invitation);
     bob_desktop.wait_holding(&workspace);

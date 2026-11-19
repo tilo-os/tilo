@@ -224,10 +224,8 @@ impl LegacyMediaImportHost {
         ensure!(
             self.destination
                 .store
-                .store()
-                .tags()
-                .get(&journal_tag)
-                .await?
+                .reference(&journal_tag)
+                .await
                 .is_none(),
             "legacy import invocation already spent"
         );
@@ -243,7 +241,7 @@ impl LegacyMediaImportHost {
                 "legacy import unavailable"
             );
             let len = if self.unscoped {
-                match self.source.store.store().blobs().status(hash).await? {
+                match self.source.store.blob_status(hash).await? {
                     iroh_blobs::api::blobs::BlobStatus::Complete { size } => size,
                     _ => bail!("legacy import unavailable"),
                 }

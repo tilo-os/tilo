@@ -296,7 +296,7 @@ fn invitation_said(error: &CertifyError) -> String {
 fn link_said(error: &LinkError) -> String {
     match error {
         LinkError::Unavailable(_) | LinkError::Refused(_) => UNREACHED.to_owned(),
-        LinkError::HostChanged => {
+        LinkError::ServerChanged => {
             "This workspace has a new home. Ask the person for a new code from their Tilo tab \
              (Set up with your agent)."
                 .to_owned()
@@ -391,14 +391,14 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
     ))
     .map_err(|error| anyhow!(error))?;
     let host = server_of(device).await?;
-    let (cert, host_cert) = device.certs()?;
+    let (cert, server_cert) = device.certs()?;
     let signed = SignIn {
         link,
         agent: device.agent.clone(),
         label: device.label.clone(),
-        host,
+        server: host,
         cert,
-        host_cert,
+        server_cert,
     };
     let entry = entry_at(&Origin::new(&http(), &device.site), &device.host_origin).await;
     Ok(Entered::enter(entry.as_ref(), &signed, Arc::new(key.clone())).await?)
@@ -406,18 +406,18 @@ pub(crate) async fn connect(key: &SigningKey, device: &Device) -> Result<Entered
 
 /// Where the server `device` reaches is dialed: at the address its invitation signed, or at
 /// the one its web origin publishes.
-pub(crate) async fn server_of(device: &Device) -> Result<tilo_server_client::Host> {
+pub(crate) async fn server_of(device: &Device) -> Result<tilo_server_client::ServerAddress> {
     if let Some(address) = &device.server_address {
-        return Ok(tilo_server_client::Host::published(address));
+        return Ok(tilo_server_client::ServerAddress::published(address));
     }
     let server_web = Origin::new(&http(), &device.host_origin);
-    let info = https::host_info(&server_web).await.map_err(|error| {
+    let info = https::server_info(&server_web).await.map_err(|error| {
         debug_why("asking the workspace's server", &error);
         anyhow!(UNREACHED)
     })?;
     info.address
         .as_ref()
-        .map(tilo_server_client::Host::published)
+        .map(tilo_server_client::ServerAddress::published)
         .ok_or_else(|| anyhow!(UNREACHED))
 }
 
@@ -446,9 +446,9 @@ fn signed_over_iroh(device: &Device, address: &ServerAddress) -> Result<SignIn> 
         },
         agent: device.agent.clone(),
         label: device.label.clone(),
-        host: tilo_server_client::Host::published(address),
+        server: tilo_server_client::ServerAddress::published(address),
         cert,
-        host_cert: server_cert,
+        server_cert,
     })
 }
 
@@ -627,11 +627,11 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         host_origin: format!("{IROH_ONLY}{}", server.endpoint_addr.id),
         workspace: grant.workspace_id.to_string(),
         workspace_name: None,
-        user: hex::encode(person.root.verifying_key().to_bytes()),
+        user: hex::encode(person.public_key()),
         agent: agent.name.clone(),
         label,
         cert: hex::encode(postcard::to_allocvec(&cert)?),
-        host_cert: hex::encode(postcard::to_allocvec(&server.device_certificate)?),
+        server_cert: hex::encode(postcard::to_allocvec(&server.device_certificate)?),
         server_address: Some(address.clone()),
     };
     let runtime = runtime()?;
@@ -793,33 +793,115 @@ impl Reporter<'_> {
     }
 }
 
-/// Claim a sign-in code for the person this device is a device of.
+/// Claim a sign-in code for the person `cert` (postcard, hex) certifies `key`'s device of: a
+/// device that may admit devices, which then certifies the tab itself.
 async fn claim(
-    host: &dyn HttpClient,
+    server: &dyn HttpClient,
     report: &str,
     key: &SigningKey,
-    device: &Device,
+    cert: String,
 ) -> Result<Claimed> {
     let signed_at_ns = u64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos(),
     )?;
-    login_code::claim(host, report, device.cert.clone(), key, signed_at_ns)
+    login_code::claim(server, report, cert, key, signed_at_ns)
         .await
-        .map_err(|refusal| match refusal.code() {
-            "not-a-device" => anyhow!(
-                "This computer is logged in to another Tilo account. Log it in again with a \
-                 code from the account the person wants to use (in Tilo, choose \
-                 \"Set up with your agent\")."
+        .map_err(|refusal| claim_said(&refusal))
+}
+
+/// What a refused claim says to the person: the server's reason, and the one thing to do.
+fn claim_said(refusal: &login_code::CodeRefusal) -> anyhow::Error {
+    use protocol::ClaimRefused;
+    let again = "then ask the tab for a new code (Try again)";
+    match refusal.claim_refused() {
+        Some(ClaimRefused::NotLive) => anyhow!(
+            "This computer's Tilo login has expired. Log it in again with `tilo login`, {again}."
+        ),
+        Some(ClaimRefused::Revoked) => anyhow!(
+            "This computer was removed from your devices. Log it in again with `tilo login`, \
+             {again}."
+        ),
+        Some(ClaimRefused::Clock) => {
+            anyhow!("This computer's clock is more than a minute off. Set it right, {again}.")
+        }
+        Some(ClaimRefused::Signature) => anyhow!(
+            "This computer's Tilo login is damaged: its key doesn't match its certificate. Log \
+             it in again with `tilo login`, {again}."
+        ),
+        Some(ClaimRefused::CannotAdmit) => anyhow!(
+            "This computer can't add devices for you, so it can't sign the tab in. Use the code \
+             on the computer that holds your Tilo identity (where you ran `tilo login \
+             --new-identity`)."
+        ),
+        None => match refusal.code() {
+            "unknown" => anyhow!(
+                "This code was used already or ran out. Ask the tab for a new one (Try again)."
             ),
-            other => {
-                debug_why(&format!("the claim was refused ({other})"), &refusal);
-                anyhow!(
-                    "Tilo couldn't use this code: ask the person for a new one from their Tilo \
-                     tab (Set up with your agent)."
-                )
+            "unreachable" => anyhow!("{refusal}"),
+            _ => {
+                debug_why("the claim was refused", refusal);
+                anyhow!("The server refused the sign-in: {}", refusal.message)
             }
+        },
+    }
+}
+
+/// How often a computer that certifies a tab asks whether the tab's request is there.
+const TAB_ASKS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Certify, with the person's `root`, the request the tab whose code this computer claimed as
+/// `report` makes once it knows whom it signs in as, until `until_ms` (Unix ms).
+async fn certify_tab(
+    server: &dyn HttpClient,
+    report: &str,
+    root: &(dyn tilo_user_identity::StatementSigner + Sync),
+    until_ms: u64,
+) -> Result<()> {
+    let request = loop {
+        match login_code::waiting(server, report).await {
+            Ok(Some(request)) => break request,
+            Ok(None) => {}
+            Err(refusal) if refusal.code() == "unreachable" => {
+                debug_why("asking for the tab's request", &refusal);
+            }
+            Err(refusal) => {
+                debug_why("asking for the tab's request", &refusal);
+                bail!("The server stopped the sign-in: {}", refusal.message);
+            }
+        }
+        if tilo_clock::unix_now_ms() >= until_ms {
+            bail!(
+                "The tab didn't ask to be signed in within 10 minutes. Ask it for a new code \
+                 (Try again)."
+            );
+        }
+        tokio::time::sleep(TAB_ASKS_EVERY).await;
+    };
+    let request: tilo_user_identity::CertificationRequest = hex::decode(&request)
+        .ok()
+        .and_then(|bytes| postcard::from_bytes(&bytes).ok())
+        .ok_or_else(|| anyhow!("The server sent the tab's request garbled. Try again."))?;
+    if request.user_public_key != root.public_key() {
+        bail!("The tab asked to be signed in as someone else. Ask it for a new code (Try again).");
+    }
+    let cert = tilo_user_identity::issue_device_cert(
+        &request,
+        root,
+        &tilo_user_identity::CertificationPolicy::browser(),
+        &tilo_user_identity::RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .map_err(|error| anyhow!("This computer couldn't certify the tab: {error}."))?;
+    login_code::certify(server, report, hex::encode(postcard::to_allocvec(&cert)?))
+        .await
+        .map_err(|refusal| {
+            debug_why("certifying the tab", &refusal);
+            anyhow!(
+                "The server refused the tab's certificate: {}",
+                refusal.message
+            )
         })
 }
 
@@ -1097,7 +1179,7 @@ fn device_of(signed: &SignIn) -> Result<Device> {
         agent: signed.agent.clone(),
         label: signed.label.clone(),
         cert: hex::encode(postcard::to_allocvec(&signed.cert)?),
-        host_cert: hex::encode(postcard::to_allocvec(&signed.host_cert)?),
+        server_cert: hex::encode(postcard::to_allocvec(&signed.server_cert)?),
         server_address: None,
     })
 }
@@ -1219,20 +1301,69 @@ async fn set_up(reporter: &Reporter<'_>, link: &str, agent: &Agent) -> Result<Ex
     Ok(ExitCode::SUCCESS)
 }
 
-/// Signing in: this computer, a device of the person, vouches for the tab
-/// that asks, and the person's stand-in on the server approves it.
-async fn vouch(reporter: &Reporter<'_>, host: &dyn HttpClient) -> Result<ExitCode> {
-    let Some((key, device)) = load(&device_dir()?)? else {
+/// How long the certificate this computer claims a sign-in code with lasts: the claim and the
+/// tab's certification are over well within it.
+const CLAIMING_CERT_NS: u64 = 15 * 60 * 1_000_000_000;
+
+/// Signing in: this computer, which holds the person's root, claims the tab's code as a device
+/// that may admit devices and certifies the tab itself.
+async fn vouch(reporter: &Reporter<'_>, server: &dyn HttpClient) -> Result<ExitCode> {
+    let Some(person) = crate::identity::held()? else {
+        // A device that holds no root claims with what it is; the server
+        // says why it may not certify the tab.
+        let Some((key, device)) = load(&device_dir()?)? else {
+            bail!(
+                "This is a sign-in code, which needs a computer already logged in to Tilo, and \
+                 this one isn't. In Tilo, choose \"Set up with your agent\" instead."
+            );
+        };
+        claim(server, &reporter.report, &key, device.cert.clone()).await?;
         bail!(
-            "This is a sign-in code, which needs a computer already logged in to Tilo, and this \
-             one isn't. In Tilo, choose \"Set up with your agent\" instead."
+            "This computer may add devices but holds no Tilo identity to sign the tab with. Use \
+             the code on the computer that holds your Tilo identity."
         );
     };
     // The server tells the tab it approved, as it approves: that step is
     // never this computer's to report.
-    claim(host, &reporter.report, &key, &device).await?;
-    println!("Approved: your tab is signing in as you.");
+    let cert = admitting_cert(&person)?;
+    let claimed = claim(
+        server,
+        &reporter.report,
+        &person.device,
+        hex::encode(postcard::to_allocvec(&cert)?),
+    )
+    .await?;
+    eprintln!("Waiting for the person's tab to ask…");
+    certify_tab(
+        server,
+        &reporter.report,
+        &person.root,
+        claimed.expires_at_ms,
+    )
+    .await?;
+    println!("Approved: your tab is signed in as you.");
     Ok(ExitCode::SUCCESS)
+}
+
+/// A certificate the person's root signs for this computer's device key, as a device that may
+/// admit devices, for as long as a sign-in takes.
+fn admitting_cert(person: &crate::identity::Person) -> Result<tilo_user_identity::DeviceCert> {
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: person.public_key(),
+        device_public_key: person.device.verifying_key().to_bytes(),
+        device_label: person.cert.device_label.clone(),
+        capabilities: tilo_user_identity::DeviceCapabilities {
+            can_admit_devices: true,
+            ..tilo_user_identity::DeviceCapabilities::member()
+        },
+        issued_at_ns: now.saturating_sub(1_000_000_000),
+        expires_at_ns: Some(now.saturating_add(CLAIMING_CERT_NS)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &person.root)?;
+    Ok(cert)
 }
 
 /// `tilo login` on a computer that holds the person's root itself: no tab and no code. The root
@@ -1265,14 +1396,14 @@ pub fn login_held(
     let (key, device) = runtime.block_on(async {
         let origin = home_server(&Origin::new(&http(), &site)).await?;
         let server = Origin::new(&http(), &origin);
-        let info = https::host_info(&server).await.map_err(|error| {
+        let info = https::server_info(&server).await.map_err(|error| {
             debug_why("asking the site's server", &error);
             anyhow!(UNREACHED)
         })?;
         let dialed = info
             .address
             .as_ref()
-            .map(tilo_server_client::Host::published)
+            .map(tilo_server_client::ServerAddress::published)
             .ok_or_else(|| anyhow!("{origin} takes no device connections"))?;
         let key = SigningKey::from_bytes(&rand::random());
         let label = label(&agent.name, &hostname());
@@ -1288,9 +1419,9 @@ pub fn login_held(
             link: unentered,
             agent: agent.name.clone(),
             label: label.clone(),
-            host: dialed,
+            server: dialed,
             cert: cert.clone(),
-            host_cert: info.host_cert.clone(),
+            server_cert: info.server_cert.clone(),
         };
         let session = Entered::connect(&signed, Arc::new(key.clone()));
         let chosen = async {
@@ -1334,7 +1465,7 @@ pub fn login_held(
             agent: agent.name.clone(),
             label,
             cert: hex::encode(postcard::to_allocvec(&cert)?),
-            host_cert: hex::encode(postcard::to_allocvec(&info.host_cert)?),
+            server_cert: hex::encode(postcard::to_allocvec(&info.server_cert)?),
             server_address: None,
         };
         anyhow::Ok((key, device))
@@ -1406,7 +1537,7 @@ fn held_device_cert(
     label: &str,
 ) -> Result<tilo_user_identity::DeviceCert> {
     let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: person.root.verifying_key().to_bytes(),
+        user_public_key: person.public_key(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: label.to_owned(),
         capabilities: tilo_user_identity::DeviceCapabilities::member(),
@@ -1494,7 +1625,7 @@ mod tests {
             agent: "Claude Code".into(),
             label: "Claude Code on build-box".into(),
             cert: "00".into(),
-            host_cert: "00".into(),
+            server_cert: "00".into(),
             server_address: None,
         }
     }
@@ -1680,7 +1811,7 @@ mod tests {
             CertifyError::Transport(LinkError::Unavailable("connect error".into())),
             CertifyError::Transport(LinkError::Refused("403".into())),
             CertifyError::Transport(LinkError::PeerVersion { theirs: 99 }),
-            CertifyError::Transport(LinkError::HostChanged),
+            CertifyError::Transport(LinkError::ServerChanged),
             CertifyError::Transport(LinkError::Sign("connect error".into())),
             CertifyError::Transport(LinkError::DeviceRevoked),
             CertifyError::Codec("bad frame".into()),
@@ -1737,7 +1868,7 @@ mod tests {
     async fn a_device_claims_a_sign_in_code_with_its_own_signature() {
         let key = SigningKey::from_bytes(&[9; 32]);
         let public = key.verifying_key();
-        let host = FakeHost::new(move |route, body| {
+        let server = FakeHost::new(move |route, body| {
             assert_eq!(route, protocol::CLAIM_ROUTE);
             let claim: protocol::Claim = serde_json::from_value(body.clone()).unwrap();
             let signature = ed25519_dalek::Signature::from_bytes(
@@ -1747,17 +1878,58 @@ mod tests {
             if public.verify_strict(&message, &signature).is_ok() && claim.cert == "00" {
                 (200, json!({"expires_at_ms": 5}))
             } else {
-                (403, Value::Null)
+                (403, json!({"error": "not signed", "reason": "signature"}))
             }
         });
-        let claimed = claim(&host, "bb", &key, &device()).await.unwrap();
+        let claimed = claim(&server, "bb", &key, device().cert).await.unwrap();
         assert_eq!(claimed.expires_at_ms, 5);
         let stranger = SigningKey::from_bytes(&[3; 32]);
-        let said = claim(&host, "bb", &stranger, &device())
+        let said = claim(&server, "bb", &stranger, device().cert)
             .await
             .unwrap_err()
             .to_string();
-        assert!(said.contains("another Tilo account"), "{said}");
+        assert!(said.contains("key doesn't match"), "{said}");
+    }
+
+    /// Each reason the server gives for refusing a claim is said in its own words, with the one
+    /// thing to do, and none of them guesses at another account.
+    #[test]
+    fn each_claim_refusal_says_its_own_reason() {
+        use protocol::ClaimRefused;
+        let said = |reason: ClaimRefused| {
+            let named = serde_json::to_value(reason).unwrap();
+            claim_said(&login_code::CodeRefusal {
+                status: 403,
+                message: format!("The server answered 403: {}", reason.sentence()),
+                reason: named.as_str().map(str::to_owned),
+            })
+            .to_string()
+        };
+        let reasons = [
+            (ClaimRefused::NotLive, "expired"),
+            (ClaimRefused::Revoked, "removed from your devices"),
+            (ClaimRefused::Clock, "clock"),
+            (ClaimRefused::Signature, "key doesn't match"),
+            (ClaimRefused::CannotAdmit, "can't add devices for you"),
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for (reason, says) in reasons {
+            let sentence = said(reason);
+            assert!(sentence.contains(says), "{reason:?}: {sentence}");
+            assert!(!sentence.contains("another"), "{reason:?}: {sentence}");
+            assert!(
+                seen.insert(sentence),
+                "{reason:?} has a sentence of its own"
+            );
+        }
+        // A 403 without a reason says the server's own sentence.
+        let bare = claim_said(&login_code::CodeRefusal {
+            status: 403,
+            message: "The server answered 403: no".into(),
+            reason: None,
+        })
+        .to_string();
+        assert!(bare.contains("The server answered 403: no"), "{bare}");
     }
 
     #[tokio::test]

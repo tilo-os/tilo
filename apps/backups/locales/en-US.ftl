@@ -147,12 +147,9 @@ backups-operation-backup-now = Run backup now
 backups-operation-setup = Set up backups
 backups-operation-verify = Verify snapshot
 backups-operation-restore-snapshot = Restore snapshot into a new or empty folder…
-backups-operation-show-source = Show source
-backups-operation-show-destination = Show destination
-backups-operation-show-snapshot = Show snapshot
+backups-operation-open = Open
 backups-operation-order-snapshots = Order snapshots
 backups-operation-read-snapshot = Read snapshot
-backups-operation-show-schedule = Show global retention policy
 backups-workspace = Backups
 
 ## What the app is called in a window and in the launcher

@@ -6,6 +6,7 @@ format = 2
 kind = "video-editor.project"
 label = "Project"
 version = 1
+shows = ["go-to-clip", "reveal-clip", "reveal-effect", "reveal-marker", "reveal-media", "reveal-track", "show-export", "split-selection", "toggle-inspector", "toggle-media"]
 fields = [
   { path = "name", type = "text" },
   { path = "fps", type = "float" },

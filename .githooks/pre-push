@@ -2,9 +2,7 @@
 # Lint the packages a push to main changes before the refs leave: the
 # repository's format check over the changed files, and Clippy over the host's
 # targets with the features the workspace's whole build gives each package. A
-# push to any other branch, such as `integration`, is not linted: work in
-# progress is tested once when it is done, by tools/integrate.sh, which then
-# moves main. The rest of what
+# push to any other branch is not linted. The rest of what
 # a push can break - the crates that use something it renamed or removed, the
 # packages as they ship, the page's wasm32 build - is linted by t's lint-head on
 # every commit of main (`t main` names the one that broke it): run here, those

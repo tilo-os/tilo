@@ -37,6 +37,8 @@ pub struct ActionCx {
     now_ms: i64,
     author: Option<MemberId>,
     invocation: Option<tilo_actions::InvocationId>,
+    /// An item method removes the item it acts on ([`Self::remove_item`]).
+    removes_item: bool,
 }
 
 /// Who invoked the action applying now, as its envelope pinned it.
@@ -98,6 +100,21 @@ fn invoking_invocation() -> Option<tilo_actions::InvocationId> {
 }
 
 impl ActionCx {
+    /// Remove the item the item method running now acts on
+    /// (`#[action(item = field)]` with the item as its first parameter): what
+    /// it changed of the item is let go with it. The item is read and removed
+    /// alone, never the collection holding it, however many items that holds.
+    pub fn remove_item(&mut self) {
+        self.removes_item = true;
+    }
+
+    /// Whether the item method that ran asked for its item to be removed
+    /// ([`Self::remove_item`]), forgetting it.
+    #[doc(hidden)]
+    pub fn take_item_removal(&mut self) -> bool {
+        std::mem::take(&mut self.removes_item)
+    }
+
     /// A context seeded from the document's heads and actor (both pinned by
     /// the executor) and the action's own payload.
     ///
@@ -114,6 +131,7 @@ impl ActionCx {
             now_ms,
             author: invoking_author(),
             invocation: invoking_invocation(),
+            removes_item: false,
         }
     }
 
@@ -146,6 +164,7 @@ impl ActionCx {
             now_ms: 0,
             author: invoking_author(),
             invocation: invoking_invocation(),
+            removes_item: false,
         }
     }
 
@@ -246,6 +265,12 @@ pub(crate) fn note_minted(id: &str) {
 #[must_use]
 pub fn take_minted() -> Vec<String> {
     MINTED.with(|minted| std::mem::take(&mut *minted.borrow_mut()))
+}
+
+/// Note `ids` again, which [`take_minted`] took: what a layer that took them to answer its own
+/// caller puts back, so the caller that invoked the action learns what it made too.
+pub fn restore_minted(ids: impl IntoIterator<Item = String>) {
+    MINTED.with(|minted| minted.borrow_mut().extend(ids));
 }
 
 thread_local! {
@@ -1194,6 +1219,13 @@ fn apply_edit_queued(
     (record.write)(after.as_ref(), doc).map_err(model_refused)
 }
 
+/// Everything `doc` holds, read whole for one action: what an item method
+/// never costs, as an observation of it says.
+fn read_whole(ops: &'static ResourceOps, doc: &Doc) -> Result<Box<dyn Any>, ActionError> {
+    let _whole = crate::profiling::Phase::start("resource.apply_whole_read");
+    (ops.read)(doc).map_err(model_refused)
+}
+
 /// [`Stamped::apply`] of `operation`, of a record of the type `record`,
 /// encoded as `payload` at `now_ms`.
 ///
@@ -1257,7 +1289,7 @@ fn apply_operation(
     let (mut current, dirty) =
         match crate::apply_cache::take_any((record.kind)(), doc, &record.refresh) {
             Some((warm, dirty)) => (warm, Some(dirty)),
-            None => ((record.read)(doc).map_err(model_refused)?, None),
+            None => (read_whole(record, doc)?, None),
         };
     // A group's first member of a record that keeps no outbox starts the record the group
     // holds: every member after it runs on it in memory, and the group writes it once.
@@ -1649,6 +1681,38 @@ impl<R, A> ActionRef<R, A> {
     #[must_use]
     pub fn key(&self) -> ActionKey {
         ActionKey::new(self.kind.declaring_app(), self.kind.kind(), self.id)
+    }
+}
+
+impl<E: crate::Effect, A> ActionRef<E, A> {
+    /// The action this effect's declaration publishes, as the resource that
+    /// offers the vocabulary publishes it: what a control binds to without a
+    /// row carrying it.
+    #[must_use]
+    pub fn spec(&self) -> Option<tilo_actions::ActionSpec> {
+        E::spec(self.id)
+    }
+
+    /// A control's binding to this effect on `resource`, from its
+    /// declaration: the resource's own address and the declared action, with
+    /// no carrier row. A nullary effect binds as a button; one taking
+    /// arguments is offered with them asked.
+    ///
+    /// # Errors
+    /// The declaration publishes no such action, or it requires an argument
+    /// this binding gives none.
+    pub fn binding(
+        &self,
+        resource: impl Into<String>,
+    ) -> Result<tilo_actions::ActionBinding<()>, tilo_actions::ActionBindingError> {
+        let resource = resource.into();
+        let spec = E::spec(self.id).ok_or_else(|| {
+            tilo_actions::ActionBindingError::ActionNotExported {
+                resource: resource.clone(),
+                action: self.id.to_owned(),
+            }
+        })?;
+        tilo_actions::ActionBinding::declared(resource, spec)
     }
 }
 

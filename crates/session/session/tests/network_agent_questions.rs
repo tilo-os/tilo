@@ -44,7 +44,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 struct Person {
     cert: DeviceCert,
     // The person's home server: the host the questions come from.
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     host_key: ed25519_dalek::SigningKey,
     env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
@@ -91,7 +91,7 @@ fn person() -> Person {
             &[],
         )
         .expect("this device may enroll another of the person's");
-    let host_cert = store
+    let server_cert = store
         .complete_enrollment(
             &profile.id,
             &token,
@@ -102,7 +102,7 @@ fn person() -> Person {
         .expect("the second device is enrolled");
     Person {
         cert,
-        host_cert,
+        server_cert,
         host_key,
         env,
         _root: root,
@@ -155,7 +155,7 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
                 CERTIFY_ALPN,
                 Asking {
                     user: person.cert.user_public_key,
-                    cert: person.host_cert.clone(),
+                    cert: person.server_cert.clone(),
                     key: person.host_key.clone(),
                     asked: Arc::clone(&asked),
                 },

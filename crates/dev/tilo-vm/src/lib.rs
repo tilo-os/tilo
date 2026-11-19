@@ -30,6 +30,7 @@ pub mod reach;
 pub mod receipt;
 pub mod remote;
 pub mod scenario;
+pub mod sound;
 mod source_inputs;
 pub mod sshguard;
 pub mod sshkey;

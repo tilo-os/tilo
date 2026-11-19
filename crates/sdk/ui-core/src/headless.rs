@@ -20,6 +20,7 @@ mod history;
 pub mod host_media;
 mod keys;
 
+use crate::state::StateHistory as _;
 pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput, FollowedView, agent_acting};
 use tilo_sort::CompactSort as _;
 
@@ -622,6 +623,8 @@ pub struct FrameHarness {
     /// The invoker each job started for someone else runs for, while it runs
     /// ([`FrameHarness::start_bound_job_for`]).
     acting_for: HashMap<tilo_actions::InvocationId, crate::invocation_scope::Continuation>,
+    /// The person's presses waiting for what they change to arrive from the workspace.
+    waiting_controls: Vec<crate::app_core::WaitingControl>,
     invocation_results: Option<invocation_results::InvocationResults>,
     /// Per-pass frame profiler set by the perf harness; `None` on a normal run, so no frame pays for
     /// it.
@@ -1581,6 +1584,7 @@ impl FrameHarness {
             bound_invocations: HashMap::new(),
             job_updates: HashMap::new(),
             acting_for: HashMap::new(),
+            waiting_controls: Vec::new(),
             invocation_results: None,
             profiler: None,
             last_send_skipped_relayout: false,
@@ -1890,7 +1894,7 @@ impl FrameHarness {
         {
             binding.undo_status(&mut self.state.doc).unwrap_or_default()
         } else {
-            self.state.undo_status(Some(&self.author))
+            crate::undo::state_status(&self.state, Some(&self.author))
         }
     }
 
@@ -2170,14 +2174,16 @@ impl FrameHarness {
 
     /// Whether the frame, having drawn, leaves the next one work that changes what it shows: a
     /// composition a widget rebuilt or replaced while the frame ran (a slide landing drops the
-    /// parts its last pose hid), a store whose sync still owes, a press or control answer the
-    /// host has yet to run, or an owner-service layout the next frame readmits. A widget's tick
-    /// runs after the paint, so these can arrive once the frame has decided to sync nothing, and
-    /// a frame that leaves them is no frame at rest.
+    /// parts its last pose hid), a store whose sync still owes, an owner wake a component queued
+    /// (a save that landed), a press or control answer the window has yet to take up, or an
+    /// owner-service layout the next frame readmits. A widget's tick comes after the paint, so
+    /// these can arrive once the frame has decided to sync nothing, and a frame that leaves them
+    /// is no frame at rest.
     fn owes_the_next_frame(&mut self) -> bool {
         self.layout_requested
             || self.owner_service_layout_retired
             || self.root.needs_idle_sync()
+            || self.has_pending_owner_models()
             || crate::widget::press_waiting()
             || !self.bound_invocations.is_empty()
             || !self.pending_control_invocations.is_empty()
@@ -2276,10 +2282,6 @@ impl FrameHarness {
             )
         };
         let locale = crate::i18n::I18nManager::revision();
-        let crossed = self
-            .component_wake
-            .as_ref()
-            .and_then(|wake| wake.binding.lifetime.crossed());
         let (before, after, replaced, resting) = tilo_resource::profiling::unobserved(|| {
             fixed_clock(|| {
                 let width = f64::from(self.viewport.0);
@@ -2301,10 +2303,17 @@ impl FrameHarness {
                     .as_ref()
                     .is_none_or(|history| history.validate_root(self.root.as_ref()).is_ok());
                 let before = shown(self);
-                crate::component_inputs::forcing(|| {
-                    self.host_tick();
-                    self.sync_frame();
-                    self.publish_undo_status();
+                // The proof syncs the tree alone: the work a view takes in
+                // beside it (a deferred read landing, a request another part
+                // made) belongs to the frame, and taking it in again here
+                // would change the tree this proof measures
+                // ([`crate::component_inputs::proving`]).
+                crate::component_inputs::proving(|| {
+                    crate::component_inputs::forcing(|| {
+                        self.host_tick();
+                        self.sync_frame();
+                        self.publish_undo_status();
+                    });
                 });
                 let replaced = self.composition_changed();
                 (before, shown(self), replaced, resting && inputs)
@@ -2315,12 +2324,12 @@ impl FrameHarness {
             return;
         }
         self.drain_component_wakes();
+        // A store's write that landed while this pass ran wakes the window it
+        // belongs to, a component's through its owner queue: its save is the
+        // next frame's to show, not proof this frame skipped one.
         if self.wake_pending()
+            || self.has_pending_owner_models()
             || crate::i18n::I18nManager::revision() != locale
-            || self
-                .component_wake
-                .as_ref()
-                .is_some_and(|wake| wake.binding.lifetime.crossed() != crossed)
         {
             self.request_layout();
             return;
@@ -2459,7 +2468,7 @@ impl FrameHarness {
                             if embedded {
                                 self.state.undo_status_snapshot(Some(&self.author))
                             } else {
-                                self.state.undo_status(Some(&self.author))
+                                crate::undo::state_status(&self.state, Some(&self.author))
                             }
                         })
                         .clone()
@@ -3569,8 +3578,10 @@ impl FrameHarness {
                     None,
                 );
                 // The header the rebuild builds hears whether the frame's row
-                // presents search, so it never shows a second search control.
-                if self.part_row.is_some() {
+                // presents search, so it never shows a second search control. A
+                // frame whose own header row is the window's bar keeps only a
+                // notice card over it, which presents none: the row keeps its own.
+                if self.parts_row_shown() {
                     crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
                 }
                 self.root.set_interaction_environment(self.interaction);
@@ -7212,7 +7223,14 @@ impl FrameHarness {
             &address.address,
             Some(address.instance_id),
         )?
-        .ok_or_else(|| tilo_actions::ApiError::Unknown(address.address.clone()))?;
+        .ok_or_else(|| {
+            crate::bound_dispatch::unoffered(
+                self.root.as_ref(),
+                &self.state.doc,
+                &address.address,
+                address.instance_id,
+            )
+        })?;
         let started = crate::bound_dispatch::invoke_resource_action(
             self.root.as_mut(),
             &mut self.state.doc,
@@ -7467,6 +7485,14 @@ impl FrameHarness {
             .as_mut()?
             .prepare_pending_control(token, confirmed)?;
         self.settle_history_control(prepared, confirmed)
+    }
+
+    /// Whether a control's invocation is still waiting for its answer: the
+    /// frames a test keeps running until the window has answered what a click
+    /// submitted.
+    #[must_use]
+    pub fn control_invocations_pending(&self) -> bool {
+        !self.pending_control_invocations.is_empty() || !self.bound_invocations.is_empty()
     }
 
     fn dispatch_control_invocations(&mut self) {
@@ -8160,6 +8186,7 @@ impl FrameHarness {
         confirm: bool,
         confirmation_phrase: Option<&str>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        self.invalidate_local();
         let author = tilo_actions::Actor::Member(self.author.clone());
         self.invoke_action_as(&author, address, arguments, confirm, confirmation_phrase)
     }
@@ -8805,6 +8832,10 @@ impl crate::app_core::ControlCore for FrameHarness {
         &self.author
     }
 
+    fn waiting_controls(&mut self) -> &mut Vec<crate::app_core::WaitingControl> {
+        &mut self.waiting_controls
+    }
+
     fn bound_publication(&self) -> &crate::bound_dispatch::BoundPublication {
         &self.bound_publication
     }
@@ -9285,8 +9316,8 @@ mod tests {
                 crate::widget::Column::new()
                     .push(Box::new(
                         crate::widget::Column::new()
-                            .push(Box::new(crate::widget::Checkbox::new("a", "a")))
-                            .push(Box::new(crate::widget::Checkbox::new("b", "b"))),
+                            .push(Box::new(crate::widget::Checkbox::bound("a", "a")))
+                            .push(Box::new(crate::widget::Checkbox::bound("b", "b"))),
                     ))
                     .push(Box::new(crate::widget::ProgressBar::new(0.4))),
             )
@@ -9862,7 +9893,7 @@ mod tests {
             })
             .unwrap();
             Self {
-                content: crate::widget::Checkbox::new("remember", "remember")
+                content: crate::widget::Checkbox::bound("remember", "remember")
                     .with_id("remember")
                     .on_action(binding),
                 resource,

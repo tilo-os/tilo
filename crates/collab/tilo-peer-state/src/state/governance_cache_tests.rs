@@ -495,3 +495,25 @@ fn a_records_writes_leave_the_security_basis_worked_out_once() {
     replica.security_basis().unwrap().unwrap();
     assert_eq!(crate::governance_work::take().security_bases, 1);
 }
+
+/// The keys of a group some members read are held by those people's devices
+/// among the workspace's key holders, and by no one else's.
+#[test]
+fn a_reader_sets_keys_are_held_by_its_peoples_devices_alone() {
+    let now = SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(2000))
+        .unwrap();
+    let (peer, people) = crowded_workspace(WORKSPACE, 3, 0, now);
+    let readers: std::collections::BTreeSet<[u8; 32]> = people[..2]
+        .iter()
+        .map(|cert| cert.user_public_key)
+        .chain([[0xee; 32]])
+        .collect();
+    let holders = peer.governance().reader_key_holders(&readers, now).unwrap();
+    let theirs: std::collections::BTreeSet<[u8; 32]> = people[..2]
+        .iter()
+        .map(|cert| cert.device_public_key)
+        .collect();
+    assert_eq!(holders, theirs);
+    assert!(!holders.contains(&people[2].device_public_key));
+}

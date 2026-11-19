@@ -34,7 +34,7 @@ fn summary(route: &Route) -> Summary {
         |step| {
             (
                 step.instruction.clone(),
-                step.maneuver.icon(),
+                crate::presentation::maneuver_icon(step.maneuver),
                 step.distance_m,
             )
         },

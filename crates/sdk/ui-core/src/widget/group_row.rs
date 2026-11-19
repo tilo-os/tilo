@@ -36,9 +36,13 @@ mod hint_places;
 pub use hint_places::HintPlaces;
 #[path = "group_row_canvas.rs"]
 mod canvas;
+#[path = "group_row_crossing.rs"]
+mod crossing;
 #[path = "group_row_floats.rs"]
 mod floats;
 pub use floats::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
+#[path = "group_row_pictures.rs"]
+mod pictures;
 #[path = "group_row_scroll.rs"]
 mod scroll;
 pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};
@@ -210,6 +214,8 @@ pub struct GroupRow {
     group_reorder_target: Option<usize>,
     group_reorder_section: Option<usize>,
     pending_group_reorder: Option<(u64, usize)>,
+    /// The window a bar drag carries, while it carries one, and a window carried here.
+    carried: crossing::Carried,
     /// The next press carries the window it lands in from anywhere in it, its body included, as a
     /// press on its bar does: the press was made with Super held.
     carry_press: bool,
@@ -941,6 +947,7 @@ impl GroupRow {
             group_reorder_target: None,
             group_reorder_section: None,
             pending_group_reorder: None,
+            carried: crossing::Carried::default(),
             carry_press: false,
             pending_topology_change: false,
             output_spans: Vec::new(),
@@ -3060,6 +3067,9 @@ impl GroupRow {
                 lifted = true;
             }
         }
+        if drag.moved && !drag.held {
+            self.carry_window(&drag);
+        }
         self.group_drag = Some(drag);
         if drag.moved && drag.held {
             // Pulled, never placed: there is no gap to drop it in.
@@ -3096,6 +3106,9 @@ impl GroupRow {
             return false;
         };
         let claimed = drag.moved;
+        if !self.let_the_window_go(drag.group_id) {
+            return claimed;
+        }
         if drag.held {
             if drag.moved && !self.reduce_motion {
                 let pull = resisted(self.last_cursor - drag.start);
@@ -4097,6 +4110,7 @@ impl Widget for GroupRow {
                 self.prune_closed_groups();
             }
             let now = crate::motion::frame_now();
+            self.take_window_drop();
             self.tick_snap_at(now);
             self.advance_drag_reach(now);
             self.advance_edge_autoscroll(now);
@@ -5101,6 +5115,13 @@ impl GroupRow {
             }
             if fading_sibling {
                 scene.pop_layer();
+            }
+        }
+        // A window wanted small that this frame drew only in part, or not at all, is drawn whole
+        // once for its picture.
+        for i in 0..self.groups.len() {
+            if in_run.get(i).copied().unwrap_or(false) {
+                self.picture_unseen_group(i, transform, (tr, theme, presence));
             }
         }
         if self.apart_window.is_some() {
@@ -7379,7 +7400,7 @@ mod tests {
         }
     }
 
-    fn drawn_strip(windows: u64) -> (GroupRow, Scene) {
+    pub(super) fn drawn_strip(windows: u64) -> (GroupRow, Scene) {
         let specs: Vec<Vec<u64>> = (1..=windows).map(|id| vec![id]).collect();
         let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
         let (mut row, _, _) = make_row_with_groups_on_display(&specs, FIXTURE_USABLE_PX, 2000.0);

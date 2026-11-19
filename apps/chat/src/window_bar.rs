@@ -118,10 +118,24 @@ impl ChatApp {
         actions
     }
 
+    /// What the window shows, as it is named: the thread that fills it, the call's stage, or the
+    /// conversation in the sidebar.
+    pub(crate) fn location_name(&self) -> String {
+        if self.thread_is_page() {
+            return self.thread_title();
+        }
+        if self.call.active
+            && self.call.expanded
+            && let Some(channel) = self.channel(&self.call.channel)
+        {
+            return channel.name.clone();
+        }
+        self.header_identity_text().name
+    }
+
     /// The window bar's parts for the conversation shown, starting from the
     /// shell's own.
     fn window_toolbar(&self) -> WindowToolbar {
-        let identity = self.header_identity_text();
         let mut bar = self
             .bar
             .as_ref()
@@ -141,18 +155,11 @@ impl ChatApp {
         }
         // The location is what the window shows: the call while its stage
         // fills the window, as the channels' chosen row says.
-        let call = (self.call.active && self.call.expanded)
-            .then(|| {
-                self.channel(&self.call.channel)
-                    .map(|channel| channel.name.clone())
-            })
-            .flatten();
-        let staged = page || call.is_some();
-        let label = if page {
-            self.thread_title()
-        } else {
-            call.unwrap_or(identity.name)
-        };
+        let staged = page
+            || (self.call.active
+                && self.call.expanded
+                && self.channel(&self.call.channel).is_some());
+        let label = self.location_name();
         // Who or what the conversation is leads its name: the face of the person or agent a
         // direct one is with, and whether they are here; a channel's mark.
         let (icon, avatar) = if staged {
@@ -209,7 +216,13 @@ impl ChatApp {
     }
 
     pub(crate) fn declare_window_toolbar(&self) {
-        ui::window_toolbar::declare(Some(self.window_toolbar()));
+        // A view shown alone is all the window shows: nothing of Chat stands around it, neither
+        // its parts in the window's bar nor its places beside the view.
+        let alone = self.alone.is_some();
+        if let Some(bar) = &self.bar {
+            bar.show_content_alone(alone);
+        }
+        ui::window_toolbar::declare((!alone).then(|| self.window_toolbar()));
     }
 
     /// Run what the person did in the window's bar as the window's own hits.

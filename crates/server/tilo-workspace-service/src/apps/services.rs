@@ -802,6 +802,53 @@ pub trait HostedWorkspaces: Send + Sync {
     ) -> Option<Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>>;
 }
 
+/// The app and workspace a resource command comes from, as the broker certified its route: the
+/// service never takes them from the command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceRequestContext {
+    app_id: String,
+    workspace_id: String,
+}
+
+impl ResourceRequestContext {
+    pub(crate) fn authenticated(
+        app_id: impl Into<String>,
+        workspace_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_id: app_id.into(),
+            workspace_id: workspace_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn app_id(&self) -> &str {
+        &self.app_id
+    }
+
+    #[must_use]
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+}
+
+/// The store's answer to one resource command, once it has it.
+pub type ResourceAnswer = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<tilo_resource_store::wire::Reply, String>>>,
+>;
+
+/// The device's one store, as apps write and read their resources in it: an app holds no store
+/// of its own.
+pub trait ResourceServices: Send + Sync {
+    /// Answers `command` of the app `context` names, in its workspace: a write as the person the
+    /// app acts for, a read of only what they may read.
+    fn command(
+        &self,
+        context: &ResourceRequestContext,
+        command: tilo_resource_store::wire::Command,
+    ) -> ResourceAnswer;
+}
+
 /// The native host's separately authorized display transaction service.
 pub trait DisplayControlServices: Send + Sync {
     fn command(&self, context: &DisplayControlContext, command: &[u8]) -> Result<Vec<u8>, String>;
@@ -897,6 +944,9 @@ pub struct ProcessServices {
     /// invocations of those workspaces' record actions run. Without it every
     /// action runs here.
     pub hosted_workspaces: Option<Arc<dyn HostedWorkspaces>>,
+    /// The device's one store, which apps write and read their resources in; without it those
+    /// commands are refused.
+    pub resources: Option<Arc<dyn ResourceServices>>,
 }
 
 impl ProcessServices {
@@ -947,5 +997,6 @@ impl ProcessServices {
         "workspace_nodes",
         "personal",
         "hosted_workspaces",
+        "resources",
     ];
 }

@@ -123,15 +123,10 @@ impl Content<'_> {
 /// Package sessions do not write partial-download handles that need a shutdown
 /// bitfield write. The caller holds the exclusive package-store lock.
 pub(crate) fn flush(content: &Content<'_>) -> Result<(), StoreError> {
-    content.runtime.block_on(async {
-        content
-            .store
-            .store()
-            .wait_idle()
-            .await
-            .map_err(content_error)?;
-        content.store.store().sync_db().await.map_err(content_error)
-    })
+    content
+        .runtime
+        .block_on(content.store.flush())
+        .map_err(content_error)
 }
 
 /// Open the content store in `dir` for one session, run `work`, and close

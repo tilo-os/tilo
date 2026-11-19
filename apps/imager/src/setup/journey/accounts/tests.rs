@@ -542,7 +542,7 @@ fn reusable_account_is_prepared_only_after_confirm_and_handoff_reseals_it() {
         #[cfg(target_os = "linux")]
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+            env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
             installer.journey.identity = Some(super::super::model::Identity::New);
             installer.journey.name = "Ada".into();
             installer
@@ -2057,7 +2057,7 @@ tilo_test_env::scenario! {
     phase saved_account_overview_names_real_sources_without_importing_or_changing_consent;
     {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let mut fixture = SavedBatchFixture::new();
         let overview = fixture.accounts.view(Rc::new(|_| {}), None);
         let nextcloud = account_widget(
@@ -2269,7 +2269,7 @@ fn source_home_checkpoint_requires_current_acknowledged_operation_and_keeps_gene
  {
     use super::super::draft::{DraftStatus, DraftStore, IdentityKind, PublicChoices};
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().canonicalize().unwrap();
     env.set("HOME", &home);
@@ -2465,7 +2465,7 @@ tilo_test_env::scenario! {
     {
         use std::os::unix::fs::PermissionsExt;
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temporary = tempfile::tempdir().unwrap();
         let home = temporary.path().join("source");
         let config = home.join(".config");
@@ -2616,7 +2616,7 @@ tilo_test_env::scenario! {
     phase saved_connections_bulk_consent_imports_all_available_and_retains_missing_keychain_attention;
     {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let mut fixture = SavedBatchFixture::new();
         environment.set(
             "DBUS_SESSION_BUS_ADDRESS",
@@ -2708,7 +2708,7 @@ tilo_test_env::scenario! {
     phase saved_connections_review_exclusions_and_explicit_skip_never_query_or_import_omitted_accounts;
     {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let mut fixture = SavedBatchFixture::new();
         fixture
             .accounts
@@ -2758,7 +2758,7 @@ tilo_test_env::scenario! {
     phase saved_connections_review_refuses_changed_source_and_back_stops_remaining_imports;
     {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let mut changed = SavedBatchFixture::new();
         changed.accounts.apply(AccountRequest::ReviewSaved).unwrap();
         let tilo_source = changed.accounts.inventory.tilo_accounts[0]
@@ -2806,7 +2806,7 @@ tilo_test_env::scenario! {
 #[test]
 fn unavailable_saved_rclone_cloud_grants_offer_explicit_reconnect_without_opening_browser() {
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temporary = tempfile::tempdir().unwrap();
     let home = temporary.path().join("source");
     let config = home.join(".config");

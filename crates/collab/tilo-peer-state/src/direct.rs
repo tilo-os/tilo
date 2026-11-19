@@ -23,7 +23,7 @@
 //! that sent it, over the same link, for the state that device holds
 //! ([`NeighbourMsg::SyncReq`]), and that device answers on that link alone
 //! with what a link starts with ([`DirectSync::catch_up`]): its certificate
-//! and, from a device of the workspace's owner, the workspace's governance and
+//! and, from a holder of the workspace of its owning person, its governance and
 //! a checkpoint of every record. What the waiting change builds on comes with
 //! it, wherever the change came from.
 //!
@@ -81,10 +81,11 @@ pub enum Kept {
 
 /// One frame of a direct link's control stream.
 ///
-/// A dialling device names its workspace first, then asks the other device's
-/// retained history to continue from its own cursors; the other device
-/// answers with the frames its store holds. The workspace's live messages
-/// travel on their own streams, one per direction.
+/// A dialling device names its workspace first; the other device answers that
+/// it is listening, then the dialling one asks for the retained history to
+/// continue from its own cursors, which the other device answers with the
+/// frames its store holds. The workspace's live messages travel on their own
+/// streams, one per direction.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 enum LinkFrame {
     /// The workspace the dialling device wants, named before anything else.
@@ -101,6 +102,9 @@ enum LinkFrame {
         /// Whether a further ask carries more.
         more: bool,
     },
+    /// The dialled device listens now: whatever the dialling one publishes
+    /// from this point reaches it, live.
+    Ready,
 }
 
 /// Ask the other device's store for the frames after `cursors`, round by round
@@ -288,6 +292,52 @@ enum OnlyHere {
     Ask,
     /// The other device asked for this device's state.
     Answer,
+}
+
+/// Two devices of one workspace in one process, paired from the moment this
+/// was made ([`DirectSync::pairing`]): their link, ready to sync.
+pub struct Pairing {
+    member: DirectSync,
+    holder: DirectSync,
+    live_mine: broadcast::Receiver<Authored>,
+    live_theirs: broadcast::Receiver<Authored>,
+}
+
+impl Pairing {
+    /// Sync the two devices until the process ends ([`DirectSync::pair`]).
+    ///
+    /// # Errors
+    ///
+    /// Either device is not in the workspace's roster.
+    pub async fn sync(self) -> Result<(), String> {
+        let Self {
+            member,
+            holder,
+            live_mine,
+            live_theirs,
+        } = self;
+        let (own, theirs) = (member.device(), holder.device());
+        holder.admits(own)?;
+        member.admits(theirs)?;
+        // Each side's catch-up is history, however old what it carries: it is
+        // judged as retained, never as a late live frame.
+        for authored in holder.catch_up().await? {
+            member.admit(authored.from, authored.message, true).await;
+        }
+        for authored in member.catch_up().await? {
+            holder.admit(authored.from, authored.message, true).await;
+        }
+        member.replay_from(&holder).await?;
+        if member.0.store.is_none() {
+            *member.0.other_store.lock_recover() = Some(OtherStore::Paired(holder.clone()));
+        }
+        member.0.caught_up.send_replace(true);
+        holder.0.caught_up.send_replace(true);
+        let to_holder = forward(live_mine, &member, &holder, false);
+        let to_member = forward(live_theirs, &holder, &member, false);
+        tokio::try_join!(to_holder, to_member)?;
+        Ok(())
+    }
 }
 
 /// The streams of a dialled link after the other device admitted this one:
@@ -851,10 +901,11 @@ impl DirectSync {
     }
 
     /// Dial `device` at `addr` from `endpoint` and answer its admission,
-    /// leaving the link ready to run ([`Dialed::run`]). `addr` is the device's
-    /// own key, or the service address of a server its signed host hint binds
-    /// to it: a server answers on a key of its own, and what its history names
-    /// no author for is still its device's.
+    /// leaving the link ready to run ([`Dialed::run`]): the other device
+    /// listens before this returns, so what this device publishes from now on
+    /// reaches it. `addr` is the device's own key, or the service address of a
+    /// server its signed host hint binds to it: a server answers on a key of
+    /// its own, and what its history names no author for is still its device's.
     ///
     /// # Errors
     ///
@@ -872,12 +923,26 @@ impl DirectSync {
             .await
             .map_err(|error| error.to_string())?;
 
-        let (mut send, recv) = connection
+        let (mut send, mut recv) = connection
             .open_bi()
             .await
             .map_err(|error| error.to_string())?;
         let workspace = self.workspace()?;
         write_link(&mut send, &LinkFrame::Workspace(workspace)).await?;
+        // The other device listens before this returns, so what the caller
+        // publishes from now on reaches it: an unsealed write it missed is in
+        // no store to catch up from.
+        match read_link(&mut recv, MAX_FRAME_BYTES).await {
+            Ok(Some(LinkFrame::Ready)) => {}
+            Ok(other) => {
+                return Err(format!(
+                    "the device answered {other:?} instead of that it listens"
+                ));
+            }
+            Err(error) => {
+                return Err(refusal(&connection).map_or(error, |refusal| refusal.to_string()));
+            }
+        }
         // Who the dialled device is, this one learns from what it sends: its
         // certificate is in the frames it opens with, and a device that has
         // not synced yet holds no roster to refuse by.
@@ -911,39 +976,31 @@ impl DirectSync {
         dialed.run(self).await
     }
 
-    /// Sync `member` with `host`, two devices of one workspace in one process:
-    /// what a link carries, with no network in between — each side's
+    /// Sync `member` with `holder`, two devices of one workspace in one
+    /// process: what a link carries, with no network in between — each side's
     /// certificate and checkpoint, then the retained history `member` lacks
-    /// from `host`'s store, then every frame either publishes while both
-    /// live. Runs until the process ends.
+    /// from `holder`'s store, then every frame either publishes while both
+    /// live, until the process ends.
     ///
     /// # Errors
     ///
     /// Either device is not in the workspace's roster.
-    pub async fn pair(member: &Self, host: &Self) -> Result<(), String> {
-        let (own, theirs) = (member.device(), host.device());
-        host.admits(own)?;
-        member.admits(theirs)?;
-        let live_mine = member.0.outgoing.subscribe();
-        let live_theirs = host.0.outgoing.subscribe();
-        // Each side's catch-up is history, however old what it carries: it is
-        // judged as retained, never as a late live frame.
-        for authored in host.catch_up().await? {
-            member.admit(authored.from, authored.message, true).await;
+    pub async fn pair(member: &Self, holder: &Self) -> Result<(), String> {
+        Self::pairing(member, holder).sync().await
+    }
+
+    /// The pairing of `member` with `holder` ([`Self::pair`]), taking what
+    /// either publishes from now on: a write `member` makes before the pairing
+    /// syncs reaches `holder` all the same, as a dialled link takes what its
+    /// device publishes from the dial on.
+    #[must_use]
+    pub fn pairing(member: &Self, holder: &Self) -> Pairing {
+        Pairing {
+            live_mine: member.0.outgoing.subscribe(),
+            live_theirs: holder.0.outgoing.subscribe(),
+            member: member.clone(),
+            holder: holder.clone(),
         }
-        for authored in member.catch_up().await? {
-            host.admit(authored.from, authored.message, true).await;
-        }
-        member.replay_from(host).await?;
-        if member.0.store.is_none() {
-            *member.0.other_store.lock_recover() = Some(OtherStore::Paired(host.clone()));
-        }
-        member.0.caught_up.send_replace(true);
-        host.0.caught_up.send_replace(true);
-        let to_host = forward(live_mine, member, host, false);
-        let to_member = forward(live_theirs, host, member, false);
-        tokio::try_join!(to_host, to_member)?;
-        Ok(())
     }
 
     /// Take in every frame `host` retains that this device's cursors do not
@@ -1046,11 +1103,17 @@ impl DirectSync {
     ) -> Result<(), String> {
         let dialing = dialled.is_some();
         let remote = dialled.unwrap_or_else(|| *connection.remote_id().as_bytes());
+        let mut control = control;
         // The device that accepted a dial refuses one of the workspace's
         // roster it does not know before a frame is read; the one that
         // dialled cannot judge, and takes only what its roster verifies.
         if !dialing && let Err(reason) = self.admits(remote) {
             return Err(refuse(connection, &Refusal::NotAMember(reason)));
+        }
+        if !dialing {
+            // Subscribed by the caller already: the dialling device publishes
+            // nothing before this reaches it.
+            write_link(&mut control.send, &LinkFrame::Ready).await?;
         }
         // Taken after the catch-up, which the caller subscribed before: a
         // change published in between reaches the link after the history
@@ -1101,7 +1164,6 @@ impl DirectSync {
             },
         ));
         let history = async {
-            let mut control = control;
             if !dialing {
                 // The other device asks for the history as the link starts,
                 // and again whenever it wants what it let go.
@@ -1344,10 +1406,12 @@ impl DirectSync {
     }
 
     /// What the other device may lack: this device's certificate and the
-    /// revocations its person signed, then, from a device of the workspace's
-    /// owner, the governance and a checkpoint of every document. A member
-    /// device of another person cannot sign checkpoints others' writes
-    /// depend on; its own writes reach the other device live.
+    /// revocations its person signed, then, from a holder of the workspace of
+    /// its owning person, the governance and a checkpoint of every document,
+    /// signed under the holder's own key. A member device signs no
+    /// checkpoints, and a holder of another person cannot sign checkpoints
+    /// others' writes depend on; their own writes reach the other device
+    /// live.
     async fn catch_up(&self) -> Result<Vec<Authored>, String> {
         let device = self.device();
         let (hello, bootstraps) = {
@@ -1367,29 +1431,24 @@ impl DirectSync {
                 cert: Box::new(cert),
                 revocations,
             };
+            // Only a holder of the workspace signs checkpoints of it: a member device's link
+            // is to a holder, which has every write the member made, and a member signing
+            // snapshots would take numbers of its own sequence its engine never committed.
             (
                 hello,
-                replica.has_governance() && replica.signed_by_owner(&device),
+                self.0.admission.is_none()
+                    && replica.has_governance()
+                    && replica.signed_by_owner(&device),
             )
         };
         let mut messages = vec![hello];
-        // The snapshots take numbers of this device's own sequence: where its engine owns the
-        // workspace they are its commit, made through the owner, so its next write numbers after
-        // them.
-        match &self.0.admission {
-            _ if !bootstraps => {}
-            Some(admission) => messages.extend(
-                admission
-                    .owner
-                    .commit_bootstrap(admission.workspace, &*self.0.signer, tilo_clock::wall())
-                    .await?,
-            ),
-            None => messages.extend(
+        if bootstraps {
+            messages.extend(
                 self.signed_change(|peer, signer, now| {
                     peer.publication_mut().bootstrap_messages(signer, now)
                 })
                 .await?,
-            ),
+            );
         }
         Ok(messages
             .into_iter()
@@ -2101,7 +2160,7 @@ async fn forward(
 ) -> Result<(), String> {
     loop {
         match live.recv().await {
-            Ok(authored) if already_theirs(&authored, device.device(), sender.device()) => {}
+            Ok(authored) if already_theirs(&authored, device.device()) => {}
             Ok(authored) => {
                 if device
                     .admit(authored.from, authored.message, retained)
@@ -2149,12 +2208,9 @@ fn channel_governance(message: &NeighbourMsg) -> bool {
 }
 
 /// Whether `authored` is the other end's already: the device `remote` sent it
-/// itself, and is another device than the one `own` this link signs for. A
-/// device hosting a workspace it placed itself serves the member it placed
-/// under the same signing key, and what that member published is what only
-/// that member's replica lacks, so whose name a frame bears says nothing there.
-fn already_theirs(authored: &Authored, remote: [u8; 32], own: [u8; 32]) -> bool {
-    !authored.published && remote != own && from_device(&authored.message, remote)
+/// itself.
+fn already_theirs(authored: &Authored, remote: [u8; 32]) -> bool {
+    !authored.published && from_device(&authored.message, remote)
 }
 
 /// What one link's live stream sends besides the frames published live.
@@ -2188,7 +2244,6 @@ async fn send_authored(
         catch_up,
         mut first_answer,
     } = sending;
-    let own = link.device();
     let reaches = link.reach_of(remote);
     for authored in catch_up
         .iter()
@@ -2234,8 +2289,7 @@ async fn send_authored(
             next = live.recv() => next,
         };
         match next {
-            Ok(authored)
-                if already_theirs(&authored, remote, own) || !reaches(&authored.message) => {}
+            Ok(authored) if already_theirs(&authored, remote) || !reaches(&authored.message) => {}
             Ok(authored) => {
                 // The governance that removes the device is the last frame it
                 // is sent, whichever path told this device of the removal.

@@ -128,9 +128,8 @@ impl AppBrokerState {
                         actor,
                         cluster,
                         peer,
-                        revision,
-                        resource,
-                        action,
+                        (revision, resource, action),
+                        false,
                     )
                     .await
                 }

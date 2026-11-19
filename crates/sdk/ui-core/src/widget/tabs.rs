@@ -28,6 +28,9 @@ use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
 
 #[path = "tabs_bar_layout.rs"]
 mod bar_layout;
+#[cfg(test)]
+#[path = "tabs_close_tests.rs"]
+mod close_tests;
 #[path = "tabs_new_tab.rs"]
 mod new_tab;
 #[path = "tabs_paint.rs"]
@@ -473,8 +476,10 @@ pub struct TabBar {
     /// ([`TabBar::set_search_control`]); the tabs then carry no search chip.
     search_control: Option<f64>,
     controls: super::window_controls::WindowControls,
-    /// The window can be carried by its bar ([`TabBar::set_carriable`]): a
-    /// press on a tab never lifts the tab, the whole window moves instead.
+    /// The bar can be carried from anywhere that is not a control
+    /// ([`TabBar::set_carriable`]): a press on a tab never lifts the tab,
+    /// the whole window moves instead, whichever tab count the window shows
+    /// ([`TabBar::lifts_the_window`]).
     carriable: bool,
     hover_control: Option<super::window_controls::WindowControl>,
     pressed_control: Option<super::window_controls::WindowControl>,
@@ -2983,7 +2988,14 @@ impl TabBar {
         }
         self.touch();
         self.carriable = carriable;
-        self.toolbar_row.set_carriable(carriable);
+    }
+
+    /// Whether a press on the bar lifts the window rather than a tab: a bar the person carries
+    /// from anywhere ([`Self::set_carriable`]), or a window of one tab, which the bar shows as its
+    /// title.
+    #[must_use]
+    pub fn lifts_the_window(&self) -> bool {
+        self.carriable || self.tabs.len() < 2
     }
 
     /// Whether `p` is on one of the bar's controls: the window's own, the toolbar's (not its
@@ -5139,7 +5151,7 @@ impl TabBar {
                 pull(p.y - resist.origin.y) / 2.0,
             );
             *handled = true;
-        } else if let Some((idx, origin)) = self.press_origin.filter(|_| !self.carriable)
+        } else if let Some((idx, origin)) = self.press_origin.filter(|_| !self.lifts_the_window())
             && point_delta(p, origin).hypot() > DRAG_START_THRESHOLD_PX
             && let Some(t) = self.tabs.get(idx)
         {
@@ -5311,6 +5323,10 @@ mod phone_bar_tests;
 #[cfg(test)]
 #[path = "tabs_new_tab_tests.rs"]
 mod new_tab_tests;
+
+#[cfg(test)]
+#[path = "tabs_carry_tests.rs"]
+mod carry_tests;
 
 #[cfg(test)]
 mod tests {
@@ -8926,9 +8942,13 @@ mod tests {
                 "the title is the icon"
             );
 
+            // The bar lifts a window of one tab, so the press is the window's and the click
+            // acts as it ends.
             let mut handled = false;
             dispatch_cursor(&mut b, location.center(), &mut handled);
             dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+            assert!(!b.editing_location(), "the press is the window's");
+            dispatch_left_button(&mut b, ElementState::Released, &mut handled);
             assert!(
                 handled && b.editing_location(),
                 "a click edits the location"
@@ -9145,6 +9165,7 @@ mod tests {
             let mut handled = false;
             dispatch_cursor(&mut b, home, &mut handled);
             dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+            dispatch_left_button(&mut b, ElementState::Released, &mut handled);
             assert!(
                 !b.editing_location(),
                 "a level goes there, it does not edit"
@@ -9159,6 +9180,7 @@ mod tests {
             let past = Point::new(location.x1 - 40.0, location.center().y);
             dispatch_cursor(&mut b, past, &mut handled);
             dispatch_left_button(&mut b, ElementState::Pressed, &mut handled);
+            dispatch_left_button(&mut b, ElementState::Released, &mut handled);
             assert!(b.editing_location());
             assert_eq!(b.toolbar_row.field_text(), Some("~/Downloads"));
         }
@@ -9432,7 +9454,7 @@ mod tests {
         }
     }
 
-    fn crowded_parts() -> crate::window_toolbar::WindowToolbar {
+    pub(super) fn crowded_parts() -> crate::window_toolbar::WindowToolbar {
         let mut parts = browser_parts();
         for (id, icon, name) in [
             ("bookmark", "star", "Bookmark this page"),

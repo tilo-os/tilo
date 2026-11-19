@@ -13,15 +13,17 @@ use tilo_session_client::Cmd;
 use tilo_session_client::network::Event;
 
 use super::adopt::{Carrier, enter, redeem};
+use super::own_service::open as open_own_service;
 use super::{
-    DeviceActions, Engine, Enrolled, HostCmd, HostEvent, KeyLink, PeerDocuments, endpoint_for,
+    DesktopEvent, DeviceActions, Engine, Enrolled, HostCmd, KeyLink, PeerDocuments, endpoint_for,
 };
 use tilo_network_actor::WorkspaceId;
 
 /// What the peer actor heard, as the client's own vocabulary says it: the transport keeps the
 /// differences an endpoint's, and the client hears one kind of word from every host. What only this
-/// desktop keeps — the person's fabric, how far a transfer got — is the host's own beside it.
-pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
+/// desktop keeps — which of the person's devices proved itself and what it sends, how far a transfer
+/// got — is this desktop's own beside it, on the one path and in the order the actor said them.
+pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, DesktopEvent>> {
     Some(Ok(match event {
         NetEvent::Msg { ws, peer, msg, .. } => Event::Msg {
             ws,
@@ -59,20 +61,27 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
             device,
             active,
         },
+        // A device that proved itself and what it sends travel the one queue, so the session hears
+        // of the device before anything it said: a frame is bound to the certificate it proved
+        // there, never to what the frame claims.
         NetEvent::Sibling {
             peer,
             certs,
             revocations,
             ..
-        } => Event::Sibling {
-            peer,
-            certs,
-            revocations,
-        },
-        NetEvent::WorkspaceDeleted { ws } => {
-            return Some(Err(HostEvent::WorkspaceDeleted { ws }));
+        } => {
+            return Some(Err(DesktopEvent::Sibling {
+                peer,
+                certs,
+                revocations,
+            }));
         }
-        NetEvent::SiblingLeft { peer, .. } => Event::SiblingLeft { peer },
+        NetEvent::WorkspaceDeleted { ws } => {
+            return Some(Err(DesktopEvent::WorkspaceDeleted { ws }));
+        }
+        NetEvent::SiblingLeft { peer, .. } => {
+            return Some(Err(DesktopEvent::SiblingLeft { peer }));
+        }
         NetEvent::SiblingMsg { peer, msg, .. } => Event::SiblingMsg {
             peer,
             msg: Box::new(msg),
@@ -83,7 +92,7 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
             received,
             ..
         } => {
-            return Some(Err(HostEvent::PersonalFabric {
+            return Some(Err(DesktopEvent::PersonalFabric {
                 peer,
                 payload,
                 received,
@@ -96,7 +105,7 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
             status,
             ..
         } => {
-            return Some(Err(HostEvent::NearbyTransferProgress {
+            return Some(Err(DesktopEvent::NearbyTransferProgress {
                 transfer_id,
                 sent_bytes,
                 total_bytes,
@@ -265,7 +274,7 @@ struct Listening {
 /// what became of an enrollment, and where the bound endpoint is said.
 pub(super) struct Wire {
     pub(super) arrivals: std::sync::mpsc::Sender<Event>,
-    pub(super) host_events: std::sync::mpsc::Sender<HostEvent>,
+    pub(super) desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
     pub(super) enrollments: std::sync::mpsc::Sender<Enrolled>,
     pub(super) ready:
         std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
@@ -283,7 +292,7 @@ pub(super) fn run(
 ) {
     let Wire {
         arrivals,
-        host_events,
+        desktop_events,
         enrollments,
         ready,
     } = wire;
@@ -305,7 +314,7 @@ pub(super) fn run(
             identity.as_ref(),
             engine.as_ref(),
             arrivals,
-            host_events,
+            desktop_events,
             wake,
             &ready,
             beside,
@@ -522,11 +531,22 @@ fn files_link(
 /// Wait for `opening`, this device's own workspace service opening, and tell the peer actor once
 /// it is open: whether it opened.
 async fn own_service_opened(
-    opening: impl std::future::Future<Output = Result<impl Sized, String>>,
+    opening: impl std::future::Future<
+        Output = Result<
+            Arc<tilo_network_actor::own_service::workspace_service::WorkspaceService>,
+            String,
+        >,
+    >,
     actor: &tokio::sync::mpsc::Sender<NetCmd>,
+    device: Option<&DeviceActions>,
 ) -> bool {
     match opening.await {
-        Ok(_) => {
+        Ok(service) => {
+            // The session's action service answers the service's ALPN, so the governance of the
+            // workspaces the service holds is asked there.
+            if let Some(device) = device {
+                device.govern_with(service.workspaces().device_actions());
+            }
             let _ = actor.send(NetCmd::OwnServiceReady).await;
             true
         }
@@ -537,13 +557,35 @@ async fn own_service_opened(
     }
 }
 
+/// Start this device's action service on `endpoint`, serve it there, and hand it to the session
+/// through `actions`: what the session installs answers, and an app's own-device actions and the
+/// asks of workspaces held elsewhere leave through it.
+fn serve_device_actions(
+    identity: &DeviceIdentity,
+    endpoint: &iroh::Endpoint,
+    engine: Option<&Arc<Engine>>,
+    served: &mut tilo_network_actor::own_service::Protocols,
+    actions: &std::sync::OnceLock<DeviceActions>,
+) {
+    let device = DeviceActions::start(identity, endpoint.clone(), engine.cloned());
+    served.push((
+        tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
+        Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.action_service()),
+    ));
+    let _ = actions.set(device);
+}
+
 /// Bind this device's endpoint, serve the peer actor and its app wire on it, and say where the
 /// session's apps reach this device — or say why it could not, and answer nothing.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one place binds what the network is opened with and serves everything it carries"
+)]
 async fn listening(
     identity: Option<&DeviceIdentity>,
     engine: Option<&Arc<Engine>>,
     arrivals: std::sync::mpsc::Sender<Event>,
-    host_events: std::sync::mpsc::Sender<HostEvent>,
+    desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     ready: &std::sync::mpsc::Sender<Result<(EndpointId, EndpointAddr, Reachability), String>>,
     Beside {
@@ -577,9 +619,9 @@ async fn listening(
     };
     let publisher = endpoint.id();
     let addr = endpoint.addr();
-    // Nothing wakes the held-back relays from here: the peer actor does when it dials a host or a
-    // peer, and the session while a workspace it shows has someone else in it
-    // (`Client::note_reachability`).
+    // The peer actor wakes the held-back relays when it dials a holder or a peer, the session
+    // while a workspace it shows has someone else in it (`Client::note_reachability`), and the
+    // workspace service before it signs an invitation's address.
     let reachability = tilo_endpoint_reachability::Reachability::defer(
         &endpoint,
         &deferred_relays,
@@ -596,16 +638,8 @@ async fn listening(
         served.extend(files_link(&endpoint, &reachability));
     }
     let _ = bound.endpoint.set(endpoint.clone());
-    if let Some(device) =
-        identity.map(|identity| DeviceActions::start(identity, endpoint.clone(), engine.cloned()))
-    {
-        served.push((
-            tilo_peer_state::actions::ACTIONS_ALPN.to_vec(),
-            Box::<dyn iroh::protocol::DynProtocolHandler>::from(device.action_service()),
-        ));
-        // The session takes it from here: what it installs answers, and an app's own-device actions
-        // leave through it.
-        let _ = actions.set(device);
+    if let Some(identity) = identity {
+        serve_device_actions(identity, &endpoint, engine, &mut served, &actions);
     }
     // This device's own workspace service answers here: the workspaces it founds are held there,
     // and their other devices and members join, sync and act with it on its own ALPNs. A device
@@ -628,14 +662,14 @@ async fn listening(
     );
     let mut opened = false;
     if let (Some(service), Some(identity), Some(engine)) = (&own_service, identity, engine) {
-        let opening = super::own_service::open(service, identity, engine, endpoint.clone());
-        opened = own_service_opened(Box::pin(opening), &actor).await;
+        let opening = open_own_service(service, identity, engine, &endpoint, &reachability);
+        opened = own_service_opened(Box::pin(opening), &actor, actions.get()).await;
     }
     let founding_link = link.clone();
     let (events, carrying, attending) = heard(
         identity.is_some(),
         arrivals,
-        host_events,
+        desktop_events,
         wake,
         link,
         documents,
@@ -645,17 +679,26 @@ async fn listening(
     if let (true, Some(service), Some(identity), Some(engine)) =
         (opened, &own_service, identity, engine)
     {
-        engine.serve_founding(Arc::new(super::own_service::Founding {
-            service: service.clone(),
-            endpoint: endpoint.clone(),
-            identity: identity.clone(),
-            engine: Arc::downgrade(engine),
-            network: Some((actor.clone(), events.clone())),
-            link: founding_link,
-        }));
+        engine
+            .founders()
+            .serve(Arc::new(super::own_service::Founding {
+                service: service.clone(),
+                endpoint: endpoint.clone(),
+                identity: identity.clone(),
+                engine: Arc::downgrade(engine),
+                network: Some((actor.clone(), events.clone())),
+                link: founding_link,
+                actions: actions.get().map(DeviceActions::action_service),
+            }));
     }
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;
+    }
+    // The links out of the workspaces this device holds were made before this session, and its
+    // service kept them: whoever redeems one dials this device (`Engine::invitations_open`).
+    if let (true, Some(engine)) = (opened, engine) {
+        let noting = Arc::clone(engine);
+        tokio::spawn(async move { super::own_service::note_open_links(&noting).await });
     }
     Some(Listening {
         endpoint,
@@ -675,7 +718,7 @@ async fn listening(
 fn heard(
     holds_ownership: bool,
     arrivals: std::sync::mpsc::Sender<Event>,
-    host_events: std::sync::mpsc::Sender<HostEvent>,
+    desktop_events: std::sync::mpsc::Sender<DesktopEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     link: Option<Arc<KeyLink>>,
     documents: Option<PeerDocuments>,
@@ -731,7 +774,7 @@ fn heard(
                     }
                 }
                 Some(Err(event)) => {
-                    if host_events.send(event).is_err() {
+                    if desktop_events.send(event).is_err() {
                         break;
                     }
                 }

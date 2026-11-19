@@ -23,12 +23,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, Weak};
 
+use tilo_webview::file_chooser::{MAX_FILE_CHOOSER_PATH, MAX_FILE_CHOOSER_PATHS};
+use tilo_webview::{
+    FileChooser, FileChooserMode, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent,
+};
 use ui::portal::{
     FileFilter, MultiChannel, MultiOutcome, PickRequest, PortalChannel, PortalOutcome,
-};
-use ui::webview::file_chooser::{MAX_FILE_CHOOSER_PATH, MAX_FILE_CHOOSER_PATHS};
-use ui::webview::{
-    FileChooser, FileChooserMode, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent,
 };
 
 use crate::CATALOG;
@@ -243,7 +243,7 @@ fn named(path: &Path, mode: FileChooserMode) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::webview::test_engine::TestEngine;
+    use tilo_webview::test_engine::TestEngine;
 
     fn answers(engine: &TestEngine) -> Vec<(u32, Vec<String>)> {
         engine

@@ -6,10 +6,17 @@
 // usage: node tools/web/html-renderer/tilolang-check.mjs BUNDLE_DIR OUT_DIR [--package tl/<id>/]
 //                                                       [--scenario all|NAME,...] [--open ROW]
 //                                                       [--width N] [--height N]
-//                                                       [--pages ROW,ROW,...]
+//                                                       [--pages ROW,ROW,...] [--zone ZONE]
+//                                                       [--press NAME,...]
 // With --pages, each named place in the window's sidebar is chosen, and its page shot in both
 // themes and both renderers as `<render>-<theme>-<place>.png`, before the interaction checks.
 // The gallery's pages are its sidebar's places, so by default every one of them is walked.
+// The page reads its clock in ZONE (an IANA name, UTC by default, as a device's capture does), and
+// a package staged with a scenario shows the capture's instant, so its days and times are a
+// capture's.
+// With --press, on each page the control or row reading each name (a table row, a tree row, a
+// card) is pointed at and shot as `<render>-<theme>-<place>-hovered-<name>.png`, then pressed
+// and shot as `...-pressed-<name>.png`: the states a pointer and a choice give it.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {serve} from '../chrome.mjs';
@@ -30,6 +37,8 @@ const width = Number(option('--width')) || 1280;
 const height = Number(option('--height')) || 800;
 const pages = (option('--pages') ?? (pkg === GALLERY ? GALLERY_PLACES.join(',') : ''))
   .split(',').filter(Boolean);
+const zone = option('--zone') ?? 'UTC';
+const presses = (option('--press') ?? '').split(',').filter(Boolean);
 const TEXT = 'Hello web';
 mkdirSync(out, {recursive: true});
 
@@ -46,6 +55,8 @@ const FIND = `((what) => {
   const dom = Boolean(root.querySelector('[data-path]'));
   for (const element of root.querySelectorAll(selector)) {
     if (dom && !element.closest('[data-path]')) continue;
+    // Text shown to be read is no field to type into.
+    if (what !== 'toggle' && (element.readOnly || element.getAttribute('aria-readonly') === 'true')) continue;
     const box = element.getBoundingClientRect();
     if (box.width < 4 || box.height < 4) continue;
     if (box.bottom < 0 || box.top > innerHeight) continue;
@@ -70,6 +81,22 @@ const NAMED = `((name) => {
     if (!best || box.width * box.height < best.area) best = {x: box.left + box.width / 2, y: box.top + box.height / 2, area: box.width * box.height};
   }
   return JSON.stringify(best);
+})`;
+
+// Whether an element of the mount other than the pressed row, `y` its middle, reads `name`: the
+// page's title once the press showed the page.
+const SHOWN = `((name, y) => {
+  const root = document.getElementById('app');
+  const dom = Boolean(root.querySelector('[data-path]'));
+  for (const element of root.querySelectorAll('*')) {
+    if (dom && !element.closest('[data-path]')) continue;
+    const said = (element.getAttribute('aria-label') ?? element.textContent ?? '').trim();
+    if (said !== name) continue;
+    const box = element.getBoundingClientRect();
+    if (box.width < 4 || box.height < 4) continue;
+    if (Math.abs(box.top + box.height / 2 - y) > 4) return 'true';
+  }
+  return 'false';
 })`;
 
 async function settle(tab) {
@@ -99,19 +126,18 @@ try {
         const result = report.pages[`${render}-${theme}-${page}`] = {};
         try {
           await tab.colourScheme(theme);
+          await tab.send('Emulation.setTimezoneOverride', {timezoneId: zone});
           await tab.navigate(`${server.url}/app.html?package=${encodeURIComponent(pkg)}&scenario=${scenario}&render=${render}&theme=${theme}`);
           await tab.waitFor('window.renderMarks.presented.length > 0', {timeout: 120000});
           await settle(tab);
-          // The place is pressed until its page shows: a press that lands
-          // while the window is still settling can go unanswered.
-          for (let tries = 0; tries < 3; tries++) {
-            const at = JSON.parse(await tab.evaluate(`${NAMED}(${JSON.stringify(page)})`));
-            if (!at || (result.opened && tries && Math.abs(at.y - result.opened.y) > 1)) break;
+          // One press on the place shows its page: the window's title reads the place's name
+          // somewhere other than the row that was pressed.
+          const at = JSON.parse(await tab.evaluate(`${NAMED}(${JSON.stringify(page)})`));
+          if (at) {
             result.opened = at;
-            result.presses = tries + 1;
-            await sleep(500);
             await press(tab, at);
             await settle(tab);
+            result.shown = JSON.parse(await tab.evaluate(`${SHOWN}(${JSON.stringify(page)}, ${at.y})`));
           }
           // Choosing a place in the gallery never reports a page it could not open.
           result.error_taught = await tab.evaluate(
@@ -119,6 +145,18 @@ try {
           );
           writeFileSync(join(out, `${render}-${theme}-${page.toLowerCase()}.png`), await tab.screenshot());
           if (render === 'dom' && theme === 'light') writeFileSync(join(out, `dom-${page.toLowerCase()}.html`), await tab.evaluate(`document.getElementById('app').outerHTML`));
+          for (const name of presses) {
+            const named = JSON.parse(await tab.evaluate(`${NAMED}(${JSON.stringify(name)})`));
+            const shot = state => join(out, `${render}-${theme}-${page.toLowerCase()}-${state}-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png`);
+            (result.presses ??= {})[name] = named;
+            if (!named) continue;
+            await tab.mouse.move(named.x, named.y);
+            await settle(tab);
+            writeFileSync(shot('hovered'), await tab.screenshot());
+            await press(tab, named);
+            await settle(tab);
+            writeFileSync(shot('pressed'), await tab.screenshot());
+          }
           // Words typed into the page's first field for them reach it, on both renders.
           const field = theme === 'light' ? JSON.parse(await tab.evaluate(`${FIND}('words')`)) : null;
           if (field) {
@@ -150,6 +188,7 @@ try {
       report.renders[`${render}-${theme}`] = result;
       try {
         await tab.colourScheme(theme);
+        await tab.send('Emulation.setTimezoneOverride', {timezoneId: zone});
         await tab.navigate(`${server.url}/app.html?package=${encodeURIComponent(pkg)}&scenario=${scenario}&render=${render}&theme=${theme}`);
         await tab.waitFor('window.renderMarks.presented.length > 0', {timeout: 120000});
         await settle(tab);

@@ -148,6 +148,37 @@ pub trait CollabTransport: Send {
     /// Move every event that is ready into `out`, in arrival order.
     fn drain(&mut self, out: &mut Vec<CollabEvent>);
 
+    /// Take no more invocations: the remote end hands over the ones it
+    /// already addressed to this connection, then ends each stream.
+    /// [`Self::invocations_stopped`] says when that is done.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Unsupported`] for a transport that cannot, and
+    /// [`TransportError::Closed`] when it is closed.
+    fn stop_invocations(&mut self) -> Result<(), TransportError> {
+        Err(TransportError::Unsupported)
+    }
+
+    /// Whether every invocation stream ended after
+    /// [`Self::stop_invocations`], and [`Self::drain`] handed over every
+    /// invocation they carried.
+    fn invocations_stopped(&self) -> bool {
+        false
+    }
+
+    /// Take invocations again after [`Self::stop_invocations`]: what the
+    /// remote end still addresses to this connection reaches it, and
+    /// [`Self::invocations_stopped`] says no.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Closed`] when the transport is closed.
+    fn resume_invocations(&mut self) -> Result<(), TransportError> {
+        // A transport whose stop took nothing off has nothing to put back.
+        Ok(())
+    }
+
     /// The remote end's decision about the latest primary `Hello`, once.
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>>;
 

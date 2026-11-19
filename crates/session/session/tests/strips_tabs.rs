@@ -52,27 +52,6 @@ fn session() -> (Session, Vec<String>) {
     (session, notes)
 }
 
-/// Keep the screen now as `name.png` where `TL_SHELL_SHOTS` names, for the shots the report cites.
-fn keep(session: &mut Session, name: &str) {
-    let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") else {
-        return;
-    };
-    let shot = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("a screenshot of the display");
-    let dir = std::path::PathBuf::from(dir);
-    std::fs::create_dir_all(&dir).expect("the captures' directory");
-    image::save_buffer(
-        dir.join(format!("{name}.png")),
-        &shot.rgba,
-        shot.width,
-        shot.height,
-        image::ColorType::Rgba8,
-    )
-    .expect("the capture written");
-}
-
 /// Place `resource` on the workspace in front, in a strip of its own: the place's id and the
 /// strip's.
 ///
@@ -209,7 +188,7 @@ fn a_note_tabbed_into_a_window_stands_as_its_tab() {
             .any(|label| label == &shown_as(&session, TITLES[1])),
         "the second tab shows its place's title: {labels:?}"
     );
-    keep(&mut session, "strips-two-tabs");
+    crate::common::shot(&mut session, "strips-two-tabs");
 }
 
 /// Switching tabs by click: choosing a tab shows its place, and choosing the other one shows
@@ -351,7 +330,7 @@ fn dragging_a_tab_out_gives_it_its_own_window() {
         [second],
         "the place stands alone in its new window"
     );
-    keep(&mut session, "strips-tab-dragged-out");
+    crate::common::shot(&mut session, "strips-tab-dragged-out");
     let _ = KEY_LEFT;
 }
 
@@ -414,5 +393,5 @@ fn dragging_a_windows_bar_onto_another_tabs_it_in() {
         kept.0 < moved.0,
         "the window's own tab stands first, the one moved in after it: {kept:?} {moved:?}"
     );
-    keep(&mut session, "strips-bar-dragged-in");
+    crate::common::shot(&mut session, "strips-bar-dragged-in");
 }

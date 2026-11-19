@@ -58,17 +58,19 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 - Do not set `CARGO_TARGET_DIR`, or point two worktrees at one target directory.
 - Do not regenerate `Cargo.lock`; `cargo update -p NAME --precise VERSION`.
   Lock-only changes and generated files: `docs/policies.md`.
-- Run the tests of the packages you touched (`cargo test --locked -p NAME`) and
-  `bash tools/policy/run.sh`.
+- Build and test on a build server, never on the machine you edit on: `t test` covers
+  the checks your change reaches, `t test <check>` one of them, `t cargo test --locked
+  -p NAME` the tests of the packages you touched, and `t test policy` the policy suite
+  (one step: `t test policy/<step>`). t gives each its own job there, keyed by what it
+  reads, and keeps the builds those jobs use.
 - Extensive checks (images, macOS, VMs) only when you change what they test.
-- Session: `cargo test --locked -p tilo-session` runs the session's tests (the desktop,
-  its windows and its strips); `cargo check --locked -p tilo-session --tests` type-checks
-  them while you iterate. A test names its module, as `cargo test -p tilo-session MODULE::`.
-  A plain `cargo test` builds no other package's binaries, so first build the apps a few of
-  the session's tests start (the lock screen, the on-screen keyboard, the quick-settings
-  panel): `bash tools/build-sibling-binaries.sh tilo-lock-screen:tilo-lock-screen osk:osk
-  tilo-quick-settings:tilo-quick-settings`. `cargo nextest` builds them itself.
-- Browser crates: also check them for `--target wasm32-unknown-unknown`.
+- Session: `t cargo test --locked -p tilo-session MODULE::` names one of the session's
+  tests (the desktop, its windows and its strips) there; `t cargo check --locked -p
+  tilo-session --tests` type-checks them while you iterate. A test that starts another
+  app (the lock screen, the on-screen keyboard, the quick-settings panel) belongs to
+  `t test`: t builds those apps for the job (`t.toml` `starts`), which a plain
+  `cargo test` does not.
+- Browser crates: `t cargo check --locked --target wasm32-unknown-unknown -p NAME` too.
 - Never ignore a failure, weaken an assertion, or lean on a tautological helper.
 - Test through production interfaces, including cancellation and denial.
 
@@ -89,19 +91,15 @@ These hold for every app, the shell and the SDK. When a doc or code disagrees, t
 
 ## Git and delivery
 
-- Commit and push work to `integration` (`git pull --rebase origin integration`,
-  then `git push origin HEAD:integration`). Nothing lints or tests that push.
-  Never force-push `integration`: it holds everyone's work, and the pre-push
-  hook refuses a push that would drop commits from it.
-- No tests while iterating. Test once, when the work is done:
-  `tools/integrate.sh` merges `main` into `integration` (a merge commit, never a
-  rebase), checks what integration adds with `t` (the touched checks and
-  lint-head's wide lint), and fast-forwards `main` to it when nothing fails that
-  `main` does not already fail; when something new fails it names the check and
-  the commit, and `main` stays where it was.
-- `main` moves only through `tools/integrate.sh`. The pre-push hook refuses an
-  agent's push that sends `main` a commit `integration` does not hold. A fix
-  for a red `main` goes the same way: push the one fix to `integration`, then
-  `tools/integrate.sh` moves `main` as soon as that fix passes.
+- Commit small and push straight to `main` (`git pull --rebase origin main`,
+  then `git push origin HEAD:main`). There is no merge queue and no
+  integration branch. The pre-commit hook is fast and reads only what the
+  commit stages; the pre-push hook lints the packages the push changes, through
+  the `cargo` on your PATH or `$CARGO` (any cargo drop-in, one that builds on
+  another machine included). Neither covers the policy suite or a package's
+  tests: those are t's, above.
+- No tests while iterating. Run the focused tests once, when the work is done,
+  then push.
+- A red `main` is fixed by the next commit, never by a revert or a hold.
 - After your change lands, watch CI on `main`; fix what you broke.
 - App packaging is affected-only; full image builds stay explicit or scheduled.

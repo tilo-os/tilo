@@ -89,7 +89,7 @@ ResolveArgs = TypedDict("ResolveArgs", {
 
 class Session(Resource):
     """Diff & Merge — `diffmerge.session`."""
-    __surface__ = "so.tilo.diffmerge@6e3e0e40ba1c3ff2"
+    __surface__ = "so.tilo.diffmerge@8f11459453d0565d"
     @property
     def comparison(self) -> Comparison | None:
         """Read only."""

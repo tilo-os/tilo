@@ -460,6 +460,7 @@ class Message(TypedDict):
     attempts: int
 
 class NewMessage(TypedDict):
+    id: str | None
     channel: str
     text: str
     parent: str | None
@@ -842,6 +843,7 @@ TriageArgs = TypedDict("TriageArgs", {
 """The arguments of `triage`."""
 
 PostArgs = TypedDict("PostArgs", {
+    "id": NotRequired["str | None"],
     "channel": "str",
     "text": "str",
     "parent": NotRequired["str | None"],
@@ -979,6 +981,7 @@ AskAgentArgs = TypedDict("AskAgentArgs", {
     "channel": "str",
     "cause": "Starting",
     "members": NotRequired["list[Any] | None"],
+    "message": NotRequired["str | None"],
 })
 """The arguments of `ask-agent`."""
 
@@ -1178,7 +1181,7 @@ SetSubAgentLimitsArgs = TypedDict("SetSubAgentLimitsArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
+    __surface__ = "so.tilo.chat@21cb18eb7dbfde6a"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1513,7 +1516,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
+    __surface__ = "so.tilo.chat@21cb18eb7dbfde6a"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1527,6 +1530,7 @@ class Messages(Resource):
         *,
         channel: str,
         text: str,
+        id: str | None = None,
         parent: str | None = None,
         quoted: Quote | None = None,
         body: list[ClipBlock] | None = None,
@@ -1537,6 +1541,8 @@ class Messages(Resource):
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
+        if id is not None:
+            args["id"] = id
         args["channel"] = channel
         args["text"] = text
         if parent is not None:
@@ -1849,6 +1855,7 @@ class Messages(Resource):
         channel: str,
         cause: Starting,
         members: list[Any] | None = None,
+        message: str | None = None,
     ) -> None:
         """Runs the app's action."""
         args: dict[str, Any] = {}
@@ -1857,6 +1864,8 @@ class Messages(Resource):
         args["cause"] = cause
         if members is not None:
             args["members"] = members
+        if message is not None:
+            args["message"] = message
         return self.action("ask-agent", **args)
 
     def ask_agent_many(self, items: list[AskAgentArgs]) -> list[dict[str, Any]]:
@@ -1961,7 +1970,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
+    __surface__ = "so.tilo.chat@21cb18eb7dbfde6a"
     drafts: dict[str, str]
 
     def start_draft(self, *, key: str) -> None:
@@ -1979,7 +1988,7 @@ class Drafts(Resource):
 
 class Learned(Resource):
     """What your agents learned — `chat.learned`."""
-    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
+    __surface__ = "so.tilo.chat@21cb18eb7dbfde6a"
     @property
     def facts(self) -> list[Entry[Fact]]:
         """Read only."""
@@ -2030,7 +2039,7 @@ class Learned(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
+    __surface__ = "so.tilo.chat@21cb18eb7dbfde6a"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -2068,7 +2077,7 @@ class WorkspaceEmoji(Resource):
 
 class ChatAgent(Resource):
     """Agents — `chat.agent`."""
-    __surface__ = "so.tilo.chat@d2b35f5c7421bf62"
+    __surface__ = "so.tilo.chat@21cb18eb7dbfde6a"
     agents: list[Entry[Agent]]
 
     def create_agent(self,

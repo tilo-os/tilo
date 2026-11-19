@@ -182,7 +182,10 @@ impl Tiering {
                     );
                 }
             }
-            self.finish(&job.hash, outcome.map(drop));
+            self.finish(
+                &job.hash,
+                outcome.map(drop).map_err(|error| error.to_string()),
+            );
         }
     }
 
@@ -300,16 +303,10 @@ impl DiskCache {
         entry.extend_from_slice(blake3::hash(&serialized).as_bytes());
         entry.extend_from_slice(&serialized);
         let path = self.path(hash);
-        let mut partial = tempfile::Builder::new()
-            .prefix(".partial-")
-            .tempfile_in(&self.dir)
-            .map_err(|e| format!("{}: {e}", self.dir.display()))?;
-        std::io::Write::write_all(&mut partial, &entry)
-            .and_then(|()| partial.as_file().sync_all())
-            .map_err(|e| format!("{}: {e}", partial.path().display()))?;
-        partial
-            .persist(&path)
-            .map_err(|e| format!("{}: {}", path.display(), e.error))?;
+        tilo_files::native::atomic::write_streaming(&path, |file| {
+            std::io::Write::write_all(file, &entry)
+        })
+        .map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(())
     }
 }

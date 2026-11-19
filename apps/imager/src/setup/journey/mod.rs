@@ -39,6 +39,7 @@ mod pairing;
 #[cfg(test)]
 mod password_validation_tests;
 pub(in crate::setup) mod personal;
+mod plan_view;
 #[path = "portable_source/presentation.rs"]
 pub(crate) mod portable_source;
 #[cfg(target_os = "linux")]
@@ -121,13 +122,13 @@ pub enum InstallerPreviewEffect {
     #[effect(returns, kind = "read")]
     ReadPreview,
     /// Query native Windows root metadata without granting any folder.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     FindWindowsRoots,
     /// Select an exact folder through the platform picker.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ChooseWindowsRoot { role: String },
     /// Independently grant one exact Windows root, including redirected libraries.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SelectWindowsRoot {
         #[param(secret, "Absolute independently selected directory")]
         source: AbsolutePath,
@@ -144,14 +145,14 @@ pub enum InstallerPreviewEffect {
         expanded: bool,
     },
     /// Decide whether an inventoried root is copied, retained, or excluded.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewWindowsRoot {
         source_id: String,
         decision: String,
         reason: Option<String>,
     },
     /// Decide how one inventoried category is preserved.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewWindowsCategory {
         source_id: String,
         category: String,
@@ -159,19 +160,19 @@ pub enum InstallerPreviewEffect {
         reason: Option<String>,
     },
     /// Set the explicit reason used by exclusion controls.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetWindowsExclusionReason { value: String },
     /// Set the private encryption password for offline sign-in suggestions.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetWindowsPreparationPassword {
         #[param(secret, "Private export password, not a sign-in credential")]
         value: String,
     },
     /// Choose the mounted backup destination using the platform picker.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ChooseWindowsExport,
     /// Export verified local copies and encrypted suggestions to a granted directory.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExportWindowsPreparation {
         #[param(
             secret,
@@ -180,46 +181,46 @@ pub enum InstallerPreviewEffect {
         destination: AbsolutePath,
     },
     /// Continue an unfinished preparation after verifying its exact identity storage.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ResumeInstallerPreparation,
     /// Retire the saved choices without deleting previous identity storage.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     StartNewInstallerPreparation,
     /// Check retained preparation again; no identity is adopted by this action.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RetryInstallerPreparation,
     /// Choose your avatar with the system file picker.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ChoosePreviewAvatar,
     /// Select an already granted local avatar file without opening a picker.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SelectPreviewAvatar {
         #[param(secret, "Absolute selected image file")]
         source_file: AbsolutePath,
     },
     /// Choose the existing identity backup through the system file picker.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ChooseExistingIdentityBackup,
     /// Select an already granted backup file without opening a picker.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SelectExistingIdentityBackup {
         #[param(secret, "Absolute selected identity backup")]
         source_file: AbsolutePath,
     },
     /// Enter the backup passphrase in private device-local memory.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetExistingIdentityPassword {
         #[param(secret, "Backup passphrase")]
         value: String,
     },
     /// Ask a nearby Tilo device to approve this named future device.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     StartExistingDevicePairing,
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     #[effect(label = "installer-pairing-cancel")]
     CancelExistingDevicePairing,
     /// Choose an option on this page.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ChoosePreview {
         #[param(
             "Choice: computer, another, desktop; migrate, fresh; new, existing; device, backup"
@@ -227,7 +228,7 @@ pub enum InstallerPreviewEffect {
         choice: String,
     },
     /// Choose an option on this page and continue to the next page.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ChooseAndContinuePreview {
         #[param(
             "Choice: computer, another, desktop; migrate, fresh; new, existing; device, backup"
@@ -235,10 +236,10 @@ pub enum InstallerPreviewEffect {
         choice: String,
     },
     /// Set your display name.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewName { value: String },
     /// Name one identifying field of the other computer.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetTargetIdentityField {
         #[param("Field: manufacturer, model, variant, board or sku")]
         field: String,
@@ -246,141 +247,141 @@ pub enum InstallerPreviewEffect {
         value: String,
     },
     /// Select the architecture the prepared medium must start on.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetTargetArchitecture {
         #[param("Architecture: x86_64 or aarch64")]
         architecture: String,
     },
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     #[effect(label = "installer-preview-target-file-title")]
     ChooseTargetHardwareReport,
     /// Read a hardware report produced on the other computer from this exact file.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ImportTargetHardwareReport {
         #[param(secret, "Absolute selected hardware report file")]
         source_file: AbsolutePath,
     },
     /// Stop using an imported report and name a model instead.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ClearTargetHardwareReport,
     /// Check the other computer's description again; this computer is not probed.
     #[effect(returns, kind = "read")]
     RecheckTargetHardware,
     /// Set this device's name.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewDeviceName { value: String },
     /// Enter the destination unlock password, in private memory only.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewPassword {
         #[param(secret, "Unlock password; never persisted or returned")]
         value: String,
     },
     /// Confirm the destination unlock password.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewConfirmation {
         #[param(secret, "Unlock confirmation; never persisted or returned")]
         value: String,
     },
     /// Create the chosen new identity in fresh, durable private ownership.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CreatePreparedIdentity {
         private_ownership: AbsolutePath,
         avatar_color: String,
     },
     /// Update the prepared identity's public profile, retaining its signing key.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     UpdatePreparedIdentity { avatar_color: String },
     /// Export that identity encrypted with the chosen destination password.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExportPreparedIdentity { destination: AbsolutePath },
     /// Export selected prepared accounts in an encrypted, operation-bound artifact.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExportPreparedAccounts {
         destination: AbsolutePath,
         setup_binding: String,
     },
     /// Package the chosen identity and selected accounts for installation.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExportPreparedSetup {
         destination: AbsolutePath,
         setup_binding: String,
     },
     /// Export the encrypted, source-checked preparation without installing it.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExportPreparedBelongings {
         #[param(secret, "Absolute private destination for the encrypted preparation")]
         destination: AbsolutePath,
     },
     /// Include a migration category.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewCategory {
         #[param("Category: files, flatpak, accounts")]
         category: String,
         included: bool,
     },
     /// Include one discovered application in the selected migration plan.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewFlatpakApp { app: String, included: bool },
     /// Include an explicitly selected website sign-in source.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewServiceSession {
         source_id: String,
         service: String,
         included: bool,
     },
     /// Review website sign-ins grouped by their granted source.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewServiceSessions,
     /// Include or exclude a discovered source group.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetPreviewServiceSessionGroup { source_id: String, included: bool },
     /// Expand or collapse an existing sign-in source group.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExpandServiceSessionGroup { source_id: String, expanded: bool },
     /// Select or exclude every eligible source in Your data.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetYourDataAll { included: bool },
     /// Select or exclude one recognizable source in Your data.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetYourDataSource {
         #[param("Source identity shown in Your data")]
         source: String,
         included: bool,
     },
     /// Select or exclude one nested source group in Your data.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetYourDataGroup {
         #[param("Nested group identity shown in Your data")]
         group: String,
         included: bool,
     },
     /// Select or exclude one eligible child in Your data.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetYourDataItem {
         #[param("Child identity shown in Your data")]
         item: String,
         included: bool,
     },
     /// Open or close one source's children without changing its selection.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ExpandYourDataSource { source: String, expanded: bool },
     /// Expand or collapse migration details.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     TogglePreviewDetails,
     /// Show or hide the selected file source’s full location.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ToggleMigrationSourceLocation,
     /// Expand or collapse the selected apps’ custom access details.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ToggleFlatpakAccessDetails,
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     #[effect(label = "installer-accounts-add")]
     AccountStep {
         step: String,
         selection: Option<String>,
     },
     /// Edit one private guided account field; credentials never enter shared state.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetAccountField {
         field: String,
         #[param(
@@ -390,58 +391,58 @@ pub enum InstallerPreviewEffect {
         value: String,
     },
     /// Import one reviewed reusable connection into an explicitly chosen target home.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ImportAccount {
         candidate: String,
         target_home: AbsolutePath,
     },
     /// Begin a provider's consent flow; returns its public consent URL.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ConnectAccount {
         provider: String,
         candidate: Option<String>,
         target_home: AbsolutePath,
     },
     /// Complete the consent flow using its private authorization handle.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CompleteAccountConnection { connection: String },
     /// Close an unfinished consent flow.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelAccountConnection { connection: String },
     /// Review exact source, target home and private journal grants. Does not copy.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewUserTransfer {
         source: AbsolutePath,
         destination: AbsolutePath,
         journals: AbsolutePath,
     },
     /// Grant the reviewed home directory for migration without opening a picker.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SelectMigrationHome {
         #[param(secret, "Explicit native home folder grant")]
         source: AbsolutePath,
     },
     /// Request a real platform grant for one discovered mounted Home location.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     GrantMountedHomeLocation { location: String },
     /// Reattest all approved locations and retain original-source permission.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ContinueMountedHomeReview,
     /// Retire the active mounted-location chooser without accepting a late answer.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelMountedHomePermission,
     /// Re-discover mounted locations using the retained original Home grant.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RestartMountedHomeReview,
     /// Save consent and stable Linux source identities for installation; no copy or mount.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SaveMigrationPlan {
         source: AbsolutePath,
         private_plans: AbsolutePath,
         operation: String,
     },
     /// Mount the retained Linux source read-only and review exact target/journal grants.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewInstalledTransfer {
         private_plans: AbsolutePath,
         operation: String,
@@ -451,13 +452,13 @@ pub enum InstallerPreviewEffect {
         flatpak_inventory: Option<AbsolutePath>,
     },
     /// Execute the reviewed data transfer; does not install or boot an OS.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     StartUserTransfer,
     /// Retry this reviewed transfer using its durable receipts.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RetryUserTransfer,
     /// Review adoption of this completed whole-home copy into the user's existing home.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewHomePromotion {
         #[param(secret, "Explicit target user home grant")]
         target_home: AbsolutePath,
@@ -465,10 +466,10 @@ pub enum InstallerPreviewEffect {
         journal: AbsolutePath,
     },
     /// Adopt the reviewed copy without replacing existing files or selected identity.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     StartHomePromotion,
     /// Resume this same reviewed adoption using its durable receipts.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RetryHomePromotion,
     /// Read a bounded page of this retained adoption result, including raw file names.
     #[effect(returns, kind = "read")]
@@ -478,94 +479,94 @@ pub enum InstallerPreviewEffect {
         limit: u64,
     },
     /// Stop adoption and retain imported items and receipts for retry.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelHomePromotion,
     /// Stop the current transfer, retaining verified copies for retry.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelUserTransfer,
     /// Recheck belongings after migration consent, without copying or signing in.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CheckBelongings,
     /// Choose a recovery directory using the ordinary folder picker for an exact Windows root.
-    #[effect(attended, returns)]
+    #[effect(kind = "outside", attended, returns)]
     ChooseRecoveryDestination { source_id: String },
     /// Select an exact recovery directory without opening a picker; creates a private durable receipt directory beside the output.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SelectRecoveryDirectory {
         source_id: String,
         directory: AbsolutePath,
     },
     /// Select an exact external recovery directory and private journal for a granted Windows root.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewRecoveryDestination {
         source_id: String,
         directory: AbsolutePath,
         journal: AbsolutePath,
     },
     /// Reattach exact source, saved output and journal grants after interruption or restart.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewExistingRecoveryCopy {
         source_id: String,
         output: AbsolutePath,
         journal: AbsolutePath,
     },
     /// Begin the reviewed durable recovery copy without deleting its source.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     StartRecoveryCopy,
     /// Resume the reviewed recovery output, rechecking hashes and source identity.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RetryRecoveryCopy,
     /// Stop recovery and keep verified partial output for explicit retry.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelRecoveryCopy,
     /// Inspect this computer's disk again. Never writes to disk.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CheckStorage,
     /// Show or hide the inspected disk allocation breakdown.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ToggleStorageDetails,
     /// Choose the space reserved for Tilo, within the inspected disk's bounds.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     SetStorageSize { gib: u64 },
     /// Open the real USB media writer. Choosing and confirming a drive happens there.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     PrepareUsb,
     /// Renew the selected home review after its contents changed; preserve identity and accounts.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewChangedFiles,
     /// Stop preparation while retaining the chosen identity and account selection.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelMediaPreparation,
     /// Approve the exact receiving-computer request shown on this handoff.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ApproveSourceHandoff { approval: String },
     /// Stop serving the other-computer handoff.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     CancelSourceHandoff,
     /// Prepare reviewed identity, accounts and original-source consent before choosing installation media.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     PrepareBelongings,
     /// Review actual system capacity and bind the prepared selected Apps
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ReviewPreparedBelongings { target_gib: u64 },
 
     /// Prepare the reviewed installation on this computer, without writing its disk.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     PrepareDirectInstallation,
     /// Prepare the current user’s Tilo Desktop setup.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     PrepareDesktopInstallation,
     /// Change a section of the reviewed setup.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     EditPreview { section: String },
     /// Continue to the next relevant page.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     ContinuePreview,
     /// Return to the preceding page.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     BackInPreview,
     /// Start the preview again.
-    #[effect(returns)]
+    #[effect(kind = "outside", returns)]
     RestartPreview,
 }
 
@@ -676,6 +677,13 @@ struct OriginalAvatar(Option<String>);
 #[derive(Default)]
 struct Machine {
     created: Option<machine::Created>,
+    /// A plan made here and not yet written into the person's Servers
+    /// workspace: the request that writes it, followed until it answers.
+    making: Option<(machine::Created, ui::InvocationCall)>,
+    /// Whether the review was waiting for the plan before it could continue.
+    plan_continue: bool,
+    /// The waiting computers, as the session answered the list.
+    listing: Option<ui::InvocationCall>,
     waiting: Vec<machine::Waiting>,
     error: Option<&'static str>,
 }
@@ -1171,6 +1179,7 @@ impl InstallerPreview {
             }
             "set-preview-device-name" => {
                 page == Page::Devices
+                    || page == Page::Machine
                     || (page == Page::Connect && self.journey.transfer.as_deref() == Some("device"))
             }
             "set-target-identity-field"
@@ -2024,9 +2033,19 @@ impl InstallerPreview {
                 self.journey.choose(&choice, self.linux)?;
                 if page == Page::Destination
                     && self.journey.destination != Some(Destination::Desktop)
+                    && self.journey.destination != Some(Destination::Another)
                     && self.journey.device_name.is_empty()
                 {
                     self.journey.device_name = t("installer-preview-device-default");
+                }
+                if page == Page::Destination
+                    && choice == "another"
+                    && self.journey.destination == Some(Destination::Another)
+                {
+                    // The name entered so far belongs to this computer; the
+                    // other computer gets a name of its own.
+                    self.journey.device_name.clear();
+                    self.field_values[1].set(String::new());
                 }
                 if choice == "fresh" && !choices_edit {
                     self.belongings.sessions.clear();
@@ -2604,7 +2623,9 @@ impl InstallerPreview {
                 if self.journey.destination == Some(Destination::Another)
                     && self.journey.plan.delivery != machine::Delivery::Usb
                 {
-                    self.make_plan()?;
+                    if !self.make_plan()? {
+                        return Ok(());
+                    }
                     self.journey.next()?;
                     self.error = None;
                     self.dirty = true;
@@ -2619,7 +2640,9 @@ impl InstallerPreview {
                         return Err("installer-preview-storage-unavailable");
                     }
                     if self.journey.destination == Some(Destination::Another) {
-                        self.make_plan()?;
+                        if !self.make_plan()? {
+                            return Ok(());
+                        }
                     }
                     if self.sensitive_handoff_deferred()
                         && self.journey.destination != Some(Destination::Another)
@@ -2923,6 +2946,7 @@ impl InstallerPreview {
             }
             InstallerPreviewEffect::SetPreviewDeviceName { value }
                 if page == Page::Devices
+                    || page == Page::Machine
                     || (page == Page::Connect
                         && self.journey.transfer.as_deref() == Some("device")) =>
             {
@@ -2934,6 +2958,7 @@ impl InstallerPreview {
                 }
                 self.field_values[1].set(value.clone());
                 self.journey.device_name = value;
+                self.plan_names_the_computer();
                 if self.live
                     && !choices_edit
                     && let Some(prepared) = self.personal.prepared_handle()
@@ -3319,6 +3344,10 @@ impl InstallerPreview {
     fn your_data(&self) -> your_data::Inventory {
         let mut sources = Vec::new();
         let desktop = self.journey.destination == Some(Destination::Desktop);
+        // A server takes files and folders from this desktop; desktop apps,
+        // browser profiles and sign-ins stay here.
+        let server = self.journey.destination == Some(Destination::Another)
+            && self.journey.plan.os() == machine::Os::TiloServer;
         let checking = self.belongings_worker.is_some();
         if !desktop {
             let windows = self.belongings.windows.is_some();
@@ -3348,9 +3377,13 @@ impl InstallerPreview {
                     note: files_note,
                 },
             ));
-            let apps = self.flatpak_apps();
+            let apps = if server {
+                Vec::new()
+            } else {
+                self.flatpak_apps()
+            };
             let apps_available = !apps.is_empty();
-            if apps_available || self.belongings.flatpak_unavailable {
+            if apps_available || (self.belongings.flatpak_unavailable && !server) {
                 let items = apps
                     .iter()
                     .enumerate()
@@ -3389,16 +3422,26 @@ impl InstallerPreview {
                     included: apps_available && self.journey.categories[1],
                 });
             }
-            sources.extend(your_data::browser_sources(&self.belongings));
+            if !server {
+                sources.extend(your_data::browser_sources(&self.belongings));
+            }
         }
-        let accounts_included = self.journey.migrate == Some(true) && self.journey.categories[2];
-        sources.extend(your_data::account_sources(
-            &self.belongings.accounts,
-            self.accounts.source_account_selection(),
-            accounts_included,
-        ));
-        let mail = your_data::mail_sources(&self.belongings);
-        let has_mail = !mail.is_empty();
+        if !server {
+            let accounts_included =
+                self.journey.migrate == Some(true) && self.journey.categories[2];
+            sources.extend(your_data::account_sources(
+                &self.belongings.accounts,
+                self.accounts.source_account_selection(),
+                accounts_included,
+            ));
+        }
+        let (has_mail, mail) = if server {
+            (true, Vec::new())
+        } else {
+            let mail = your_data::mail_sources(&self.belongings);
+            let has_mail = !mail.is_empty();
+            (has_mail, mail)
+        };
         sources.extend(mail);
         let installed = |id: &str| {
             self.belongings.flatpak.as_ref().is_some_and(|inventory| {
@@ -3430,7 +3473,7 @@ impl InstallerPreview {
                 )
             })
         });
-        if !tree_has_steam && installed("com.valvesoftware.Steam") {
+        if !server && !tree_has_steam && installed("com.valvesoftware.Steam") {
             sources.push(your_data::Source {
                 id: "steam".into(),
                 test_id: "installer.your-data.steam".into(),
@@ -3930,8 +3973,24 @@ impl InstallerPreview {
         Ok(())
     }
 
+    /// The plan carries the computer's name only when one is named: an empty
+    /// name leaves it for the computer to answer when it installs.
+    fn plan_names_the_computer(&mut self) {
+        if self.journey.destination == Some(Destination::Another) {
+            self.journey.plan.name_open = self.journey.device_name.trim().is_empty();
+        }
+    }
+
     fn category_available(&self, index: usize) -> bool {
         if index < 2 && self.journey.destination == Some(Destination::Desktop) {
+            return false;
+        }
+        if index > 0
+            && self.journey.destination == Some(Destination::Another)
+            && self.journey.plan.os() == machine::Os::TiloServer
+        {
+            // A server takes files from this computer, never its desktop apps
+            // or its sign-ins.
             return false;
         }
         if !self.live || self.belongings_worker.is_some() {
@@ -3945,7 +4004,7 @@ impl InstallerPreview {
     }
 
     fn reconcile_categories(&mut self) {
-        for index in 0..2 {
+        for index in 0..3 {
             if !self.category_available(index) {
                 self.journey.categories[index] = false;
             }
@@ -4186,6 +4245,8 @@ impl InstallerPreview {
             let changed = self.poll_windows();
             self.dirty |= changed;
         }
+        let plan_changed = if self.live { self.poll_plan() } else { false };
+        self.dirty |= plan_changed;
         let navigation_changed = if let Some(returning) = &self.media_return
             && let Some(reason) = returning.get()
         {
@@ -4676,16 +4737,6 @@ impl InstallerPreview {
     }
 
     fn review_device_row(&self) -> ListRow {
-        if self.journey.destination == Some(Destination::Another) && self.journey.plan.name_open {
-            return self
-                .review_selection_row(
-                    "devices",
-                    "machine",
-                    t("installer-preview-name-open-title"),
-                    t("installer-preview-name-open-body"),
-                )
-                .icon(Icon::Monitor);
-        }
         if self.device_label_locked() {
             ListRow::new("installer.review.devices", self.journey.device_name.clone())
                 .secondary(t(
@@ -4742,164 +4793,6 @@ impl InstallerPreview {
         }
     }
 
-    /// One of the plan's choices as the review shows it: what the row is
-    /// about, and the value it takes, or that the computer answers it when it
-    /// installs.
-    fn plan_review_row(
-        &self,
-        id: &str,
-        section: &str,
-        label: &str,
-        chosen: Option<&str>,
-        open: &str,
-    ) -> ListRow {
-        let value = chosen.unwrap_or(open);
-        self.review_selection_row(
-            id,
-            section,
-            t(&format!("installer-preview-{label}-heading")),
-            t(&format!("installer-preview-{value}-title")),
-        )
-    }
-
-    /// What the plan decides for the other computer, in the values it takes.
-    fn plan_review_rows(&self) -> ui::widget::Column {
-        use machine::{Disks, Hosting, Unlock, Updates};
-        let plan = &self.journey.plan;
-        let mut rows = page::related();
-        let os = plan.os();
-        rows = rows.push(Box::new(
-            self.plan_review_row(
-                "plan-os",
-                "destination",
-                "plan-os",
-                Some(os.key()),
-                os.key(),
-            )
-            .icon(Icon::Monitor),
-        ));
-        let disk = plan.disk.map(|disk| match disk {
-            Disks::Largest => "disk-largest",
-            Disks::Empty => "disk-empty",
-            Disks::Only => "disk-only",
-        });
-        rows = rows.push(Box::new(
-            self.plan_review_row("plan-disk", "storage", "disk", disk, "disk-open")
-                .icon(Icon::HardDrive),
-        ));
-        let unlock = plan.unlock.map(|unlock| match unlock {
-            Unlock::Hardware => "unlock-tpm",
-            Unlock::OwnerDevice => "unlock-owner-device",
-            Unlock::Passphrase => "unlock-passphrase",
-        });
-        let updates = plan.updates.map(|updates| match updates {
-            Updates::Stable => "updates-stable",
-            Updates::Development => "updates-dev",
-        });
-        let hosting = (plan.hosting == Some(Hosting::HoldsNone)).then_some("hosting-none");
-        for (id, label, chosen, open, icon) in [
-            (
-                "plan-network",
-                "network",
-                plan.network.map(|_| "network-dhcp"),
-                "network-open",
-                Icon::EthernetPort,
-            ),
-            ("plan-unlock", "unlock", unlock, "unlock-open", Icon::Lock),
-            (
-                "plan-updates",
-                "updates",
-                updates,
-                "updates-open",
-                Icon::Refresh,
-            ),
-        ] {
-            rows = rows.push(Box::new(
-                self.plan_review_row(id, "machine", label, chosen, open)
-                    .icon(icon),
-            ));
-        }
-        if plan.os() == machine::Os::TiloServer {
-            rows = rows.push(Box::new(
-                self.plan_review_row(
-                    "plan-hosting",
-                    "machine",
-                    "hosting",
-                    hosting,
-                    "hosting-open",
-                )
-                .icon(Icon::Layers),
-            ));
-        }
-        let delivery = plan.delivery.key();
-        rows = rows.push(Box::new(
-            self.plan_review_row(
-                "plan-delivery",
-                "machine",
-                "delivery",
-                Some(delivery),
-                delivery,
-            )
-            .icon(match plan.delivery {
-                machine::Delivery::Usb => Icon::Usb,
-                machine::Delivery::Netboot => Icon::Terminal,
-                machine::Delivery::Alongside => Icon::Disc3,
-            }),
-        ));
-        rows
-    }
-
-    fn make_plan(&mut self) -> Result<(), &'static str> {
-        if self.machine.created.is_some() {
-            return Ok(());
-        }
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(created) = machine::create(
-                &self.journey.plan,
-                &self.journey.device_name,
-                install_plan::INSTALLER_URL,
-            ) {
-                self.machine.created = Some(created);
-                self.machine.error = None;
-                return Ok(());
-            }
-        }
-        self.machine.error = Some("installer-plan-unavailable");
-        Err("installer-plan-unavailable")
-    }
-
-    fn machine_status(&self) -> serde_json::Value {
-        let created = self.machine.created.as_ref().map(|created| {
-            serde_json::json!({
-                "plan": created.plan.plan,
-                "destination": created.plan.destination,
-                "open": created.plan.open_choices(),
-                "token_file": created.token_file.display().to_string(),
-                "expires_at_ns": created.plan.token.expires_at_ns,
-                "medium": created.commands.medium,
-                "netboot": created.commands.netboot,
-                "alongside": created.commands.alongside,
-            })
-        });
-        serde_json::json!({
-            "created": created,
-            "error": self.machine.error,
-            "waiting": self.machine.waiting.iter().map(|waiting| serde_json::json!({
-                "plan": waiting.plan,
-                "name": waiting.name,
-                "destination": waiting.destination,
-                "expires_in_hours": waiting.expires_in_hours,
-                "questions": waiting.questions.iter()
-                    .map(|question| serde_json::json!({
-                        "choice": question.choice,
-                        "text": question.text,
-                    }))
-                    .collect::<Vec<_>>(),
-            })).collect::<Vec<_>>(),
-        })
-    }
-
     fn has_storage_decision(&self) -> bool {
         match self.journey.destination {
             Some(Destination::Another) => true,
@@ -4932,6 +4825,14 @@ impl InstallerPreview {
                 self.journey.history.pop();
             }
         }
+        if self.journey.page == Page::Devices
+            && self.journey.destination == Some(Destination::Another)
+            && self.journey.device_name.trim().is_empty()
+        {
+            self.journey.device_name = self.target.suggested_name();
+            self.field_values[1].set(self.journey.device_name.clone());
+        }
+        self.plan_names_the_computer();
         if self.live
             && !self.sensitive_handoff_deferred()
             && self.journey.destination == Some(Destination::Computer)
@@ -4986,13 +4887,19 @@ impl InstallerPreview {
     }
 
     fn choice(&self, key: &str, selected: bool) -> Card {
-        self.option_card(key, selected, true)
+        self.option_card(key, selected)
     }
 
     /// `key` as a choice of this page that the person confirms and continues
-    /// from, or one this page takes now ([`Self::select`]).
-    fn option_card(&self, key: &str, selected: bool, continues: bool) -> Card {
-        let title = t(&format!("installer-preview-{key}-title"));
+    /// from.
+    fn option_card(&self, key: &str, selected: bool) -> Card {
+        let server = self.journey.destination == Some(Destination::Another)
+            && self.journey.plan.os() == machine::Os::TiloServer;
+        let title = if server && key == "migrate" {
+            t("installer-preview-migrate-server-title")
+        } else {
+            t(&format!("installer-preview-{key}-title"))
+        };
         let description = if key == "computer" && self.live && self.windows.enabled {
             t(if self.direct_route_enabled() {
                 "installer-native-full-os-body"
@@ -5003,14 +4910,24 @@ impl InstallerPreview {
             t("installer-preview-computer-usb-body")
         } else if key == "migrate" && self.journey.destination == Some(Destination::Computer) {
             t("installer-preview-migrate-shared-body")
+        } else if key == "migrate"
+            && self.journey.destination == Some(Destination::Another)
+            && self.journey.plan.os() == machine::Os::TiloServer
+        {
+            t("installer-preview-migrate-server-body")
         } else if key == "migrate" && self.journey.destination == Some(Destination::Another) {
             t("installer-preview-migrate-portable-body")
+        } else if key == "fresh"
+            && self.journey.destination == Some(Destination::Another)
+            && self.journey.plan.os() == machine::Os::TiloServer
+        {
+            t("installer-preview-fresh-server-body")
         } else if key == "device" && self.live && !cfg!(target_os = "linux") {
             t("installer-pairing-helper-unavailable")
         } else {
             t(&format!("installer-preview-{key}-body"))
         };
-        self.labelled_option(key, title, description, selected, continues)
+        self.labelled_option(key, title, description, selected)
     }
 
     /// One option with words of its own: a value the person typed, or a name
@@ -5021,7 +4938,6 @@ impl InstallerPreview {
         title: String,
         description: String,
         selected: bool,
-        continues: bool,
     ) -> Card {
         let choice = key.strip_prefix("purpose-").unwrap_or(key).to_string();
         let icon = match key {
@@ -5032,15 +4948,6 @@ impl InstallerPreview {
             "fresh" => Icon::Sparkles,
             "new" => Icon::User,
             "existing" => Icon::Users,
-            "disk-empty" | "disk-largest" | "disk-only" => Icon::HardDrive,
-            "disk-open" => Icon::ScanLine,
-            _ if key.starts_with("usb") => Icon::Usb,
-            _ if key.starts_with("netboot") => Icon::Terminal,
-            _ if key.starts_with("alongside") => Icon::Disc3,
-            _ if key.starts_with("unlock") => Icon::Lock,
-            _ if key.starts_with("updates") => Icon::Refresh,
-            _ if key.starts_with("network") => Icon::EthernetPort,
-            _ if key.starts_with("hosting") => Icon::Layers,
             _ => Icon::Shield,
         };
         let copy = page::related()
@@ -5063,11 +4970,7 @@ impl InstallerPreview {
         let card = Card::new(Box::new(contents))
             .with_accessible_name(format!("{title}. {description}"))
             .selected(selected);
-        let effect = if continues {
-            InstallerPreviewEffect::ChooseAndContinuePreview { choice }
-        } else {
-            InstallerPreviewEffect::ChoosePreview { choice }
-        };
+        let effect = InstallerPreviewEffect::ChooseAndContinuePreview { choice };
         match self
             .actions
             .as_ref()
@@ -5076,17 +4979,6 @@ impl InstallerPreview {
             Some(binding) => card.on_action(format!("installer.choice.{key}"), binding),
             None => card,
         }
-    }
-
-    /// `key` as one of this page's choices, taken now: this page keeps
-    /// showing while the person sets the rest.
-    fn select(&self, key: &str, selected: bool) -> Card {
-        self.option_card(key, selected, false)
-    }
-
-    /// `key` as one of this page's choices, taken now, with words of its own.
-    fn select_named(&self, key: &str, title: String, description: String, selected: bool) -> Card {
-        self.labelled_option(key, title, description, selected, false)
     }
 
     fn track_password_focus(&mut self) -> bool {
@@ -5434,10 +5326,7 @@ impl InstallerPreview {
             return;
         }
         self.live = true;
-        #[cfg(target_os = "linux")]
-        {
-            self.machine.waiting = machine::waiting(install_plan::INSTALLER_URL);
-        }
+        self.machine.listing = Some(machine::waiting());
         if imager_backend::prepared_identity::require_supported().is_ok() {
             let _ = self.restart.inspect();
         }
@@ -5457,6 +5346,8 @@ impl InstallerPreview {
         self.linux = true;
         self.capture = true;
         self.live = false;
+        self.machine.making = None;
+        self.machine.listing = None;
         self.storage.stage();
         self.journey = Journey::new("Ada Lovelace".into());
         self.journey.device_name = t("installer-preview-device-default");
@@ -6240,7 +6131,10 @@ mod tests {
         }
         // The path to another computer chooses its drive and how the plan
         // reaches it before the review.
-        while matches!(status(app)["page"].as_str(), Some("storage" | "method")) {
+        while matches!(
+            status(app)["page"].as_str(),
+            Some("storage" | "method" | "machine")
+        ) {
             app.effect(&InstallerPreviewEffect::ContinuePreview)
                 .unwrap();
         }
@@ -6281,10 +6175,10 @@ mod tests {
     /// Continue through the pages an "on another computer" plan still has
     /// before the review.
     fn to_review(app: &mut TestApp<ImagerShell>) {
-        for _ in 0..3 {
+        for _ in 0..4 {
             match status(app)["page"].as_str() {
                 Some("review") => return,
-                Some("storage" | "method") => {
+                Some("storage" | "method" | "machine") => {
                     app.effect(&InstallerPreviewEffect::ContinuePreview)
                         .unwrap();
                 }
@@ -6356,7 +6250,7 @@ mod tests {
         let original_certificate =
             std::fs::read(root.join("future-device/device/cert.bin")).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("XDG_STATE_HOME", &state_root);
         let mut app = fixture();
         choose(&mut app, "computer");
@@ -6501,7 +6395,7 @@ mod tests {
         let (root, intent) =
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
         let minimum = intent.application_minimum();
@@ -6690,7 +6584,7 @@ mod tests {
         let (root, intent) =
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
         let minimum = intent.application_minimum();
@@ -6814,7 +6708,7 @@ mod tests {
         let (root, intent) =
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
         let minimum = intent.application_minimum();
@@ -6921,7 +6815,7 @@ mod tests {
         let (root, intent) =
             imager_backend::setup::migration_intent::reviewed_app_routing_fixture();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
@@ -7176,7 +7070,10 @@ mod tests {
                 assert_eq!(snapshot["portable_preparation"]["prepared"], true);
                 break;
             }
-            if matches!(snapshot["page"].as_str(), Some("storage" | "method")) {
+            if matches!(
+                snapshot["page"].as_str(),
+                Some("storage" | "method" | "machine")
+            ) {
                 app.effect(&InstallerPreviewEffect::ContinuePreview)
                     .unwrap();
                 continue;
@@ -7280,7 +7177,7 @@ mod tests {
         use imager_backend::prepared_identity::PreparedIdentity;
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -7293,7 +7190,7 @@ mod tests {
         )
         .unwrap();
         let expected_photo =
-            runtime_identity::ProfilePhoto::new(1, 1, vec![9, 20, 30, 255]).unwrap();
+            tilo_identity_client::ProfilePhoto::new(1, 1, vec![9, 20, 30, 255]).unwrap();
         donor.update_photo(Some(expected_photo.clone())).unwrap();
         let backup = root.join("original.sealed");
         donor
@@ -7455,7 +7352,7 @@ mod tests {
     fn profile_continue_prepares_identity_and_profile_edits_keep_its_key() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -7480,7 +7377,7 @@ mod tests {
         let entries = preparation_operations(&preparations);
         assert_eq!(entries.len(), 1);
         let record = entries.first().unwrap().join("identity/primary.json");
-        let original = runtime_identity::load_from_path(record.clone()).unwrap();
+        let original = tilo_identity::store::load_from_path(record.clone()).unwrap();
         assert_eq!(original.display_name(), "Ada");
         let proof = original.sign(b"installer-profile-edit").unwrap();
         app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
@@ -7497,7 +7394,7 @@ mod tests {
             edited["prepared_identity"]["public_key"],
             created["prepared_identity"]["public_key"]
         );
-        let updated = runtime_identity::load_from_path(record).unwrap();
+        let updated = tilo_identity::store::load_from_path(record).unwrap();
         assert_eq!(updated.display_name(), "Ada");
         assert_eq!(updated.sign(b"installer-profile-edit").unwrap(), proof);
         assert_eq!(preparation_operations(&preparations).len(), 1);
@@ -7514,7 +7411,7 @@ mod tests {
     fn selected_avatar_is_cached_and_exported_without_rereading_originals() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -7551,12 +7448,13 @@ mod tests {
         let operations = preparation_operations(&state_home.join("tilo/installer/preparations"));
         assert_eq!(operations.len(), 1);
         let record = operations.first().unwrap().join("identity/primary.json");
-        let identity = runtime_identity::load_from_path(record.clone()).unwrap();
-        let expected = runtime_identity::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
+        let identity = tilo_identity::store::load_from_path(record.clone()).unwrap();
+        let expected =
+            tilo_identity_client::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
         assert_eq!(identity.profile_photo(), Some(&expected));
         let key = identity.group_public_key();
         let artifact = root.join("photo.sealed");
-        runtime_identity::export_portable_backup(
+        tilo_identity::store::export_portable_backup(
             &record,
             &artifact,
             b"a sufficiently long photo password",
@@ -7565,7 +7463,7 @@ mod tests {
         let restored = root.join("restored");
         std::fs::create_dir(&restored).unwrap();
         std::fs::set_permissions(&restored, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let imported = runtime_identity::import_portable_backup(
+        let imported = tilo_identity::store::import_portable_backup(
             &artifact,
             b"a sufficiently long photo password",
             &restored,
@@ -7573,7 +7471,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            runtime_identity::load_from_path(imported)
+            tilo_identity::store::load_from_path(imported)
                 .unwrap()
                 .profile_photo(),
             Some(&expected)
@@ -7597,7 +7495,7 @@ mod tests {
             "the changed original stays refused: {refused}"
         );
         assert_eq!(
-            runtime_identity::load_from_path(record)
+            tilo_identity::store::load_from_path(record)
                 .unwrap()
                 .group_public_key(),
             key
@@ -7610,7 +7508,7 @@ mod tests {
     fn ordinary_password_continue_refuses_symlink_ownership_without_advancing() {
         use std::os::unix::fs::{PermissionsExt, symlink};
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -7644,7 +7542,7 @@ mod tests {
     fn identity_preparation_and_export_use_device_local_public_effects() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -7735,7 +7633,7 @@ mod tests {
             );
         }
         let metadata =
-            runtime_identity::load_metadata_from_path(&ownership.join("primary.json")).unwrap();
+            tilo_identity_client::load_metadata_from_path(&ownership.join("primary.json")).unwrap();
         assert_eq!(metadata.display_name, "Ada");
         assert_eq!(metadata.avatar_color, [0xab, 0xcd, 0xef]);
         #[cfg(target_os = "linux")]
@@ -9317,7 +9215,7 @@ mod tests {
         let mut environment = tilo_test_env::ScopedEnv::new();
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         let (reply, receiver) = std::sync::mpsc::channel();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         let mut app = fixture();
         choose(&mut app, "computer");
@@ -9430,7 +9328,7 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join("original"), b"untouched").unwrap();
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         environment.set("XDG_STATE_HOME", root.path().join("state"));
         environment.set("XDG_CONFIG_HOME", root.path().join("config"));
         let mut app = fixture();
@@ -9537,7 +9435,7 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         std::fs::write(home.join("original"), b"untouched").unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("XDG_STATE_HOME", root.path().join("state"));
         let mut app = fixture();
         choose(&mut app, "another");
@@ -9592,7 +9490,10 @@ mod tests {
         loop {
             let snapshot = status(&mut app);
             if snapshot["portable_preparation"]["prepared"] == true {
-                if matches!(snapshot["page"].as_str(), Some("storage" | "method")) {
+                if matches!(
+                    snapshot["page"].as_str(),
+                    Some("storage" | "method" | "machine")
+                ) {
                     to_review(&mut app);
                 }
                 assert_eq!(status(&mut app)["page"], "review");
@@ -9998,7 +9899,7 @@ mod tests {
         let root = crate::setup::test_support::qualified_tempdir();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set("XDG_STATE_HOME", root.path().join("state"));
         env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
         let home = root.path().join("home");
@@ -10155,7 +10056,7 @@ mod tests {
     fn guarded_computer_route_reviews_explicit_usb_choice_without_empty_storage() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "0");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
@@ -10344,7 +10245,7 @@ mod tests {
     fn review_profile_save_and_cancel_preserve_ownership_and_exact_cached_photo() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -10363,9 +10264,9 @@ mod tests {
         )
         .unwrap();
         let original_photo =
-            runtime_identity::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
+            tilo_identity_client::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
         let changed_photo =
-            runtime_identity::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
+            tilo_identity_client::ProfilePhoto::new(1, 1, vec![25, 90, 210, 255]).unwrap();
         let mut app = fixture();
         choose(&mut app, "another");
         choose(&mut app, "fresh");
@@ -10549,7 +10450,7 @@ mod tests {
     fn review_device_edit_preserves_live_identity_and_commits_only_on_save() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -10686,7 +10587,7 @@ mod tests {
                 .unwrap();
             assert_eq!(status(&mut app)["page"], "purpose");
             choose(&mut app, "computer");
-            if matches!(status(&mut app)["page"].as_str(), Some("storage" | "method")) {
+            if matches!(status(&mut app)["page"].as_str(), Some("storage" | "method" | "machine")) {
                 to_review(&mut app);
             }
             let original = status(&mut app);
@@ -11336,7 +11237,7 @@ mod tests {
                 .unwrap();
             assert_eq!(status(&mut app)["page"], "purpose");
             choose(&mut app, "computer");
-            while matches!(status(&mut app)["page"].as_str(), Some("storage" | "method")) {
+            while matches!(status(&mut app)["page"].as_str(), Some("storage" | "method" | "machine")) {
                 if status(&mut app)["page"] == "storage" {
                     assert!(catalog_availability(&mut app, "set-storage-size").is_available());
                 }
@@ -11683,7 +11584,7 @@ mod tests {
         let before_review = if !retained {
             Page::Devices
         } else if plans_another {
-            Page::Method
+            Page::Machine
         } else {
             Page::Purpose
         };
@@ -11706,7 +11607,7 @@ mod tests {
     fn inspected_storage_changes_the_real_plan_and_live_setup_cannot_fake_completion() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         env.set(super::super::internal_install_flow::RUNTIME_ALLOW_VAR, "1");
         let temp = crate::setup::test_support::qualified_tempdir();
         let root = temp.path().canonicalize().unwrap();

@@ -59,7 +59,8 @@ wifi = b"ssid=studio\n"
 payload = (
     b"etc/NetworkManager/system-connections/tilo-setup.nmconnection\n"
     + str(len(wifi)).encode() + b"\n" + wifi
-    + b"var/lib/tilo/user-identity/privkey.bin\n" + str(len(secret)).encode() + b"\n" + secret
+    + b"var/home/person/.config/tilo/identity/secrets/" + b"ab" * 32 + b".key\n"
+    + str(len(secret)).encode() + b"\n" + secret
 )
 digest = hashlib.sha256(payload).hexdigest().encode()
 header = b"TILO_SETUP_HANDOFF_V1\n" + digest + b"\n" + str(len(payload)).encode() + b"\n"

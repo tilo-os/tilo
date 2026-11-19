@@ -8,6 +8,9 @@ const here = name => new URL(name, import.meta.url);
 const locale = name => parseMessages(readFileSync(here(`locales/${name}.ftl`), 'utf8'));
 const named = (name, code, message = code) => Object.assign(new Error(message), {name, code});
 
+/** A session the host stopped with `code`, as `whenReady` rejects with it. */
+const session = (message, code) => Object.assign(new Error(message), {code, sessionError: message, sessionErrorCode: code});
+
 test('each failure is told apart by what the page knows of it', () => {
   const cases = [
     [named('HostAdmissionError', 'removed'), {}, 'removed'],
@@ -31,8 +34,15 @@ test('each failure is told apart by what the page knows of it', () => {
     [new Error('admit: HTTP 500'), {}, 'host-error'],
     [new Error('the peer has no replicated workspace'), {admitted: true}, 'desktop'],
     // Reached the host, which never let the page in: no connection problem.
-    [Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {connected: true}), {}, 'host-silent'],
-    [Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'), {connected: false}), {}, 'unreachable'],
+    [Object.assign(new Error('Workspace admission timed out'), {name: 'TimeoutError', code: 'timed-out', connected: true}), {}, 'host-silent'],
+    // The host stopped the session as it started, and said why (`whenReady` in peer.mjs keeps its code).
+    [session('This workspace’s host no longer has you as a member.', 'not-admitted'), {}, 'no-access'],
+    [session('This workspace was deleted by its owner.', 'workspace-deleted'), {}, 'deleted'],
+    [session('The workspace was set up again.', 'host-changed'), {}, 'gone'],
+    [session('This browser\'s certificate expired.', 'certificate-expired'), {}, 'certificate'],
+    [session('The saved peer identity or host does not match this session.', 'certificate-rejected'), {}, 'certificate'],
+    [session('unknown message kind', 'protocol-rejected'), {}, 'incompatible'],
+    [session('This workspace is full.', 'workspace-full'), {hostIsSite: true}, 'join-stopped'],
     // The host answered the join with a no, and its reason.
     [Object.assign(new Error('the host did not let this tab in: device not in workspace membership'),
       {code: 'not-let-in', sessionError: 'device not in workspace membership', sessionErrorCode: 'permission-required', connected: true}), {}, 'host-refused'],
@@ -56,6 +66,8 @@ test('every screen says its cause and offers Try again only where trying again c
       assert.doesNotMatch(said, /\{|\$|HTTP|TypeError|undefined|null/, `${cause}: ${said}`);
     }
     assert.notEqual(screen.body.trim(), 'Try again.', cause);
+    // The reader may be the one who keeps this site: no errand to someone else.
+    assert.doesNotMatch(screen.body, /whoever|send them/, cause);
   }
 });
 
@@ -83,13 +95,13 @@ test('a desktop that did not start says where it stopped and why trying again is
   assert.equal(drawing.body, 'It stopped while drawing its first screen. Your windows and documents are kept in this browser, '
     + 'so trying again picks up where you left off.');
   assert.match(failureScreen('desktop', {step: 'open'}).body, /^It stopped while setting up its desktop\./);
-  assert.match(failureScreen('loading', {step: 'join'}).body, /^It stopped while joining\. Try again\. If it stops again, copy the technical details/);
+  assert.equal(failureScreen('loading', {step: 'join'}).body, 'It stopped while joining the workspace. Try again.');
   assert.equal(failureScreen('refused', {error: new Error('You did not join')}).body, 'You did not join');
 });
 
 test('a host that never let the page in is not called unreachable, and its details say what the session said', () => {
-  const error = Object.assign(new DOMException('Workspace admission timed out', 'TimeoutError'),
-    {connected: true, phase: 'admitting', sessionError: 'device not in workspace membership', sessionErrorCode: 'permission-required'});
+  const error = Object.assign(new Error('Workspace admission timed out'),
+    {name: 'TimeoutError', code: 'timed-out', connected: true, phase: 'admitting', sessionError: 'device not in workspace membership', sessionErrorCode: 'permission-required'});
   const screen = failureScreen(failureCause(error), {workspace: 'Mine', host: 'https://127.0.0.1:24100'});
   assert.equal(screen.heading, '127.0.0.1:24100 didn’t let this tab into Mine');
   assert.doesNotMatch(screen.body, /connection|certificate/);
@@ -226,7 +238,7 @@ test('a host that refused the tab is said to have refused it, with its reason', 
   assert.equal(cause, 'host-refused');
   const screen = failureScreen(cause, {workspace: 'My workspace', host: 'https://127.0.0.1:24100', step: 'join', error});
   assert.equal(screen.heading, '127.0.0.1:24100 refused this tab entry to My workspace');
-  assert.match(screen.body, /^It said: device not in workspace membership\. /);
+  assert.equal(screen.body, 'It said: device not in workspace membership.');
   for (const name of ['en-US', 'de-DE']) {
     const localized = failureScreen(cause, {workspace: 'My workspace', host: 'https://127.0.0.1:24100', error, messages: locale(name)});
     assert.match(localized.body, /device not in workspace membership/, name);

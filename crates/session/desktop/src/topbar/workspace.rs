@@ -88,7 +88,7 @@ impl TopBarChrome {
                 transform,
                 self.tilo_mark_rect,
                 theme,
-                theme.tokens.colors.surfaces.base,
+                super::bar_ground(theme),
             );
         let side = f64::from(theme.tokens.metrics.icon_md);
         paint_tilo_mark(
@@ -253,11 +253,7 @@ impl TopBarChrome {
         let label = self.placed.workspace_label.clone();
         let face = self.workspace_face(&name, &label);
         let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
-        face.paint(
-            &mut ctx,
-            self.ws_pill_rect,
-            theme.tokens.colors.surfaces.base,
-        );
+        face.paint(&mut ctx, self.ws_pill_rect, super::bar_ground(theme));
     }
 }
 

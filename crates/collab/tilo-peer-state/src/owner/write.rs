@@ -414,6 +414,35 @@ impl NativeWorkspaceOwner {
         .ok_or_else(|| "native document write committed nothing".to_owned())
     }
 
+    /// [`Self::commit_document`] for many writes in one turn: one publication for all of them.
+    #[cfg(test)]
+    pub(crate) fn commit_documents(
+        &self,
+        mut requests: Vec<OwnerCommitRequest>,
+        now: SystemTime,
+    ) -> Result<Vec<OwnerCommitReceipt>, String> {
+        let Some(first) = requests.first() else {
+            return Ok(Vec::new());
+        };
+        let workspace =
+            WorkspaceId::parse(&first.workspace).ok_or("invalid native document workspace")?;
+        let _turn = self.0.mutation.lock();
+        let candidate = self.view(workspace)?;
+        let mut refused = None;
+        Ok(self
+            .commit_writes(
+                workspace,
+                &candidate,
+                &mut requests,
+                None,
+                now,
+                &mut refused,
+            )?
+            .into_iter()
+            .map(|(_, receipt)| receipt)
+            .collect())
+    }
+
     /// Admit and durably commit writes of this device to `workspace`, in order and in the owner's
     /// turn with their outgoing ownership: one durable publication for all of them. A write the
     /// document holds already is an exact retry, answered as it was taken. A write whose sequence
@@ -617,7 +646,7 @@ fn numbered(
         let mut request = kept.clone();
         let CommitOperation::Document {
             app,
-            document: record,
+            document,
             envelope,
             ..
         } = &mut request.operation
@@ -628,10 +657,19 @@ fn numbered(
             return Err("native local publication signer differs from selected device".into());
         }
         if let Some(signed) = signed {
+            // A write signed before the turn (an app's, signed by the identity service) names the
+            // governance this owner admits it under, and is signed again for it; one the document
+            // holds already is a retry, kept as it was taken.
+            if !matches!(
+                live.lookup_exact_local_document(app, document, envelope, now),
+                Ok(Some(_))
+            ) {
+                envelope.name_governance(&live.governance_heads()?);
+            }
             **envelope = live
-                .sequenced_local_document(app, record, (**envelope).clone(), now)?
+                .sequenced_local_document(app, document, (**envelope).clone(), now)?
                 .0;
-            let before = taken.entry((app.clone(), record.clone())).or_insert(0);
+            let before = taken.entry((app.clone(), document.clone())).or_insert(0);
             if envelope.seq <= *before {
                 envelope.seq = before.checked_add(1).ok_or("sequence exhausted")?;
             }

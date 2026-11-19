@@ -38,9 +38,9 @@ fn bound_device(root: &Path) -> (IdentityPaths, Account) {
     (paths, ada)
 }
 
-fn signer(account: &Account) -> runtime_identity::SigningIdentity {
+fn signer(account: &Account) -> crate::store::SigningIdentity {
     let dir = account.home.join(IDENTITY_DIR_IN_HOME);
-    runtime_identity::load_from_path(runtime_identity::resolve_active_identity(&dir).unwrap())
+    crate::store::load_from_path(tilo_identity_client::resolve_active_identity(&dir).unwrap())
         .unwrap()
 }
 
@@ -58,7 +58,7 @@ tilo_test_env::scenario! {
     // all are ignored rather than contested.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(crate::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let (paths, ada) = bound_device(temp.path());
         assert!(
@@ -95,7 +95,7 @@ tilo_test_env::scenario! {
     // the proof, and a stale one (another device's) is replaced.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(crate::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let (paths, ada) = bound_device(temp.path());
         std::fs::remove_file(proof_path(&ada)).unwrap();
@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
     // to settle, and is answered as such.
     {
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(crate::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let (paths, ada) = bound_device(temp.path());
         let twin = account(temp.path(), "twin", uid() + 1);

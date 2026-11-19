@@ -14,7 +14,7 @@
 )]
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -32,6 +32,8 @@ use tilo_desktop_model::{
 use tilo_desktop_search::SHOW_PEOPLE;
 use tilo_session::sync::{Client, Event, OwnPresence};
 use tilo_session::{AppActions, Options, Session};
+
+use crate::common::{shot, until};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -658,18 +660,6 @@ fn install(store: &Path, app: &str, name: &str) {
 /// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
-/// `session` , stepped until `ready` says so, and no further.
-#[track_caller]
-fn until(session: &mut Session, what: &str, mut ready: impl FnMut(&Session) -> bool) {
-    for _ in 0..200 {
-        if ready(session) {
-            return;
-        }
-        session.step(REFRESH).expect("a turn of the session");
-    }
-    panic!("{what}");
-}
-
 /// The control `names` names, where the session shows it: the bar's face of a person, a button of
 /// the roster or of a card.
 fn control(session: &Session, names: &[&str]) -> Option<(f64, f64, f64, f64)> {
@@ -699,34 +689,6 @@ fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
             .expect("the button");
         session.step(REFRESH).expect("a turn of the session");
     }
-}
-
-/// Write what the session shows where a person can look at it, when the run asked for shots:
-/// `TILO_SURFACE_SHOTS` names where they go, a relative one under the build's own target directory,
-/// where a build that ran elsewhere hands them over.
-fn capture(session: &mut Session, name: &str) {
-    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(PathBuf::from) else {
-        return;
-    };
-    let directory = if directory.is_relative() {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../target")
-            .join(directory)
-    } else {
-        directory
-    };
-    let frame = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("a frame of the session");
-    let pixels = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
-        .expect("the frame's pixels fill it");
-    let mut png = Vec::new();
-    pixels
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .expect("the shot");
-    std::fs::create_dir_all(&directory).expect("the directory for shots");
-    std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
 }
 
 /// Ada is here on two devices, working in Notes on the first and focusing on the second, each
@@ -797,6 +759,24 @@ fn assert_ada_card(labels: &[String]) {
 /// handed the app invocation that reveals it.
 #[test]
 fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() {
+    message_from_the_card(press);
+}
+
+/// Message pressed as assistive technology and the session's control press it: the card and the
+/// roster leave as they do for the pointer, so the keyboard goes to the conversation.
+#[test]
+fn message_pressed_by_name_leaves_the_roster_too() {
+    message_from_the_card(|session, _| {
+        session
+            .press_action("Message", ui::window_targets::TargetAction::Activate)
+            .expect("the card's Message is pressed");
+        session.step(REFRESH).expect("a turn of the session");
+    });
+}
+
+/// Open Ada's card from her face, press its Message with `press_message`, and check what came of
+/// it.
+fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64, f64))) {
     let _settled = ui::motion::testing::settled();
     let home = tempfile::tempdir().expect("a home for this test's app store");
     let store = home.path().join("tilo-apps");
@@ -851,12 +831,12 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() 
         session.controls()
     );
     assert_ada_card(&session.accessible_labels());
-    capture(&mut session, "people-card-message");
+    shot(&mut session, "people-card-message");
     let message = message.expect("the card's Message");
 
     // Message hands Chat the conversation with them: the app's own `open-direct-conversation` on
     // the row their two root keys name.
-    press(&mut session, message);
+    press_message(&mut session, message);
     until(&mut session, "Chat is handed the conversation", |_| {
         !host.invoked.borrow().is_empty()
     });
@@ -879,11 +859,18 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() 
         "Chat opens the conversation with them"
     );
 
-    // The card closed behind the choice, and the roster is still here.
+    // The card closed behind the choice, and the roster with it: the person was taken to the
+    // conversation, where the keyboard goes.
+    session.step(REFRESH).expect("a turn of the session");
     assert!(
         control(&session, &["profile-message", "Message"]).is_none(),
         "the card closed: {:?}",
         session.controls()
+    );
+    let labels = session.accessible_labels();
+    assert!(
+        !labels.iter().any(|label| label == "People"),
+        "the roster left with the card: {labels:?}"
     );
 }
 
@@ -1005,7 +992,7 @@ fn your_own_avatar_opens_your_card() {
         identity < key && key < devices,
         "the id sits under your identity, not at the top of the card: {labels:?}"
     );
-    capture(&mut session, "own-card");
+    shot(&mut session, "own-card");
 
     assert!(
         control(&session, &["profile-card", "Your profile"]).is_some(),
@@ -1207,7 +1194,7 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
         names.iter().any(|name| name == "Put back in the bar"),
         "{names:?}"
     );
-    capture(&mut session, "roster-pinned");
+    shot(&mut session, "roster-pinned");
 
     // Pressing her card follows her view, and pressing it again stops.
     let follow = holding(&people(&session), "Follow Ada");
@@ -1236,7 +1223,7 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
         "the banner is read beside the kept roster: {:?}",
         said_by(&panel)
     );
-    capture(&mut session, "roster-following");
+    shot(&mut session, "roster-following");
     let stop = holding(&people(&session), "Stop following Ada");
     press(&mut session, stop);
     for _ in 0..6 {
@@ -1362,7 +1349,7 @@ fn the_roster_kept_on_screen_from_the_start_names_its_workspace() {
         session.step(Duration::from_millis(1)).expect("step");
     }
 
-    capture(&mut session, "roster-kept-from-start");
+    shot(&mut session, "roster-kept-from-start");
     // The panel's title is the workspace it is of, and its header counts who is here.
     let panel = people(&session);
     let said: Vec<String> = panel
@@ -1445,7 +1432,7 @@ fn a_pinned_roster_waits_off_the_shell_while_the_person_is_alone() {
             .any(|name| name == "Nobody else is here right now"),
         "the session holds no card saying nobody is here: {said:?}"
     );
-    capture(&mut session, "roster-waiting-alone");
+    shot(&mut session, "roster-waiting-alone");
 
     // Ada arrives, and the roster kept on screen comes in with what she is doing, its pin kept:
     // nothing is pressed again.
@@ -1460,7 +1447,7 @@ fn a_pinned_roster_waits_off_the_shell_while_the_person_is_alone() {
         said.iter().any(|name| name == "Put back in the bar"),
         "the roster is kept on screen without being pinned again: {said:?}"
     );
-    capture(&mut session, "roster-back-for-ada");
+    shot(&mut session, "roster-back-for-ada");
 }
 
 /// The roster's first frame on the shell is its last: the material it is made of is blurred before
@@ -1498,7 +1485,7 @@ fn the_rosters_first_frame_on_the_shell_is_final() {
         0,
         "the roster's material is drawn in its first frame"
     );
-    capture(&mut session, "roster-first-frame");
+    shot(&mut session, "roster-first-frame");
 }
 
 /// A send-to box finds the people of the workspace by the name everyone here calls them: the one

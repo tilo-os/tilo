@@ -40,7 +40,8 @@ case $image in
     # server with the program it starts a task's tilolang programs in (it finds it beside
     # itself), the boot tools the update log and the boot-entry pass read, and the early-boot
     # unlock chain its encrypted root needs (tilo-auth, tilo-rollback, the sign-in screen the
-    # root discovery steps aside from, and the sibling factor's enrolment program). One feature
+    # root discovery steps aside from, and the sibling factor's enrolment program), and tilo-crypto,
+    # which verifies the signed boot chain a release adds to the image. One feature
     # resolution, so the shared workspace crates compile once.
     packages=(-p tilo-server -p tilo-fs --bin tilo-server --bin tilo-server-admin \
                 --bin tilo-enroll --bin fs
@@ -53,11 +54,13 @@ case $image in
               -p tilo-board-successor --bin tilo-board-successor
               -p tilo-rollback --bin tilo-rollback
               -p tilo-auth --bin tilo-auth
-              -p tilo-boot-signin --bin tilo-boot-signin)
+              -p tilo-boot-signin --bin tilo-boot-signin
+              -p tilo-crypto --bin tilo-crypto
+              -p tilo-boot-order --bin tilo-default-start)
     bins=(tilo-server tilo-server-admin tilo-enroll fs tilo-linux-vm tilo-hosted-jail tilo-api
           tilolang-process
           tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
-          tilo-rollback tilo-auth tilo-boot-signin) ;;
+          tilo-rollback tilo-auth tilo-boot-signin tilo-crypto tilo-default-start) ;;
   *)
     die "unknown server image $image: api, vm-host, server or host" ;;
 esac

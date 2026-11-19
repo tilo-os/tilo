@@ -16,7 +16,6 @@ use std::sync::{Arc, mpsc};
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_broker_core::owner_service::OwnerService as _;
 use tilo_desktop_model::WorkspaceId;
 use ui::permissions::MemberId;
 use ui::resource::workspace::WorkspaceResources;
@@ -43,6 +42,8 @@ struct Inner {
     replicas: RefCell<HashMap<DocumentKey, Replica>>,
     /// The workspaces whose records moved in the engine, told as each one does.
     moved: RefCell<Option<mpsc::Receiver<crate::platform::records::Changed>>>,
+    /// The stream of record changes, told what the session wrote once the workspace took it.
+    changes: RefCell<Option<crate::platform::records::Changes>>,
     /// The stores, by workspace and app, the session wrote to since their changes were last
     /// written into the engine.
     written: RefCell<BTreeSet<(String, String)>>,
@@ -111,6 +112,7 @@ impl EngineRecords {
                 stores: RefCell::default(),
                 replicas: RefCell::default(),
                 moved: RefCell::default(),
+                changes: RefCell::default(),
                 written: RefCell::default(),
                 unread: RefCell::default(),
                 keeping: Cell::default(),
@@ -132,6 +134,7 @@ impl EngineRecords {
         *self.0.engine.borrow_mut() = Some(engine);
         *self.0.apps.borrow_mut() = apps;
         *self.0.moved.borrow_mut() = Some(changes.reader());
+        *self.0.changes.borrow_mut() = Some(changes.clone());
         self.0.write(true);
         let opened: Vec<(String, String)> = self.0.stores.borrow().keys().cloned().collect();
         for (workspace, app) in opened {
@@ -182,6 +185,39 @@ impl EngineRecords {
         );
         self.0.read_documents(Some(workspace));
         (self.0.wake)();
+    }
+
+    /// Name `record` in `app`'s index of `workspace` , as the app's windows name the records they
+    /// open there, written as `person` : the workspace holds it from then on. Written into the
+    /// workspace on the next pass. Whether it is named.
+    pub(crate) fn reference(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &ui::resource::DocumentCheckout,
+        person: &str,
+    ) -> bool {
+        if !self.holds(workspace) {
+            return false;
+        }
+        // The index is the app's own record of the workspace, which names no kind of its own.
+        let named = self
+            .in_workspace(workspace, MemberId::person(person.to_owned()))
+            .open_primary(app, record.kind.as_str(), &|_| Ok(()))
+            .map_err(|error| error.to_string())
+            .and_then(|index| {
+                index.edit(false, |doc| {
+                    ui::resource::index::reference(doc, &record.id, &record.kind);
+                    Ok(())
+                })?;
+                index.flush();
+                Ok(())
+            });
+        if let Err(error) = named {
+            tracing::warn!(%error, %workspace, %app, "a record is not brought here");
+            return false;
+        }
+        true
     }
 
     /// What the session's copy of `record` of `app` in `workspace` holds as stored: the record a
@@ -304,7 +340,7 @@ impl Inner {
         else {
             return;
         };
-        let Ok(records) = engine.records(workspace) else {
+        let Ok(records) = engine.documents(workspace) else {
             return;
         };
         let mut kept = false;
@@ -487,20 +523,16 @@ impl Inner {
                     None => (doc.save(), true, heads),
                 }
             };
-            let sealed = if engine.commits_documents(room) {
-                None
-            } else {
-                match engine.seal_keys(room) {
-                    Ok(SealKeys::Here(keys)) => Some(keys),
-                    Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
-                        unwritten.insert((workspace.clone(), app.clone()));
-                        continue;
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
-                        unwritten.insert((workspace.clone(), app.clone()));
-                        continue;
-                    }
+            let sealed = match engine.seal_keys(room) {
+                Ok(SealKeys::Here(keys)) => Some(keys),
+                Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
+                    unwritten.insert((workspace.clone(), app.clone()));
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
+                    unwritten.insert((workspace.clone(), app.clone()));
+                    continue;
                 }
             };
             let (engine, route) = (Arc::clone(engine), (app.clone(), record.clone()));
@@ -596,22 +628,17 @@ impl Inner {
                     DocumentMutation::Snapshot(bytes) => (bytes, true),
                     DocumentMutation::Incremental(bytes) => (bytes, false),
                 };
-                // In the clear where this device commits the workspace's documents, else under the
-                // record channel's keys, once it holds them.
-                let sealed = if engine.commits_documents(room) {
-                    None
-                } else {
-                    match engine.seal_keys(room) {
-                        Ok(SealKeys::Here(keys)) => Some(keys),
-                        Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
-                            unwritten.insert((workspace.clone(), app.clone()));
-                            continue;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
-                            unwritten.insert((workspace.clone(), app.clone()));
-                            continue;
-                        }
+                // Sealed under the record channel's keys, once it holds them.
+                let sealed = match engine.seal_keys(room) {
+                    Ok(SealKeys::Here(keys)) => Some(keys),
+                    Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
+                        unwritten.insert((workspace.clone(), app.clone()));
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
+                        unwritten.insert((workspace.clone(), app.clone()));
+                        continue;
                     }
                 };
                 let (engine, route) = (Arc::clone(&engine), (app.clone(), record.clone()));
@@ -679,6 +706,9 @@ impl Inner {
                 }
                 if let Some(apps) = self.apps.borrow().as_ref() {
                     apps.deliver_write(workspace, write);
+                }
+                if let Some(changes) = self.changes.borrow().as_ref() {
+                    changes.note(workspace, app, record, false);
                 }
                 true
             }

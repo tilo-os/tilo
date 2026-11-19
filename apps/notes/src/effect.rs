@@ -68,6 +68,7 @@ pub enum NotesEffect {
     /// Import Markdown
     ///
     /// Choose a Markdown file and add it to the notebook as a note.
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     #[effect(keywords = "open markdown, import md")]
     #[effect(icon = "download")]
@@ -76,12 +77,14 @@ pub enum NotesEffect {
     ///
     /// Choose a Notion export and add every page in it to the notebook as one
     /// action, so one undo takes the whole import back.
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     #[effect(icon = "download")]
     ImportNotionExport,
     /// Export Markdown
     ///
     /// Save a note as a Markdown file, its images inside it.
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable, row, item = pages)]
     #[effect(keywords = "save as markdown, download, export md")]
     #[effect(icon = "upload")]
@@ -105,6 +108,7 @@ pub enum NotesEffect {
     /// Insert image
     ///
     /// Choose an image and add it to a note.
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable, row, item = pages)]
     #[effect(keywords = "add picture, add photo, insert picture")]
     #[effect(icon = "image")]
@@ -115,6 +119,7 @@ pub enum NotesEffect {
     /// Copy note link
     ///
     /// Copy a link to a note that pastes into another note.
+    #[effect(kind = "outside")]
     #[effect(row, item = pages)]
     #[effect(keywords = "share link, link to note")]
     #[effect(icon = "link")]
@@ -126,6 +131,7 @@ pub enum NotesEffect {
     ///
     /// Open a web or mail link in the person's browser. What following a
     /// link in a note asks for: a person clicks the link.
+    #[effect(kind = "outside")]
     #[effect(job, audience = "agents")]
     #[effect(icon = "external-link")]
     OpenLink {

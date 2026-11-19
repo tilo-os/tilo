@@ -494,6 +494,12 @@ pub(crate) fn readable_output(screen: &Screen) -> (String, bool) {
     (reversed.chars().rev().collect(), false)
 }
 
+/// A public web link the terminal printed: an item of the `terminal.link`
+/// type, whose address names the pane and the link.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "terminal.link", label = "Link", effects = TerminalEffect)]
+pub(crate) struct Link;
+
 /// What a terminal does that changes no document: drive its process, move
 /// the session to another environment, manage environments, copy and scroll
 /// its output, open a link it printed. Every effect that reaches the
@@ -523,6 +529,7 @@ pub enum TerminalEffect {
     /// Replace editor selection
     ///
     /// Literally replace the original qualified editor selection without execution.
+    #[effect(kind = "outside")]
     #[effect(job, destructive)]
     ReplaceEditorSelection {
         #[param("Original local terminal session")]
@@ -535,6 +542,7 @@ pub enum TerminalEffect {
     /// Send text
     ///
     /// Writes reviewed text without pressing Enter.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     #[effect(keywords = "type text, enter command")]
     Send {
@@ -542,22 +550,26 @@ pub enum TerminalEffect {
         text: String,
     },
     /// Interrupt process
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     #[effect(keywords = "stop, cancel, kill process, ctrl c")]
     Interrupt,
     /// Clear screen
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     #[effect(keywords = "cls, clear terminal, reset screen")]
     Clear,
     /// Restart shell
     ///
     /// Starts the session's shell again in place, after it ended.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     Restart,
     /// Paste
     ///
     /// Pastes the exact supplied text; clipboard contents are never re-read
     /// after confirmation.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     Paste {
         #[param("Exact text to paste after confirmation")]
@@ -567,6 +579,7 @@ pub enum TerminalEffect {
     ///
     /// Pastes the exact supplied text; clipboard contents are never re-read
     /// after confirmation.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     PastePrimary {
         #[param("Exact text to paste after confirmation")]
@@ -576,6 +589,7 @@ pub enum TerminalEffect {
     ///
     /// Restarts this session in another environment and records it as the
     /// session's target.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     OpenIn {
         #[param(
@@ -589,6 +603,7 @@ pub enum TerminalEffect {
     /// New environment
     ///
     /// Creates an environment on the default runtime with nothing added.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     #[effect(keywords = "new container, new sandbox")]
     CreateEnvironment {
@@ -598,6 +613,7 @@ pub enum TerminalEffect {
     /// Grant folder to environment
     ///
     /// Binds a host folder into the environment, read-write.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     GrantFolder {
         #[param("The environment's resource")]
@@ -606,6 +622,7 @@ pub enum TerminalEffect {
         path: AbsolutePath,
     },
     /// Rename environment
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     RenameEnvironment {
         #[param("The environment's resource")]
@@ -618,22 +635,22 @@ pub enum TerminalEffect {
     #[effect(keywords = "copy output, copy screen")]
     CopyVisible,
     /// Copy selected output
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, own_device, kind = "read")]
     CopySelection,
     /// Select all output
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, screen)]
     SelectAll,
     /// Show oldest output
-    #[effect(kind = "read")]
+    #[effect(screen)]
     HistoryTop,
     /// Return to live output
-    #[effect(kind = "read")]
+    #[effect(screen)]
     HistoryLive,
     /// Show item
     ///
     /// Shows one thing a run's parsers found: a link opens in the browser,
     /// a location or a diagnostic opens its file.
-    #[effect(row, item = commands)]
+    #[effect(screen, row, item = commands)]
     OpenItem {
         #[param("The run")]
         run: String,
@@ -643,7 +660,7 @@ pub enum TerminalEffect {
     /// Open link
     ///
     /// Opens a public web link the process printed.
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, own_device, kind = "read", on = Link)]
     OpenLink {
         #[param("The link")]
         url: String,

@@ -423,6 +423,46 @@ fn commit_pinned(doc: &mut Doc, env: &ActionEnvelope) {
     doc.commit_with(options);
 }
 
+/// The committed changes of a document, as reading their entries asks for
+/// them: a document, or the committed part of one still being written, whose
+/// device keeps it when the reader is an app's model module.
+pub trait Changes {
+    /// The metadata of the committed change `hash`.
+    fn change_meta(&self, hash: &automerge::ChangeHash) -> Option<automerge::ChangeMetadata<'_>>;
+    /// The committed change number `seq` of `actor`.
+    fn change_of(&self, actor: &ActorId, seq: u64) -> Option<automerge::ChangeHash>;
+    /// How many changes of `actor` are committed.
+    fn last_seq(&self, actor: &ActorId) -> u64;
+}
+
+impl Changes for automerge::Automerge {
+    fn change_meta(&self, hash: &automerge::ChangeHash) -> Option<automerge::ChangeMetadata<'_>> {
+        self.get_change_meta_by_hash(hash)
+    }
+
+    fn change_of(&self, actor: &ActorId, seq: u64) -> Option<automerge::ChangeHash> {
+        self.hash_of_actor_seq(actor, seq)
+    }
+
+    fn last_seq(&self, actor: &ActorId) -> u64 {
+        self.applied_seq(actor)
+    }
+}
+
+impl Changes for Doc {
+    fn change_meta(&self, hash: &automerge::ChangeHash) -> Option<automerge::ChangeMetadata<'_>> {
+        self.committed_change_meta(hash)
+    }
+
+    fn change_of(&self, actor: &ActorId, seq: u64) -> Option<automerge::ChangeHash> {
+        self.committed_hash_of_actor_seq(actor, seq)
+    }
+
+    fn last_seq(&self, actor: &ActorId) -> u64 {
+        self.committed_applied_seq(actor)
+    }
+}
+
 /// The message `context` is written with by `actor` on `doc`: as the
 /// continuation of the actor's last whole entry when the change differs from
 /// it only in its gesture and action payload, else whole. Changes of others
@@ -431,10 +471,9 @@ fn commit_pinned(doc: &mut Doc, env: &ActionEnvelope) {
 #[must_use]
 pub fn entry_message(doc: &Doc, actor: &ActorId, context: &ActionContext) -> Option<String> {
     if context.gesture.is_some() && context.compensation.is_none() {
-        let document = doc.committed_document();
-        let continuation = document
-            .hash_of_actor_seq(actor, document.applied_seq(actor))
-            .and_then(|last| context.continuation_of(&opening_entry(document, last)?));
+        let continuation = doc
+            .change_of(actor, doc.last_seq(actor))
+            .and_then(|last| context.continuation_of(&opening_entry(doc, last)?));
         if continuation.is_some() {
             return continuation;
         }
@@ -471,9 +510,12 @@ thread_local! {
 /// writer's last whole entry with the continuation's gesture and action
 /// (found by following its writer's earlier changes).
 #[must_use]
-pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
+pub fn entry_of<D: Changes + ?Sized>(
+    doc: &D,
+    hash: automerge::ChangeHash,
+) -> Option<ActionContext> {
     let entry = opening_entry(doc, hash)?;
-    match doc.get_change_meta_by_hash(&hash)?.message.as_deref() {
+    match doc.change_meta(&hash)?.message.as_deref() {
         Some(message) if message.starts_with(CONTINUATION_PREFIX) => {
             ActionContext::continued(message, &entry)
         }
@@ -484,8 +526,11 @@ pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Opti
 /// The whole entry of the change `hash`: its own, or for a continuation its
 /// writer's last whole entry, which a continuation is written and read
 /// against.
-fn opening_entry(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
-    let meta = doc.get_change_meta_by_hash(&hash)?;
+fn opening_entry<D: Changes + ?Sized>(
+    doc: &D,
+    hash: automerge::ChangeHash,
+) -> Option<ActionContext> {
+    let meta = doc.change_meta(&hash)?;
     let message = meta.message.as_deref()?;
     if let Some(entry) = ActionContext::from_change_message(message) {
         return Some(entry);
@@ -508,15 +553,15 @@ fn opening_entry(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Opt
 /// The whole entry the continuation `meta` continues, and how many of its
 /// writer's changes back it is: none when it is more than
 /// [`MAX_CONTINUATIONS`] back.
-fn first_entry(
-    doc: &automerge::Automerge,
+fn first_entry<D: Changes + ?Sized>(
+    doc: &D,
     meta: &automerge::ChangeMetadata<'_>,
 ) -> Option<(ActionContext, usize)> {
     for depth in 1..=MAX_CONTINUATIONS {
         #[cfg(test)]
         STEPS_BACK.with(|steps| steps.set(steps.get().saturating_add(1)));
         let seq = meta.seq.checked_sub(u64::try_from(depth).ok()?)?;
-        let earlier = doc.get_change_meta_by_hash(&doc.hash_of_actor_seq(&meta.actor, seq)?)?;
+        let earlier = doc.change_meta(&doc.change_of(&meta.actor, seq)?)?;
         let text = earlier.message.as_deref()?;
         if let Some(first) = ActionContext::from_change_message(text) {
             return Some((first, depth));
@@ -777,7 +822,7 @@ pub fn verify_change(
         .get_change_meta_by_hash(&hash)
         .ok_or_else(|| ActionError::Refused("the change is not in the document".into()))?
         .into_owned();
-    let Some(context) = entry_of(doc.committed_document(), hash) else {
+    let Some(context) = entry_of(doc, hash) else {
         return Ok(Verified::NothingRecorded);
     };
     let Some(recorded) = context.action.as_ref() else {
@@ -818,7 +863,7 @@ pub fn verified_compensation(
 ) -> Result<Option<Box<dyn Action>>, ActionError> {
     doc.get_change_meta_by_hash(&hash)
         .ok_or_else(|| ActionError::Refused("history change is unavailable".into()))?;
-    let inverse = entry_of(doc.committed_document(), hash).and_then(|context| context.compensation);
+    let inverse = entry_of(doc, hash).and_then(|context| context.compensation);
     let Some(inverse) = inverse else {
         return Ok(None);
     };

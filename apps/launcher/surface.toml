@@ -6,4 +6,5 @@ format = 2
 kind = "launcher.search"
 label = "Search"
 version = 1
+shows = ["back", "dismiss", "filter", "move-selection", "open-search", "search", "widen"]
 

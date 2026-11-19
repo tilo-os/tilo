@@ -89,11 +89,19 @@ pub(crate) fn window(cx: &ViewCx<Store>, mut window: StoreApp) -> Element {
         let state = Rc::clone(&state);
         cx.on_stage(move |scenario| state.borrow_mut().stage_scene(scenario));
     }
-    let (rows, row, entries) = (Rc::clone(&state), Rc::clone(&state), state);
+    let (rows, row, statuses, entries) = (
+        Rc::clone(&state),
+        Rc::clone(&state),
+        Rc::clone(&state),
+        state,
+    );
     cx.publishing(
         Publishes::new()
             .live_rows(move || rows.borrow().live_rows())
             .live_row(move |id| row.borrow().live_row(id))
+            // A row's own effects say when they cannot be invoked here: a bot
+            // added from a workspace, a package the device's repository manages.
+            .row_status(move |id| statuses.borrow().row_status(id))
             // Every app of the complete catalogue, not only the rows the
             // current filter shows, each opening its details.
             .search_entries(move || entries.borrow().catalogue_search_entries())

@@ -121,7 +121,7 @@ impl AudioGraph {
     pub fn ended(&self) -> bool {
         let socket = self.pipewire_socket();
         fs::symlink_metadata(&socket).is_ok_and(|metadata| metadata.file_type().is_socket())
-            && std::os::unix::net::UnixStream::connect(&socket)
+            && tilo_files::native::socket::connect(&socket)
                 .is_err_and(|error| error.kind() == std::io::ErrorKind::ConnectionRefused)
     }
 

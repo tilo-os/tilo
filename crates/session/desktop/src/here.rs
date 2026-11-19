@@ -34,12 +34,6 @@ pub use waves::{WAVE_AGAIN_MS, Wave, WaveEar, WaveFrom, WaveOut};
 /// activity line).
 const MAX_OWN_WORDS_BYTES: usize = 96;
 
-/// How long a device that dropped out of the live layer still counts as here: back within it, it
-/// never left. A page renews its live grant every few minutes by reconnecting, which drops every
-/// member and adds them again, and a carrier re-announces a member as withdrawn and back; none of
-/// that is someone arriving.
-const REJOIN_QUIET_MS: u64 = 90_000;
-
 /// One member of the workspace's live layer, as the page reports it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct LiveMember {
@@ -243,12 +237,6 @@ pub struct HereState {
     /// presence and leads what everyone here reads of them, before anything their device reads off
     /// their steps.
     own_words: Option<String>,
-    /// The other people's devices already announced as here; `None` until the first roster arrived
-    /// ([`HereState::take_arrivals`]).
-    announced: Option<std::collections::BTreeSet<String>>,
-    /// When each announced device last dropped out of the live layer, Unix milliseconds, so one
-    /// back within [`REJOIN_QUIET_MS`] is not news.
-    dropped: HashMap<String, u64>,
     /// The waves this page sent and heard.
     waves: waves::Waves,
     /// The last wave at this person, as the bar says it.
@@ -267,195 +255,10 @@ pub struct HereState {
     met_agents: std::collections::BTreeSet<String>,
     /// Where this person's own agents were last shown working ([`HereState::take_own_agent_work`]).
     agent_work: agent_work::AgentWork,
-    /// Every agent present, by publisher: its name and when it was last here (Unix milliseconds),
-    /// so one gone for good is said to have finished ([`HereState::take_agents_finished`]).
-    working_agents: HashMap<String, (String, u64)>,
     /// When the workspace admitted each of its people, by their root key (hex), Unix milliseconds,
     /// as its governance records it ([`HereState::set_joined`]): the order people who share a name
     /// are numbered in, here as in the roster.
     joined: BTreeMap<String, u64>,
-}
-
-/// An agent that left the workspace: its work is over.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentFinished {
-    pub publisher: String,
-    /// Its name ("Claude Code").
-    pub label: String,
-}
-
-/// Where a session worked: the document and resource its first change touched, so the notice of
-/// its finishing leads to the work rather than to a card.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionWork {
-    /// The app keeping the record.
-    pub app: String,
-    /// The document, as its route names it.
-    pub document: String,
-    /// The resource of it the first change touched: the issue an agent worked, the message it
-    /// answered.
-    pub resource: String,
-}
-
-/// What an agent's newest session did, as its finished notice says it: the session, as the history keeps
-/// it, so one session is told once however many sessions of the agent worked it; how many of its
-/// actions changed a record (a command it ran or a page it read changed none); what it worked, in
-/// the words its card lists the session by ("Edited Launch notes", or the instruction as the person
-/// phrased it); and the workspace it worked in, when the history names it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionSummary {
-    pub session: String,
-    pub changes: usize,
-    pub worked: String,
-    pub workspace: Option<String>,
-    /// The first resource it changed: what its notice opens.
-    pub work: Option<SessionWork>,
-}
-
-impl AgentFinished {
-    /// What this agent's newest session in `sessions` did: the history names a connection's session as the
-    /// connection named its agent ("Claude Code", or "Claude Code #2" for a numbered session of it).
-    /// `None` when the history lists no session of it.
-    #[must_use]
-    pub fn summary(
-        &self,
-        sessions: &tilo_actions::remote::workspace_activity::Sessions,
-    ) -> Option<SessionSummary> {
-        let client = ui::presence::agent_client(&self.label);
-        let session = sessions
-            .sessions
-            .iter()
-            .filter(|session| ui::presence::agent_client(&session.agent.name) == client)
-            .max_by_key(|session| session.last_ms)?;
-        let work = session.actions.iter().find_map(|action| {
-            use tilo_actions::remote::workspace_activity::ActionView;
-            let target = action.view.target();
-            // A change to a resource names what it changed; a file, a page or a command names
-            // none.
-            if matches!(
-                action.view,
-                ActionView::File { .. } | ActionView::Command { .. } | ActionView::Page { .. }
-            ) {
-                return None;
-            }
-            Some(SessionWork {
-                app: target
-                    .app_id
-                    .clone()
-                    .unwrap_or_else(|| action.app_id.clone()),
-                document: action.record.clone(),
-                resource: target.id.clone(),
-            })
-        });
-        Some(SessionSummary {
-            session: session.id.clone(),
-            changes: session.changes(),
-            worked: session.instruction.trim().to_owned(),
-            workspace: session
-                .workspace
-                .clone()
-                .filter(|name| !name.trim().is_empty()),
-            work,
-        })
-    }
-}
-
-/// Console, where an agent's card is.
-use tilo_app_id::apps::CONSOLE as AGENTS_APP;
-/// The action key of a finished notice's choice that opens the card of the agent of the client
-/// after it.
-pub const AGENT_CARD_ACTION: &str = "agent-card:";
-/// The action key of a finished notice's choice that opens what the session worked: its app, the
-/// record and the resource after it, parted by [`WORK_SEPARATOR`].
-pub const AGENT_WORK_ACTION: &str = "agent-work:";
-/// What parts the place after [`AGENT_WORK_ACTION`]: a unit separator no app id, record or
-/// resource carries.
-pub const WORK_SEPARATOR: char = '\u{1f}';
-
-/// The place `action` names when it opens what a session worked: its app, record and resource.
-#[must_use]
-pub fn worked_place(action: &str) -> Option<(&str, &str, &str)> {
-    let mut parts = action
-        .strip_prefix(AGENT_WORK_ACTION)?
-        .split(WORK_SEPARATOR);
-    let app = parts.next().filter(|part| !part.is_empty())?;
-    let record = parts.next()?;
-    let resource = parts.next().filter(|part| !part.is_empty())?;
-    Some((app, record, resource))
-}
-
-/// The notice that `agent` finished: what its session changed and where, when `summary` says
-/// ("Claude Code finished: 4 changes in Storefront"), else that it finished; under it what the session
-/// worked, in the words its card lists it by ("Edited Launch notes"), never what the agent was
-/// doing (it is done); with its own face and its card one choice away.
-///
-/// `None` when there is nothing to tell: a session that changed nothing, or one `told` already says
-/// a notice told of, as another session of the same agent that worked it did.
-pub fn finished_notice(
-    agent: &AgentFinished,
-    summary: Option<&SessionSummary>,
-    told: &mut std::collections::BTreeSet<String>,
-) -> Option<tilo_desktop_surface::notifications::Notification> {
-    use tilo_desktop_surface::i18n::{t, t_args};
-    if let Some(summary) = summary
-        && (summary.changes == 0 || !told.insert(summary.session.clone()))
-    {
-        return None;
-    }
-    let name = || agent.label.clone().into();
-    let title = match summary {
-        Some(SessionSummary {
-            changes,
-            workspace: Some(workspace),
-            ..
-        }) => t_args(
-            "workspace-notice-agent-finished-in",
-            &[
-                ("agent", name()),
-                ("count", (*changes).into()),
-                ("workspace", workspace.clone().into()),
-            ],
-        ),
-        Some(SessionSummary {
-            changes,
-            workspace: None,
-            ..
-        }) => t_args(
-            "workspace-notice-agent-finished-changes",
-            &[("agent", name()), ("count", (*changes).into())],
-        ),
-        None => t_args("workspace-notice-agent-finished", &[("agent", name())]),
-    };
-    let body = summary.map_or_else(String::new, |summary| summary.worked.clone());
-    let client = ui::presence::agent_client(&agent.label);
-    let mut notice = tilo_desktop_surface::notifications::Notification::new(title, body)
-        .with_agent_from(agent.label.clone(), agent.publisher.clone())
-        .with_app_id(AGENTS_APP)
-        // It is the agent's news, said in its name wherever notices are grouped by who sent them;
-        // the banner, which leads with the agent's face, shows no source line repeating it.
-        .with_app_name(agent.label.clone());
-    let mut actions = Vec::new();
-    if let Some(work) = summary.and_then(|summary| summary.work.as_ref()) {
-        actions.push((
-            format!(
-                "{AGENT_WORK_ACTION}{}{WORK_SEPARATOR}{}{WORK_SEPARATOR}{}",
-                work.app, work.document, work.resource
-            ),
-            t_args(
-                "workspace-notice-agent-open",
-                &[(
-                    "app",
-                    tilo_desktop_search::names::app_name(&work.app).into(),
-                )],
-            ),
-        ));
-    }
-    actions.push((
-        format!("{AGENT_CARD_ACTION}{client}"),
-        t("workspace-notice-agent-card"),
-    ));
-    notice.actions = actions;
-    Some(notice)
 }
 
 pub type Here = std::rc::Rc<std::cell::RefCell<HereState>>;
@@ -651,144 +454,6 @@ impl HereState {
             .collect();
         self.met_agents
             .extend(arrived.iter().map(|(publisher, _)| publisher.clone()));
-        arrived
-    }
-
-    /// The clients of the agents present now ([`ui::presence::agent_client`]): "Claude Code" for a
-    /// "Claude Code #2".
-    fn agent_clients_here(&self) -> std::collections::BTreeSet<&str> {
-        self.members
-            .iter()
-            .flatten()
-            .filter(|member| member.kind == "agent")
-            .map(|member| ui::presence::agent_client(&member.label))
-            .collect()
-    }
-
-    /// The agents that left since the last call, each once: gone from the live layer for longer than
-    /// a reconnect takes (`REJOIN_QUIET_MS`), so a page renewing its grant is no agent finishing.
-    /// An agent's finishing is news the person did not cause, which a notice says.
-    ///
-    /// An agent's client restarts its session often (a new `tilo mcp` per restart), each a
-    /// publisher of its own working the same session: an agent is finished once no session of its
-    /// client is here, and its sessions that left are said finished together, as one.
-    pub fn take_agents_finished(&mut self, now_ms: u64) -> Vec<AgentFinished> {
-        let Some(members) = &self.members else {
-            return Vec::new();
-        };
-        for member in members.iter().filter(|member| member.kind == "agent") {
-            let held = self
-                .working_agents
-                .entry(member.publisher.clone())
-                .or_insert_with(|| (member.label.clone(), now_ms));
-            held.0.clone_from(&member.label);
-            held.1 = now_ms;
-        }
-        let due = self.agents_due();
-        let gone: Vec<(String, (String, u64))> = self
-            .working_agents
-            .extract_if(|_, (label, _)| {
-                due.get(ui::presence::agent_client(label))
-                    .is_some_and(|at| *at <= now_ms)
-            })
-            .collect();
-        // One per client: the session that was here last speaks for it.
-        let mut by_client: std::collections::BTreeMap<String, (String, String, u64)> =
-            std::collections::BTreeMap::new();
-        for (publisher, (label, seen)) in gone {
-            let client = ui::presence::agent_client(&label).to_owned();
-            let entry = by_client
-                .entry(client)
-                .or_insert_with(|| (publisher.clone(), label.clone(), seen));
-            if (seen, &publisher) > (entry.2, &entry.0) {
-                *entry = (publisher, label, seen);
-            }
-        }
-        let mut finished: Vec<AgentFinished> = by_client
-            .into_values()
-            .map(|(publisher, label, _)| AgentFinished { publisher, label })
-            .collect();
-        finished.sort_by(|a, b| a.publisher.cmp(&b.publisher));
-        finished
-    }
-
-    /// When an agent that left is next due to be said finished, on the clock
-    /// [`Self::take_agents_finished`] is handed: the reconnect's grace after it was last here.
-    /// `None` while every agent seen is still here, or another session of its client is. A page
-    /// draws only when something changes, and nothing changes when an agent stays gone: it wakes
-    /// for this, or the notice waits for whatever draws next.
-    #[must_use]
-    pub fn next_agent_finished_ms(&self) -> Option<u64> {
-        self.agents_due().into_values().min()
-    }
-
-    /// When each client none of whose sessions is here is due to be said finished: the reconnect's
-    /// grace after the last of its sessions was here, so a session back within it was never gone.
-    fn agents_due(&self) -> HashMap<String, u64> {
-        let here = self.agent_clients_here();
-        let mut due: HashMap<String, u64> = HashMap::new();
-        for (label, seen) in self.working_agents.values() {
-            let client = ui::presence::agent_client(label);
-            if here.contains(client) {
-                continue;
-            }
-            let at = seen.saturating_add(REJOIN_QUIET_MS);
-            let entry = due.entry(client.to_owned()).or_insert(at);
-            *entry = (*entry).max(at);
-        }
-        due
-    }
-
-    /// Who joined since the last call, by the name everyone here sees: a person who was not in the
-    /// workspace before. The first roster this page sees is who was already here, not arrivals;
-    /// this page's person and agents are never announced, and leaving is not news. A device back
-    /// within `REJOIN_QUIET_MS` of dropping out never left, and another device of someone here is
-    /// not them arriving. One whose name is not known yet (their presence has not said it) is
-    /// announced once it is, by that name, as the bar shows them.
-    pub fn take_arrivals(&mut self, now_ms: u64) -> Vec<String> {
-        let Some(members) = &self.members else {
-            return Vec::new();
-        };
-        let here: Vec<&LiveMember> = members
-            .iter()
-            .filter(|member| member.kind != "agent" && !self.is_own_person(&member.publisher))
-            .collect();
-        let Some(before) = &self.announced else {
-            self.announced = Some(here.iter().map(|member| member.publisher.clone()).collect());
-            return Vec::new();
-        };
-        let labels = self.labels();
-        let mut arrived = Vec::new();
-        let mut announced = std::collections::BTreeSet::new();
-        // Who counts as here already: the people of devices announced before.
-        let mut persons: Vec<&str> = here
-            .iter()
-            .filter(|member| before.contains(&member.publisher))
-            .map(|member| self.person_of(&member.publisher))
-            .collect();
-        for member in &here {
-            let id = member.publisher.as_str();
-            let back = self
-                .dropped
-                .get(id)
-                .is_some_and(|at| now_ms.saturating_sub(*at) < REJOIN_QUIET_MS);
-            let person = self.person_of(id);
-            if !before.contains(id) && !back && !persons.contains(&person) {
-                let Some(name) = member_name(member) else {
-                    continue;
-                };
-                arrived.push(labels.label(person, name));
-                persons.push(person);
-            }
-            announced.insert(id.to_owned());
-        }
-        for gone in before.difference(&announced) {
-            self.dropped.insert(gone.clone(), now_ms);
-        }
-        self.dropped.retain(|id, at| {
-            !announced.contains(id) && now_ms.saturating_sub(*at) < REJOIN_QUIET_MS
-        });
-        self.announced = Some(announced);
         arrived
     }
 
@@ -1454,8 +1119,19 @@ fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member
         .filter_map(|(person, role)| {
             let person_id = PersonId::parse(&person).ok()?;
             let id = MemberId::person(person_id.clone());
+            // Someone not here goes by the name the workspace's governance gives them: the one
+            // they gave themselves, wherever they did.
             let (name, colour) = here(&id).map_or_else(
-                || (String::new(), PresenceHue::of_member(&id)),
+                || {
+                    (
+                        workspace
+                            .people_names
+                            .get(&person)
+                            .cloned()
+                            .unwrap_or_default(),
+                        PresenceHue::of_member(&id),
+                    )
+                },
                 |person| (person.label.clone(), hue_of(person.rgb)),
             );
             let mut row = Member::of_person(

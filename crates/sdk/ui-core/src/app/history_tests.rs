@@ -1,4 +1,5 @@
 use super::*;
+use crate::bound_dispatch::ToolkitPart as _;
 use crate::history_mode::*;
 use crate::widget::{AppModel, ModelPath};
 use automerge::{ROOT, transaction::Transactable};
@@ -122,8 +123,6 @@ fn app_on(state: State) -> App {
 }
 /// An app on `state` showing `root` under the framework's registered History.
 pub(crate) fn app_with_root(state: State, root: Box<dyn crate::widget::Widget>) -> App {
-    // The session serves the history of the window's document.
-    crate::history_mode::feed::tests::serve(&state.doc);
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {
@@ -725,7 +724,7 @@ impl RoutedOwners {
                     doc.pending_ops(),
                     history.revision(),
                     actions.generation,
-                    actions.statuses_for_test(),
+                    actions.part().statuses_for_test(),
                 )
             })
             .unwrap()
@@ -1119,7 +1118,7 @@ impl RoutedPrimary {
                     doc.pending_ops(),
                     history.revision(),
                     actions.generation,
-                    actions.statuses_for_test(),
+                    actions.part().statuses_for_test(),
                 )
             })
             .unwrap()
@@ -1270,14 +1269,6 @@ static OWNED_HISTORY: HistoryDefinition = HistoryDefinition {
 };
 impl RoutedOwners {
     fn install_history(&mut self) {
-        // The session serves the history of the window's first resource.
-        let first = &self.bindings[0];
-        crate::history_mode::feed::tests::serve(
-            &first
-                .records
-                .read_checked(&first.checkout.id, Clone::clone)
-                .unwrap(),
-        );
         let sources = self
             .bindings
             .iter()
@@ -4340,7 +4331,6 @@ tilo_test_env::scenario! {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "live").unwrap();
         state.commit_action(None, None);
-        crate::history_mode::feed::tests::serve(&state.doc);
         let mut driver = crate::headless::FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(root, registration),
@@ -4931,12 +4921,12 @@ fn ownership_matrix_app_with_confirmation(
     let control: Box<dyn Widget> = match kind {
         "Button" => Box::new(Button::new("control", "Control").on_action(unit())),
         "Checkbox" => Box::new(
-            Checkbox::new("control", "unused")
+            Checkbox::bound("control", "unused")
                 .with_id("control")
                 .on_action(ownership_matrix_binding(&resource)),
         ),
         "Toggle" => Box::new(
-            Toggle::new("control", "unused")
+            Toggle::bound("control", "unused")
                 .with_id("control")
                 .on_action(ownership_matrix_binding(&resource)),
         ),

@@ -514,7 +514,7 @@ mod tests {
                     ]
                 );
                 assert!(
-                    !argv.iter().any(|arg| arg.contains("/records")),
+                    !argv.iter().any(|arg| arg.contains("so.tilo.settings-")),
                     "the settings document reaches Settings through the shell's settings service, \
                  never a bind: {argv:?}"
                 );
@@ -558,7 +558,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod private_service_tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};

@@ -29,10 +29,7 @@ pub trait SessionServices: Send + Sync {
 
     /// Who setup acts as: the session's person, the owner of the setup app.
     fn person(&self) -> String {
-        std::env::var("TILO_USER_ID")
-            .ok()
-            .filter(|id| !id.is_empty())
-            .unwrap_or_else(|| "local".to_owned())
+        "local".to_owned()
     }
 }
 

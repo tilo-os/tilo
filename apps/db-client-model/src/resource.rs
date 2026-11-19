@@ -123,11 +123,13 @@ impl Workspace {
             )
             .anchored(item_resource_id::<Self>("connections", id))
         });
-        let queries =
-            self.saved_queries.iter().map(|(id, saved)| {
-                SearchEntry::new(&saved.name, "Collaborative saved query")
-                    .anchored(item_resource_id::<Self>("saved_queries", id))
-            });
+        let queries = self.saved_queries.iter().map(|(id, saved)| {
+            SearchEntry::new(
+                &saved.name,
+                tilo_resource::word!("db-client-search-saved-query").read(),
+            )
+            .anchored(item_resource_id::<Self>("saved_queries", id))
+        });
         connections.chain(queries).collect()
     }
 }
@@ -139,17 +141,20 @@ impl Workspace {
 #[effect(operation = "db_client.effects")]
 pub enum DbEffect {
     /// Execute SQL
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, destructive)]
     Query {
         #[param("SQL query")]
         sql: String,
     },
     /// Connect
+    #[effect(kind = "outside")]
     #[effect(row, job, idempotent, item = connections)]
     Connect {
         #[param("The saved connection")]
         connection: String,
     },
+    #[effect(kind = "outside")]
     #[effect(row, job, destructive, item = saved_queries)]
     Run {
         #[param("The saved query")]
@@ -158,30 +163,43 @@ pub enum DbEffect {
     /// New connection
     #[effect(view)]
     NewConnection,
-    #[effect(view, row)]
+    #[effect(view, row, on = crate::rows::Database)]
     FocusDatabase { connection: Uuid },
-    #[effect(view, row)]
+    #[effect(view, row, on = crate::rows::Schema)]
     FocusSchema { connection: Uuid, schema: String },
-    #[effect(row, job, idempotent)]
+    #[effect(kind = "outside")]
+    #[effect(row, job, idempotent, on = crate::rows::Table)]
+    #[effect(on = crate::rows::View, on = crate::rows::Column)]
     Browse {
         connection: Uuid,
         schema: String,
         table: String,
     },
-    #[effect(view, row)]
+    #[effect(view, row, on = crate::rows::QueryResult)]
     ShowResult { connection: Uuid, generation: usize },
     /// Read query result
-    #[effect(view, row, returns)]
+    #[effect(
+        view,
+        row,
+        returns,
+        on = crate::rows::QueryResult,
+        tag = tilo_actions::DOCUMENT_READ_TAG
+    )]
     ReadResult { connection: Uuid, generation: usize },
-    #[effect(attended, row, job)]
+    #[effect(kind = "outside")]
+    #[effect(attended, row, job, on = crate::rows::QueryResult)]
     ExportCsv { connection: Uuid, generation: usize },
-    #[effect(row, job)]
+    #[effect(kind = "outside")]
+    #[effect(row, job, on = crate::rows::Transaction)]
     Begin { connection: Uuid },
-    #[effect(row, job, destructive)]
+    #[effect(kind = "outside")]
+    #[effect(row, job, destructive, on = crate::rows::Transaction)]
     Commit { connection: Uuid },
-    #[effect(row, job, destructive)]
+    #[effect(kind = "outside")]
+    #[effect(row, job, destructive, on = crate::rows::Transaction)]
     Rollback { connection: Uuid },
     /// Execute a historical query
-    #[effect(row, job, destructive)]
+    #[effect(kind = "outside")]
+    #[effect(row, job, destructive, on = crate::rows::QueryHistoryEntry)]
     Rerun { connection: Uuid, generation: usize },
 }

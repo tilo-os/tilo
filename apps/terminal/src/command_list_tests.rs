@@ -86,7 +86,9 @@ fn each_command_shows_with_what_it_printed_and_how_it_ended() {
     );
     // A session the server keeps takes the next command here.
     assert!(
-        !texts.iter().any(|text| text.contains("someone's computer")),
+        !texts
+            .iter()
+            .any(|text| text.contains("someone else's computer")),
         "{texts:?}"
     );
 }
@@ -146,7 +148,9 @@ fn a_session_on_someones_computer_shows_its_commands_without_a_line() {
     let texts = app.texts();
     assert!(texts.iter().any(|text| text == "$ make"), "{texts:?}");
     assert!(
-        texts.iter().any(|text| text.contains("someone's computer")),
+        texts
+            .iter()
+            .any(|text| text.contains("someone else's computer")),
         "{texts:?}"
     );
     assert!(app.harness().click_named("terminal-command").is_err());

@@ -6,19 +6,13 @@ format = 2
 kind = "backups.workspace"
 label = "Backups"
 version = 1
+shows = ["open", "order-snapshots", "read"]
 fields = [
   { path = "policy", type = { named = "RetentionPolicy" }, stored = "record" },
   { path = "policy.hourly", type = "int" },
   { path = "policy.daily", type = "int" },
   { path = "policy.weekly", type = "int" },
   { path = "policy.monthly", type = "int" },
-]
-
-[[resources.verbs]]
-id = "verify"
-kind = "read"
-params = [
-  { name = "snapshot_id", type = "text", required = true },
 ]
 
 [[resources.types]]

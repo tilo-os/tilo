@@ -11,6 +11,8 @@
 #[cfg(feature = "filesystem")]
 pub mod acl;
 #[cfg(feature = "filesystem")]
+pub mod admission;
+#[cfg(feature = "filesystem")]
 pub mod authenticated_transport;
 #[cfg(feature = "filesystem")]
 pub mod availability;
@@ -117,10 +119,9 @@ pub use fs::QuickFS;
 pub use hydration::Hydrator;
 #[cfg(feature = "filesystem")]
 pub use identity::{
-    CertifiedIdentityError, CertifiedMountIdentity, MountIdentity, PeerCredentials,
-    WorkspaceShareIssuerError, identity_paths, load_certified_mount_identity,
-    load_certified_mount_identity_once_valid, load_mount_identity, load_revocation_list,
-    load_workspace_share_issuer, revocation_list_path,
+    CertifiedIdentityError, CertifiedMountIdentity, MountIdentity, PeerCredentials, identity_paths,
+    load_certified_mount_identity, load_certified_mount_identity_once_valid, load_mount_identity,
+    load_revocation_list, revocation_list_path,
 };
 #[cfg(feature = "filesystem")]
 #[cfg(feature = "filesystem")]
@@ -131,9 +132,9 @@ pub use peer_auth::{
 };
 #[cfg(feature = "filesystem")]
 pub use smart::Heuristics;
+pub use store::ContentStore;
 #[cfg(feature = "filesystem")]
-pub use store::{BackendGcRelease, StoreEvictionError};
-pub use store::{ContentStore, DEFAULT_BLOB_GC_INTERVAL};
+pub use store::StoreEvictionError;
 #[cfg(feature = "filesystem")]
 pub use sync::{FsTransportIdentity, Ticket, Workspace};
 #[cfg(feature = "filesystem")]

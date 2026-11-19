@@ -12,7 +12,7 @@
 //! widgets) | | [`Transient`] | a readout or acknowledgement that goes on its own | | [`Follow`] | a
 //! peer's pointer gliding between the samples it is heard at | | [`Float`] | a reaction rising from the
 //! pointer it was sent from | | [`Trace`] | a member's just-typed run fading on its own | |
-//! [`Breathe`] | a live state's soft ring (someone in a call) | | [`Feedback`] | press and hover tints
+//! [`Sweep`] | a live state's ring (someone in a call, an agent at work) | | [`Feedback`] | press and hover tints
 //! | | [`ControlChange`] / [`Thumb`] / [`Mark`] | a switch's knob and tint, a checkbox's mark, a
 //! slider's thumb, a badge's count | | [`Attention`] | a refusal's shake, a single pulse | | [`Beckon`]
 //! | a control hint arriving, showing its gesture, and acknowledged | Every motion runs on
@@ -67,9 +67,9 @@ pub use kept::{
 };
 pub(crate) use kept::{closing_window, frame_ended};
 pub use named::{
-    Ambient, Appear, Attention, Breathe, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill,
-    DrillDepth, Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reading, Reveal,
-    Snap, Speaking, Thumb, Trace, Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
+    Ambient, Appear, Attention, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill, DrillDepth,
+    Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reading, Reveal, Snap, Speaking,
+    Sweep, Thumb, Trace, Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
 };
 pub use placed::Placed;
 pub use pose::Pose;

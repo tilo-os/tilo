@@ -42,6 +42,8 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-browser-import-engine/thin", "tilo-accounts-engine/thin"]
 
 [dependencies]
+# The web engine client: the Chromium helper, the page protocol and their commands.
+tilo-webview = { version = "0.1.0", path = "../../crates/sdk/tilo-webview" }
 tilo-browser-sessions = { path = "../../crates/platform/tilo-browser-sessions" }
 fnv.workspace = true
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
@@ -62,6 +64,8 @@ tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # and content by address (`ContentStore`) are the toolkit's to hand an app:
 # `ui::tilo_actions` and `ui::content`, not the crates behind them.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["webview-adblock"] }
+# The resource the app draws: its types, verbs and typed action arguments.
+browser-model = { path = "../browser-model" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-browser-import-engine = { path = "../../crates/runtime/engines/browser-import", optional = true }
 tilo-accounts-engine = { path = "../../crates/runtime/engines/accounts", optional = true }

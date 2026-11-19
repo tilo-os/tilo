@@ -4,7 +4,9 @@
 //!
 //! It is no app launch.
 
-use super::{RunError, RunOptions, compile_app_baseline, find_runtime_bundle, stage_seccomp_blob};
+use super::{
+    LaunchError, LaunchOptions, compile_app_baseline, find_runtime_bundle, stage_seccomp_blob,
+};
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -157,11 +159,11 @@ pub fn verified_instance(
     manifest_path: &Path,
     payload_root: &Path,
     expected: &str,
-) -> Result<VerifiedInstance, RunError> {
+) -> Result<VerifiedInstance, LaunchError> {
     let (manifest, publisher) =
         super::verified_launch_publisher(installed, manifest_path, payload_root, expected)?;
     let not_tilolang =
-        || RunError::InvalidServiceLaunch(format!("{} is no tilolang app", manifest.package_id));
+        || LaunchError::InvalidServiceLaunch(format!("{} is no tilolang app", manifest.package_id));
     let runtime = manifest
         .entrypoint
         .runtime
@@ -187,39 +189,39 @@ pub fn is_tilolang(runtime: &str) -> bool {
 }
 
 /// Start the tilolang host `launch` on `socket` and wait for it to end.
-pub fn run_tilolang_process(
+pub fn launch_tilolang_process(
     launch: &ProcessLaunch,
     socket: OwnedFd,
-    opts: &RunOptions,
-) -> Result<std::process::ExitStatus, RunError> {
+    opts: &LaunchOptions,
+) -> Result<std::process::ExitStatus, LaunchError> {
     let (found, searched) = find_runtime_bundle(&launch.runtime, opts)?;
     let Some((runtime_root, version)) = found else {
-        return Err(RunError::RuntimeBundleMissing {
+        return Err(LaunchError::RuntimeBundleMissing {
             runtime: launch.runtime.clone(),
             paths: searched,
         });
     };
     let (found, app_searched) = find_runtime_bundle(&launch.app_runtime, opts)?;
     let Some((app_root, app_version)) = found else {
-        return Err(RunError::RuntimeBundleMissing {
+        return Err(LaunchError::RuntimeBundleMissing {
             runtime: launch.app_runtime.clone(),
             paths: app_searched,
         });
     };
     if app_version == version {
-        return Err(RunError::RuntimeReferenceMalformed(
+        return Err(LaunchError::RuntimeReferenceMalformed(
             launch.app_runtime.clone(),
         ));
     }
     if !runtime_root.join(BIN).is_file() {
-        return Err(RunError::Io(std::io::Error::new(
+        return Err(LaunchError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!("the runtime {} has no {BIN}", launch.runtime),
         )));
     }
     let storage = std::fs::canonicalize(&launch.storage)?;
     if !storage.is_dir() {
-        return Err(RunError::Io(std::io::Error::new(
+        return Err(LaunchError::Io(std::io::Error::new(
             std::io::ErrorKind::NotADirectory,
             "the host's storage is no directory",
         )));

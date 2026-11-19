@@ -33,11 +33,11 @@ RememberArgs = TypedDict("RememberArgs", {
 
 class DiskUsage(Resource):
     """Disk Usage Analyzer — `disk-usage`."""
-    __surface__ = "so.tilo.disk-usage@142cf5e7136a5290"
+    __surface__ = "so.tilo.disk-usage@dc38f49d9643175e"
 
 class RecentFolders(Resource):
     """Recent folders — `disk-usage.recent-folders`."""
-    __surface__ = "so.tilo.disk-usage@142cf5e7136a5290"
+    __surface__ = "so.tilo.disk-usage@dc38f49d9643175e"
     devices: dict[str, Any]
 
     def remember(self,

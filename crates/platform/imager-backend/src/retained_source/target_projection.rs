@@ -87,7 +87,6 @@ pub(super) fn run() -> io::Result<()> {
             let retired = source.retire();
             result.and(retired)
         }
-        TargetProjectionMode::RetiredSelectedParent => return Err(refused()),
     };
     directory.validate()?;
     let current = std::fs::symlink_metadata(&path)?;

@@ -427,13 +427,6 @@ mod tests {
                     "open-folder",
                     CodeEditorEffect::OpenFolder { path: absolute() },
                 ),
-                (
-                    "save",
-                    CodeEditorEffect::Save {
-                        file: None,
-                        path: absolute(),
-                    },
-                ),
             ];
             let arguments = serde_json::json!({"path": path, "line": 0, "column": 0, "results": false});
             let arguments = arguments.as_object().unwrap();
@@ -523,10 +516,7 @@ mod tests {
             .unwrap();
         sample
             .app
-            .effect_confirmed(&CodeEditorEffect::Save {
-                file: Some(readme),
-                path: None,
-            })
+            .effect_confirmed(&CodeEditorEffect::Save { file: Some(readme) })
             .unwrap();
         let on_disk = std::fs::read_to_string(sample.root.join("README.md")).unwrap();
         assert!(on_disk.ends_with("saved\n"), "{on_disk}");

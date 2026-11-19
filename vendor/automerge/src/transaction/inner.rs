@@ -12,7 +12,7 @@ use crate::author::Author;
 use crate::exid::ExId;
 use crate::marks::{ExpandMark, Mark, MarkSet};
 use crate::op_set2::change::build_change;
-use crate::op_set2::{Op, OpSet, PropRef, SuccInsert, TxOp};
+use crate::op_set2::{DeleteSuccs, Op, OpSet, PropRef, SuccInsert, TxOp};
 use crate::patches::PatchLog;
 use crate::types::{Clock, ElemId, ObjMeta, OpId, ScalarValue, SequenceType, TextEncoding, HEAD};
 use crate::Automerge;
@@ -781,8 +781,8 @@ impl TransactionInner {
         let mut deleted: usize = 0;
         // Each delete is pending as it is made (its id counts them); its
         // successors are written once every element is found.
-        let mut deletes: Vec<(usize, Vec<SuccInsert>)> = Vec::new();
-        for query in doc.ops().seek_run_by_index(
+        let mut deletes: Vec<(usize, DeleteSuccs)> = Vec::new();
+        for query in doc.ops().seek_run_by_index_iter(
             &obj.id,
             delete_index,
             del as usize,
@@ -806,20 +806,26 @@ impl TransactionInner {
 
             let query_elemid = query.elemid().ok_or(AutomergeError::InvalidIndex(index))?;
             let op = self.next_delete(obj, delete_index, query_elemid, &query.ops);
-            let ops_pos = query
-                .ops
-                .iter()
-                .map(|o| o.add_succ(op.id(), None))
-                .collect::<Vec<_>>();
+            let mut suiting = query.ops.iter().map(|o| o.add_succ(op.id(), None));
+            let succs = match (suiting.next(), suiting.next()) {
+                (Some(one), None) => DeleteSuccs::One(one),
+                (first, second) => DeleteSuccs::Many(
+                    first
+                        .into_iter()
+                        .chain(second)
+                        .chain(suiting)
+                        .collect::<Vec<_>>(),
+                ),
+            };
             deleted += step;
-            deletes.push((self.pending.len(), ops_pos));
+            deletes.push((self.pending.len(), succs));
             self.pending.push(op);
         }
         // Each element's successors were placed against the object as it was
         // before any of them was deleted: the successors written for the
         // elements before it (which sit before it) move its own along.
         let mut written = 0;
-        let (at, mut elements): (Vec<usize>, Vec<Vec<SuccInsert>>) = deletes.into_iter().unzip();
+        let (at, mut elements): (Vec<usize>, Vec<DeleteSuccs>) = deletes.into_iter().unzip();
         for succs in &mut elements {
             for succ in succs.iter_mut() {
                 succ.sub_pos += written;

@@ -87,7 +87,7 @@ async fn a_keys_writes_land_in_every_part_and_chunk_the_workspace_keeps() {
 }
 
 async fn a_keys_writes_land() {
-    let on_server = api_on_server(ISSUER).await;
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (root, token) = person(&on_server, "Ada").await;
     assert_ne!(
@@ -186,9 +186,21 @@ async fn a_keys_writes_land() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    // Its person revokes the key's grant in the workspace: a write to the
-    // tree's own document and one into a part of the notebook are refused
-    // alike, and neither answers that it went in.
+    // The key, which acts as its person, also holds an MCP session in the workspace.
+    let mut mcp = super::api::Mcp {
+        api: &api,
+        path: format!("/w/{workspace}/mcp"),
+        token: key.token.clone(),
+        session: None,
+    };
+    assert_eq!(mcp.initialize().await.0, 200);
+    mcp.did("notes/Notes#new-note", json!({"title": "over MCP"}))
+        .await;
+
+    // Its person revokes the key's grant in the workspace: every open session of the key ends
+    // at once, and a write to the tree's own document, one into a part of the notebook, a read
+    // and a call over MCP are refused alike as a revoked key's, each saying how its person
+    // approves another.
     let person = root.verifying_key().to_bytes();
     let grants = workspaces.grants_of(&workspace, &person).await.unwrap();
     assert_eq!(grants.len(), 1, "the workspace lists the key: {grants:?}");
@@ -198,6 +210,15 @@ async fn a_keys_writes_land() {
             .await
             .unwrap()
     );
+    let ending = Instant::now() + Duration::from_secs(5);
+    while !on_server.api.open_sessions().is_empty() {
+        assert!(
+            Instant::now() < ending,
+            "a revoked key's session stays open: {:?}",
+            on_server.api.open_sessions()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let (status, put) = json_of(
         key.send(
             hyper::Method::POST,
@@ -225,16 +246,42 @@ async fn a_keys_writes_land() {
             &[],
         )
         .await;
-    for (what, (status, answer)) in [("the tree", tree_write), ("a part", part_write)] {
-        assert!(
-            !(200..300).contains(&status) || answer["status"] != "ok",
-            "a revoked key's write to {what} answers an error: {status} {answer}"
+    let read = key.get(&format!("{base}/resources")).await;
+    for (what, (status, answer)) in [
+        ("write to the tree", tree_write),
+        ("write to a part", part_write),
+        ("read", read),
+    ] {
+        assert_eq!(
+            (status, &answer["error"]["code"]),
+            (401, &json!("key_revoked")),
+            "a revoked key's {what} is refused as revoked: {answer}"
         );
         assert!(
             answer.to_string().contains("tilo keys create"),
             "the refusal says how to approve a key again: {answer}"
         );
     }
+    let (_, over_mcp) = mcp
+        .post(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                     "params": {"name": "tilo_do", "arguments":
+                                {"path": "notes/Notes#new-note", "args": {"title": "revoked"}}}}))
+        .await;
+    assert!(
+        over_mcp.to_string().contains("tilo keys create"),
+        "a revoked key's MCP call is refused as revoked: {over_mcp}"
+    );
+    assert!(
+        !titles_kept(&on_server, &workspace)
+            .await
+            .contains("revoked"),
+        "a revoked key's MCP call writes nothing"
+    );
+    assert!(
+        on_server.api.open_sessions().is_empty(),
+        "a refused call opens no session: {:?}",
+        on_server.api.open_sessions()
+    );
 
     // Doing what it says gives a key that writes again.
     let page = enrol(&root, "Ada's browser again", DeviceCapabilities::member());
@@ -276,7 +323,7 @@ fn missing_in(
 
 /// What `server`'s tool `name` answers with `arguments`, which must succeed.
 async fn did(
-    server: &tilo_mcp::McpServer<tilo_session_client::remote::SessionActions>,
+    server: &tilo_mcp::McpServer<tilo_session_actions::SessionActions>,
     name: &str,
     arguments: Value,
 ) -> String {
@@ -322,7 +369,7 @@ async fn a_computers_agent_moves_things_in_through_a_server() {
 }
 
 async fn a_computers_agent_moves_things_in() {
-    let on_server = api_on_server(ISSUER).await;
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (root, token) = person(&on_server, "Ada").await;
     let key = Key { api: &api, token };
@@ -344,7 +391,7 @@ async fn a_computers_agent_moves_things_in() {
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Your agent").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = tilo_mcp::McpServer::new(
-        tilo_session_client::remote::SessionActions::new(
+        tilo_session_actions::SessionActions::new(
             &agent.peer,
             agent.workspace,
             on_server.host.cert.device_public_key,
@@ -554,7 +601,7 @@ async fn comments_kept(on_server: &OnServer, workspace: &str) -> usize {
 /// a group that answers ok and changes nothing loses a customer's data.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_imported_tree_sent_as_import_then_move_groups_is_kept_nested() {
-    let on_server = api_on_server(ISSUER).await;
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (_root, token) = person(&on_server, "Ada").await;
     let key = Key { api: &api, token };
@@ -650,9 +697,9 @@ async fn an_imported_tree_sent_as_import_then_move_groups_is_kept_nested() {
 /// the agent calls.
 async fn agent_on_a_server() -> (
     OnServer,
-    tilo_mcp::McpServer<tilo_session_client::remote::SessionActions>,
+    tilo_mcp::McpServer<tilo_session_actions::SessionActions>,
 ) {
-    let on_server = api_on_server(ISSUER).await;
+    let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
     let (root, token) = person(&on_server, "Ada").await;
     let key = Key { api: &api, token };
@@ -672,7 +719,7 @@ async fn agent_on_a_server() -> (
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Your agent").await;
     let person = hex::encode(root.verifying_key().to_bytes());
     let server = tilo_mcp::McpServer::new(
-        tilo_session_client::remote::SessionActions::new(
+        tilo_session_actions::SessionActions::new(
             &agent.peer,
             agent.workspace,
             on_server.host.cert.device_public_key,

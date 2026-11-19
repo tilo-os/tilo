@@ -29,12 +29,11 @@ type Card {
     count: Int
 }
 
-/// One change of the document: who made it, when, and what it did.
+/// One change of the document: what it did. Who made it and when are the change's own, kept when
+/// it was made.
 type Change {
     title: Text
-    who: Text
     summary: Text
-    at: Time
 }
 
 /// The data page: each data view as an app places it, over the page's collection.
@@ -61,7 +60,7 @@ view data(g: Gallery) {
                         cells: {
                             ui.DataTableCell("Name", value: x.title)
                             ui.DataTableCell("State", value: x.state)
-                            ui.DataTableCell("Size", value: "{x.size}")
+                            ui.DataTableCell("Size", value: "{x.size} B")
                         }
                     }
                 }
@@ -127,7 +126,15 @@ view data(g: Gallery) {
         ) {
             ui.ActivityTimeline(newest_first: true) {
                 for c in g.data_changes {
-                    ui.ActivityEntry(c, c.summary, time: c.at, kind: .details)
+                    if let made = created(c) {
+                        ui.ActivityEntry(
+                            c,
+                            c.summary,
+                            author: made.who,
+                            time: made.at,
+                            kind: .details,
+                        )
+                    }
                 }
                 on revert(x: Change): reverted(last, x)
                 on open(x: Change): opened_change(last, x)
@@ -138,7 +145,14 @@ view data(g: Gallery) {
 
 /// The data group, over a release a team is working on.
 scenario "data" {
-    fill(root Gallery)
+    let g = root Gallery
+    invoke(note_change(g, "Rewrote the summary"), by: person("Ada"), at: 2026-06-30T08:42Z)
+    invoke(note_change(g, "Added the screenshots"), by: agent("Scout"), at: 2026-06-30T09:05Z)
+}
+
+/// Note a change to the document, made by whoever asks for it.
+action note_change(g: Gallery, summary: Text) {
+    g.data_changes.insert(Change(title: summary, summary: summary))
 }
 
 /// Note the row the table picked, in the page's answer.

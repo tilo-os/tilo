@@ -11,12 +11,15 @@ pub const STAGING_REQUEST_ARG: &str = "--tilo-staging-request";
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Args {
     action: Option<Action>,
+    disk: Option<String>,
     manifest: Option<String>,
     esp: Option<String>,
     root: Option<String>,
     target_bytes: Option<u64>,
     profile: Option<String>,
     record: Option<String>,
+    plan: Option<String>,
+    token_file: Option<String>,
     out: Option<String>,
 }
 
@@ -45,6 +48,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 }
             }
             "--manifest" => once(&mut out.manifest, value()?)?,
+            "--disk" => once(&mut out.disk, value()?)?,
             "--component" => {
                 let v = value()?;
                 match v.split_once('=') {
@@ -68,6 +72,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--profile-json" => once(&mut out.profile, value()?)?,
             "--record" => once(&mut out.record, value()?)?,
+            "--plan" => once(&mut out.plan, value()?)?,
+            "--token-file" => once(&mut out.token_file, value()?)?,
             "--out" => once(&mut out.out, value()?)?,
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -132,6 +138,9 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         staging_root: component(&args.root).map_err(other)?.unwrap_or_default(),
     };
     if action != Action::Stage {
+        if args.disk.is_some() {
+            return Err(other("--disk names the staging target of a stage".into()));
+        }
         let id = args
             .record
             .as_deref()
@@ -152,6 +161,8 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
             profile: serde_json::Map::new(),
             migration: None,
             prepared_setup: None,
+            install_plan: None,
+            token_file: None,
         };
         let summary = json!({"ok": true, "action": action, "operation_id": id});
         return Ok((request, summary));
@@ -170,12 +181,15 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         Some(p) => read_profile(p).map_err(other)?,
         None => serde_json::Map::new(),
     };
-    let host = super::probe::probe();
-    let blockers = &host.blockers;
-    let Some(basis) = host.basis.as_ref().filter(|_| blockers.is_empty()) else {
+    let probed = match &args.disk {
+        Some(target) => super::probe::probe_target(target).map_err(other)?,
+        None => super::probe::probe(),
+    };
+    let blockers = &probed.blockers;
+    let Some(basis) = probed.basis.as_ref().filter(|_| blockers.is_empty()) else {
         return Err(Failure::Blocked(json!({"ok": false, "blockers": blockers})));
     };
-    let plan = super::plan::compute(basis, facts.requirements(target))
+    let mut plan = super::plan::compute(basis, facts.requirements(target))
         .map(|p| super::plan::with_loader_path(p, &facts.efi_path))
         .map_err(|e| {
             Failure::Plan(match e {
@@ -189,6 +203,25 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
                 }
             })
         })?;
+    let install_plan = match &args.plan {
+        Some(path) => {
+            let bytes = std::fs::read(path).map_err(|e| other(format!("{path}: {e}")))?;
+            let plan: install_profile_model::plan::Plan = serde_json::from_slice(&bytes)
+                .map_err(|e| other(format!("{path}: not an install plan: {e}")))?;
+            Some(plan)
+        }
+        None => None,
+    };
+    let token_file = match &args.token_file {
+        Some(path) => Some(absolute(path).map_err(other)?),
+        None => None,
+    };
+    if let Some(target) = &args.disk {
+        // The plan's disk handle is the identity the helper resolves again;
+        // a `/dev` name means nothing in another namespace or boot.
+        let identity = super::TargetDisk::parse(target).map_err(other)?.to_string();
+        plan.basis.disk.id = identity;
+    }
     let request = Request {
         schema: helper::REQUEST_SCHEMA,
         operation_id: super::random_guid(),
@@ -205,6 +238,8 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         profile,
         migration: None,
         prepared_setup: None,
+        install_plan,
+        token_file,
     };
     helper::validate_request(&request).map_err(|r| other(r.to_string()))?;
     let summary = json!({
@@ -217,6 +252,11 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
         "staging_esp": request.plan.staging_esp,
         "staging_root": request.plan.staging_root,
         "disk": {"guid": request.plan.basis.disk.guid, "id": request.plan.basis.disk.id},
+        "install_plan": request.install_plan.as_ref().map(|plan| json!({
+            "id": plan.plan,
+            "destination": plan.destination,
+            "nonce": plan.token.nonce,
+        })),
     });
     Ok((request, summary))
 }
@@ -268,6 +308,18 @@ mod tests {
             assert_eq!(a.esp.as_deref(), Some("e.img"));
             assert_eq!(a.target_bytes, Some(36_507_222_016));
             assert_eq!(a.action, None);
+            assert_eq!(a.disk, None);
+            let target = parse(&s(&[
+                "--disk",
+                "serial:16Q0A07GTM7J",
+                "--target-bytes",
+                "1",
+                "--out",
+                "x",
+            ]))
+            .unwrap();
+            assert_eq!(target.disk.as_deref(), Some("serial:16Q0A07GTM7J"));
+            assert!(parse(&s(&["--disk", "a", "--disk", "b"])).is_err());
             let r = parse(&s(&["--action", "remove", "--record", "op", "--out", "x"])).unwrap();
             assert_eq!(r.action, Some(Action::Remove));
             assert!(parse(&s(&["--component", "boot=x"])).is_err());

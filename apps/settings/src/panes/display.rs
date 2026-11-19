@@ -76,36 +76,65 @@ pub(crate) fn automatic_brightness(cx: &ViewCx<DisplayPrefs>) -> Item {
         )
 }
 
+/// A connected display, as the pane publishes it: a row of the
+/// `settings.display-output` type, whose effects show it, stage its layout
+/// and make it the primary.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.display-output",
+    label = "Display output",
+    effects = DisplayEffect
+)]
+pub(crate) struct DisplayOutputRow;
+
+/// A display tool the person trusted, as the pane publishes it: a row of the
+/// `settings.display-tool` type, offering to ask again.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.display-tool",
+    label = "Display tool",
+    effects = DisplayEffect
+)]
+pub(crate) struct DisplayToolRow;
+
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum DisplayEffect {
     /// The built-in panel's brightness, from 0 to 1.
+    #[effect(kind = "outside")]
     #[effect(returns, idempotent)]
     SetBrightness { brightness: f64 },
     /// An external monitor's brightness, from 0 to 1.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetMonitorBrightness { display: String, brightness: f64 },
     /// Use a display, or turn it off. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     UseDisplay { display: String, on: bool },
     /// Make a display the one panels and new windows open on.
+    #[effect(kind = "outside", on = DisplayOutputRow)]
     #[effect(returns, row, idempotent)]
     SetPrimaryDisplay { display: String },
     /// A display's scale. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     #[effect(keywords = "scaling, zoom, text size, dpi")]
     SetOutputScale { display: String, scale: String },
     /// Place a display beside another: `Right of …`, `Left of …`, `Above …`,
     /// `Below …`. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row)]
     PlaceDisplay { display: String, position: String },
     /// Put a display's top-left corner at a point of the desktop, as
     /// dragging it does. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row)]
     MoveDisplay { display: String, x: i32, y: i32 },
     /// Place a device's screens in the person's shared layout by where one of them goes: where
     /// they meet another device's screens is where the pointer crosses between the two, and a
     /// device placed apart from the others is out of its reach.
+    #[effect(kind = "outside")]
     #[effect(returns, row)]
     MoveDeviceDisplay {
         display: String,
@@ -118,27 +147,34 @@ pub enum DisplayEffect {
     InspectSharedDisplays,
     /// Show another display's picture, or extend the workspace. Staged
     /// until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row)]
     MirrorDisplay { display: String, mirror: String },
     /// A display's resolution and refresh rate. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     #[effect(keywords = "resolution, refresh rate, hz, screen size")]
     SetDisplayMode { display: String, mode: String },
     /// A display's rotation. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     #[effect(keywords = "rotate screen, portrait, landscape, orientation")]
     RotateDisplay { display: String, rotation: String },
     /// High dynamic range on a display that offers it. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetHdr { display: String, on: bool },
     /// How bright SDR content is while a display runs in HDR, from 0 to 1.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetSdrBrightness { display: String, brightness: f64 },
     /// Variable refresh rate on a display that offers it. Staged until
     /// applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetVrr { display: String, on: bool },
     /// A display's colour profile, or `System default`. Staged until applied.
+    #[effect(kind = "outside")]
     #[effect(returns, row, idempotent)]
     SetColorProfile { display: String, profile: String },
     // The five below ask the device's display service when the displays
@@ -149,21 +185,26 @@ pub enum DisplayEffect {
     #[effect(job, returns, own_device, idempotent, kind = "read")]
     InspectDisplayConfiguration,
     /// Show each display's number and name on it for a few seconds.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     IdentifyDisplays,
     /// Preview the staged placement; it is kept only when confirmed.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     ApplyDisplayChanges,
     /// Keep the placement being previewed.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     KeepDisplayChanges,
     /// Go back to the placement before the preview.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     RevertDisplayChanges,
     /// Ask again before keeping display changes from a layout tool.
+    #[effect(kind = "outside", on = DisplayToolRow)]
     #[effect(returns, row, label = "display-tools-forget")]
     ForgetDisplayTool {
-        #[param("The tool's executable")]
+        #[param("The tool's row, or its executable")]
         tool: String,
     },
 }
@@ -905,16 +946,9 @@ pub struct DisplayModel {
 
 impl DisplayModel {
     fn tool_row(tool: &settings_store::display_tools::DisplayTool) -> LiveRow {
-        LiveRow::new(
+        LiveRow::typed::<DisplayToolRow>(
             format!("settings.display-tool:{}", tool.executable),
-            "settings.display-tool",
             tool.name().to_owned(),
-        )
-        .operation(
-            SettingsEffect::from(DisplayEffect::ForgetDisplayTool {
-                tool: tool.executable.clone(),
-            })
-            .bound(),
         )
     }
 
@@ -1368,9 +1402,8 @@ impl DisplayModel {
 
     fn output_row(&self, output: &DisplayOutput) -> LiveRow {
         let display = &output.connector;
-        let mut row = LiveRow::new(
+        let mut row = LiveRow::typed::<DisplayOutputRow>(
             format!("settings.display-output:{display}"),
-            "settings.display-output",
             output_title(output),
         );
         let target = || display.clone();
@@ -1381,10 +1414,6 @@ impl DisplayModel {
                     on: false,
                 },
                 vec!["on"],
-            ),
-            (
-                DisplayEffect::SetPrimaryDisplay { display: target() },
-                vec![],
             ),
             (
                 DisplayEffect::SetOutputScale {
@@ -1686,10 +1715,13 @@ impl DisplayModel {
                 }
                 Ok(())
             }),
-            DisplayEffect::SetPrimaryDisplay { display } => self.stage(display, |cfg, _, _| {
-                cfg.primary = true;
-                Ok(())
-            }),
+            DisplayEffect::SetPrimaryDisplay { display } => self.stage(
+                crate::effects::row_entity(display, "settings.display-output"),
+                |cfg, _, _| {
+                    cfg.primary = true;
+                    Ok(())
+                },
+            ),
             DisplayEffect::SetOutputScale { display, scale } => {
                 let factor =
                     scale_factor_of(scale).ok_or_else(|| format!("`{scale}` is not a scale"))?;
@@ -1824,6 +1856,9 @@ impl DisplayModel {
                     })
             }
             DisplayEffect::ForgetDisplayTool { tool } => {
+                // A tool's row binds the row's id; a control names its
+                // executable.
+                let tool = crate::effects::row_entity(tool, "settings.display-tool");
                 settings_store::display_tools::TrustedDisplayTools::forget(tool)
                     .map(|()| t("display-tools-forgotten"))
                     .map_err(|error| format!("The display tool was not forgotten: {error}"))

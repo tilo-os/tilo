@@ -6,6 +6,7 @@ format = 2
 kind = "notes.notebook"
 label = "Notebook"
 version = 3
+shows = ["back", "find-page", "find-text", "forward", "inspect-editor", "open-note", "open-resource", "open-tag", "reveal-block-range"]
 fields = [
   { path = "tags", type = { collection = { named = "Tag" } }, stored = "collection" },
   { path = "tags.*.name", type = "text", label = true },

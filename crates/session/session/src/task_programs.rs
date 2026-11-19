@@ -148,6 +148,7 @@ impl HostStepServices for TaskPrograms {
                 label: None,
                 kind: tilo_actions::context::AGENT_SESSION_GROUP.to_owned(),
                 declared_id: None,
+                session: None,
             });
         self.programs.run(ProgramRequest {
             workspace: request.workspace,

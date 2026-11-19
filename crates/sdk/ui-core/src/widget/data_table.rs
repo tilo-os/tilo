@@ -783,6 +783,8 @@ pub struct DataTableCore {
     check: Option<RowAction<(usize, bool)>>,
     /// The display row under the pointer.
     hover_row: Option<usize>,
+    /// The sortable column whose header is under the pointer: it shows the order a press gives.
+    hover_header: Option<usize>,
     /// No header band: the table continues one headed above it, or has a single self-evident column.
     headerless: bool,
     /// The rows are windowed by a scroll the host owns ([`Self::host_scrolled`]).
@@ -1200,6 +1202,7 @@ impl DataTableCore {
             add_row: None,
             check: None,
             hover_row: None,
+            hover_header: None,
             headerless: false,
             host_scrolled: false,
             moving: row_motion::Moving::default(),
@@ -1301,6 +1304,15 @@ impl DataTableCore {
         let row = pt
             .filter(|pt| pt.y < body_bottom)
             .and_then(|pt| self.row_at(pt));
+        let header_bottom = self.rect.y0 + self.header_h;
+        self.hover_header = pt
+            .filter(|pt| !self.headerless && pt.y >= self.rect.y0 && pt.y < header_bottom)
+            .and_then(|pt| {
+                self.col_rects
+                    .iter()
+                    .position(|c| pt.x >= c.x0 && pt.x < c.x1)
+            })
+            .filter(|i| self.columns.get(*i).is_some_and(|c| c.sortable));
         if row != self.hover_row {
             self.hover_row = row;
             if self.reveals_on_hover() {
@@ -2849,6 +2861,7 @@ impl DataTableCore {
                 &header,
                 col.alignment(),
                 sorted,
+                self.hover_header == Some(i),
             );
         }
         scene.pop_layer();
@@ -3851,8 +3864,32 @@ impl Widget for DataTableCore {
             };
             let row = body.part(&format!("row:{index}"), "DataTable", row_rect);
             row.tag = Some("tr");
-            if self.selectable && self.is_row_selected(index) {
+            // Its ground as the canvas paints it: a selected row's lift, else every other row's
+            // stripe, a share of that lift, at the item radius.
+            let selected = self.selectable && self.is_row_selected(index);
+            if selected {
                 row.attrs.push(("aria-selected", "true".into()));
+            }
+            let ground = theme.tokens.colors.surfaces.content;
+            let fill = if selected {
+                Some(
+                    crate::chrome::selection_tier_on(
+                        theme,
+                        crate::chrome::SelectionState::new(true, false, false),
+                        ground,
+                    )
+                    .fill,
+                )
+            } else {
+                (index % 2 == 1).then(|| zebra_on(theme, ground))
+            };
+            if let Some(fill) = fill {
+                row.ground = Some(crate::composition::Ground {
+                    fill: Some(crate::composition::rgba8(fill)),
+                    edge: None,
+                    radius: f64::from(theme.tokens.radii.item).min(row_rect.height() / 2.0),
+                    inset: [0.0; 2],
+                });
             }
             let Some(Arrival::Ready(data)) = self.row_state_at(index) else {
                 continue;
@@ -5323,10 +5360,13 @@ fn paint_header_label(
     label: &str,
     align: CellAlign,
     sorted: Option<bool>,
+    hovered: bool,
 ) {
     if cell.width() <= 0.0 {
         return;
     }
+    // A hovered sortable header that does not sort yet shows, faintly, the order a press gives.
+    let shown = sorted.or(hovered.then_some(true));
     let theme = ctx.theme;
     let tokens = &theme.tokens;
     let text_style = header_style(theme);
@@ -5335,7 +5375,7 @@ fn paint_header_label(
     let icon_gap = f64::from(tokens.spacing.s1);
     let spare = (cell.width()
         - 2.0 * pad_x
-        - if sorted.is_some() {
+        - if shown.is_some() {
             icon + icon_gap
         } else {
             0.0
@@ -5348,14 +5388,13 @@ fn paint_header_label(
     let label_y = centered_text_top(cell.y0, cell.height(), label_h);
     let trailing = align == CellAlign::Trailing;
     let label_x = align.place(cell, f64::from(label_w), pad_x);
-    ctx.text(
-        &label,
-        &text_style,
-        tokens.colors.text_dim,
-        Point::new(label_x, label_y),
-        None,
-    );
-    if let Some(ascending) = sorted {
+    let ink = if hovered {
+        tokens.colors.text_primary
+    } else {
+        tokens.colors.text_dim
+    };
+    ctx.text(&label, &text_style, ink, Point::new(label_x, label_y), None);
+    if let Some(ascending) = shown {
         // The sort direction is an icon beside the label: before a
         // trailing-aligned numeric header, after a leading one.
         let x0 = if trailing {
@@ -5370,7 +5409,12 @@ fn paint_header_label(
         } else {
             crate::icons::Icon::ChevronDown
         };
-        arrow.draw(ctx.scene, ctx.transform, glyph, tokens.colors.text_dim);
+        let ink = if sorted.is_some() {
+            tokens.colors.text_dim
+        } else {
+            tokens.colors.text_tertiary
+        };
+        arrow.draw(ctx.scene, ctx.transform, glyph, ink);
     }
 }
 
@@ -5615,6 +5659,7 @@ impl<'a> DataTableFace<'a> {
                 column.header,
                 CellAlign::for_kind(column.kind),
                 sorted,
+                false,
             );
         }
         for (index, row) in self.rows.iter().enumerate() {

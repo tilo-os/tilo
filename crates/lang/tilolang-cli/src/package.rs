@@ -478,15 +478,15 @@ pub(crate) fn write_tapp(
     packed: &tilo_app_package::pack::Packed,
 ) -> Result<(), String> {
     use std::io::Write as _;
-    let temp = path.with_extension("tapp.tmp");
-    let file = std::fs::File::create(&temp).map_err(io(&temp))?;
-    let mut file = tilo_app_package::tapp::write(
-        std::io::BufWriter::new(file),
-        &packed.meta,
-        Some(packed as &dyn tilo_app_package::BlobSource),
-    )
-    .map_err(|error| format!("{}: {error}", path.display()))?;
-    file.flush().map_err(io(&temp))?;
-    drop(file);
-    std::fs::rename(&temp, path).map_err(io(path))
+    tilo_files::native::atomic::write_streaming(path, |temp| {
+        let mut archive = tilo_app_package::tapp::write(
+            std::io::BufWriter::new(&mut *temp),
+            &packed.meta,
+            Some(packed as &dyn tilo_app_package::BlobSource),
+        )
+        .map_err(std::io::Error::other)?;
+        archive.flush()?;
+        Ok(())
+    })
+    .map_err(|error| format!("{}: {error}", path.display()))
 }

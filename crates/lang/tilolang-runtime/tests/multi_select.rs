@@ -96,20 +96,6 @@ mod cases {
             .to_owned()
     }
 
-    fn of_kind<'a>(tree: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-        fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
-            if node.kind == kind {
-                out.push(node);
-            }
-            for child in &node.children {
-                walk(child, kind, out);
-            }
-        }
-        let mut out = Vec::new();
-        walk(tree, kind, &mut out);
-        out
-    }
-
     /// The children of the part `name` of `node`, in order.
     fn part<'a>(node: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
         node.children
@@ -123,7 +109,7 @@ mod cases {
 
     /// The window's bar: the shell that spans its columns.
     fn bar(tree: &UiNode) -> &UiNode {
-        let shells = of_kind(tree, "ui.NavShell");
+        let shells = tree.of_kind("ui.NavShell");
         assert_eq!(shells.len(), 1, "a window has one bar over its columns");
         shells[0]
     }
@@ -154,7 +140,9 @@ mod cases {
 
     /// Pick the place `key` in the window's sidebar, as a person choosing a place does.
     fn pick(window: &mut ViewInstance, key: &str) {
-        let item = of_kind(window.tree(), "ui.NavItem")
+        let item = window
+            .tree()
+            .of_kind("ui.NavItem")
             .into_iter()
             .find(|node| node.props.get("key") == Some(&Value::text(key)))
             .unwrap_or_else(|| panic!("the window offers no place {key}"))
@@ -167,7 +155,7 @@ mod cases {
     /// Choose `items` in the window's list, as a person choosing rows reports them.
     fn choose(window: &mut ViewInstance, items: &[&ResourceRef]) {
         let list = {
-            let lists = of_kind(window.tree(), "ui.VirtualList");
+            let lists = window.tree().of_kind("ui.VirtualList");
             assert_eq!(lists.len(), 1, "the window shows one list");
             lists[0].key.clone()
         };
@@ -232,7 +220,7 @@ mod cases {
         // The choice is put away once it has acted: the bar is the window's own again.
         let tree = window.tree();
         assert_eq!(
-            of_kind(tree, "ui.Badge").len(),
+            tree.of_kind("ui.Badge").len(),
             0,
             "the choice is put away once it has acted"
         );

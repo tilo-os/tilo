@@ -3,7 +3,7 @@
 //! through the extension's actions.
 
 use super::*;
-use ui::webview::ExtensionSidePanelChange;
+use tilo_webview::ExtensionSidePanelChange;
 
 fn with_side_panel(id: &str) -> Installed {
     installed(
@@ -22,7 +22,7 @@ tilo_test_env::scenario! {
     phase an_extensions_side_panel_shows_beside_the_page_as_it_asks;
     {
         use ExtensionSidePanelChange as Change;
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         controller.refresh = false;
@@ -142,7 +142,7 @@ tilo_test_env::scenario! {
 
     phase the_person_opens_and_closes_a_side_panel_from_the_window_and_the_api;
     {
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         controller.refresh = false;
@@ -248,7 +248,7 @@ tilo_test_env::scenario! {
 
     phase a_side_panel_asks_for_more_access_through_the_window;
     {
-        let window = ui::webview::test_engine::TestEngine::new();
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         controller.refresh = false;
@@ -308,7 +308,7 @@ tilo_test_env::scenario! {
         let theme = ui::theme::Theme::dark();
         let (narrowest, widest) = side_panel_bounds(&theme);
         assert!(narrowest < side_panel_width(&theme) && side_panel_width(&theme) < widest);
-        let shared: SharedEngine = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = tilo_webview::test_engine::TestEngine::new();
         let dir = tempfile::tempdir().unwrap();
         let store = || {
             ui::storage::Settings::<SidePanelWidths>::for_app("so.tilo.browser").in_profile(dir.path())
@@ -366,8 +366,8 @@ tilo_test_env::scenario! {
 
     phase a_shortcut_pressed_in_the_address_runs_the_command_that_holds_it;
     {
-        use ui::webview::{ExtensionShortcut, KeyInput, KeyModifiers};
-        let window = ui::webview::test_engine::TestEngine::new();
+        use tilo_webview::{ExtensionShortcut, KeyInput, KeyModifiers};
+        let window = tilo_webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
         let mut controller = ExtensionController::new(true);
         controller.refresh = false;

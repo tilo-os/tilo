@@ -381,13 +381,10 @@ fn several_issues_in_one_call_are_what_their_caller_may_do_one_at_a_time() {
         unchanged(&app),
         "what a commenter was refused changed nothing"
     );
-    // The group is offered to whoever may change an issue's own fields, so
-    // someone who may only comment comments on one issue a call.
-    assert!(group(&mut app, comments()).is_err());
-    assert!(unchanged(&app));
-    app.call_on(&first, "comment", json!({ "text": "Seen" }))
-        .expect("a commenter comments on an issue");
-    assert_eq!(count(&app, |issue| issue.comments.len() == 1), 1);
+    // A group is the edits it carries: someone who may comment comments on
+    // several issues in one call, as they comment on one.
+    group(&mut app, comments()).expect("a commenter comments on several issues");
+    assert_eq!(count(&app, |issue| issue.comments.len() == 1), 2);
     assert_eq!(
         count(&app, |issue| issue.status == Status::Backlog
             && issue.assignee.is_none()),

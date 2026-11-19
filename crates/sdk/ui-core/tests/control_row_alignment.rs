@@ -51,8 +51,8 @@ fn fixture_row() -> Box<dyn Widget> {
         Row::new()
             .no_wrap()
             .push(Box::new(Button::new("save", "Save")))
-            .push(Box::new(Toggle::new("wifi", "wifi")))
-            .push(Box::new(Checkbox::new("agree", "agree")))
+            .push(Box::new(Toggle::bound("wifi", "wifi")))
+            .push(Box::new(Checkbox::bound("agree", "agree")))
             .push(slot(Box::new(Dropdown::new(
                 vec!["Low".into(), "High".into()],
                 "level",
@@ -74,8 +74,8 @@ fn toolbar_row() -> Box<dyn Widget> {
         Row::new()
             .no_wrap()
             .push(Box::new(Button::new("save", "Save")))
-            .push(Box::new(Toggle::new("wifi", "wifi")))
-            .push(Box::new(Checkbox::new("agree", "agree")))
+            .push(Box::new(Toggle::bound("wifi", "wifi")))
+            .push(Box::new(Checkbox::bound("agree", "agree")))
             .push(Box::new(TextInput::new(vec![PathSegment::Field(
                 "query".into(),
             )]))),

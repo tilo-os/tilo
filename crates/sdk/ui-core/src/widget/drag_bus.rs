@@ -74,6 +74,20 @@ pub fn revision() -> u64 {
     REVISION.with(std::cell::Cell::get)
 }
 
+/// `source` lifted the resource `address` over `rect` : a window's bar, a view a person picks up.
+pub fn carry(source: String, address: Vec<u8>, label: String, pointer: Point, rect: Rect) {
+    publish(InFlight {
+        source: source.clone(),
+        payload: crate::dnd::DragPayload::Custom {
+            kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
+            blob: address,
+        },
+        label,
+        pointer,
+        runs: vec![(source, rect)],
+    });
+}
+
 /// `run` lifted an item: everything else in the window may take it now.
 pub fn publish(mut in_flight: InFlight) {
     let origin = origin();

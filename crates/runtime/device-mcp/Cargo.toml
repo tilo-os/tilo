@@ -1,0 +1,36 @@
+[package]
+name = "tilo-device-mcp"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The MCP server between the person's own devices over iroh, and a key's way into one of their workspaces wherever it is hosted."
+
+[dependencies]
+collab-types = { path = "../../collab/collab-types" }
+ed25519-dalek.workspace = true
+hex.workspace = true
+iroh.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
+serde.workspace = true
+serde_json.workspace = true
+tilo-actions = { path = "../../collab/actions" }
+tilo-delivery-protocol = { path = "../../server/tilo-delivery-protocol" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-mcp = { path = "../tilo-mcp" }
+tilo-server-session = { path = "../../server/tilo-server-session" }
+tilo-session-actions = { path = "../../session/session-actions" }
+tilo-session-client = { path = "../../session/client" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+uuid.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# A test checks the agent id it forms is one a workspace admits.
+tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true

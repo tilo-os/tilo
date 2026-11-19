@@ -57,11 +57,11 @@ fn lineage_len(state: &Path, author: &[u8; 32]) -> usize {
 async fn join_late(
     host: &crate::support::TestHost,
     device: crate::support::Device,
-    host_cert: &tilo_user_identity::DeviceCert,
+    server_cert: &tilo_user_identity::DeviceCert,
     target: &AutoCommit,
 ) -> (AutoCommit, usize, Duration) {
     let started = Instant::now();
-    let joiner = start_peer(host.iroh(), device.cert, host_cert.clone(), device.key);
+    let joiner = start_peer(host.iroh(), device.cert, server_cert.clone(), device.key);
     let events = joiner.events();
     joiner
         .join_placed(crate::support::WORKSPACE, "Workspace")

@@ -143,6 +143,7 @@ impl State {
                 .map_err(|error| tracing::warn!(?error, "dmabuf feedback"))
                 .ok()
         });
+        let with_feedback = feedback.is_some();
         let global = match feedback {
             Some(feedback) => self
                 .protocols
@@ -154,9 +155,9 @@ impl State {
                 .create_global::<Self>(&display, formats),
         };
         self.protocols.dmabuf_global = Some(global);
-        // Where clients allocate is what `tilo system health --gpu` reads.
+        // What clients are offered is what `tilo system health --gpu` reads.
         let node = device.and_then(|node| node.dev_path());
-        crate::gpu_health::record_dmabuf(node.as_deref());
+        crate::gpu_health::record_dmabuf(node.as_deref(), with_feedback);
     }
 
     /// Offer `linux-dmabuf` with default feedback for linear buffers of the DRM fourcc `codes`,

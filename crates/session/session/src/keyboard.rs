@@ -37,8 +37,10 @@ pub const SURFACE: &str = "osk";
 /// Its program, as it is installed beside the session's own.
 const PROGRAM: &str = "tilo-osk";
 
-/// Its kind, as a reader with no words of its own knows it.
-const KEYBOARD_KIND: &str = "keyboard.on-screen";
+/// The on-screen keyboard as the session publishes it: whether it shows and where it stands.
+#[derive(tilo_resource::Row)]
+#[row(kind = "keyboard.on-screen", label = "On-screen keyboard")]
+pub(crate) struct OnScreenKeyboard;
 
 /// The margin between the keyboard and the bottom and sides of the display,
 /// in logical pixels.
@@ -266,6 +268,7 @@ impl Service for KeyboardService {
 #[effect(operation = "so.tilo.session.keyboard")]
 pub(crate) enum KeyboardAction {
     /// Show the keyboard, or put it away, until the field it was asked over is left
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     SetVisible {
         /// Whether the keyboard belongs on screen
@@ -273,6 +276,7 @@ pub(crate) enum KeyboardAction {
         visible: bool,
     },
     /// Type text into the field the person types into
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Type {
         /// The text to type
@@ -283,11 +287,13 @@ pub(crate) enum KeyboardAction {
 
 /// The on-screen keyboard as the session publishes it.
 fn keyboard_resource() -> ResourceSpec {
-    tilo_service::offer::<KeyboardAction>(ResourceSpec::new(
-        KEYBOARD,
-        KEYBOARD_KIND,
-        crate::i18n::t("session-resource-keyboard"),
-    ))
+    tilo_service::offer::<KeyboardAction>(
+        tilo_resource::LiveRow::typed::<OnScreenKeyboard>(
+            KEYBOARD,
+            crate::i18n::t("session-resource-keyboard"),
+        )
+        .into_resource(),
+    )
 }
 
 impl crate::Session {

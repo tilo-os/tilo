@@ -246,7 +246,7 @@ tilo_test_env::scenario! {
     phase goa_refreshed_remote_identity_mismatch_prevents_persistence;
     {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temporary = tempfile::tempdir().unwrap();
         let (roots, selected, path) = source(temporary.path(), CONFIG);
         let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
@@ -272,7 +272,7 @@ tilo_test_env::scenario! {
     phase goa_identity_alone_does_not_prove_access_to_files;
     {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temporary = tempfile::tempdir().unwrap();
         let (roots, selected, path) = source(temporary.path(), CONFIG);
         let issuer = tilo_oauth::fake::FakeAuthorizationServer::start();
@@ -305,7 +305,7 @@ tilo_test_env::scenario! {
     phase goa_original_registration_refreshes_verifies_identity_and_root_and_retries_without_source_writes;
     {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temporary = tempfile::tempdir().unwrap();
         let (roots, selected, path) = source(temporary.path(), CONFIG);
         assert!(selected.can_import_credentials);
@@ -391,7 +391,7 @@ tilo_test_env::scenario! {
     phase goa_runtime_defaults_and_explicit_config_fallback_preserve_actual_original_registration;
     {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let without_overrides = CONFIG
             .lines()
             .filter(|line| !line.starts_with("OAuth2Client"))
@@ -434,7 +434,7 @@ tilo_test_env::scenario! {
     phase goa_onedrive_uses_original_runtime_grant_and_canonical_storage_consumer;
     {
         let mut environment = tilo_test_env::ScopedEnv::new();
-        environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temporary = tempfile::tempdir().unwrap();
         let contents = CONFIG.replace("Provider=google", "Provider=ms_graph");
         let (roots, selected, path) = source(temporary.path(), &contents);
@@ -580,7 +580,7 @@ fn wait_for_actual_expiry(root: &Path, id: &AccountId) {
 fn expired_imported_goa_grant_renews_automatically_after_reseal_under_original_client_without_source_revocation()
  {
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    environment.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temporary = tempfile::tempdir().unwrap();
     let (roots, selected, path) = source(temporary.path(), CONFIG);
     let before = std::fs::metadata(&path).unwrap();

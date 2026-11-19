@@ -334,11 +334,27 @@ fn later_writers(
     (before, after): (&[ChangeHash], &[ChangeHash]),
     by: Option<&str>,
     invoker: Option<&tilo_actions::Actor>,
-    created: &HashSet<ObjId>,
+    forward: &mut Option<Vec<Patch>>,
 ) -> Later {
     let versions = tilo_resource::history::versions(doc);
     let saw_run = made_after_run(doc, before, after);
     let start_at = first_index_after(doc, after, versions.len());
+    // What the step made and what it wrote are read only where a change was
+    // made after it: with none, nobody could have built on it, so taking the
+    // step back reads none of its characters (a paste nobody touched since).
+    let created = if start_at < versions.len() {
+        let read = doc.diff(before, after);
+        let created = objects_created(&read);
+        *forward = Some(read);
+        created
+    } else {
+        HashSet::new()
+    };
+    let undone = if start_at < versions.len() {
+        crate::history_source::steps::undone(doc)
+    } else {
+        HashSet::new()
+    };
     let mut out: HashMap<Slot, String> = HashMap::new();
     let mut typed: HashMap<ObjId, text::LaterText> = HashMap::new();
     for i in start_at..versions.len() {
@@ -358,6 +374,12 @@ fn later_writers(
                     .is_some_and(|other| other.acting.by == *invoker)
             })
         {
+            continue;
+        }
+        // A later step that was taken back since leaves nothing of its own, and neither does
+        // the undo that took it back: the earlier step is undone as if neither was made, so
+        // a write undone before its file's making is undone takes the file with it.
+        if undone.contains(&v.hash.to_string()) || undid_only(doc, &v, &undone) {
             continue;
         }
         let lo = if i == 0 {
@@ -394,6 +416,19 @@ fn later_writers(
         slots: out,
         text: typed,
     }
+}
+
+/// Whether `version` is an undo, and every step it took back is still undone.
+fn undid_only(
+    doc: &AutoCommit,
+    version: &tilo_resource::history::Version,
+    undone: &HashSet<String>,
+) -> bool {
+    matches!(
+        crate::history_source::steps::kind_of(doc, version),
+        crate::history_source::steps::Kind::Undo(moved)
+            if !moved.is_empty() && moved.iter().all(|step| undone.contains(step))
+    )
 }
 
 /// The object living at `prop` of `obj` as of `after`, when it is one the run
@@ -589,11 +624,15 @@ fn plan(
     (by, invoker): (Option<&str>, Option<&tilo_actions::Actor>),
     authors: &dyn ResolveAuthor,
 ) -> (RevertOutcome, Vec<(Patch, bool)>) {
-    let forward = doc.diff(before, after);
-    let created = objects_created(&forward);
     let inverse = doc.diff(after, before);
-    let later = later_writers(doc, (before, after), by, invoker, &created);
-    let rewritten = text::rewritten(doc, &forward, (before, after), &later.text);
+    let mut forward = None;
+    let later = later_writers(doc, (before, after), by, invoker, &mut forward);
+    let rewritten = text::rewritten(
+        doc,
+        forward.as_deref().unwrap_or_default(),
+        (before, after),
+        &later.text,
+    );
     classify(
         doc,
         inverse,

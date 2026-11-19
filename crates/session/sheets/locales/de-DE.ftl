@@ -527,6 +527,19 @@ keyboard-shortcuts-resource = Tastenkürzel
 keyboard-shortcuts-list = Kürzel auflisten
 keyboard-shortcuts-list-description = Jedes Kürzel des Desktops mit seinen aktuellen und voreingestellten Tasten.
 
+## Ein Agent fragt seine Person etwas in eigenen Worten: eine Entscheidung
+## oder etwas, das nur sie weiß.
+agent-ask-title = { $agent } fragt dich
+agent-ask-workspace = Arbeitsbereich
+agent-ask-send = Senden
+agent-ask-not-now = Nicht jetzt
+agent-ask-pick-or-type = Wähle eine Antwort oder tippe eine.
+agent-question-more-label = Außerdem offen
+agent-question-more = { $count ->
+    [one] 1 weitere Frage
+   *[other] { $count } weitere Fragen
+}
+
 ## Die Fragen des Zusammenarbeitsnetzes: ein Agent auf dem Rechner eines
 ## Arbeitsbereichs fragt seine Person um Erlaubnis für eine Aktion, und ein
 ## Gerät bittet sein Geschwistergerät um den Schlüssel, mit dem es startet.
@@ -728,6 +741,7 @@ so-tilo-workspace-settings-change-revoke-delegation = Deine Arbeit von einem Ser
 so-tilo-workspace-settings-change-set-agent-answer = Eine Art beantworten
 so-tilo-workspace-settings-change-set-agent-model = Das Modell wählen
 so-tilo-workspace-settings-change-set-agent-spend-limit = Das Tageslimit setzen
+so-tilo-workspace-settings-change-set-moderation = Moderation ein- oder ausschalten
 so-tilo-workspace-settings-change-set-role = Eine Rolle ändern
 so-tilo-workspace-settings-change-show-tab = Einen Tab zeigen
 so-tilo-workspace-settings-change-toggle-device = Auf einem Gerät zeigen
@@ -754,7 +768,7 @@ pair-device-no-workspace = Öffne zuerst einen Arbeitsbereich: Der Link öffnet 
 pair-device-not-yours = Dieser Computer ist nicht als du angemeldet und kann daher kein neues Gerät aufnehmen.
 pair-device-no-link = Der Link ließ sich nicht erstellen. Schließe dies und versuche es noch einmal.
 pair-device-waiting-title = Geräte warten auf den Beitritt
-pair-device-waiting-nothing = Kein Gerät wartet. Ein Gerät, das von einem deiner Geräte eingerichtet wurde, erscheint hier, wenn es beitreten möchte.
+pair-device-waiting-nothing = Kein Gerät wartet. Ein Gerät, das von einem deiner Geräte eingerichtet wurde, wartet auf deine Zustimmung, wenn es beitreten möchte.
 pair-device-waiting-approve = Bestätigen
 pair-device-waiting-decline = Ablehnen
 pair-device-link-field = Die Verknüpfung des Geräts

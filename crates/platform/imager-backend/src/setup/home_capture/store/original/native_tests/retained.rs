@@ -275,7 +275,7 @@ fn retained_groups_require_actual_peer_protected_record_and_owned_rw_epoch() {
     assert_eq!(rustix::process::geteuid().as_raw(), 0);
     let mut receiver = installed_receiver::Receiver::from_inherited().unwrap();
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let mount = PathBuf::from(
         std::env::var_os("TILO_ORIGINAL_SOURCE_GPT_STORE")
             .expect("explicit owned direct GPT native subject required"),

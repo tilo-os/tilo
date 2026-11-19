@@ -9,6 +9,8 @@
 //! for it from the person's devices that hold the key. [`provisioning`] creates that chain, [`identity store`]
 //! selects the certificate this device presents to the device serving each
 //! workspace, and [`join_proof`] keeps the signed proof it presents there.
+//! [`store`] is the person's identity at rest: its secret providers,
+//! backups and recovery words.
 //!
 //! The session supplies its committed workspaces and channel service through
 //! [`broker::WorkspaceMembership`] and [`broker::GroupKeySource`].
@@ -45,6 +47,8 @@ pub mod provisioning;
 #[cfg(unix)]
 pub mod registry;
 pub mod sources;
+#[cfg(unix)]
+pub mod store;
 
 #[cfg(all(not(unix), not(target_arch = "wasm32")))]
 mod unsupported_host;

@@ -114,6 +114,64 @@ fn a_servers_configuration_is_typed_actions_with_history() {
     );
 }
 
+/// Every device founds the document with the same change, so two of the
+/// person's devices that each write a server into it before they see one
+/// another write one document holding both, not two competing roots.
+#[test]
+fn two_devices_that_each_write_the_document_first_merge_into_one() {
+    let mut left = Replica::<Servers>::from_doc(genesis(WORKSPACE).unwrap());
+    let mut right = Replica::<Servers>::from_doc(genesis(WORKSPACE).unwrap());
+    assert_eq!(
+        left.doc().clone().get_heads(),
+        right.doc().clone().get_heads(),
+        "the genesis is one change, identical on every device"
+    );
+
+    // Each device writes under its own actor, as the document's author does
+    // when the workspace hands it a copy.
+    left.doc_mut()
+        .set_actor(automerge::ActorId::from([1; 32].to_vec()));
+    left.apply(Servers::ENROLL_SERVER.with((
+        device_id(&[7; 32]).as_str().to_owned(),
+        "Attic".into(),
+        endpoint(),
+    )))
+    .unwrap();
+    right
+        .doc_mut()
+        .set_actor(automerge::ActorId::from([2; 32].to_vec()));
+    right
+        .apply(Servers::ENROLL_SERVER.with((
+            device_id(&[9; 32]).as_str().to_owned(),
+            "Cellar".into(),
+            endpoint(),
+        )))
+        .unwrap();
+
+    // What the workspace hands one device's copy once the two meet: the
+    // other's whole document, merged in.
+    let mut merged = Replica::<Servers>::load(&left.save()).unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(merged.doc_mut(), &right.save())
+        .expect("the other device's copy merges");
+    let state = merged.state().unwrap();
+    assert_eq!(state.servers.len(), 2, "both servers are in one document");
+    assert_eq!(state.active(&[7; 32]).unwrap().label, "Attic");
+    assert_eq!(state.active(&[9; 32]).unwrap().label, "Cellar");
+}
+
+/// The genesis is derived from the document's identity alone: another workspace
+/// has another genesis, and no plan or server is in it.
+#[test]
+fn the_genesis_is_empty_and_named_by_its_workspace() {
+    let mut one = genesis(WORKSPACE).unwrap();
+    let mut same = genesis(WORKSPACE).unwrap();
+    assert_eq!(one.get_heads(), same.get_heads());
+    let mut other = genesis("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a22").unwrap();
+    assert_ne!(one.get_heads(), other.get_heads());
+    let replica = Replica::<Servers>::load(&one.save()).unwrap();
+    assert!(replica.state().unwrap().servers.is_empty());
+}
+
 #[test]
 fn a_change_the_document_cannot_mean_is_refused() {
     let mut replica = enrolled();
@@ -284,6 +342,50 @@ fn a_machines_own_configuration_is_typed_actions_with_history() {
     assert_eq!(
         server.device.status.revision,
         "0123456789abcdef0123456789abcdef"
+    );
+}
+
+/// A link addressed in both families keeps a default route for each at once:
+/// the IPv4 gateway and the IPv6 one in the interface's one setting.
+#[test]
+fn a_dual_stack_interface_keeps_a_gateway_for_each_family() {
+    let mut servers = enrolled();
+    servers
+        .apply(Servers::SET_INTERFACE.with((
+            device(),
+            "enp3s0".into(),
+            STATIC.into(),
+            "65.108.204.148/26,2a01:4f9:1a:a083::2/64".into(),
+            "65.108.204.129,fe80::1".into(),
+            "185.12.64.1,185.12.64.2".into(),
+            String::new(),
+        )))
+        .unwrap();
+    let server = servers.state().unwrap().active(&[7; 32]).cloned().unwrap();
+    let interface = server
+        .device
+        .network
+        .get(&Id::from_raw("enp3s0"))
+        .cloned()
+        .expect("the interface is set up");
+    assert_eq!(
+        interface.addresses,
+        "65.108.204.148/26,2a01:4f9:1a:a083::2/64"
+    );
+    assert_eq!(interface.gateway, "65.108.204.129,fe80::1");
+    // A second gateway of one family is refused whole.
+    assert!(
+        servers
+            .apply(Servers::SET_INTERFACE.with((
+                device(),
+                "enp3s0".into(),
+                STATIC.into(),
+                "65.108.204.148/26,2a01:4f9:1a:a083::2/64".into(),
+                "65.108.204.129,65.108.204.130".into(),
+                "185.12.64.1".into(),
+                String::new(),
+            )))
+            .is_err()
     );
 }
 
@@ -663,5 +765,186 @@ fn a_machine_with_an_unknown_token_is_refused() {
                 String::new(),
             )))
             .is_err()
+    );
+}
+
+/// The machine's own drives, as it reads them off its hardware: two empty
+/// ones, so the plan's `empty` rule settles neither.
+fn empty_drives() -> Vec<install_profile_model::plan::Drive> {
+    vec![
+        install_profile_model::plan::Drive {
+            model: "QEMU HARDDISK".into(),
+            identity: "serial-a".into(),
+            bytes: 40_000_000_000,
+            holds_data: false,
+            boots: false,
+        },
+        install_profile_model::plan::Drive {
+            model: "QEMU HARDDISK".into(),
+            identity: "serial-b".into(),
+            bytes: 40_000_000_000,
+            holds_data: false,
+            boots: false,
+        },
+    ]
+}
+
+/// A machine that enrolled with a plan's token is one of the person's
+/// devices, and reads its plan from its waiting entry: it reports the drives
+/// it really has, asks what it cannot settle, waits while another of the
+/// person's devices answers in the entry, and then finishes.
+#[test]
+fn a_machine_reads_its_plan_from_its_entry_reports_its_drives_and_finishes() {
+    let mut servers = planned("empty", "");
+    let drives = empty_drives();
+    let machine = device_id(&[9; 32]);
+
+    // It reads its plan from the waiting entry, as the person's devices keep
+    // it, before it has a device key of its own.
+    let planned_entry = servers
+        .state()
+        .unwrap()
+        .planned_by_nonce(NONCE)
+        .map(|(_, server)| server.clone())
+        .expect("the token names the planned machine");
+    let read = planned_entry.install_plan().unwrap();
+    assert_eq!(read.plan, PLAN);
+    assert_eq!(read.name, "cupboard");
+    assert_eq!(read.destination, "tilo-server");
+    assert_eq!(read.disk.encode(), "empty");
+
+    // It reports its two empty drives, and asks which one, because the plan's
+    // rule matches neither.
+    let machine::Step::Enlist { nonce, report } = machine::step(&planned_entry, &drives).unwrap()
+    else {
+        panic!("a planned machine enlists");
+    };
+    assert_eq!(nonce, NONCE);
+    let asked: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&report.ask).unwrap();
+    assert!(
+        asked
+            .get("disk")
+            .is_some_and(|reason| reason.contains("2 drives")),
+        "the machine asks about its disk: {asked:?}"
+    );
+    servers
+        .apply(Servers::BEGIN_INSTALL.with((
+            machine.as_str().to_owned(),
+            nonce,
+            report.drives,
+            report.ask,
+        )))
+        .unwrap();
+
+    let entry = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&machine)
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        machine::step(&entry, &drives).unwrap(),
+        machine::Step::Wait(vec!["disk".to_owned()]),
+        "it waits while the question is open"
+    );
+
+    // Another of the person's devices answers in the entry.
+    servers
+        .apply(Servers::ANSWER_MACHINE_CHOICE.with((
+            machine.clone(),
+            "disk".into(),
+            "serial:serial-a".into(),
+        )))
+        .unwrap();
+
+    let entry = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&machine)
+        .cloned()
+        .unwrap();
+    let machine::Step::Install(plan) = machine::step(&entry, &drives).unwrap() else {
+        panic!("an answered machine installs: {entry:?}");
+    };
+    assert_eq!(
+        plan.disk.encode(),
+        "serial:serial-a",
+        "with the answered drive"
+    );
+    assert_eq!(plan.name, "cupboard", "and the name it was planned under");
+    assert_eq!(plan.unlock, "tpm");
+    assert_eq!(plan.network.addressing, "dhcp");
+
+    servers
+        .apply(Servers::FINISH_INSTALL.with(machine.clone()))
+        .unwrap();
+    let entry = servers
+        .state()
+        .unwrap()
+        .servers
+        .get(&machine)
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        machine::step(&entry, &drives).unwrap(),
+        machine::Step::Finished
+    );
+    assert_eq!(
+        entry.install_plan().unwrap().disk.encode(),
+        "serial:serial-a",
+        "the installed entry still says what it was installed from"
+    );
+}
+
+/// A plan open on its network or on the workspaces it holds is not asked
+/// about: the person's devices set those up on the machine's entry, so nothing
+/// waits for an answer.
+#[test]
+fn a_machine_asks_nothing_about_what_its_entry_sets_up() {
+    let servers = planned("largest", "network,hosting");
+    let mut drives = empty_drives();
+    drives[1].bytes = 2_000_000_000_000;
+    let report = machine::report(
+        servers
+            .state()
+            .unwrap()
+            .planned_by_nonce(NONCE)
+            .map(|(_, server)| server)
+            .unwrap(),
+        &drives,
+    )
+    .unwrap();
+    assert!(report.ask.is_empty(), "nothing is asked: {report:?}");
+}
+
+/// A rule that matches exactly one of the machine's drives is settled by the
+/// machine itself; the plan's other open choices are asked instead.
+#[test]
+fn a_machine_settles_its_disk_when_the_rule_names_one_drive() {
+    let servers = planned("largest", "name");
+    let mut drives = empty_drives();
+    drives[1].bytes = 2_000_000_000_000;
+    let report = machine::report(
+        servers
+            .state()
+            .unwrap()
+            .planned_by_nonce(NONCE)
+            .map(|(_, server)| server)
+            .unwrap(),
+        &drives,
+    )
+    .unwrap();
+    let asked: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&report.ask).unwrap();
+    assert!(
+        !asked.contains_key("disk"),
+        "the rule settled the disk: {asked:?}"
+    );
+    assert!(
+        asked.contains_key("name"),
+        "the plan's open name is asked: {asked:?}"
     );
 }

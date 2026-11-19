@@ -30,20 +30,6 @@ params = [
   { name = "query", type = { option = "text" }, required = false },
 ]
 
-[[resources.verbs]]
-id = "inspect"
-kind = "read"
-params = [
-  { name = "process", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "copy-pid"
-kind = "read"
-params = [
-  { name = "process", type = "text", required = true },
-]
-
 [[resources.types]]
 name = "SortKey"
 cases = [

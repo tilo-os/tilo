@@ -130,16 +130,7 @@ pub enum FsRequest {
         recovery: [u8; 16],
         name: Vec<u8>,
     },
-    /// Retired: the retained source named its replacements itself. Kept at its place so an app
-    /// from an older build is answered "unexpected directory request", not read as another call.
-    RetiredPrepareReplace,
     SyncDirectory,
-    RetiredRetireCreated,
-    RetiredSetCreatedPermissions,
-    RetiredRenameReplace,
-    RetiredAtomicSave,
-    RetiredHistoryReadSubject,
-    RetiredHistoryQuery,
     // MetadataPin
     PinStat,
     PinCheckScope,
@@ -147,43 +138,16 @@ pub enum FsRequest {
     JobPoll,
     JobCancel,
     JobCheckScope,
-    RetiredJobPinReplacement,
-    RetiredJobCreatedTemporary,
-    // ReplacementPin
-    RetiredReplacementCommit,
-    RetiredReplacementObserve,
-    RetiredReplacementCheck,
     // DirectoryCursor
     CursorPage {
         expected_sequence: u64,
     },
-    // PendingReplacement
-    RetiredPendingObserve,
-    RetiredPendingStart,
-    RetiredPendingCancel,
-    RetiredPendingCheckScope,
-    RetiredPendingArm,
-    RetiredPendingCommittedPin,
-    RetiredPendingRetireHandoff,
-    // CreatedTemporary
-    RetiredTemporaryCheckScope,
-    RetiredTemporaryRetire,
-    RetiredTemporaryPrepareReplace,
-    RetiredTemporarySetPermissions,
-    RetiredTemporaryPrepareAtomicSave,
-    // HistoryReadSubject
-    RetiredSubjectObserve,
-    RetiredSubjectCheckScope,
-    RetiredSubjectCheck,
-    RetiredSubjectArm,
-    RetiredSubjectRetireHandoff,
     // SessionBlobs
     SessionScope {
         workspace: String,
         app: String,
     },
     SessionRefreshPublic,
-    RetiredSessionAttributeWrites,
     // DocumentBlobs
     Put {
         bytes: Vec<u8>,
@@ -242,12 +206,6 @@ pub enum FsReply {
     FilesystemStats(Option<DirectoryFilesystemStats>),
     Recoveries(Option<RecoveryPage>),
     Poll(Option<JobPoll>),
-    /// Retired with the retained source's replacement path; the bytes a reply carries are read only
-    /// by the build that asked for them. Kept at their places so no other reply moves.
-    RetiredReplacementObservation,
-    RetiredPendingObservation,
-    RetiredHistoryObservation,
-    RetiredCommittedPin,
     Ticket(Vec<u8>),
     OpenedFile(Option<OpenedFile>),
     Scope(u64),

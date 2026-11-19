@@ -88,7 +88,8 @@ impl RestartStorage {
     }
 }
 
-#[cfg(all(test, not(unix)))]
+#[cfg(test)]
+#[cfg(not(unix))]
 mod tests {
     use super::*;
     #[test]

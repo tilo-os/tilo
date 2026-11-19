@@ -134,8 +134,8 @@ OWN_SCROLL = re.compile(r"\bscroll_(?:y|offset|top|position|x)\b")
 DECORATOR_IMPL = re.compile(r"\bimpl\s+(?:[\w:<>]*::)?Decorator\s+for\s+\w+")
 # A rounded rect used as a clip mask (a fade or reveal layer) is not a painted
 # panel: it shapes what the wrapped widget drew. How far above the rect its
-# `push_layer` may stand.
-CLIP_LAYER = re.compile(r"\bpush_layer\s*\(")
+# `push_layer` (`push_clip_layer` for a clip) may stand.
+CLIP_LAYER = re.compile(r"\bpush_(?:clip_)?layer\s*\(")
 CLIP_REACH = 8
 
 RULES = (
@@ -369,9 +369,54 @@ def print_baseline(root: Path) -> None:
         print(f"{rule} {count} {file}")
 
 
+def lower(root: Path, baseline_path: Path, files: list[str]) -> bool:
+    """Lower the lines of ``files`` to the counts they now have, never raise.
+
+    ``files`` are the repository-relative sources a commit stages. Fixing a
+    hand-painted control leaves its allowance too high, and the check then fails
+    the tree "is now …; lower the count" until someone edits the file by hand.
+    Lowering is not a judgement call, so a commit does it here. A line is never
+    raised: a count that grew is a new violation for its author to fix or to
+    raise deliberately, which is the judgement the check exists for.
+    """
+    found = {}
+    for file in files:
+        path = root / file
+        # A source a commit deletes has no counts: its allowance drops, as a
+        # lowered one does.
+        found[file] = (count_file(path.read_text(errors="replace"), file)
+                       if path.exists() else {})
+    lines = baseline_path.read_text().splitlines()
+    lowered = False
+    out = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            out.append(line)
+            continue
+        rule, count, file = stripped.split(maxsplit=2)
+        have = found.get(file, {}).get(rule, 0)
+        if file in found and have < int(count):
+            # A count of 0 deletes the line, as "lower the count" asks.
+            if have:
+                out.append(f"{rule} {have} {file}")
+            lowered = True
+            continue
+        out.append(line)
+    if lowered:
+        baseline_path.write_text("\n".join(out) + "\n")
+    return lowered
+
+
 def main(argv: list[str]) -> int:
     if argv[1:] == ["--print-baseline"]:
         print_baseline(ROOT)
+        return 0
+    if argv[1:2] == ["--lower"]:
+        files = argv[2:]
+        if lower(ROOT, BASELINE, files):
+            print("primitives_baseline.txt: lowered the counts these files fixed",
+                  file=sys.stderr)
         return 0
     errors = check(ROOT, BASELINE)
     if errors:

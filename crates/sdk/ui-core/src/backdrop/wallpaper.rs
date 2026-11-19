@@ -93,7 +93,7 @@ impl Source {
         self.state.borrow().picture.clone()
     }
 
-    /// The picture covering `rect`, blurred by `blur_px` logical pixels: what a surface standing on
+    /// The picture covering `rect`, blurred by `blur_px` logical pixels: what a surface resting on
     /// the shell shows of it, made once per picture, rectangle and blur ([`blurred_cover`] keeps
     /// it).
     #[must_use]

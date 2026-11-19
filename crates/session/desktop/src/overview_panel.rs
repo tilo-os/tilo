@@ -170,6 +170,9 @@ pub struct OverviewPanel {
     laid_out: Rect,
     shell: OverviewCards,
     flight: Option<WindowFlight>,
+    /// The window groups whose drawings the toolkit keeps for this overview's pictures
+    /// ([`ui::window_pictures`]): every window it shows whose picture the compositor does not draw.
+    wanted_pictures: Vec<u64>,
     metrics: Metrics,
     grid: GridMetrics,
     reduce_motion: bool,
@@ -241,6 +244,7 @@ impl OverviewPanel {
             tilo_question_h: 0.0,
             tilo_answers_w: (0.0, 0.0),
             flight: None,
+            wanted_pictures: Vec::new(),
             metrics: Metrics::default(),
             grid: GridMetrics::for_theme(&Theme::default()),
             reduce_motion: false,
@@ -281,6 +285,27 @@ impl OverviewPanel {
     pub fn set_flight(&mut self, flight: WindowFlight) {
         self.flight = Some(flight);
         self.bump();
+    }
+
+    /// Have the toolkit keep the drawings of the windows this overview shows while it is `drawn`,
+    /// and of none once it is not: what each window's picture shows ([`ui::window_pictures`]). A
+    /// window whose picture the compositor draws is left to it.
+    fn want_pictures(&mut self, drawn: bool) {
+        let groups: Vec<u64> = if drawn {
+            self.picture()
+                .strips
+                .iter()
+                .flat_map(|strip| strip.windows.iter())
+                .filter(|window| !self.shell.pictured.contains(&window.address.tab))
+                .map(|window| window.address.group)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if groups != self.wanted_pictures {
+            ui::window_pictures::want(&groups);
+            self.wanted_pictures = groups;
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -658,7 +683,9 @@ impl Widget for OverviewPanel {
     ) {
         let progress = self.progress();
         self.drawn_progress = progress;
-        if !self.is_drawn() {
+        let drawn = self.is_drawn();
+        self.want_pictures(drawn);
+        if !drawn {
             if let Some(flight) = &self.flight {
                 flight.clear();
             }
@@ -714,9 +741,11 @@ impl Widget for OverviewPanel {
         }
     }
 
-    /// Changed, or the flight's clock moved since the last frame.
+    /// Changed, the flight's clock moved since the last frame, or a window shown here still waits
+    /// for its first picture.
     fn needs_redraw(&self) -> bool {
         self.dirty
+            || (!self.wanted_pictures.is_empty() && ui::window_pictures::owes_any())
             || self
                 .flight
                 .as_ref()
@@ -1713,6 +1742,7 @@ mod tests {
                     with: vec![crate::overview::ShownPerson {
                         id: "ada".into(),
                         name: "Ada".into(),
+                        kind: crate::overview::HolderKind::Person,
                     }],
                     writable: false,
                 })

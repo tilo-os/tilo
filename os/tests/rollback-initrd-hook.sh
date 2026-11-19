@@ -54,7 +54,9 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = --output ]; then printf 'sealed-key' >"$2"; fi
   shift
 done
-[ "${TILO_TEST_FAIL:-0}" -eq 0 ]
+[ "${TILO_TEST_FAIL:-0}" -eq 0 ] && exit 0
+printf 'the rollback floor refuses generation 0: this image is older than the oldest one this machine boots\n' >&2
+exit 1
 EOF
 chmod 0755 "$work/bin/"*
 mkdir -p "/dev/disk/by-uuid" 2>/dev/null || true
@@ -81,9 +83,10 @@ rm -f "$work/asked" "$work/args"
 failed_key="$work/failure-root/run/cryptsetup-keys.d/luks-$uuid.key"
 if PATH="$work/bin:$PATH" TILO_TEST_FAIL=1 TILO_TEST_ARGS="$work/args" \
      TILO_TEST_ASKED="$work/asked" TILO_ROLLBACK_RUNTIME_ROOT="$work/failure-root" \
-     "$helper" "/dev/disk/by-uuid/$uuid" "luks-$uuid" \
-   && [ ! -e "$failed_key" ]; then
-  ok "failed TPM unseal removes partial key material and yields to recovery"
+     "$helper" "/dev/disk/by-uuid/$uuid" "luks-$uuid" 2>"$work/reason" \
+   && [ ! -e "$failed_key" ] \
+   && grep -Fq 'the rollback floor refuses generation 0' "$work/reason"; then
+  ok "failed TPM unseal removes partial key material, says why, and yields to recovery"
 else
   bad "failed TPM unseal blocked fallback or left partial key material"
 fi

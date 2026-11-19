@@ -195,7 +195,7 @@ pub fn presentation(workspace: &str, cert: &DeviceCert, key: &SigningKey) -> Vec
         workspace_id: workspace.into(),
         device_certificate: serde_json::to_vec(cert).unwrap(),
         proof: key
-            .sign(&runtime_identity::collaboration_join_digest(workspace).unwrap())
+            .sign(&tilo_identity_client::collaboration_join_digest(workspace).unwrap())
             .to_bytes()
             .to_vec(),
     }

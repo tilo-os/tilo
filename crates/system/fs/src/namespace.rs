@@ -523,9 +523,18 @@ impl Namespace {
             ROOT_DOCUMENT_ID_KEY,
             root_document_id.0.to_string(),
         )?;
-        // Name the founding change as the mount's now: a merge made later settles a pending
-        // change without its name, and a device signs only the changes that name what made them.
-        ns.doc.index_mut().commit_named();
+        // Name the founding change now, as the making of the tree's root folder: a merge made
+        // later settles a pending change without its name, and a device signs only the changes
+        // that name what made them.
+        let ambient = ACTING.with(|acting| acting.borrow().clone());
+        let index = ns.doc.index_mut();
+        index.name_as(
+            &fs_protocol::tree::document_id(),
+            fs_protocol::file_action::did(fs_protocol::file_action::verbs::NEW_FOLDER),
+            ROOT_ID,
+            ambient.as_ref(),
+        );
+        index.commit_named();
         ns.rebuild_document_index();
         Ok(ns)
     }

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tilo_vm_protocol::Owner;
 
 use crate::error::DaemonError;
-use crate::fsutil::{self, write_atomic};
+use crate::fsutil;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TargetRecord {
@@ -98,7 +98,9 @@ impl TargetStore {
     fn save(&self, record: &TargetRecord) -> Result<(), DaemonError> {
         let bytes = serde_json::to_vec_pretty(record)
             .map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
-        write_atomic(&self.record_path(&record.worktree), &bytes)
+        let path = self.record_path(&record.worktree);
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+            .map_err(DaemonError::io(format!("write {}", path.display())))
     }
 
     /// Every recorded build dir, most recently used first.

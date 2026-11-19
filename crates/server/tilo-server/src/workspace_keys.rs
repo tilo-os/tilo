@@ -182,13 +182,18 @@ impl Drop for KeyService {
 struct Keys(KeyProvider);
 
 impl GroupKeys for Keys {
-    fn group_keys<'a>(&'a self, workspace: &'a str, create: bool) -> GroupKeysAnswerFuture<'a> {
+    fn group_keys<'a>(
+        &'a self,
+        workspace: &'a str,
+        readers: &'a str,
+        create: bool,
+    ) -> GroupKeysAnswerFuture<'a> {
         let keys = self.0.clone();
         Box::pin(async move {
             if keys.get().is_none() {
                 return Some(Err("this device's key service is not running".into()));
             }
-            keys.group_keys(workspace, create, OPEN_WAIT).await
+            keys.group_keys(workspace, readers, create, OPEN_WAIT).await
         })
     }
 }
@@ -285,10 +290,26 @@ impl KeyDirectory for Directory {
                 .collect(),
         )
     }
+    fn reader_devices(
+        &self,
+        workspace: WorkspaceId,
+        people: &BTreeSet<[u8; 32]>,
+        now: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
+        let state = lock(&self.states).get(&workspace.to_string())?.clone();
+        let readers = state.governance().reader_key_holders(people, at).ok()?;
+        Some(
+            readers
+                .into_iter()
+                .map(Ed25519PublicKey::from_bytes)
+                .collect(),
+        )
+    }
     fn founds(&self, workspace: WorkspaceId) -> bool {
         lock(&self.states)
             .get(&workspace.to_string())
-            .is_some_and(|state| state.governance().founder() == Some(self.device))
+            .is_some_and(|state| state.governance().founding_device() == Some(self.device))
     }
 }
 

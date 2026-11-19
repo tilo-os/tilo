@@ -125,6 +125,20 @@ fn drive_pixels(device: &wgpu::Device, queue: &wgpu::Queue, conservative: bool) 
     })
 }
 
+/// The code that reads the workspace's resources is in: every desktop builds the windows that
+/// waited for it.
+pub(crate) fn workspace_resources_arrived() {
+    let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
+    for id in ids {
+        let _ = with_mount_quietly(id, |mount| {
+            if let Some(desktop) = &mount.desktop {
+                desktop.shared.code_arrived();
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Schedule a frame for every desktop: an application posted or withdrew a
 /// notification, or the Activity pane's code arrived. Runs inside
 /// application code or a future, so it reaches the mounts only through the
@@ -466,6 +480,8 @@ pub(crate) struct Mount {
     /// at once.
     semantics: RefCell<crate::semantics_status::SemanticsPublisher>,
     window: Arc<Window>,
+    /// Per-mount window toolbar/embeds state so sibling mounts never overwrite each other's bar.
+    hosted_window: ui::hosted_window::HostedWindow,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
     /// How far following an agent brought the view inside its window.
@@ -630,18 +646,6 @@ pub(crate) struct Desktop {
     permissions: SharedPermissions,
     /// The workspace the session serves.
     workspace: String,
-    /// Agents that finished, waiting for the history's read of what their run did before their
-    /// notice: each with the read asked and when, Unix milliseconds.
-    finishing: RefCell<
-        Vec<(
-            tilo_desktop::here::AgentFinished,
-            tilo_actions::InvocationId,
-            u64,
-        )>,
-    >,
-    /// The runs a finished notice already told, by the history's id: an agent's sessions that
-    /// worked one run are told of once.
-    told_runs: RefCell<std::collections::BTreeSet<String>>,
     /// The page's own rows on the shell, and whether the upload rows stand with them.
     offered: uploads::Offered,
     /// The workspace's files, as the page copies dropped and uploaded files into them; `None`
@@ -738,37 +742,9 @@ impl Desktop {
         self.shared.wake();
     }
 
-    /// Tell this person, in a banner that retires to the notification
-    /// centre, about something someone else did in the workspace.
-    fn notify(&self, title: &str) {
-        self.post(tilo_desktop_surface::notifications::Notification::new(
-            title, "",
-        ));
-    }
-
-    fn post(&self, notice: tilo_desktop_surface::notifications::Notification) {
-        self.persistence.notifications.post(notice);
-        self.shared.wake();
-    }
-
-    /// Someone arriving is the one roster change worth a notice: this
-    /// person did not cause it, and it changes who sees their work. Who was
-    /// here already, and who leaves, stay quiet.
-    fn announce_arrivals(&self) {
-        let arrivals = self.here.borrow_mut().take_arrivals(crate::shell::now_ms());
-        for name in arrivals {
-            self.notify(&tilo_desktop_surface::i18n::t_args(
-                "workspace-notice-joined",
-                &[("name", name.into())],
-            ));
-        }
-    }
-
     /// Project the workspace's governance onto the shell, as every device does: its one name and
     /// its people (who is in it, in what part, admitted when, and the grants it makes). The shell
-    /// keeps none of these of its own. A name the governance took since the last projection, which
-    /// this page did not ask for, is someone else's rename, and the person hears it. Whether the
-    /// shell changed.
+    /// keeps none of these of its own. Whether the shell changed.
     fn project_governance(&self, peer: Option<u32>) -> bool {
         let Some(peer) = peer else {
             return false;
@@ -782,32 +758,16 @@ impl Desktop {
         if self.shared.projected_at.get() == Some((revision, self.handle.revision())) {
             return false;
         }
-        let name = crate::replication::governance_name(peer, workspace);
-        if let Some(name) = &name {
-            let before = self.shared.projected_name.replace(Some(name.clone()));
-            let asked = self.shared.asked_name.borrow().clone();
-            if asked.as_deref() == Some(name.as_str()) {
-                self.shared.asked_name.replace(None);
-            } else if before.is_some_and(|before| before != *name) {
-                self.notify(&tilo_desktop_surface::i18n::t_args(
-                    "workspace-notice-renamed",
-                    &[("workspace", name.clone().into())],
-                ));
-            }
-        }
-        let policy = crate::replication::governance_policy(peer, workspace);
+        // Who is in the workspace waits for the code that reads its governance.
+        let Some(code) = crate::workspace_resources::WORKSPACE_RESOURCES.get() else {
+            return false;
+        };
         let mut tree = self.handle.read(Clone::clone);
         let changed = tree
             .workspaces
             .iter_mut()
             .find(|held| held.id() == workspace)
-            .is_some_and(|held| {
-                let named = name.as_deref().is_some_and(|name| held.named_as(name));
-                let people = policy
-                    .as_ref()
-                    .is_some_and(|policy| tilo_session_client::membership::project(held, policy));
-                named | people
-            });
+            .is_some_and(|held| (code.project_governance)(peer, workspace, held));
         if changed {
             self.handle.replace_tree(tree);
         }
@@ -1076,7 +1036,10 @@ impl Mount {
         for store in self.stores.borrow().iter() {
             let _ = store.try_flush();
         }
-        crate::person_resources::flush(&self.store);
+        if let Some(code) = crate::workspace_resources::WORKSPACE_RESOURCES.get() {
+            let store: Rc<dyn durable_store::DurableStore> = self.store.clone();
+            (code.flush_person)(&store);
+        }
         self.save_desktop();
     }
 
@@ -1221,6 +1184,7 @@ fn with_mount_quietly<R>(
             // A window reads and acts through its desktop, whatever it does
             // in this call: an app's own action API is made on first use.
             let _served = mount.desktop.as_ref().map(Desktop::serve_windows);
+            let _window = ui::window_toolbar::enter(Some(&mount.hosted_window));
             run(mount)
         })
     })
@@ -1483,18 +1447,11 @@ fn mount_search(
 /// store its own records are in, from the content the page keeps.
 fn files_of_the_workspace(
     config: &Config,
-    owners: &ui::resource::ResourceOwners,
     shared: &crate::desktop::Shared,
     content: &tilo_content::ContentStore,
 ) -> Option<Rc<crate::page_files::WorkspaceFiles>> {
     config.peer?;
-    let records = crate::workspace_resources::in_page(
-        owners,
-        &shared.stores,
-        &config.workspace,
-        config.author(),
-        true,
-    );
+    let records = shared.page_stores(&config.author())?;
     // The files' bytes are the tree record's content: read through that record's
     // media queue, so a file whose bytes are not here yet is asked of the workspace and
     // its words are read when it arrives. A plain store would answer what the
@@ -1582,7 +1539,7 @@ fn present_desktop(
         &here,
         (&handle, &shared.woken),
     );
-    let files = files_of_the_workspace(config, &owners, &shared, &content_store);
+    let files = files_of_the_workspace(config, &shared, &content_store);
     let search = mount_search(
         id,
         config,
@@ -1625,8 +1582,6 @@ fn present_desktop(
 
             permissions: opening_permissions,
             workspace: config.workspace.clone(),
-            finishing: RefCell::default(),
-            told_runs: RefCell::default(),
             offered: uploads::Offered::default(),
             files,
             carrying,
@@ -1919,6 +1874,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             ui::time::Duration::from_millis(window_ms),
         )),
         window: Arc::clone(&window),
+        hosted_window: ui::hosted_window::HostedWindow::new(),
         canvas,
         frame,
         media,
@@ -2519,8 +2475,10 @@ impl Mount {
     fn draw(&mut self) -> Result<(), String> {
         // The workspace's files as the palette will find them: what moved
         // since the last frame, and the words of content that arrived.
-        if let Some(files) = &self.files_of_the_workspace {
-            files.refresh();
+        if let Some(files) = &self.files_of_the_workspace
+            && let Some(code) = crate::workspace_resources::WORKSPACE_RESOURCES.get()
+        {
+            (code.refresh_files)(files);
         }
         let start = self.metric_start();
         let before = self.frames;
@@ -3452,7 +3410,6 @@ impl Mount {
 /// # Errors
 ///
 /// Rejects an unknown kind or a closed mount.
-mod agent_notices;
 mod app_window;
 mod attention;
 mod carry_out;

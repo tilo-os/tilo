@@ -54,6 +54,7 @@ use web_time::{Duration, SystemTime};
 
 pub mod device_grants;
 pub mod link;
+pub mod machines;
 pub mod scopes;
 
 use scopes::resource_owner;
@@ -87,6 +88,11 @@ pub const WIFI_KIND: &str = "identity.wifi";
 /// says of itself that lasts: what it is, its speaker groups and its disk
 /// unlock, each under its own key.
 pub const DEVICE_FACTS: &str = "facts";
+/// The kind of the person's resource that holds the machines that asked to
+/// join and have not been answered yet: one entry per ask, under its id, and
+/// the answer any of their devices wrote. The storing device's session shows
+/// it from here and carries out whatever answer arrives.
+pub const ENROLLMENT_KIND: &str = "identity.enrollment";
 /// The most devices that resource names to this device: entries past it are
 /// not read, and this device adds none.
 const MAX_DEVICES: usize = 256;
@@ -130,6 +136,13 @@ pub struct PersonalStore {
     owned: BTreeMap<Route, SignedOp>,
 }
 
+/// Where a device keeping its state in `state` keeps the person's own
+/// documents: one file, the whole store.
+#[must_use]
+pub fn store_path(state: &std::path::Path) -> std::path::PathBuf {
+    state.join("tilo").join("personal").join("documents")
+}
+
 /// Where a write a store decides came from.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Origin {
@@ -162,6 +175,44 @@ impl PersonalStore {
             devices_moved: true,
             owned: BTreeMap::new(),
         })
+    }
+
+    /// The person's store a device keeps under `state`: the store an earlier
+    /// start wrote is read back, and the first start opens it empty on the
+    /// person's root, held by `device`.
+    ///
+    /// A machine copied from another re-keyed its device: the store kept
+    /// there is the device it was copied from, which still holds it. It is
+    /// set aside, never opened as this device's, and the person's documents
+    /// come back from their other devices as to any new one of theirs.
+    ///
+    /// # Errors
+    ///
+    /// The store kept there cannot be read, or `device` is not a certificate
+    /// the person's root signed that still holds.
+    pub fn open_at(
+        state: &std::path::Path,
+        root: [u8; 32],
+        device: DeviceCert,
+        now: SystemTime,
+    ) -> Result<Self, String> {
+        let path = store_path(state);
+        match std::fs::read(&path) {
+            Ok(bytes)
+                if Self::kept_by(&bytes).is_some_and(|kept| kept != device.device_public_key) =>
+            {
+                let kept = Self::kept_by(&bytes).unwrap_or_default();
+                let aside = path.with_extension(format!("of-{}", hex::encode(&kept[..4])));
+                std::fs::rename(&path, &aside)
+                    .map_err(|error| format!("{}: {error}", path.display()))?;
+                Self::open(root, device, now)
+            }
+            Ok(bytes) => Self::restore(&bytes, &device, now),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Self::open(root, device, now)
+            }
+            Err(error) => Err(format!("{}: {error}", path.display())),
+        }
     }
 
     /// The identity root the store opens on.

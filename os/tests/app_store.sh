@@ -116,7 +116,7 @@ done
 thin_bad=0
 for m in "${manifests[@]}"; do
   dir="$(dirname "$m")"
-  grep -q '^thin = \["dep:runtime-dylib"\]$' "$dir/Cargo.toml" \
+  grep -Eq '^thin = \[[^]]*"dep:runtime-dylib"' "$dir/Cargo.toml" \
     || { bad "$(basename "$dir") does not define the shared-runtime thin feature"; thin_bad=1; }
   grep -q '^runtime-dylib = .*optional = true' "$dir/Cargo.toml" \
     || { bad "$(basename "$dir") does not make runtime-dylib an optional dependency"; thin_bad=1; }

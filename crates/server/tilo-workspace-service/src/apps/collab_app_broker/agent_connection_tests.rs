@@ -119,7 +119,7 @@ impl SessionAgent {
             certificate: self.delegation.encode(),
             proof: self
                 .key
-                .sign(&runtime_identity::collaboration_join_digest(&workspace).unwrap())
+                .sign(&tilo_identity_client::collaboration_join_digest(&workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }
@@ -235,12 +235,12 @@ async fn an_agent_session_takes_an_app_action() {
             let f = Fixture::new();
             let agent = admit(&f);
             let (_target, stream) = notes_target(&f).await;
-            let host = f
+            let api = f
                 .state
                 .agent_connection(&agent.presentation(), NAME)
                 .unwrap();
             let caller = connection();
-            let receipt = answered(&f, host.invoke(&caller, append_request(41)))
+            let receipt = answered(&f, api.invoke(&caller, append_request(41)))
                 .await
                 .expect("answered")
                 .unwrap();
@@ -256,7 +256,7 @@ async fn an_agent_session_takes_an_app_action() {
             assert_eq!(context.group.expect("the session's group").id, SESSION);
             let id = tilo_actions::InvocationId(uuid::Uuid::from_u128(41));
             assert!(
-                host.observe(&caller, &id).is_some(),
+                api.observe(&caller, &id).is_some(),
                 "the connection reads its own invocation back"
             );
             drop(f);
@@ -276,13 +276,13 @@ async fn an_application_is_told_the_device_an_agent_session_came_from() {
             let laptop = tilo_actions::InvokerDevice::certified([0x5c; 32], "Studio laptop");
             f.native.sessions.lock().unwrap()[0].1.origin = Some(laptop.clone());
             let (_target, stream) = notes_target(&f).await;
-            let host = f
+            let api = f
                 .state
                 .agent_connection(&agent.presentation(), NAME)
                 .unwrap();
             answered(
                 &f,
-                host.invoke(&connection(), request_naming_a_device(43, &agent)),
+                api.invoke(&connection(), request_naming_a_device(43, &agent)),
             )
             .await
             .expect("answered")
@@ -309,13 +309,13 @@ async fn an_agent_session_of_this_device_is_on_no_other_device_whatever_it_says(
             let f = Fixture::new();
             let agent = admit(&f);
             let (_target, stream) = notes_target(&f).await;
-            let host = f
+            let api = f
                 .state
                 .agent_connection(&agent.presentation(), NAME)
                 .unwrap();
             answered(
                 &f,
-                host.invoke(&connection(), request_naming_a_device(44, &agent)),
+                api.invoke(&connection(), request_naming_a_device(44, &agent)),
             )
             .await
             .expect("answered")
@@ -336,14 +336,14 @@ async fn ending_the_session_cuts_its_connection() {
             let f = Fixture::new();
             let agent = admit(&f);
             let (_target, _stream) = notes_target(&f).await;
-            let host = f
+            let api = f
                 .state
                 .agent_connection(&agent.presentation(), NAME)
                 .unwrap();
             let caller = connection();
             end(&f);
             assert!(
-                answered(&f, host.invoke(&caller, append_request(42)))
+                answered(&f, api.invoke(&caller, append_request(42)))
                     .await
                     .expect("answered")
                     .is_err()
@@ -351,7 +351,7 @@ async fn ending_the_session_cuts_its_connection() {
             assert!(
                 answered(
                     &f,
-                    host.query(&caller, tilo_actions::remote::CatalogueQuery::default())
+                    api.query(&caller, tilo_actions::remote::CatalogueQuery::default())
                 )
                 .await
                 .expect("answered")
@@ -381,12 +381,12 @@ async fn an_agent_session_takes_host_and_session_steps_while_it_goes() {
                 });
                 let f = Fixture::with_services(None, vec![desktop.clone()]);
                 let agent = admit(&f);
-                let host = f
+                let api = f
                     .state
                     .agent_connection(&agent.presentation(), NAME)
                     .unwrap();
                 let caller = connection();
-                let receipt = answered(&f, host.invoke(&caller, list_windows_request(51)))
+                let receipt = answered(&f, api.invoke(&caller, list_windows_request(51)))
                     .await
                     .expect("answered")
                     .unwrap();
@@ -399,7 +399,7 @@ async fn an_agent_session_takes_host_and_session_steps_while_it_goes() {
                 );
                 end(&f);
                 assert!(
-                    answered(&f, host.invoke(&caller, list_windows_request(52)))
+                    answered(&f, api.invoke(&caller, list_windows_request(52)))
                         .await
                         .expect("answered")
                         .is_err()
@@ -510,12 +510,12 @@ async fn an_agent_sessions_question_is_asked_on_the_shell_and_allowed_once() {
             let agent = admit(&f);
             let shell = asking_on_the_shell(&f, &agent);
             let (_target, stream) = notes_target(&f).await;
-            let host = f
+            let api = f
                 .state
                 .agent_connection(&agent.presentation(), NAME)
                 .unwrap();
             let caller = connection();
-            let first = answered(&f, host.invoke(&caller, append_request(71)))
+            let first = answered(&f, api.invoke(&caller, append_request(71)))
                 .await
                 .expect("answered")
                 .unwrap_err();
@@ -523,7 +523,7 @@ async fn an_agent_sessions_question_is_asked_on_the_shell_and_allowed_once() {
                 first,
                 tilo_actions::remote::ActionCallError::confirmation_required()
             );
-            let asking = host.confirm(&caller, &append_request(71));
+            let asking = api.confirm(&caller, &append_request(71));
             let shown = shell.shown(1).await;
             assert!(shown.confirming, "{shown:?}");
             assert_eq!(shown.scope.as_deref(), Some(NAME), "{shown:?}");
@@ -531,7 +531,7 @@ async fn an_agent_sessions_question_is_asked_on_the_shell_and_allowed_once() {
             let confirmed = asking.await.expect("answered").unwrap();
             let mut again = append_request(71);
             confirmed.apply(&mut again);
-            let receipt = answered(&f, host.invoke(&caller, again))
+            let receipt = answered(&f, api.invoke(&caller, again))
                 .await
                 .expect("answered")
                 .unwrap();
@@ -541,7 +541,7 @@ async fn an_agent_sessions_question_is_asked_on_the_shell_and_allowed_once() {
                 wire.actor,
                 tilo_actions::MemberId::agent(agent.delegation.agent_id.clone()).into()
             );
-            let next = answered(&f, host.invoke(&caller, append_request(72)))
+            let next = answered(&f, api.invoke(&caller, append_request(72)))
                 .await
                 .expect("answered")
                 .unwrap_err();
@@ -565,11 +565,11 @@ async fn an_agent_sessions_question_the_person_denies_refuses_the_step() {
             let agent = admit(&f);
             let shell = asking_on_the_shell(&f, &agent);
             let (_target, _stream) = notes_target(&f).await;
-            let host = f
+            let api = f
                 .state
                 .agent_connection(&agent.presentation(), NAME)
                 .unwrap();
-            let asking = host.confirm(&connection(), &append_request(81));
+            let asking = api.confirm(&connection(), &append_request(81));
             shell.shown(1).await;
             shell.answer(None);
             let refused = asking.await.expect("answered").unwrap_err();
@@ -594,24 +594,24 @@ async fn allowing_an_agent_session_covers_its_next_step() {
             let agent = admit(&f);
             let shell = asking_on_the_shell(&f, &agent);
             let (_target, stream) = notes_target(&f).await;
-            let host = f
+            let api = f
                 .state
                 .agent_connection(&agent.presentation(), NAME)
                 .unwrap();
             let caller = connection();
-            let asking = host.confirm(&caller, &append_request(91));
+            let asking = api.confirm(&caller, &append_request(91));
             shell.shown(1).await;
             shell.answer(Some(tilo_action_policy::Lifetime::UntilRevoked));
             let confirmed = asking.await.expect("answered").unwrap();
             let mut again = append_request(91);
             confirmed.apply(&mut again);
-            let receipt = answered(&f, host.invoke(&caller, again))
+            let receipt = answered(&f, api.invoke(&caller, again))
                 .await
                 .expect("answered")
                 .unwrap();
             assert!(went_on(&receipt), "{receipt:?}");
             stream.next().await.unwrap();
-            let next = answered(&f, host.invoke(&caller, append_request(92)))
+            let next = answered(&f, api.invoke(&caller, append_request(92)))
                 .await
                 .expect("answered")
                 .unwrap();
@@ -633,12 +633,12 @@ async fn an_agent_sessions_question_is_withdrawn_when_it_leaves_or_ends() {
             let agent = admit(&f);
             let shell = asking_on_the_shell(&f, &agent);
             let (_target, _stream) = notes_target(&f).await;
-            let host = f
+            let api = f
                 .state
                 .agent_connection(&agent.presentation(), NAME)
                 .unwrap();
             let caller = connection();
-            let asking = host.confirm(&caller, &append_request(101));
+            let asking = api.confirm(&caller, &append_request(101));
             let shown = shell.shown(1).await;
             drop(asking);
             for _ in 0..500 {
@@ -649,7 +649,7 @@ async fn an_agent_sessions_question_is_withdrawn_when_it_leaves_or_ends() {
             }
             assert_eq!(*shell.withdrawn.lock().unwrap(), [shown.handle]);
 
-            let asking = host.confirm(&caller, &append_request(102));
+            let asking = api.confirm(&caller, &append_request(102));
             shell.shown(2).await;
             end(&f);
             let refused = asking.await.expect("answered").unwrap_err();

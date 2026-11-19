@@ -34,24 +34,29 @@ impl std::fmt::Debug for ApiTesterEffect {
 #[effect(operation = "api_tester.effects")]
 pub enum ApiTesterEffect {
     /// Send request
+    #[effect(kind = "outside")]
     #[effect(job, returns, untrusted, cancellable)]
     Send,
     /// Send saved request
+    #[effect(kind = "outside")]
     #[effect(job, returns, untrusted, cancellable)]
     SendSaved {
         #[param("Id of the saved request")]
         request: String,
     },
     /// Cancel request
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     CancelSend,
     /// Copy response
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     CopyResponse {
         #[param("What to copy", choices = COPY_PARTS.iter().copied())]
         part: String,
     },
     /// Set the request's credential
+    #[effect(kind = "outside")]
     #[effect(job)]
     SetCredential {
         #[param("The token, password or key, kept on this device")]
@@ -63,6 +68,7 @@ pub enum ApiTesterEffect {
         #[param("Environment name, No environment, or an environment management command")]
         choice: String,
     },
+    #[effect(kind = "outside")]
     SetSecretValue {
         #[param("Id of the variable")]
         variable: String,

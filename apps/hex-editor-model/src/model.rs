@@ -118,6 +118,18 @@ impl Endian {
     }
 }
 
+/// The set of `indices`, inserted one at a time rather than collected.
+///
+/// `BTreeSet`'s `FromIterator` sorts the whole list first, and std's sort is
+/// generic over the element type: collected, the marks would compile a copy of
+/// its several kilobytes into every app that keeps one. Inserting gives the
+/// same set, and the marks here are few.
+fn set_of(indices: impl IntoIterator<Item = usize>) -> BTreeSet<usize> {
+    let mut set = BTreeSet::new();
+    set.extend(indices);
+    set
+}
+
 pub(crate) fn common_suffix<T: PartialEq>(a: &[T], b: &[T]) -> usize {
     a.iter()
         .rev()
@@ -173,12 +185,13 @@ impl HexModel {
     pub fn show_bytes(&mut self, bytes: &[u8], saved: &[u8]) {
         let unchanged = bytes == self.bytes.as_slice();
         if bytes.len() == saved.len() {
-            self.dirty = bytes
-                .iter()
-                .zip(saved)
-                .enumerate()
-                .filter_map(|(index, (now, was))| (now != was).then_some(index))
-                .collect();
+            self.dirty = set_of(
+                bytes
+                    .iter()
+                    .zip(saved)
+                    .enumerate()
+                    .filter_map(|(index, (now, was))| (now != was).then_some(index)),
+            );
         } else if !unchanged {
             let prefix = self
                 .bytes
@@ -192,20 +205,20 @@ impl HexModel {
             );
             let old_end = self.bytes.len() - suffix;
             let new_end = bytes.len() - suffix;
-            self.dirty = self
-                .dirty
-                .iter()
-                .filter_map(|&d| {
-                    if d < prefix {
-                        Some(d)
-                    } else if d >= old_end {
-                        Some(d - old_end + new_end)
-                    } else {
-                        None
-                    }
-                })
-                .chain(prefix..new_end)
-                .collect();
+            self.dirty = set_of(
+                self.dirty
+                    .iter()
+                    .filter_map(|&d| {
+                        if d < prefix {
+                            Some(d)
+                        } else if d >= old_end {
+                            Some(d - old_end + new_end)
+                        } else {
+                            None
+                        }
+                    })
+                    .chain(prefix..new_end),
+            );
         }
         // Local typing already changed the copy; its marks are reconciled against the
         // saved file above.
@@ -480,11 +493,7 @@ impl HexModel {
     pub fn insert_byte(&mut self, offset: usize, value: u8) {
         let at = offset.min(self.bytes.len());
         self.bytes.insert(at, value);
-        let shifted: BTreeSet<usize> = self
-            .dirty
-            .iter()
-            .map(|&d| if d >= at { d + 1 } else { d })
-            .collect();
+        let shifted = set_of(self.dirty.iter().map(|&d| if d >= at { d + 1 } else { d }));
         self.dirty = shifted;
         self.dirty.insert(at);
         self.edits.push(BufferEdit::Insert {

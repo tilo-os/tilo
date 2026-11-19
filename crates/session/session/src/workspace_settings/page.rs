@@ -53,8 +53,8 @@ impl PageAgents {
                 ..self.agents.pane(
                     tree,
                     &self.person,
-                    &names,
-                    &Directory::default(),
+                    (&names, &Directory::default()),
+                    false,
                     review.as_deref(),
                 )
             }

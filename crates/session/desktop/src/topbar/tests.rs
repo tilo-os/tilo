@@ -2427,11 +2427,12 @@ tilo_test_env::scenario! {
         ]);
         let mut bar = TopBarChrome::from_tree(&tree);
         bar.sync_from_tree(&tree);
+        // People first, then agents, whatever order the roster lists them in.
         assert_eq!(
             bar.face_members,
             vec![
-                collab_types::MemberId::agent("scribe"),
-                collab_types::MemberId::person("ada")
+                collab_types::MemberId::person("ada"),
+                collab_types::MemberId::agent("scribe")
             ]
         );
         // Each face is named for a reader, an agent as one.
@@ -2447,7 +2448,7 @@ tilo_test_env::scenario! {
             .iter()
             .filter_map(|face| face.name.as_deref())
             .collect();
-        assert_eq!(faces, ["Scribe, agent", "Ada"]);
+        assert_eq!(faces, ["Ada", "Scribe, agent"]);
         assert!(people.children.iter().all(|face| face.bounds.is_some()));
     }
 
@@ -2741,7 +2742,7 @@ fn unread_activity_paints_nothing_on_the_people_control() {
 }
 
 tilo_test_env::scenario! {
-    fn the_bar_draws_readings_displays_and_hints;
+    fn the_bar_draws_readings_and_displays;
 
     phase every_reading_the_machine_has_draws_its_own_glyph;
     // Each reading the machine has draws its own glyph in the status cluster;
@@ -2835,90 +2836,6 @@ tilo_test_env::scenario! {
         let covered = Placement::of(&tree, &["panel".to_owned()]);
         assert!(covered.bars.is_empty(), "one bar needs no placing");
         assert_eq!(covered.fullscreen, [None], "and it steps aside");
-    }
-
-    phase a_control_hint_stands_in_the_room_beside_the_clock;
-    // A hint for a gesture no control on screen does stands in the bar, right beside its clock: in
-    // the room the bar keeps between the clock and its own controls on its right. A bar that keeps
-    // none — hidden under a window that filled the display, or crowded by its own controls — shows
-    // no hint at all, rather than one over the clock, the names or the status beside it.
-    {
-        let mut tree = Layout {
-            workspaces: vec![Workspace::new(
-                WorkspaceId::from_u128(1),
-                "Customer support and escalations",
-            )],
-            active: WorkspaceId::from_u128(0),
-            ..Default::default()
-        };
-        tree.active = tree.workspaces[0].id();
-        for person in 0..6 {
-            tree.workspaces[0].member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person(format!("person-{person}")),
-                format!("Person {person}"),
-            ));
-        }
-        let chrome = super::fixture::FixtureChrome::new(tree.clone());
-        chrome.borrow_mut().status = crate::chrome::SystemStatus {
-            battery_percent: Some(72),
-            link: Some(crate::chrome::LinkStatus {
-                kind: crate::chrome::LinkKind::Wifi,
-                name: Some("home".into()),
-                signal: 3,
-            }),
-            volume: Some(crate::chrome::VolumeState {
-                level: 0.6,
-                muted: false,
-            }),
-            ..crate::chrome::SystemStatus::default()
-        };
-        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-        lay_out_and_draw(&mut bar, 1280.0);
-        let clock = bar.center_rect;
-        assert!(!clock.is_zero_area(), "fixture: the bar shows its clock");
-        let room = bar
-            .hint_room()
-            .expect("the bar keeps room beside its clock");
-        assert_eq!(room.x0, clock.x1 + 8.0, "right beside the clock: {room:?}");
-        assert_eq!(
-            (room.y0, room.y1),
-            (bar.rect.y0, bar.rect.y1),
-            "the bar's height across"
-        );
-        assert!(
-            room.x1 < bar.rect.x1,
-            "short of the bar's own end: {room:?}"
-        );
-        // The bar's own controls keep out of the room: the names on its left, the clock, and the
-        // people and the status on its right.
-        for (name, rect) in bar.test_rects() {
-            // The hit rects are deliberately larger than what the bar paints.
-            if rect.is_zero_area() || name.ends_with("_hit") {
-                continue;
-            }
-            assert!(
-                !room.overlaps(rect),
-                "the hint's room {room:?} stands over {name} {rect:?}"
-            );
-        }
-        // A bar narrower than the pill keeps room too small for it: the hint shows nowhere rather
-        // than over the controls beside it.
-        lay_out_and_draw(&mut bar, 640.0);
-        let narrow = bar
-            .hint_room()
-            .expect("the bar still keeps its clock's room");
-        assert!(
-            narrow.width() < 240.0,
-            "too narrow for the pill: {narrow:?}"
-        );
-        // A bar with no room beside its clock at all keeps no hint either.
-        lay_out_and_draw(&mut bar, 320.0);
-        assert_eq!(bar.hint_room(), None, "no room at all");
-        // Hidden under the window that filled the display, the bar teaches nothing either.
-        lay_out_and_draw(&mut bar, 1280.0);
-        assert!(bar.hint_room().is_some(), "fixture: the wide bar has room");
-        bar.set_presence(TopBarPresence::Hidden);
-        lay_out_and_draw(&mut bar, 1280.0);
-        assert_eq!(bar.hint_room(), None, "a hidden bar shows no hint");
     }
 }
 

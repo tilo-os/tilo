@@ -51,12 +51,19 @@ fn text_of(doc: &AutoCommit) -> String {
     }
 }
 
-fn retained_count(state_root: &std::path::Path, workspace: WorkspaceId) -> usize {
+/// How many of the frames the server retains for `workspace` carry `payload`.
+fn retained_carrying(
+    state_root: &std::path::Path,
+    workspace: WorkspaceId,
+    payload: &[u8],
+) -> usize {
     tilo_server::store::WorkspaceStore::open(state_root, workspace, false)
         .unwrap()
         .load_retained()
         .unwrap()
-        .len()
+        .iter()
+        .filter(|frame| frame.windows(payload.len()).any(|w| w == payload))
+        .count()
 }
 
 /// Drain `session` until a delta `author` wrote arrives, applying it to
@@ -200,13 +207,13 @@ async fn coedits_converge_through_the_host_live_and_offline() {
         let addr1 = host1.node_addr();
 
         // Shared durable coverage serves B even though it has never connected.
-        let mut doc_a = publish_offline_coedit(addr1, &user, &a, WS, &state_root).await;
+        let (mut doc_a, coedit) = publish_offline_coedit(addr1, &user, &a, WS, &state_root).await;
 
         // ---- The host restarts on the same state directory. ----
         drop(host1);
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(
-            retained_count(&state_root, WS) >= 1,
+            retained_carrying(&state_root, WS, &coedit) >= 1,
             "the queued co-edit must survive the host process dying"
         );
 
@@ -247,14 +254,15 @@ async fn coedits_converge_through_the_host_live_and_offline() {
 
 /// A connects to `addr1`, joins the co-edit session, drains its own
 /// Ready(0), publishes `offline-note`, waits until the host has queued
-/// it on disk for the (never-yet-connected) B, then disconnects.
+/// it on disk for the (never-yet-connected) B, then disconnects. Gives A's
+/// document and the co-edit as it was published.
 async fn publish_offline_coedit(
     addr1: iroh_base::EndpointAddr,
     user: &TestUser,
     a: &crate::common::TestDevice,
     ws: WorkspaceId,
     state_root: &std::path::Path,
-) -> AutoCommit {
+) -> (AutoCommit, Vec<u8>) {
     let a_client = ServerClient::connect(
         client_endpoint().await,
         addr1,
@@ -280,12 +288,16 @@ async fn publish_offline_coedit(
 
     let mut doc_a = doc_with_text(b"alice", "offline-note");
     let delta = doc_a.save_incremental();
-    a_session.publish_retained_delta([2; 32], delta).unwrap();
+    a_session
+        .publish_retained_delta([2; 32], delta.clone())
+        .unwrap();
 
+    // A held workspace retains frames of its own from the start: the wait is
+    // for A's co-edit itself, which the server has only once it retains it.
     let mut queued = 0;
     // Polls for up to 30 s; only a hang uses the whole budget.
     for _ in 0..1200 {
-        queued = retained_count(state_root, ws);
+        queued = retained_carrying(state_root, ws, &delta);
         if queued >= 1 {
             break;
         }
@@ -298,7 +310,7 @@ async fn publish_offline_coedit(
 
     // A disconnects; now neither device is online.
     drop(a_session);
-    doc_a
+    (doc_a, delta)
 }
 
 /// B connects for the very first time (to the restarted host), joins,
@@ -425,6 +437,7 @@ async fn a_members_document_write_reaches_another_member_of_a_held_workspace() {
     let b = user.enrol("phone", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let server_dev = user.enrol("home-server", DeviceCapabilities::member());
+    let server_cert = server_dev.cert.clone();
     let server = spawn_server_on(state.path(), &user, server_dev, &[WS], &[&a.cert, &b.cert]).await;
     let join = async |device: &crate::common::TestDevice| {
         let client = ServerClient::connect(
@@ -437,26 +450,51 @@ async fn a_members_document_write_reaches_another_member_of_a_held_workspace() {
         )
         .await
         .expect("connect");
-        let session = ServerCoeditSession::join(client, WS, device.device_pubkey()).unwrap();
-        tilo_test_env::within("Ready timeout", async {
-            while !matches!(session.recv().await, Some(Inbound::Ready { .. })) {}
-        })
-        .await;
-        session
+        ServerCoeditSession::join(client, WS, device.device_pubkey()).unwrap()
     };
-    let a_session = join(&a).await;
-    let b_session = join(&b).await;
-
-    // A's write names the workspace it is sent to, as A's replica of that
-    // workspace writes it.
+    // A's replica of the workspace is the one a member holds once it joined: the server's
+    // session hands it the workspace's governance before it says it is ready, and A takes it
+    // in. A write is signed under the governance it names, so a replica without it signs none.
     let mut replica = tilo_peer_state::StatePeer::new(
         &WS.to_string(),
-        a.cert.clone(),
-        vec![a.cert.clone(), b.cert.clone()],
+        server_cert.clone(),
+        vec![server_cert.clone(), a.cert.clone(), b.cert.clone()],
         RevocationList::new(),
         std::time::SystemTime::now(),
     )
     .unwrap();
+    replica.select_exact_admissions().unwrap();
+    let a_session = join(&a).await;
+    tilo_test_env::within("A holds the workspace", async {
+        let mut ready = false;
+        while !ready || replica.admitted_workspace().is_none() {
+            match a_session.recv().await.expect("A's session stays open") {
+                Inbound::Ready { .. } => ready = true,
+                Inbound::Delta { author, data } => {
+                    let message: neighbour_wire::NeighbourMsg =
+                        postcard::from_bytes(&data).unwrap();
+                    let origin = if author == server_cert.device_public_key {
+                        tilo_peer_state::TransportOrigin::RetainedServerDelta(author)
+                    } else {
+                        tilo_peer_state::TransportOrigin::ServerDelta(author)
+                    };
+                    replica
+                        .receive_from(origin, message, std::time::SystemTime::now())
+                        .unwrap();
+                }
+                _ => {}
+            }
+        }
+    })
+    .await;
+    let b_session = join(&b).await;
+    tilo_test_env::within("Ready timeout", async {
+        while !matches!(b_session.recv().await, Some(Inbound::Ready { .. })) {}
+    })
+    .await;
+
+    // A's write names the workspace it is sent to, as A's replica of that
+    // workspace writes it.
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "topic", "from A").unwrap();
     doc.commit_edit("fixture", "topic");

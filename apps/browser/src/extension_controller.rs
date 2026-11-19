@@ -11,11 +11,11 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
-use ui::icons::Icon;
-use ui::webview::{
+use tilo_webview::{
     ExtensionActionIcon, ExtensionMenuItem, ExtensionPermissionSet, SharedEngine, WebViewCommand,
     WebViewEvent,
 };
+use ui::icons::Icon;
 use ui::widget::floating_surface::PanelAlign;
 use ui::widget::{
     Actions, Banner, Button, Column, Container, Element, ListRow, MenuButton, MenuItem, Text,
@@ -320,7 +320,7 @@ pub struct ExtensionController {
     /// life only.
     side_panel_widths: HashMap<String, f32>,
     side_panel_store: Option<ui::storage::Settings<SidePanelWidths>>,
-    shortcuts: Vec<ui::webview::ExtensionShortcut>,
+    shortcuts: Vec<tilo_webview::ExtensionShortcut>,
 }
 
 /// The switches `installed` asks for that this session has not made yet, noted as
@@ -836,15 +836,15 @@ impl ExtensionController {
             let mut closed = false;
             for event in popup.drain_events() {
                 match event {
-                    event @ (ui::webview::WebViewEvent::ExtensionPermissionRequest { .. }
-                    | ui::webview::WebViewEvent::ExtensionPermissions { .. }) => {
+                    event @ (tilo_webview::WebViewEvent::ExtensionPermissionRequest { .. }
+                    | tilo_webview::WebViewEvent::ExtensionPermissions { .. }) => {
                         permissions.push(event);
                     }
                     // Its page closed it (a password filled, a choice made), or
                     // a sign-in reached its end.
-                    ui::webview::WebViewEvent::TabClosed => closed = true,
+                    tilo_webview::WebViewEvent::TabClosed => closed = true,
                     // A sign-in page names the site it moved on to.
-                    ui::webview::WebViewEvent::UriChanged(url) if shown_site.is_some() => {
+                    tilo_webview::WebViewEvent::UriChanged(url) if shown_site.is_some() => {
                         let now = sign_in_site(&url);
                         if now.is_some() && now != *shown_site {
                             *shown_site = now;
@@ -852,7 +852,7 @@ impl ExtensionController {
                         }
                     }
                     // As big as its page, as Chrome sizes a popup.
-                    ui::webview::WebViewEvent::DocumentSize { width, height, .. } => {
+                    tilo_webview::WebViewEvent::DocumentSize { width, height, .. } => {
                         let page = (
                             ui::num::f32_of_f64(width).clamp(POPUP_SIZE.0, POPUP_MAX.0),
                             ui::num::f32_of_f64(height).clamp(25.0, POPUP_MAX.1),
@@ -1135,7 +1135,7 @@ impl ExtensionController {
         let before = self.switching.len();
         self.switching.retain(|(page, opened)| {
             let done = page.drain_events().into_iter().any(|event| {
-                matches!(event, ui::webview::WebViewEvent::TitleChanged(title) if title.starts_with("done"))
+                matches!(event, tilo_webview::WebViewEvent::TitleChanged(title) if title.starts_with("done"))
             });
             !done && now.saturating_duration_since(*opened) < SWITCH_TIMEOUT
         });
@@ -1267,7 +1267,7 @@ impl ExtensionController {
             }
             Command::Send(id, text) => engine.send(WebViewCommand::ExtensionOmnibox {
                 id,
-                input: ui::webview::OmniboxInput::Entered { text },
+                input: tilo_webview::OmniboxInput::Entered { text },
             }),
             Command::OpenSidePanel(id) => self.open_side_panel(id, engine),
             Command::CloseSidePanel(id) => self.close_side_panel(&id),

@@ -1007,6 +1007,17 @@ impl tilo_workspace_service::apps::services::WorkspaceGrants for SessionGrants {
     }
 }
 
+/// The steps an agent session takes here: the programs its task writes, and the workspace's tools
+/// an agent in a process of its own calls.
+fn agent_session_steps(
+    programs: std::sync::Arc<crate::task_programs::TaskPrograms>,
+) -> [std::sync::Arc<dyn HostStepServices>; 2] {
+    [
+        programs,
+        std::sync::Arc::new(crate::agent_tools::AgentToolSteps::default()),
+    ]
+}
+
 /// What the apps this session runs reach of it: the resources its services
 /// publish, the launcher that started them, and — when this session runs on a
 /// device fabric — the speaker groups Settings asks that fabric for.
@@ -1343,6 +1354,12 @@ fn broker_services(
             std::sync::Arc::new(hosting)
                 as std::sync::Arc<dyn tilo_workspace_service::apps::services::HostedWorkspaces>
         })),
+        // Apps write and read their resources in this device's one store, which holds every
+        // workspace's: no app keeps a store of its own.
+        resources: BrokerService::when(engine.clone().map(|engine| {
+            std::sync::Arc::new(crate::app_resources::AppResources(engine))
+                as std::sync::Arc<dyn tilo_workspace_service::apps::services::ResourceServices>
+        })),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
         // device, administering their identities and the devices trusted
@@ -1356,6 +1373,10 @@ fn broker_services(
                         fabric: steps_fabric,
                         pairing: crate::pairing::Pairing::session(),
                     }),
+                    // The machines the person planned to install: their plans
+                    // are entries in their Servers workspace, which this
+                    // session's own workspace service keeps.
+                    crate::machine_steps::MachineSteps::session(engine.clone()),
                     std::sync::Arc::new(crate::identity_admin::BrokerApi {
                         layout: layout_authority,
                         admin: crate::identity_admin::IdentityAdmin::session(),
@@ -1368,10 +1389,11 @@ fn broker_services(
                     crate::server_account::ServerAccountApi::session(),
                 ],
                 // An agent's task writes its programs; this session's links runs them as the
-                // steps of the run the task is in.
+                // steps of the run the task is in. An agent whose turn is worked in its own
+                // process calls the workspace's tools here, as steps of its session too.
                 task_programs
-                    .map(|programs| programs as std::sync::Arc<dyn HostStepServices>)
                     .into_iter()
+                    .flat_map(agent_session_steps)
                     .collect(),
                 // The session's own actions, published where every other caller of the
                 // desktop reaches them: the layout, its undo, the windows and the
@@ -2198,6 +2220,10 @@ mod tests {
     /// as one still to serve — so an app that starts calling a service this
     /// session serves nothing of fails this test.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one walk through every boundary this session decides"
+    )]
     fn every_boundary_is_decided_and_no_shipped_app_asks_for_what_is_not_served() {
         let decided = broker_services(
             Link::for_test(),
@@ -2253,9 +2279,10 @@ mod tests {
         );
         assert_eq!(
             services.host_steps.len(),
-            5,
+            6,
             "the steps this session serves are the workspace's activity, device \
-             pairing, identity administration, the person's hosting account and its own actions"
+             pairing, identity administration, the person's hosting account, the machines they \
+             planned and its own actions"
         );
         let providers: Vec<&str> = services
             .host_steps
@@ -2278,6 +2305,10 @@ mod tests {
             (
                 tilo_actions::remote::server_account::PROVIDER,
                 "Settings' Billing reads the person's account with their host",
+            ),
+            (
+                tilo_actions::remote::machines::PROVIDER,
+                "the installer's window and the command plan a machine",
             ),
         ] {
             assert!(

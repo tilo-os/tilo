@@ -270,9 +270,12 @@ fn decode(bytes: &[u8]) -> io::Result<PathBuf> {
     Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&decoded)))
 }
 
-#[cfg(all(test, feature = "managed-tree-test"))]
+#[cfg(test)]
+#[cfg(feature = "managed-tree-test")]
 mod tests {
+    use super::super::{FIRST_FD, OriginalMountedInput};
     use super::*;
+    use std::ffi::CString;
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command, Stdio};

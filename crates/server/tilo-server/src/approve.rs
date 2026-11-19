@@ -5,7 +5,8 @@
 //! that hold their root. This program is one of those devices on a machine
 //! that runs a local tilo.sh: [`Command::Person`] opens the person a page
 //! made from the recovery key it showed, through the product's own root
-//! envelope, and keeps their root in an identity root directory;
+//! envelope, and keeps their root in an identity store of its own, as a
+//! server keeps a root: in owner-only files, since it has no Secret Service;
 //! [`Command::Next`] signs their answer to the next question the host has for
 //! them, as a member's root does, and prints the question it saw.
 //! [`Command::Pair`] certifies another device of the person with their root, a
@@ -22,11 +23,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, bail};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
-use tilo_device_identity::IdentityPaths;
-use tilo_device_identity::persist::{write_public_key, write_signing_key};
-use tilo_server_client::questions::{MemberQuestions, QuestionHost};
-use tilo_server_client::{Host, MemberApprover};
+use tilo_device_identity::persist::write_signing_key;
+use tilo_identity::certification_ceremony::PersonSigner;
+use tilo_server_client::questions::{MemberQuestions, QuestionServer};
+use tilo_server_client::{MemberApprover, ServerAddress};
 use tilo_server_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
+use tilo_user_identity::StatementSigner as _;
 use tilo_user_identity::root_envelope::{RecoveryKey, RootEnvelope};
 
 /// How often a watching device asks the host whether a question is waiting.
@@ -50,14 +52,14 @@ enum Command {
         /// What the page's person wrote: `{"recovery_key": …, "envelope": {…}}`.
         #[arg(long)]
         person: PathBuf,
-        /// The identity root directory the person's root is written into.
+        /// The identity directory the person's root is kept in.
         #[arg(long)]
         root: PathBuf,
     },
     /// Certify a new device of the person with their root: a device that
     /// holds no root, as one paired to them.
     Pair {
-        /// The identity root directory [`Command::Person`] wrote.
+        /// The identity directory [`Command::Person`] kept the root in.
         #[arg(long)]
         root: PathBuf,
         /// Where the device's key and certificate are written.
@@ -69,7 +71,7 @@ enum Command {
     },
     /// Answer the next question the host puts to the person.
     Next {
-        /// The identity root directory [`Command::Person`] wrote.
+        /// The identity directory [`Command::Person`] kept the root in.
         #[arg(long)]
         root: PathBuf,
         /// Answer as the device [`Command::Pair`] wrote here, not the root.
@@ -161,9 +163,9 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     }
 }
 
-/// Write the person `document` names into the identity root `root`: the
-/// root's own key pair, as every program that holds a person's root keeps
-/// it. Answers the person's public key.
+/// Keep the person `document` names in the identity store at `root`: their
+/// whole root as a single-device identity, its secret in owner-only files.
+/// Answers the person's public key.
 fn open_person(document: &std::path::Path, root: &std::path::Path) -> anyhow::Result<[u8; 32]> {
     let page: PagePerson = serde_json::from_slice(
         &std::fs::read(document)
@@ -181,16 +183,27 @@ fn open_person(document: &std::path::Path, root: &std::path::Path) -> anyhow::Re
         .envelope
         .open_with_recovery(&recovery)
         .map_err(|error| anyhow::anyhow!("the recovery key does not open this person: {error}"))?;
-    let public = signing.verifying_key().to_bytes();
-    let paths = IdentityPaths::under(root);
-    paths
-        .ensure_directories()
-        .with_context(|| format!("make the identity root at {}", root.display()))?;
-    write_signing_key(&paths.user_privkey, &signing)
-        .with_context(|| format!("write {}", paths.user_privkey.display()))?;
-    write_public_key(&paths.user_pubkey, &public)
-        .with_context(|| format!("write {}", paths.user_pubkey.display()))?;
-    Ok(public)
+    tilo_identity::provisioning::import_single_device_root(
+        root,
+        &signing,
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .with_context(|| format!("keep the person's root in {}", root.display()))?;
+    Ok(signing.verifying_key().to_bytes())
+}
+
+/// The person's root, from the identity store [`Command::Person`] kept it in.
+fn person_root(root: &std::path::Path) -> anyhow::Result<PersonSigner> {
+    let active = tilo_identity_client::resolve_active_identity(root).with_context(|| {
+        format!(
+            "{} holds no person: run `tilo-approve person` first",
+            root.display()
+        )
+    })?;
+    let identity = tilo_identity::store::load_from_path(active)
+        .map_err(|error| anyhow::anyhow!("open the person's root: {error}"))?;
+    Ok(PersonSigner::new(Box::new(identity)))
 }
 
 /// The file a paired device's key is kept in, under its directory.
@@ -206,15 +219,12 @@ fn pair(
     device: &std::path::Path,
     label: &str,
 ) -> anyhow::Result<tilo_user_identity::DeviceCert> {
-    let root_key = tilo_device_identity::persist::read_owned_signing_key(
-        &IdentityPaths::under(root).user_privkey,
-    )
-    .context("read the person's root: run `tilo-approve person` first")?;
+    let root_key = person_root(root)?;
     let mut seed = [0u8; 32];
     getrandom::fill(&mut seed).map_err(|error| anyhow::anyhow!("no randomness: {error}"))?;
     let key = ed25519_dalek::SigningKey::from_bytes(&seed);
     let mut cert = tilo_user_identity::DeviceCert {
-        user_public_key: root_key.verifying_key().to_bytes(),
+        user_public_key: root_key.public_key(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: label.to_owned(),
         capabilities: tilo_user_identity::DeviceCapabilities::member(),
@@ -253,10 +263,10 @@ async fn next(
         let cert: tilo_user_identity::DeviceCert =
             serde_json::from_slice(&std::fs::read(device.join(DEVICE_CERT))?)
                 .context("read the device's certificate")?;
-        let member = MemberApprover::new(Host::at(host));
+        let member = MemberApprover::new(ServerAddress::at(host));
         let seen = {
             let mut questions = MemberQuestions {
-                host: &member,
+                server: &member,
                 root: &key,
                 device: Some(&cert),
             };
@@ -265,18 +275,11 @@ async fn next(
         member.close().await;
         return seen;
     }
-    let paths = IdentityPaths::under(root);
-    let root_key = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)
-        .with_context(|| {
-            format!(
-                "read the person's root at {}: run `tilo-approve person` first",
-                paths.user_privkey.display()
-            )
-        })?;
-    let member = MemberApprover::new(Host::at(host));
+    let root_key = person_root(root)?;
+    let member = MemberApprover::new(ServerAddress::at(host));
     let seen = {
         let mut questions = MemberQuestions {
-            host: &member,
+            server: &member,
             root: &root_key,
             device: None,
         };
@@ -288,7 +291,7 @@ async fn next(
 
 /// Watch the host until a question arrives, or `within` passes.
 async fn wait(
-    questions: &mut impl QuestionHost,
+    questions: &mut impl QuestionServer,
     answer: Answer,
     within: Duration,
 ) -> anyhow::Result<u8> {
@@ -404,15 +407,25 @@ mod tests {
                 signing.verifying_key().to_bytes(),
                 "the person the page made"
             );
-            let kept = tilo_device_identity::persist::read_owned_signing_key(
-                &IdentityPaths::under(&root).user_privkey,
-            )
-            .unwrap();
+            let kept = person_root(&root).unwrap();
             assert_eq!(
-                kept.to_bytes(),
-                signing.to_bytes(),
-                "the root, kept where every program reads it"
+                kept.public_key(),
+                signing.verifying_key().to_bytes(),
+                "the root, kept in the person's identity store"
             );
+            assert_eq!(
+                tilo_identity::store::list_identities(&root).unwrap()[0].protection,
+                tilo_identity_client::KeyProtection::BrokerFile,
+                "in owner-only files, as a server keeps it"
+            );
+
+            // A device paired with that root: certified by it, holding no root.
+            let phone = directory.path().join("phone");
+            let cert = pair(&root, &phone, "Phone").unwrap();
+            tilo_user_identity::verify_device_cert(&cert).unwrap();
+            assert_eq!(cert.user_public_key, public);
+            assert_eq!(cert.device_label, "Phone");
+            assert!(!cert.capabilities.can_admit_devices);
         }
 
         phase another_persons_recovery_key_opens_nothing;

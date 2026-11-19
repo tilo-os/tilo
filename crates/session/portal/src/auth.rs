@@ -185,10 +185,17 @@ impl PortalAuthenticator {
             }
             let identified =
                 pid.and_then(|pid| self.identify.as_ref().and_then(|identify| identify(pid)));
+            // Named by its process, the app is placed as one the frontend names: in the
+            // workspace it lives in and, when the session started it in a sandbox, answered with
+            // paths that sandbox can open.
             return identified
-                .map(|caller| AuthenticatedCall {
+                .map(|named| AuthenticatedCall {
                     owner: expected,
-                    caller,
+                    caller: self
+                        .resolver
+                        .resolve(&named.app_id, parent_window)
+                        .filter(|placed| placed.app_id == named.app_id)
+                        .unwrap_or(named),
                 })
                 .ok_or(AuthenticationError::UnattributedRequester);
         };
@@ -367,6 +374,34 @@ mod tests {
         );
         assert_eq!(name("/org/freedesktop/portal/desktop/request//t1"), None);
         assert_eq!(name("/org/freedesktop/portal/desktop/request/x_y/t1"), None);
+    }
+
+    /// An app the frontend could not name (no desktop entry of its id is installed) and its
+    /// process names is placed as the session places it: a sandboxed app's chosen file is then
+    /// answered with a path in its own documents store, not a path its sandbox lacks.
+    #[tokio::test]
+    async fn an_app_named_by_its_process_is_placed_in_its_workspace_and_sandbox() {
+        const HANDLE: &str = "/org/freedesktop/portal/desktop/request/1_42/t";
+        let owner: OwnedUniqueName = ":1.7".try_into().unwrap();
+        let placed = |app_id: &str| PortalCaller {
+            workspace: Some("workspace-1".into()),
+            sandboxed: true,
+            ..PortalCaller::new(app_id)
+        };
+        let call = PortalAuthenticator::fixed_for_tests(
+            owner.clone(),
+            Arc::new(move |app_id: &str, _: Option<&str>| {
+                (app_id == "so.tilo.windows").then(|| placed(app_id))
+            }),
+        )
+        .with_requester_pids_for_tests(HashMap::from([(":1.42".to_string(), 4242)]))
+        .with_identify(Arc::new(|pid| {
+            (pid == 4242).then(|| PortalCaller::new("so.tilo.windows"))
+        }))
+        .authenticate_request(Some(&owner), HANDLE, "", None)
+        .await
+        .unwrap();
+        assert_eq!(call.caller, placed("so.tilo.windows"));
     }
 
     #[tokio::test]

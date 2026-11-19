@@ -6,6 +6,7 @@ format = 2
 kind = "print-centre.defaults"
 label = "Print Centre"
 version = 1
+shows = ["choose-printer", "close-print-setup", "confirm-cancel", "next-print-page", "next-scan-page", "open-dashboard", "open-history", "open-needs", "open-printer", "open-queue", "previous-print-page", "previous-scan-page", "print-document", "run-diagnostics", "scan-another", "scan-document", "scan-with", "set-print-option"]
 fields = [
   { path = "two_sided", type = "bool" },
   { path = "scan_resolution", type = "int" },

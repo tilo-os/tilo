@@ -62,6 +62,7 @@ pub const SCENARIOS: &[&str] = &[
     "scrolled",
     "sidebar_scroll",
     "page_tree",
+    "page_tree_flat",
     "migrated",
     "mention",
     "reactions",
@@ -121,6 +122,7 @@ pub fn shown_note(scenario: Option<&str>) -> Option<&'static str> {
         Some("formula") => Some("Formula notebook"),
         Some("import_success") => Some("Project brief"),
         Some("page_tree") => Some(HANDBOOK),
+        Some("page_tree_flat") => FLAT_NOTES.first().map(|(title, _)| *title),
         Some("migrated") => Some("Onboarding checklist"),
         _ if types_into_new_note(scenario) => Some(WRITING),
         _ => Some(LAUNCH),
@@ -336,7 +338,10 @@ pub fn fill(scene: &Scene, chain: &ui::framework::Chain<crate::note_list::NoteLi
 /// The tags `scenario` shows, written with the notebook's own actions.
 #[must_use]
 pub fn tag_actions(scenario: Option<&str>) -> Vec<TagAction> {
-    if matches!(scenario, Some("first_note" | "migrated" | "page_tree")) {
+    if matches!(
+        scenario,
+        Some("first_note" | "migrated" | "page_tree" | "page_tree_flat")
+    ) {
         return Vec::new();
     }
     // Tags are notebook metadata, not syntax hidden in the note body.
@@ -356,6 +361,9 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
     }
     if scenario == Some("page_tree") {
         return page_tree_actions();
+    }
+    if scenario == Some("page_tree_flat") {
+        return flat_tree_actions();
     }
     let (inbox, projects, launch, reading, recipes, formulas) =
         (page(1), page(2), page(3), page(4), page(5), page(6));
@@ -418,6 +426,157 @@ pub fn actions(scenario: Option<&str>) -> Vec<Action> {
     out
 }
 
+/// The sections a long imported wiki keeps under its handbook, each with the notes inside it
+/// (and one of those holding notes of its own), so the page-tree shot shows a tree a hundred
+/// notes long rather than a handful.
+const WIKI_SECTIONS: &[(&str, &[&str])] = &[
+    (
+        "Meeting notes",
+        &[
+            "Weekly sync",
+            "Planning",
+            "Retro",
+            "Offsite",
+            "1:1 template",
+        ],
+    ),
+    (
+        "Product",
+        &[
+            "Roadmap",
+            "Pricing",
+            "Onboarding",
+            "Search",
+            "Sharing",
+            "Mobile",
+        ],
+    ),
+    (
+        "Design",
+        &[
+            "Typography",
+            "Colour",
+            "Icons",
+            "Motion",
+            "Sidebar",
+            "Empty states",
+        ],
+    ),
+    (
+        "Research",
+        &["Interviews", "Survey results", "Competitors", "Field notes"],
+    ),
+    (
+        "Hiring",
+        &[
+            "Interview loop",
+            "Take-home",
+            "Offer letter",
+            "Onboarding buddy",
+        ],
+    ),
+    (
+        "Sales",
+        &[
+            "Pipeline",
+            "Pitch deck",
+            "Objections",
+            "Case studies",
+            "Pricing calls",
+        ],
+    ),
+    (
+        "Support",
+        &["Macros", "Escalations", "Known issues", "Refunds"],
+    ),
+    (
+        "Infrastructure",
+        &[
+            "Deploys",
+            "Backups",
+            "Monitoring",
+            "Incident review",
+            "Costs",
+        ],
+    ),
+    (
+        "Marketing",
+        &["Launch plan", "Blog ideas", "Newsletter", "Social"],
+    ),
+    ("Finance", &["Budget", "Invoices", "Payroll", "Taxes"]),
+    ("Legal", &["Terms", "Privacy", "Trademarks"]),
+    ("Personal", &["Reading", "Groceries", "Trips", "Ideas"]),
+];
+
+/// A notebook as an import from another wiki leaves it: most notes at the top level, some with
+/// titles too long for the sidebar, and a few holding a note or two.
+const FLAT_NOTES: &[(&str, &[&str])] = &[
+    ("Einkaufsliste", &[]),
+    ("Office Hours", &["09-31"]),
+    ("2026-11-07", &[]),
+    (
+        "Random Thoughts",
+        &[
+            "Why every sidebar ends up as a junk drawer of half-finished notes",
+            "Field notes on \"agentic engineering\" from the unconference",
+            "Help! I've been boiled and nobody told me the water was warm",
+        ],
+    ),
+    (
+        "unconference notes",
+        &["design stuff", "how to build faster", "taste"],
+    ),
+    ("agent companies", &["Maritime Talk"]),
+    ("happier prompt template", &[]),
+    (
+        "Ideas for applications that nobody has built yet but somebody should",
+        &[],
+    ),
+    ("Public releases", &["typography"]),
+    ("names", &[]),
+    ("Demo 21.09", &[]),
+    (
+        "Reading list for the long winter evenings, sorted by how much I want them",
+        &[],
+    ),
+    (
+        "Meeting with the accountant about the quarterly numbers",
+        &[],
+    ),
+    ("Trip planning", &["Lisbon", "Porto"]),
+    ("Recipes", &[]),
+    ("Interview questions", &[]),
+    ("Weekly review", &[]),
+    ("Pitch deck feedback", &[]),
+    ("Things to fix before launch", &[]),
+    ("Birthday gift ideas", &[]),
+    ("Podcast episode outlines", &[]),
+    ("Garden", &[]),
+    ("Book notes: The Design of Everyday Things", &[]),
+    ("Investor update draft", &[]),
+    ("Hiring plan", &[]),
+    (
+        "Old notes from the previous wiki that still need sorting",
+        &[],
+    ),
+];
+
+/// The notebook the flat page-tree scenario shows ([`FLAT_NOTES`]).
+fn flat_tree_actions() -> Vec<Action> {
+    let mut out = Vec::new();
+    let mut next = 1;
+    for (title, notes) in FLAT_NOTES {
+        let parent = page(next);
+        next += 1;
+        out.push(actions::create_page_action(parent, None, title));
+        for note in *notes {
+            out.push(actions::create_page_action(page(next), Some(parent), note));
+            next += 1;
+        }
+    }
+    out
+}
+
 /// The notebook the page-tree scenario shows: a handbook holding notes inside notes, three
 /// levels deep, as a workspace imported from another wiki keeps them.
 fn page_tree_actions() -> Vec<Action> {
@@ -441,6 +600,36 @@ fn page_tree_actions() -> Vec<Action> {
         .iter()
         .map(|(id, parent, title)| actions::create_page_action(*id, *parent, title))
         .collect::<Vec<_>>();
+    let mut next = 100;
+    for (section, notes) in WIKI_SECTIONS {
+        let section_page = page(next);
+        next += 1;
+        out.push(actions::create_page_action(
+            section_page,
+            Some(handbook),
+            section,
+        ));
+        for (index, note) in notes.iter().enumerate() {
+            let note_page = page(next);
+            next += 1;
+            out.push(actions::create_page_action(
+                note_page,
+                Some(section_page),
+                note,
+            ));
+            // The second note of every section holds two of its own: a third level.
+            if index == 1 {
+                for child in ["Draft", "Final"] {
+                    out.push(actions::create_page_action(
+                        page(next),
+                        Some(note_page),
+                        child,
+                    ));
+                    next += 1;
+                }
+            }
+        }
+    }
     let body = "How we work.\n\n## Where things live\n\n- Expenses go to finance\n- Engineering keeps the runbooks\n- Contracts stay under files\n";
     out.push(actions::write_body_action(
         handbook,
@@ -521,6 +710,20 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             reveal_sidebar(driver);
             let rect = semantic_name_rect(driver, LAUNCH).ok_or("note row missing")?;
             press(driver, rect.center(), MouseButton::Right);
+        }
+        Some("page_tree") => {
+            driver.relayout();
+            // The pointer rests on the shown note's row, as a person's does after choosing it:
+            // the row shows its chosen and hovered states together.
+            let rect = nodes(driver)
+                .into_iter()
+                .find(|node| {
+                    node.role == ui::a11y::Role::TreeItem && node.name.as_deref() == Some(HANDBOOK)
+                })
+                .and_then(|node| node.bounds)
+                .map(ui::a11y::AccessBounds::to_rect)
+                .ok_or("page tree row missing")?;
+            move_pointer(driver, rect.center());
         }
         Some("sidebar_hover") => {
             reveal_sidebar(driver);

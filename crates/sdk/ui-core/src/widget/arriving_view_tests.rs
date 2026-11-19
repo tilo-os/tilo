@@ -1,5 +1,5 @@
 use super::*;
-use crate::arriving::{GRACE, MIN_SHOWN, NAME_SOURCE_AFTER, frame_budget};
+use crate::arriving::{GRACE, MIN_SHOWN, frame_budget};
 use crate::launch::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
 use crate::widget::Spacer;
@@ -57,7 +57,7 @@ fn remote_data_shows_ground_then_a_skeleton_then_cross_fades_in_without_moving()
     let mut frame = ShotFrame::new((400, 300), Theme::dark());
     let height = content_height(&mut frame);
     let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::pending(Source::peer("Laptop"));
+        let arriving: Arriving<f32> = Arriving::pending(Source::Remote);
         let view = arriving
             .view(|height| Box::new(Spacer::fixed(*height)))
             .shaped(SHAPE);
@@ -119,7 +119,7 @@ fn a_skeleton_never_shows_for_less_than_its_minimum() {
     let t0 = crate::time::now();
     let mut frame = ShotFrame::new((400, 300), Theme::dark());
     let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::pending(Source::host("eu1.tilo.sh"));
+        let arriving: Arriving<f32> = Arriving::pending(Source::Remote);
         let view = arriving.view(|height| Box::new(Spacer::fixed(*height)));
         (arriving, view)
     });
@@ -149,8 +149,8 @@ fn a_failure_shows_the_error_with_a_retry_that_asks_again() {
     let mut frame = ShotFrame::new((400, 300), Theme::dark());
     let (arriving, mut view) = with_monotonic_time(t0, || {
         let arriving: Arriving<f32> =
-            Arriving::pending(Source::peer("Laptop")).on_retry(|arriving: &Arriving<f32>| {
-                let _ = arriving.begin(Source::peer("Laptop"));
+            Arriving::pending(Source::Remote).on_retry(|arriving: &Arriving<f32>| {
+                let _ = arriving.begin(Source::Remote);
             });
         let view = arriving.view(|height| Box::new(Spacer::fixed(*height)));
         (arriving, view)
@@ -182,7 +182,7 @@ fn a_read_without_a_way_to_retry_shows_its_failure_alone() {
     let t0 = crate::time::now();
     let mut frame = ShotFrame::new((400, 300), Theme::dark());
     let (arriving, mut view) = with_monotonic_time(t0, || {
-        let arriving: Arriving<f32> = Arriving::pending(Source::peer("Laptop"));
+        let arriving: Arriving<f32> = Arriving::pending(Source::Remote);
         let view = arriving.view(|height| Box::new(Spacer::fixed(*height)));
         (arriving, view)
     });
@@ -259,13 +259,13 @@ tilo_test_env::scenario! {
         let t0 = crate::time::now();
         let mut frame = ShotFrame::new((400, 300), Theme::dark());
         let mut view = with_monotonic_time(t0, || {
-            let arriving: Arriving<f32> = Arriving::pending(Source::peer("Laptop"));
+            let arriving: Arriving<f32> = Arriving::pending(Source::Remote);
             arriving.view(|height| Box::new(Spacer::fixed(*height)))
         });
         let steps = [
             (ms(t0, 50), Step::Ground, Some(t0 + GRACE)),
-            (ms(t0, 1_000), Step::Skeleton, Some(t0 + NAME_SOURCE_AFTER)),
-            (ms(t0, 2_500), Step::Named, None),
+            (ms(t0, 1_000), Step::Skeleton, None),
+            (ms(t0, 60_000), Step::Skeleton, None),
         ];
         for (at, step, next) in steps {
             frame_at(&mut frame, &mut view, at);
@@ -279,23 +279,23 @@ tilo_test_env::scenario! {
                 assert_eq!(view.next_wake_deadline(), next);
             });
         }
-        let named_due = t0 + NAME_SOURCE_AFTER;
+        let skeleton_due = t0 + GRACE;
         let mut view = with_monotonic_time(t0, || {
-            let arriving: Arriving<f32> = Arriving::pending(Source::peer("Laptop"));
+            let arriving: Arriving<f32> = Arriving::pending(Source::Remote);
             arriving.view(|height| Box::new(Spacer::fixed(*height)))
         });
-        frame_at(&mut frame, &mut view, ms(t0, 1_000));
-        with_monotonic_time(named_due, || {
+        frame_at(&mut frame, &mut view, ms(t0, 50));
+        with_monotonic_time(skeleton_due, || {
             assert!(view.needs_animation_frame(), "the due step is drawn");
-            assert!(view.serve_deadline(named_due));
+            assert!(view.serve_deadline(skeleton_due));
         });
-        frame_at(&mut frame, &mut view, named_due);
-        with_monotonic_time(named_due, || assert!(!view.needs_animation_frame()));
-        with_monotonic_time(named_due, || {
+        frame_at(&mut frame, &mut view, skeleton_due);
+        with_monotonic_time(skeleton_due, || assert!(!view.needs_animation_frame()));
+        with_monotonic_time(ms(t0, 60_000), || {
             assert_eq!(
                 view.accessibility().and_then(|node| node.name).as_deref(),
-                Some("From Laptop"),
-                "it says where the data comes from"
+                Some("Loading"),
+                "it says it is loading, never where from"
             );
         });
     }
@@ -315,7 +315,7 @@ tilo_test_env::scenario! {
             Showing::Answer,
             "an answer already here shows at once"
         );
-        let completion = with_monotonic_time(ms(t0, 10), || arriving.begin(Source::peer("Laptop")));
+        let completion = with_monotonic_time(ms(t0, 10), || arriving.begin(Source::Remote));
         frame_at(&mut frame, &mut view, ms(t0, 500));
         assert_eq!(view.showing(), Showing::Answer, "the shown answer stays");
         assert!(completion.finish(Ok(20.0)));
@@ -330,10 +330,11 @@ tilo_test_env::scenario! {
     phase an_arrival_paints_its_placeholder_steps_inside_its_rect;
     {
         let t0 = crate::time::now();
-        let mut clock = ArrivalClock::with_budget(t0, Source::host("eu1.tilo.sh"), frame_budget());
+        let mut clock = ArrivalClock::with_budget(t0, Source::Remote, frame_budget());
         assert_eq!(ArrivalFace::new(SHAPE, &clock, t0).step(), Step::Ground);
-        let named = ArrivalFace::new(SHAPE, &clock, t0 + NAME_SOURCE_AFTER);
-        assert_eq!(named.caption().as_deref(), Some("From eu1.tilo.sh"));
+        let waiting = ArrivalFace::new(SHAPE, &clock, ms(t0, 2_000));
+        assert_eq!(waiting.step(), Step::Skeleton);
+        assert_eq!(waiting.description(), "Loading");
         clock.arrive(ms(t0, 3_000));
         assert_eq!(
             ArrivalFace::new(SHAPE, &clock, ms(t0, 3_000)).step(),
@@ -347,7 +348,7 @@ tilo_test_env::scenario! {
         let mut frame = ShotFrame::new((400, 300), Theme::dark());
         let skeleton = t0 + GRACE;
         let mut view = with_monotonic_time(ms(t0, 120), || {
-            ArrivingView::placeholder_since(Source::host("eu1.tilo.sh"), t0, SHAPE)
+            ArrivingView::placeholder_since(Source::Remote, t0, SHAPE)
         });
         frame_at(&mut frame, view.as_mut(), ms(t0, 120));
         with_monotonic_time(ms(t0, 120), || {
@@ -364,10 +365,10 @@ tilo_test_env::scenario! {
             (height - f64::from(content_height(&mut frame))).abs() < 0.5,
             "it reserves its shape's geometry"
         );
-        with_monotonic_time(t0 + NAME_SOURCE_AFTER, || {
+        with_monotonic_time(ms(t0, 2_000), || {
             assert_eq!(
                 view.accessibility().and_then(|node| node.name).as_deref(),
-                Some("From eu1.tilo.sh")
+                Some("Loading")
             );
         });
     }

@@ -1,0 +1,23 @@
+# Mail, Agent, Contacts and Disks grew past their budgets with code of their
+# own after the model modules' raise was measured: their binaries, not their
+# payloads, are 21 to 38 KB larger at d87beb6a6e. Each amount is the app's
+# overage at run rb55fae3ed4 plus the ratchet's 1 % headroom, rounded up to
+# 64 KiB.
+reason = "mail, agent, contacts and disks gained code of their own since the budgets were measured, past what the model modules' raise accounted for"
+run = "rb55fae3ed4"
+
+# no model; 1,118,720 bytes in all, 1,114,112 budgeted.
+[apps."so.tilo.agent"]
+x86_64 = 65536
+
+# model 23,213 bytes; 2,048,000 bytes in all, 2,031,616 budgeted.
+[apps."so.tilo.contacts"]
+x86_64 = 65536
+
+# model 36,986 bytes; 1,707,008 bytes in all, 1,703,936 budgeted.
+[apps."so.tilo.disks"]
+x86_64 = 65536
+
+# no model; 4,098,560 bytes in all, 4,063,232 budgeted.
+[apps."so.tilo.mail"]
+x86_64 = 131072

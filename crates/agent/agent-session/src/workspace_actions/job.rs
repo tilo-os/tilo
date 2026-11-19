@@ -7,6 +7,14 @@
 )]
 use super::*;
 
+/// How soon a queued job is taken ([`Job::urgency`]): the least first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Urgency {
+    Read,
+    Write,
+    Background,
+}
+
 /// What the worker thread is asked to do, one at a time.
 pub(super) enum Job {
     Feedback {
@@ -145,6 +153,32 @@ impl Job {
                 tilo_actions::remote::ContentPutStep::Progress { .. } => "progress",
             }),
             _ => None,
+        }
+    }
+
+    /// How soon the worker takes the job among those queued: what a caller waits on to read
+    /// first, then writes in the order they came, then what no caller waits on. A bulk import
+    /// queues a write after every answer, and each write it lands queues a name to read again:
+    /// served in arrival order, a listing asked meanwhile waited behind all of them, past the
+    /// wait its caller gives up after. A reader asked after a write it waited for still reads
+    /// what that write did: a caller is answered a write once it ran.
+    pub(super) const fn urgency(&self) -> Urgency {
+        match self {
+            Self::Catalogue { .. }
+            | Self::ReadDocument { .. }
+            | Self::Search { .. }
+            | Self::Changes { .. }
+            | Self::Invocations { .. }
+            | Self::Changed { .. }
+            | Self::Feedback { .. }
+            | Self::Content { .. }
+            | Self::ContentGet { .. }
+            | Self::ContentLink { .. }
+            | Self::Joined(_) => Urgency::Read,
+            Self::Invoke { .. } | Self::Ran(_) | Self::Arrived { .. } | Self::Forget(_) => {
+                Urgency::Write
+            }
+            Self::Rename(..) => Urgency::Background,
         }
     }
 

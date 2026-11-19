@@ -16,9 +16,11 @@ pub use firewall_model::{AppliedConfig, Firewall, FirewallConfig, ZoneKind};
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "firewall.effect")]
 pub enum FirewallEffect {
+    #[effect(kind = "outside")]
     #[effect(job)]
     ApplyConfig,
     /// Retry firewalld connection.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Retry,
     #[effect(job, kind = "read")]

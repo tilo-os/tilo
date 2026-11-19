@@ -542,16 +542,15 @@ mod tests {
             environment.set("HOME", &home);
             environment.set("XDG_STATE_HOME", home.join(".local/state"));
             environment.set("XDG_CONFIG_HOME", home.join(".config"));
+            environment.set("XDG_DATA_HOME", home.join(".local/share"));
             let namespace = home.join(".local/state/tilo/installer/preparations");
             fs::create_dir_all(&namespace).unwrap();
             fs::set_permissions(&namespace, fs::Permissions::from_mode(0o700)).unwrap();
             // The setup held its settings profile in this Home; its lock stays.
-            let records =
-                tilo_settings_records::Records::of(&tilo_settings_records::profile_root().unwrap());
-            fs::create_dir_all(records.dir().join("person")).unwrap();
-            let [lock, _] = records.runtime_files();
-            fs::write(&lock, b"").unwrap();
-            fs::write(records.dir().join("person/state.automerge"), b"real settings").unwrap();
+            let person = home.join(".local/share").join(tilo_paths::SETTINGS_PERSON);
+            fs::create_dir_all(&person).unwrap();
+            fs::write(person.join("canonical.lock"), b"").unwrap();
+            fs::write(person.join("state.automerge"), b"real settings").unwrap();
             fs::write(home.join("document"), b"real document").unwrap();
             let proofs = OriginalPreparation::review(&home)
                 .unwrap()
@@ -563,6 +562,7 @@ mod tests {
             environment.set("XDG_CONFIG_HOME", temporary.path().join("elsewhere"));
             let pin = PinnedDirectory::open_absolute(&home).unwrap();
             let inventory = SourceInventory::capture_original_home(&pin, &proofs).unwrap();
+            let lock = home.join(".local/share").join(tilo_paths::PROFILE_LOCK);
             let relative = lock.strip_prefix(&home).unwrap();
             assert!(inventory.facts.get(relative).unwrap().is_none());
             assert_eq!(
@@ -577,8 +577,8 @@ mod tests {
             let forged: OriginalOmission = serde_json::from_value(forged).unwrap();
             assert!(forged.validate_shape().is_err());
             // A different file in its place is Home data again.
-            fs::write(records.dir().join("replacement"), b"").unwrap();
-            fs::rename(records.dir().join("replacement"), &lock).unwrap();
+            fs::write(person.join("replacement"), b"").unwrap();
+            fs::rename(person.join("replacement"), &lock).unwrap();
             assert!(SourceInventory::capture_original_home(&pin, &proofs).is_err());
         }
     }

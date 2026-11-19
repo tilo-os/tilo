@@ -7,7 +7,7 @@ use super::{DocumentRoute, EndpointChannelKeys, SdkCertifiedIdentity};
 /// The keys the identity service answered, or, when it could not answer,
 /// that they are unavailable and the answer was not the channel service's.
 pub(super) fn answered_keys(
-    reply: Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>,
+    reply: Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable>,
     generation: u64,
 ) -> KeysAnswer {
     match reply {
@@ -18,8 +18,8 @@ pub(super) fn answered_keys(
         Err(error) => {
             tracing::warn!(?error, "collab: identity service refused channel keys");
             KeysAnswer {
-                reply: runtime_identity::wire::ChannelKeysReply {
-                    access: runtime_identity::wire::KeyAccess::Unavailable,
+                reply: tilo_identity_client::wire::ChannelKeysReply {
+                    access: tilo_identity_client::wire::KeyAccess::Unavailable,
                     generation,
                     keys: None,
                 },
@@ -31,7 +31,7 @@ pub(super) fn answered_keys(
 
 /// One route's answer to a key question.
 pub(super) struct KeysAnswer {
-    reply: runtime_identity::wire::ChannelKeysReply,
+    reply: tilo_identity_client::wire::ChannelKeysReply,
     /// The channel service answered (rather than the identity service
     /// refusing or failing): it then tells the route when this answer may
     /// change, and the endpoint need not ask on a timer.

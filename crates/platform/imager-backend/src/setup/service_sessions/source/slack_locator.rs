@@ -216,7 +216,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "native-slack-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-slack-qualification")]
 mod native_locator {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -312,7 +313,7 @@ mod native_locator {
                 .windows(b"com.slack.Slack.desktop".len())
                 .any(|part| part == b"com.slack.Slack.desktop")
         );
-        let mut mutated = repacked.clone();
+        let mut mutated = repacked;
         *mutated.last_mut().unwrap() ^= 1;
         assert!(super::super::slack_asar::verify(&mutated).is_err());
         let home = tempfile::tempdir().unwrap();

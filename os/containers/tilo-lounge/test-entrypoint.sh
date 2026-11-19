@@ -74,8 +74,6 @@ Coffee and tea, and whatever is being made
 editor
 --web
 127.0.0.1:9781
---packet-relay
-0.0.0.0:9782
 --tls
 dev
 --web-plain
@@ -88,6 +86,8 @@ https://eu1.tilo.sh
 https://tilo.sh/
 --allowed-origin
 https://eu1.tilo.sh
+--packet-relay
+0.0.0.0:9782
 --fetch-proxy
 --chat-channel
 general

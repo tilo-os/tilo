@@ -64,7 +64,7 @@ impl VirtualRows {
             vello::peniko::BlendMode::default(),
             opacity,
             transform,
-            &self.rect,
+            &self.drawn(),
         );
         let accent = theme.tokens.colors.intent.accent_ink;
         let frame_transform = transform;
@@ -117,9 +117,28 @@ impl VirtualRows {
             let Some(row_rect) = row_rect else {
                 continue;
             };
+            // A list row paints its chosen state itself, in the box the list would lift it in:
+            // its hover and its selection are then one box in one state, never the row's hover
+            // as a second, smaller box inside the list's lift, nor a hover hiding the choice.
+            // The box stands around the row, the lift's bleed past it on each side, so it keeps
+            // the column's gutter and its rounded corners clear of the pane's edges.
+            let lift_bleed = self.lift;
+            let mut content = crate::widget::row_content_box(row.widget.as_ref());
+            let handed = !self.delegate_selection
+                && row
+                    .widget
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
+                    .is_some_and(|list_row| {
+                        let around = content
+                            .get_or_insert_with(|| crate::widget::Widget::get_rect(list_row));
+                        let lift_box = super::lift::selection_around(row_rect, *around, lift_bleed);
+                        list_row.set_lift_box(Some(lift_box));
+                        crate::widget::RowSelectionSink::take_selection(list_row, selection);
+                        true
+                    });
             let lift = (selection.selected && !self.delegate_selection).then(|| {
-                let content =
-                    crate::widget::row_content_box(row.widget.as_ref()).unwrap_or(row_rect);
+                let content = content.unwrap_or(row_rect);
                 let painted = super::lift::selection_around(row_rect, content, self.lift);
                 self.painted_lifts.push(crate::widget::RowLift {
                     rect: painted,
@@ -128,6 +147,7 @@ impl VirtualRows {
                 });
                 painted
             });
+            let lift = lift.filter(|_| !handed);
             // A row the frame keeps on screen, unchanged, is not drawn
             // again: its selection, its ring and its widget are as they were.
             if focused != Some(&row.key)
@@ -231,10 +251,10 @@ impl VirtualRows {
                 };
                 if self.indent_guides {
                     chevrons.paint_guides(
-                        marks,
                         scene,
                         transform,
-                        &row.key,
+                        theme,
+                        marks.depth(&row.key),
                         line,
                         crate::ColorCompat::with_alpha_factor(guide_color, alpha),
                     );

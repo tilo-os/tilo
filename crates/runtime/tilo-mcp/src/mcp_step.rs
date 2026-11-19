@@ -106,10 +106,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if let Some(execution) = self.caller.execution_id() {
             hasher.update(execution.as_bytes());
         }
-        let session = self
-            .agent_session()
-            .map(|session| session.id)
-            .unwrap_or_default();
+        let session = self.session_id().unwrap_or_default();
         hasher.update(
             &u64::try_from(session.len())
                 .unwrap_or(u64::MAX)

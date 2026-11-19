@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::page_resource::agent_handle;
 
-use ui::webview::{
+use tilo_webview::{
     AnsweredBy, HeldKind, HeldRequest, PageActor, PageKey, PageRequest, WebViewCommand,
     WebViewEngine as _,
 };

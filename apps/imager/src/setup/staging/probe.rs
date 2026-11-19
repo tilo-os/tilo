@@ -1,11 +1,11 @@
-//! Host readiness: facts plus blockers with stable IDs. Unprivileged where the platform
+//! Readiness of the machine: facts plus blockers with stable IDs. Unprivileged where the platform
 //! allows; the helper re-probes before mutating.
 
 use super::plan::{PlanError, Requirements};
 
 pub use imager_backend::model::{Blocker, HostFacts};
 
-/// Probe this host. Never mutates; safe to call from the UI thread's worker.
+/// Probe this machine. Never mutates; safe to call from the UI thread's worker.
 ///
 /// Native facts come from the backend's platform adapter. Shared blockers from
 /// [`add_shared_blockers`] are added here for both; `InsufficientSpace`
@@ -18,6 +18,27 @@ pub fn probe() -> HostFacts {
     let mut facts = imager_backend::staging::probe_host();
     add_shared_blockers(&mut facts);
     facts
+}
+
+/// Probe a disk named by the identity a machine plan uses
+/// (`serial:<serial>` or `wwid:<wwn>`), not this machine's own system disk.
+///
+/// # Errors
+/// The identity names no disk or several, a partition of it is mounted, it is
+/// removable, or it has no GPT.
+pub fn probe_target(text: &str) -> Result<HostFacts, String> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = text;
+        Err("a named staging disk is available on Linux only".into())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let target = super::TargetDisk::parse(text)?;
+        let mut facts = imager_backend::linux::probe_target(&target)?;
+        add_shared_blockers(&mut facts);
+        Ok(facts)
+    }
 }
 
 pub fn add_shared_blockers(facts: &mut HostFacts) {

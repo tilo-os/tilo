@@ -18,7 +18,6 @@ use tilo_vm_protocol::{
 };
 
 use crate::error::DaemonError;
-use crate::fsutil::write_atomic;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountEntry {
@@ -310,7 +309,9 @@ impl AccountStore {
     pub fn save(&self, record: &AccountEntry) -> Result<(), DaemonError> {
         let bytes = serde_json::to_vec_pretty(record)
             .map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
-        write_atomic(&self.record_path(&record.name), &bytes)
+        let path = self.record_path(&record.name);
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+            .map_err(DaemonError::io(format!("write {}", path.display())))
     }
 
     /// Every account on disk, sorted by name.
@@ -427,7 +428,9 @@ impl AccountStore {
         to.reason = format!("swap {component} {layer}");
         let bytes = serde_json::to_vec_pretty(&to)
             .map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
-        write_atomic(&self.generation_path(&record.name, to.number), &bytes)?;
+        let path = self.generation_path(&record.name, to.number);
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+            .map_err(DaemonError::io(format!("write {}", path.display())))?;
         Ok(Some((from, to)))
     }
 
@@ -486,7 +489,9 @@ impl AccountStore {
         let bytes = serde_json::to_vec_pretty(&to)
             .map_err(|error| DaemonError::InvalidParams(error.to_string()))?;
         if publish {
-            write_atomic(&self.generation_path(&record.name, to.number), &bytes)?;
+            let path = self.generation_path(&record.name, to.number);
+            tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+                .map_err(DaemonError::io(format!("write {}", path.display())))?;
         }
         Ok((from, to))
     }
@@ -529,7 +534,9 @@ impl AccountStore {
     /// Record that a transition to `number` is being applied; [`Self::set_current`] clears it, and
     /// one still present afterwards means the transition was cut short.
     pub fn mark_pending(&self, name: &str, number: u64) -> Result<(), DaemonError> {
-        write_atomic(&self.pending_path(name), number.to_string().as_bytes())
+        let path = self.pending_path(name);
+        tilo_files::native::atomic::write_creating_parent(&path, number.to_string().as_bytes())
+            .map_err(DaemonError::io(format!("write {}", path.display())))
     }
 
     /// # Errors

@@ -306,7 +306,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
             "committing the title renames the page"
         );
         assert_eq!(
-            n(&mut app).main_panel_mut().title(),
+            n(&mut app).main_panel_mut().name().as_deref(),
             Some("Roadmap"),
             "the panel shows the new title"
         );

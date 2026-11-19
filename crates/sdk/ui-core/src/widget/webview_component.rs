@@ -27,7 +27,7 @@ pub struct WebViewProps {
     pub fail: Event,
     /// The page's engine, which its app builds and hands in.
     #[component(skip)]
-    pub engine: Option<crate::webview::SharedEngine>,
+    pub engine: Option<tilo_webview::SharedEngine>,
 }
 
 impl Described for WebView {
@@ -42,9 +42,9 @@ impl Described for WebView {
             engine,
         } = props;
         let engine = engine.unwrap_or_else(|| {
-            crate::webview::chromium::UnavailableEngine::new(
-                crate::i18n::I18nManager::lookup_plain("webview-unavailable"),
-            ) as crate::webview::SharedEngine
+            tilo_webview::chromium::UnavailableEngine::new(crate::i18n::I18nManager::lookup_plain(
+                "webview-unavailable",
+            )) as tilo_webview::SharedEngine
         });
         let mut view = Self::new(engine);
         if let Some(title) = title {

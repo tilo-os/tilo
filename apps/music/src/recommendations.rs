@@ -8,7 +8,7 @@ use ui::tilo_resource::{self, Model, Set};
 use crate::model::{Library, Track};
 
 mod resources;
-pub use resources::{PREFERENCES, row_by_id, rows};
+pub use resources::{PREFERENCES, row_by_id, row_status, rows};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Input {

@@ -39,6 +39,9 @@ impl Hers {
         let (key, owner) = governor();
         let holder = test_holder(dir.path(), &key, &owner).await;
         let workspaces = holder.workspaces().clone();
+        // Her calendar server is this machine: the operator lets the server
+        // call its own network, which it is otherwise kept from.
+        workspaces.call_private_model_addresses(true);
         let (workspace, workspace_id, service) = governed(&workspaces).await;
         let ada = admit(&workspaces, &workspace, &owner, 1).await;
         let server = fake_caldav::Server::start(ADDRESS, PASSWORD);

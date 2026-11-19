@@ -15,8 +15,8 @@ extern crate runtime_dylib;
 pub use tilo_content_blocker;
 
 #[cfg(feature = "thin")]
-use tilo_ui::webview::adblock::{AdblockError, ChunkedFilter, CompileFn, EngineEntry};
-/// The entry the toolkit opens (`ui::webview::adblock::ENGINE_ENTRY`): the
+use runtime_dylib::tilo_webview::adblock::{AdblockError, ChunkedFilter, CompileFn, EngineEntry};
+/// The entry the toolkit opens (`tilo_webview::adblock::ENGINE_ENTRY`): the
 /// compiler, its type checked here against the toolkit's [`CompileFn`].
 #[cfg(feature = "thin")]
 #[unsafe(no_mangle)]
@@ -31,7 +31,7 @@ const _: EngineEntry = tilo_adblock_engine_entry;
 fn compile(lists: &[&str], max_rules_per_chunk: usize) -> Result<ChunkedFilter, AdblockError> {
     use tilo_content_blocker::Failure;
     match tilo_content_blocker::compile(lists, max_rules_per_chunk) {
-        Ok(compiled) => Ok(tilo_ui::webview::adblock::chunked_filter(
+        Ok(compiled) => Ok(runtime_dylib::tilo_webview::adblock::chunked_filter(
             compiled.chunks,
             compiled.rule_count,
             compiled.skipped,

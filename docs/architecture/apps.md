@@ -27,15 +27,80 @@ built per architecture. A device that holds the keys of a workspace applies
 any installed app's actions from that package, so a server takes an app's work
 the moment the app is installed, with no build of its own.
 
+The module carries the app's model logic and nothing of a document's
+storage: the device holds the document. Built with `--cfg tilo_model_guest`,
+the module's `Doc` (Automerge's `AutoCommit`) is a handle on the device's
+document, and every read and write a verb makes (a field's value, a
+collection's entries, a put, an insert, a delete) is one call to the device,
+answered from the device's own Automerge at the resource's current heads
+(`vendor/automerge/src/model_device`). So the change a verb makes is made by the
+device's Automerge, which signs it and keeps its history, and the module is
+the size of the app's own code rather than one copy of Automerge per app.
+`#[derive(Model)]` and `#[resource]` generate the same code for both builds;
+only what `Doc` is differs.
+
 An app's model is one crate, `apps/<app>-model`, and the module is one guest
 crate beside it, `apps/<app>-model-wasm`, whose whole content is the app's
-resource served through `tilo-model-guest`. One mechanism builds every app's
-module: `tilo-app model` builds that guest crate for `wasm32-unknown-unknown`,
-with the crate's own `.cargo` config saying what makes it a module rather than
-a page (no JavaScript glue, no browser clocks), and packaging writes the result
-into the payload as `model.wasm`. So building an app's package builds its
-model, and a tree keeps none: `t test app-models` builds them all, and the
-checks that read one declare it.
+resources, `tilo_model_guest::model!("<app>", <resource>, ...)`, served
+through `tilo-model-guest`. A module is one per app, whatever number of
+resource kinds the app declares (Tube serves `tube.library` and
+`tube.watch-history` alike): each request names the resource kind it is for,
+and the module routes it to that resource's verbs. The guest crates are
+workspace members, so every app's module shares one lockfile and one wasm32
+target directory, and each is built for size (opt-level `z`, no unwinding, no
+debug info, then `wasm-opt`), since it is the same bytes on every device. The
+crate's own `.cargo` config says what makes a module rather than a page (no
+JavaScript glue, no browser clocks). Built alone (`tilo-app model`), a guest is
+a whole module, and `tilo-app package` ships it so: any device calls it as it
+is.
+
+Nearly all of such a module is code every app's model shares: automerge, std,
+the resource layer, serde_json. So the apps this repository ships are built
+together. `t test app-models` (tools/ci/app-models.sh) links every guest crate
+into one module (crates/sdk/tilo-models-wasm) and splits it with
+`wasm-split --models` (tools/web/wasm-split): what only one app's entry
+reaches becomes that app's `model.wasm`, tens of KB, and everything else the
+model runtime, kept once beside them as `app-model-runtime/` (its modules and a
+`runtime.json` naming it by a BLAKE3 hash of their bytes). Each app's module
+names that hash, and the export to call, in a `tilo_model_runtime` section.
+Both pack paths take that output rather than building it again: the release
+pack (`dist/apps/package-apps.sh`) when it signs, and the image pack
+(`os/scripts/pack-apps.sh`), whose app store a freshly installed system boots
+with. Each writes an app's module into its payload as `model.wasm`, signed with
+the rest, and refuses an app whose guest crate it finds and whose module is not
+there. The model runtime is in no app's package: the runtime bundle every app
+of the release names carries it, signed, as `lib/app-model-runtime`, and
+`tools/perf/runtime-size-budget/` holds its bytes. An app's package therefore
+counts only its own model code against its budget.
+
+A device links a split module after the runtime it names
+(`tilo-model-engine`, on the engine that executes every WebAssembly module, which
+caches the runtime's compiled modules once per process): the runtime's start
+module with the model ABI, its shared modules, then the app's module, each
+import answered by the exports of the modules before it, as the page links a
+split bundle. It finds the runtime by its hash in the directories
+`TILO_APP_MODEL_RUNTIME` lists, then under `TILO_APP_MODELS` (the app-models
+output the tests are given), then in every installed runtime bundle (the
+person's and `/usr/lib/tilo-runtime`). The server's image carries the runtime
+of the release it was built with and names it in `TILO_APP_MODEL_RUNTIME`.
+A package built by another release names another runtime, and the bundle that
+carries it in its manifest (`[package].runtime`, `tilo-runtime/<version>`). A
+server lacking that runtime fetches it before it applies the app's first action
+(`app_cli::model_runtime`): it asks the enabled registries for the runtime
+package that provides that version, takes the package only as the registry's
+signed entry names it (length, BLAKE3, root and publisher) and when its
+signature verifies, checks that the bundle manifest inside is signed by a
+runtime publisher the device trusts (as the launcher checks an installed
+bundle) and lists every file it takes, and downloads only
+`lib/app-model-runtime`, never the bundle's libraries. The engine then reads
+the runtime and computes its hash from its bytes; it must be the hash the
+module names. The runtime is kept on disk under the store's cache
+(`app-model-runtime/<hash>`, the four most recently used) and in memory for
+the process, so later actions ask the registry nothing. A runtime that cannot
+be fetched or verified is refused with the hash the module names, the ones
+this server holds and why the fetch failed, and is not asked for again for five
+minutes; it is never linked against other code. A whole module names none and
+is called as before.
 
 An app written against the framework writes none of the following: storage, sync, merge,
 undo, history, presence, identity, signing, encryption, key handling, transport,
@@ -52,12 +117,17 @@ signs, stores and syncs an app's documents:
   actor ([§4](#4-who-did-it)). The host checks the grant
   ([security architecture](../security/architecture.md) §6), runs the verb from
   the app's module against the document, runs the model's `check`, records the
-  change with its history entry, and signs it as the actor. A verb has no clock,
-  randomness, file, network or process access because its module has no such
-  imports; that's enforced by what the module can link, not by a lint.
+  change with its history entry, and signs it as the actor. The verb reads and
+  writes the document through the device's document calls, so what it writes
+  lands in the device's Automerge. A verb has no clock, randomness, file, network
+  or process access because its module has no such imports (only its request,
+  its answer and the document calls); that's enforced by what the module can
+  link, not by a lint.
 - **Replay.** The same module replays a verb received from another device to
-  verify it ([resources.md](resources.md) §5). The app's process is never
-  involved.
+  verify it ([resources.md](resources.md) §5): the device gives it the document
+  at the change's parent heads, the verb goes through the same document calls,
+  and the device compares the change it makes with the one received. The app's
+  process is never involved.
 - **Readings.** A view receives readings: the decrypted, typed state of the
   resources it shows and was granted, delivered per changed path. A collection
   arrives as its item ids, and each item as its own reading when a view reads
@@ -199,10 +269,11 @@ All of that moves to the document host:
    and nothing else, and Chat's own `ChatPermissions` goes.
 6. The outbox drain is decided per entry by the session's policy, like an action.
 7. A server applies the actions of any installed app from its package. Today
-   `tilo-workspace-service` knows only the app models compiled into it (Chat
-   and Calendar, behind its `agents` feature), and `tilo-agent-session` links
-   the models of most apps natively; both go once packages carry the model as
-   WebAssembly. Most apps' models already build for WebAssembly, for the page.
+   `tilo-workspace-service` knows only the app models compiled into it
+   (Calendar, behind its `agents` feature), and `tilo-agent-session` links the
+   models of most apps natively; both go once packages carry the model as
+   WebAssembly. Most apps' models already build for WebAssembly, for the page,
+   and the ones that do are applied from their package: Chat's resources are.
 8. A member lets a server use one secret, and a consent sheet raised on a
    server reaches that member's devices.
 

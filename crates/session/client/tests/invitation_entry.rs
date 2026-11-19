@@ -53,7 +53,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
     let workspaces = host.server.workspaces().unwrap();
     let acme = workspaces.create("Acme").await.unwrap();
-    let host_cert = host_device.cert.clone();
+    let server_cert = host_device.cert.clone();
     let bob = new_key();
     let user = bob.verifying_key().to_bytes();
     let page = new_key();
@@ -62,7 +62,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     // invitation, and the workspace admits the device on it: the session is in.
     let (invitation, token) = entry_grant(&host, &alice, &host_device, &acme.workspace, user).await;
     let (cert, entry) = invitation_entry(
-        &host_cert,
+        &server_cert,
         &invitation,
         &page,
         entering(None, Some(&bob), &token),
@@ -75,7 +75,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     let peer = enter_page(
         host.iroh(),
         cert.clone(),
-        host_cert.clone(),
+        server_cert.clone(),
         page.clone(),
         Arc::new(MemoryPeerStore::default()),
         entry,
@@ -91,11 +91,11 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     // Asked again, it enters under the certificate it holds, exactly.
     let held = Held {
         cert: cert.clone(),
-        host_cert: Some(host_cert.clone()),
+        server_cert: Some(server_cert.clone()),
     };
     let (invitation, token) = entry_grant(&host, &alice, &host_device, &acme.workspace, user).await;
     let (again, _) = invitation_entry(
-        &host_cert,
+        &server_cert,
         &invitation,
         &page,
         entering(Some(&held), Some(&bob), &token),
@@ -114,10 +114,10 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
             device_public_key: laptop.verifying_key().to_bytes(),
             ..cert.clone()
         },
-        host_cert: Some(host_cert.clone()),
+        server_cert: Some(server_cert.clone()),
     };
     let (anew, _) = invitation_entry(
-        &host_cert,
+        &server_cert,
         &invitation,
         &page,
         entering(Some(&theirs), Some(&bob), &token),
@@ -130,7 +130,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     // Without a root, nothing it could enter with is no certificate: said so, typed, before the
     // host is asked to admit anything.
     let none = invitation_entry(
-        &host_cert,
+        &server_cert,
         &invitation,
         &page,
         entering(Some(&theirs), None, &token),
@@ -146,7 +146,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
         entry_grant(&host, &alice, &host_device, &acme.workspace, carol).await;
     let tab = new_key();
     let (cert, entry) = invitation_entry(
-        &host_cert,
+        &server_cert,
         &invitation,
         &tab,
         entering(None, Some(&bob), &token),
@@ -156,7 +156,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
     let refused_peer = enter_page(
         host.iroh(),
         cert,
-        host_cert.clone(),
+        server_cert.clone(),
         tab,
         Arc::new(MemoryPeerStore::default()),
         entry,
@@ -178,7 +178,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
     let workspaces = host.server.workspaces().unwrap();
     let acme = workspaces.create("Acme").await.unwrap();
     let beta = workspaces.create("Beta").await.unwrap();
-    let host_cert = host_device.cert.clone();
+    let server_cert = host_device.cert.clone();
     let bob = new_key();
     let user = bob.verifying_key().to_bytes();
     let key = new_key();
@@ -186,7 +186,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
     // Bob's device is in Acme, through its session's own entry.
     let (invitation, token) = entry_grant(&host, &alice, &host_device, &acme.workspace, user).await;
     let (cert, entry) = invitation_entry(
-        &host_cert,
+        &server_cert,
         &invitation,
         &key,
         entering(None, Some(&bob), &token),
@@ -197,7 +197,7 @@ async fn a_device_in_a_session_redeems_an_invitation_on_another_stream_of_its_co
         PeerConfig {
             host: host.iroh(),
             cert: cert.clone(),
-            host_cert: host_cert.clone(),
+            server_cert: server_cert.clone(),
             revocations: RevocationList::new(),
             entering: Some(entry),
         },
@@ -264,13 +264,13 @@ async fn an_invitation_asked_again_under_the_same_request_admits_the_device_it_a
     let workspaces = host.server.workspaces().unwrap();
     let acme = workspaces.create("Acme").await.unwrap();
     let beta = workspaces.create("Beta").await.unwrap();
-    let host_cert = host_device.cert.clone();
+    let server_cert = host_device.cert.clone();
     let bob = new_key();
     let user = bob.verifying_key().to_bytes();
     let key = new_key();
     let (invitation, token) = entry_grant(&host, &alice, &host_device, &acme.workspace, user).await;
     let (cert, entry) = invitation_entry(
-        &host_cert,
+        &server_cert,
         &invitation,
         &key,
         entering(None, Some(&bob), &token),
@@ -281,7 +281,7 @@ async fn an_invitation_asked_again_under_the_same_request_admits_the_device_it_a
         PeerConfig {
             host: host.iroh(),
             cert,
-            host_cert: host_cert.clone(),
+            server_cert: server_cert.clone(),
             revocations: RevocationList::new(),
             entering: Some(entry),
         },
@@ -357,9 +357,9 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
     )
     .await
     .unwrap();
-    let held = |cert: DeviceCert, host_cert: &DeviceCert| Held {
+    let held = |cert: DeviceCert, server_cert: &DeviceCert| Held {
         cert,
-        host_cert: Some(host_cert.clone()),
+        server_cert: Some(server_cert.clone()),
     };
     let choose = |held: Held, root: Option<&SigningKey>| {
         let host = host.clone();
@@ -452,7 +452,7 @@ async fn a_held_certificate_serves_only_from_the_same_host_for_the_same_person_w
     // Kept without the host it was kept for: it serves no host, so only a root enters.
     let hostless = |cert: DeviceCert| Held {
         cert,
-        host_cert: None,
+        server_cert: None,
     };
     assert_eq!(
         choose(hostless(cert.clone()), None).await.unwrap_err().code,
@@ -576,7 +576,7 @@ async fn an_invitation_opens_from_a_device_that_reaches_its_server_only_through_
         .parse::<iroh_base::RelayUrl>()
         .expect("the invitation names the server's packet relay");
     let through_relay =
-        tilo_server_client::Host::published(&tilo_server_protocol::web::HostAddress {
+        tilo_server_client::ServerAddress::published(&tilo_server_protocol::web::ServerAddress {
             endpoint_addr: server.endpoint_addr.clone(),
             relay_url: Some(relay.to_string()),
             web: None,

@@ -1432,6 +1432,7 @@ impl AppComponent {
     pub(crate) fn project_resource_save_status(&mut self) -> bool {
         let captured = self.callback_binding();
         let context = &self.context;
+        let told = self.sampled_resource_save().cloned();
         let wake = std::sync::Arc::clone(self.save_wake.get_or_insert_with(|| {
             let handle = context.wake_handle();
             std::sync::Arc::new(move || handle.wake_save_progress())
@@ -1466,7 +1467,12 @@ impl AppComponent {
                     root.record_said(text);
                 }
                 let status = binding.sampled_save_status(&parts, &wake).ok()?;
-                root.resource_save_status(status.clone());
+                // The root hears the durability it shows when it moves, once
+                // per move: a frame samples it after its settle and its sync
+                // both, and a status it already shows is no news.
+                if told.as_ref() != Some(&status) {
+                    root.resource_save_status(status.clone());
+                }
                 Some((status, !refusals.is_empty() || !said.is_empty()))
             })
             .ok()

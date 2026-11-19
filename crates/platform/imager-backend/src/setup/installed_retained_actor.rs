@@ -670,7 +670,8 @@ mod tests {
     }
 }
 
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 mod different_uid_native {
     use super::*;
     use std::os::fd::{AsRawFd, FromRawFd};
@@ -683,7 +684,7 @@ mod different_uid_native {
     fn root_observes_actual_nonroot_task_without_inferring_original_credentials() {
         if std::env::var_os(CHILD).is_some() {
             assert_eq!(rustix::process::getuid().as_raw(), 1004);
-            assert_eq!(unsafe { libc::getgid() }, 1005);
+            assert_eq!(rustix::process::getgid().as_raw(), 1005);
             let mut stream = unsafe { UnixStream::from_raw_fd(42) };
             process_binding::complete(&mut stream).expect("actual dropped task binding");
             return;

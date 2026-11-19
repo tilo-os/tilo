@@ -179,12 +179,18 @@ pub fn public_only(lookup: Lookup) -> Lookup {
     })
 }
 
-/// The system's resolver, as a [`Lookup`].
+/// The system's resolver, as a [`Lookup`]. A name that is itself an address
+/// is answered with that address at once: the resolver is not asked for it.
 #[cfg(not(target_family = "wasm"))]
 #[must_use]
 pub fn system_lookup() -> Lookup {
     std::sync::Arc::new(|name: String| {
         Box::pin(async move {
+            // An address is its own answer: nothing is asked for it and
+            // nothing is waited for.
+            if let Some(address) = literal(&name) {
+                return Ok(vec![address]);
+            }
             tokio::task::spawn_blocking(move || {
                 std::net::ToSocketAddrs::to_socket_addrs(&(name.as_str(), 0))
                     .map(|found| found.map(|address| address.ip()).collect::<Vec<IpAddr>>())
@@ -193,6 +199,31 @@ pub fn system_lookup() -> Lookup {
             .map_err(std::io::Error::other)?
         })
     })
+}
+
+/// Whether `lookup` would have `address` dialled, for an address that a URL
+/// writes out ([`written_out`]): no connection looks such an address up, so
+/// whoever gave its client a lookup asks it here, with the address as the
+/// name, before anything is sent. The lookup is asked once and not waited
+/// for: a name that is itself an address needs no look-up, and every lookup
+/// of this module answers it at once. So a caller on a thread that awaits
+/// nothing can ask.
+///
+/// # Errors
+/// The lookup's own refusal, of which [`not_public`] tells the judge's; and
+/// for a lookup that answers another address, or would wait, a refusal that
+/// says so.
+#[cfg(not(target_family = "wasm"))]
+pub fn asked_as_written(lookup: &Lookup, address: IpAddr) -> std::io::Result<()> {
+    let mut asking = lookup(address.to_string());
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match asking.as_mut().poll(&mut context) {
+        std::task::Poll::Ready(Ok(answered)) if answered.contains(&address) => Ok(()),
+        std::task::Poll::Ready(Err(refused)) => Err(refused),
+        std::task::Poll::Ready(Ok(_)) | std::task::Poll::Pending => Err(std::io::Error::other(
+            format!("{address} is not an address its lookup answers"),
+        )),
+    }
 }
 
 /// Whether `error` is the refusal of [`public_addresses`], not a look-up
@@ -206,6 +237,31 @@ pub fn not_public(error: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An address is its own answer, at once: the system's resolver is not
+    /// waited for, and the judge over it refuses an own address and passes a
+    /// public one. So the address a URL writes out is asked about from a
+    /// thread that awaits nothing. A lookup that would wait for it, or that
+    /// answers another address, has it dialled by nobody.
+    #[test]
+    fn an_address_a_url_writes_out_is_asked_of_a_lookup_without_waiting() {
+        let own = IpAddr::from([10, 0, 0, 8]);
+        let public = IpAddr::from([93, 184, 216, 34]);
+        assert!(asked_as_written(&system_lookup(), own).is_ok());
+        let judged = public_only(system_lookup());
+        assert!(asked_as_written(&judged, public).is_ok());
+        let refused = asked_as_written(&judged, own).expect_err("an own address");
+        assert!(not_public(&refused), "the judge's refusal: {refused}");
+        let loopback = asked_as_written(&judged, IpAddr::from(Ipv6Addr::LOCALHOST));
+        assert!(loopback.is_err_and(|refused| not_public(&refused)));
+        let waits: Lookup = std::sync::Arc::new(|_: String| {
+            Box::pin(std::future::pending::<std::io::Result<Vec<IpAddr>>>())
+        });
+        assert!(asked_as_written(&waits, public).is_err());
+        let elsewhere: Lookup =
+            std::sync::Arc::new(move |_: String| Box::pin(async move { Ok(vec![own]) }));
+        assert!(asked_as_written(&elsewhere, public).is_err());
+    }
 
     /// Every form of an address of this machine or its network is not
     /// public, in IPv6 as in IPv4, and the public web is: the one table the

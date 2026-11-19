@@ -928,5 +928,6 @@ fn session<'a>(
         shared_input: shared.keyboard_and_pointer.as_deref(),
         layout: &shared.layout,
         notifications: shared.notifications.borrow().desktop(),
+        questions: shared.asker.questions(),
     }
 }

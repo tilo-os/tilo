@@ -1,10 +1,12 @@
 //! Exclusive content restore ownership; host admission is supplied separately.
-use super::{InstanceId, MemberId, State, UndoLog};
+use super::{State, UndoLog};
 use crate::history_mode::restore::{
     PreparedContentRestore, RestoreError, RestoreOutcome, apply_prepared_content_restore,
 };
+use crate::permissions::MemberId;
 use crate::permissions::PermissionContext;
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
+use collaboration::state::InstanceId;
 pub(crate) use collaboration::state::{OwnedActionAttribution, OwnedActionReceipt, same_frontier};
 
 /// Private, synchronous admission staging. A prepared content plan alone is never an
@@ -411,58 +413,80 @@ impl Drop for OwnedContentAction<'_> {
         }
     }
 }
-impl State {
+/// What the toolkit does with an app's [`State`] beyond keeping it: restore reviewed history into
+/// it, merge committed history it was served, and report its undo status in words.
+pub(crate) trait StateHistory {
+    /// Restore `prepared` as an owned action, for the tests that drive one directly.
     #[cfg(test)]
-    pub(crate) fn restore_prepared_owned(
+    fn restore_prepared_owned(
+        &mut self,
+        admitted: &ConfirmedRestore<'_>,
+        prepared: &PreparedContentRestore,
+    ) -> Result<OwnedActionReceipt, OwnedRestoreError>;
+    /// Write `write` as one owned action the history can take back.
+    fn restore_write_owned(
+        &mut self,
+        admitted: &ConfirmedRestore<'_>,
+        write: RestoreWrite<'_>,
+    ) -> Result<OwnedActionReceipt, OwnedRestoreError>;
+    /// Whether the window's document cannot take a peer's document yet: an unfinished edit, or
+    /// undo history over a different frontier.
+    fn defers_remote(&self) -> bool;
+    /// Merge committed history when nothing local is open over it: `None` when the live
+    /// document has uncommitted or unrecorded edits, else whether the merge changed it.
+    fn merge_remote_committed(
+        &mut self,
+        incoming: crate::collaboration::Incoming<'_>,
+    ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError>;
+    /// What the history can do for `author` right now.
+    fn undo_status_snapshot(&self, author: Option<&MemberId>) -> crate::undo::UndoStatus;
+}
+
+impl StateHistory for State {
+    #[cfg(test)]
+    fn restore_prepared_owned(
         &mut self,
         admitted: &ConfirmedRestore<'_>,
         prepared: &PreparedContentRestore,
     ) -> Result<OwnedActionReceipt, OwnedRestoreError> {
         self.restore_write_owned(admitted, RestoreWrite::Content(prepared))
     }
-    pub(crate) fn restore_write_owned(
+
+    fn restore_write_owned(
         &mut self,
         admitted: &ConfirmedRestore<'_>,
         write: RestoreWrite<'_>,
     ) -> Result<OwnedActionReceipt, OwnedRestoreError> {
-        OwnedContentAction::begin_clean(
-            &mut self.doc,
-            &mut self.undo,
-            write.current_heads(),
-            admitted,
-            None,
-        )?
-        .apply(write)
+        let (doc, undo, _) = self.parts_mut();
+        OwnedContentAction::begin_clean(doc, undo, write.current_heads(), admitted, None)?
+            .apply(write)
     }
-}
 
-impl State {
-    pub(crate) fn merge_remote_committed(
+    fn defers_remote(&self) -> bool {
+        self.doc.pending_ops() != 0
+            || !same_frontier(self.undo_log().last_heads(), &self.doc.base_heads())
+    }
+
+    fn merge_remote_committed(
         &mut self,
-        mutation: &collab_types::DocumentMutation,
+        incoming: crate::collaboration::Incoming<'_>,
     ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
-        if self.doc.pending_ops() != 0
-            || !same_frontier(self.undo.last_heads(), &self.doc.base_heads())
-        {
+        if self.defers_remote() {
             return Ok(None);
         }
-        let before = self.doc.get_heads();
-        let changed = crate::history_mode::routes::merge_committed(&mut self.doc, mutation)?;
+        let (doc, undo, outbound) = self.parts_mut();
+        let before = doc.get_heads();
+        let changed = crate::history_mode::routes::merge_committed(doc, incoming)?;
         if changed {
-            self.undo.rebase(&mut self.doc);
+            undo.rebase(doc);
             // The owner that served this history holds it: the next primary delta must
             // not echo it back as this replica's change.
-            self.outbound.observe_changes_after(&mut self.doc, &before);
+            outbound.observe_changes_after(doc, &before);
         }
         Ok(Some(changed))
     }
-}
 
-impl State {
-    pub(crate) fn undo_status_snapshot(
-        &self,
-        author: Option<&MemberId>,
-    ) -> crate::undo::UndoStatus {
-        crate::undo::status_snapshot(&self.doc, &self.undo, author)
+    fn undo_status_snapshot(&self, author: Option<&MemberId>) -> crate::undo::UndoStatus {
+        crate::undo::status_snapshot(&self.doc, self.undo_log(), author)
     }
 }

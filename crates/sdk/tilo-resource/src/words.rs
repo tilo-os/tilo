@@ -125,6 +125,28 @@ pub trait RowType {
     fn words() -> ResourceType {
         type_words(Self::KIND, Self::LABEL)
     }
+
+    /// The effects the type offers on each of its rows, each with its first
+    /// parameter bound to the row's id (`#[effect(on = Row)]`), or as it is
+    /// when it takes none. A row that is an item of a declared type offers
+    /// these, so what a press does on it is one of the type's effects,
+    /// published on every row of the type.
+    fn effects(_id: &crate::Id) -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
+
+    /// The effects the type offers on the row `id`, those `bindings` names
+    /// among them ([`RowBindings`](crate::row::RowBindings)): each with
+    /// exactly the arguments the row's state gives bound and the rest still
+    /// asked. This is [`Self::effects`] for a row whose entity is named by
+    /// more than its id (a saved network and whether it joins by itself),
+    /// offered only for the effects that apply to it now.
+    fn effects_with(
+        _id: &crate::Id,
+        _bindings: &crate::row::RowBindings,
+    ) -> Vec<tilo_actions::ActionSpec> {
+        Vec::new()
+    }
 }
 
 /// A `#[derive(Model)]` record's declaration is its type's: it publishes the

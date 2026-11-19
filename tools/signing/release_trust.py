@@ -65,6 +65,9 @@ SIGNED_REPOSITORIES = {
     'code.tilo.so/tilo/tilo': 'os-images',
     'registry.tilo.so/tilo/tilo-host': 'os-images',
     'registry.tilo.so/tilo/linux-guest': 'os-images',
+    # The name the last published guest image went out under, which os/linux-guest-snapshot.env
+    # pins until a stable release publishes under linux-guest; that release drops it.
+    'registry.tilo.so/tilo/legacy-guest': 'os-images',
     'registry.tilo.so/tilo/hosted-guest': 'os-images',
 }
 # Development and CI images Tilo publishes unsigned. Only a development

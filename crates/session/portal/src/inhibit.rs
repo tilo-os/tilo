@@ -79,11 +79,17 @@ impl Default for Watched {
     }
 }
 
+/// One app's hold on the session, as a declared type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "portal.inhibition", label = "Inhibition")]
+pub struct InhibitionRow;
+
 /// What an app's hold offers.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.portal.inhibition")]
 pub enum InhibitionEffect {
     /// End the app's hold
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     End,
 }
@@ -218,9 +224,8 @@ impl crate::Published for Inhibitions {
             .lock_recover()
             .iter()
             .map(|(path, held)| {
-                offer::<InhibitionEffect>(ResourceSpec::new(
+                offer::<InhibitionEffect>(tilo_resource::typed_resource::<InhibitionRow>(
                     format!("{INHIBITION_PREFIX}{path}"),
-                    "portal.inhibition",
                     held.app_id.clone(),
                 ))
                 .with_presentation(ResourcePresentation {

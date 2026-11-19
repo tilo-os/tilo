@@ -189,13 +189,23 @@ mod schema;
 /// `<operation>-<id>` (separators as dashes), or the key `label = "..."`
 /// names. `#[effect(catalogue = "dir")]` on the enum reads another catalogue
 /// than `locales/`. Variant options: `#[effect(label = "key", view, row, job, cancellable, returns,
-/// destructive, privileged, idempotent, own_device, attended, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
+/// destructive, privileged, idempotent, own_device, attended, screen, audience = "agents", untrusted, opens_path, member, risk = "path", kind = "read",
 /// host_render, tag = some::TAG)]`. `host_render` marks an effect a host
 /// answers in a render service of its own rather than the record's app
 /// worker; `tag` (repeatable) adds a contract tag, a `&'static str` constant;
 /// `outside_with = "path"` makes a `kind = "read"` effect reach outside only
 /// when that parameter is given (an export writing the file it names).
-/// Who may run an effect is decided by its kind, like any action. An
+/// `item = field` offers it on each item of a collection, its first parameter
+/// bound to the item's id; `on = RowType` offers it on each row of a
+/// `#[derive(Row)]` type, bound to the row's id.
+/// Who may run an effect is decided by what it declares, like any action.
+/// Every effect states its kind: `kind = "read"`, `"undoable"` or `"outside"`
+/// (a change checked against the caller's grants). `view` implies `read`,
+/// `edit` implies `undoable`, and an effect that names none of them does not
+/// build. A `screen`
+/// effect only changes what is on the screen it is invoked on (a form, a
+/// panel, a place it shows): it reads, answers nothing, only the person at
+/// that screen invokes it and no agent is listed it. An
 /// `own_device` effect's whole scope is the invoking person's own device,
 /// touching nothing shared and no one else (their clipboard, their own
 /// appearance): a room's grants have nothing to consent to. An `attended`
@@ -214,7 +224,43 @@ pub fn derive_effect(input: TokenStream) -> TokenStream {
 }
 
 mod effect;
+mod row;
 mod words;
+
+/// Derive `Row`: a plain struct as the type of the entities a surface
+/// publishes that live outside any document — processes, devices,
+/// containers, journal entries, a fetched catalogue's rows. See
+/// `tilo_resource::words`.
+///
+/// `#[row(kind = "app.thing", label = "Thing")]` names what a row of it is to
+/// search, exactly as a `#[resource]` type's items say theirs; `label`
+/// defaults to the type's name in words. `effects = Type` names the
+/// vocabulary offered on every row of the type (`#[effect(on = Thing)]`),
+/// each bound to the row's id; `LiveRow::typed` publishes them, so a press on
+/// the row is one of the type's effects or `open`. Generates
+/// `impl tilo_resource::words::RowType`.
+///
+/// How a row's effects take their arguments: the first parameter is the row
+/// id, parsed as that field's type (`String`, `u64`, an identity), and a row
+/// whose id is not one is published unavailable with the reason.
+/// `LiveRow::labelled` names one effect for that row alone; `RowBindings`
+/// with `LiveRow::typed_with` offers only the effects the row's state says
+/// apply, binding further arguments by name (`operation`, `folder`) or the
+/// row id itself; `LiveRow::prefilled` leaves an argument asked and fills its
+/// field with the value the row knows (a calendar's current colour, a
+/// switch's next state). A destructive effect's `phrase` is published on
+/// every spec it produces, so a row-bound invocation still asks what it
+/// loses. `#[param(resource = "kind")]` makes a parameter a picker of an
+/// existing resource of that kind; a parameter's description named in the
+/// catalogue (`<label key>-<param>`) is read in the person's language.
+#[proc_macro_derive(Row, attributes(row))]
+pub fn derive_row(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match row::derive(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
 
 #[derive(Default)]
 #[allow(

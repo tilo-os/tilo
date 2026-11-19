@@ -227,5 +227,5 @@ action note_photo(last: Text, p: Photo) {
 
 /// The media group, with a library of photos the gallery carries itself, each in its address.
 scenario "media" {
-    fill(root Gallery)
+    root Gallery
 }

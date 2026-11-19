@@ -24,37 +24,49 @@ pub enum DestinationEffect {
     #[effect(returns, kind = "read")]
     Status,
     /// Next.
+    #[effect(kind = "outside")]
     Next,
     /// Back.
+    #[effect(kind = "outside")]
     Back,
     /// Return to the existing system.
+    #[effect(kind = "outside")]
     ReturnToHost,
     /// Choose keyboard layout.
+    #[effect(kind = "outside")]
     SetLayout {
         #[param("Keyboard layout", choices = imager_backend::destination::layouts::display_names())]
         layout: String,
     },
+    #[effect(kind = "outside")]
     #[effect(label = "installer-action-refresh-networks")]
     RefreshNetworks,
     /// Choose Wi-Fi network.
+    #[effect(kind = "outside")]
     SelectNetwork {
         #[param("Network name")]
         ssid: String,
     },
     /// Connect to the chosen Wi-Fi network.
+    #[effect(kind = "outside")]
     ConnectNetwork {
         #[param(secret, "Wi-Fi password (secured networks only)")]
         password: Option<String>,
     },
     /// Sign in using the private form.
+    #[effect(kind = "outside")]
     AddAccount,
     /// Retry signing in using the private form.
+    #[effect(kind = "outside")]
     RetryAccount,
+    #[effect(kind = "outside")]
     #[effect(label = "installer-accounts-cancel")]
     CancelSignIn,
+    #[effect(kind = "outside")]
     #[effect(label = "imager-installer-continue-offline")]
     ContinueOffline,
     /// Choose install method.
+    #[effect(kind = "outside")]
     SetMethod {
         #[param(
             "erase: use the whole disk; alongside: keep existing partitions",
@@ -62,20 +74,24 @@ pub enum DestinationEffect {
         )]
         method: String,
     },
+    #[effect(kind = "outside")]
     #[effect(label = "installer-action-refresh-disks")]
     RefreshDisks,
     /// Use this disk.
+    #[effect(kind = "outside")]
     #[effect(row)]
     SelectDisk {
         #[param("Device path of the disk")]
         device: String,
     },
     /// Use this region.
+    #[effect(kind = "outside")]
     #[effect(row)]
     SelectRegion {
         #[param("Index of the unallocated region")]
         index: i64,
     },
+    #[effect(kind = "outside")]
     #[effect(row)]
     #[effect(label = "installer-storage-use-capacity")]
     SetSize {
@@ -85,6 +101,7 @@ pub enum DestinationEffect {
         extent: String,
     },
     /// Set username and name.
+    #[effect(kind = "outside")]
     SetIdentity {
         #[param("Up to 32 lowercase letters, digits, _ or -; starts with a letter or _")]
         username: Option<String>,
@@ -92,6 +109,7 @@ pub enum DestinationEffect {
         full_name: Option<String>,
     },
     /// Set account and default startup secret.
+    #[effect(kind = "outside")]
     SetPassphrase {
         #[param(
             secret,
@@ -102,6 +120,7 @@ pub enum DestinationEffect {
         confirmation: String,
     },
     /// Set a separate disk startup secret.
+    #[effect(kind = "outside")]
     SetDiskPassphrase {
         #[param(
             secret,
@@ -116,6 +135,7 @@ pub enum DestinationEffect {
         mode: Option<String>,
     },
     /// Set a pre-hashed account password.
+    #[effect(kind = "outside")]
     SetPasswordHash {
         #[param(
             secret,
@@ -124,35 +144,42 @@ pub enum DestinationEffect {
         hash: String,
     },
     /// Choose filesystem.
+    #[effect(kind = "outside")]
     SetFilesystem {
         #[param("Root filesystem", choices = install_profile_model::FILESYSTEMS)]
         filesystem: String,
     },
     /// Enroll a security key.
+    #[effect(kind = "outside")]
     SetSecurityKey {
         #[param("Enroll a FIDO2 security key as another unlock factor")]
         enabled: bool,
     },
     /// Install media codecs.
+    #[effect(kind = "outside")]
     SetMediaCodecs {
         #[param("Install more video and audio formats once the new system is online")]
         enabled: bool,
     },
     /// Set hostname.
+    #[effect(kind = "outside")]
     SetHostname {
         #[param("Letters, digits and hyphens; no leading or trailing hyphen; at most 63")]
         hostname: String,
     },
     /// Choose language and locale.
+    #[effect(kind = "outside")]
     SetLocale {
         #[param("Language and locale", choices = install_profile_model::locales())]
         locale: String,
     },
     /// Choose time zone.
+    #[effect(kind = "outside")]
     SetTimezone {
         #[param("IANA time zone")]
         timezone: String,
     },
+    #[effect(kind = "outside")]
     #[effect(label = "installer-action-recovery-promise")]
     SetRecoveryPromise {
         #[param(
@@ -161,6 +188,7 @@ pub enum DestinationEffect {
         acknowledged: bool,
     },
     /// Begin installation.
+    #[effect(kind = "outside")]
     #[effect(row, destructive, phrase = "Self::target_name")]
     Begin {
         #[param("The reviewed target the installation formats")]
@@ -168,16 +196,20 @@ pub enum DestinationEffect {
         #[param("The reviewed free-space plan, for an install beside another system")]
         allocation: String,
     },
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     #[effect(label = "installer-action-copy-recovery-key")]
     CopyRecoveryKey,
+    #[effect(kind = "outside")]
     #[effect(label = "installer-action-recovery-saved")]
     ConfirmRecoverySaved {
         #[param("The recovery key is stored somewhere other than this computer")]
         saved: bool,
     },
+    #[effect(kind = "outside")]
     #[effect(label = "installer-action-reboot")]
     Reboot,
+    #[effect(kind = "outside")]
     #[effect(label = "installer-action-power-off")]
     PowerOff,
 }

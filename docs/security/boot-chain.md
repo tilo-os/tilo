@@ -30,29 +30,65 @@ Why composefs rather than ostree at all is recorded in
 [composefs-decision.md](composefs-decision.md).
 
 Everything below describes the desktop and board images. The server image
-is built differently, and the next section says where it stands.
+shares their boot chain, and the next section says where it stands.
 
 ## Tilo Server
 
-The server image is the Fedora bootc base with the server's programs laid on it.
-It does not take the desktop image's kernel, its sealing stages or its hardening
-layers; it shares the early-boot unlock chain (`91tilo-rollback`,
-`92tilo-sibling-unlock`), the update path (`tilo-verified-update`) and the
+The server image is the Fedora bootc base with the server's programs laid on it
+(`os/Containerfile.host-base`, `os/Containerfile.host`). It keeps the base's
+Fedora kernel, but is sealed by the desktop's own stages: `host-build.sh`
+appends `os/image/boot.Containerfile` to the server's Containerfile and builds it
+with the desktop's `uki-tools` stage, which `host-base.sh` builds from the same
+base and snapshot. It shares the early-boot unlock chain (`91tilo-rollback`),
+the update path (`tilo-verified-update`), the release's boot signing
+(`os-release.sh sign-boot`, `os/dev/sign-target-prediction.sh`) and the
 container signature policy. A server must boot unattended, so every item below
 is judged for a machine nobody sits at.
 
+Its release is these checks, in order: `image-host` builds the image with the
+generation `generation-host` read from the server's own series,
+`sign-host-loader` signs the image's systemd-boot with the release EFI key and
+adds the signed companion `bootctl install` copies to the ESP, `seal-host`
+rewrites the UKI's placeholder composefs digest to the one `bootc install`
+computes from the image's layers (bootc#2334; the resealing bootc a sealed dev
+image is sealed with, `tools/ci/seal-dev-image.sh`), `sign-host-boot`
+signs the UKIs with the release EFI key and the generation's PCR 11 prediction
+with the PCR authority, `apply-host-boot` verifies those signatures against the
+pinned keys and adds them under `/boot`, and `sign-host` and `publish-host` sign
+the image with the release key, attest its provenance with the generation, and
+publish it as `registry.tilo.so/tilo/tilo-host` under `gen<N>` among its tags.
+The desktop release and the boards have the same loader step,
+`sign-os-loader-{arch}` and `sign-os-loader-lenovo-83ed`, between composing the
+image and sealing it.
+
+`host-assurance-x86_64` proves the chain in a VM: it signs the image's boot
+loader and UKIs with throwaway EFI and PCR keys through the same steps, enrols
+only that EFI certificate in the firmware with Secure Boot on
+(`os/dev/prepare-release-secureboot-vars.sh`), attaches a software TPM, and
+checks that the server boots enforcing, from the signed boot loader and through
+systemd-stub, with its generation on the measured command line and PCR 11
+extended; that a UKI whose command line was edited, and the same UKI unsigned,
+are both refused by the firmware; that an update, sealed and signed the same
+way, stages and rolls back when it breaks the server; and that an update from a
+registry is verified and staged while an unsigned one is refused. The installed
+machine then seals the volume to itself with the shipped `tilo-rollback enroll`
+(PIN-less, against the signed PCR 11 prediction and its own PCR 7) and reboots
+with nothing typed; an image whose prediction the authority signed as an older
+generation, with the floor moved to the running one by signed approvals, must
+not unseal it.
+
 | What a server needs | Where it stands |
 |---|---|
-| Firmware verifies the boot loader and the kernel image under Secure Boot | **Missing.** The ESP holds the unsigned `systemd-boot-unsigned` loader and bootc's split kernel/initramfs entries. Nothing on it is signed with the release EFI certificate or an owner key, and `tilo-secureboot` is not in the image. With Secure Boot enforcing, the server does not boot; with it off, nothing is verified. |
-| A signed UKI with the command line inside the signature | **Missing.** The command line is a Boot Loader Specification entry, an editable text file on the ESP, and the initramfs is a plain file beside the kernel. Anyone who can write the ESP chooses the server's kernel arguments and the code that executes before its root opens. |
-| The composefs root verified, its digest bound into the signed image | **Partly.** The root is composefs (systemd-boot forces bootc's composefs backend), but the `composefs=` digest is in that same editable entry, so it binds nothing. |
-| Measured boot: the disk key sealed to PCR 7 and a signed PCR 11 policy | **Missing.** No systemd-stub is involved, so PCR 11 carries nothing, and the command line has no `tilo.generation=`. No TPM keyslot is enrolled: the disk opens with the recovery key typed at the console or with the half another of the owner's devices releases. |
-| Rollback protection: no older signed image boots below the floor | **Missing.** `tilo-rollback-confirm` and `tilo-rollback-harden` are enabled but find no generation and no TPM keyslot, so they do nothing, and the floor approvals the owner's devices sign (`crates/server/tilo-server/src/servers/floor.rs`) have no counter to move. The health test they would apply also requires `greetd`, which a server never starts. |
-| Update images verified before staging | **Partly.** Updates go through `tilo-verified-update`, and the container policy requires a Rekor-logged release signature for `code.tilo.so/tilo/tilo` and `registry.tilo.so/tilo/tilo`, and for the workspace VM guest. The server image itself is not published, and its own repository is in no signed scope, so the default `reject` refuses every registry update for it; an update reaches a server only from local media, which the policy admits unsigned (that takes root). |
+| Firmware verifies the boot loader and the kernel image under Secure Boot | **Implemented, VM proof pending.** The UKIs and systemd-boot are signed with the release EFI certificate. The loader is signed into the image before the seal (`sign-host-loader`, `sign-os-loader-{arch}` for the desktop and boards), and `bootctl install` copies its `.efi.signed` companion to `EFI/systemd` and `EFI/BOOT`. The VM check proves the install puts exactly that companion on the ESP, that the machine boots from it under firmware holding only the throwaway certificate, and that an edited or unsigned UKI is refused. |
+| A signed UKI with the command line inside the signature | **Done.** The kernel, the initramfs and the command line are one UKI, sealed from `kargs.d` (the root found by the unlock chain, the hardening arguments, the consoles, the boot mode and the generation). |
+| The composefs root verified, its digest bound into the signed image | **Done.** `seal-host` closes the digest before anything signs the UKI; `test-image-host` checks the sealed command line names one. |
+| Measured boot: the disk key sealed to PCR 7 and a signed PCR 11 policy | **Implemented, VM proof pending.** systemd-stub measures the UKI into PCR 11, the generation is on the measured command line, and each release carries the signed PCR 11 prediction of its generation under `/boot`, which `tilo-disk-encrypt enrol --tpm-automatic` seals a PIN-less keyslot to. The VM check seals the volume on the installed machine — the installer's enrollment ran in a guest whose PCR 7 is not the machine's, so it cannot open there — and proves an unattended reboot unlocks it through the TPM keyslot, with no peer and nothing typed. |
+| Rollback protection: no older signed image boots below the floor | **Implemented, VM proof pending.** Every server image carries a generation of the server's own dense series, which `os/dev/next-generation.sh` reads from the signed `gen<N>` tags and their provenance. `tilo-rollback-confirm` judges a server by its own probe, the unit `tilo-boot-health` is configured with, rather than by greetd, which a server never starts. The floor lives in the TPM beside the keyslots and moves by signed, single-use approvals (`crates/server/tilo-server/src/servers/floor.rs`). The VM check enrols an older signed image's prediction as a generation below any floor, moves the floor to the running generation with approvals, and proves the boot stops at the unlock prompt with the floor named as the reason, while the recovery key still opens the disk. |
+| Update images verified before staging | **Done.** Updates go through `tilo-verified-update`, and the container policy requires a Rekor-logged release signature for `registry.tilo.so/tilo/tilo-host`, as for the desktop's repositories; its releases carry certified signatures once the release root exists, and provenance with the generation. The VM check serves an update from a registry the server takes for a mirror of that repository, signed with a key that stands in for the release key in the same policy scope, and proves the server's update step verifies and stages it and refuses an image of the repository nobody signed (`os/tests/registry_update_check.sh`). An update from local media is still admitted unsigned, which takes root. |
 | No SSH | **Done.** `openssh`, `openssh-server` and `openssh-clients` are removed at build and the build fails if any returns. |
-| No interactive local login | **Done.** Every account, root's included, carries a locked password, so the gettys on the local and serial consoles and the emergency shell open for nobody; the build fails on an unlocked account. The consoles show the enrollment code. The boot menu's editor, which would let a person at the console add `init=/bin/sh` to the next boot, is off: the boot-entry pass writes `editor no` into `loader/loader.conf` on every machine, because bootc writes no loader.conf for kernel/initrd entries and systemd-boot's default is on. |
-| Kernel lockdown | **Done.** The image carries the desktop's `01-hardening.toml`, so bootc writes `lockdown=integrity` and the other hardening arguments into the boot entry. While that entry is editable (above), someone who can write the ESP can take them out again. |
-| No credentials imported from firmware or the boot loader | **Done**, through `05-credentials.toml` (`systemd.import_credentials=no`), with the same caveat about the editable entry. The consoles' gettys import no credentials either: systemd's own units ask for some, and with nothing imported they never started, which left the serial console without a prompt. |
+| No interactive local login | **Done.** Every account, root's included, carries a locked password, so the gettys on the local and serial consoles and the emergency shell open for nobody; the build fails on an unlocked account. The consoles show the enrollment code. The command line is inside the signed UKI, and the boot menu's editor is off as well: the boot-entry pass writes `editor no` into `loader/loader.conf` on every machine. |
+| Kernel lockdown | **Done.** `lockdown=integrity` and the desktop's other hardening arguments (`01-hardening.toml`) are on the sealed command line. |
+| No credentials imported from firmware or the boot loader | **Done**, through `05-credentials.toml` (`systemd.import_credentials=no`) on the sealed command line. The consoles' gettys import no credentials either: systemd's own units ask for some, and with nothing imported they never started, which left the serial console without a prompt. |
 | No system or configuration extensions merged at boot | **Done.** `systemd-sysext`, `systemd-confext` and the sysext socket are masked. |
 | Few listening ports | **Done.** The `FedoraServer` zone admits only `dhcpv6-client`, `systemd-resolved`, `systemd-networkd` and `systemd-coredump` are removed, so NetworkManager alone owns the network and its resolver file, and the base's mDNS responder (`avahi-daemon`) is masked. A booted server listens beyond loopback only through NetworkManager's DHCP client and Tilo's own transport, which dials out. |
 | Few setuid programs | **Done.** `sudo` is the only setuid program left, for an account a test disk adds at install; every other setuid and setgid bit under `/usr` is cleared at build. The services have their own accounts and `NoNewPrivileges=`, except `tilo-hosted`, which can become root through the capabilities its unit gives it, by design. |
@@ -762,6 +798,39 @@ exactly the authorities recorded when the slot was sealed
 unlock, so a machine whose Secure Boot policy changed — a `db` that gained a
 third-party CA, say — asks for the typed secret instead of opening on a boot it no
 longer recognises, rather than opening anyway or leaving an unbootable disk.
+
+### A planned server's installer enrols the unlock your devices release
+
+A server is installed before it is one of the person's devices, and the
+sibling unlock (`91tilo-rollback`, `92tilo-sibling-unlock`) can only be
+enrolled once the machine has enrolled and keeps the person's device store.
+But its first boot is the very thing that needs the keyslot: with no TPM and no
+console, the volume cannot open before a service starts. So a staged install
+whose plan names `owner-device`, or names (or leaves open) `tpm` on a machine
+with no usable TPM, does both steps in the installer, while the network and
+the open disk are still in hand:
+
+1. `tilo-enroll enroll` spends the staged token into the installed
+   `/var/lib/tilo`, which hands the machine the person's device store;
+2. `tilo-disk-encrypt enrol --sibling --key-file …` adds the keyslot with the
+   installer's throwaway key, asking the person's devices over the peer
+   network for their consent, and saves the plan's static network keyfile in
+   the token so early boot joins it.
+
+The first boot then opens with another of the person's devices approving the
+boot, and `tilo-server-firstboot` has nothing left to enrol: it removes the
+install key's LUKS2 keyslot with `cryptsetup luksRemoveKey` and shreds the key
+`tilo-disk-encrypt finish` kept root-only (0600, in a 0700 directory) inside
+the encrypted root at `/var/lib/tilo/sibling-enrol/luks.key`. Until that
+succeeds both stay in place and the next boot tries again; the installed
+system's status says `sibling unlock pending` while it waits
+(`ServerStatus.unlock`, shown by `tilo server status`). A machine that cannot
+enroll or enrol the sibling keyslot fails the install instead of finishing a
+disk nobody can open.
+
+A `passphrase` plan keeps a person at the keyboard and drops the key as before,
+and Tilo OS installs keep nothing: only the server image has a first boot that
+can spend it.
 
 The privileged installer enforces the same startup-secret policy shown by the
 graphical installer. It requires at least fifteen characters (the NIST

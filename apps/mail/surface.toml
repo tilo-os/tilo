@@ -6,6 +6,7 @@ format = 2
 kind = "mail.mailbox"
 label = "Mail"
 version = 1
+shows = ["account-settings", "always-load-remote-content", "compose", "contact-recipients", "forward", "inspect", "load-remote-content", "open", "open-link", "reply", "reply-all"]
 fields = [
   { path = "folders", type = { collection = { named = "LocalFolder" } }, stored = "collection" },
   { path = "folders.*.name", type = "text", label = true },

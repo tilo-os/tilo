@@ -19,7 +19,7 @@ use crate::tokens::TextRole;
 use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct SankeyStyle {
@@ -77,7 +77,6 @@ pub struct SankeyMarks {
     links: Vec<ChartLink>,
     style: SankeyStyle,
     frame: PlotFrame<Hit>,
-    label_reserve: f64,
 }
 
 pub type SankeyChart = Plot<SankeyMarks>;
@@ -89,7 +88,6 @@ impl SankeyChart {
             links,
             style: SankeyStyle::default(),
             frame: PlotFrame::new(420.0, 180.0),
-            label_reserve: 0.0,
         })
     }
     #[must_use]
@@ -136,23 +134,12 @@ impl SankeyMarks {
     }
 
     fn content_rect(&self) -> Rect {
-        let x1 = (self.frame.rect.x1 - 18.0 - self.label_reserve).max(self.frame.rect.x0 + 18.0);
-        Rect::new(
-            self.frame.rect.x0 + 18.0,
-            self.frame.rect.y0
-                + if self.frame.title.is_empty() {
-                    18.0
-                } else {
-                    52.0
-                },
-            x1,
-            self.frame.rect.y1 - 18.0,
-        )
+        self.frame.inside()
     }
 
-    /// The trailing width the last column's labels need: its widest label,
-    /// never more than a third of the chart, so the flow keeps its width.
-    fn measure_label_reserve(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+    /// The title over the flow, and the trailing width the last column's labels need: its
+    /// widest label, never more than a third of the chart, so the flow keeps its width.
+    fn measure_margins(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let links = self.resolved_links();
         let depths = self.depths(&links);
         let last = depths.iter().copied().max().unwrap_or_default();
@@ -166,7 +153,9 @@ impl SankeyMarks {
             .fold(0.0, f64::max);
         let pad = f64::from(theme.tokens.spacing.s2);
         let reserve = if widest > 0.0 { widest + pad } else { 0.0 };
-        self.label_reserve = reserve.min(self.frame.rect.width() / 3.0).max(0.0);
+        let mut margins = Margins::header(theme, &self.frame.title, 0);
+        margins.right = reserve.min(self.frame.rect.width() / 3.0).max(0.0);
+        self.frame.margins = margins;
     }
 
     fn resolved_links(&self) -> Vec<(usize, usize, usize, f64)> {
@@ -384,8 +373,9 @@ impl SankeyMarks {
                 continue;
             };
             let column = column_of(node.rect.x0);
+            // A label stands a step past its node; the last column's ends on the chart's edge.
             let spare = if column == last {
-                self.frame.rect.x1 - node.rect.x1 - 2.0 * pad
+                self.frame.rect.x1 - node.rect.x1 - pad
             } else {
                 gap - 2.0 * pad
             };
@@ -522,6 +512,10 @@ impl PlotMarks for SankeyMarks {
         graph_items(&self.nodes, &self.links, |value| format!("Flow {value}"))
     }
 
+    fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        self.measure_margins(tr, theme);
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "ribbons, nodes, labels and inspector share one ordered flow paint pass"
@@ -533,7 +527,6 @@ impl PlotMarks for SankeyMarks {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.measure_label_reserve(tr, theme);
         self.follow_keyboard_anchor();
         let (nodes, links) = self.geometry();
         draw_title(
@@ -685,7 +678,7 @@ mod tests {
             for width in [200.0, 260.0, 360.0, 520.0, 900.0] {
                 let mut chart = product_flow();
                 chart.marks.frame.rect = Rect::new(0.0, 0.0, width, 220.0);
-                chart.marks.measure_label_reserve(&mut tr, &theme);
+                chart.marks.measure_margins(&mut tr, &theme);
                 let (nodes, _) = chart.marks.geometry();
                 let labels: Vec<Rect> = chart
                     .marks

@@ -466,7 +466,6 @@ workspace-settings-allows-reach = Reach { $what }
 workspace-settings-allows-edit = Edit { $what }
 workspace-settings-allows-view = View { $what }
 workspace-settings-allows-action = Use “{ $action }” in { $app }
-workspace-settings-subject-foreign-device = devices that are not their own
 workspace-settings-granted-by-person = granted by { $id }
 workspace-settings-granted-by-you = granted by you
 workspace-settings-granted-by-agent = granted by agent { $id }
@@ -476,7 +475,6 @@ workspace-settings-section-apps = Apps
 workspace-settings-section-people = People
 workspace-settings-section-agents = Agents
 workspace-settings-section-roles = Roles
-workspace-settings-subject-bot = Bot { $id }
 workspace-settings-subject-role = everyone with { $role }
 workspace-settings-grant-network = Network access
 workspace-settings-grant-read-files = Read workspace files
@@ -533,6 +531,10 @@ workspace-settings-bot-starting = Starting
 workspace-settings-bot-paused = Paused
 workspace-settings-bot-running = Running
 workspace-settings-bot-version = Version { $version }
+workspace-settings-moderation = Moderation
+workspace-settings-moderation-detail = Answers reports in Chat, and can restrict someone and undo their messages.
+workspace-settings-moderation-on = On
+workspace-settings-moderation-off = Off
 workspace-settings-remove-bot = Remove
 workspace-settings-agents-header = Agents
 workspace-settings-retire-agent = Remove
@@ -853,19 +855,6 @@ overview-strip-rename = Rename
 overview-strip-move-up = Move up
 overview-strip-move-down = Move down
 browser-new-workspace-name = Workspace { $number }
-workspace-notice-joined = { $name } joined
-workspace-notice-agent-finished = { $agent } finished
-workspace-notice-agent-card = Open card
-workspace-notice-agent-open = Open in { $app }
-workspace-notice-agent-finished-changes = { $agent } finished: { $count ->
-    [one] 1 change
-   *[other] { $count } changes
-}
-workspace-notice-agent-finished-in = { $agent } finished: { $count ->
-    [one] 1 change
-   *[other] { $count } changes
-} in { $workspace }
-workspace-notice-renamed = The workspace is now called { $workspace }
 # What the shell says when something a person asked for did not happen: what
 # they asked for, why, and the button that tries it again.
 answer-app-not-opened = { $app } could not open
@@ -1316,6 +1305,11 @@ profile-agent-now = Now
 task-programs-resource = Task programs
 task-programs-run = Run a program
 task-programs-run-detail = Runs a program as a step of the task, and answers what it read or changed.
+agent-tools-resource = Agent tools
+agent-tools-list = List the tools
+agent-tools-list-detail = Lists the tools an agent works through in its session.
+agent-tools-call = Call a tool
+agent-tools-call-detail = Calls one of the agent's tools as a step of its session, and answers what it said.
 
 ## What a grant covers when it covers the whole tree
 workspace-settings-scope-everything = Everything

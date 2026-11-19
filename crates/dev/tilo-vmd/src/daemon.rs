@@ -1059,8 +1059,10 @@ impl Daemon {
         let mut problem = if write
             && let Err(error) = serde_json::to_vec(&lease)
                 .map_err(|e| DaemonError::InvalidParams(e.to_string()))
-                .and_then(|bytes| crate::fsutil::write_atomic(&path, &bytes))
-        {
+                .and_then(|bytes| {
+                    tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+                        .map_err(DaemonError::io(format!("write {}", path.display())))
+                }) {
             Some(error.to_string())
         } else {
             None

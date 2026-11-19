@@ -274,14 +274,14 @@ fn history_roundtrip(
 
 fn engine_outcome(
     app: &mut TestApp<BrowserShell>,
-    engine: &ui::webview::SharedEngine,
+    engine: &tilo_webview::SharedEngine,
     request: u32,
 ) -> Result<(String, Option<String>), Box<dyn std::error::Error>> {
     let mut outcome = None;
     app.harness()
         .wait_until(ui::time::Duration::from_secs(5), |_| {
             for event in engine.drain_events() {
-                if let ui::webview::WebViewEvent::NavigationOutcome {
+                if let tilo_webview::WebViewEvent::NavigationOutcome {
                     request_id,
                     uri,
                     error,
@@ -298,10 +298,10 @@ fn engine_outcome(
 
 fn site_reload_roundtrip(
     app: &mut TestApp<BrowserShell>,
-    engine: &ui::webview::SharedEngine,
+    engine: &tilo_webview::SharedEngine,
     url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use ui::webview::{WebViewCommand, WebViewEvent};
+    use tilo_webview::{WebViewCommand, WebViewEvent};
     engine.send(WebViewCommand::RequestSiteStatus {
         request_id: 700,
         origin: url.trim_end_matches('/').into(),
@@ -354,8 +354,8 @@ fn engine_edge_cases(
     app: &mut TestApp<BrowserShell>,
     url: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use ui::webview::{NavigationCommand, WebViewCommand};
-    let engine: ui::webview::SharedEngine = ui::webview::chromium::ChromiumEngine::new()?;
+    use tilo_webview::{NavigationCommand, WebViewCommand};
+    let engine: tilo_webview::SharedEngine = tilo_webview::chromium::ChromiumEngine::new()?;
     engine.navigate_owned(
         1,
         NavigationCommand::Navigate {
@@ -510,7 +510,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host_hash = hex::encode(Sha256::digest(std::fs::read(&host)?));
     println!("native fixture host SHA256: {host_hash}");
     let mut environment = tilo_test_env::ScopedEnv::new();
-    environment.set(ui::webview::chromium::runtime::HOST_OVERRIDE_ENV, &host);
+    environment.set(tilo_webview::chromium::runtime::HOST_OVERRIDE_ENV, &host);
     let server = FixtureServer::start()?;
     let url = format!("http://{}/", server.address);
     let mut app = TestApp::<BrowserShell>::new()?;

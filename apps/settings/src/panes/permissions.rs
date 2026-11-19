@@ -46,9 +46,11 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&PermissionsArea> 
 #[effect(operation = "settings.effect")]
 pub enum PermissionsEffect {
     /// Open the privacy settings of the workspace that owns the grants.
+    #[effect(kind = "outside")]
     #[effect(job)]
     OpenWorkspacePrivacy,
     /// Let an application use the saved passwords and keys again, or stop it.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetSecretsAccess {
         #[param("The application identity the secret store recorded")]
@@ -57,12 +59,14 @@ pub enum PermissionsEffect {
         allowed: bool,
     },
     /// Remove an application's saved secrets and its resource.
+    #[effect(kind = "outside")]
     #[effect(job)]
     ForgetSecrets {
         #[param("The application identity the secret store recorded")]
         app: String,
     },
     /// Take back an answer the person gave an app about a device of theirs.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     RevokeDeviceAnswer {
         #[param("The answer, as the session publishes it")]
@@ -542,14 +546,17 @@ fn device_answers_card(cx: &ViewCx<Settings>, answers: &[DeviceAnswer]) -> Setti
             "input" => t("perm-kind-remote"),
             other => other.to_owned(),
         };
-        let mut details = vec![if answer.this_device {
-            t("perm-device-answer-here")
-        } else {
-            t_args(
-                "perm-device-answer-on",
-                &[("device", answer.device_label.clone().into())],
-            )
-        }];
+        let mut details = vec![
+            what,
+            if answer.this_device {
+                t("perm-device-answer-here")
+            } else {
+                t_args(
+                    "perm-device-answer-on",
+                    &[("device", answer.device_label.clone().into())],
+                )
+            },
+        ];
         if answer.answer != tilo_action_policy::Answer::Allow {
             details.push(t("perm-device-answer-refused"));
         }

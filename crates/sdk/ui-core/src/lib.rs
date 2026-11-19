@@ -380,7 +380,7 @@ pub mod workspace_emoji;
 pub use native::warmup;
 /// Private completion receipts shared by native and browser text editors.
 pub mod text_input {
-    pub use crate::webview::text_input::{Failure, Receipt, Resolver};
+    pub use tilo_webview::text_input::{Failure, Receipt, Resolver};
 }
 pub mod webview;
 pub mod widget;
@@ -545,8 +545,8 @@ pub use collab_types::presence::{
 };
 pub use history_source::groups as history_groups;
 pub use history_source::sentence::{
-    AuthorParts, attribution_hover, author_line, author_parts, author_spoken, wire_author_line,
-    writer_badge,
+    AuthorParts, attribution_hover, author_line, author_parts, author_spoken, learn_item_names,
+    wire_author_line, writer_badge,
 };
 pub use history_source::{
     ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,

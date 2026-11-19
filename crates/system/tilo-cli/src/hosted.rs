@@ -39,7 +39,7 @@ pub enum KeysCmd {
     )]
     Create {
         /// What will use it, as your grants page will name it. With -w
-        /// (an id), it reaches only that workspace.
+        /// (a name or id), it reaches only that workspace.
         name: String,
         /// Seconds until it expires; without it, a key reaching all your
         /// workspaces lasts until revoked.
@@ -67,9 +67,10 @@ pub enum KeysCmd {
         #[arg(long)]
         expires_in: Option<u64>,
     },
-    /// Revoke this key or one it minted, and every key it minted.
+    /// Revoke a key, by its name or grant as `tilo keys ls` lists it, and every key it minted.
+    /// On a computer logged in as the person, any key of theirs, `tilo keys export`'s included.
     Revoke {
-        /// The grant, as `tilo keys ls` names it.
+        /// The key's name, or its grant, as `tilo keys ls` lists them.
         grant: String,
     },
     /// Make a key of its own for a program here, and write it as a key file.
@@ -84,7 +85,7 @@ pub enum KeysCmd {
     )]
     Export {
         /// What will use it, as your grants page will name it. With -w
-        /// (an id), it reaches only that workspace.
+        /// (a name or id), it reaches only that workspace.
         name: String,
         /// Where to write it, readable by this account only.
         #[arg(long)]
@@ -315,12 +316,15 @@ pub enum PeopleCmd {
         /// The address's entry, as `tilo workspace people wait-list` names it.
         entry: String,
     },
-    /// How the workspace shows you from now on: the name its people and the
-    /// invitations you make say for you.
+    /// Your name from now on: what every workspace you are in, its people and
+    /// the invitations you make say for you, and every device of yours shows.
     #[command(
         after_help = "Example:\n  tilo workspace people name \"Quinten Wolff\" -w Acme\n\n\
-                      Any device or key of yours sets it: the workspace knows you by it before a \
-                      browser of yours joins, and whoever you invite sees who asked them in."
+                      Any device or key of yours sets it, asked in any workspace of yours: the \
+                      server keeping it keeps the name with your profile, which your browsers \
+                      and other devices show, and names you by it in every workspace it keeps. \
+                      Each workspace knows you by it before a browser of yours joins, and whoever \
+                      you invite sees who asked them in."
     )]
     Name {
         /// The name to go by, as your teammates will read it.
@@ -389,10 +393,6 @@ fn text<'a>(value: &'a Value, name: &str) -> &'a str {
     value.get(name).and_then(Value::as_str).unwrap_or_default()
 }
 
-fn compact(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_default()
-}
-
 fn show(json: bool, typed: &Value, said: &str) -> ExitCode {
     if json {
         println!(
@@ -413,103 +413,37 @@ fn label_of(label: &str) -> Result<(String, String), String> {
         .ok_or_else(|| format!("`{label}` is no label: write NAME=VALUE, as customer_id=cus_8121"))
 }
 
-fn workspace_line(row: &Value) -> String {
-    let mut line = format!("{} (id {}", text(row, "name"), text(row, "id"));
-    if let Some(host) = row.get("host").and_then(Value::as_str) {
-        let _ = write!(line, ", on {host}");
-    }
-    if let Some(role) = row.get("role").and_then(Value::as_str) {
-        let _ = write!(line, ", {role}");
-    }
-    for (name, value) in row
-        .get("labels")
-        .and_then(Value::as_object)
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(line, ", {name}={}", value.as_str().unwrap_or_default());
-    }
-    if row.get("unattended").and_then(Value::as_bool) == Some(true) {
-        line.push_str(", runs commands unattended");
-    }
-    line.push(')');
-    line
-}
-
-fn when(row: &Value, field: &str, none: &str) -> String {
-    row.get(field)
-        .and_then(Value::as_u64)
-        .map_or_else(|| none.to_owned(), tilo_api::pages::date)
-}
-
 /// `tilo do <path> name=value… -w <workspace>`: one action of a hosted
-/// workspace, as `app/resource#action`.
+/// workspace, as `app/resource#action`, said as `tilo do` says an action
+/// this desktop ran ([`tilo_control::front::say`]).
 pub fn act(reach: Reach<'_>, workspace: &str, path: &str, args: &[String]) -> ExitCode {
-    run(async {
+    crate::log_to_stderr(tracing_subscriber::filter::LevelFilter::OFF);
+    let acting = async {
         let client = Client::open(reach)?;
         let Some((resource, action)) = path.rsplit_once('#') else {
             bail!("{path:?} names no action: write it as app/resource#action, like notes#open");
         };
         let workspace = client.workspace_id(workspace).await?;
-        let arguments = arguments(args)?;
-        let answer = client
+        let arguments =
+            Value::Object(tilo_control::front::arguments(args).map_err(anyhow::Error::msg)?);
+        client
             .act(&workspace, resource, action, &arguments, path)
-            .await?;
-        Ok(show(reach.json, &answer, &action_text(&answer)))
-    })
-}
-
-/// An action's answer as the lines a person reads.
-fn action_text(answer: &Value) -> String {
-    let path = text(answer, "path");
-    // An action names the resource it resolved to; one that names none says
-    // its status alone.
-    let named = |word: &str| {
-        if path.is_empty() {
-            word.to_owned()
-        } else {
-            format!("{word} {path}")
-        }
+            .await
     };
-    let mut said = match text(answer, "status") {
-        "ok" => named("ok"),
-        "pending" => {
-            let mut said = format!("pending {}: it waits for you", text(answer, "invocation"));
-            if let Some(url) = answer.pointer("/ask/url").and_then(Value::as_str) {
-                let _ = write!(said, ", at {url}");
-            }
-            if !path.is_empty() {
-                let _ = write!(said, " ({path})");
-            }
-            said
-        }
-        other => named(other),
-    };
-    if let Some(result) = answer.get("result").filter(|result| !result.is_null()) {
-        let _ = write!(said, "\n{}", compact(result));
-    }
-    // What the action answered it made or changed, as the workspace names it:
-    // the path the next command can take as it is.
-    for resource in answer
-        .get("resources")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-    {
-        let _ = write!(said, "\n-> {resource}");
-    }
-    let links = answer
-        .get("links")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .chain(answer.get("link").and_then(Value::as_str));
-    for link in links {
-        let _ = write!(said, "\n{link}");
-    }
-    said
+    let answered = runtime()
+        .and_then(|runtime| runtime.block_on(acting))
+        .map_err(|error| format!("tilo: {error:#}"));
+    let stdout = std::io::stdout();
+    let stderr = std::io::stderr();
+    let code = tilo_control::front::say(
+        answered,
+        reach.json,
+        &mut tilo_control::front::Io {
+            out: &mut stdout.lock(),
+            err: &mut stderr.lock(),
+        },
+    );
+    ExitCode::from(code)
 }
 
 /// `tilo ls [path] -w <workspace>`: what the workspace holds, or what `path`
@@ -793,7 +727,11 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                         &serde_json::json!({"name": name, "labels": labels}),
                     )
                     .await?;
-                Ok(show(reach.json, &made, &workspace_line(&made)))
+                Ok(show(
+                    reach.json,
+                    &made,
+                    &tilo_api::v1::lines::workspace(&made),
+                ))
             }
             WorkspaceCmd::Rename {
                 workspace: named,
@@ -806,7 +744,11 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                         &serde_json::json!({ "name": name }),
                     )
                     .await?;
-                Ok(show(reach.json, &renamed, &workspace_line(&renamed)))
+                Ok(show(
+                    reach.json,
+                    &renamed,
+                    &tilo_api::v1::lines::workspace(&renamed),
+                ))
             }
             WorkspaceCmd::Branch {
                 source,
@@ -824,7 +766,11 @@ fn workspaces(reach: Reach<'_>, cmd: WorkspaceCmd) -> ExitCode {
                         &serde_json::json!({"name": name, "labels": labels}),
                     )
                     .await?;
-                Ok(show(reach.json, &made, &workspace_line(&made)))
+                Ok(show(
+                    reach.json,
+                    &made,
+                    &tilo_api::v1::lines::workspace(&made),
+                ))
             }
             WorkspaceCmd::Unattended {
                 workspace: named,
@@ -876,19 +822,7 @@ async fn list_workspaces(
         format!("/v1/workspaces?{}", query.join("&"))
     };
     let listed = client.get(&path).await?;
-    let rows = listed
-        .get("workspaces")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(workspace_line)
-        .collect::<Vec<_>>();
-    let said = if rows.is_empty() {
-        "no workspaces".to_owned()
-    } else {
-        rows.join("\n")
-    };
-    Ok(show(json, &listed, &said))
+    Ok(show(json, &listed, text(&listed, "text")))
 }
 
 /// `tilo workspace unattended <workspace> [--off]`: held while the
@@ -1548,7 +1482,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                 let listed = client
                     .get(&format!("/v1/workspaces/{workspace}/members"))
                     .await?;
-                Ok(show(reach.json, &listed, &members_text(&listed)))
+                Ok(show(reach.json, &listed, text(&listed, "text")))
             }
             PeopleCmd::Invite {
                 role,
@@ -1586,7 +1520,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         &serde_json::json!({ "role": role }),
                     )
                     .await?;
-                Ok(show(reach.json, &moved, &members_text(&moved)))
+                Ok(show(reach.json, &moved, text(&moved, "text")))
             }
             PeopleCmd::Revoke { invite } => {
                 let left = client
@@ -1595,7 +1529,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         api::encode_path(&invite)
                     ))
                     .await?;
-                Ok(show(reach.json, &left, &members_text(&left)))
+                Ok(show(reach.json, &left, text(&left, "text")))
             }
             PeopleCmd::Rm { key } => {
                 let left = client
@@ -1604,7 +1538,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         api::encode_path(&key)
                     ))
                     .await?;
-                Ok(show(reach.json, &left, &members_text(&left)))
+                Ok(show(reach.json, &left, text(&left, "text")))
             }
             PeopleCmd::Add { key, role, name } => {
                 let mut body = serde_json::json!({"person": key, "role": role});
@@ -1614,13 +1548,13 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                 let added = client
                     .post(&format!("/v1/workspaces/{workspace}/members"), &body)
                     .await?;
-                Ok(show(reach.json, &added, &members_text(&added)))
+                Ok(show(reach.json, &added, text(&added, "text")))
             }
             PeopleCmd::WaitList => {
                 let listed = client
                     .get(&format!("/v1/workspaces/{workspace}/members/wait-list"))
                     .await?;
-                Ok(show(reach.json, &listed, &wait_list_text(&listed)))
+                Ok(show(reach.json, &listed, text(&listed, "text")))
             }
             PeopleCmd::Unlist { entry } => {
                 let listed = client
@@ -1628,7 +1562,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         "/v1/workspaces/{workspace}/members/wait-list/{entry}"
                     ))
                     .await?;
-                Ok(show(reach.json, &listed, &wait_list_text(&listed)))
+                Ok(show(reach.json, &listed, text(&listed, "text")))
             }
             PeopleCmd::Name { name } => {
                 let named = client
@@ -1637,7 +1571,7 @@ fn members(reach: Reach<'_>, workspace: &str, cmd: PeopleCmd) -> ExitCode {
                         &serde_json::json!({"name": name}),
                     )
                     .await?;
-                Ok(show(reach.json, &named, &members_text(&named)))
+                Ok(show(reach.json, &named, text(&named, "text")))
             }
         }
     })
@@ -1677,117 +1611,30 @@ fn servers(reach: Reach<'_>, workspace: &str, cmd: ServersCmd) -> ExitCode {
                     .await?
             }
         };
-        Ok(show(reach.json, &listed, &servers_text(&listed)))
+        Ok(show(reach.json, &listed, text(&listed, "text")))
     })
 }
 
-/// A workspace's servers, as lines: each by its device key, the one asked
-/// marked.
-fn servers_text(listed: &Value) -> String {
-    let servers = listed
-        .get("servers")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut said = String::from("kept by:");
-    for server in &servers {
-        let here = if server.get("here").and_then(Value::as_bool) == Some(true) {
-            "  (asked here)"
-        } else {
-            ""
-        };
-        let _ = write!(said, "\n  {}{here}", text(server, "device"));
+/// The id of the workspace a new key is to reach, named as every command names one: by its name
+/// or its id. The API server's key page takes the id alone.
+async fn key_workspace(reach: Reach<'_>, workspace: Option<&str>) -> Result<Option<String>> {
+    match workspace {
+        None => Ok(None),
+        Some(id) if api::is_uuid(id) => Ok(Some(id.to_owned())),
+        Some(named) => Ok(Some(Client::open(reach)?.workspace_id(named).await?)),
     }
-    if listed.get("confirmed").and_then(Value::as_bool) == Some(false) {
-        said.push_str(
-            "\nthe server that was let go was not reached: it is no longer named, and lets the \
-             workspace go once it hears so",
-        );
-    }
-    said
-}
-
-/// A workspace's wait list, as lines: each address with its entry, and
-/// whether it was invited.
-fn wait_list_text(listed: &Value) -> String {
-    let entries = listed
-        .get("entries")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if entries.is_empty() {
-        return "the wait list is empty".to_owned();
-    }
-    let mut said = String::from("wait list:");
-    for entry in &entries {
-        let invited = if entry.get("invited_at_ns").is_some_and(|at| !at.is_null()) {
-            ", invited"
-        } else {
-            ""
-        };
-        let _ = write!(
-            said,
-            "\n  {}{invited} — {}",
-            text(entry, "contact"),
-            text(entry, "entry")
-        );
-    }
-    said
-}
-
-/// A workspace's people and its open invitations, as lines.
-fn members_text(listed: &Value) -> String {
-    let members = listed
-        .get("members")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut said = String::from("members:");
-    for member in &members {
-        // One place each: an owner is an administrator with a role beneath, named by the first.
-        let what = Some(text(member, "place"))
-            .filter(|place| !place.is_empty())
-            .unwrap_or_else(|| text(member, "role"));
-        let _ = write!(said, "\n  {} — {what}", text(member, "name"));
-        // A person is named by their key, which `role` and `rm` take.
-        if let Some(key) = member.pointer("/member/person").and_then(Value::as_str) {
-            let _ = write!(said, "  {key}");
-        }
-    }
-    if members.is_empty() {
-        said.push_str("\n  nobody yet");
-    }
-    let invitations = listed
-        .get("invitations")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    if invitations.is_empty() {
-        said.push_str("\ninvitations: none open");
-        return said;
-    }
-    said.push_str("\ninvitations:");
-    for invitation in &invitations {
-        // Named by what redeeming it makes them: an owner's or an administrator's invitation
-        // joins someone as an Editor and makes them more.
-        let what = Some(text(invitation, "place"))
-            .filter(|place| !place.is_empty())
-            .unwrap_or_else(|| text(invitation, "role"));
-        // Who it is for, when the inviter named them, and its id, which
-        // cancelling it takes.
-        let named = text(invitation, "invitee_name");
-        let _ = write!(said, "\n  {what} invitation");
-        if !named.is_empty() {
-            let _ = write!(said, " for {named}");
-        }
-        let _ = write!(said, ", {}", text(invitation, "invite"));
-    }
-    said
 }
 
 /// `tilo keys …`.
 pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode {
     run(async {
+        let new_key = matches!(cmd, KeysCmd::Create { .. } | KeysCmd::Export { .. });
+        let key_reaches = if new_key {
+            key_workspace(reach, workspace).await?
+        } else {
+            None
+        };
+        let workspace_id = key_reaches.as_deref();
         match cmd {
             KeysCmd::Create {
                 name,
@@ -1797,7 +1644,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 let asked = KeyAsk {
                     api: reach.api,
                     name: &name,
-                    workspace,
+                    workspace: workspace_id,
                     expires_in,
                     browser_pages: !no_browser_pages,
                 };
@@ -1818,7 +1665,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                 let asked = KeyAsk {
                     api: reach.api,
                     name: &name,
-                    workspace,
+                    workspace: workspace_id,
                     expires_in,
                     browser_pages: true,
                 };
@@ -1826,28 +1673,7 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
             }
             KeysCmd::Ls => {
                 let listed = Client::open(reach)?.get("/v1/keys").await?;
-                let rows = listed
-                    .get("keys")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .map(|key| {
-                        format!(
-                            "{} (grant {}, reaches {}, last used {}, expires {})",
-                            text(key, "name"),
-                            text(key, "grant"),
-                            text(key, "scope"),
-                            when(key, "last_used_at_ms", "never"),
-                            when(key, "expires_at_ms", "never"),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let said = if rows.is_empty() {
-                    "no keys".to_owned()
-                } else {
-                    rows.join("\n")
-                };
-                Ok(show(reach.json, &listed, &said))
+                Ok(show(reach.json, &listed, text(&listed, "text")))
             }
             KeysCmd::Mint { name, expires_in } => {
                 let Some(named) = workspace else {
@@ -1863,29 +1689,28 @@ pub fn keys(reach: Reach<'_>, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode
                     fields.insert("expires_in".into(), serde_json::json!(expires_in));
                 }
                 let minted = client.post("/v1/keys", &body).await?;
-                let said = format!(
-                    "{} (grant {}, reaches {}, expires {})\n  MCP {}\n  key {} (shown once)",
-                    text(&minted, "name"),
-                    text(&minted, "grant"),
-                    text(&minted, "workspace"),
-                    when(&minted, "expires_at_ms", "never"),
-                    text(&minted, "mcp_url"),
-                    text(&minted, "token"),
-                );
+                let said = tilo_api::v1::lines::minted_key(&minted);
                 Ok(show(reach.json, &minted, &said))
             }
-            KeysCmd::Revoke { grant } => {
-                let revoked = Client::open(reach)?
-                    .delete(&format!("/v1/keys/{}", api::encode_path(&grant)))
-                    .await?;
-                Ok(show(
-                    reach.json,
-                    &revoked,
-                    &format!("revoked {}", text(&revoked, "revoked")),
-                ))
-            }
+            KeysCmd::Revoke { grant } => revoke_key(reach, &grant).await,
         }
     })
+}
+
+/// `tilo keys revoke KEY`: the key `named` (its grant, or its name as `tilo keys ls` lists it)
+/// revoked, with every key it minted.
+async fn revoke_key(reach: Reach<'_>, named: &str) -> Result<ExitCode> {
+    let client = Client::open(reach)?;
+    let listed = client.get("/v1/keys").await?;
+    let grant = key_api::key_named(&listed, named)?;
+    let revoked = client
+        .delete(&format!("/v1/keys/{}", api::encode_path(&grant)))
+        .await?;
+    Ok(show(
+        reach.json,
+        &revoked,
+        &format!("revoked {}", text(&revoked, "revoked")),
+    ))
 }
 
 /// `tilo keys export NAME --out <path>`: a new key for a program here, asked
@@ -1940,7 +1765,7 @@ struct KeyAsk<'a> {
     api: Option<&'a str>,
     /// What will use it, as the grants page names it.
     name: &'a str,
-    /// The one workspace it reaches, when not all of them.
+    /// The id of the one workspace it reaches, when not all of them.
     workspace: Option<&'a str>,
     expires_in: Option<u64>,
     browser_pages: bool,
@@ -2032,19 +1857,6 @@ async fn ask_key(asked: &KeyAsk<'_>) -> Result<Value> {
     }
 }
 
-/// `name=value` options: each value as JSON when it is, else as text.
-pub fn arguments(args: &[String]) -> Result<Value> {
-    let mut object = serde_json::Map::new();
-    for arg in args {
-        let (name, value) = arg
-            .split_once('=')
-            .ok_or_else(|| anyhow!("{arg:?} is not name=value"))?;
-        let value = serde_json::from_str::<Value>(value).unwrap_or_else(|_| Value::from(value));
-        object.insert(name.to_owned(), value);
-    }
-    Ok(Value::Object(object))
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -2087,7 +1899,7 @@ mod tests {
             agent: "Claude Code".into(),
             label: "Claude Code on build-box".into(),
             cert: hex::encode(postcard::to_allocvec(&cert).unwrap()),
-            host_cert: "00".into(),
+            server_cert: "00".into(),
             server_address: None,
         };
         crate::login::store(dir.path(), &key, &device).unwrap();
@@ -2233,6 +2045,56 @@ mod tests {
         let own = dir.join("own.json");
         std::fs::write(&own, serde_json::to_vec(file).unwrap()).unwrap();
         assert!(as_file(&own).is_some());
+    }
+
+    /// `-w` names the workspace a new key reaches by its name, as every other command takes it:
+    /// the key page is asked with the id the name is listed under.
+    #[test]
+    fn a_new_key_reaches_the_workspace_its_name_names() {
+        let device = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_DEVICE_DIR", device.path())
+            .set(api::KEY_ENV, "tilo_sk_test");
+        let api_server = test_http::Responder::handle(|request: &test_http::Request| {
+            let (status, body) = match (request.method.as_str(), request.target.as_str()) {
+                ("GET", "/v1/workspaces") => (
+                    200,
+                    serde_json::json!({"workspaces": [{"id": WORKSPACE, "name": "Studio"}]}),
+                ),
+                _ => (
+                    400,
+                    serde_json::json!({"error": {"code": "refused", "message": "no key today"}}),
+                ),
+            };
+            Some(
+                test_http::Reply::status(status)
+                    .header("content-type", "application/json")
+                    .body(body.to_string()),
+            )
+        });
+        let url = api_server.url();
+        let asked = keys(
+            Reach {
+                api: Some(&url),
+                key_file: None,
+                json: false,
+            },
+            Some("Studio"),
+            KeysCmd::Create {
+                name: "Visa backend".into(),
+                expires_in: None,
+                no_browser_pages: false,
+            },
+        );
+        assert_ne!(asked, ExitCode::SUCCESS, "the key page refused this one");
+        let sent = api_server.drain_requests();
+        let new_key = sent
+            .iter()
+            .find(|sent| sent.target == "/keys/new")
+            .expect("the key was asked for");
+        let body: Value = serde_json::from_str(&new_key.body_text()).unwrap();
+        assert_eq!(body["workspace"], WORKSPACE, "the name is sent as its id");
+        drop(env);
     }
 
     /// A folder goes up whole, each file named by its path from the folder's
@@ -2768,8 +2630,7 @@ mod tests {
             let _key = keyed();
             let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let counted = Arc::clone(&asked);
-            let api_server = test_http::Responder::handle(move |_request: &test_http::Request| {
-                let first = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            let api_server = test_http::Responder::handle(move |request: &test_http::Request| {
                 let reply = |status: u16, body: Value| {
                     Some(
                         test_http::Reply::status(status)
@@ -2777,6 +2638,11 @@ mod tests {
                             .body(body.to_string()),
                     )
                 };
+                // The key is named as `tilo keys ls` lists it first.
+                if request.method == "GET" {
+                    return reply(200, json!({"keys": [{"grant": "grant-1", "name": "Nightly"}]}));
+                }
+                let first = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
                 if first {
                     reply(
                         503,
@@ -2798,7 +2664,11 @@ mod tests {
                     grant: "grant-1".into(),
                 },
             );
-            let sent = api_server.drain_requests();
+            let sent: Vec<_> = api_server
+                .drain_requests()
+                .into_iter()
+                .filter(|sent| sent.method == "DELETE")
+                .collect();
             assert_eq!(
                 sent.len(),
                 2,
@@ -2813,23 +2683,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn hosted_arguments_and_answers_read_as_a_person_wrote_them;
-
-        phase options_are_json_where_they_parse;
-        {
-            assert_eq!(
-                arguments(&[
-                    "name=Jane Doe".into(),
-                    "count=3".into(),
-                    "ok=true".into(),
-                    "edit={\"op\":\"set\"}".into()
-                ])
-                .unwrap(),
-                serde_json::json!({"name": "Jane Doe", "count": 3, "ok": true,
-                    "edit": {"op": "set"}})
-            );
-            assert!(arguments(&["nothing".into()]).is_err());
-        }
+        fn hosted_answers_read_as_a_person_wrote_them;
 
         phase a_workspace_is_named_by_its_words;
         {
@@ -2837,42 +2691,6 @@ mod tests {
             assert_eq!(api::slug("applicant-jane-doe"), "applicant-jane-doe");
             assert!(api::is_uuid("3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b"));
             assert!(!api::is_uuid("jane-doe"));
-        }
-
-        phase a_workspace_line_names_its_id_and_where_it_lives;
-        {
-            let row = serde_json::json!({"id": "3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b",
-                "name": "Applicant: Jane Doe", "host": "eu1.tilo.sh", "role": "owner"});
-            assert_eq!(
-                workspace_line(&row),
-                "Applicant: Jane Doe (id 3f2a8c1e-0b4d-4e5f-9a6b-7c8d9e0f1a2b, on eu1.tilo.sh, \
-             owner)"
-            );
-        }
-
-        phase an_action_answer_says_what_ran_and_where_it_is;
-        {
-            let done = serde_json::json!({"status": "ok", "path": "notes#open",
-                "invocation": "inv-1", "link": "https://tilo.sh/#/w/x/notes/Todo"});
-            assert_eq!(
-                action_text(&done),
-                "ok notes#open\nhttps://tilo.sh/#/w/x/notes/Todo"
-            );
-            // What it made or changed, as a path the next command takes as it
-            // is: the answer an agent's create prints is not lost.
-            let created = serde_json::json!({"status": "ok", "path": "tasks#create",
-                "resources": ["tasks.tracker/issues/7"]});
-            assert_eq!(
-                action_text(&created),
-                "ok tasks#create\n-> tasks.tracker/issues/7"
-            );
-            let pending = serde_json::json!({"status": "pending", "invocation": "inv-2",
-                "path": "pdf-viewer#import-pdf-content", "ask": {"url": "https://tilo.sh/approve/1"}});
-            assert_eq!(
-                action_text(&pending),
-                "pending inv-2: it waits for you, at https://tilo.sh/approve/1 \
-             (pdf-viewer#import-pdf-content)"
-            );
         }
 
         phase a_listing_and_a_read_print_what_the_host_said;
@@ -2890,31 +2708,6 @@ mod tests {
             );
             let read = serde_json::json!({"path": "notes/Notebook/Todo", "text": "# Todo\n"});
             assert_eq!(text(&read, "text"), "# Todo\n");
-        }
-
-        phase the_people_of_a_workspace_are_a_line_each;
-        {
-            // One place each, as the workspace names it: an owner is an administrator and an
-            // editor beneath, and reads as an owner alone.
-            let listed = serde_json::json!({
-                "members": [{"name": "Ada", "role": "editor", "owner": true, "administrator": true,
-                             "place": "owner"},
-                            {"name": "Rosa Ortiz", "role": "editor", "place": "editor"}],
-                "invitations": [{"invite": "inv-1", "role": "viewer", "invitee_name": "Bo",
-                                 "place": "viewer"},
-                                {"invite": "inv-2", "role": "editor", "administrator": true,
-                                 "owner": true, "place": "owner"}],
-            });
-            assert_eq!(
-                members_text(&listed),
-                "members:\n  Ada — owner\n  Rosa Ortiz — editor\n\
-             invitations:\n  viewer invitation for Bo, inv-1\n  owner invitation, inv-2"
-            );
-            let alone = serde_json::json!({"members": [], "invitations": []});
-            assert_eq!(
-                members_text(&alone),
-                "members:\n  nobody yet\ninvitations: none open"
-            );
         }
     }
 }

@@ -2,15 +2,70 @@
 //! policy, which must replicate and undo, is the resource's model
 //! ([`Backups`](crate::resource::Backups)).
 
-use tilo_actions::ActionSpec;
-use ui::framework::{Effect, LiveRow};
+use ui::framework::LiveRow;
 use ui::tilo_resource;
+use ui::tilo_resource::RowBindings;
 
-use crate::model::{Catalog, Snapshot};
+use crate::model::{Catalog, Snapshot as StoredSnapshot};
 
 /// Paths and credentials never cross this boundary: effects address the already-published
 /// catalog by opaque id only.
 pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
+
+/// The backup sources, as one row.
+#[derive(tilo_resource::Row)]
+#[row(kind = "backups.source-set", label = "Backup sources")]
+pub struct SourceList;
+
+/// One backup source.
+#[derive(tilo_resource::Row)]
+#[row(kind = "backups.source", label = "Backup source", effects = BackupsEffect)]
+pub struct Source;
+
+/// The retention policy observed for one source.
+#[derive(tilo_resource::Row)]
+#[row(kind = "backups.schedule", label = "Schedule", effects = BackupsEffect)]
+pub struct Schedule;
+
+/// Where backups are written, as one row.
+#[derive(tilo_resource::Row)]
+#[row(kind = "backups.destination-set", label = "Backup destinations")]
+pub struct DestinationList;
+
+/// One backup destination.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "backups.destination",
+    label = "Backup destination",
+    effects = BackupsEffect
+)]
+pub struct Destination;
+
+/// The recent snapshot versions and backup runs, as one row.
+#[derive(tilo_resource::Row)]
+#[row(kind = "backups.snapshot-set", label = "Snapshots")]
+pub struct SnapshotList;
+
+/// One stored snapshot version.
+#[derive(tilo_resource::Row)]
+#[row(kind = "backups.snapshot", label = "Snapshot", effects = BackupsEffect)]
+pub struct Snapshot;
+
+/// The completed run of one stored snapshot.
+#[derive(tilo_resource::Row)]
+#[row(kind = "backups.run", label = "Backup run", effects = BackupsEffect)]
+pub struct Run;
+
+/// The folder a restore of one snapshot writes to: an explicit row rather than an unspoken
+/// side effect of Restore, so palette and agent users get the same "new or empty folder"
+/// contract the restore sheet shows.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "backups.restore-target",
+    label = "Restore target",
+    effects = BackupsEffect
+)]
+pub struct RestoreTarget;
 
 /// The safe, agent-drivable side-effect surface. These are effects rather than document
 /// actions: a peer must never replay a backup or restore against a different machine's
@@ -18,49 +73,54 @@ pub const BACKUPS_OPERATION_TYPE: &str = "backups.operation";
 #[derive(Clone, Debug, PartialEq, Eq, ui::framework::Effect)]
 #[effect(operation = "backups.operation")]
 pub enum BackupsEffect {
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     BackupNow,
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     Setup,
-    #[effect(job, returns, kind = "read")]
+    /// Read snapshot.
+    #[effect(view, returns, on = Snapshot)]
+    #[effect(label = "backups-operation-read-snapshot")]
+    #[effect(tag = tilo_actions::DOCUMENT_READ_TAG)]
+    Read {
+        #[param("The snapshot row's id, or the snapshot's id")]
+        snapshot_id: String,
+    },
+    /// Open.
+    ///
+    /// Show what the row is in the window: a source, its schedule, a destination, a stored
+    /// snapshot or the run that made it.
+    #[effect(
+        view,
+        on = Source,
+        on = Schedule,
+        on = Destination,
+        on = Snapshot,
+        on = Run
+    )]
+    #[effect(label = "backups-operation-open")]
+    Open {
+        #[param("The backup row to show")]
+        row: String,
+    },
+    /// Verify snapshot.
+    #[effect(job, returns, kind = "read", on = Snapshot)]
     Verify {
-        #[param("Id of the stored snapshot")]
+        #[param("The snapshot row's id, or the snapshot's id")]
         snapshot_id: String,
     },
+    #[effect(kind = "outside", on = Snapshot, on = RestoreTarget)]
     #[effect(attended, job, returns)]
-    RestoreSnapshot {
-        #[param("Id of the stored snapshot")]
-        snapshot_id: String,
-    },
-    #[effect(view)]
-    ShowSource {
-        #[param("Id of the source")]
-        source_id: String,
-    },
-    #[effect(view)]
-    ShowDestination {
-        #[param("Id of the destination")]
-        destination_id: String,
-    },
-    #[effect(view)]
-    ShowSnapshot {
-        #[param("Id of the stored snapshot")]
+    #[effect(label = "backups-operation-restore-snapshot")]
+    Restore {
+        #[param("The snapshot row's id, or the snapshot's id")]
         snapshot_id: String,
     },
     #[effect(view, idempotent)]
     OrderSnapshots {
         #[param("How to list them", choices = ORDERS.iter().copied())]
         order: String,
-    },
-    #[effect(view, returns)]
-    ReadSnapshot {
-        #[param("Id of the stored snapshot")]
-        snapshot_id: String,
-    },
-    #[effect(view)]
-    ShowSchedule {
-        #[param("Id of the source")]
-        source_id: String,
     },
 }
 
@@ -72,57 +132,26 @@ pub(crate) struct Blocked {
     pub(crate) reason: String,
 }
 
-/// `effect` as the row `id` offers it, unavailable while `blocked`.
-fn offer(id: &str, effect: &BackupsEffect, blocked: Option<&Blocked>) -> ActionSpec {
-    let mut spec = effect.bound();
-    id.clone_into(&mut spec.type_mut().id);
-    match blocked {
-        Some(blocked) => spec.unavailable(blocked.code, blocked.reason.clone()),
-        None => spec,
-    }
-}
-
-fn labelled(mut spec: ActionSpec, label: &str) -> ActionSpec {
-    label.clone_into(&mut spec.type_mut().label);
-    spec
-}
-
 fn source_rows(catalog: &Catalog) -> LiveRow {
-    let mut sources = LiveRow::new("backups.sources", "backups.source-set", "Backup sources");
+    let mut sources = LiveRow::typed::<SourceList>("backups.sources", "Backup sources");
     for source in &catalog.sources {
-        let schedule = LiveRow::new(
+        let schedule = open_row::<Schedule>(
             format!("backups.schedule:{}", source.id),
-            "backups.schedule",
             format!(
                 "Observed {} cadence: {}.",
                 source.kind.label(),
                 crate::view::schedule_label(source.schedule)
             ),
-        )
-        .operation(offer(
-            "open",
-            &BackupsEffect::ShowSchedule {
-                source_id: source.id.clone(),
-            },
-            None,
-        ));
+        );
         sources = sources.row(
-            LiveRow::new(
+            open_row::<Source>(
                 format!("backups.source:{}", source.id),
-                "backups.source",
                 format!(
                     "{} with {}.",
                     source.kind.label(),
                     crate::view::schedule_label(source.schedule)
                 ),
             )
-            .operation(offer(
-                "open",
-                &BackupsEffect::ShowSource {
-                    source_id: source.id.clone(),
-                },
-                None,
-            ))
             .row(schedule),
         );
     }
@@ -130,30 +159,17 @@ fn source_rows(catalog: &Catalog) -> LiveRow {
 }
 
 fn destination_rows(catalog: &Catalog) -> LiveRow {
-    let mut destinations = LiveRow::new(
-        "backups.destinations",
-        "backups.destination-set",
-        "Backup destinations",
-    );
+    let mut destinations =
+        LiveRow::typed::<DestinationList>("backups.destinations", "Backup destinations");
     for destination in &catalog.destinations {
-        destinations = destinations.row(
-            LiveRow::new(
-                format!("backups.destination:{}", destination.id),
-                "backups.destination",
-                format!(
-                    "{} is a {} backup destination.",
-                    destination.name,
-                    destination.kind.label()
-                ),
-            )
-            .operation(offer(
-                "open",
-                &BackupsEffect::ShowDestination {
-                    destination_id: destination.id.clone(),
-                },
-                None,
-            )),
-        );
+        destinations = destinations.row(open_row::<Destination>(
+            format!("backups.destination:{}", destination.id),
+            format!(
+                "{} is a {} backup destination.",
+                destination.name,
+                destination.kind.label()
+            ),
+        ));
     }
     destinations
 }
@@ -162,21 +178,20 @@ const SNAPSHOT_PAGE: usize = 128;
 
 /// The live catalog as rows beneath the resource: sources with their schedules,
 /// destinations, and the recent snapshots.
-pub(crate) fn live_rows(catalog: &Catalog, blocked: Option<&Blocked>) -> Vec<LiveRow> {
-    let mut snapshots = LiveRow::new(
+pub(crate) fn live_rows(catalog: &Catalog) -> Vec<LiveRow> {
+    let mut snapshots = LiveRow::typed::<SnapshotList>(
         "backups.snapshots",
-        "backups.snapshot-set",
         "Recent snapshot versions and backup runs",
     );
     for snapshot in catalog.snapshots.iter().take(SNAPSHOT_PAGE) {
-        snapshots = snapshots.row(snapshot_row(snapshot, blocked));
+        snapshots = snapshots.row(snapshot_row(snapshot));
     }
     vec![source_rows(catalog), destination_rows(catalog), snapshots]
 }
 
 /// The live row `id`, also for a snapshot outside the recent page: a search result's
 /// address keeps its Verify and Restore operations.
-pub(crate) fn live_row(catalog: &Catalog, blocked: Option<&Blocked>, id: &str) -> Option<LiveRow> {
+pub(crate) fn live_row(catalog: &Catalog, id: &str) -> Option<LiveRow> {
     let snapshot_id = id
         .strip_prefix("backups.snapshot:")
         .or_else(|| id.strip_prefix("backups.run:"))
@@ -186,9 +201,9 @@ pub(crate) fn live_row(catalog: &Catalog, blocked: Option<&Blocked>, id: &str) -
         .iter()
         .find(|snapshot| snapshot.id == snapshot_id)?;
     if id.starts_with("backups.snapshot:") {
-        return Some(snapshot_row(snapshot, blocked));
+        return Some(snapshot_row(snapshot));
     }
-    let (run, target) = snapshot_children(snapshot, blocked);
+    let (run, target) = snapshot_children(snapshot);
     Some(if id.starts_with("backups.run:") {
         run
     } else {
@@ -196,114 +211,101 @@ pub(crate) fn live_row(catalog: &Catalog, blocked: Option<&Blocked>, id: &str) -
     })
 }
 
-fn snapshot_row(snapshot: &Snapshot, blocked: Option<&Blocked>) -> LiveRow {
-    let restore = BackupsEffect::RestoreSnapshot {
-        snapshot_id: snapshot.id.clone(),
+/// A row of the type `R` whose `open` shows it, and whose other effects, when the type
+/// offers them, are bound to `bindings`.
+fn row<R: ui::tilo_resource::words::RowType>(
+    id: String,
+    label: String,
+    bindings: impl FnOnce(RowBindings) -> RowBindings,
+) -> LiveRow {
+    let bindings = bindings(RowBindings::new().bind(
+        BackupsEffect::OPEN,
+        [("row", serde_json::Value::from(id.clone()))],
+    ));
+    LiveRow::typed_with::<R>(id, label, &bindings)
+}
+
+/// A row of the type `R` whose `open` shows it.
+fn open_row<R: ui::tilo_resource::words::RowType>(id: String, label: String) -> LiveRow {
+    row::<R>(id, label, |bindings| bindings)
+}
+
+fn snapshot_row(snapshot: &StoredSnapshot) -> LiveRow {
+    let (run, target) = snapshot_children(snapshot);
+    let id = format!("backups.snapshot:{}", snapshot.id);
+    let snapshot_of = |bindings: RowBindings| {
+        bindings
+            .bind(
+                BackupsEffect::READ,
+                [("snapshot_id", serde_json::Value::from(snapshot.id.clone()))],
+            )
+            .bind(
+                BackupsEffect::VERIFY,
+                [("snapshot_id", serde_json::Value::from(snapshot.id.clone()))],
+            )
+            .bind(
+                BackupsEffect::RESTORE,
+                [("snapshot_id", serde_json::Value::from(snapshot.id.clone()))],
+            )
     };
-    let (run, target) = snapshot_children(snapshot, blocked);
-    LiveRow::new(
-        format!("backups.snapshot:{}", snapshot.id),
-        "backups.snapshot",
+    row::<Snapshot>(
+        id,
         format!(
             "{} {} snapshot containing {}.",
             taken_label(snapshot),
             snapshot.kind.label(),
             ui::format::size(snapshot.size_bytes)
         ),
+        snapshot_of,
     )
-    .operation(
-        offer(
-            "read",
-            &BackupsEffect::ReadSnapshot {
-                snapshot_id: snapshot.id.clone(),
-            },
-            None,
-        )
-        .reads_document(),
-    )
-    .operation(offer(
-        "open",
-        &BackupsEffect::ShowSnapshot {
-            snapshot_id: snapshot.id.clone(),
-        },
-        None,
-    ))
-    .operation(offer(
-        "verify",
-        &BackupsEffect::Verify {
-            snapshot_id: snapshot.id.clone(),
-        },
-        blocked,
-    ))
-    .operation(offer("restore", &restore, blocked))
     .row(run)
     .row(target)
 }
 
-/// A stored snapshot's completed run, and the folder a restore writes to: an explicit child
-/// rather than an unspoken side effect of Restore, so palette and agent users get the same
-/// "new or empty folder" contract the restore sheet shows.
-fn snapshot_children(snapshot: &Snapshot, blocked: Option<&Blocked>) -> (LiveRow, LiveRow) {
-    let run = LiveRow::new(
+fn snapshot_children(snapshot: &StoredSnapshot) -> (LiveRow, LiveRow) {
+    let run = open_row::<Run>(
         format!("backups.run:{}", snapshot.id),
-        "backups.run",
         format!(
             "Completed {} run on {}.",
             snapshot.kind.label(),
             taken_label(snapshot)
         ),
-    )
-    .operation(labelled(
-        offer(
-            "open",
-            &BackupsEffect::ShowSnapshot {
-                snapshot_id: snapshot.id.clone(),
-            },
-            None,
-        ),
-        "Show run result",
-    ));
-    let target = LiveRow::new(
+    );
+    let target = row::<RestoreTarget>(
         format!("backups.restore-target:{}", snapshot.id),
-        "backups.restore-target",
-        "Restore into a new or empty local folder",
-    )
-    .operation(labelled(
-        offer(
-            "restore",
-            &BackupsEffect::RestoreSnapshot {
-                snapshot_id: snapshot.id.clone(),
-            },
-            blocked,
-        ),
-        "Restore into a new or empty folder…",
-    ));
+        "Restore into a new or empty local folder".to_owned(),
+        |bindings| {
+            bindings.bind(
+                BackupsEffect::RESTORE,
+                [("snapshot_id", serde_json::Value::from(snapshot.id.clone()))],
+            )
+        },
+    );
     (run, target)
 }
 
-pub(crate) fn taken_label(snapshot: &Snapshot) -> String {
+pub(crate) fn taken_label(snapshot: &StoredSnapshot) -> String {
     ui::format::Formats::current().timestamp(snapshot.taken)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Catalog;
-    use tilo_actions::{Availability, OperationKind, ResourceSpec};
+    use tilo_actions::{ActionKind, OperationKind, ResourceSpec};
+    use ui::tilo_resource::Effect as _;
 
-    fn row_tree(catalog: &Catalog, blocked: Option<&Blocked>) -> Vec<ResourceSpec> {
-        live_rows(catalog, blocked)
+    fn row_tree(catalog: &Catalog) -> Vec<ResourceSpec> {
+        live_rows(catalog)
             .into_iter()
             .map(LiveRow::into_resource)
             .collect()
     }
 
-    /// The catalog's rows carry each item's effects with its id bound, and the reason this
-    /// device cannot run them.
+    /// Each row is its declared type, offering that type's effects bound to it.
     #[test]
-    fn live_rows_bind_each_items_effects_and_say_why_they_are_unavailable() {
+    fn live_rows_offer_their_types_effects_bound_to_the_row() {
         let catalog = Catalog::sample(ui::clock::local_now().datetime());
-        let rows = row_tree(&catalog, None);
+        let rows = row_tree(&catalog);
         let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -336,19 +338,26 @@ mod tests {
         );
         let action = |id: &str| snapshot.actions.iter().find(|a| a.id == id).unwrap();
         assert_eq!(action("open").kind, OperationKind::View);
+        assert_eq!(action("read").kind, OperationKind::View);
+        assert_eq!(
+            action("read").contract.kind,
+            ActionKind::Read,
+            "a snapshot read reads the app's document"
+        );
         let verify = action("verify");
         assert_eq!(verify.kind, OperationKind::Effect);
-        assert_eq!(verify.contract.kind, tilo_actions::ActionKind::Read);
+        assert_eq!(verify.contract.kind, ActionKind::Read);
         let encoded = verify.build_json(&serde_json::Map::new()).unwrap();
         assert_eq!(encoded.type_id, BACKUPS_OPERATION_TYPE);
         assert_eq!(
             BackupsEffect::from_payload(&encoded.payload).unwrap(),
             BackupsEffect::Verify {
-                snapshot_id: first.id.clone()
-            }
+                snapshot_id: first.id.clone(),
+            },
+            "the row binds the snapshot it is"
         );
         let restore = action("restore");
-        assert_eq!(restore.contract.kind, tilo_actions::ActionKind::Outside);
+        assert_eq!(restore.contract.kind, ActionKind::Outside);
         assert!(
             restore.contract.validate_declaration().is_empty(),
             "the empty-target restore contract has no misleading confirmation"
@@ -360,6 +369,7 @@ mod tests {
             .expect("explicit restore target row");
         assert!(target.label.contains("new or empty"));
         assert_eq!(target.actions.len(), 1);
+        assert_eq!(target.actions[0].id, "restore");
         assert!(
             snapshot
                 .children
@@ -367,23 +377,6 @@ mod tests {
                 .any(|child| child.kind == "backups.run"),
             "every stored version exposes its completed run"
         );
-
-        let blocked = Blocked {
-            code: "not_configured",
-            reason: "The saved backup location is unavailable.".into(),
-        };
-        let rows = row_tree(&catalog, Some(&blocked));
-        let snapshot = &rows[2].children[0];
-        for id in ["verify", "restore"] {
-            let action = snapshot.actions.iter().find(|a| a.id == id).unwrap();
-            assert!(matches!(
-                &action.contract.availability,
-                Availability::Unavailable { code, reason }
-                    if code == "not_configured" && *reason == blocked.reason
-            ));
-        }
-        let open = snapshot.actions.iter().find(|a| a.id == "open").unwrap();
-        assert_eq!(open.contract.availability, Availability::Available);
     }
 
     /// An older snapshot outside the published page still resolves by the id its search
@@ -399,7 +392,7 @@ mod tests {
                 snapshot
             })
             .collect();
-        let rows = row_tree(&catalog, None);
+        let rows = row_tree(&catalog);
         assert_eq!(rows[2].children.len(), SNAPSHOT_PAGE);
         let last = format!("snap-{}", SNAPSHOT_PAGE + 4);
         for prefix in [
@@ -408,11 +401,9 @@ mod tests {
             "backups.restore-target:",
         ] {
             let id = format!("{prefix}{last}");
-            let row = live_row(&catalog, None, &id)
-                .expect("resolves")
-                .into_resource();
+            let row = live_row(&catalog, &id).expect("resolves").into_resource();
             assert_eq!(row.id.as_str(), id);
         }
-        assert!(live_row(&catalog, None, "backups.snapshot:missing").is_none());
+        assert!(live_row(&catalog, "backups.snapshot:missing").is_none());
     }
 }

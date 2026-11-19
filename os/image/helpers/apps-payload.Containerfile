@@ -125,7 +125,7 @@ RUN --mount=type=secret,id=browser_runtime_identity \
     : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
-              /build/crates/sdk/ui-core/src/webview/chromium/runtime.rs)" \
+              /build/crates/sdk/tilo-webview/src/chromium/runtime.rs)" \
          && test -n "$pinned" \
          && test "$pinned" = "${CHROMIUM_RUNTIME_VERSION}" \
          && test -x /run/tilo-chromium/chromium-engine/chromium/tilo-chromium-host \
@@ -190,6 +190,7 @@ RUN --mount=type=secret,id=app_publisher_identity \
          export IDENTITY_JSON=/run/secrets/app_publisher_identity; \
        fi \
     && BIN_DIR=/out/thin-apps \
+    APP_MODELS=/out/app-models \
     TAPP_DIR=/out/prebuilt-apps \
     TAPP_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \

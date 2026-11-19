@@ -134,7 +134,7 @@ impl NativeWorkspaceOwner {
                 hint: None,
             }),
             host_hint: None,
-            peer: peer.durable_parts()?.into(),
+            peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
             publication: Some(publication::StoredPublication::default()),
@@ -142,7 +142,6 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             shortcut_change: None,
             effect_history_root: None,
-            join_log: crate::join_log::JoinLog::default(),
             join_admissions: std::collections::BTreeMap::new(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;
@@ -228,7 +227,7 @@ impl NativeWorkspaceOwner {
                 hint: Some(hint),
             }),
             host_hint: None,
-            peer: peer.durable_parts()?.into(),
+            peer: peer.durable_layout()?.into(),
             generation: 1,
             continuity: 0,
             publication: Some(publication::StoredPublication::default()),
@@ -236,7 +235,6 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             shortcut_change: None,
             effect_history_root: None,
-            join_log: crate::join_log::JoinLog::default(),
             join_admissions: std::collections::BTreeMap::new(),
         };
         self.publish_workspace(workspace, NativeCommittedView::new(peer, record), None)?;

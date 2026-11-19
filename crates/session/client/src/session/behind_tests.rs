@@ -28,14 +28,14 @@ fn a_document_this_device_is_behind_in_is_asked_for_again_until_its_compaction_i
     } = late_admission_at(web_time::SystemTime::now());
     let server = bootstrap.host;
     let config = PeerConfig {
-        host: tilo_server_client::Host::through(
+        host: tilo_server_client::ServerAddress::through(
             iroh_base::EndpointAddr::new(
                 iroh_base::EndpointId::from_bytes(&server.device_public_key).unwrap(),
             ),
             None,
         ),
         cert: bootstrap.device_cert,
-        host_cert: server,
+        server_cert: server,
         revocations: RevocationList::new(),
         entering: None,
     };

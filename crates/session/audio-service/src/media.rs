@@ -141,31 +141,53 @@ pub fn token_of(resource: &str) -> Option<&str> {
     resource.strip_prefix(PLAYER_PREFIX)
 }
 
+/// The `media` resource, as a declared type: what plays now and where its
+/// sound can go.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.audio.media", label = "Now playing")]
+pub struct MediaReading;
+
+/// One media player, as a declared type: its controls are [`PlayerAction`]'s,
+/// offered for what the player can do now.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.audio.player",
+    label = "Media player",
+    effects = PlayerAction
+)]
+pub struct PlayerRow;
+
 /// A player's controls.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.audio.player")]
 pub enum PlayerAction {
     /// Play or pause.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         row,
         icon = "play",
+        on = PlayerRow,
         keywords = "media, music, play, pause, resume, abspielen, pausieren"
     )]
     PlayPause,
     /// Skip to the next track.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         row,
         icon = "skip-forward",
+        on = PlayerRow,
         keywords = "media, music, next, skip, nächster titel"
     )]
     Next,
     /// Go back to the previous track.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         row,
         icon = "skip-back",
+        on = PlayerRow,
         keywords = "media, music, previous, back, vorheriger titel"
     )]
     Previous,
@@ -188,6 +210,7 @@ impl PlayerAction {
 #[effect(operation = "so.tilo.audio.media")]
 pub enum MediaAction {
     /// Play when paused, pause when playing.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         icon = "play",
@@ -195,15 +218,19 @@ pub enum MediaAction {
     )]
     PlayPause,
     /// Skip to the next track.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "skip-forward", keywords = "skip")]
     Next,
     /// Go back to the previous track.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "skip-back", keywords = "back")]
     Previous,
     /// Stop playing.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "square", keywords = "halt")]
     Stop,
     /// Go to a point in what plays.
+    #[effect(kind = "outside")]
     #[effect(
         own_device,
         idempotent,
@@ -217,6 +244,7 @@ pub enum MediaAction {
     },
     /// Continue here the session another of the person's devices hands
     /// over.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "play", keywords = "handoff, continue, resume")]
     Resume {
         /// The handoff's request, 32 hex digits.
@@ -274,28 +302,38 @@ fn front_controls(media: &Media, resource: &mut ResourceSpec) {
 
 /// The resource of one player, with the controls it offers now.
 fn player_spec(player: &Player) -> ResourceSpec {
-    let mut controls = Vec::new();
     let pauses = player.playing && player.can_pause;
+    let mut bindings = tilo_resource::RowBindings::new();
     if pauses || (!player.playing && player.can_play) {
-        let mut spec = PlayerAction::PlayPause.bound();
-        let ty = spec.type_mut();
-        // The row says what choosing it does now.
-        if pauses { "Pause" } else { "Play" }.clone_into(&mut ty.label);
-        ty.icon = Some(if pauses { "pause" } else { "play" }.to_owned());
-        controls.push(spec);
+        bindings = bindings.offer(PlayerAction::PLAY_PAUSE);
     }
     if player.can_next {
-        controls.push(PlayerAction::Next.bound());
+        bindings = bindings.offer(PlayerAction::NEXT);
     }
     if player.can_previous {
-        controls.push(PlayerAction::Previous.bound());
+        bindings = bindings.offer(PlayerAction::PREVIOUS);
     }
     let headline = player.headline();
-    for spec in &mut controls {
-        spec.type_mut().description = Some(headline.clone());
+    let mut resource = tilo_resource::LiveRow::typed_with::<PlayerRow>(
+        player_resource(&player.token),
+        headline.clone(),
+        &bindings,
+    )
+    .into_resource();
+    for spec in &mut resource.actions {
+        let pause = spec.id == PlayerAction::PLAY_PAUSE.id;
+        let ty = spec.type_mut();
+        ty.description = Some(headline.clone());
+        if pause {
+            // The row says what choosing it does now.
+            if pauses {
+                "Pause".clone_into(&mut ty.label);
+            } else {
+                "Play".clone_into(&mut ty.label);
+            }
+            ty.icon = Some(if pauses { "pause" } else { "play" }.to_owned());
+        }
     }
-    let mut resource = ResourceSpec::new(player_resource(&player.token), PLAYER_KIND, headline);
-    resource.actions = controls;
     // Who made it is the row's second line, not part of its label.
     if let Some(artist) = player.byline() {
         resource = resource.with_presentation(ResourcePresentation {
@@ -309,9 +347,8 @@ fn player_spec(player: &Player) -> ResourceSpec {
 /// The `media` resource reading `media`.
 #[must_use]
 pub fn resource(media: &Media) -> ResourceSpec {
-    let mut resource = offer::<MediaAction>(ResourceSpec::new(
+    let mut resource = offer::<MediaAction>(tilo_resource::typed_resource::<MediaReading>(
         MEDIA,
-        MEDIA_KIND,
         crate::i18n::name(MEDIA_KIND, "Now playing"),
     ));
     front_controls(media, &mut resource);

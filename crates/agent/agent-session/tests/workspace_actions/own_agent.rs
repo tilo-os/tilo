@@ -6,9 +6,10 @@
 //! for the person; and an action that asks first goes to the person.
 use super::*;
 use serde_json::{Value, json};
+use tilo_agent_session::ModelChoice;
 use tilo_mcp::McpServer;
+use tilo_session_actions::SessionActions;
 use tilo_session_client::Outbox;
-use tilo_session_client::remote::SessionActions;
 
 const NOTES: &str = "so.tilo.notes";
 const TASKS: &str = "so.tilo.tasks";
@@ -547,7 +548,7 @@ async fn a_persons_own_agent_lists_a_stopped_app_into_running_writes_and_reads_a
                     .all(|group| group.as_ref().is_some_and(|group| {
                         group.kind == "agent-session"
                             && group.id.starts_with("agent-session:")
-                            && group.label.is_none()
+                            && group.label.as_deref() == Some("Claude Code")
                     })),
                 "every change the agent made is its run: {groups:?}"
             );

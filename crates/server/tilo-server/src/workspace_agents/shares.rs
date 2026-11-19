@@ -30,7 +30,7 @@ use tilo_mcp::McpServer;
 
 use super::{
     Ask, CHAT, Caller, DocumentRoute, InvokeArgument, InvokeRequest, Reply, ToolDefinition, Turn,
-    WorkspaceActionProvider, call_tool, invoke_named, learned,
+    WorkspaceActionProvider, invoke_named, learned,
 };
 
 /// The tool a turn in a conversation answers through with the thing it worked on.
@@ -259,9 +259,9 @@ async fn read_as_the_turn(
     path: &str,
 ) -> Result<(String, String), String> {
     let reading = json!({"path": path, "max_chars": 200});
-    let (read, failed) = call_tool(tools, "tilo_read", reading).await;
-    if failed {
-        return Err(read);
+    let read = tilo_agent_turn::Tools::call(tools, "tilo_read", reading).await;
+    if read.is_error {
+        return Err(read.text);
     }
     tools
         .acted()

@@ -1,16 +1,16 @@
-//! What a window's History lists: the workspace's history of the resources the window keeps, as the
-//! session's activity feed serves it to every reader. The window names those resources; the feed
-//! names who changed them, by the workspace's own rules, and says what each change did. A row
-//! carries the change's id in the window's own resource, so choosing it previews that resource.
+//! Who made the changes a window's History lists, as the workspace's history names them. The
+//! session's activity feed serves the history of the resources the window keeps; History lists the
+//! changes its documents hold ([`super::listing`]) and takes from the feed the name, colour and
+//! relation of each change's author, and the groups the workspace named.
 
 use crate::remote_actions::{Followed, RemoteActions};
+use crate::tilo_actions::InvocationUpdate;
 use crate::tilo_actions::remote::workspace_activity as wire;
-use crate::tilo_actions::{ActionApp, ActionContext, InvocationUpdate};
-use crate::widget::{AuthorRelation, EntryKind, HistoryAuthor, HistoryEntry};
+use crate::widget::{AuthorRelation, HistoryAuthor, HistoryEntry};
 use crate::{DocumentId, HistoryEntryId, NamedRange};
-use collab_types::ArtifactKind;
+use std::collections::HashMap;
 
-/// The window's History as the feed answers it, kept current while History is open.
+/// The workspace's history of the window's resources, kept current while History lists it.
 pub(super) struct WindowFeed {
     query: wire::FeedQuery,
     followed: Followed,
@@ -18,13 +18,29 @@ pub(super) struct WindowFeed {
     taken: Option<u64>,
 }
 
-/// What the feed listed last: its rows in causal order, the named groups over them, and whether
-/// older changes exist.
+/// What the feed answered last: each change's author, by the change's id in its own resource, and
+/// the groups the workspace named over them.
 #[derive(Default)]
-pub(super) struct Listed {
-    pub(super) entries: Vec<HistoryEntry>,
-    pub(super) named: Vec<NamedRange>,
-    pub(super) has_earlier: bool,
+pub(super) struct Reading {
+    authors: HashMap<HistoryEntryId, HistoryAuthor>,
+    named: Vec<NamedRange>,
+}
+
+impl Reading {
+    /// Name each of `entries` by its author as the workspace names them, and add the groups the
+    /// workspace named that `named` lacks.
+    pub(super) fn apply(&self, entries: &mut [HistoryEntry], named: &mut Vec<NamedRange>) {
+        for entry in entries.iter_mut() {
+            if let Some(author) = self.authors.get(&entry.id) {
+                entry.author = author.clone();
+            }
+        }
+        for range in &self.named {
+            if !named.iter().any(|kept| kept.id == range.id) {
+                named.push(range.clone());
+            }
+        }
+    }
 }
 
 impl WindowFeed {
@@ -65,7 +81,7 @@ impl WindowFeed {
     }
 
     /// The feed's newest answer, once: `None` when it has not answered since.
-    pub(super) fn take(&mut self) -> Option<Listed> {
+    pub(super) fn take(&mut self) -> Option<Reading> {
         let revision = self.followed.call().revision();
         if self.taken == Some(revision) {
             return None;
@@ -78,7 +94,7 @@ impl WindowFeed {
             _ => None,
         })?;
         let feed: wire::Feed = serde_json::from_value(value).ok()?;
-        Some(listed(&feed))
+        Some(read(&feed))
     }
 }
 
@@ -86,20 +102,18 @@ fn entry_id(hex: &str) -> Option<HistoryEntryId> {
     wire::entry_id(hex).map(HistoryEntryId::from_bytes)
 }
 
-/// `feed` as History lists it: each row under the change's id in its own resource.
-fn listed(feed: &wire::Feed) -> Listed {
-    let mut own = std::collections::HashMap::new();
-    let entries: Vec<HistoryEntry> = feed
-        .entries
-        .iter()
-        .rev()
-        .filter_map(|entry| {
-            let listed = entry_id(&entry.id)?;
-            let id = entry.change.as_deref().and_then(entry_id).unwrap_or(listed);
-            own.insert(listed, id);
-            Some(row(entry, id))
-        })
-        .collect();
+/// `feed` keyed by each change's id in its own resource.
+fn read(feed: &wire::Feed) -> Reading {
+    let mut own = HashMap::new();
+    let mut authors = HashMap::new();
+    for entry in &feed.entries {
+        let Some(listed) = entry_id(&entry.id) else {
+            continue;
+        };
+        let id = entry.change.as_deref().and_then(entry_id).unwrap_or(listed);
+        own.insert(listed, id);
+        authors.insert(id, author(&entry.author));
+    }
     let named = feed
         .groups
         .iter()
@@ -121,15 +135,10 @@ fn listed(feed: &wire::Feed) -> Listed {
             })
         })
         .collect();
-    Listed {
-        has_earlier: feed.total > entries.len(),
-        entries,
-        named,
-    }
+    Reading { authors, named }
 }
 
-fn row(entry: &wire::Entry, id: HistoryEntryId) -> HistoryEntry {
-    let author = &entry.author;
+fn author(author: &wire::Author) -> HistoryAuthor {
     let [red, green, blue] = author.rgb;
     let mut by = HistoryAuthor::new(author.name.clone(), 0.0, author.identity.clone())
         .with_rgb((red, green, blue))
@@ -140,7 +149,6 @@ fn row(entry: &wire::Entry, id: HistoryEntryId) -> HistoryEntry {
         });
     by.for_reader = author.for_reader;
     by.task.clone_from(&author.task);
-    // Software names whom it acted for, as the session's own rows do.
     if let Some(person) = author
         .on_behalf_of
         .as_ref()
@@ -152,49 +160,9 @@ fn row(entry: &wire::Entry, id: HistoryEntryId) -> HistoryEntry {
         attribution.on_behalf_of_name = Some(person.clone());
         by.attribution = Some(attribution);
     }
-    // What the change did, in this app's own words where its action recorded the step.
-    let mut context = entry
-        .step
-        .clone()
-        .or_else(|| entry.app.as_ref().map(|_| ActionContext::default()));
-    if let (Some(context), Some(label)) = (context.as_mut(), entry.app.as_ref()) {
-        let id = context.app.take().map(|app| app.id).unwrap_or_default();
-        context.app = Some(ActionApp {
-            id,
-            label: label.clone(),
-        });
-    }
-    let summary = context
-        .as_ref()
-        .filter(|_| entry.step.is_some())
-        .and_then(crate::history_source::sentence::step_summary)
-        .unwrap_or_else(|| entry.summary.clone());
-    let at = u64::try_from(entry.at_ms).unwrap_or_default();
-    HistoryEntry {
-        id,
-        author: by,
-        entry_kind: match entry.kind {
-            wire::Kind::Text => EntryKind::Text,
-            wire::Kind::Move => EntryKind::Move,
-            wire::Kind::Details => EntryKind::Details,
-            wire::Kind::Comment => EntryKind::Comment,
-            wire::Kind::Delete => EntryKind::Delete,
-            wire::Kind::Restore => EntryKind::Restore,
-            wire::Kind::Access => EntryKind::Access,
-            wire::Kind::Compaction => EntryKind::Compaction,
-            wire::Kind::Redaction => EntryKind::Redaction,
-        },
-        artifact_kind: ArtifactKind::File,
-        timestamp: crate::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(at),
-        summary,
-        text_delta: None,
-        diff_payload: None,
-        redaction: None,
-        context,
-        target: None,
-    }
+    by
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 #[path = "feed_tests.rs"]
-pub mod tests;
+mod tests;

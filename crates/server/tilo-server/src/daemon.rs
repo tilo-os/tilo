@@ -602,26 +602,27 @@ impl Server {
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
         };
         // A certified host governs the workspaces it creates, unless its embedder
-        // serves workspace joining itself. It answers their governance as
-        // actions itself, beside whatever apps its embedder serves, and it
-        // runs the app transforms its embedder gives it a job runner for.
+        // serves workspace joining itself, and only when its device may own
+        // workspaces: governing one is holding its keys, so a device that may not
+        // keeps no workspace. It answers their governance as actions itself, beside
+        // whatever apps its embedder serves, and it runs the app transforms its
+        // embedder gives it a job runner for.
         let governs_workspaces = !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
+            && identity.device_cert.capabilities.holds_workspace_keys()
             && !additional_protocols.iter().any(|(alpn, _)| {
                 alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
             });
-        // A server whose device may own workspaces takes part in every channel of
-        // the workspaces it governs, as one key holder beside their members; a
-        // server whose device may not keeps no channel keys at all.
-        let workspace_keys = (governs_workspaces
-            && identity.device_cert.capabilities.holds_workspace_keys())
-        .then(|| {
-            crate::workspace_keys::KeyService::open(
-                &cfg.state_root,
-                identity.device_signing_key.clone(),
-            )
-        })
-        .transpose()?
-        .map(Arc::new);
+        // A server that governs workspaces takes part in every channel of them, as
+        // one key holder beside their members.
+        let workspace_keys = governs_workspaces
+            .then(|| {
+                crate::workspace_keys::KeyService::open(
+                    &cfg.state_root,
+                    identity.device_signing_key.clone(),
+                )
+            })
+            .transpose()?
+            .map(Arc::new);
         // Where this host is dialled — what each workspace's governance names of
         // it, and what a link it hands out carries — is the relay, which the
         // endpoint knows only once it has connected to one. The workspaces opened
@@ -650,6 +651,9 @@ impl Server {
                 trust_policy: cfg.trust_policy.clone(),
                 max_workspace_grants: cfg.max_workspace_grants,
                 reaching,
+                // A server's endpoint keeps its relays from the start, so nothing is held back for
+                // an invitation to wake.
+                reachability: tilo_endpoint_reachability::Reachability::default(),
                 apps: app_serving.clone(),
                 shell_payloads,
                 // The folder its operator names for the keys of people's
@@ -661,6 +665,9 @@ impl Server {
                         .map(PathBuf::from)
                         .unwrap_or_default(),
                 ),
+                // A server serves other people's workspaces; it joins none as
+                // a member.
+                member: None,
             },
             identity.clone(),
             endpoint.clone(),
@@ -765,22 +772,27 @@ impl Server {
             // A server of the person's own takes part in their admin workspace,
             // whose record of their servers says what it should be.
             if enrolled_server {
-                // The person's first server makes it; a later one asks an
-                // earlier one, as its enrollment named them, to take it in.
+                // The person's own devices make it when they first need it; a
+                // server that came later asks an earlier one, as its
+                // enrollment named them, to take it in.
                 let earlier = earlier_servers(&cfg.identity_root, &identity.device_cert)?;
                 if crate::servers::holds_admin(governed).await {
                     crate::servers::enroll(governed, &endpoint.addr()).await
                 } else if earlier.is_empty() {
-                    crate::servers::found(governed, &endpoint.addr())
-                        .await
-                        .map(drop)
+                    Ok(())
                 } else {
+                    // Until an earlier server takes this one in, it holds no
+                    // Servers workspace and so cannot read the plan it was
+                    // installed from. Once it does, it finishes installing and
+                    // applies the document from then on.
                     push_background_task(
                         &background_tasks,
-                        tokio::spawn(ask_to_be_admitted(
+                        tokio::spawn(admitted_first_boot(
                             endpoint.clone(),
                             identity.clone(),
                             earlier,
+                            governed.clone(),
+                            cfg.state_root.clone(),
                         )),
                     );
                     Ok(())
@@ -795,20 +807,47 @@ impl Server {
             }
             // What this device is, and what the person's servers are told to
             // be, is its record in the Servers workspace's document: it applies
-            // the document now and after each change to it. A device that holds
-            // no Servers workspace yet asks a server it manages to take it in,
-            // and starts applying the document once it does.
-            if crate::servers::holds_admin(governed).await {
+            // the document from the moment it holds the workspace, and after
+            // each change to it. A device that holds no Servers workspace yet
+            // asks a server it manages to take it in; one of the person's
+            // devices may also hand it the workspace on its own.
+            //
+            // A machine whose plan this is finishes installing it here when it
+            // comes up holding the workspace, whether it was handed it before
+            // or just now: the entry says what still has to happen.
+            if crate::servers::holds_admin(governed).await
+                && let Some(nonce) = crate::servers::first_install::recorded_nonce(&cfg.state_root)
+            {
+                let workspaces = governed.clone();
+                let cert = identity.device_cert.clone();
                 push_background_task(
                     &background_tasks,
-                    crate::servers::applied::follow(
-                        governed,
-                        crate::servers::applied::Requests::default(),
-                        Some(endpoint.clone()),
-                        cfg.state_root.clone(),
-                    ),
+                    tokio::spawn(async move {
+                        let requests = crate::servers::applied::Requests::default();
+                        if let Err(error) = crate::servers::first_install::install(
+                            &workspaces,
+                            &cert,
+                            &nonce,
+                            &crate::servers::first_install::real_drives(),
+                            &requests,
+                        )
+                        .await
+                        {
+                            tracing::warn!(%error, "this machine did not install from its plan");
+                        }
+                    }),
                 );
-            } else if !enrolled_server
+            }
+            push_background_task(
+                &background_tasks,
+                tokio::spawn(follow_once_held(
+                    governed.clone(),
+                    endpoint.clone(),
+                    cfg.state_root.clone(),
+                )),
+            );
+            if !enrolled_server
+                && !crate::servers::holds_admin(governed).await
                 && let Some((server, addr)) =
                     earlier_servers(&cfg.identity_root, &identity.device_cert)?
                         .into_iter()
@@ -819,8 +858,6 @@ impl Server {
                     tokio::spawn(ask_to_be_taken_in(
                         endpoint.clone(),
                         identity.clone(),
-                        governed.clone(),
-                        cfg.state_root.clone(),
                         server,
                         addr,
                     )),
@@ -916,10 +953,20 @@ impl Server {
     /// queueing for store-and-forward. Deltas in that window are neither
     /// delivered nor queued. Closing the endpoint sends `CONNECTION_CLOSE`
     /// straight away, so peers drop the subscription and queue instead.
+    ///
+    /// What its workspaces took in of their members' writes is written
+    /// through to their files first
+    /// ([`crate::workspaces::Workspaces::keep_what_was_followed`]): that
+    /// write-through is deferred, so a server stopped without it would start
+    /// again on documents that lack what was written last, and owe a turn its
+    /// agent had already answered.
     pub async fn shutdown(mut self) {
         // Stop reconnecting first: the dial loop would otherwise open a
         // fresh connection while the endpoint is closing.
         lock_background_tasks(&self.background_tasks).clear();
+        if let Some(workspaces) = &self.workspaces {
+            workspaces.keep_what_was_followed().await;
+        }
         if let Err(error) = self.router.shutdown().await {
             tracing::debug!(%error, "server router shutdown task failed");
         }
@@ -1148,15 +1195,45 @@ fn earlier_servers(
         .collect())
 }
 
+/// Apply the person's Servers workspace's document from the moment this
+/// device holds the workspace, however it came to: it held it at start, a
+/// server took it in, or one of the person's devices handed it over.
+async fn follow_once_held(
+    workspaces: crate::workspaces::Workspaces,
+    endpoint: Endpoint,
+    state_root: PathBuf,
+) {
+    use tokio::sync::broadcast::error::RecvError;
+    let mut listed = workspaces.listing_changes();
+    let mut governed = workspaces.governance_changes();
+    while !crate::servers::holds_admin(&workspaces).await {
+        // A slow receiver re-reads; a closed one means the service is gone.
+        let changed = tokio::select! {
+            change = listed.recv() => change.map(drop),
+            change = governed.recv() => change.map(drop),
+        };
+        if changed == Err(RecvError::Closed) {
+            return;
+        }
+    }
+    let following = crate::servers::applied::follow(
+        &workspaces,
+        crate::servers::applied::Requests::default(),
+        Some(endpoint),
+        state_root,
+    );
+    if let Err(error) = following.await {
+        tracing::warn!(%error, "the Servers workspace's document is no longer applied here");
+    }
+}
+
 /// Ask a server of the person's that holds their Servers workspace to take
 /// this device in: it holds that workspace from then on like any other of
-/// theirs, and applies its document from the moment it does. A server that
-/// cannot be reached is asked again after a while, longer each time.
+/// theirs. A server that cannot be reached is asked again after a while,
+/// longer each time.
 async fn ask_to_be_taken_in(
     endpoint: Endpoint,
     identity: ServerIdentity,
-    workspaces: crate::workspaces::Workspaces,
-    state_root: PathBuf,
     server: tilo_user_identity::DeviceCert,
     addr: EndpointAddr,
 ) {
@@ -1178,14 +1255,6 @@ async fn ask_to_be_taken_in(
         match asked {
             Ok(_) => {
                 tracing::info!(server = %hex::encode(server.device_public_key), "a server handed this device its Servers workspace");
-                // What the person's servers are told to be is its document,
-                // which this device applies from now on.
-                let _following = crate::servers::applied::follow(
-                    &workspaces,
-                    crate::servers::applied::Requests::default(),
-                    Some(endpoint.clone()),
-                    state_root,
-                );
                 return;
             }
             Err(error) => {
@@ -1195,6 +1264,52 @@ async fn ask_to_be_taken_in(
         tokio::time::sleep(wait).await;
         wait = wait.saturating_mul(2).min(Duration::from_secs(300));
     }
+}
+
+/// A machine installed from a plan asks its person's earlier servers to take
+/// it in, waits until it holds their Servers workspace, finishes the
+/// installation its plan describes and applies the workspace's document from
+/// then on.
+async fn admitted_first_boot(
+    endpoint: Endpoint,
+    identity: ServerIdentity,
+    earlier: Vec<(tilo_user_identity::DeviceCert, EndpointAddr)>,
+    workspaces: crate::workspaces::Workspaces,
+    state_root: PathBuf,
+) {
+    ask_to_be_admitted(endpoint.clone(), identity.clone(), earlier).await;
+    // The hand-over is the holders' to make: one of them names this device in
+    // the workspace, which then reaches it, and it holds the workspace.
+    let mut wait = Duration::from_millis(500);
+    while !crate::servers::holds_admin(&workspaces).await {
+        tokio::time::sleep(wait).await;
+        wait = wait.saturating_mul(2).min(Duration::from_secs(30));
+    }
+    if let Some(nonce) = crate::servers::first_install::recorded_nonce(&state_root) {
+        let requests = crate::servers::applied::Requests::default();
+        match crate::servers::first_install::install(
+            &workspaces,
+            &identity.device_cert,
+            &nonce,
+            &crate::servers::first_install::real_drives(),
+            &requests,
+        )
+        .await
+        {
+            Ok(()) => tracing::info!("this machine installed from its plan"),
+            Err(error) => {
+                tracing::warn!(%error, "this machine did not install from its plan");
+            }
+        }
+    }
+    // What the person's servers are told to be is the workspace's document,
+    // which this device applies from now on.
+    let _following = crate::servers::applied::follow(
+        &workspaces,
+        crate::servers::applied::Requests::default(),
+        Some(endpoint),
+        state_root,
+    );
 }
 
 /// Ask the person's earlier servers, in turn, to take this one in among
@@ -1599,11 +1714,6 @@ impl ProtocolHandler for ManagementProtocol {
         let mut decommissioned = false;
         match request {
             HomePeerManagementRequest::Status => {}
-            HomePeerManagementRequest::RetiredOperate(_) => {
-                return Err(AcceptError::from_err(std::io::Error::other(
-                    "a server is operated through its person's Servers workspace, as an action",
-                )));
-            }
             HomePeerManagementRequest::HoldAdmin { endpoint } => {
                 // A device of the person's holds their Servers workspace like
                 // any other workspace of theirs: it asks a server that holds
@@ -2107,7 +2217,7 @@ mod tests {
             let (host_key, host) = DeviceIdentity::generate("home", 2);
             let (client_key, client) = DeviceIdentity::generate("laptop", 3);
             let (admin_key, admin) = DeviceIdentity::generate("primary", 5);
-            let mut host_cert = DeviceCert {
+            let mut server_cert = DeviceCert {
                 user_public_key: user.public_key,
                 device_public_key: host.public_key,
                 device_label: host.label,
@@ -2137,7 +2247,7 @@ mod tests {
                 signature: [0; 64],
                 issuer: None,
             };
-            sign_device_cert(&mut host_cert, &root).unwrap();
+            sign_device_cert(&mut server_cert, &root).unwrap();
             sign_device_cert(&mut client_cert, &root).unwrap();
             sign_device_cert(&mut admin_cert, &root).unwrap();
             let filesystem =
@@ -2185,16 +2295,56 @@ mod tests {
                 ServerIdentity {
                     user_public_key: user.public_key,
                     device_signing_key: host_key,
-                    device_cert: host_cert,
+                    device_cert: server_cert.clone(),
                     revocations: RevocationList::new(),
                 },
                 status_clock,
             )
             .await
             .unwrap();
+            let server_workspaces = server.workspaces().expect("the server holds workspaces");
+            // The person's primary device makes their Servers workspace, enters
+            // this server among their servers there and hands it the workspace,
+            // as it hands a server any workspace its entry names: no server
+            // founds it.
+            let primary_state = tempfile::tempdir().unwrap();
+            let primary = Server::start(
+                ServerConfig {
+                    state_root: primary_state.path().to_path_buf(),
+                    services: crate::mesh::ServiceCapabilities::personal_server(),
+                    ..ServerConfig::default()
+                },
+                ServerIdentity {
+                    user_public_key: user.public_key,
+                    device_signing_key: admin_key.clone(),
+                    device_cert: admin_cert.clone(),
+                    revocations: RevocationList::new(),
+                },
+            )
+            .await
+            .unwrap();
+            let primary_workspaces = primary.workspaces().expect("the device holds workspaces");
+            crate::servers::founded(primary_workspaces).await.unwrap();
+            crate::servers::admit(primary_workspaces, &server_cert, &server.node_addr())
+                .await
+                .unwrap();
+            crate::servers::take_in(primary_workspaces, &server_cert, &server.node_addr())
+                .await
+                .unwrap();
+            tilo_test_env::within(
+                "the server to hold its entry in the Servers workspace",
+                async {
+                    while !crate::servers::read(server_workspaces)
+                        .await
+                        .is_ok_and(|servers| servers.active(&host.public_key).is_some())
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                },
+            )
+            .await;
             // The workspace enters the server the way production does it: the
             // person makes it on their server and their device enters it.
-            let server_workspaces = server.workspaces().expect("the server holds workspaces");
             let server_workspace = given.to_string();
             server_workspaces
                 .create_workspace("Workspace", Some(&server_workspace))
@@ -2345,9 +2495,8 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(renamed.label, "Living workspace NAS");
-            // The name is the server's entry in its person's admin workspace,
-            // which the enrolled host made and entered itself into: no file of
-            // the host's own keeps it.
+            // The name is the server's entry in its person's Servers workspace:
+            // no file of the host's own keeps it.
             let governed = server.workspaces().unwrap();
             let servers = crate::servers::read(governed).await.unwrap();
             assert_eq!(

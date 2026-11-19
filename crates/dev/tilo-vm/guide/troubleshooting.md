@@ -62,12 +62,17 @@ tilo-vm vm client dev -- vm status
 tilo-vm vm client dev          # fetch it and print the image, protocol and path
 ```
 
+When the VM's tilo-vmd is the older one, this tilo-vm can also give it its
+own: `tilo-vm --target dev swap vmd --account vm` builds the daemon for the
+VM, unpacks it over plain SSH (no protocol involved), and lets it import and
+apply its own layer, as any daemon update does. Every later command then
+speaks this checkout's protocol.
+
 The alternative is to change one side: `tilo-vm vm upgrade` moves a VM that
 boots a bootc dev image onto a current one; a tiny VM can be created fresh
-(`tilo-vm vm create <name>`). A checkout older than the VM updates and
-rebuilds (`cargo build -p tilo-vm`), then `target/debug/tilo-vm` is the binary
-with its own commands; with no `--`, `vm client` only fetches and names the
-copied client. The hint checks which side is older.
+(`tilo-vm vm create <name>`). A checkout older than the VM rebuilds with
+`cargo build -p tilo-vm` and uses `target/debug/tilo-vm`. The hint checks
+which side is older.
 
 **No tilo-vmd / no tilo-control.** The VM runs a production image (or any
 non-Tilo image). SSH still works: `vm start` returns as soon as SSH answers,

@@ -17,7 +17,6 @@ use ui::resource::{ResourceOwners, ResourceStore};
 use wasm_bindgen::JsValue;
 
 use super::{Config, Presentation, Root, error};
-use crate::workspace_resources::in_page;
 
 /// A page showing one application, and the record it opens there.
 ///
@@ -72,10 +71,16 @@ impl AppPage {
         .map_err(error)
     }
 
-    /// Whether what this page opens is still on its way from the workspace: its
-    /// window shows the app arriving until it is here, or until the workspace
-    /// answered it holds none of it.
+    /// Whether what this page opens is still on its way: the code that reads the workspace's
+    /// resources, or the resource itself until it is here or the workspace answered it holds
+    /// none of it. Its window shows the app arriving meanwhile.
     pub(super) fn arriving(&self) -> bool {
+        if crate::workspace_resources::WORKSPACE_RESOURCES
+            .get()
+            .is_none()
+        {
+            return true;
+        }
         let Ok(store) = self.store() else {
             return false;
         };
@@ -97,6 +102,9 @@ impl AppPage {
     pub(super) fn present(self: &Rc<Self>) -> Result<Presentation, JsValue> {
         let config = &self.config;
         let definition = self.definition;
+        let Some(resources) = crate::workspace_resources::WORKSPACE_RESOURCES.get() else {
+            return Ok(self.arrival());
+        };
         let record = self.store()?;
         let opening = crate::app_page::opening(
             definition,
@@ -155,14 +163,14 @@ impl AppPage {
         };
         context.provide_models(config.models()?);
         context.provide_content(self.content.clone());
-        context.provide_workspace_resources(in_page(
-            &self.owners.borrow(),
-            &self.stores,
-            &config.workspace,
-            config.author(),
-            config.peer.is_some(),
-        ));
-        crate::person_resources::provide(&mut context, &self.dyn_store).map_err(error)?;
+        let page = crate::workspace_resources::PageStores {
+            owners: self.owners.borrow().clone(),
+            stores: Rc::clone(&self.stores),
+            workspace: config.workspace.clone(),
+            author: config.author(),
+            replicated: config.peer.is_some(),
+        };
+        (resources.beside)(&mut context, &page, &self.dyn_store).map_err(error)?;
         config.lend_provider_admin(&mut context)?;
         let loaders = Rc::new(RefCell::new(Vec::new()));
         let image_owners = crate::page_content::ImageOwners::default();
@@ -188,7 +196,7 @@ impl AppPage {
     /// it — and [`Self::present`] builds it once the record is here.
     fn arrival(self: &Rc<Self>) -> Presentation {
         let shown = ui::widget::TileHost::new(ui::widget::TileContent::Arriving)
-            .arriving_from(crate::desktop::code_host())
+            .arriving_from(ui::arriving::Source::Remote)
             .with_arrival_shape(ui::application::registry::declared_arrival_shape(
                 self.definition.app_id(),
             ));

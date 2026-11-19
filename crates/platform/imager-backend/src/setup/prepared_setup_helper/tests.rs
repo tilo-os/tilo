@@ -74,7 +74,7 @@ fn args(root: &Path, package: &Path, quarantine: &str) -> Vec<OsString> {
 #[test]
 fn headless_entry_authenticates_imports_and_retries_without_remint_or_secret_response() {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let (package, key, id, source) = fixture(&root);
@@ -121,7 +121,7 @@ fn headless_entry_authenticates_imports_and_retries_without_remint_or_secret_res
                 .any(|part| part == b"selected-private-password")
         );
         assert_eq!(
-            runtime_identity::load_from_path(root.join("identities/primary.json"))
+            tilo_identity::store::load_from_path(root.join("identities/primary.json"))
                 .unwrap()
                 .group_public_key(),
             key
@@ -156,7 +156,7 @@ fn headless_entry_authenticates_imports_and_retries_without_remint_or_secret_res
 #[test]
 fn account_conflict_retains_identity_quarantine_and_no_receipt_until_full_retry_succeeds() {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let (package, key, id, source) = fixture(&root);
@@ -192,7 +192,7 @@ fn account_conflict_retains_identity_quarantine_and_no_receipt_until_full_retry_
     assert!(output.is_empty());
     assert!(root.join("incomplete/home").exists());
     assert_eq!(
-        runtime_identity::load_from_path(root.join("identities/primary.json"))
+        tilo_identity::store::load_from_path(root.join("identities/primary.json"))
             .unwrap()
             .group_public_key(),
         key
@@ -264,7 +264,7 @@ fn authenticate_configured_profile(root: &Path) {
 fn authenticate_install_checks_exact_ciphertext_without_importing_or_activating() {
     use sha2::{Digest, Sha256};
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let (package, key, _, _) = fixture(&root);
@@ -327,7 +327,7 @@ fn authenticate_install_checks_exact_ciphertext_without_importing_or_activating(
 #[test]
 fn authenticated_device_label_survives_actual_identity_and_account_import() {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let (_, key, id, source) = fixture(&root);
@@ -362,7 +362,7 @@ fn authenticated_device_label_survives_actual_identity_and_account_import() {
     assert_eq!(receipt.identity_public_key, key);
     assert_eq!(receipt.account_count, 1);
     assert_eq!(
-        runtime_identity::load_from_path(root.join("identities/primary.json"))
+        tilo_identity::store::load_from_path(root.join("identities/primary.json"))
             .unwrap()
             .group_public_key(),
         key
@@ -383,7 +383,7 @@ fn authenticated_device_label_survives_actual_identity_and_account_import() {
 fn authenticated_retained_plan_preserves_consent_and_refuses_unattested_source() {
     use sha2::{Digest, Sha256};
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     fixture(&root);
@@ -482,7 +482,7 @@ fn home_capability_probe_accepts_only_gnu_tar_with_sparse_pax_support() {
 fn authenticate_completed_declaration_emits_exact_application_binding_without_import() {
     use sha2::{Digest, Sha256};
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().canonicalize().unwrap();
     let (original, key, _, _) = fixture(&root);

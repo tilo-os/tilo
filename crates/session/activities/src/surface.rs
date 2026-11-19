@@ -312,15 +312,18 @@ impl ResourceSurface<Activities, ActivityEffect> for ActivitiesSurface {
             .cards
             .iter()
             .map(|card| {
-                LiveRow::new(
+                let bindings = ui::tilo_resource::RowBindings::new().bind(
+                    ActivityEffect::CLOSE,
+                    [
+                        ("app", card.app.clone().into()),
+                        ("activity", card.summary.id.clone().into()),
+                    ],
+                );
+                LiveRow::typed_with::<crate::resource::ActivityCard>(
                     format!("activities.card/{}:{}", card.app, card.summary.id),
-                    "activities.card",
                     card.summary.title.clone(),
+                    &bindings,
                 )
-                .effect(&ActivityEffect::Close {
-                    app: card.app.clone(),
-                    activity: card.summary.id.clone(),
-                })
             })
             .collect()
     }

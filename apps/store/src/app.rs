@@ -11,13 +11,16 @@ use std::rc::Rc;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::Theme;
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow};
-use ui::tilo_actions::{ActionSpec, ResourcePresentation};
-use ui::tilo_resource::Effect as _;
+use ui::tilo_actions::ResourcePresentation;
+use ui::tilo_resource::{ActionRef, Effect as _, RowBindings};
 
 use crate::catalogue::{AppDetails, BlockList, Home, SearchResults, Unblocked as _};
 use crate::model::{ActionKind, StoreItem, StoreSource};
 use crate::reports::{Reports as Store, reports as verbs};
-use crate::resource::{ReportProjection, StoreEffect};
+use crate::resource::{
+    CatalogueApp, CatalogueSnapshot, InstallJob, Moderation, RemoteList, ReportProjection,
+    ReportRow, StoreEffect, StorePublisher, StoreRemote, StoreReview, StoreVersion,
+};
 use crate::worker::{Outcome, Request, StoreWorker};
 mod view;
 mod window;
@@ -283,23 +286,28 @@ fn flatpak_unavailable_reason(error: Option<&str>) -> &str {
     )
 }
 
-fn needing_flatpak(
-    spec: ActionSpec,
-    action: ActionKind,
-    flatpak_available: bool,
-    error: Option<&str>,
-) -> ActionSpec {
-    if action.requires_flatpak_host() && !flatpak_available {
-        spec.unavailable(
-            "flatpak_host_unavailable",
-            flatpak_unavailable_reason(error),
-        )
-    } else {
-        spec
-    }
+/// The typed reference to `effect`, whatever variant it is: what a row binds
+/// its own state into.
+fn effect_ref(effect: &StoreEffect) -> ActionRef<StoreEffect, ()> {
+    ActionRef::new(effect.id(), &[], StoreEffect::kind())
 }
 
-fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> LiveRow {
+/// `bindings` offering `effect`, bound to the entity and state it names.
+fn bind(bindings: RowBindings, effect: &StoreEffect) -> RowBindings {
+    bindings.bind(effect_ref(effect), effect.arguments())
+}
+
+/// What `item` offers now: its package action, keeping it on this device, and
+/// removing it.
+fn package_effects(item: &StoreItem, flatpak_available: bool) -> Vec<StoreEffect> {
+    std::iter::once(item.action_kind(flatpak_available))
+        .chain(item.pin_action())
+        .chain(item.remove_action())
+        .filter_map(|action| StoreEffect::package(action, item))
+        .collect()
+}
+
+fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
     let source = match &item.source {
         StoreSource::Tilo { .. } => "Tilo verified",
         StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => item.source.distribution_name(),
@@ -314,50 +322,35 @@ fn app_row(item: &StoreItem, flatpak_available: bool, error: Option<&str>) -> Li
     } else {
         format!("{source}, v{latest}")
     };
-    let mut row = LiveRow::new(app_row_id(&item.id), "store.app", item.name.clone())
-        .presentation(ResourcePresentation {
-            detail: (!detail.is_empty()).then_some(detail),
-            badge: Some(badge),
-            preview: None,
-        })
-        .effect(&StoreEffect::ShowDetails {
+    let mut bindings = bind(
+        RowBindings::new(),
+        &StoreEffect::ShowDetails {
             app: item.id.clone(),
-        });
-    let actions = std::iter::once(item.action_kind(flatpak_available))
-        .chain(item.pin_action())
-        .chain(item.remove_action());
-    for action in actions {
-        let Some(effect) = StoreEffect::package(action, item) else {
-            continue;
-        };
-        let spec = effect.bound();
-        let spec = if action == ActionKind::AddBot {
-            spec.unavailable(
-                "added_by_the_workspace",
-                CATALOG.t("store-bot-add-elsewhere"),
-            )
-        } else if let Some((code, reason)) = item.unavailable_action(action) {
-            spec.unavailable(code, reason)
-        } else {
-            needing_flatpak(spec, action, flatpak_available, error)
-        };
-        row = row.operation(spec);
+        },
+    );
+    for effect in package_effects(item, flatpak_available) {
+        bindings = bind(bindings, &effect);
     }
+    let mut row =
+        LiveRow::typed_with::<CatalogueApp>(app_row_id(&item.id), item.name.clone(), &bindings)
+            .presentation(ResourcePresentation {
+                detail: (!detail.is_empty()).then_some(detail),
+                badge: Some(badge),
+                preview: None,
+            });
     for version in item.versions.iter().take(32) {
         let label = if version.version.is_empty() {
             "Version metadata unavailable".into()
         } else {
             format!("Version {}", version.version)
         };
-        row = row.row(LiveRow::new(
+        row = row.row(LiveRow::typed::<StoreVersion>(
             format!("app:{}:version:{}", item.id, version.version),
-            "store.version",
             label,
         ));
     }
-    row.row(LiveRow::new(
+    row.row(LiveRow::typed::<StoreReview>(
         format!("app:{}:review", item.id),
-        "store.review",
         review_label(item),
     ))
 }
@@ -1171,16 +1164,11 @@ impl StoreState {
         let waiting = busy && self.items.is_empty();
         let pending = self.catalogue_read.with(ui::Arrival::is_pending);
         if waiting && !pending {
-            let from = self.remotes.iter().find(|remote| !remote.disabled).map_or(
-                ui::arriving::Source::Local,
-                |remote| {
-                    ui::arriving::Source::host(if remote.title.is_empty() {
-                        remote.name.clone()
-                    } else {
-                        remote.title.clone()
-                    })
-                },
-            );
+            let from = if self.remotes.iter().any(|remote| !remote.disabled) {
+                ui::arriving::Source::Remote
+            } else {
+                ui::arriving::Source::Local
+            };
             self.catalogue_read.writer().pending(from);
         } else if !waiting && pending {
             self.catalogue_read.writer().ready(());
@@ -2396,6 +2384,52 @@ impl StoreState {
         statuses
     }
 
+    /// What one published app row says about its own effects: a directory
+    /// bot is added from a workspace, never here; a package the device's
+    /// repository manages, or one another release already installed, cannot
+    /// be installed from this row; and the Flatpak actions need Flatpak on
+    /// this device.
+    pub(crate) fn row_status(&self, id: &str) -> Vec<EffectStatus> {
+        let Some(app) = id.strip_prefix("app:") else {
+            return Vec::new();
+        };
+        let Some(item) = self.item(app) else {
+            return Vec::new();
+        };
+        let mut statuses = Vec::new();
+        let actions = std::iter::once(item.action_kind(self.flatpak_available))
+            .chain(item.pin_action())
+            .chain(item.remove_action());
+        for action in actions {
+            let Some(effect) = StoreEffect::package(action, item) else {
+                continue;
+            };
+            let reference = effect_ref(&effect);
+            if action == ActionKind::AddBot {
+                statuses.push(
+                    EffectStatus::unavailable(
+                        reference,
+                        "added_by_the_workspace",
+                        CATALOG.t("store-bot-add-elsewhere"),
+                    )
+                    .on(id),
+                );
+            } else if let Some((code, reason)) = item.unavailable_action(action) {
+                statuses.push(EffectStatus::unavailable(reference, code, reason).on(id));
+            } else if action.requires_flatpak_host() && !self.flatpak_available {
+                statuses.push(
+                    EffectStatus::unavailable(
+                        reference,
+                        "flatpak_host_unavailable",
+                        flatpak_unavailable_reason(self.flatpak_error.as_deref()),
+                    )
+                    .on(id),
+                );
+            }
+        }
+        statuses
+    }
+
     /// The live rows the Store publishes: a bounded page of the catalogue
     /// grouped by publisher, the Flatpak remotes, the moderation effects on
     /// each report and the running package job.
@@ -2410,11 +2444,7 @@ impl StoreState {
                 .entry(key)
                 .or_insert_with(|| (label, Vec::new()))
                 .1
-                .push(app_row(
-                    item,
-                    self.flatpak_available,
-                    self.flatpak_error.as_deref(),
-                ));
+                .push(app_row(item, self.flatpak_available));
         }
         let mut publishers = publishers.into_iter().collect::<Vec<_>>();
         publishers.sort_by(|(_, (left, _)), (_, (right, _))| left.cmp(right));
@@ -2422,7 +2452,7 @@ impl StoreState {
             .into_iter()
             .map(|(key, (label, apps))| {
                 apps.into_iter().fold(
-                    LiveRow::new(format!("publisher:{key}"), "store.publisher", label),
+                    LiveRow::typed::<StorePublisher>(format!("publisher:{key}"), label),
                     LiveRow::row,
                 )
             })
@@ -2449,11 +2479,11 @@ impl StoreState {
                 } else {
                     format!("Version {}", version.version)
                 };
-                return Some(LiveRow::new(id, "store.version", label));
+                return Some(LiveRow::typed::<StoreVersion>(id, label));
             }
             if let Some(app_id) = rest.strip_suffix(":review") {
                 let item = self.items.iter().find(|item| item.id == app_id)?;
-                return Some(LiveRow::new(id, "store.review", review_label(item)));
+                return Some(LiveRow::typed::<StoreReview>(id, review_label(item)));
             }
             return self
                 .items
@@ -2461,11 +2491,11 @@ impl StoreState {
                 .find(|item| item.id == rest)
                 .cloned()
                 .or_else(|| self.directory.app(rest))
-                .map(|item| app_row(&item, self.flatpak_available, self.flatpak_error.as_deref()));
+                .map(|item| app_row(&item, self.flatpak_available));
         }
         if let Some(key) = id.strip_prefix("publisher:") {
             let item = self.items.iter().find(|item| publisher_of(item).0 == key)?;
-            return Some(LiveRow::new(id, "store.publisher", publisher_of(item).1));
+            return Some(LiveRow::typed::<StorePublisher>(id, publisher_of(item).1));
         }
         if id.starts_with("remote:") {
             return self
@@ -2490,9 +2520,8 @@ impl StoreState {
     }
 
     fn catalogue_snapshot_row(&self) -> LiveRow {
-        LiveRow::new(
+        LiveRow::typed::<CatalogueSnapshot>(
             CATALOGUE_SNAPSHOT_ID,
-            "store.catalogue-snapshot",
             format!(
                 "{} additional apps are available through App Store search",
                 self.items.len().saturating_sub(RESOURCE_SNAPSHOT_LIMIT)
@@ -2523,61 +2552,78 @@ impl StoreState {
     }
 
     fn remote_live_row(remote: &crate::flathub_client::Remote) -> LiveRow {
-        let mut row = remote_row(remote);
-        if remote.user_managed {
-            row = row.effect(&remote_enabled_effect(remote));
+        let mut bindings = RowBindings::new();
+        if !remote.disabled {
+            bindings = bind(
+                bindings,
+                &StoreEffect::BrowseRemote {
+                    remote: remote.resource_id(),
+                },
+            );
         }
-        row
+        if remote.user_managed {
+            bindings = bind(
+                bindings,
+                &StoreEffect::RemoveRemote {
+                    name: remote.name.clone(),
+                },
+            );
+            bindings = bind(bindings, &remote_enabled_effect(remote));
+        }
+        remote_row(remote, &bindings)
     }
 
     fn remotes_row(&self) -> LiveRow {
+        let bindings = RowBindings::new()
+            .offer(StoreEffect::SHOW_REMOTES)
+            .offer(StoreEffect::REFRESH_REMOTES);
         self.remotes.iter().map(Self::remote_live_row).fold(
-            LiveRow::new(REMOTES_ID, "store.remote-list", "Flatpak remotes")
-                .effect(&StoreEffect::ShowRemotes)
-                .effect(&StoreEffect::RefreshRemotes),
+            LiveRow::typed_with::<RemoteList>(REMOTES_ID, "Flatpak remotes", &bindings),
             LiveRow::row,
         )
     }
 
     fn moderation_row(&self) -> LiveRow {
+        let bindings = RowBindings::new().offer(StoreEffect::SHOW_TRUST);
         self.reports
             .iter()
             .map(|report| self.report_row(report))
             .fold(
-                LiveRow::new(
+                LiveRow::typed_with::<Moderation>(
                     crate::resource::MODERATION_ID,
-                    "store.moderation",
                     "Trust and moderation",
-                )
-                .effect(&StoreEffect::ShowTrust),
+                    &bindings,
+                ),
                 LiveRow::row,
             )
     }
 
     fn report_row(&self, report: &ReportProjection) -> LiveRow {
         let app = report.app_id.clone();
-        let mut row = LiveRow::new(
-            report.id.clone(),
-            "store.report",
-            format!("{}: {}", report.app_id, report.status),
-        )
-        .effect(&StoreEffect::ExportEvidence { app: app.clone() });
+        let mut bindings = bind(
+            RowBindings::new(),
+            &StoreEffect::ExportEvidence { app: app.clone() },
+        );
         if self.reported_app(report).is_ok() {
             if report.is_case() {
-                row = row.effect(&StoreEffect::RefreshStatus { app: app.clone() });
+                bindings = bind(bindings, &StoreEffect::RefreshStatus { app: app.clone() });
                 if let Some(effect) = self.moderation_effect(&app, true) {
-                    row = row.effect(&effect);
+                    bindings = bind(bindings, &effect);
                 }
             } else if let Some(effect) = self.moderation_effect(&app, false) {
-                row = row.effect(&effect);
+                bindings = bind(bindings, &effect);
             }
         }
-        row
+        LiveRow::typed_with::<ReportRow>(
+            report.id.clone(),
+            format!("{}: {}", report.app_id, report.status),
+            &bindings,
+        )
     }
 
     fn latest_job_row(&self) -> Option<LiveRow> {
         (!self.status_line.is_empty())
-            .then(|| LiveRow::new(LATEST_JOB_ID, "store.install-job", self.status_line.clone()))
+            .then(|| LiveRow::typed::<InstallJob>(LATEST_JOB_ID, self.status_line.clone()))
     }
 }
 
@@ -2681,7 +2727,8 @@ fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
     )
 }
 
-fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
+/// A Flatpak remote's row: its title, and the effects its own state offers.
+fn remote_row(remote: &crate::flathub_client::Remote, bindings: &RowBindings) -> LiveRow {
     let scope = remote_scope_label(remote);
     let title = crate::resource::CATALOG.t_args(
         "store-remote-title",
@@ -2690,19 +2737,7 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
             ("scope", ui::i18n::ArgValue::Text(scope)),
         ],
     );
-    let mut row = LiveRow::new(remote.resource_id(), "store.remote", title);
-    if !remote.disabled {
-        row = row.effect(&StoreEffect::BrowseRemote {
-            remote: remote.resource_id(),
-        });
-    }
-    if remote.user_managed {
-        row.effect(&StoreEffect::RemoveRemote {
-            name: remote.name.clone(),
-        })
-    } else {
-        row
-    }
+    LiveRow::typed_with::<StoreRemote>(remote.resource_id(), title, bindings)
 }
 
 fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
@@ -2810,14 +2845,20 @@ mod tests {
             unsupported.versions.clear();
             let id = unsupported.id.clone();
             app.set_items(vec![unsupported]);
-            let row = app.live_row(&format!("app:{id}")).unwrap();
-            let open = row
-                .operations()
-                .iter()
-                .find(|action| action.id == "open-app")
-                .unwrap();
+            let row_id = format!("app:{id}");
+            let row = app.live_row(&row_id).unwrap();
             assert!(
-                matches!(&open.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_version_unavailable")
+                row.operations()
+                    .iter()
+                    .any(|action| action.id == "open-app"),
+                "the row still offers opening it"
+            );
+            assert!(
+                app.row_status(&row_id).iter().any(|status| {
+                    let said = format!("{status:?}");
+                    said.contains("open-app") && said.contains("device_version_unavailable")
+                }),
+                "the row says why it cannot be opened here"
             );
             assert!(app.admit(StoreEffect::OpenApp { app: id }).is_err());
         }
@@ -2909,16 +2950,20 @@ mod tests {
                 };
                 app.set_flatpak_available(false);
                 let chess = app.live_row("app:id.chess").expect("an app row resolves");
-                let setup = chess
-                    .operations()
-                    .iter()
-                    .find(|action| action.id == "flatpak-setup")
-                    .unwrap();
-                assert!(matches!(
-                    setup.contract.availability,
-                    ui::tilo_actions::Availability::Unavailable { ref code, .. }
-                        if code == "flatpak_host_unavailable"
-                ));
+                assert!(
+                    chess
+                        .operations()
+                        .iter()
+                        .any(|action| action.id == "flatpak-setup"),
+                    "the row still offers setting Flatpak up"
+                );
+                assert!(
+                    app.row_status("app:id.chess").iter().any(|status| {
+                        let said = format!("{status:?}");
+                        said.contains("flatpak-setup") && said.contains("flatpak_host_unavailable")
+                    }),
+                    "the row says Flatpak is not on this device"
+                );
                 assert!(
                     app.effect_statuses()
                         .iter()
@@ -3919,10 +3964,15 @@ mod tests {
                 remote: "remote:flathub".into(),
             })
             .unwrap_err();
-        // Admin effects are removed from a viewer's public api; unlike a
-        // retained read effect submitting a forbidden edit, lookup itself refuses.
+        // Admin effects are off a viewer's public api; the refusal says the
+        // action exists and their permissions keep it from them, naming it,
+        // rather than answering as if the Store had no such action.
         assert!(
-            matches!(&refused, ui::tilo_actions::ApiError::Unknown(_)),
+            matches!(
+                &refused,
+                ui::tilo_actions::ApiError::Unavailable { code, reason }
+                    if code == "permission_denied" && reason.contains("enable source")
+            ),
             "{refused:?}"
         );
         assert!(!app.harness().controls().iter().any(|control| matches!(
@@ -4309,13 +4359,19 @@ mod tests {
                 CATALOG.t("store-flatpak-unavailable")
             );
             let row = app.live_row("app:id.chess").unwrap();
-            let action = row
-                .operations()
-                .iter()
-                .find(|action| action.id == "flatpak-setup")
-                .unwrap();
-            assert!(matches!(&action.contract.availability,
-                ui::tilo_actions::Availability::Unavailable { reason, .. } if reason == error));
+            assert!(
+                row.operations()
+                    .iter()
+                    .any(|action| action.id == "flatpak-setup"),
+                "the row still offers setting Flatpak up"
+            );
+            assert!(
+                app.row_status("app:id.chess").iter().any(|status| {
+                    let said = format!("{status:?}");
+                    said.contains("flatpak-setup") && said.contains(error)
+                }),
+                "the row says Flatpak could not be read, with the error"
+            );
             assert_eq!(
                 app.package_operation("id.chess", ActionKind::FlatpakInstall)
                     .unwrap_err(),
@@ -4567,13 +4623,18 @@ mod tests {
             .remove(0);
             app.set_items(vec![remote_item]);
             let row = app.live_row("app:org.example.Editor").unwrap();
-            let install = row
-                .operations()
-                .iter()
-                .find(|action| action.id == "flatpak-install")
-                .unwrap();
             assert!(
-                matches!(&install.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_managed_repository")
+                row.operations()
+                    .iter()
+                    .any(|action| action.id == "flatpak-install"),
+                "the row still offers installing it"
+            );
+            assert!(
+                app.row_status("app:org.example.Editor").iter().any(|status| {
+                    let said = format!("{status:?}");
+                    said.contains("flatpak-install") && said.contains("device_managed_repository")
+                }),
+                "the row says its repository manages it"
             );
             assert!(
                 app.admit(StoreEffect::FlatpakInstall {
@@ -4984,7 +5045,7 @@ mod tests {
         {
             let app = seeded_app();
             let item = app.items.iter().find(|item| item.id == "id.notes").unwrap();
-            let presentation = app_row(item, true, None)
+            let presentation = app_row(item, true)
                 .into_resource()
                 .presentation
                 .expect("app row has a search and history summary");

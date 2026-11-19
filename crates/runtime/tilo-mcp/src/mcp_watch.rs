@@ -97,17 +97,22 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The host's last state of invocation `id`, asked off this task's
     /// thread: a host may ask the device running it and wait for the answer
     /// (a session's actions do), and a wait on this thread would stall the
-    /// connection that carries that answer until it gave up.
+    /// connection that carries that answer until it gave up. What the look
+    /// cost is told on this thread, where a tool's own accounting is.
     pub(crate) async fn observed(
         &self,
         id: tilo_actions::InvocationId,
     ) -> Option<tilo_actions::remote::InvocationState> {
-        let host = std::sync::Arc::clone(&self.host);
+        let provider = std::sync::Arc::clone(&self.host);
         let caller = self.caller();
-        tokio::task::spawn_blocking(move || host.observe(&caller, &id))
+        let asked = caller.clone();
+        let told = std::sync::Arc::clone(&provider);
+        let state = tokio::task::spawn_blocking(move || provider.observe(&caller, &id))
             .await
             .ok()
-            .flatten()
+            .flatten();
+        told.observed(&asked, &id, state.as_ref());
+        state
     }
 
     /// Note that `invocation` started, as a watch of this session follows it.
@@ -141,21 +146,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         self.invocations_moved();
     }
 
-    /// The group a watch attributes this session's calls to: the title a
-    /// call named, else the connection's own agent session.
+    /// The group a watch attributes this session's calls to: the caller's
+    /// session, named as the call declared its step.
     fn group_named(&self) -> (String, String) {
-        let session = self.agent_session();
-        let id = session
-            .as_ref()
-            .map(|session| session.id.clone())
-            .unwrap_or_default();
-        let title = match DeclaredInvocation::current().map(|invocation| invocation.title) {
-            Some(title) if !title.is_empty() => title,
-            _ => session
-                .and_then(|session| session.label)
-                .unwrap_or_default(),
-        };
-        (title, id)
+        match self.agent_session(DeclaredInvocation::current().as_ref()) {
+            Some(group) => (group.label.unwrap_or_default(), group.id),
+            None => (String::new(), String::new()),
+        }
     }
 
     /// [`WatchArgs`] as one answer: what happened since `cursor`, or nothing
@@ -505,7 +502,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             arguments,
             tilo_actions::InvocationId::new(),
             None,
-            std::time::Duration::from_millis(5_000),
+            crate::Hold::For(std::time::Duration::from_millis(5_000)),
             &mut None,
         ))
         .await?;

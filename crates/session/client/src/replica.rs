@@ -266,6 +266,11 @@ impl Replicas {
                         .unwrap_or(false)
                 })
             });
+        if let Some(owner) = &owner
+            && let Some(journaled) = workspaces.journaled.lock_recover().as_mut()
+        {
+            journaled.resume(owner);
+        }
         let owner = owner.unwrap_or_else(|| NativeWorkspaceOwner::empty(workspaces));
         let workspaces = owner
             .storage()
@@ -468,7 +473,10 @@ impl Replicas {
     /// workspace's own governance keeps for it: the address a peer dials the
     /// host at, and the relay it is reached through. `None` until the host's
     /// bootstrap or a governance message named it.
-    pub(crate) fn host(&self, workspace_id: WorkspaceId) -> Option<tilo_server_client::Host> {
+    pub(crate) fn host(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Option<tilo_server_client::ServerAddress> {
         let hint = self
             .with_workspace(workspace_id, |view| {
                 let host = view.workspace_host().device_public_key;
@@ -489,7 +497,7 @@ impl Replicas {
             "iroh:direct" => None,
             url => Some(url.parse().ok()?),
         };
-        Some(tilo_server_client::Host::through(
+        Some(tilo_server_client::ServerAddress::through(
             payload.endpoint_addr,
             relay,
         ))

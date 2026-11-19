@@ -612,7 +612,10 @@ pub const BOOT_TRIES: u32 = 3;
 /// For an image whose own pass cannot see the ESP ([`EntriesOutcome::NoLayout`]
 /// or [`EntriesOutcome::Absent`]): mount the ESP the boot loader started from
 /// (`LoaderDevicePartUUID`) in a private mount namespace and give the entry
-/// that boots `verity` its try counter, the same rename tilo-deployment does.
+/// that boots `verity` its try counter, the same rename tilo-deployment does. The system
+/// holds that ESP read-only at /boot, and a second mount of it shares that read-only
+/// superblock: mount then falls back to read-only without failing, so the script makes it
+/// writable (until the next boot, as staging an image does) before renaming.
 /// The entry is found by the composefs identity it boots, never by name:
 /// bootc renumbers every entry when it stages one. Prints `@@counted N`, or
 /// `@@counter none` where no boot loader names an ESP (a VM started without
@@ -621,6 +624,7 @@ pub fn count_staged_entry_script(verity: &str) -> String {
     let inner = format!(
         r#"m=$(mktemp -d) || {{ echo '@@counter failed: no scratch directory'; exit 0; }}
 if ! mount -t vfat -o rw "/dev/disk/by-partuuid/$1" "$m" 2>/dev/null; then echo "@@counter failed: could not mount the ESP (PARTUUID $1) read-write"; exit 0; fi
+case ",$(findmnt -n -o OPTIONS "$m")," in *,ro,*) mount -o remount,rw "$m" 2>/dev/null || {{ umount "$m"; echo "@@counter failed: the ESP (PARTUUID $1) stays read-only"; exit 0; }} ;; esac
 n=0
 for f in "$m"/loader/entries.staged/bootc*.conf "$m"/loader/entries/bootc*.conf; do
   [ -f "$f" ] || continue
@@ -628,7 +632,8 @@ for f in "$m"/loader/entries.staged/bootc*.conf "$m"/loader/entries/bootc*.conf;
   u=$(sed -n 's/^uki[[:space:]]\{{1,\}}//p' "$f" | head -1)
   if [ -n "$u" ]; then c=$(/usr/libexec/tilo-uki-cmdline show "$m/${{u#/}}" 2>/dev/null); else c=$(sed -n 's/^options[[:space:]]//p' "$f"); fi
   printf '%s\n' "$c" | tr ' \t' '\n\n' | sed 's/^composefs=sha512:/composefs=/' | grep -qx 'composefs={verity}' || continue
-  mv "$f" "${{f%.conf}}+{BOOT_TRIES}.conf" && n=$((n + 1))
+  mv "$f" "${{f%.conf}}+{BOOT_TRIES}.conf" || {{ umount "$m"; echo "@@counter failed: could not rename ${{f##*/}}"; exit 0; }}
+  n=$((n + 1))
 done
 sync
 umount "$m"; rmdir "$m"
@@ -1500,6 +1505,10 @@ mod tests {
             assert!(script.contains(&format!("composefs={verity}")));
             assert!(script.contains("+3.conf"));
             assert!(script.contains("entries.staged"));
+            assert!(
+                script.contains("remount,rw"),
+                "a read-only fallback mount is made writable: {script}"
+            );
             assert_eq!(parse_counted("@@counted 1\n"), Counted::Entries(1));
             assert_eq!(parse_counted("@@counted 0"), Counted::Entries(0));
             assert_eq!(parse_counted("@@counter none\n"), Counted::NoBootLoader);

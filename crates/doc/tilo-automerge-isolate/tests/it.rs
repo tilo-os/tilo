@@ -5,5 +5,7 @@ tilo_automerge_isolate::test_worker!();
 
 #[path = "admission_cost.rs"]
 mod admission_cost;
+#[path = "deferred.rs"]
+mod deferred;
 #[path = "isolation.rs"]
 mod isolation;

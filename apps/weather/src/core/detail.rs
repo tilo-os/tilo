@@ -8,7 +8,7 @@ use vello::peniko::{BlendMode, Brush, Fill, Gradient};
 use winit::event::WindowEvent;
 
 use ui::a11y::{AccessNode, Role};
-use ui::charts::{BarGauge, GaugeStyle, TrendRange};
+use ui::charts::{BarGauge, TrendRange};
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
@@ -1322,7 +1322,6 @@ impl ForecastRows<'_> {
                 self.week.fraction(d.temp_max) as f32,
             ),
             &Brush::Gradient(grad),
-            &GaugeStyle::default(),
         );
         ctx.text(
             &format!("{hi}°"),

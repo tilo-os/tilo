@@ -66,8 +66,10 @@ tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # record's NetHost grants, and nftables that admit only what it answered.
 tilo-egress = { path = "../egress" }
 # Installed Linux apps become commands in every guest (`LinuxVmLaunch`);
-# a hosted workspace's programs run in its own VM (`hosted_vm`).
-linux-vm = { path = "../linux-vm" }
+# a hosted workspace's programs run in its own VM (`hosted_vm`). The keeper
+# that wakes a VM's windows belongs to the VM's own program, so this side
+# leaves the `supervisor` feature off and links no Wayland server.
+linux-vm = { path = "../linux-vm", default-features = false }
 linux-vm-protocol = { path = "../linux-vm-protocol" }
 
 anyhow.workspace = true

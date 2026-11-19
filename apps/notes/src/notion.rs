@@ -237,9 +237,7 @@ fn page_title(name: &str, text: &str) -> String {
         .map(str::trim)
         .find_map(|line| line.strip_prefix("# ").map(str::trim))
         .filter(|heading| !heading.is_empty());
-    from_file
-        .or(from_body)
-        .map_or_else(|| CATALOG.t("notes-imported-untitled"), str::to_owned)
+    from_file.or(from_body).unwrap_or_default().to_owned()
 }
 
 /// The Markdown of the page stored at `name`, with each picture it shows
@@ -500,8 +498,7 @@ fn api_title(listing: &Value, blocks: &[Value]) -> String {
     from_property
         .or(from_heading)
         .map(|title| title.trim().to_owned())
-        .filter(|title| !title.is_empty())
-        .unwrap_or_else(|| CATALOG.t("notes-imported-untitled"))
+        .unwrap_or_default()
 }
 
 /// Write one API block as Markdown; its children follow it, indented for a

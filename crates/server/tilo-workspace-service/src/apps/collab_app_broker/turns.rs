@@ -354,12 +354,7 @@ impl AppBrokerState {
             })
             .ok_or("the agent's connection no longer answers turns")?;
         let sender = self
-            .invocation_subscribers
-            .lock()
-            .map_err(|_| "the invocation streams are unavailable")?
-            .get(&peer)
-            .filter(|sender| !sender.is_closed())
-            .cloned()
+            .invocation_stream(peer)
             .ok_or("the agent's connection has no invocation stream")?;
         let id = self
             .invocation_id

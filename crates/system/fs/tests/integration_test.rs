@@ -65,11 +65,7 @@ async fn shutdown_fuse_fixture(
 ) {
     fs::fuse_session::unmount_and_join(session, mount).expect("unmount and join FUSE session");
     endpoint.close().await;
-    store
-        .store()
-        .shutdown()
-        .await
-        .expect("shut down blob store");
+    store.shutdown().await.expect("shut down blob store");
 }
 
 struct AbortErrorFs;
@@ -201,11 +197,7 @@ fn stopping_a_held_auto_unmount_session_ends_it() {
 
 async fn shutdown_runtime_fixture(endpoint: Endpoint, store: Arc<ContentStore>) {
     endpoint.close().await;
-    store
-        .store()
-        .shutdown()
-        .await
-        .expect("shut down blob store");
+    store.shutdown().await.expect("shut down blob store");
 }
 
 const ALICE: [u8; 32] = [0xA1; 32];
@@ -526,7 +518,6 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
             fs::fuse_session::unmount_and_join(sb, bob_dir.path()).expect("unmount Bob session");
             shutdown_endpoint.close().await;
             shutdown_store
-                .store()
                 .shutdown()
                 .await
                 .expect("shut down blob store");
@@ -626,7 +617,7 @@ async fn the_live_fuse_access_path_enforces_current_identity_grants() {
         shutdown_runtime_fixture(alice_endpoint, alice_store).await;
         shutdown_runtime_fixture(bob_endpoint, bob_store).await;
         shutdown_runtime_fixture(open_endpoint, open_store).await;
-        store.store().shutdown().await.unwrap();
+        store.shutdown().await.unwrap();
     }
     fuse_mount_enforces_identity_acl_end_to_end().await;
     {
@@ -860,7 +851,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
             assert_eq!(std::fs::read(after_restart).unwrap(), b"exact bytes");
             fs::fuse_session::unmount_and_join(session, second_mount.path()).unwrap();
             shutdown_endpoint.close().await;
-            store.store().shutdown().await.unwrap();
+            store.shutdown().await.unwrap();
         })
         .await;
     }

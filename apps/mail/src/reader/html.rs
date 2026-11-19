@@ -12,10 +12,10 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use tilo_webview::{SharedEngine, WebViewCommand, WebViewEvent};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::webview::{SharedEngine, WebViewCommand, WebViewEvent};
 use ui::widget::{WebView, Widget};
 
 use crate::html_mail::{InlinePart, Policy, Prepared};
@@ -29,7 +29,7 @@ fn new_engine() -> (SharedEngine, bool) {
     if let Some(engine) = native_engine() {
         return (engine, true);
     }
-    let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
+    let engine: SharedEngine = tilo_webview::test_engine::TestEngine::new();
     (engine, false)
 }
 
@@ -37,7 +37,7 @@ fn new_engine() -> (SharedEngine, bool) {
 fn native_engine() -> Option<SharedEngine> {
     use std::sync::OnceLock;
     static PROFILE: OnceLock<Option<tempfile::TempDir>> = OnceLock::new();
-    ui::webview::chromium::runtime::locate().ok()?;
+    tilo_webview::chromium::runtime::locate().ok()?;
     let profile = PROFILE
         .get_or_init(|| {
             tempfile::Builder::new()
@@ -46,7 +46,7 @@ fn native_engine() -> Option<SharedEngine> {
                 .ok()
         })
         .as_ref()?;
-    match ui::webview::chromium::ChromiumEngine::sealed_documents(profile.path()) {
+    match tilo_webview::chromium::ChromiumEngine::sealed_documents(profile.path()) {
         Ok(engine) => Some(engine as SharedEngine),
         Err(error) => {
             tracing::warn!(%error, "mail: the HTML engine did not start");
@@ -103,7 +103,7 @@ pub(super) struct HtmlBody {
     found: Option<(usize, Option<usize>)>,
 }
 
-fn is_page(frame: &ui::webview::Frame) -> bool {
+fn is_page(frame: &tilo_webview::Frame) -> bool {
     const BESIDE: usize = 16;
     let (width, height) = (frame.width as usize, frame.height as usize);
     let row = height.saturating_sub(2) * width;
@@ -566,11 +566,9 @@ impl HtmlBody {
         if let Some(engine) = &self.engine {
             for down in [true, false] {
                 engine.send(WebViewCommand::Key {
-                    key: ui::webview::KeyInput::Character("a".into()),
+                    key: tilo_webview::KeyInput::Character("a".into()),
                     down,
-                    modifiers: ui::webview::KeyModifiers::command(
-                        ui::platform::PlatformConventions::default(),
-                    ),
+                    modifiers: ui::platform::PlatformConventions::default().command_key_modifiers(),
                     code: Some("KeyA"),
                 });
             }
@@ -660,7 +658,7 @@ pub(crate) fn is_openable(url: &str) -> bool {
 mod tests {
     use super::is_page;
     use std::sync::Arc;
-    use ui::webview::Frame;
+    use tilo_webview::Frame;
 
     fn frame(width: u32, height: u32, fill: [u8; 4], mark: Option<[u8; 4]>) -> Frame {
         let mut rgba = fill.repeat(width as usize * height as usize);

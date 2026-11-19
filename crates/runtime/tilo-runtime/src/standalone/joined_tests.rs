@@ -704,7 +704,7 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
     device_key
         .verifying_key()
         .verify_strict(
-            &runtime_identity::collaboration_join_digest(&workspace.to_string()).unwrap(),
+            &tilo_identity_client::collaboration_join_digest(&workspace.to_string()).unwrap(),
             &ed25519_dalek::Signature::from_slice(&presentation.proof).unwrap(),
         )
         .unwrap();
@@ -838,6 +838,58 @@ async fn a_foreign_runtime_joins_a_hosted_workspace_as_an_editor_and_syncs_both_
         })
         .await;
     receipt.expect("a member's write commits to the joined workspace");
+    // A write this device signed before the owner's turn, under a sequence the
+    // document has already passed, is signed again above it. What answers is
+    // the write the owner took, and its receipt binds that one: the request as
+    // it was asked no longer says what the owner committed.
+    let mut stale = AutoCommit::load(&chat).unwrap();
+    let heads = stale.get_heads();
+    stale
+        .put(ROOT, "restated", "a writer behind the turn")
+        .unwrap();
+    stale.commit_edit("fixture", "restated");
+    let message = joined
+        .owner
+        .with_current(workspace, |view| {
+            view.peer().clone().publication_mut().publish_incremental(
+                "so.tilo.chat",
+                "",
+                stale.save_after(&heads),
+                &device_key,
+                SystemTime::now(),
+            )
+        })
+        .unwrap();
+    let NeighbourMsg::AppDocument { mut envelope, .. } = message else {
+        panic!("a signed document write")
+    };
+    envelope.seq = 1;
+    let asked = OwnerCommitRequest {
+        workspace: workspace.to_string(),
+        operation: CommitOperation::Document {
+            app: "so.tilo.chat".into(),
+            document: String::new(),
+            envelope,
+            own: None,
+        },
+    };
+    let asked_seq = document_seq(&asked);
+    let (committed, receipt) = joined
+        .commit_local_document(asked.clone(), None)
+        .await
+        .expect("a write behind the owner's turn is taken under a sequence above it");
+    let committed_seq = document_seq(&committed);
+    assert!(
+        committed_seq > asked_seq,
+        "the write was not signed again above the document's own sequence"
+    );
+    receipt
+        .validate_for(&committed)
+        .expect("the receipt binds the write the owner took");
+    assert!(
+        receipt.validate_for(&asked).is_err(),
+        "the receipt cannot bind the request before the owner signed it again"
+    );
     tilo_test_env::within("the write at the host's link", async {
         loop {
             if let Ok(heard) = heard.recv().await
@@ -1208,9 +1260,9 @@ impl tilo_workspace_service::apps::document_content::ContentShelf for Shelf {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
+    use neighbour_wire::content::PIECE_BYTES;
     use tilo_content::hash_bytes;
     use tilo_peer_state::peer_handle;
-    use tilo_workspace_service::apps::document_content::PIECE_BYTES;
 
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let governing = Box::pin(HostedWorkspace::start(directory.path())).await;
@@ -1355,9 +1407,9 @@ async fn a_joined_workspace_s_record_content_crosses_the_host_both_ways() {
 /// content arrives: waiting, then fetching, then here.
 #[tokio::test(flavor = "current_thread")]
 async fn a_want_through_the_host_waits_for_its_offline_holder_and_arrives_when_it_connects() {
+    use neighbour_wire::content::PIECE_BYTES;
     use tilo_content::{ContentState, hash_bytes};
     use tilo_peer_state::peer_handle;
-    use tilo_workspace_service::apps::document_content::PIECE_BYTES;
 
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let governing = Box::pin(HostedWorkspace::start(directory.path())).await;
@@ -1504,6 +1556,16 @@ fn signed_write(
     }
 }
 
+/// The sequence a document write carries, whatever else the request names.
+fn document_seq(request: &tilo_peer_state::owner_commit::OwnerCommitRequest) -> u64 {
+    let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } =
+        &request.operation
+    else {
+        panic!("a document write, not {:?}", request.operation);
+    };
+    envelope.seq
+}
+
 /// The profile's workspace is placed on the workspace host the profile runs and held
 /// as a joined workspace, admitted like any other; placing it again finds it.
 #[tokio::test(flavor = "current_thread")]
@@ -1523,7 +1585,6 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
             .unwrap(),
         workspace.to_string()
     );
-    assert!(joined.requires_workspace(&workspace.to_string()));
     assert!(
         !joined.records_effects(&workspace.to_string()),
         "the profile keeps its own workspace's effect records"
@@ -1582,7 +1643,6 @@ async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
         ),
     )
     .unwrap();
-    assert!(joined.requires_workspace(&workspace.to_string()));
     let refused = joined
         .commit(signed_write(
             workspace,

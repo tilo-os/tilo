@@ -8,9 +8,8 @@
 //! loaded: a message, its attachments, the accounts.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Effect, JsonSchema};
+use ui::tilo_resource::{self, Effect, JsonSchema, RowBindings};
 
-use tilo_actions::ActionSpec;
 use ui::framework::LiveRow;
 
 use crate::attachment_store;
@@ -85,6 +84,7 @@ pub enum MailEffect {
     /// outside the resource, so an agent asking for it is put to the person in
     /// their tab first, as any agent's outside action is, unless they allowed
     /// it.
+    #[effect(kind = "outside")]
     #[effect(returns, audience = "agents")]
     AddAccount {
         #[param("The name shown for it")]
@@ -107,7 +107,8 @@ pub enum MailEffect {
         password: Option<String>,
     },
     /// Prepare a draft from this exact address-book recipient and sender.
-    #[effect(row, destructive, returns)]
+    #[effect(kind = "outside")]
+    #[effect(row, destructive, returns, on = crate::app::contact_recipients::Choice)]
     PrepareContactDraft {
         person: String,
         label: String,
@@ -116,12 +117,14 @@ pub enum MailEffect {
         sender_email: String,
     },
     /// Refresh current folder
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     Refresh,
     /// Prepare calendar invitation
     ///
     /// Saves a bounded METHOD:REQUEST invitation as the draft and opens it
     /// for review; nothing is sent.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     PrepareCalendarInvitation {
         #[param("Invitation recipient")]
@@ -134,13 +137,13 @@ pub enum MailEffect {
         calendar_ics: String,
     },
     /// Open
-    #[effect(view, row)]
+    #[effect(view, row, on = MessageItem, on = DraftItem, on = AccountItem)]
     Open { target: MailTarget },
     /// Preview without marking read
     ///
     /// Shows a loaded message without changing its read state: asking to
     /// inspect a message never sends a read receipt.
-    #[effect(view, row)]
+    #[effect(view, row, on = MessageItem)]
     #[effect(label = "mail-preview")]
     Inspect { message: String },
     /// Read message
@@ -150,25 +153,26 @@ pub enum MailEffect {
     /// it: who sent it to whom, its subject, when, its text, its links and
     /// its attachments, each with the item that hands over its content.
     /// Changes nothing, and marks it read for no one.
-    #[effect(row, kind = "read", returns, idempotent)]
+    #[effect(row, kind = "read", returns, idempotent, on = MessageItem)]
     ReadMessage { message: String },
     /// Reply
-    #[effect(view, row)]
+    #[effect(view, row, on = MessageItem)]
     #[effect(label = "mail-reply")]
     Reply { message: String },
     /// Reply all
-    #[effect(view, row)]
+    #[effect(view, row, on = MessageItem)]
     #[effect(label = "mail-reply-all")]
     ReplyAll { message: String },
     /// Forward
-    #[effect(view, row)]
+    #[effect(view, row, on = MessageItem)]
     #[effect(label = "mail-forward")]
     Forward { message: String },
     /// Save attachment
     ///
     /// Saves a downloaded attachment where the person chooses on this
     /// device.
-    #[effect(row, job, cancellable)]
+    #[effect(kind = "outside")]
+    #[effect(row, job, cancellable, on = AttachmentItem)]
     #[effect(label = "mail-save-attachment")]
     Save { message: String, index: usize },
     /// Load remote images
@@ -176,13 +180,13 @@ pub enum MailEffect {
     /// Shows the images, fonts and styles an HTML message loads from the
     /// web, for this message only. Loading them tells the sender it was
     /// read; nothing else it asks for (script, frames, forms) ever runs.
-    #[effect(view, row)]
+    #[effect(view, row, on = MessageItem)]
     LoadRemoteContent { message: String },
     /// Always load remote images from this sender
     ///
     /// Loads them in every message from this message's sender, now and
     /// later. Part of the person's Mail preferences.
-    #[effect(view, row)]
+    #[effect(view, row, on = MessageItem)]
     AlwaysLoadRemoteContent { message: String },
     /// Search messages
     ///
@@ -232,7 +236,7 @@ pub enum MailEffect {
     /// the PDF viewer) through the desktop's `open`, handed over as
     /// workspace content: a window of its own, or a tab of the window
     /// `group`. Answers the window, its group and strip, once it is up.
-    #[effect(row, job, kind = "read", returns)]
+    #[effect(row, job, kind = "read", returns, on = AttachmentItem)]
     OpenAttachment {
         message: String,
         index: usize,
@@ -248,7 +252,7 @@ pub enum MailEffect {
     /// content address (`tilo.content:<hash>`), name and media type, for
     /// another app's action to take (the PDF viewer's import). Nothing is
     /// written to a folder and nothing is sent.
-    #[effect(row, content, kind = "read", returns, idempotent)]
+    #[effect(row, content, kind = "read", returns, idempotent, on = AttachmentItem)]
     Content { message: String, index: usize },
     /// Export content
     ///
@@ -269,7 +273,7 @@ pub enum MailEffect {
     ///
     /// Opens one of the message's links (as Read message lists them) in the
     /// Browser.
-    #[effect(view, row)]
+    #[effect(view, row, on = MessageItem)]
     #[effect(label = "mail-link-open")]
     OpenLink {
         message: String,
@@ -286,13 +290,6 @@ pub(crate) fn effect_payload(effect: &MailEffect) -> Vec<u8> {
         .build_json(&serde_json::Map::new())
         .map(|encoded| encoded.payload)
         .unwrap_or_default()
-}
-
-/// `effect` bound to the item it acts on, under that item's own `label`.
-fn bound(effect: &MailEffect, label: &str) -> ActionSpec {
-    let mut spec = effect.bound();
-    label.clone_into(&mut spec.type_mut().label);
-    spec
 }
 
 /// A message as written: who it goes to, what it says, what it carries.
@@ -805,40 +802,48 @@ pub(crate) fn message_row(message: &crate::model::Message) -> MessageRow {
     }
 }
 
-/// A message the engine loaded, as the type its row is an item of.
-struct MessageItem;
-impl ui::tilo_resource::words::RowType for MessageItem {
-    const KIND: &'static str = "mail.message";
-    const LABEL: &'static str = "Message";
-}
+/// A message the engine loaded, as the type its row is an item of: the
+/// window's effects on it are bound to its id, and opening it to the target
+/// it names.
+#[derive(tilo_resource::Row)]
+#[row(kind = "mail.message", label = "Message", effects = MailEffect)]
+pub(crate) struct MessageItem;
 
 /// An attachment of a loaded message, as the type its row is an item of.
-struct AttachmentItem;
-impl ui::tilo_resource::words::RowType for AttachmentItem {
-    const KIND: &'static str = "mail.attachment";
-    const LABEL: &'static str = "Attachment";
-}
+#[derive(tilo_resource::Row)]
+#[row(kind = "mail.attachment", label = "Attachment", effects = MailEffect)]
+pub(crate) struct AttachmentItem;
 
 /// A draft, as the type its row is an item of.
-struct DraftItem;
-impl ui::tilo_resource::words::RowType for DraftItem {
-    const KIND: &'static str = "mail.draft";
-    const LABEL: &'static str = "Draft";
-}
+#[derive(tilo_resource::Row)]
+#[row(kind = "mail.draft", label = "Draft", effects = MailEffect)]
+pub(crate) struct DraftItem;
 
 /// One of this device's accounts, as the type its row is an item of.
-struct AccountItem;
-impl ui::tilo_resource::words::RowType for AccountItem {
-    const KIND: &'static str = "mail.account";
-    const LABEL: &'static str = "Account";
-}
+#[derive(tilo_resource::Row)]
+#[row(kind = "mail.account", label = "Account", effects = MailEffect)]
+pub(crate) struct AccountItem;
 
 /// The accounts, as the type their collection row is an item of.
-struct AccountsItem;
-impl ui::tilo_resource::words::RowType for AccountsItem {
-    const KIND: &'static str = "mail.account.collection";
-    const LABEL: &'static str = "Accounts";
-}
+#[derive(tilo_resource::Row)]
+#[row(kind = "mail.account.collection", label = "Accounts")]
+pub(crate) struct AccountsItem;
+
+/// The contact choices the composer offers, as the type their collection row
+/// is an item of.
+#[derive(tilo_resource::Row)]
+#[row(kind = "mail.contacts", label = "Contact recipients")]
+pub(crate) struct ContactsItem;
+
+/// A thread of loaded messages, as the type its row is an item of.
+#[derive(tilo_resource::Row)]
+#[row(kind = "mail.thread", label = "Thread")]
+pub(crate) struct ThreadItem;
+
+/// A message on its way out, as the type its row is an item of.
+#[derive(tilo_resource::Row)]
+#[row(kind = "mail.send", label = "Send")]
+pub(crate) struct PendingSendItem;
 
 fn message_label(m: &MessageRow) -> String {
     let base = &m.label;
@@ -850,12 +855,30 @@ fn message_label(m: &MessageRow) -> String {
 }
 
 pub(crate) fn message_row_of(message: &MessageRow) -> LiveRow {
-    let mut row = with_message_views(
-        LiveRow::typed::<MessageItem>(
-            format!("mail.message:{}", message.id),
-            message_label(message),
-        ),
-        &message.id,
+    let id = message.id.clone();
+    let message_value = || serde_json::Value::String(id.clone());
+    let target =
+        serde_json::to_value(MailTarget::Message(id.clone())).unwrap_or(serde_json::Value::Null);
+    let bindings = RowBindings::new()
+        .bind(MailEffect::OPEN, [("target", target)])
+        .bind(MailEffect::INSPECT, [("message", message_value())])
+        .bind(MailEffect::READ_MESSAGE, [("message", message_value())])
+        .bind(MailEffect::REPLY, [("message", message_value())])
+        .bind(MailEffect::REPLY_ALL, [("message", message_value())])
+        .bind(MailEffect::FORWARD, [("message", message_value())])
+        .bind(
+            MailEffect::LOAD_REMOTE_CONTENT,
+            [("message", message_value())],
+        )
+        .bind(
+            MailEffect::ALWAYS_LOAD_REMOTE_CONTENT,
+            [("message", message_value())],
+        )
+        .bind(MailEffect::OPEN_LINK, [("message", message_value())]);
+    let mut row = LiveRow::typed_with::<MessageItem>(
+        format!("mail.message:{id}"),
+        message_label(message),
+        &bindings,
     );
     for (index, attachment) in message.attachments.iter().enumerate() {
         row = row.row(attachment_row(&message.id, index, attachment));
@@ -863,50 +886,31 @@ pub(crate) fn message_row_of(message: &MessageRow) -> LiveRow {
     row
 }
 
-/// The attachment `index` of the loaded message `message_id`, offering to
-/// save it once its content is here.
+/// The attachment `index` of the loaded message `message_id`: its own row,
+/// offering to save it, hand over its content or open it once its bytes are
+/// here.
 pub(crate) fn attachment_row(
     message_id: &str,
     index: usize,
     attachment: &AttachmentRow,
 ) -> LiveRow {
-    let save = MailEffect::Save {
-        message: message_id.to_owned(),
-        index,
-    }
-    .bound();
-    let content = MailEffect::Content {
-        message: message_id.to_owned(),
-        index,
-    }
-    .bound();
-    let open = MailEffect::OpenAttachment {
-        message: message_id.to_owned(),
-        index,
-        group: None,
-    }
-    .bound_asking(&["group"]);
-    let not_downloaded = |spec: ActionSpec| {
-        if attachment.downloadable {
-            spec
-        } else {
-            spec.unavailable(
-                "not_downloaded",
-                crate::i18n::CATALOG.t("mail-attachment-not-downloaded"),
-            )
-        }
-    };
-    LiveRow::typed::<AttachmentItem>(
+    let arguments = [
+        ("message", serde_json::Value::String(message_id.to_owned())),
+        ("index", serde_json::json!(index)),
+    ];
+    let bindings = RowBindings::new()
+        .bind(MailEffect::SAVE, arguments.clone())
+        .bind(MailEffect::CONTENT, arguments.clone())
+        .bind(MailEffect::OPEN_ATTACHMENT, arguments);
+    LiveRow::typed_with::<AttachmentItem>(
         format!("mail.attachment:{message_id}:{index}"),
         format!(
             "{} ({})",
             attachment.filename,
             ui::format::size(attachment.size)
         ),
+        &bindings,
     )
-    .operation(not_downloaded(content))
-    .operation(not_downloaded(open))
-    .operation(not_downloaded(save))
 }
 
 /// The draft `id` as the item `draft-reply` and `read` name it
@@ -918,55 +922,39 @@ pub(crate) fn draft_row(id: &str, draft: &crate::resource::DraftState) -> LiveRo
     } else {
         MailTarget::DraftId(id.to_owned())
     };
-    LiveRow::typed::<DraftItem>(
+    let bindings = RowBindings::new().bind(
+        MailEffect::OPEN,
+        [(
+            "target",
+            serde_json::to_value(target).unwrap_or(serde_json::Value::Null),
+        )],
+    );
+    LiveRow::typed_with::<DraftItem>(
         format!("mail.draft:{id}"),
         crate::resource::draft_label(draft),
-    )
-    .operation(bound(&MailEffect::Open { target }, "Open draft"))
-}
-
-/// Open, preview, reply, reply all and forward, bound to the message
-/// `id`: what can be done with a message that changes no document.
-fn with_message_views(row: LiveRow, id: &str) -> LiveRow {
-    let message = || id.to_owned();
-    row.operation(bound(
-        &MailEffect::Open {
-            target: MailTarget::Message(message()),
-        },
-        "Open message",
-    ))
-    .effect(&MailEffect::Inspect { message: message() })
-    .effect(&MailEffect::ReadMessage { message: message() })
-    .effect(&MailEffect::Reply { message: message() })
-    .effect(&MailEffect::ReplyAll { message: message() })
-    .effect(&MailEffect::Forward { message: message() })
-    .effect(&MailEffect::LoadRemoteContent { message: message() })
-    .effect(&MailEffect::AlwaysLoadRemoteContent { message: message() })
-    .operation(
-        MailEffect::OpenLink {
-            message: message(),
-            url: String::new(),
-        }
-        .bound_asking(&["url"]),
+        &bindings,
     )
 }
 
 /// One of this device's accounts, opening its inbox.
 pub(crate) fn account_row(id: &str, label: &str, active: bool) -> LiveRow {
-    LiveRow::typed::<AccountItem>(
+    let bindings = RowBindings::new().bind(
+        MailEffect::OPEN,
+        [(
+            "target",
+            serde_json::to_value(MailTarget::Account(id.to_owned()))
+                .unwrap_or(serde_json::Value::Null),
+        )],
+    );
+    LiveRow::typed_with::<AccountItem>(
         format!("mail.account:{id}"),
         if active {
             format!("{label} (open)")
         } else {
             label.to_owned()
         },
+        &bindings,
     )
-    .operation(bound(
-        &MailEffect::Open {
-            target: MailTarget::Account(id.to_owned()),
-        },
-        "Open account",
-    ))
 }
 
 /// This device's accounts `(id, label, active)`, each opening its inbox.

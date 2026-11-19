@@ -665,20 +665,66 @@ fn written_before_reads(format: u64) -> bool {
     format < FORMAT
 }
 
-/// How the committed surface `before` differs from `now`, one line each.
-fn differences(kind: &str, before: &Value, now: &Value, format: u64) -> Vec<String> {
-    let mut changes = Vec::new();
+/// The code's resource `now` as the committed file `before` holds it: what
+/// the writer of that file left out comes out again (a verb's answer and
+/// parameter types, a field's type in the code's vocabulary, read verbs it
+/// has none of), so what remains are the differences to review.
+fn expected(before: &Value, now: &Value, format: u64) -> Value {
     let older = written_before_types(before);
     let unread = written_before_reads(format);
+    let mut expected = now.clone();
+    if !older && !unread {
+        return expected;
+    }
+    let old_verbs = by(before.get("verbs"), "id");
+    if unread && let Some(verbs) = expected.get_mut("verbs").and_then(Value::as_array_mut) {
+        verbs.retain(|verb| !is_read(verb) || old_verbs.contains_key(text(verb, "id")));
+    }
+    for verb in expected
+        .get_mut("verbs")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(previous) = old_verbs.get(text(verb, "id"))
+            && same_but_earlier(previous, verb, older, unread)
+        {
+            *verb = (**previous).clone();
+        }
+    }
+    if older && let Some(object) = expected.as_object_mut() {
+        object.remove("types");
+    }
+    if older {
+        let old_fields = by(before.get("fields"), "path");
+        for field in expected
+            .get_mut("fields")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(previous) = old_fields.get(text(field, "path"))
+                && same_but_older(previous, field)
+            {
+                *field = (**previous).clone();
+            }
+        }
+    }
+    expected
+}
+
+/// How the committed surface `before` differs from `now`, one line each.
+/// Every field of the resource is compared, not a list of them, so one the
+/// writer adds is checked too.
+fn differences(kind: &str, before: &Value, now: &Value, format: u64) -> Vec<String> {
+    let expected = expected(before, now, format);
+    let mut changes = Vec::new();
     for (what, list, key) in [("verb", "verbs", "id"), ("field", "fields", "path")] {
         let old = by(before.get(list), key);
-        let new = by(now.get(list), key);
+        let new = by(expected.get(list), key);
         for (name, value) in &new {
             match old.get(name) {
-                None if what == "verb" && unread && is_read(value) => {}
                 None => changes.push(format!("{kind}: new {what} `{name}`")),
-                Some(previous) if older && same_but_older(previous, value) => {}
-                Some(previous) if same_but_earlier(previous, value, older, unread) => {}
                 Some(previous) if previous != value => {
                     changes.push(format!("{kind}: {what} `{name}` changed"));
                 }
@@ -689,13 +735,19 @@ fn differences(kind: &str, before: &Value, now: &Value, format: u64) -> Vec<Stri
             changes.push(format!("{kind}: {what} `{name}` is gone"));
         }
     }
-    for key in ["label", "version", "person"] {
-        if before.get(key) != now.get(key) {
+    let rest = |value: &Value| -> BTreeSet<String> {
+        value
+            .as_object()
+            .into_iter()
+            .flat_map(|object| object.keys())
+            .filter(|key| !matches!(key.as_str(), "verbs" | "fields"))
+            .cloned()
+            .collect()
+    };
+    for key in rest(before).union(&rest(&expected)) {
+        if before.get(key) != expected.get(key) {
             changes.push(format!("{kind}: {key} changed"));
         }
-    }
-    if !older && before.get("types") != now.get("types") {
-        changes.push(format!("{kind}: types changed"));
     }
     changes
 }
@@ -982,9 +1034,23 @@ pub fn write_app(start: &Path, saved: Option<&Path>) -> Result<(PathBuf, Surface
         ensure_framework_app(&app_dir)?;
         report_of(&app_dir, None)?
     };
+    ensure_view_built(&report, &app_dir)?;
     let path = write(&app_dir, &report.resources)?;
     sync_resource_kinds(&app_dir)?;
     Ok((path, report))
+}
+
+/// Refuse a report whose view did not build: what the view publishes (its read
+/// actions) is missing from it, so writing it would drop them from the surface.
+fn ensure_view_built(report: &SurfaceReport, app_dir: &Path) -> Result<()> {
+    if let Some(view) = &report.view {
+        bail!(
+            "{}'s view could not be built headless ({view}), so the read actions it publishes are \
+             unknown; write the surface where the app's window builds",
+            app_dir.display()
+        );
+    }
+    Ok(())
 }
 
 /// Add to the manifest's `[resources] kinds`, which the package signs, the
@@ -1468,6 +1534,34 @@ mod tests {
         assert!(!found.passed());
     }
 
+    #[test]
+    fn every_field_the_writer_writes_is_compared() {
+        let before = filed(&resource(1, "String", &["rename"]));
+        for (field, value) in [
+            ("label", serde_json::json!("Notes again")),
+            ("version", serde_json::json!(2)),
+            ("person", serde_json::json!(true)),
+            ("own", serde_json::json!(true)),
+            ("shows", serde_json::json!(["open"])),
+        ] {
+            let mut now = before.clone();
+            now[field] = value;
+            assert_eq!(
+                differences("notes.book", &before, &now, FORMAT),
+                [format!("notes.book: {field} changed")],
+                "{field}"
+            );
+        }
+        let mut other = before;
+        other["shows"] = serde_json::json!(["open"]);
+        let mut now = other.clone();
+        now["shows"] = serde_json::json!(["open", "show"]);
+        assert_eq!(
+            differences("notes.book", &other, &now, FORMAT),
+            ["notes.book: shows changed"]
+        );
+    }
+
     tilo_test_env::scenario! {
         fn a_changed_person_record_and_a_framework_id_are_findings;
 
@@ -1538,6 +1632,29 @@ mod tests {
             .unwrap();
             assert!(!is_framework_app(temp.path()));
         }
+    }
+
+    #[test]
+    fn a_surface_is_not_written_from_a_report_whose_view_did_not_build() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path();
+        std::fs::create_dir_all(app.join("src")).unwrap();
+        std::fs::write(
+            app.join("Cargo.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(app.join("src/main.rs"), "ui::main!(demo::App);\n").unwrap();
+        let saved = app.join("demo.json");
+        std::fs::write(
+            &saved,
+            "{\"resources\": [], \"unbound\": [], \"effects\": [], \"views\": [], \
+             \"reserved\": [], \"view\": \"no display\"}",
+        )
+        .unwrap();
+        let refused = write_app(app, Some(&saved)).unwrap_err();
+        assert!(refused.to_string().contains("no display"), "{refused:#}");
+        assert!(!app.join(FILE).exists(), "no surface is written");
     }
 
     #[test]

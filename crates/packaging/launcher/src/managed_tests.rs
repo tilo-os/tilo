@@ -132,14 +132,14 @@ fn assert_normal_launch_expected_root(installed: &InstalledPackage) {
         verify(&"0".repeat(64)).is_err(),
         "an upgraded root cannot inherit original declarations"
     );
-    let opts = crate::run::RunOptions {
+    let opts = crate::run::LaunchOptions {
         expected_package_hash: Some(original.clone()),
         ..Default::default()
     };
     let manifest = verify(original).unwrap();
     assert!(matches!(
-        crate::run::run_with(&manifest, &installed.payload_root, &opts),
-        Err(crate::run::RunError::InvalidServiceLaunch(_))
+        crate::run::launch_with(&manifest, &installed.payload_root, &opts),
+        Err(crate::run::LaunchError::InvalidServiceLaunch(_))
     ));
     assert!(
         crate::run::verified_launch_installation(
@@ -415,12 +415,12 @@ tilo_test_env::scenario! {
         let (root, package, trust) = installed();
         let fixture = runtime(root.path());
         let manifest = package.revalidate(&trust).unwrap();
-        let mut options = crate::run::RunOptions {
+        let mut options = crate::run::LaunchOptions {
             runtime_root: Some(fixture.bundle_root.clone()),
             require_runtime_publisher: Some(fixture.runtime_publisher.clone()),
             ..Default::default()
         };
-        let resolve = |options: &crate::run::RunOptions| {
+        let resolve = |options: &crate::run::LaunchOptions| {
             ManagedRuntime::from_launch_options(
                 &manifest,
                 options,

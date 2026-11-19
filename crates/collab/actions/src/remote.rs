@@ -36,6 +36,7 @@ pub use window_actions::{
     activation_requested, link_scheme, open_link_arguments,
 };
 
+pub mod agent_tools;
 mod application;
 pub mod browser;
 mod caller;
@@ -94,7 +95,9 @@ pub use application::{
     application_provider, application_provider_resource, application_resource_target,
 };
 pub use confirmation::{
-    Confirmation, ConfirmationQuestion, ConfirmationReply, ConfirmedInvocation, argument_digest,
+    ASK, ASK_PROVIDER, ASK_RESOURCE, Confirmation, ConfirmationQuestion, ConfirmationReply,
+    ConfirmedInvocation, MAX_ASK_CHARS, MAX_ASK_CHOICES, MAX_CHOICE_CHARS, MAX_REPLY_CHARS,
+    PersonAnswer, PersonAsk, argument_digest, ask_target, is_ask,
 };
 pub use providers::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX,
@@ -199,6 +202,11 @@ pub fn workspace_governance_resource(workspace: &str) -> String {
 /// application starts a privileged process. It is answered under its own
 /// provider name, for the person at this device in the workspace they joined.
 pub mod device_pairing;
+
+/// Machines a person prepared to install: the plan and its waiting entry in
+/// their Servers workspace, read and written through the session that holds
+/// it. The command and the installer's window name one set of steps.
+pub mod machines;
 
 /// The person's settings, kept by the provider whether or not the app that shows
 /// them is open: each section a record published with its field edits and
@@ -639,6 +647,15 @@ pub const AWAITING_APPROVAL: &str = "awaiting_approval";
 /// them an owner, and no invitation of a workspace there brought them in.
 pub const NOT_ON_THIS_SERVER: &str = "not_on_this_server";
 
+/// The code a workspace refuses a key its person revoked with: nothing it asks is answered
+/// until they approve another.
+pub const KEY_REVOKED: &str = "key_revoked";
+
+/// What a key that no longer acts (revoked, expired, or no longer granted in its workspace) is
+/// told to do: the one command that approves a key again.
+pub const APPROVE_AGAIN: &str = "approve a new key: the person types `tilo keys create \"<name>\"` \
+     and approves it in their Tilo tab (on their own computer, `tilo login` again)";
+
 /// The refusal of a server that does not know `person` (their root key) yet, saying what to do:
 /// its operator declares them an owner, or they join with an invitation link.
 #[must_use]
@@ -880,6 +897,12 @@ pub trait ActionProvider {
     /// The latest state of an invocation `caller` started, or `None` for an
     /// id this caller does not own.
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState>;
+
+    /// The state [`Self::observe`] answered for `id` was read for `caller`'s call, on the
+    /// caller's own thread: what a provider that counts the looks a tool makes of it keeps here.
+    fn observed(&self, caller: &Caller, id: &InvocationId, state: Option<&InvocationState>) {
+        let _ = (caller, id, state);
+    }
 
     /// Resolves the next time invocation `id` (owned by `caller`) may have
     /// changed state, so a waiter observes it again then instead of on a
@@ -1719,10 +1742,12 @@ impl<T> InvocationLog<T> {
         request: &InvokeRequest,
     ) -> Result<Reservation, ActionCallError> {
         let id = request.invocation;
-        if let Some(entry) = self.entries.get(&id) {
-            if entry.caller != *caller || !entry.request.same_invocation(request) {
+        if let Some(entry) = self.entries.get_mut(&id) {
+            if !caller.continues(&entry.caller) || !entry.request.same_invocation(request) {
                 return Err(ActionCallError::InvocationConflict);
             }
+            // Asked again on the connection that replaced its own: it is this one's from now on.
+            entry.caller.clone_from(caller);
             return if entry.handle.is_some() {
                 Ok(Reservation::Admitted)
             } else {
@@ -1782,12 +1807,13 @@ impl<T> InvocationLog<T> {
         }
     }
 
-    /// The handle for an invocation `caller` admitted.
+    /// The handle for an invocation `caller` admitted, or the caller it continues
+    /// ([`Caller::continues`]).
     #[must_use]
     pub fn get(&self, caller: &Caller, id: &InvocationId) -> Option<&T> {
         self.entries
             .get(id)
-            .filter(|entry| entry.caller == *caller)
+            .filter(|entry| caller.continues(&entry.caller))
             .and_then(|entry| entry.handle.as_ref())
     }
 
@@ -1795,7 +1821,7 @@ impl<T> InvocationLog<T> {
     pub fn get_mut(&mut self, caller: &Caller, id: &InvocationId) -> Option<&mut T> {
         self.entries
             .get_mut(id)
-            .filter(|entry| entry.caller == *caller)
+            .filter(|entry| caller.continues(&entry.caller))
             .and_then(|entry| entry.handle.as_mut())
     }
 }
@@ -2738,7 +2764,19 @@ mod tests {
             ));
             assert!(provider.observe(&first, &id).is_some());
             assert!(provider.observe(&second, &id).is_none());
+            // The connection that replaced the ended one is the same caller going on: it follows
+            // and asks again what it started there, and the invocation is carried out once. The
+            // one open beside it borrows nothing, even now.
+            assert!(reconnected.continues(&first));
+            assert!(!second.continues(&first));
+            assert!(provider.observe(&reconnected, &id).is_some());
+            assert!(matches!(
+                now(provider.invoke(&reconnected, archive(id))).unwrap().status,
+                ReceiptStatus::Completed { .. }
+            ));
             assert_eq!(provider.runs(), 1);
+            let someone_else = Caller::authenticated([3; 32], [4; 32]).in_new_execution();
+            assert!(!someone_else.continues(&first), "another device continues nothing");
         }
 
         phase serving_answers_each_request_as_the_person_the_device_belongs_to;

@@ -193,17 +193,20 @@ tilo_test_env::scenario! {
         let mut fixture = Fixture::new();
         fixture.booted("imageDigest", json!(digest('c')));
         fixture.booted("verity", json!("d".repeat(128)));
-        let target_ref = format!("code.tilo.so/tilo/tilo@{}", digest('a'));
         let update_origin = format!("code.tilo.so/tilo/tilo:lenovo-83ed-{}", "e".repeat(40));
         fixture.receipt(&json!({"schema": "tilo.installer-offline-target.v1",
-            "target_ref": target_ref, "target_digest": digest('a'),
-            "hardware_profile": "lenovo-83ed", "update_origin": update_origin}));
+            "repository": "code.tilo.so/tilo/tilo", "target_digest": digest('a'),
+            "architecture": "aarch64", "hardware_profile": "lenovo-83ed",
+            "update_origin": update_origin}));
         fixture.set_origin(&digest('a'), &update_origin);
         let result = fixture.proof().unwrap();
         assert_eq!(result["schema"], "tilo.vm-install-image-proof.v2");
         assert_eq!(result["booted_composefs_digest"], "d".repeat(128));
         assert_eq!(result["installed_composefs_digest"], COMPOSEFS);
-        assert_eq!(result["selected_target"]["target_ref"], target_ref);
+        assert_eq!(
+            result["selected_target"]["repository"],
+            "code.tilo.so/tilo/tilo"
+        );
         assert_eq!(
             result["installed_update_origin"],
             format!("ostree-unverified-image:docker://{update_origin}")
@@ -220,7 +223,7 @@ tilo_test_env::scenario! {
         let update_origin = "registry.tilo.so/tilo/tilo-vm:main-1234567-w42-lenovo-83ed";
         fixture.set_origin(&digest('a'), update_origin);
         let mut metadata = json!({"schema": "tilo.installer-dev-target.v1",
-            "target_ref": format!("registry.tilo.so/tilo/tilo-vm@{}", digest('a')),
+            "repository": "registry.tilo.so/tilo/tilo-vm",
             "target_digest": digest('a'), "architecture": "aarch64",
             "hardware_profile": "lenovo-83ed", "update_origin": update_origin,
             "source_revision": "e".repeat(40), "ci_run_id": "42",

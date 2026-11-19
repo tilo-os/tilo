@@ -5,7 +5,7 @@ use tilo_server_protocol::Envelope;
 use tilo_server_session::ServerClient;
 
 use super::Task;
-use crate::remote::NOT_CONNECTED;
+use tilo_session_actions::NOT_CONNECTED;
 
 /// Where whether the session is now the agent's run goes ([`crate::Cmd::AgentSession`]).
 pub(super) type AgentSessionCompletion = crate::Answer<Result<(), String>>;

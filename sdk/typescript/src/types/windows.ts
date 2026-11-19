@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.windows@59fa16efb06a9562";
+export const SURFACE = "so.tilo.windows@5f8b8f362b914588";
 
 /** One of "wine", "proton", "vm". */
 export type Route = "wine" | "proton" | "vm";
@@ -30,15 +30,11 @@ export type Route = "wine" | "proton" | "vm";
 /** Windows manager — `windows.manager`. */
 export interface Manager extends tilo.Resource {
   routes: Record<string, Route>;
-  openFile(args: {
-    app: string;
-    path?: unknown;
-  }): Promise<void>;
 }
 
 /** The actions `Manager` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const MANAGER_ACTIONS = ["openFile"] as const;
+export const MANAGER_ACTIONS = [] as const;
 
 /** The `windows.manager` kind at `path`. */
 export function manager(ws: tilo.Workspace, path: string): Manager {

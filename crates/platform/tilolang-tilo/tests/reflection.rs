@@ -455,7 +455,7 @@ default view board for Topics
 default view topic_page for Topic
 
 view topic_page(t: Topic) {
-    ui.ListRow(title: t.title)
+    text(t.title)
 }
 
 action open_topic(b: Topics, title: Text) -> Topic {

@@ -86,7 +86,7 @@ rand_core.workspace = true
 # Existing certified Join encoder; no new wire schema or credential.
 runtime-collab = { path = "../runtime-collab", default-features = false }
 runtime-fs = { path = "../runtime-fs" }
-runtime-identity = { path = "../runtime-identity" }
+tilo-identity-client = { path = "../tilo-identity-client" }
 serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { path = "../../collab/actions" }
@@ -133,6 +133,7 @@ tilo-rt.workspace = true
 # `tilo mcp`'s agent says its word on the person's session as a client of the workspace's board.
 tilo-session-client = { path = "../../session/client" }
 tilo-mcp = { path = "../tilo-mcp" }
+tilo-device-mcp = { path = "../device-mcp" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true

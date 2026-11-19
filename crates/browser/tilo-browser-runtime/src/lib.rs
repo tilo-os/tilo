@@ -119,6 +119,12 @@ pub fn start() {
 pub fn refresh_mounts() {
     browser::refresh_mounts();
 }
+/// The code that reads the workspace's resources is in: the windows that waited for it are
+/// built.
+#[cfg(target_arch = "wasm32")]
+pub fn workspace_resources_arrived() {
+    browser::workspace_resources_arrived();
+}
 /// Whether a mount has presented its first frame yet.
 #[cfg(target_arch = "wasm32")]
 #[must_use]
@@ -242,8 +248,6 @@ mod fixed_chords;
 mod frame_metrics;
 #[cfg(target_arch = "wasm32")]
 mod page_activity;
-#[cfg(target_arch = "wasm32")]
-mod page_agents;
 #[cfg(target_arch = "wasm32")]
 mod pages;
 #[cfg(target_arch = "wasm32")]
@@ -395,6 +399,10 @@ mod way_in;
 mod window_pictures;
 #[cfg(target_arch = "wasm32")]
 mod workspace_resources;
+#[cfg(target_arch = "wasm32")]
+pub use workspace_resources::{
+    WORKSPACE_RESOURCES, WorkspaceResourcesCode, builtin_workspace_resources,
+};
 // When graphics start-up is said to stall: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(

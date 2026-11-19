@@ -44,13 +44,21 @@
 # With --unlock (a dev disk carrying tilo-control), B's root then moves onto
 # LUKS2 with a sibling-unlock slot, and B reboots several times
 # (os/dev/nearby-unlock-phase.sh):
-#   9. A approves B's unlock through `device.unlock`, and B boots without a
+#   9. The harness allows B's ask to set up its unlock on A's sheet — B holds
+#      none of the person's root, so it asks A over the peer network — and A
+#      approves B's unlock at the next boot, which then opens without a
 #      passphrase.
-#  10. A denial, a replay of the approved exchange, a boot key that was never
-#      certified, and B's removal from the fleet each leave B at the
-#      passphrase prompt, with the attempt in A's history.
+#  10. A denied sheet, a replay of the approved exchange, a boot key that was
+#      never certified, and B's revocation on A each leave B at the
+#      passphrase prompt, with the boot's own account of why.
+#
+# With --relay-only (with --unlock or --wake) the two machines' segment goes
+# away once they are paired: each keeps only its own network, so the enrolment
+# ask and the unlock that follow can reach the other solely through the iroh
+# relay, as a machine behind a network address translation is reached.
 #
 # Usage: os/dev/test-nearby-pairing.sh DISK_QCOW2 [--out DIR] [--display gl|2d] [--wake] [--unlock]
+#                                     [--relay-only]
 #
 # DISK_QCOW2 is never booted or modified; each VM boots its own overlay.
 set -euo pipefail
@@ -63,16 +71,20 @@ out="$PWD/nearby-pairing-artifacts"
 display="${TILO_VM_DISPLAY:-gl}"
 wake=0
 unlock=0
+relay_only=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="${2:?--out needs a directory}"; shift 2 ;;
     --display) display="${2:?--display needs gl or 2d}"; shift 2 ;;
     --wake) wake=1; shift ;;
     --unlock) unlock=1; shift ;;
+    --relay-only) relay_only=1; shift ;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 case "$display" in gl|2d) ;; *) echo '--display must be gl or 2d' >&2; exit 2 ;; esac
+[ "$relay_only" = 0 ] || [ "$unlock" = 1 ] || [ "$wake" = 1 ] \
+  || { echo '--relay-only needs --unlock or --wake: it cuts the segment once the machines are paired' >&2; exit 2; }
 [ -f "$base" ] || { printf 'disk not found: %s\n' "$base" >&2; exit 1; }
 base="$(cd "$(dirname "$base")" && pwd)/$(basename "$base")"
 command -v jq >/dev/null || { echo 'jq is required' >&2; exit 1; }
@@ -217,8 +229,14 @@ cleanup() {
 trap cleanup EXIT
 
 # --- boot both machines -------------------------------------------------------
-# The segment's hub lives as long as this script holds its stdin open.
-exec {lan_hub_input}> >(exec "$vm" tool python3 "$dev_dir/nearby-lan-hub.py" "$lan_hub" 23901 23902 23903)
+# The segment's hub lives as long as this script holds its stdin open, and is
+# named by pid so --relay-only can take the segment away.
+mkfifo "$out/.lan-hub.stdin"
+"$vm" tool python3 "$dev_dir/nearby-lan-hub.py" "$lan_hub" 23901 23902 23903 \
+  < "$out/.lan-hub.stdin" &
+lan_hub_pid=$!
+exec {lan_hub_input}> "$out/.lan-hub.stdin"
+rm -f "$out/.lan-hub.stdin"
 qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_a/disk.qcow2" >/dev/null
 qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_b/disk.qcow2" >/dev/null
 # --unlock grows B's disk once B has booted (os/dev/nearby-unlock-phase.sh):
@@ -263,6 +281,23 @@ if vm_a ssh 'command -v ping >/dev/null'; then
   done
 fi
 
+# What --relay-only proves: once the pair are joined, the hub that carried
+# their segment goes, and each machine keeps only its own user-mode network.
+# Nothing of a broadcast, a LAN dial or an mDNS answer crosses between them
+# from here on; only the iroh relay the machines' own settings name does.
+cut_segment() {
+  # The hub lives until its stdin closes: closing this end ends it, and the
+  # port the two segment NICs send their frames to answers nothing from then on.
+  exec {lan_hub_input}>&-
+  wait "$lan_hub_pid" 2>/dev/null || true
+  kill -0 "$lan_hub_pid" 2>/dev/null && die "the segment's hub outlived its stdin"
+  if vm_a ssh 'command -v ping >/dev/null'; then
+    vm_a ssh "ping -c 1 -W 2 $lan_b" >/dev/null 2>&1 \
+      && die "VM A still reaches VM B over the segment after its hub was cut"
+  fi
+  note "the segment is gone: the paired machines can only reach each other through the relay"
+}
+
 # The --wake and --unlock phases read what each session records: B's audit of
 # a remote action, A's wake progress and unlock history, A's account of an idle
 # hold. Those are info lines, which a session drops unless RUST_LOG asks for
@@ -283,10 +318,16 @@ fi
 wait_onboarding() {
   local each=$1
   "$each" login --passcode-only "$TILO_PASS"
-  for attempt in $(seq 1 120); do
+  for attempt in $(seq 1 300); do
     "$each" ssh 'busctl --user status org.freedesktop.impl.portal.desktop.tilo >/dev/null 2>&1' && return 0
     sleep 1
   done
+  # What the machine said while its session did not come up: the compositor's
+  # own log and the failed units, in this check's log rather than only in files
+  # the check's failure discards.
+  session_log "$each" | tail -60 >&2 || true
+  "$each" ssh 'systemctl --user --no-pager --failed 2>&1 || true
+    journalctl -b --no-pager -u greetd -u tilo-session 2>&1 | tail -40 || true' >&2 2>&1 || true
   die "$each: the compositor did not reach first-login onboarding"
 }
 # A session the check drives over ssh for minutes without touching its keyboard
@@ -620,6 +661,10 @@ device="$c_device" fleet_lists_b < "$out/b-fleet-c.json" || die "B's fleet recor
 note "B paired C with A's approval"
 collect c "$run_c" vm_c
 stop_owned_vm c vm_c || die "C could not be stopped"
+
+if [ "$relay_only" = 1 ]; then
+  cut_segment
+fi
 
 if [ "$wake" = 1 ]; then
   # shellcheck source=os/dev/nearby-wake-phase.sh

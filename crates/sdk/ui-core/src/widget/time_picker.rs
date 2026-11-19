@@ -69,13 +69,17 @@ impl TimeValue {
 
 type TimeChange = Box<dyn FnMut(u8, u8, Option<u8>)>;
 
+/// The time of day a bound moment falls on in the person's zone, as the time field beside it
+/// reads it: its seconds only when it holds some, since an instant always carries a seconds
+/// part and a meeting at half past nine is not at 09:30:00.
 fn time_of(at: &str) -> Option<TimeValue> {
-    let clock = at.get(11..19)?;
-    let part = |range: std::ops::Range<usize>| -> Option<u8> { clock.get(range)?.parse().ok() };
+    let time = crate::widget::date_field::time_in(Some(at))?;
     Some(TimeValue {
-        hours: part(0..2)?,
-        minutes: part(3..5)?,
-        seconds: part(6..8),
+        hours: u8::try_from(time.hour()).ok()?,
+        minutes: u8::try_from(time.minute()).ok()?,
+        seconds: u8::try_from(time.second())
+            .ok()
+            .filter(|&seconds| seconds != 0),
     })
 }
 
@@ -934,6 +938,18 @@ impl TimePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_moment_on_the_minute_shows_no_seconds_spinner() {
+        let at = time_of("09:30").expect("a time of day");
+        assert_eq!((at.hours, at.minutes, at.seconds), (9, 30, None));
+        let picker = TimePicker::from_text_state(&crate::LocalState::new("09:30".to_owned()));
+        assert_eq!(
+            picker.value().seconds,
+            None,
+            "no seconds spinner for half past nine"
+        );
+    }
     use crate::testing::dispatch;
     use automerge::AutoCommit;
 

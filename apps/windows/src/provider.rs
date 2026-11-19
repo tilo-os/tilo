@@ -1,7 +1,7 @@
 //! Provider boundary for the session compatibility service.
 use std::fs::File;
-use std::sync::mpsc::{self, Receiver, Sender};
-use ui::time::{Duration, Instant};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::time::Duration;
 
 use compat_service::{
     InstallationStatus, ManagedApplication, ManagedInstallation, MatchReason, PROTOCOL_VERSION,
@@ -343,7 +343,8 @@ impl CompatibilityProvider for SampleProvider {
     }
     fn stage(&mut self, scenario: &str) {
         match scenario {
-            "closed" | "ended-with-error" | "ended-overview" | "could-not-open" => {
+            "closed" | "ended-with-error" | "ended-overview" | "could-not-open"
+            | "support-missing" | "support-installing" | "support-failed" => {
                 if let Some(app) = self.catalogue.app_mut("cyberpunk-2077") {
                     app.status = AppStatus::Ready;
                 }
@@ -424,6 +425,7 @@ enum WorkerCommand {
 }
 
 /// A list the service answered.
+#[derive(Clone, PartialEq)]
 struct Listed {
     applications: Vec<ManagedApplication>,
     installations: Vec<ManagedInstallation>,
@@ -449,8 +451,6 @@ pub struct LiveProvider {
     cached: Catalogue,
     commands: Sender<WorkerCommand>,
     events: Receiver<WorkerEvent>,
-    refresh_pending: bool,
-    next_refresh: Instant,
     notice: Option<String>,
     /// Whether the notice the last list brought is about something that went wrong.
     notice_error: bool,
@@ -469,18 +469,36 @@ impl LiveProvider {
     ///
     /// Returns an error when no verified descriptor was inherited or the bounded worker
     /// thread cannot be started.
-    pub fn connect() -> Result<Self, String> {
+    pub fn connect(wake: ui::WakeHandle) -> Result<Self, String> {
         // SAFETY: the app creates exactly one live provider, which becomes the
         // inherited descriptor's sole owner and transfers it immediately to
         // `SessionClient`.
         let owned = unsafe { runtime_portal::take_service_fd("compat") }
             .ok_or_else(|| "The Tilo compatibility service is unavailable.".to_string())?;
-        let client = SessionClient::from_owned_fd(owned);
+        Self::over(SessionClient::from_owned_fd(owned), wake)
+    }
+
+    /// Talk to the service over `client` on a worker thread, which wakes the window with `wake`
+    /// whenever it has news: an answer, or a list that changed since the last one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the worker thread cannot be started.
+    pub(crate) fn over(client: SessionClient, wake: ui::WakeHandle) -> Result<Self, String> {
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         std::thread::Builder::new()
             .name("tilo-windows-service".to_string())
-            .spawn(move || worker(client, &command_rx, &event_tx))
+            .spawn(move || {
+                worker(
+                    client,
+                    &command_rx,
+                    &Events {
+                        sender: event_tx,
+                        wake,
+                    },
+                );
+            })
             .map_err(|error| format!("Could not start compatibility worker: {error}"))?;
         command_tx
             .send(WorkerCommand::Refresh)
@@ -489,8 +507,6 @@ impl LiveProvider {
             cached: unavailable_catalogue("Connecting to the Tilo compatibility service."),
             commands: command_tx,
             events: event_rx,
-            refresh_pending: true,
-            next_refresh: ui::time::now() + REFRESH_INTERVAL,
             notice: None,
             notice_error: false,
             stopping: None,
@@ -501,7 +517,15 @@ impl LiveProvider {
     }
 
     fn drain(&mut self) {
-        while let Ok(event) = self.events.try_recv() {
+        loop {
+            let event = match self.events.try_recv() {
+                Ok(event) => event,
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.cached = unavailable_catalogue("The compatibility service disconnected.");
+                    return;
+                }
+            };
             match event {
                 WorkerEvent::Listed(listed) => {
                     let Listed {
@@ -539,15 +563,11 @@ impl LiveProvider {
                     );
                     self.cached.vm_install_confirmation =
                         self.pending_vm_install_confirmation.clone();
-                    self.refresh_pending = false;
-                    self.next_refresh = ui::time::now() + REFRESH_INTERVAL;
                 }
                 WorkerEvent::Unavailable(detail) => {
                     // A malformed, mismatched, or disconnected response never leaves stale
                     // installed applications painted as live.
                     self.cached = unavailable_catalogue(&detail);
-                    self.refresh_pending = false;
-                    self.next_refresh = ui::time::now() + REFRESH_INTERVAL;
                     self.notice = Some(detail);
                     self.notice_error = false;
                 }
@@ -579,6 +599,11 @@ impl LiveProvider {
                     self.pending_vm_install = Some((source, source_name));
                     self.notice = Some(confirmation.detail.clone());
                     self.notice_error = false;
+                    // The installer was taken and waits for the person to choose where it
+                    // installs: that answers the install, and the choice is an operation of its
+                    // own. Left unanswered, the install held the window busy and refused the
+                    // choice the person then approved.
+                    self.operation_result = Some(Ok(confirmation.detail.clone()));
                     let confirmation = VmInstallConfirmation {
                         display_name: confirmation.display_name,
                         detail: confirmation.detail,
@@ -615,6 +640,46 @@ impl LiveProvider {
         self.pending_vm_install_confirmation = None;
         Ok(pending)
     }
+
+    /// Show `source_name` as installing while its setup goes on: the service lists it once
+    /// setup ended, and the window says meanwhile that something is happening.
+    fn show_installing(&mut self, source_name: &str) {
+        let name = source_name
+            .strip_suffix(".exe")
+            .or_else(|| source_name.strip_suffix(".msi"))
+            .unwrap_or(source_name);
+        self.cached.apps.push(WindowsApp {
+            id: format!("installing-{}", self.cached.apps.len()),
+            name: name.replace(['_', '-'], " "),
+            publisher: "Imported application".into(),
+            route: Route::Wine,
+            recommended_route: Route::Wine,
+            runner: "Choosing…".into(),
+            capsule: "Pending private capsule".into(),
+
+            catalogue_source: "Checking the installer…".into(),
+            confidence: Confidence::Heuristic,
+            reason: "Tilo is checking the installer and choosing how to run it.".into(),
+            status: AppStatus::Installing,
+            grants: Vec::new(),
+            fallback_detail: "Setup can't reach anything else on this computer.".into(),
+            launch_available: false,
+            launch_unavailable_reason: Some("Setup is still running.".into()),
+            portal_file_open_available: false,
+            portal_file_open_unavailable_reason: Some("Setup is still running.".into()),
+            route_override_available: false,
+            route_override_unavailable_reason: None,
+            can_retry_install: false,
+            can_escalate_install_to_vm: false,
+            can_remove_launcher: false,
+            can_vendor_uninstall: false,
+            can_delete_data: false,
+            can_publish_vm_candidate: false,
+            installation_detail: Some("Installing…".into()),
+            vm_fallback_available: false,
+            vm_fallback_unavailable_reason: Some("Setup is still running.".into()),
+        });
+    }
 }
 
 impl CompatibilityProvider for LiveProvider {
@@ -623,13 +688,6 @@ impl CompatibilityProvider for LiveProvider {
     }
     fn catalogue(&mut self) -> Catalogue {
         self.drain();
-        if !self.refresh_pending && ui::time::now() >= self.next_refresh {
-            if self.commands.send(WorkerCommand::Refresh).is_ok() {
-                self.refresh_pending = true;
-            } else {
-                self.cached = unavailable_catalogue("The compatibility service disconnected.");
-            }
-        }
         self.cached.clone()
     }
 
@@ -669,41 +727,6 @@ impl CompatibilityProvider for LiveProvider {
     }
 
     fn install(&mut self, source: File, source_name: &str) -> Result<(), String> {
-        let name = source_name
-            .strip_suffix(".exe")
-            .or_else(|| source_name.strip_suffix(".msi"))
-            .unwrap_or(source_name);
-        self.cached.apps.push(WindowsApp {
-            id: format!("installing-{}", self.cached.apps.len()),
-            name: name.replace(['_', '-'], " "),
-            publisher: "Imported application".into(),
-            route: Route::Wine,
-            recommended_route: Route::Wine,
-            runner: "Choosing…".into(),
-            capsule: "Pending private capsule".into(),
-
-            catalogue_source: "Checking the installer…".into(),
-            confidence: Confidence::Heuristic,
-            reason: "Tilo is checking the installer and choosing how to run it.".into(),
-            status: AppStatus::Installing,
-            grants: Vec::new(),
-            fallback_detail: "Setup can't reach anything else on this computer.".into(),
-            launch_available: false,
-            launch_unavailable_reason: Some("Setup is still running.".into()),
-            portal_file_open_available: false,
-            portal_file_open_unavailable_reason: Some("Setup is still running.".into()),
-            route_override_available: false,
-            route_override_unavailable_reason: None,
-            can_retry_install: false,
-            can_escalate_install_to_vm: false,
-            can_remove_launcher: false,
-            can_vendor_uninstall: false,
-            can_delete_data: false,
-            can_publish_vm_candidate: false,
-            installation_detail: Some("Installing…".into()),
-            vm_fallback_available: false,
-            vm_fallback_unavailable_reason: Some("Setup is still running.".into()),
-        });
         self.send(WorkerCommand::Install {
             source,
             source_name: source_name.to_string(),
@@ -712,6 +735,7 @@ impl CompatibilityProvider for LiveProvider {
 
     fn confirm_capsule_install(&mut self) -> Result<(), String> {
         let (source, source_name) = self.take_pending_install()?;
+        self.show_installing(&source_name);
         self.send(WorkerCommand::InstallInCapsule {
             source,
             source_name,
@@ -720,6 +744,7 @@ impl CompatibilityProvider for LiveProvider {
 
     fn confirm_vm_install(&mut self) -> Result<(), String> {
         let (source, source_name) = self.take_pending_install()?;
+        self.show_installing(&source_name);
         self.send(WorkerCommand::InstallInVm {
             source,
             source_name,
@@ -803,12 +828,29 @@ impl CompatibilityProvider for LiveProvider {
     clippy::too_many_lines,
     reason = "the worker serializes one bounded protocol stream and its exhaustive commands"
 )]
-fn worker(
-    mut client: SessionClient,
-    commands: &Receiver<WorkerCommand>,
-    events: &Sender<WorkerEvent>,
-) {
-    while let Ok(command) = commands.recv() {
+fn worker(mut client: SessionClient, commands: &Receiver<WorkerCommand>, events: &Events) {
+    let mut last_listed = None;
+    loop {
+        let command = match commands.recv_timeout(REFRESH_INTERVAL) {
+            Ok(command) => command,
+            // Nothing asked for a while: look whether a program or setup moved on, and wake the
+            // window only when the list changed, so a quiet manager draws nothing.
+            Err(RecvTimeoutError::Timeout) => {
+                let listed = list(&mut client);
+                let changed = match (&listed, &last_listed) {
+                    (WorkerEvent::Listed(now), Some(before)) => **now != *before,
+                    _ => true,
+                };
+                if let WorkerEvent::Listed(now) = &listed {
+                    last_listed = Some(now.as_ref().clone());
+                }
+                if changed && !events.send(listed) {
+                    return;
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
         let (event, refresh) = match command {
             WorkerCommand::Refresh => {
                 // Refreshing the server-owned singleton status before listing prevents
@@ -971,9 +1013,39 @@ fn worker(
                 true,
             ),
         };
-        if events.send(event).is_err() || refresh && events.send(list(&mut client)).is_err() {
+        if let WorkerEvent::Listed(now) = &event {
+            last_listed = Some(now.as_ref().clone());
+        }
+        if !events.send(event) {
             return;
         }
+        if refresh {
+            let listed = list(&mut client);
+            if let WorkerEvent::Listed(now) = &listed {
+                last_listed = Some(now.as_ref().clone());
+            }
+            if !events.send(listed) {
+                return;
+            }
+        }
+    }
+}
+
+/// Where the worker's news goes: the window's queue, and the wake that has the window take it
+/// in now rather than at the next input.
+struct Events {
+    sender: Sender<WorkerEvent>,
+    wake: ui::WakeHandle,
+}
+
+impl Events {
+    /// Hand `event` to the window and wake it: `false` once the window is gone.
+    fn send(&self, event: WorkerEvent) -> bool {
+        if self.sender.send(event).is_err() {
+            return false;
+        }
+        self.wake.wake();
+        true
     }
 }
 
@@ -1718,8 +1790,6 @@ mod tests {
                 cached: sample.catalogue(),
                 commands: command_tx,
                 events: event_rx,
-                refresh_pending: true,
-                next_refresh: ui::time::now() + REFRESH_INTERVAL,
                 notice: None,
                 notice_error: false,
                 stopping: None,
@@ -1747,8 +1817,6 @@ mod tests {
             cached: unavailable_catalogue("Connecting"),
             commands: command_tx,
             events: event_rx,
-            refresh_pending: true,
-            next_refresh: ui::time::now() + REFRESH_INTERVAL,
             notice: None,
             notice_error: false,
             stopping: None,

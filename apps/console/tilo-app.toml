@@ -30,7 +30,7 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@32"
+collab = "optional@34"
 
 [entrypoint]
 bin = "bin/console"

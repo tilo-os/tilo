@@ -96,6 +96,21 @@ pub enum ServiceOperation {
     /// their lists read it by from then on. Only a device of their own, never
     /// an agent's grant or a stand-in.
     NamePersonalDevice,
+    /// Plan a machine that is not installed yet: enter the plan document the
+    /// caller wrote as an entry in their Servers workspace, which the host
+    /// makes when it does not hold it yet. Only a device of the host's person
+    /// that may admit a device, never an agent's grant or a stand-in.
+    PlanMachine,
+    /// The machines the host's person planned and has not installed: each
+    /// plan as the machine reads it, with the drives its machine reported and
+    /// the questions it asked.
+    ListMachines,
+    /// One of them, named by its plan.
+    ShowMachine,
+    /// Take a machine that enrolled with a plan's token into its entry, under
+    /// its device key: the person's device that approved it does this, and the
+    /// machine's own report follows when it holds the workspace.
+    AdmitMachine,
 }
 
 impl ServiceOperation {
@@ -120,6 +135,10 @@ impl ServiceOperation {
             Self::KeepPersonalList => "workspace.personal.keep",
             Self::ReadPersonalList => "workspace.personal",
             Self::NamePersonalDevice => "workspace.personal.name",
+            Self::PlanMachine => "machine.plan",
+            Self::ListMachines => "machine.list",
+            Self::ShowMachine => "machine.show",
+            Self::AdmitMachine => "machine.admit",
         }
     }
 
@@ -182,7 +201,11 @@ impl ServiceOperation {
             | Self::AuthorApplications
             | Self::ComputeControl
             | Self::HostWorkspace
-            | Self::UnhostWorkspace => false,
+            | Self::UnhostWorkspace
+            | Self::PlanMachine
+            | Self::ListMachines
+            | Self::ShowMachine
+            | Self::AdmitMachine => false,
         }
     }
 }
@@ -192,7 +215,7 @@ mod tests {
     use super::ServiceOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [ServiceOperation; 17] = [
+    const ALL: [ServiceOperation; 21] = [
         ServiceOperation::CreateWorkspace,
         ServiceOperation::ListWorkspaces,
         ServiceOperation::EnterWorkspace,
@@ -210,6 +233,10 @@ mod tests {
         ServiceOperation::BranchOwnWorkspace,
         ServiceOperation::KeepPersonalList,
         ServiceOperation::ReadPersonalList,
+        ServiceOperation::PlanMachine,
+        ServiceOperation::ListMachines,
+        ServiceOperation::ShowMachine,
+        ServiceOperation::AdmitMachine,
     ];
 
     fn device(person: [u8; 32], capabilities: DeviceCapabilities) -> DeviceCert {

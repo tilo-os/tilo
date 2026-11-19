@@ -500,7 +500,7 @@ impl MainPanel {
             .as_title()
             .with_id("note_title")
             .on_change_view(move |text| *edited.borrow_mut() = Some(text.to_owned()));
-        title.set_placeholder(&CATALOG.t("notes-title-placeholder"));
+        title.set_placeholder(&crate::metadata::note_name("", []));
         title.set_accessible_name(CATALOG.t("notes-a11y-page-title"));
         Self {
             page_id: None,
@@ -863,14 +863,18 @@ impl MainPanel {
         })
     }
 
-    /// Update only the title (used by the sidebar's inline rename). Ignored
-    /// while the title is itself being edited, so a model echo doesn't stomp
-    /// the user's in-flight typing.
-    pub fn set_title(&mut self, title: Option<String>) {
-        if let Some(t) = title {
-            self.title_held = t;
-            self.show_held_title();
+    /// Update only the title, and what the note is called without one
+    /// (`untitled`, its first line), which an empty title shows dimmed in its
+    /// place. The title is left alone while it is itself being edited, so a
+    /// model echo doesn't stomp the user's in-flight typing.
+    pub fn set_title(&mut self, title: String, untitled: &str) {
+        if self.title.placeholder() != untitled {
+            self.title.set_placeholder(untitled);
+            self.measure_title();
+            self.dirty = true;
         }
+        self.title_held = title;
+        self.show_held_title();
     }
 
     /// Show the note's title in the field unless it is being typed in.
@@ -1532,13 +1536,15 @@ impl MainPanel {
         md
     }
 
-    /// Currently displayed title, if any. `None` when no page is open.
-    pub fn title(&self) -> Option<&str> {
-        if self.page_id.is_some() {
-            Some(self.title.value())
-        } else {
-            None
-        }
+    /// What the open note is called as its title reads now, typing
+    /// included: the title, else what its placeholder says. `None` when no
+    /// page is open.
+    pub fn name(&self) -> Option<String> {
+        self.page_id?;
+        Some(crate::metadata::note_name(
+            self.title.value(),
+            [self.title.placeholder()],
+        ))
     }
 
     /// Read-only access to the live editor. Used by integration

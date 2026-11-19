@@ -5,7 +5,7 @@
 //! listing reaches every one of them without the page carrying them: by
 //! name, by window, and by count.
 use super::ResourceRoot;
-use super::read::offer_document_reads;
+use super::read::{offer_document_reads, offer_item_reads};
 use super::{ResourceSpec, offer_item_open};
 use ui_core::automerge::AutoCommit;
 
@@ -43,6 +43,9 @@ impl ResourceRoot {
                 if self.resource.readable {
                     offer_document_reads(&mut child, &|id| self.typed.document_child(&*state, id));
                 }
+                // As the published page's items carry it: one past the page
+                // answers the same read it lists.
+                offer_item_reads(&mut child, table, self.resource.kind);
                 children.push(child);
             }
         }
@@ -170,6 +173,9 @@ impl ResourceRoot {
                 if self.resource.readable {
                     offer_document_reads(&mut child, &|id| self.typed.document_child(&*state, id));
                 }
+                // As the published page's items carry it: one past the page
+                // answers the same read it lists.
+                offer_item_reads(&mut child, table, self.resource.kind);
                 children.push(child);
             }
             skipped = skipped.saturating_add(past);

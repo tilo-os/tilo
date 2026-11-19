@@ -26,7 +26,7 @@ use tilo_server::certify::{ApproverDecision, ApproverReply};
 use tilo_server::daemon::{Server, ServerIdentity};
 use tilo_server::web::{TlsSource, WebConfig, WebHandle};
 use tilo_server::workspaces::PreAdmitRequest;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_client::{Approver, Carrier};
 use tilo_server_protocol::workspaces::{JoinReply, PreAdmission, Role};
 use tilo_session_client::{MemoryPeerStore, PeerConfig};
@@ -403,12 +403,12 @@ impl TestHost {
 
     /// The host as a session reaches it: its iroh endpoint, and the
     /// WebTransport listener pages reach it at.
-    pub fn iroh(&self) -> Host {
-        Host::at(self.server.node_addr()).with_web(Some(self.web.link.clone()))
+    pub fn iroh(&self) -> ServerAddress {
+        ServerAddress::at(self.server.node_addr()).with_web(Some(self.web.link.clone()))
     }
 
     /// The host as a device reaches it over `carrier`.
-    pub fn over(&self, carrier: Carrier) -> Host {
+    pub fn over(&self, carrier: Carrier) -> ServerAddress {
         self.iroh().over(carrier)
     }
 }
@@ -420,7 +420,7 @@ pub async fn approve_one(host: &TestHost, root: &SigningKey, laptop: &Device) ->
 }
 
 /// [`approve_one`], with `laptop` reaching the host as `host` says.
-pub async fn approve_one_over(host: &Host, root: &SigningKey, laptop: &Device) -> String {
+pub async fn approve_one_over(host: &ServerAddress, root: &SigningKey, laptop: &Device) -> String {
     // The laptop approves over iroh, whichever way the new device came.
     let host = match host.carrier() {
         Carrier::WebTransport => host.clone().over(Carrier::Direct),
@@ -486,11 +486,16 @@ where
     }
 }
 
-pub fn start_peer(host: Host, cert: DeviceCert, host_cert: DeviceCert, key: SigningKey) -> Link {
+pub fn start_peer(
+    host: ServerAddress,
+    cert: DeviceCert,
+    server_cert: DeviceCert,
+    key: SigningKey,
+) -> Link {
     start_peer_with_store(
         host,
         cert,
-        host_cert,
+        server_cert,
         key,
         Arc::new(MemoryPeerStore::default()),
     )
@@ -498,9 +503,9 @@ pub fn start_peer(host: Host, cert: DeviceCert, host_cert: DeviceCert, key: Sign
 
 /// [`start_peer`] over `store`, as a page reloaded from its profile.
 pub fn start_peer_with_store(
-    host: Host,
+    host: ServerAddress,
     cert: DeviceCert,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     key: SigningKey,
     store: Arc<MemoryPeerStore>,
 ) -> Link {
@@ -508,7 +513,7 @@ pub fn start_peer_with_store(
         PeerConfig {
             host,
             cert,
-            host_cert,
+            server_cert,
             revocations: RevocationList::new(),
             entering: None,
         },
@@ -545,9 +550,9 @@ impl tilo_server_client::DeviceSigner for PageMembership {
 /// [`start_peer`] for a page: over `store`, its ownership keeps the device key,
 /// so its session dials from an endpoint the device delegated.
 pub fn start_page(
-    host: Host,
+    host: ServerAddress,
     cert: DeviceCert,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     key: SigningKey,
     store: Arc<MemoryPeerStore>,
 ) -> Link {
@@ -555,7 +560,7 @@ pub fn start_page(
         PeerConfig {
             host,
             cert,
-            host_cert,
+            server_cert,
             revocations: RevocationList::new(),
             entering: None,
         },
@@ -567,9 +572,9 @@ pub fn start_page(
 /// [`start_page`], its session entering a workspace through its entry as it
 /// opens, as a new visitor's page does.
 pub fn enter_page(
-    host: Host,
+    host: ServerAddress,
     cert: DeviceCert,
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     key: SigningKey,
     store: Arc<MemoryPeerStore>,
     entering: tilo_server_protocol::entering::Entering,
@@ -578,7 +583,7 @@ pub fn enter_page(
         PeerConfig {
             host,
             cert,
-            host_cert,
+            server_cert,
             revocations: RevocationList::new(),
             entering: Some(entering),
         },
@@ -853,11 +858,11 @@ pub async fn enter(
     entry: (Vec<u8>, Vec<u8>),
     cert: &DeviceCert,
     key: &SigningKey,
-    host_cert: &DeviceCert,
+    server_cert: &DeviceCert,
     workspace_id: WorkspaceId,
 ) -> Link {
     redeem(host, entry, cert, key).await;
-    let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), key.clone());
+    let peer = start_peer(host.iroh(), cert.clone(), server_cert.clone(), key.clone());
     peer.send(Cmd::Join(workspace_id)).unwrap();
     in_workspace(&peer, workspace_id).await;
     peer

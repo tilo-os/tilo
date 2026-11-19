@@ -17,7 +17,9 @@ type Item {
 /// and, where a control on it is bound to a field, the field here. The root is made with the
 /// package and holds every value the pages show, so a window opens on its components from the
 /// first frame, whatever the document holds.
-type Gallery {
+type Gallery (title: name) {
+    /// What the gallery is called: its name, so no field a page edits is taken for its title.
+    name: Text = "Gallery"
     /// The note the basics' text input writes.
     basics_note: Text = ""
     /// The report the controls' page edits: every control there writes one of these.
@@ -67,132 +69,97 @@ root Gallery
 
 default view gallery for Gallery
 
-/// A gallery whose root is made opens filled: the platform applies this once to the root, as it
-/// applies every migration, as the root is made and before the window that asked for it is drawn.
-migration action seed(g: Gallery) {
-    fill(g)
-}
-
-/// What the gallery shows with nothing in it yet: one document of every group, so a person meets
-/// the components rather than an empty window. Each group fills only while it stands empty, so a
-/// scenario may fill them too.
-action fill(g: Gallery) {
-    if g.backlog_items.is_empty() {
-        g.backlog_items.insert(
-            Item(
-                title: "Write the release notes",
-                notes: RichText("Lead with the sync fix, then the new board."),
-                stage: "To do",
-            ),
-        )
-        g.backlog_items.insert(
-            Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"),
-        )
-        g.backlog_items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
-    }
-    if g.release_items.is_empty() {
-        g.release_items.insert(
-            Item(title: "Write the release notes", notes: RichText(""), stage: "To do"),
-        )
-        g.release_items.insert(
-            Item(title: "Translate the onboarding", notes: RichText(""), stage: "To do"),
-        )
-        g.release_items.insert(
-            Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"),
-        )
-        g.release_items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
-    }
-    if g.data_rows.is_empty() {
-        g.data_rows.insert(Row(title: "Readme.md", state: "Edited", size: 1204))
-        g.data_rows.insert(Row(title: "release.toml", state: "New", size: 312))
-        g.data_rows.insert(Row(title: "notes.txt", state: "Locked", size: 48))
-    }
-    if g.data_files.is_empty() {
-        let project = g.data_files.insert(Node(title: "Project", folder: true))
-        let src = g.data_files.insert(Node(title: "src", parent: project, folder: true, size: 0))
-        g.data_files.insert(Node(title: "main.rs", parent: src, folder: false, size: 880))
-        g.data_files.insert(Node(title: "board.rs", parent: src, folder: false, size: 2416))
-        let docs = g.data_files.insert(Node(title: "docs", parent: project, folder: true, size: 0))
-        g.data_files.insert(
-            Node(title: "release-notes.md", parent: docs, folder: false, size: 1204),
-        )
-    }
-    if g.data_messages.is_empty() {
-        g.data_messages.insert(
-            Message(
-                title: "a",
-                from: "Ada",
-                body: "Are we ready to ship the release tomorrow?",
-                at: 2026-06-29T16:05Z,
-                mine: false,
-            ),
-        )
-        g.data_messages.insert(
-            Message(
-                title: "b",
-                from: "Sam",
-                body: "The build is green. One screenshot is left for the docs.",
-                at: 2026-06-29T16:07Z,
-                mine: true,
-            ),
-        )
-        g.data_messages.insert(
-            Message(
-                title: "c",
-                from: "Sam",
-                body: "I'll finish it first thing.",
-                at: 2026-06-29T16:07Z,
-                mine: true,
-            ),
-        )
-        g.data_messages.insert(
-            Message(
-                title: "d",
-                from: "Ada",
-                body: "Screenshots are in. Then let us go.",
-                at: 2026-06-30T08:44Z,
-                mine: false,
-            ),
-        )
-        g.data_messages.insert(
-            Message(
-                title: "e",
-                from: "Sam",
-                body: "Shipping now.",
-                at: 2026-06-30T08:46Z,
-                mine: true,
-            ),
-        )
-    }
-    if g.data_cards.is_empty() {
-        g.data_cards.insert(Card(title: "Design", count: 12))
-        g.data_cards.insert(Card(title: "Engineering", count: 34))
-        g.data_cards.insert(Card(title: "Support", count: 7))
-    }
-    if g.data_changes.is_empty() {
-        g.data_changes.insert(
-            Change(title: "a", who: "Ada", summary: "Rewrote the summary", at: 2026-06-30T08:42Z),
-        )
-        g.data_changes.insert(
-            Change(title: "b", who: "Sam", summary: "Moved to Done", at: 2026-06-30T09:10Z),
-        )
-    }
-    if g.media_photos.is_empty() {
-        g.media_photos.insert(Photo(title: "Dawn", place: "Black Forest", picture: photo()))
-        g.media_photos.insert(Photo(title: "Blue hour", place: "Lake Constance", picture: photo()))
-        g.media_photos.insert(Photo(title: "Dunes", place: "Erg Chebbi", picture: photo()))
-        g.media_photos.insert(
-            Photo(title: "Pines in fog", place: "Harz", picture: photo(), tall: true),
-        )
-    }
-    if g.media_source == "" {
-        g.media_source = "text(\"Hills at dawn\")"
-    }
-    if g.chrome_apps.is_empty() {
-        g.chrome_apps.insert(Pinned(title: "Notes"))
-        g.chrome_apps.insert(Pinned(title: "Tasks"))
-        g.chrome_apps.insert(Pinned(title: "Mail"))
-    }
+/// What a new gallery starts with: one document of every group, so a person meets the components
+/// rather than an empty window.
+initial action fill(g: Gallery) {
+    g.backlog_items.insert(
+        Item(
+            title: "Write the release notes",
+            notes: RichText("Lead with the sync fix, then the new board."),
+            stage: "To do",
+        ),
+    )
+    g.backlog_items.insert(
+        Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"),
+    )
+    g.backlog_items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
+    g.release_items.insert(
+        Item(title: "Write the release notes", notes: RichText(""), stage: "To do"),
+    )
+    g.release_items.insert(
+        Item(title: "Translate the onboarding", notes: RichText(""), stage: "To do"),
+    )
+    g.release_items.insert(
+        Item(title: "Screenshots for the docs", notes: RichText(""), stage: "Doing"),
+    )
+    g.release_items.insert(Item(title: "Bump the version", notes: RichText(""), stage: "Done"))
+    g.data_rows.insert(Row(title: "Readme.md", state: "Edited", size: 1204))
+    g.data_rows.insert(Row(title: "release.toml", state: "New", size: 312))
+    g.data_rows.insert(Row(title: "notes.txt", state: "Locked", size: 48))
+    let project = g.data_files.insert(Node(title: "Project", folder: true))
+    let src = g.data_files.insert(Node(title: "src", parent: project, folder: true, size: 0))
+    g.data_files.insert(Node(title: "main.rs", parent: src, folder: false, size: 880))
+    g.data_files.insert(Node(title: "board.rs", parent: src, folder: false, size: 2416))
+    let docs = g.data_files.insert(Node(title: "docs", parent: project, folder: true, size: 0))
+    g.data_files.insert(Node(title: "release-notes.md", parent: docs, folder: false, size: 1204))
+    g.data_messages.insert(
+        Message(
+            title: "Ready to ship?",
+            from: "Ada",
+            body: "Are we ready to ship the release tomorrow?",
+            at: 2026-06-29T16:05Z,
+            mine: false,
+        ),
+    )
+    g.data_messages.insert(
+        Message(
+            title: "The build is green",
+            from: "Sam",
+            body: "The build is green. One screenshot is left for the docs.",
+            at: 2026-06-29T16:07Z,
+            mine: true,
+        ),
+    )
+    g.data_messages.insert(
+        Message(
+            title: "The last screenshot",
+            from: "Sam",
+            body: "I'll finish it first thing.",
+            at: 2026-06-29T16:07Z,
+            mine: true,
+        ),
+    )
+    g.data_messages.insert(
+        Message(
+            title: "Screenshots are in",
+            from: "Ada",
+            body: "Screenshots are in. Then let us go.",
+            at: 2026-06-30T08:44Z,
+            mine: false,
+        ),
+    )
+    g.data_messages.insert(
+        Message(
+            title: "Shipping now",
+            from: "Sam",
+            body: "Shipping now.",
+            at: 2026-06-30T08:46Z,
+            mine: true,
+        ),
+    )
+    g.data_cards.insert(Card(title: "Design", count: 12))
+    g.data_cards.insert(Card(title: "Engineering", count: 34))
+    g.data_cards.insert(Card(title: "Support", count: 7))
+    g.data_changes.insert(Change(title: "Rewrote the summary", summary: "Rewrote the summary"))
+    g.data_changes.insert(Change(title: "Moved to Done", summary: "Moved to Done"))
+    g.media_photos.insert(Photo(title: "Dawn", place: "Black Forest", picture: photo()))
+    g.media_photos.insert(Photo(title: "Blue hour", place: "Lake Constance", picture: photo()))
+    g.media_photos.insert(Photo(title: "Dunes", place: "Erg Chebbi", picture: photo()))
+    g.media_photos.insert(Photo(title: "Pines in fog", place: "Harz", picture: photo(), tall: true))
+    g.media_source = "text(\"Hills at dawn\")"
+    g.chrome_apps.insert(Pinned(title: "Notes"))
+    g.chrome_apps.insert(Pinned(title: "Tasks", kind: .tasks))
+    g.chrome_apps.insert(Pinned(title: "Mail", kind: .mail))
 }
 
 /// What the chosen group is called, over its page.
@@ -215,13 +182,12 @@ fn page_title(page: Text) -> Text {
         std.say("Places")
     } else if page == "chrome" {
         std.say("Shell parts")
-    } else if page == "customs" { std.say("Your own") } else { std.say("Gallery") }
+    } else if page == "customs" { std.say("Charts and views") } else { std.say("Gallery") }
 }
 
 /// The gallery's window: each group in the sidebar under what it is for, the one chosen shown
 /// beside it, so every component the toolkit describes is a place away rather than a window of
-/// its own. A window with no documents yet offers to fill them, because a gallery with nothing in
-/// it says nothing.
+/// its own.
 view gallery(g: Gallery) {
     state showing: Text = "basics"
     ui.NavShell(content_kind: .page, title: page_title(showing), sidebar_title: "Gallery") {
@@ -390,79 +356,137 @@ view parts(g: Gallery, last: State<Text>) {
     }
     part("A page of a stack", "A section opened in a page of its own, one level deep.") {
         ui.PageSlide(level: 1) {
-            ui.Text("Opened from the panel, with the way back above it.", role: .caption)
+            ui.Text("A page one level deep, slid in over the one that opened it.", role: .caption)
         }
     }
 }
 
 /// The backlog's page: its items as rows, each with a menu, a swipe and a hover toolbar,
-/// over a composer.
+/// over the line that adds the next one.
 view backlog_list(g: Gallery) {
-    state last: Text = ""
     ui.Docked {
         foot: {
-            stack(gap: .related) {
-                if last != "" {
-                    ui.Text(last, role: .caption, secondary: true)
+            row(gap: .related) {
+                ui.RichInput(
+                    bind: g.backlog_draft,
+                    placeholder: "Add an item to the backlog",
+                    fill,
+                ) {
+                    on submit: add_item(g)
                 }
-                row(gap: .related) {
-                    ui.RichInput(bind: g.backlog_draft, placeholder: "Message the team", fill)
-                    ui.Button("Send", icon: .send, icon_only: true)
+                ui.Button("Add", icon: .plus, icon_only: true) {
+                    on press: add_item(g)
                 }
             }
         }
-        ui.VirtualList(selection_follows_focus: true, in_column: true) {
-            for x in g.backlog_items {
-                ui.ListItem(item: x) {
-                    menu: {
-                        ui.EmojiBar(["👍", "🎉", "👀"])
-                        ui.MenuItem("Open", icon: .arrow_right)
-                        ui.MenuSeparator()
-                        ui.MenuItem("Delete", icon: .trash, destructive: true)
+        stack(padding: .group, gap: .related, fill) {
+            ui.Text(
+                "Rows of a collection: each with a menu, a swipe, a toolbar on hover and its reactions.",
+                role: .caption,
+                secondary: true,
+            )
+            ui.VirtualList(selection_follows_focus: true, fill) {
+                for x in g.backlog_items {
+                    ui.ListItem(item: x, done: x.stage == "Done") {
+                        menu: {
+                            ui.EmojiBar(["👍", "🎉", "👀"]) {
+                                on pick(e): react(x, e)
+                            }
+                            ui.MenuItem("Mark done", icon: .check) {
+                                on choose: finish(x)
+                            }
+                            ui.MenuSeparator()
+                            ui.MenuItem("Delete", icon: .trash, destructive: true) {
+                                on choose: remove_item(g, x)
+                            }
+                        }
+                        swipe: {
+                            ui.SwipeAction("Done", icon: .check) {
+                                on swipe: finish(x)
+                            }
+                        }
+                        change: {
+                            ui.ChangeMark(x)
+                        }
+                        item_row(g, x)
                     }
-                    swipe: {
-                        ui.SwipeAction("Archive", icon: .archive)
-                    }
-                    change: {
-                        ui.ChangeMark(x)
-                    }
-                    item_row(x)
                 }
             }
         }
     }
 }
 
-/// One item in the list: its row, what it says, its reactions and the message it answers, with
-/// a menu, a swipe and a hover toolbar of its own.
-view item_row(x: Item) {
+/// One item in the list: its row, what it says and its reactions, with a menu, a swipe and a
+/// hover toolbar of its own.
+view item_row(g: Gallery, x: Item) {
     stack(gap: .tight) {
         ui.ListRow(x.title, secondary: x.stage)
-        ui.Reactions(reactions: x.reactions)
+        if not x.reactions.keys().is_empty() {
+            ui.Reactions(reactions: x.reactions) {
+                on toggle(e): react(x, e)
+            }
+        }
     }
     ui.ContextMenu {
-        ui.MenuItem("Copy link", icon: .link)
+        ui.MenuItem("Mark done", icon: .check) {
+            on choose: finish(x)
+        }
     }
     ui.Swipe {
         trailing: {
-            ui.SwipeAction("Delete", icon: .trash, destructive: true)
+            ui.SwipeAction("Delete", icon: .trash, destructive: true) {
+                on swipe: remove_item(g, x)
+            }
         }
     }
     ui.HoverToolbar {
-        ui.Button("Reply", icon: .reply, icon_only: true)
-        ui.EmojiPicker()
+        ui.Button("Mark done", icon: .check, icon_only: true) {
+            on press: finish(x)
+        }
+        ui.EmojiPicker() {
+            on pick(e): react(x, e)
+        }
     }
+}
+
+/// Adds what the backlog's line says as an item to do, and clears the line.
+action add_item(g: Gallery) {
+    require not g.backlog_draft.is_empty() "Write the item first"
+    g.backlog_items.insert(
+        Item(title: g.backlog_draft.excerpt, notes: g.backlog_draft, stage: "To do"),
+    )
+    g.backlog_draft = RichText("")
+}
+
+/// Marks an item done.
+action finish(x: Item) {
+    require x.stage != "Done" "Already done"
+    x.stage = "Done"
+}
+
+/// Takes an item off the backlog.
+destructive action remove_item(g: Gallery, x: Item) {
+    g.backlog_items.remove(x)
+}
+
+/// Reacts to an item with an emoji, or takes the person's reaction back.
+action react(x: Item, emoji: Text) {
+    let mine = if let who = x.reactions.get(emoji) { who.any(p -> p == invoker) } else { false }
+    if mine { x.reactions.remove(emoji, invoker) } else { x.reactions.add(emoji, invoker) }
 }
 
 /// The release's page: a list per stage, each card an item.
 view release_board(g: Gallery) {
     state last: Text = ""
-    stack(gap: .section, fill) {
-        ui.Text(
-            "A board, a list per stage, with cards an app drags between them.",
-            role: .caption,
-            secondary: true,
-        )
+    // The board keeps the column's edge itself, so it scrolls across to the pane's edges.
+    stack(gap: .tight, fill) {
+        stack(padding: .group) {
+            ui.Text(
+                "A board, a list per stage, with cards an app drags between them.",
+                role: .caption,
+                secondary: true,
+            )
+        }
         ui.Scroll(across: true) {
             ui.Board(name: "Release") {
                 for stage in ["To do", "Doing", "Done"] {
@@ -494,11 +518,10 @@ view board_item_row(x: Item) {
 /// The basics, with a note the person looking wrote.
 scenario "basics" {
     let g = root Gallery
-    fill(g)
     g.basics_note = "Written from the text input."
 }
 
 /// Every group filled, as the gallery's first start fills it.
 scenario "every family" {
-    invoke(fill(root Gallery))
+    root Gallery
 }

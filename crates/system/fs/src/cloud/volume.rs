@@ -1639,12 +1639,12 @@ impl CloudVolume {
                 Ok(())
             }
             Err(Error::Conflict { .. } | Error::AlreadyExists) => {
-                self.keep_both(id, &item, &parent, &staged)
+                self.keep_both(id, &item, &parent, &staged, generation)
             }
             Err(Error::NotFound) if !is_local(id) => {
                 // Deleted remotely while edited here: the edit survives as a conflict copy where the file
                 // was.
-                self.keep_both(id, &item, &parent, &staged)
+                self.keep_both(id, &item, &parent, &staged, generation)
             }
             Err(error) => Err(error),
         }
@@ -1661,30 +1661,37 @@ impl CloudVolume {
     }
 
     fn finish_upload(&self, id: &ItemId, uploaded: &Item, staged: &Path, generation: u64) {
-        let adopt = {
-            let mut inner = self.inner();
+        // Read the bytes before taking the lock, so a big upload does not hold the mount while it
+        // hashes. A writer appending meanwhile bumps the generation, and the content is not adopted.
+        let digest = hash_file(staged).ok();
+        let mut inner = self.inner();
+        let unchanged = inner
+            .local
+            .get(id)
+            .is_some_and(|l| l.generation == generation && l.writers == 0);
+        if unchanged {
+            // Store the bytes and drop the staged copy before the new revision becomes visible:
+            // until they are in the content area, a reader of that revision would fetch a version
+            // nothing names yet. Without the staged copy the tree shows the uploaded size.
+            if let Some(digest) = digest
+                && let Some(content) = self.content()
+            {
+                let key = rev_key(&uploaded.id, uploaded.revision.as_ref());
+                let _ = content.adopt_hashed_file(&key, staged, digest, Retention::Cached);
+            }
+            inner.local.remove(id);
             Self::remap(&mut inner, id, uploaded.clone());
-            let unchanged = inner
-                .local
-                .get(&uploaded.id)
-                .is_some_and(|l| l.generation == generation && l.writers == 0);
-            if unchanged {
-                inner.local.remove(&uploaded.id);
-            } else if let Some(local) = inner.local.get_mut(&uploaded.id) {
+        } else {
+            Self::remap(&mut inner, id, uploaded.clone());
+            if let Some(local) = inner.local.get_mut(&uploaded.id) {
                 // Written again while uploading: the next upload starts from what was just sent.
                 local.base.clone_from(&uploaded.revision);
                 if local.writers == 0 {
                     inner.queue(Op::Upload(uploaded.id.clone()));
                 }
             }
-            unchanged
-        };
-        if adopt {
-            let key = rev_key(&uploaded.id, uploaded.revision.as_ref());
-            if let Some(content) = self.content() {
-                let _ = content.adopt_file(&key, staged, Retention::Cached);
-            }
         }
+        drop(inner);
         self.report(MountHealth::Healthy);
     }
 
@@ -1696,10 +1703,11 @@ impl CloudVolume {
         item: &Item,
         parent: &ItemId,
         staged: &Path,
+        generation: u64,
     ) -> Result<(), Error> {
-        let bytes = hash_file(staged)?;
+        let digest = hash_file(staged)?;
         let copy_name = String::from_utf8_lossy(
-            conflict_name(item.name.as_bytes(), &iroh_blobs::Hash::from(bytes)).as_bytes(),
+            conflict_name(item.name.as_bytes(), &iroh_blobs::Hash::from(digest)).as_bytes(),
         )
         .into_owned();
         let copy = match self.send_file(
@@ -1727,9 +1735,29 @@ impl CloudVolume {
                 Err(error) => return Err(error),
             }
         };
+        let key = rev_key(&copy.id, copy.revision.as_ref());
         {
             let mut inner = self.inner();
-            inner.local.remove(id);
+            let written = inner
+                .local
+                .get(id)
+                .is_some_and(|local| local.generation != generation || local.writers > 0);
+            if written {
+                // Written while the conflict resolved, so the staged bytes are no longer the copy's
+                // revision and the writer keeps appending: the file it has open becomes the copy, and
+                // the copy's next upload carries the rest.
+                if let Some(local) = inner.local.get_mut(id) {
+                    local.base.clone_from(&copy.revision);
+                }
+                Self::remap(&mut inner, id, copy.clone());
+            } else {
+                // Store the bytes before the copy shows: until they are in the content area, a reader
+                // of that revision would fetch a version nothing names yet.
+                if let Some(content) = self.content() {
+                    let _ = content.adopt_hashed_file(&key, staged, digest, Retention::Cached);
+                }
+                inner.local.remove(id);
+            }
             match remote {
                 Some(remote) => {
                     inner.tree_mut().upsert(remote);
@@ -1738,11 +1766,7 @@ impl CloudVolume {
                     inner.tree_mut().remove(id);
                 }
             }
-            inner.tree_mut().upsert(copy.clone());
-        }
-        let key = rev_key(&copy.id, copy.revision.as_ref());
-        if let Some(content) = self.content() {
-            let _ = content.adopt_file(&key, staged, Retention::Cached);
+            inner.tree_mut().upsert(copy);
         }
         if is_local(id) {
             // The name belongs to someone else's new file now: list what is there.

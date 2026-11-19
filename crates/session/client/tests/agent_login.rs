@@ -163,7 +163,7 @@ async fn an_agent_logs_in_with_the_tabs_code_and_shows_in_the_workspace_as_the_p
             .checked_sub(signed.cert.issued_at_ns),
         Some(CertificationPolicy::browser().lifetime_ns)
     );
-    assert_eq!(signed.host_cert, host_device.cert);
+    assert_eq!(signed.server_cert, host_device.cert);
 
     // It enters the Lounge as Bob, through the entry as the page would, its
     // session the agent's run.

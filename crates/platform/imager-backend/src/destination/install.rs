@@ -141,6 +141,11 @@ pub struct InstallOptions {
     /// Enrol the secret as a plain strong LUKS passphrase instead of the measured-boot TPM2 PIN
     /// policy; the interactive flow leaves the reviewed target's choice alone.
     pub force_startup_passphrase: bool,
+    /// The plan's unlock choice: `owner-device`, `tpm` or `passphrase`. Empty leaves it to the
+    /// image's own default. A server planned for `owner-device`, or for `tpm` on a machine with
+    /// no usable TPM, keeps its install key inside the encrypted root so first boot can enrol
+    /// the sibling unlock.
+    pub unlock: String,
     /// POSIX locale seeded into `/etc/locale.conf`.
     pub locale: String,
     /// IANA time zone; empty omits the flag.
@@ -156,6 +161,19 @@ pub struct InstallOptions {
     pub fido2: bool,
     /// Staged (USB-free) installs only: the validated handoff copy names the installer's disk.
     pub internal_handoff: String,
+    /// A complete install plan stands in for the person's confirmation: the
+    /// machine installs with nobody at its screen, enrolls with the staged
+    /// token, and enrols the unlock another of the person's devices releases.
+    pub install_plan: bool,
+    /// The plan's static addressing, `address/prefix` entries comma separated:
+    /// applied to the installer and kept in the installed system, so a machine
+    /// whose only address is a static one can reach the person's devices.
+    pub network_static: String,
+    /// The static network's default gateways, comma separated: one for each
+    /// address family; empty for none.
+    pub network_gateway: String,
+    /// The static network's DNS servers, comma separated; empty for none.
+    pub network_dns: String,
     /// Install the media codecs extension, which downloads the formats from their publishers.
     pub codecs: bool,
     /// Never serialized into a prepared profile.
@@ -210,6 +228,7 @@ impl Default for InstallOptions {
             full_name: String::new(),
             password_is_hash: false,
             force_startup_passphrase: false,
+            unlock: String::new(),
             locale: String::new(),
             timezone: String::new(),
             keymap: "us".to_string(),
@@ -217,6 +236,10 @@ impl Default for InstallOptions {
             pin: Zeroizing::new(String::new()),
             fido2: false,
             internal_handoff: String::new(),
+            install_plan: false,
+            network_static: String::new(),
+            network_gateway: String::new(),
+            network_dns: String::new(),
             codecs: false,
             online_accounts: None,
             account_operation: String::new(),
@@ -320,6 +343,21 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     }
     if opts.force_startup_passphrase {
         cmd.arg("--startup-passphrase-only");
+    }
+    if !opts.unlock.is_empty() {
+        cmd.arg("--unlock").arg(&opts.unlock);
+    }
+    if opts.install_plan {
+        cmd.arg("--install-plan");
+    }
+    if !opts.network_static.is_empty() {
+        cmd.arg("--network-static").arg(&opts.network_static);
+        if !opts.network_gateway.is_empty() {
+            cmd.arg("--network-gateway").arg(&opts.network_gateway);
+        }
+        if !opts.network_dns.is_empty() {
+            cmd.arg("--network-dns").arg(&opts.network_dns);
+        }
     }
     if !opts.locale.trim().is_empty() {
         cmd.arg("--locale").arg(opts.locale.trim());
@@ -1396,6 +1434,69 @@ mod tests {
                 .unwrap();
             assert_eq!(purpose[1], "server");
             assert_eq!(server.get_program(), computer.get_program());
+        }
+
+        phase install_command_carries_the_plans_unlock_choice;
+        {
+            let planned = InstallOptions {
+                unlock: "owner-device".into(),
+                ..InstallOptions::default()
+            };
+            let args: Vec<String> = install_command("/dev/vda", "qq", &planned)
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let at = args
+                .iter()
+                .position(|a| a == "--unlock")
+                .expect("--unlock");
+            assert_eq!(args[at + 1], "owner-device");
+            let open: Vec<String> = install_command("/dev/vda", "qq", &InstallOptions::default())
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                !open.iter().any(|a| a == "--unlock"),
+                "an unplanned install leaves the default alone"
+            );
+        }
+
+        phase install_command_carries_the_plans_static_network;
+        {
+            let planned = InstallOptions {
+                purpose: SERVER_PURPOSE.into(),
+                install_plan: true,
+                network_static: "65.108.204.148/26,2a01:4f9:1a:a083::2/64".into(),
+                network_gateway: "65.108.204.129,fe80::1".into(),
+                network_dns: "185.12.64.1,185.12.64.2".into(),
+                ..InstallOptions::default()
+            };
+            let args: Vec<String> = install_command("/dev/vda", "", &planned)
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert!(args.iter().any(|a| a == "--install-plan"), "{args:?}");
+            for expected in [
+                [
+                    "--network-static",
+                    "65.108.204.148/26,2a01:4f9:1a:a083::2/64",
+                ],
+                ["--network-gateway", "65.108.204.129,fe80::1"],
+                ["--network-dns", "185.12.64.1,185.12.64.2"],
+            ] {
+                assert!(
+                    args.windows(2).any(|pair| pair.iter().map(String::as_str).eq(expected)),
+                    "missing {expected:?} in {args:?}"
+                );
+            }
+            let dhcp: Vec<String> = install_command("/dev/vda", "", &InstallOptions::default())
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                !dhcp.iter().any(|a| a.starts_with("--network-")),
+                "an unplanned network is left to the image's own default: {dhcp:?}"
+            );
         }
 
         phase install_command_passes_the_codecs_opt_in_only_when_chosen;

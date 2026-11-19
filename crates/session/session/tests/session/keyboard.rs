@@ -77,7 +77,7 @@ fn clear_of_the_next(rect: (i32, i32, i32, i32)) -> (f64, f64) {
 
 /// A finger touching `display` at (`x`, `y` ) and lifting again: a tap on the glass, as a person
 /// gives one.
-fn finger(session: &mut Session, (x, y): (f64, f64)) {
+pub(super) fn finger(session: &mut Session, (x, y): (f64, f64)) {
     for event in [
         InputEvent::TouchDown { slot: 0, x, y },
         InputEvent::TouchFrame,

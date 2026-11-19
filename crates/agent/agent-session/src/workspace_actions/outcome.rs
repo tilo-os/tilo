@@ -5,7 +5,7 @@
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueQuery, Confirmation, InvocationReceipt, ReceiptStatus,
 };
-use tilo_actions::{ActionOutput, ConfirmationPolicy, InvocationId};
+use tilo_actions::{ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId};
 
 use crate::member::actions::Outcome;
 
@@ -121,4 +121,22 @@ pub(super) fn opens_as_its_own(app: &ui::application::ApplicationDefinition, rec
         return false;
     }
     !app.keeps_workspace_resource() || collab_types::person_resource_type(record).is_none()
+}
+
+/// Whether a failure is this invocation's answer. One the caller may ask
+/// again is not: the same request under the same id executes it again rather
+/// than being handed the failure it already has, which is what a change the
+/// workspace took none of because the session it rode was replaced needs.
+pub(super) fn settles(error: &ActionFailure) -> bool {
+    !error.retryable
+}
+
+/// The outcome of an action whose change could not be committed.
+pub(super) fn commit_failed(message: String, retryable: bool) -> Outcome {
+    Outcome::Failed(ActionFailure {
+        code: "commit_failed".into(),
+        message,
+        details: None,
+        retryable,
+    })
 }

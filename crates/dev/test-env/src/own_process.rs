@@ -130,8 +130,17 @@ fn is_the_child(name: &str) -> bool {
 fn run_child(name: &str, proof: &Path) -> std::process::ExitStatus {
     let binary = env::current_exe().expect("the test binary");
     let mut command = Command::new(binary);
+    // A test the caller asked for despite its `#[ignore]` (a check that
+    // builds what it reads) starts here the same way.
     command
-        .args(["--exact", name, "--nocapture", "--test-threads", "1"])
+        .args([
+            "--exact",
+            name,
+            "--nocapture",
+            "--include-ignored",
+            "--test-threads",
+            "1",
+        ])
         .env(CHILD_TEST, name)
         .env(CHILD_PROOF, proof);
     // The child copies the environment as it starts: start it while no

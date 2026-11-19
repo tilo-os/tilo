@@ -28,12 +28,6 @@ pub fn block_kind() -> String {
 /// The longest block label a hit shows; the whole block is still searched.
 const BLOCK_LABEL_CHARS: usize = 72;
 
-/// The display title for a page: the word for an unnamed note when it has no title, so a note
-/// nobody named is still findable and readable in the palette.
-fn display_title(page: &Page) -> String {
-    crate::metadata::note_title(&page.title)
-}
-
 /// Every note of `pages` and every non-empty block of it, each opening its
 /// note.
 pub fn entries<'a>(pages: impl Iterator<Item = (&'a Id, &'a Page)>) -> Vec<SearchEntry> {
@@ -43,7 +37,7 @@ pub fn entries<'a>(pages: impl Iterator<Item = (&'a Id, &'a Page)>) -> Vec<Searc
             continue;
         };
         let anchor = crate::actions::page_resource_id(page_id);
-        let title = display_title(page);
+        let title = page.name();
         entries.push(
             SearchEntry::new(title.clone(), "")
                 .anchored(anchor.clone())
@@ -138,12 +132,8 @@ mod tests {
             {
                 let mut notebook = Replica::<NoteList>::new();
                 add(&mut notebook, "");
-                let hits = search(&notebook).search("untitled");
-                assert_eq!(
-                    hits.len(),
-                    1,
-                    "a blank-titled page surfaces under its placeholder"
-                );
+                let hits = search(&notebook).search("new note");
+                assert_eq!(hits.len(), 1, "a blank note surfaces under its name");
             }
             {
                 let source = search(&populated().0);
@@ -194,7 +184,7 @@ mod tests {
         }
     }
 
-    /// A note nobody named reads as the word for one in the language of whoever looks it up, and
+    /// A note that says nothing yet reads as the word for a new one in the language of whoever looks it up, and
     /// the resource itself holds no title at all.
     #[test]
     fn a_note_nobody_named_reads_in_the_readers_own_language() {
@@ -211,13 +201,13 @@ mod tests {
                 .all(|(_, page)| page.title.is_empty()),
             "the note keeps no title, so the shell says what an unnamed note is"
         );
-        let hits = search(&notebook).search("ohne");
+        let hits = search(&notebook).search("neue");
         assert_eq!(
             hits.len(),
             1,
             "the German locale finds it by the German word"
         );
-        assert_eq!(hits[0].title, "Ohne Titel");
+        assert_eq!(hits[0].title, "Neue Notiz");
         assert_eq!(hits[0].action_id, crate::actions::page_resource_id(id));
         CATALOG.set_locale("en-US");
     }

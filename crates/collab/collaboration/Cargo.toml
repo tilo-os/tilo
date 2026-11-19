@@ -12,7 +12,7 @@ description = "The collab client without the toolkit: what a process that commit
 default = []
 # The local session runtime: the identity the launcher bound, read through
 # the identity client.
-local-daemons = ["dep:runtime-portal", "dep:runtime-identity"]
+local-daemons = ["dep:runtime-portal", "dep:tilo-identity-client"]
 # A native launch: the manager joins its workspace on the connection the launcher
 # (or the shell, for a window it opened) handed the process.
 native = ["local-daemons"]
@@ -29,6 +29,8 @@ audio = ["native", "dep:media"]
 test-support = ["dep:tilo-test-env", "dep:tracing-subscriber", "runtime-collab/settings-host"]
 
 [dependencies]
+# What an app asks of the device's one store, and its answers.
+tilo-resource-store = { version = "0.1.0", path = "../resource-store" }
 collab-types = { version = "0.1.0", path = "../collab-types" }
 key-group = { version = "0.1.0", path = "../key-group" }
 # The members' content secret a record's content is sealed under.
@@ -72,7 +74,7 @@ sha2.workspace = true
 # The local document action report is the broker SDK's vocabulary.
 runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false }
 runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", optional = true }
-runtime-identity = { package = "tilo-identity-client", version = "0.1.0", path = "../../runtime/tilo-identity-client", optional = true }
+tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", optional = true }
 # The host inputs (who this process is, where its files live), as the toolkit
 # reads them, without the toolkit's host services.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
@@ -92,14 +94,14 @@ tilo-app-id = { version = "0.1.0", path = "../../platform/tilo-app-id" }
 
 [dev-dependencies]
 tempfile.workspace = true
+libc.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 runtime-collab = { path = "../../runtime/runtime-collab", features = ["settings-host"] }
 tracing-subscriber.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
-runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
-# The identity tests read the configuration directory the process names.
+# The tests read the toolkit's host inputs from the process environment.
 tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", features = ["native"] }
 
 [lints]

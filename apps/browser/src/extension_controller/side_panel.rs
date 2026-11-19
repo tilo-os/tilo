@@ -3,11 +3,11 @@
 //! the person drags it to; and the extensions' keyboard shortcuts the window runs while
 //! its own field has the keyboard.
 
-use ui::icons::Icon;
-use ui::webview::{
+use tilo_webview::{
     ExtensionShortcut, ExtensionSidePanelChange, KeyInput, KeyModifiers, SharedEngine,
     WebViewCommand, WebViewEvent,
 };
+use ui::icons::Icon;
 use ui::widget::{Button, Container, Element, MenuItem};
 use ui::window_toolbar::ToolbarAction;
 

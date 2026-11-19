@@ -77,6 +77,12 @@ async fn every_mutation_reaches_the_helper_and_is_kept() {
             let id = identity_of(request);
             format!("{id} 1\nNov 18 tilo-server: serving\n")
         }
+        "set-default-start" => {
+            let id = identity_of(request);
+            format!(
+                "{id} 1\nTilo (Boot0100) now starts by default where Boot0001 did; 1 boot entry ahead kept their place\n"
+            )
+        }
         _ => format!("{} 1\n{verb} done", identity_of(request)),
     });
     let ask = |operation| {
@@ -122,6 +128,18 @@ async fn every_mutation_reaches_the_helper_and_is_kept() {
     assert_eq!(reboot.operation, "reboot");
     let rollback = ask(ServerOperation::Rollback).await;
     assert!(!rollback.done);
+
+    // Making Tilo the default start changes firmware, not a boot: it waits for
+    // the helper's answer and keeps its sentence, which names what changed.
+    let default_start = ask(ServerOperation::SetDefaultStart).await;
+    assert!(default_start.done, "{default_start:?}");
+    assert_eq!(default_start.operation, "set-default-start");
+    assert!(
+        default_start.summary.contains("where Boot0001 did"),
+        "{}",
+        default_start.summary
+    );
+    assert_eq!(default_start.answer, ServerAnswer::Nothing);
 }
 
 #[tokio::test]
@@ -205,6 +223,27 @@ fn journal_lines_are_capped() {
     );
     assert_eq!(parse_answer("no newline"), None);
     assert_eq!(parse_answer("abc 7\n"), None);
+}
+
+#[test]
+fn the_status_names_a_sibling_unlock_that_is_still_pending() {
+    let temp = tempfile::tempdir().unwrap();
+    let state_root = temp.path();
+    assert_eq!(
+        super::unlock_with_pending("owner-device".into(), state_root),
+        "owner-device",
+        "without the installer's marker there is nothing pending"
+    );
+    std::fs::write(state_root.join("sibling-unlock-pending"), "").unwrap();
+    assert_eq!(
+        super::unlock_with_pending("owner-device".into(), state_root),
+        "owner-device (sibling unlock pending)"
+    );
+    assert_eq!(
+        super::unlock_with_pending(String::new(), state_root),
+        "owner-device (sibling unlock pending)",
+        "an image-default plan still names what the pending unlock will be"
+    );
 }
 
 #[test]

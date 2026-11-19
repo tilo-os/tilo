@@ -423,7 +423,9 @@ fn a_page_is_told_the_packet_relay_its_host_runs_from_the_first_answer() {
     let started = announced(&workspace);
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let info = runtime
-        .block_on(tilo_server_client::https::host_info(&Plain(started.plain)))
+        .block_on(tilo_server_client::https::server_info(&Plain(
+            started.plain,
+        )))
         .expect("the host answers where its pages dial it");
     let address = info.address.expect("the host names an endpoint");
     let relay = address
@@ -505,8 +507,8 @@ async fn wait_for<T: Send>(
 }
 
 /// The workspace's iroh endpoint, where its pages run their sessions.
-fn host_of(info: tilo_server_protocol::web::HostInfo) -> tilo_server_client::Host {
-    tilo_server_client::Host::at(
+fn host_of(info: tilo_server_protocol::web::ServerInfo) -> tilo_server_client::ServerAddress {
+    tilo_server_client::ServerAddress::at(
         info.address
             .expect("the workspace publishes its iroh endpoint")
             .endpoint_addr,
@@ -515,16 +517,16 @@ fn host_of(info: tilo_server_protocol::web::HostInfo) -> tilo_server_client::Hos
 
 /// A page of `cert`'s device, on the workspace's session.
 fn page(
-    host: tilo_server_client::Host,
+    host: tilo_server_client::ServerAddress,
     key: ed25519_dalek::SigningKey,
     cert: tilo_user_identity::DeviceCert,
-    host_cert: &tilo_user_identity::DeviceCert,
+    server_cert: &tilo_user_identity::DeviceCert,
 ) -> tilo_session_client::Link {
     tilo_session_client::start_session(
         tilo_session_client::PeerConfig {
             host,
             cert,
-            host_cert: host_cert.clone(),
+            server_cert: server_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
             entering: None,
         },
@@ -573,15 +575,15 @@ async fn enter_through_entry_as(
     name: &str,
     request_id: [u8; 32],
 ) -> Result<tilo_server_client::login::Admission, tilo_session_client::device::DeviceRefusal> {
-    let info = tilo_server_client::https::host_info(&Plain(plain))
+    let info = tilo_server_client::https::server_info(&Plain(plain))
         .await
         .unwrap();
-    let host_cert = info.host_cert.clone();
+    let server_cert = info.server_cert.clone();
     let session = tilo_session_client::start_session(
         tilo_session_client::PeerConfig {
             host: host_of(info),
             cert: cert.clone(),
-            host_cert,
+            server_cert,
             revocations: tilo_user_identity::RevocationList::new(),
             entering: Some(tilo_server_protocol::entering::Entering {
                 workspace: workspace.to_owned(),
@@ -798,15 +800,15 @@ async fn chat_route(
     plain: std::net::SocketAddr,
     cluster: &str,
 ) -> (
-    tilo_server_client::Host,
+    tilo_server_client::ServerAddress,
     tilo_user_identity::DeviceCert,
     tilo_peer_state::document_frame::DocumentRoute,
 ) {
     const CHAT: &str = "so.tilo.chat";
-    let info = tilo_server_client::https::host_info(&Plain(plain))
+    let info = tilo_server_client::https::server_info(&Plain(plain))
         .await
         .unwrap();
-    let host_cert = info.host_cert.clone();
+    let server_cert = info.server_cert.clone();
     let host = host_of(info);
     let catalogue = tilo_agent_session::AppCatalogue::native();
     let route = tilo_peer_state::document_frame::DocumentRoute {
@@ -814,7 +816,7 @@ async fn chat_route(
         cluster_id: cluster.into(),
         document: tilo_server::workspace_bots::workspace_resource(&catalogue, CHAT),
     };
-    (host, host_cert, route)
+    (host, server_cert, route)
 }
 
 /// A person of their own: a root this test generates, and a device the root
@@ -1011,9 +1013,9 @@ async fn persons_read_the_workspace_and_are_refused(
 ) {
     use tilo_session_client::Event;
 
-    let (host, host_cert, route) = chat_route(plain, cluster).await;
+    let (host, server_cert, route) = chat_route(plain, cluster).await;
 
-    let visiting = page(host.clone(), visiting_key, visiting_cert, &host_cert);
+    let visiting = page(host.clone(), visiting_key, visiting_cert, &server_cert);
 
     let visiting_heard = visiting.events();
     visiting.send(Cmd::Join(workspace_id)).unwrap();
@@ -1030,7 +1032,7 @@ async fn persons_read_the_workspace_and_are_refused(
 
     // Another person holds the listing's default role, a viewer's: they read
     // the workspace and write nothing.
-    let writer = page(host.clone(), writing_key, writing_cert, &host_cert);
+    let writer = page(host.clone(), writing_key, writing_cert, &server_cert);
     let writer_heard = writer.events();
     writer.send(Cmd::Join(workspace_id)).unwrap();
     writer.send(Cmd::OpenRoute(route.clone())).unwrap();
@@ -1064,7 +1066,7 @@ async fn persons_read_the_workspace_and_are_refused(
     .await;
     assert!(!committed, "the viewer's write was committed: {refused:?}");
 
-    let other = page(host.clone(), sibling_key, sibling_cert, &host_cert);
+    let other = page(host.clone(), sibling_key, sibling_cert, &server_cert);
 
     let other_heard = other.events();
     other.send(Cmd::Join(workspace_id)).unwrap();
@@ -1088,7 +1090,7 @@ async fn persons_read_the_workspace_and_are_refused(
         "a sibling device was admitted: {refused:?}"
     );
 
-    owner_devices_join_and_forgeries_are_refused(host, &host_cert, workspace_id).await;
+    owner_devices_join_and_forgeries_are_refused(host, &server_cert, workspace_id).await;
 
     other.close();
     writer.close();
@@ -1100,14 +1102,14 @@ async fn persons_read_the_workspace_and_are_refused(
 /// owner's root without the root's signature, and one of the owner's root's
 /// that expired, are not admitted.
 async fn owner_devices_join_and_forgeries_are_refused(
-    host: tilo_server_client::Host,
-    host_cert: &tilo_user_identity::DeviceCert,
+    host: tilo_server_client::ServerAddress,
+    server_cert: &tilo_user_identity::DeviceCert,
     workspace_id: WorkspaceId,
 ) {
     use tilo_session_client::Event;
 
     let (owner_key, owner_cert) = another_owner_device();
-    let owner_device = page(host.clone(), owner_key, owner_cert, host_cert);
+    let owner_device = page(host.clone(), owner_key, owner_cert, server_cert);
     owner_device.send(Cmd::Join(workspace_id)).unwrap();
     wait_for(
         "another device of the workspace's owner to be admitted",
@@ -1126,7 +1128,7 @@ async fn owner_devices_join_and_forgeries_are_refused(
     // A certificate that names the owner's root but carries a signature the
     // root never made is no device of the owner's.
     let (forged_key, forged_cert) = forged_owner_device();
-    let forged = page(host.clone(), forged_key, forged_cert, host_cert);
+    let forged = page(host.clone(), forged_key, forged_cert, server_cert);
     let forged_heard = forged.events();
     forged.send(Cmd::Join(workspace_id)).unwrap();
     let refused = wait_for(
@@ -1152,7 +1154,7 @@ async fn owner_devices_join_and_forgeries_are_refused(
     // A device of the owner's root whose certificate expired is no longer
     // theirs to offer.
     let (expired_key, expired_cert) = expired_owner_device();
-    let expired = page(host, expired_key, expired_cert, host_cert);
+    let expired = page(host, expired_key, expired_cert, server_cert);
     let expired_heard = expired.events();
     expired.send(Cmd::Join(workspace_id)).unwrap();
     let refused = wait_for(
@@ -1188,8 +1190,8 @@ async fn an_editor_page_writes_and_is_committed(
     workspace_id: WorkspaceId,
     (editor_key, editor_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
 ) {
-    let (host, host_cert, route) = chat_route(plain, cluster).await;
-    let editor = page(host, editor_key, editor_cert, &host_cert);
+    let (host, server_cert, route) = chat_route(plain, cluster).await;
+    let editor = page(host, editor_key, editor_cert, &server_cert);
     let editor_heard = editor.events();
     editor.send(Cmd::Join(workspace_id)).unwrap();
     editor.send(Cmd::OpenRoute(route.clone())).unwrap();
@@ -1265,10 +1267,10 @@ fn a_persistent_workspace_reopens_after_hard_stops() {
     let (key, cert) =
         join_through_entry(&runtime, again.plain, &id, own_device(0x75, "Ben"), "Ben");
     runtime.block_on(async {
-        let info = tilo_server_client::https::host_info(&Plain(again.plain))
+        let info = tilo_server_client::https::server_info(&Plain(again.plain))
             .await
             .unwrap();
-        let host_cert = info.host_cert.clone();
+        let server_cert = info.server_cert.clone();
         let host = host_of(info);
         let catalogue = tilo_agent_session::AppCatalogue::native();
         let route = tilo_peer_state::document_frame::DocumentRoute {
@@ -1276,7 +1278,7 @@ fn a_persistent_workspace_reopens_after_hard_stops() {
             cluster_id: id.clone(),
             document: tilo_server::workspace_bots::workspace_resource(&catalogue, CHAT),
         };
-        let visiting = page(host, key, cert, &host_cert);
+        let visiting = page(host, key, cert, &server_cert);
         let visiting_heard = visiting.events();
         visiting.send(Cmd::Join(workspace_id)).unwrap();
         visiting.send(Cmd::OpenRoute(route.clone())).unwrap();

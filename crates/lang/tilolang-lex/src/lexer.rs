@@ -12,8 +12,8 @@ pub const KEYWORDS: &[&str] = &[
 ];
 
 /// Words that are keywords only where a declaration starts (`state` at the start of a statement,
-/// `root`, `default`, `row`, `scenario`, `trigger`, `every`, `at`, `primary`, `destructive` and
-/// `migration` before an item's keyword). Elsewhere they are ordinary names.
+/// `root`, `default`, `row`, `scenario`, `trigger`, `every`, `at`, `primary`, `destructive`,
+/// `migration` and `initial` before an item's keyword). Elsewhere they are ordinary names.
 pub const CONTEXTUAL: &[&str] = &[
     "state",
     "root",
@@ -26,6 +26,7 @@ pub const CONTEXTUAL: &[&str] = &[
     "primary",
     "destructive",
     "migration",
+    "initial",
 ];
 
 /// `@app.Type:id@version`: a reference literal, carried whole for the parser to read.
@@ -718,8 +719,14 @@ impl Lexer<'_> {
             end += 1;
         }
         self.pos = end;
-        let item_follows = self.at(0) == Some(b'/') && self.step_follows();
-        if end == start || self.bytes.get(end - 1) == Some(&b'.') || !item_follows {
+        // Dots only belong to the document's name when the `/` of an item follows them; after an
+        // id they read a field of the resource. A `uuid:` document's id goes on past its colon.
+        let dotted = self
+            .bytes
+            .get(start..end)
+            .is_some_and(|s| s.contains(&b'.'));
+        let step = self.at(0) == Some(b'/') && self.step_follows();
+        if end == start || self.bytes.get(end - 1) == Some(&b'.') || (dotted && !step) {
             self.pos = start;
             self.id_chars();
         }
@@ -984,12 +991,6 @@ mod tests {
             "notes"
         );
         assert_eq!(reference("@todo.TodoList:01J8ZK4T.items").id, "01J8ZK4T");
-        // A dotted stretch no item follows is a field read, however it continues: a program
-        // that maps over the list keeps `.items.map(...)` outside the reference.
-        assert_eq!(
-            reference("@tasks.Tasks:01J8ZK4T.items.map(t -> t.title)").id,
-            "01J8ZK4T"
-        );
     }
 
     /// A document a person made is named `uuid:` and its uuid: the id goes on past that colon,

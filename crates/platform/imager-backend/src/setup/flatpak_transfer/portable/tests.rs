@@ -347,7 +347,7 @@ fn package(root: &Path, fake: &Fake, state: bool) -> (PathBuf, Expectation) {
 #[cfg(test)]
 fn setup(root: &Path, expected: Expectation) -> PreparedSetupReview {
     let mut env = tilo_test_env::ScopedEnv::new();
-    env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+    env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
     let identity = PreparedIdentity::create(
         &root.join("identity"),
         "Ada",

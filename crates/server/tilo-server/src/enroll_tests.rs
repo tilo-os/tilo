@@ -1,6 +1,18 @@
 use super::*;
-use crate::protocol::v2_body;
+
+use tilo_enrollment::approval::{ApprovalOptions, register_home_peer};
+use tilo_enrollment::protocol::{
+    Approver, Response, ResponseRoute, decrypt_pair_offer, decrypt_request, encrypt_response,
+    make_finalized, v2_body, verify_ack,
+};
+
+use tilo_enrollment::ISSUANCE_CLOCK_ALLOWANCE_NS;
+use tilo_enrollment::response_statement_digest;
+use tilo_enrollment::sign_response;
+use tilo_identity::certification_ceremony::pairing_code;
+use tilo_server::HomePeerRegistration;
 use tilo_test_env::SpawnUnderEnvLock as _;
+use tilo_user_identity::verify_device_cert;
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };
@@ -60,7 +72,6 @@ tilo_test_env::scenario! {
             tilo_identity::provisioning::IdentityStorage::Files,
         )
         .unwrap();
-        assert!(!paths.user_privkey.exists());
         let options = ApprovalOptions {
             identity_root: &root,
             identity_dir: Some(&identities),
@@ -74,6 +85,7 @@ tilo_test_env::scenario! {
             port: 0,
             ready: None,
             approved: None,
+            person_uid: None,
         };
         let identity = load_approval_identity(&options).unwrap();
         let mut cert = payload(&ed25519_dalek::SigningKey::from_bytes(&[74; 32])).cert;
@@ -88,7 +100,7 @@ tilo_test_env::scenario! {
             signature: [0; 64],
         };
         sign_revocation_entry(&mut revocation, identity.root.as_deref().unwrap()).unwrap();
-        let store = fleet_store(&root, &identities);
+        let store = fleet_store(&root, &identities, None);
         let identity_id = hex::encode(identity.user_public_key);
         let mut fleet = store.load(&identity_id).unwrap();
         fleet.revocations.push(revocation);
@@ -134,7 +146,6 @@ tilo_test_env::scenario! {
             load_approval_identity(&options).err().unwrap(),
             "not authorised",
         );
-        assert!(!paths.user_privkey.exists());
     }
 
     phase a_held_root_certifies_an_administrator_into_the_fleet;
@@ -147,7 +158,13 @@ tilo_test_env::scenario! {
         let paths = IdentityPaths::under(identity_root.path());
         paths.ensure_directories().unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[43; 32]);
-        tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+        tilo_identity::provisioning::import_single_device_root(
+            identity_dir.path(),
+            &root,
+            "",
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .unwrap();
         let admin = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
         let device = hex::encode(admin.verifying_key().to_bytes());
         let out = identity_dir.path().join("admin.cert");
@@ -170,7 +187,7 @@ tilo_test_env::scenario! {
         verify_device_cert(&cert).unwrap();
         assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
         assert_eq!(cert.capabilities, DeviceCapabilities::administrator());
-        let fleet = fleet_store(identity_root.path(), identity_dir.path())
+        let fleet = fleet_store(identity_root.path(), identity_dir.path(), None)
             .load(&hex::encode(cert.user_public_key))
             .unwrap();
         assert_eq!(fleet.certificates, vec![cert]);
@@ -234,7 +251,7 @@ tilo_test_env::scenario! {
             user
         );
         let record =
-            runtime_identity::load_from_path(identity_record_path(identity_dir.path(), user)).unwrap();
+            tilo_identity::store::load_from_path(identity_record_path(identity_dir.path(), user)).unwrap();
         assert_eq!(record.group_public_key(), user);
         assert!(record.sign(b"root-only operation").is_err());
 
@@ -303,7 +320,7 @@ tilo_test_env::scenario! {
         };
         let identity_root = tempfile::tempdir().unwrap();
         let identities = tempfile::tempdir().unwrap();
-        let store = fleet_store(identity_root.path(), identities.path());
+        let store = fleet_store(identity_root.path(), identities.path(), None);
         let accepting =
             |document: &[u8], identity: &str| store.accept_transferred(identity, document, [1; 32]);
         let now = now_ns().unwrap();
@@ -367,7 +384,7 @@ fn personal_payload(
         server_node_id: [8; 32],
         cert,
         home_peer_toml: None,
-        public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
+        public_identity_json: Some(public_identity_document(user, "My Tilo identity").unwrap()),
         fleet_json: Some(fleet),
         home_peers_json: Some(b"[]".to_vec()),
     }
@@ -420,6 +437,124 @@ fn payload(root: &ed25519_dalek::SigningKey) -> ResponsePayload {
     }
 }
 
+/// The certificate `root`'s person signs for `device`.
+fn root_signed(
+    root: &ed25519_dalek::SigningKey,
+    device: [u8; 32],
+    label: &str,
+    capabilities: DeviceCapabilities,
+    issued_at_ns: u64,
+) -> DeviceCert {
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device,
+        device_label: label.into(),
+        capabilities,
+        issued_at_ns,
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).unwrap();
+    cert
+}
+
+/// A server's enrollment answers with the person's own store beside its
+/// certificate: the machine keeps that list in its identity root, where the
+/// devices it may ask at boot come from with no session of theirs running.
+#[test]
+fn a_home_peer_keeps_the_persons_devices_from_its_enrollment() {
+    let dir = tempfile::tempdir().unwrap();
+    let system = dir.path().join("system");
+    let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
+    let user = root.verifying_key().to_bytes();
+    let identity_id = hex::encode(user);
+    let issuer = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
+    let issuer_cert = root_signed(
+        &root,
+        issuer.verifying_key().to_bytes(),
+        "The laptop",
+        DeviceCapabilities::primary(),
+        1,
+    );
+    let now = now_ns().unwrap();
+    let token = tilo_user_identity::mint_enrollment_token(
+        user,
+        DeviceCapabilities::member(),
+        now,
+        now + 60 * 60 * 1_000_000_000,
+        [3; 16],
+        Vec::new(),
+        &issuer,
+    )
+    .unwrap();
+    let token_text = tilo_user_identity::encode_enrollment_token(&token).unwrap();
+    let home_peer_output = dir.path().join("home-peer.toml");
+    let options = JoinOptions {
+        identity_root: &system,
+        label: "NAS",
+        timeout: 60,
+        kind: EnrollmentKind::HomePeer,
+        home_peer_output: Some(&home_peer_output),
+        identity_dir: None,
+        requester_lease: None,
+        port: 0,
+        recovery_key: None,
+    };
+    let prepared = prepare_join(&token_text, options).unwrap();
+    let machine = prepared.device.verifying_key().to_bytes();
+    let cert = root_signed(&root, machine, "NAS", DeviceCapabilities::member(), now);
+    let home_peer = fs::full_replica::HomePeerSet {
+        status_file: PathBuf::from("/var/lib/tilo/full-replica/status.json"),
+        workspaces: Vec::new(),
+    };
+    let payload = ResponsePayload {
+        nonce: token.nonce,
+        recipient_device_public_key: machine,
+        server_node_id: prepared.request.server_node_id,
+        cert: cert.clone(),
+        home_peer_toml: Some(toml::to_string_pretty(&home_peer).unwrap()),
+        public_identity_json: None,
+        fleet_json: Some(fleet_document(
+            &identity_id,
+            vec![issuer_cert, cert],
+            Vec::new(),
+        )),
+        home_peers_json: Some(b"[]".to_vec()),
+    };
+    install_answer(&prepared, options, &payload, b"response", &mut |_| Ok(())).unwrap();
+
+    assert!(
+        home_peer_output.exists(),
+        "the home-peer configuration is written"
+    );
+    let paths = IdentityPaths::under(&system);
+    assert!(
+        tilo_device_identity::persist::read_device_cert(&paths.device_cert)
+            .is_ok_and(|written| written.device_public_key == machine),
+        "the machine holds its certificate"
+    );
+    let store = DeviceFleetStore::of_device(paths, &identity_id);
+    let kept = store
+        .load(&identity_id)
+        .expect("the person's devices are kept");
+    assert!(
+        kept.certificates
+            .iter()
+            .any(|known| known.device_public_key == machine),
+        "the machine's own certificate is among them"
+    );
+    assert_eq!(
+        kept.personal_devices(&user, now).len(),
+        2,
+        "the machine and the device that admitted it"
+    );
+    assert!(
+        store.fleet_file(&identity_id).starts_with(system.as_path()),
+        "kept in this machine's identity root, not an account's configuration"
+    );
+}
+
 tilo_test_env::scenario! {
     #[allow(
         clippy::too_many_lines,
@@ -443,7 +578,7 @@ tilo_test_env::scenario! {
         };
         sign_device_cert(&mut cert, &root).unwrap();
         let identity = tempfile::tempdir().unwrap();
-        let store = fleet_store(identity.path(), identity.path());
+        let store = fleet_store(identity.path(), identity.path(), None);
 
         let error = store
             .transferred(&hex::encode(cert.user_public_key), &cert)
@@ -472,7 +607,7 @@ tilo_test_env::scenario! {
         };
         sign_revocation_entry(&mut revocation, &root).unwrap();
         let identity = tempfile::tempdir().unwrap();
-        let store = fleet_store(identity.path(), identity.path());
+        let store = fleet_store(identity.path(), identity.path(), None);
         let mut fleet = DeviceFleet::new(hex::encode(user));
         fleet.revocations.push(revocation);
         store.adopt_transferred(&fleet).unwrap();
@@ -516,6 +651,7 @@ tilo_test_env::scenario! {
             port: 0,
             ready: None,
             approved: None,
+            person_uid: None,
         };
         assert_eq!(expected_pair(&options).unwrap(), None);
 
@@ -585,6 +721,7 @@ tilo_test_env::scenario! {
             label: "NAS".into(),
             hardware: "8 cores · 16 GB memory".into(),
             kind: EnrollmentKind::HomePeer,
+            recovery_key: None,
         };
         let (encrypted, _) = encrypt_request(&request, issuer.verifying_key().to_bytes()).unwrap();
         assert!(
@@ -694,7 +831,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
         // First use reads a selected joined identity as a finished join;
         // an interrupted commit has selected nothing yet.
         assert_eq!(
-            runtime_identity::resolve_active_identity(identity_dir.path()),
+            tilo_identity_client::resolve_active_identity(identity_dir.path()),
             None,
             "an unfinished join selected its identity"
         );
@@ -748,7 +885,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             vec![hex::encode(member.verifying_key().to_bytes())]
         );
         assert!(
-            runtime_identity::resolve_active_identity(identity_dir.path()).is_some(),
+            tilo_identity_client::resolve_active_identity(identity_dir.path()).is_some(),
             "the finished join selects its identity"
         );
         // What the runtime starts the identity from is the registry this
@@ -786,7 +923,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             server_node_id: [8; 32],
             cert: cert.clone(),
             home_peer_toml: None,
-            public_identity_json: Some(public_identity_record(user, "My Tilo identity").unwrap()),
+            public_identity_json: Some(public_identity_document(user, "My Tilo identity").unwrap()),
             fleet_json: Some(fleet_document(&hex::encode(user), vec![cert], Vec::new())),
             home_peers_json: Some(b"[]".to_vec()),
         };
@@ -798,10 +935,10 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
         // The joined identity is what this device acts for from the next
         // login on, not an absent default that asks to create one.
         assert_eq!(
-            runtime_identity::resolve_active_identity(identity_dir.path()),
+            tilo_identity_client::resolve_active_identity(identity_dir.path()),
             Some(record.clone())
         );
-        let loaded = runtime_identity::load_from_path(record).unwrap();
+        let loaded = tilo_identity::store::load_from_path(record).unwrap();
         assert_eq!(loaded.group_public_key(), user);
         assert!(!loaded.is_single_device());
         assert!(loaded.sign(b"root-only operation").is_err());
@@ -826,7 +963,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
             );
             assert_eq!(
                 std::fs::metadata(
-                    fleet_store(identity_root.path(), identity_dir.path())
+                    fleet_store(identity_root.path(), identity_dir.path(), None)
                         .fleet_file(&hex::encode(user))
                 )
                 .unwrap()
@@ -995,6 +1132,7 @@ fn personal_projection_publishes_only_live_valid_identity_state() {
                     identity_dir: Some(identity_dir.path()),
                     requester_lease: Some(lease),
                     port: 0,
+                    recovery_key: None,
                 },
                 None,
             )
@@ -1019,7 +1157,13 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     paths.ensure_directories().unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let issuer = ed25519_dalek::SigningKey::from_bytes(&[32; 32]);
-    tilo_device_identity::persist::write_signing_key(&paths.user_privkey, &root).unwrap();
+    tilo_identity::provisioning::import_single_device_root(
+        approver_identities.path(),
+        &root,
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
     tilo_device_identity::persist::write_public_key(
         &paths.user_pubkey,
         &root.verifying_key().to_bytes(),
@@ -1043,7 +1187,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
         &issuer_cert,
     )
     .unwrap();
-    fleet_store(approver_root.path(), approver_identities.path())
+    fleet_store(approver_root.path(), approver_identities.path(), None)
         .remember_certificate(&hex::encode(root.verifying_key().to_bytes()), issuer_cert)
         .unwrap();
     let home_device = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
@@ -1092,6 +1236,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
             port: 0,
             ready: Some(&ready_tx),
             approved: None,
+            person_uid: None,
         })
     });
     let port = match ready_rx.recv_timeout(tilo_test_env::hang_bound()) {
@@ -1122,6 +1267,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
             identity_dir: Some(new_identities.path()),
             requester_lease: Some(requester),
             port,
+            recovery_key: None,
         },
         None,
     )
@@ -1142,7 +1288,6 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     verify_device_cert_at(&cert, finished_ns - ISSUANCE_CLOCK_ALLOWANCE_NS)
         .expect("a device whose clock trails the approver's accepts its certificate");
     assert!(cert.issued_at_ns >= started_ns - ISSUANCE_CLOCK_ALLOWANCE_NS);
-    assert!(!enrolled_paths.user_privkey.exists());
     let peers: Vec<HomePeerRegistration> = serde_json::from_slice(
         &std::fs::read(tilo_server::home_peer_registry_path(new_root.path())).unwrap(),
     )
@@ -1150,7 +1295,7 @@ fn nearby_personal_device_pairing_transfers_cert_fleet_and_home_peer() {
     assert_eq!(peers.len(), 1);
     assert_eq!(peers[0].server_node_id, hex::encode([43; 32]));
     let record = identity_record_path(new_identities.path(), root.verifying_key().to_bytes());
-    let identity = runtime_identity::load_from_path(record).unwrap();
+    let identity = tilo_identity::store::load_from_path(record).unwrap();
     assert!(
         identity
             .sign(b"root/admin signing must stay unavailable")
@@ -1190,7 +1335,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
     let seed = [31; 32];
     let root = ed25519_dalek::SigningKey::from_bytes(&seed);
     let user = root.verifying_key().to_bytes();
-    let key_holder = runtime_identity::load_from_bytes(
+    let key_holder = tilo_identity::store::load_from_bytes(
         &serde_json::to_vec(&serde_json::json!({
             "display_name": "Key holder", "avatar_color": [1, 2, 3],
             "created_at": "2026-10-22T00:00:00Z", "schema_version": 1,
@@ -1229,11 +1374,11 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
         &member_cert,
     )
     .unwrap();
-    fleet_store(member_root.path(), member_identities.path())
+    fleet_store(member_root.path(), member_identities.path(), None)
         .remember_certificate(&hex::encode(user), member_cert)
         .unwrap();
     assert!(
-        load_approval_root(member_root.path(), Some(member_identities.path())).is_err(),
+        tilo_enrollment::load_root(Some(member_identities.path())).is_err(),
         "the member holds none of the key"
     );
 
@@ -1296,6 +1441,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
         port: 0,
         ready: None,
         approved: None,
+        person_uid: None,
     });
     assert!(refused.is_err());
 
@@ -1318,6 +1464,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
             port: 0,
             ready: Some(&ready_tx),
             approved: Some(&approved),
+            person_uid: None,
         })
     });
     let port = match ready_rx.recv_timeout(tilo_test_env::hang_bound()) {
@@ -1334,6 +1481,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
             identity_dir: Some(new_identities.path()),
             requester_lease: Some(tilo_server::ProcessLease::capture(std::process::id()).unwrap()),
             port,
+            recovery_key: None,
         },
         None,
     )
@@ -1347,7 +1495,7 @@ fn a_device_holding_no_key_pairs_a_device_its_key_holder_approved() {
     assert_eq!(cert.user_public_key, user);
     assert_eq!(cert.device_label, "New laptop");
     verify_device_cert(&cert).unwrap();
-    let fleet = fleet_store(member_root.path(), member_identities.path())
+    let fleet = fleet_store(member_root.path(), member_identities.path(), None)
         .load(&hex::encode(user))
         .unwrap();
     assert!(
@@ -1774,6 +1922,7 @@ fn sample_request() -> Request {
         label: "NAS".into(),
         hardware: "8 cores · 16 GB memory".into(),
         kind: EnrollmentKind::HomePeer,
+        recovery_key: None,
     }
 }
 

@@ -102,12 +102,12 @@ impl ServiceConnections {
         let collab = UnixStream::connect(sockets.collab)?;
         let mut identity = UnixStream::connect(sockets.identity)?;
         identity.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
-        let handshake = serde_json::to_vec(&runtime_identity::wire::Handshake {
+        let handshake = serde_json::to_vec(&tilo_identity_client::wire::Handshake {
             workspace_id: workspace.into(),
             app_id: app_id.into(),
             surface: started_surface(),
         })?;
-        runtime_identity::wire::HANDSHAKE_FRAMING.write(&mut identity, &handshake)?;
+        tilo_identity_client::wire::HANDSHAKE_FRAMING.write(&mut identity, &handshake)?;
         identity.set_write_timeout(None)?;
         let blobs = connect_blobs(sockets.blobs, app_id, workspace);
         Ok(Self {

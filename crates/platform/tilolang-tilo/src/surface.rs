@@ -496,6 +496,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
             verbs,
             fields,
             types: types.into_types(),
+            shows: Vec::new(),
         });
     }
     let mut types = TypeSet::new();
@@ -513,6 +514,7 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         verbs: loose,
         fields: Vec::new(),
         types: types.into_types(),
+        shows: Vec::new(),
     });
     surfaces
 }
@@ -555,6 +557,7 @@ pub fn host_surface() -> Surface {
         )],
         fields: Vec::new(),
         types: Vec::new(),
+        shows: Vec::new(),
     }
 }
 

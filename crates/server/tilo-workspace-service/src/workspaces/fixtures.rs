@@ -264,8 +264,19 @@ pub struct TestGroupKeys {
 }
 
 impl GroupKeys for TestGroupKeys {
-    fn group_keys<'a>(&'a self, workspace: &'a str, create: bool) -> GroupKeysAnswerFuture<'a> {
+    fn group_keys<'a>(
+        &'a self,
+        workspace: &'a str,
+        readers: &'a str,
+        create: bool,
+    ) -> GroupKeysAnswerFuture<'a> {
         Box::pin(async move {
+            let group = collab_types::reader_group(
+                collab_types::WorkspaceId::parse(workspace).expect("a workspace id"),
+                readers,
+            )?
+            .to_string();
+            let workspace = group.as_str();
             let held = {
                 let keys = self.held.lock().expect("the fixture's keys");
                 keys.get(workspace).cloned()

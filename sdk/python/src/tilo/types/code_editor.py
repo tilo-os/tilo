@@ -95,7 +95,7 @@ class FinishedCommand(TypedDict):
     undoable: bool
     items: list[CommandItem]
     request: str | None
-    run: str
+    id: str
 
 ItemKind = Literal["error", "warning", "location", "url", "test-passed", "test-failed", "test-ignored", "change"]
 
@@ -199,13 +199,13 @@ RecordCommandArgs = TypedDict("RecordCommandArgs", {
     "undoable": "bool",
     "items": "list[CommandItem]",
     "request": NotRequired["str | None"],
-    "run": "str",
+    "id": "str",
 })
 """The arguments of `record-command`."""
 
 class Project(Resource):
     """Code Editor — `code_editor.project`."""
-    __surface__ = "so.tilo.code-editor@75fb383bba126522"
+    __surface__ = "so.tilo.code-editor@2406f1a4b7ab548c"
     files: list[Entry[Entry]]
     buffers: dict[str, Any]
     @property
@@ -428,7 +428,7 @@ class Project(Resource):
         tool: str,
         undoable: bool,
         items: list[CommandItem],
-        run: str,
+        id: str,
         output: Any | None = None,
         request: str | None = None,
     ) -> None:
@@ -447,7 +447,7 @@ class Project(Resource):
         args["items"] = items
         if request is not None:
             args["request"] = request
-        args["run"] = run
+        args["id"] = id
         return self.action("record-command", **args)
 
     def record_command_many(self, items: list[RecordCommandArgs]) -> list[dict[str, Any]]:

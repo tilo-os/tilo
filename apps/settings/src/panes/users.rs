@@ -9,7 +9,7 @@ use std::fs;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use runtime_identity::{IdentitySummary, KeyProtection};
+use tilo_identity_client::{IdentitySummary, KeyProtection};
 use ui::LocalState;
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
 use ui::icons::Icon;
@@ -47,6 +47,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&UsersArea> {
 #[effect(operation = "settings.effect")]
 pub enum UsersEffect {
     /// Create a login account, with the password typed into the form.
+    #[effect(kind = "outside")]
     #[effect(job)]
     CreateUser {
         #[param("The login name")]
@@ -55,6 +56,7 @@ pub enum UsersEffect {
         full_name: String,
     },
     /// Make an account an administrator, or a standard account.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetAdministrator {
         #[param("The account's login name")]
@@ -63,6 +65,7 @@ pub enum UsersEffect {
         admin: bool,
     },
     /// Sign an account in without its password when the device starts.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetAutomaticLogin {
         #[param("The account's login name")]
@@ -70,6 +73,7 @@ pub enum UsersEffect {
         on: bool,
     },
     /// Remove an account, keeping its files or removing them too.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     RemoveUser {
         #[param("The account's login name")]
@@ -78,18 +82,21 @@ pub enum UsersEffect {
         keep_files: bool,
     },
     /// Sign new apps in as one of the person's identities.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     UseIdentity {
         #[param("The identity's id")]
         identity: String,
     },
     /// Remove an identity from this device.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive, label = "settings-users-identity-remove")]
     RemoveIdentity {
         #[param("The identity's id")]
         identity: String,
     },
     /// Move an identity's key from a plain file into protected storage.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     ProtectIdentity {
         #[param("The identity's id")]
@@ -469,14 +476,24 @@ impl UsersArea {
     }
 }
 
+/// A user account on this device, as the pane publishes it: a row of the
+/// `settings.user` type, offering to make it an administrator, log it in
+/// automatically or remove it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.user", label = "Device user")]
+pub(crate) struct DeviceAccount;
+
+/// An identity this device keeps, as the pane publishes it: a row of the
+/// `settings.identity` type, offering to use, protect or remove it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.identity", label = "Identity")]
+pub(crate) struct DeviceIdentity;
+
 fn user_live_row(user: &DeviceUser) -> LiveRow {
     let name = user.username.clone();
-    let mut row = LiveRow::new(
-        format!("settings.user:{name}"),
-        "settings.user",
-        user.full_name.clone(),
-    )
-    .operation(
+    let mut row =
+        LiveRow::typed::<DeviceAccount>(format!("settings.user:{name}"), user.full_name.clone());
+    row = row.operation(
         SettingsEffect::from(UsersEffect::SetAdministrator {
             user: name.clone(),
             admin: !user.admin,
@@ -503,9 +520,8 @@ fn user_live_row(user: &DeviceUser) -> LiveRow {
 
 fn identity_live_row(identity: &IdentitySummary) -> LiveRow {
     let id = identity.id.clone();
-    let mut row = LiveRow::new(
+    let mut row = LiveRow::typed::<DeviceIdentity>(
         format!("settings.identity:{id}"),
-        "settings.identity",
         identity_name(identity).to_owned(),
     );
     if !identity.active {

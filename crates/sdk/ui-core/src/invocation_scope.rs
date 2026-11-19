@@ -693,7 +693,7 @@ impl ResourceInvocationScope {
     pub(crate) fn check_read_loan(&self, document: &AutoCommit) -> Result<(), String> {
         self.check()?;
         let (store, checkout) = self.owner.store_checkout();
-        if !record_loan_matches(store, checkout, document)
+        if !resource_loan_matches(store, checkout, document)
             || !self.admission.matches(document, checkout)
         {
             return Err("invocation does not hold the actual canonical record loan".into());
@@ -709,7 +709,7 @@ impl ResourceInvocationScope {
     ) -> Result<R, String> {
         self.check()?;
         let (store, checkout) = self.owner.store_checkout();
-        if !record_loan_matches(store, checkout, document)
+        if !resource_loan_matches(store, checkout, document)
             || !self.admission.matches(document, checkout)
         {
             return Err("invocation does not hold the actual canonical record loan".into());
@@ -1140,51 +1140,8 @@ impl DocumentAuthorization {
     }
 }
 
-struct LoanIdentity {
-    store: ResourceStore,
-    record: DocumentId,
-    document: *const AutoCommit,
-}
-thread_local! {
-    static RESOURCE_LOANS: RefCell<Vec<LoanIdentity>> = const { RefCell::new(Vec::new()) };
-}
-struct ResourceLoan;
-impl Drop for ResourceLoan {
-    fn drop(&mut self) {
-        RESOURCE_LOANS.with_borrow_mut(|loans| {
-            loans.pop();
-        });
-    }
-}
-pub(crate) fn with_resource_loan<R>(
-    store: &ResourceStore,
-    record: &DocumentId,
-    document: &mut AutoCommit,
-    callback: impl FnOnce(&mut AutoCommit) -> R,
-) -> R {
-    RESOURCE_LOANS.with_borrow_mut(|loans| {
-        loans.push(LoanIdentity {
-            store: store.clone(),
-            record: record.clone(),
-            document,
-        })
-    });
-    let _loan = ResourceLoan;
-    callback(document)
-}
-fn record_loan_matches(
-    store: &ResourceStore,
-    checkout: &DocumentCheckout,
-    document: &AutoCommit,
-) -> bool {
-    RESOURCE_LOANS.with_borrow(|loans| {
-        loans.last().is_some_and(|loan| {
-            loan.store.same_owner(store)
-                && loan.record == checkout.id
-                && std::ptr::eq(loan.document, document)
-        })
-    })
-}
+use crate::bound_dispatch::StoreActions as _;
+use crate::resource::resource_loan_matches;
 
 /// The record a disclosed read names: its workspace when it is shared in one.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1257,7 +1214,7 @@ pub(crate) fn with_loaned_resource<R>(
     document: &mut AutoCommit,
     callback: impl FnOnce(&mut AutoCommit) -> R,
 ) -> R {
-    let stamp = record_loan_matches(store, checkout, document).then(|| {
+    let stamp = resource_loan_matches(store, checkout, document).then(|| {
         route.as_ref().map_or_else(
             || ResourceStamp {
                 workspace: None,

@@ -159,7 +159,7 @@ KeepArgs = TypedDict("KeepArgs", {
 
 class Collection(Resource):
     """Clocks — `clocks.collection`."""
-    __surface__ = "so.tilo.clocks@de9ae8048fcfe612"
+    __surface__ = "so.tilo.clocks@931161d584af886b"
     world_clocks: list[Entry[WorldClock]]
     alarms: list[Entry[Alarm]]
     timers: list[Entry[Timer]]
@@ -313,14 +313,22 @@ class Collection(Resource):
         """Runs `reset-stopwatch` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("reset-stopwatch", items)
 
+    def show(self, *, section: str) -> None:
+        """Runs the app's action."""
+        return self.action("show", section=section)
+
+    def dismiss_notice(self) -> None:
+        """Runs the app's action."""
+        return self.action("dismiss-notice")
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"add_world_clock", "add_world_clock_many", "remove_world_clock", "remove_world_clock_many", "add_alarm", "add_alarm_many", "set_alarm_enabled", "set_alarm_enabled_many", "edit_alarm", "edit_alarm_many", "remove_alarm", "remove_alarm_many", "add_timer", "add_timer_many", "pause_timer", "pause_timer_many", "resume_timer", "resume_timer_many", "add_minute", "add_minute_many", "remove_timer", "remove_timer_many", "start_stopwatch", "start_stopwatch_many", "pause_stopwatch", "pause_stopwatch_many", "lap", "lap_many", "reset_stopwatch", "reset_stopwatch_many"})
+    __actions__ = frozenset({"add_world_clock", "add_world_clock_many", "remove_world_clock", "remove_world_clock_many", "add_alarm", "add_alarm_many", "set_alarm_enabled", "set_alarm_enabled_many", "edit_alarm", "edit_alarm_many", "remove_alarm", "remove_alarm_many", "add_timer", "add_timer_many", "pause_timer", "pause_timer_many", "resume_timer", "resume_timer_many", "add_minute", "add_minute_many", "remove_timer", "remove_timer_many", "start_stopwatch", "start_stopwatch_many", "pause_stopwatch", "pause_stopwatch_many", "lap", "lap_many", "reset_stopwatch", "reset_stopwatch_many", "show", "dismiss_notice"})
 
 
 class OnDevices(Resource):
     """Clocks on each device — `clocks.on-devices`."""
-    __surface__ = "so.tilo.clocks@de9ae8048fcfe612"
+    __surface__ = "so.tilo.clocks@931161d584af886b"
     devices: dict[str, Any]
 
     def keep(self,

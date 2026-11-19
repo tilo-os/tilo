@@ -225,10 +225,11 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # Everything Windows apps need that is large: the FEX payload and the x86 guest
 # root (ARM), Proton, the Steam runtime and the virtio-win media, about 3.1 GB.
 # It is packed here as tilo-windows-compat.raw, a sysext overlaying those exact
-# /usr paths, and is NOT part of the OS image. OS release publication exports
-# the `windows-compat-sysext` target (no t check does yet), publishes the image
-# next to the signed manifest tools/extensions/sysext_image.py writes, and a
-# device installs it
+# /usr paths, and is NOT part of the OS image. The os-windows-compat-<arch>
+# checks build the `windows-compat-sysext` target (os/image/layers.toml image
+# `windows-compat`), tools/ci/publish/windows-compat-sysext.sh publishes it
+# beside main's dev images, extension-manifests pins it in the signed manifest
+# tools/extensions/sysext_image.py writes, and a device installs it
 # when its owner first enables Windows apps or creates a Windows VM
 # (/usr/share/tilo/system-extensions/sysext.d/windows-compat.json).
 FROM ${BASE_REF} AS windows-compat-sysext-build
@@ -450,7 +451,10 @@ COPY sdk/typescript/native /build/sdk/typescript/native
 COPY vendor /build/vendor
 COPY dist /build/dist
 COPY docs/developers/tasks /build/docs/developers/tasks
-COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py /build/tools/ci/
+COPY tools/ci/rustc-thin-app-wrapper.sh tools/ci/runtime-dylib-lazy-link.py \
+     tools/ci/app-models.sh /build/tools/ci/
+# app-models.sh splits every app's model with this tool, its own workspace.
+COPY tools/web/wasm-split /build/tools/web/wasm-split
 # build-thin-apps.sh routes a cached build through this dispatcher
 # (RUSTC_WRAPPER), which finds the size wrapper beside it in tools/ci/.
 COPY tools/ci/thin-app/sccache /build/tools/ci/thin-app/sccache
@@ -528,7 +532,7 @@ ARG RPMS_REF
 # static archives, plus the LLVM tools and clang-tools-extra; nothing here links
 # or runs them, and the dev image installs this list (os/scripts/builder-packages.txt).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-        rust cargo sccache capnproto \
+        rust cargo rust-std-static-wasm32-unknown-unknown binaryen sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
         clang pkgconf-pkg-config \
         bash-devel readline-devel \
@@ -755,7 +759,7 @@ RUN --mount=type=secret,id=browser_runtime_identity \
     : > /out/browser-runtime-publisher.hex \
     && if [ "${TILO_WITH_BROWSER}" != 0 ]; then \
          pinned="$(sed -n 's/^pub const RUNTIME_VERSION: &str = "\([^"]*\)";$/\1/p' \
-              /build/crates/sdk/ui-core/src/webview/chromium/runtime.rs)" \
+              /build/crates/sdk/tilo-webview/src/chromium/runtime.rs)" \
          && test -n "$pinned" \
          && test "$pinned" = "${CHROMIUM_RUNTIME_VERSION}" \
          && test -x /run/tilo-chromium/chromium-engine/chromium/tilo-chromium-host \
@@ -820,6 +824,7 @@ RUN --mount=type=secret,id=app_publisher_identity \
          export IDENTITY_JSON=/run/secrets/app_publisher_identity; \
        fi \
     && BIN_DIR=/out/thin-apps \
+    APP_MODELS=/out/app-models \
     TAPP_DIR=/out/prebuilt-apps \
     TAPP_BUDGET="$([ "$TILO_RUST_LTO" = off ] && echo report || echo enforce)" \
     EXPECTED_PUBKEY="${TILO_APP_COLLECTION_PUBLISHER}" \
@@ -2537,6 +2542,7 @@ COPY \
 COPY --chmod=0755 \
     os/usr/libexec/tilo-disk-encrypt \
     os/usr/libexec/tilo-store-volume \
+    os/usr/libexec/tilo-plan-network \
     os/usr/libexec/tilo-verified-boot-install-preflight \
     /usr/libexec/
 
@@ -3184,6 +3190,12 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 # a caller forgets the argument, and an image that silently ships generation 0 is
 # one whose rollback floor can never move — the failure would appear months later
 # as a machine that will not unseal.
+#
+# The same step writes the enrollment methods this image offers, in the one file
+# every image declares them in: the token made for this machine, the code it
+# shows for a device of the person's to approve, and a device of theirs finding
+# it on the local network. A desktop has someone at it to confirm the pairing;
+# the server image declares only the first two.
 ARG TILO_GENERATION
 RUN case "${TILO_GENERATION}" in \
       ''|*[!0-9]*) \

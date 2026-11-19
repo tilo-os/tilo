@@ -12,7 +12,7 @@ pub trait WorkspaceMembership: collab_types::signer::MaybeSendSync + 'static {
 
 /// A route's access, generation and content keys, as [`GroupKeySource`]
 /// answers; the keys are empty unless newly ready.
-pub type GroupKeys = (runtime_identity::wire::KeyAccess, u64, Vec<u8>);
+pub type GroupKeys = (tilo_identity_client::wire::KeyAccess, u64, Vec<u8>);
 
 /// The key service that hands apps their workspace's content keys.
 pub trait GroupKeySource: collab_types::signer::MaybeSendSync + 'static {

@@ -93,21 +93,13 @@ mod tests {
 
         phase each_platform_runs_only_the_apps_that_declare_it;
         {
-            // Terminal's page lists a session's commands, so no platform
-            // leaves it out any more: it opens in Tilo on a computer and in a
-            // browser.
             let terminal = app("so.tilo.terminal");
             assert!(terminal.platforms.contains(&"web"));
-            assert!(runs_on(terminal.id, &["web"]), "a terminal in a browser");
+            assert!(runs_on(terminal.id, &["web"]));
             assert!(runs_on(terminal.id, &["macos"]));
             assert!(runs_on(terminal.id, &["tilo-os", "linux"]));
             assert!(runs_on("dev.tilo.terminal", &["linux"]), "a local build");
             assert!(runs_on("dev.tilo.terminal", &["web"]));
-
-            let editor = app("so.tilo.code-editor");
-            assert!(!editor.platforms.contains(&"web"));
-            assert!(!runs_on(editor.id, &["web"]), "no editor in a browser");
-            assert!(!runs_on("dev.tilo.code-editor", &["web"]));
 
             let os_only = catalog()
                 .iter()
@@ -133,11 +125,9 @@ mod tests {
 
         phase an_app_that_does_not_run_here_says_where_it_does;
         {
-            // An app that names only the computers it opens on, beside one
-            // that names only Tilo OS and one the registry does not list.
             assert_eq!(
-                runs_elsewhere("so.tilo.code-editor", "the browser"),
-                "Code Editor runs in Tilo on a computer, not in the browser"
+                runs_elsewhere("so.tilo.backups", "the browser"),
+                "Backups runs in Tilo on a computer, not in the browser"
             );
             let os_only = catalog()
                 .iter()

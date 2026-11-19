@@ -51,6 +51,7 @@ impl WorkspaceDirectory {}
 #[effect(operation = "so.tilo.workspace-directory.join")]
 pub enum DirectoryEffect {
     /// Join a public workspace
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Join {
         #[param("The workspace, by its key in the list")]

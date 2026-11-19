@@ -261,14 +261,11 @@ machine id and its SSH host keys. A setting such as accepting agents from the
 person's other devices is on the disk and comes along.
 
 **Certification adds no trust.** Only the person's root signs a device
-certificate:
+certificate, and the root lives only in the person's identity store, so
+nothing at boot signs:
 
-- A machine whose system identity tree holds the root
-  (`user-identity/privkey.bin`) certifies its branch at boot, granting exactly
-  what the source's certificate granted, and no expiry the source did not
-  have. It could sign any certificate for that person already.
-- A person whose root is in their own identity document (the usual primary
-  device) has it issued at their next sign-in, the same provisioning that
+- A person whose identity store holds the root (the usual primary device) has
+  it issued when their identity service starts, the same provisioning that
   issues a certificate to any of their devices that holds none; it carries the
   branch's name (`device/branch-label`).
 - A device that joined without the root holds nothing that signs. It waits,
@@ -316,10 +313,12 @@ is not applied yet.
 The same entry names the machine itself: its hostname, which drives it uses for
 what — the system disk, the data pool, a mirror — by serial or WWN rather than
 by kernel name, and how each network interface is set up (DHCP or static
-addresses, gateway, DNS, a VLAN tag, membership in a bond). These are typed
+addresses, a default gateway for each address family, DNS, a VLAN tag,
+membership in a bond). These are typed
 actions on the document like any other, so they carry history and an author,
 and they refuse what a machine cannot be: a static interface with no address, a
-second system disk, the disk the system runs from repurposed, a drive holding
+second gateway of one family (a dual-stack link names one of each),
+a second system disk, the disk the system runs from repurposed, a drive holding
 data used without the person naming its serial to confirm erasing it. The
 device writes the whole desired configuration as a request for a root-run
 helper, which applies the hostname and the network as NetworkManager keyfiles

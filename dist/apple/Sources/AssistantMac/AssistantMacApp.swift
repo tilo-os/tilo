@@ -16,7 +16,7 @@ enum Entry {
         if AssistantDrive.isAsked {
             AssistantDrive.run()
         }
-        MacApp(source: Source.make(), engine: Source.engine, live: { Source.live($0) }).run()
+        MacApp(source: Source.make(), engine: Source.engine, live: { Source.live($0) }, liveStage: { Source.liveStage($0) }).run()
     }
 }
 #else

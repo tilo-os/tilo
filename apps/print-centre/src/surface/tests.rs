@@ -751,10 +751,12 @@ fn an_agent_cannot_press_new_scanned_document() {
     }
     app.settle();
     let agent = ui::tilo_actions::Actor::Member(ui::tilo_actions::MemberId::agent("helper"));
-    let press = ui::tilo_actions::ActionAddress::new(
-        "tilo.control:print-centre.scan.new-document",
-        "invoke",
-    );
+    let resources = app.harness().resources();
+    let press = resources
+        .iter()
+        .find(|resource| resource.id.as_str() == "tilo.control:print-centre.scan.new-document")
+        .and_then(|resource| resource.action_address("invoke"))
+        .expect("the window publishes the person's New scanned document control");
     let none = ui::serde_json::Map::new();
     let refused = app
         .harness()

@@ -113,8 +113,10 @@ an invocation of its own, named for the key ("Visa backend #3").
 | `GET /v1/workspaces/{workspace}/links?path=&mode=` | `{"path", "link"}`: the link a person opens it with (invite them first) |
 | `GET /v1/workspaces/{workspace}/views?path=&picture=&scale=` | what the app's window shows for `path`: `{"path", "app", "shown", "text", "tree", "nodes", "viewport", "window_origin", "revision"}`, and `picture` (a `tilo.content:` of a PNG) with `picture=true` |
 
-A row of `rows` is `{"path", "name", "label", "kind", "has_children", "actions"}`, its `actions`
-the ids of the actions it offers. `kinds` describes them once for each kind of row on the page
+A row of `rows` is `{"path", "name", "label", "kind", "has_children", "reads", "actions"}`, its
+`actions` the ids of the actions it offers, and `reads` whether a read answers it as a resource of
+its own: a row that is only a place inside one (an option, a choice) says no, and holds nothing of
+its own to read. `kinds` describes them once for each kind of row on the page
 (`{"notes.Page": [...]}`), so a page of a thousand notes does not repeat the same action rows a
 thousand times. An action row is `{"id", "label", "params": [{"name", "ty", "required",
 "description", "choices", "schema"}], "kind": "read"|"undoable"|"outside"}`. `next_cursor` is

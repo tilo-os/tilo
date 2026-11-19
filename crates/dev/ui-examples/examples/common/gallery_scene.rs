@@ -338,15 +338,15 @@ fn build_controls_card(theme: &Theme) -> Box<dyn Widget> {
                 ))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Toggle::new("sw_wifi", "sw_wifi")))
+                        .push(Box::new(Toggle::bound("sw_wifi", "sw_wifi")))
                         .push(label("Wi-Fi"))
                         .push(Box::new(Spacer::new()))
-                        .push(Box::new(Toggle::new("sw_bt", "sw_bt")))
+                        .push(Box::new(Toggle::bound("sw_bt", "sw_bt")))
                         .push(label("Bluetooth")),
                 ))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Checkbox::new("cb_updates", "cb_updates")))
+                        .push(Box::new(Checkbox::bound("cb_updates", "cb_updates")))
                         .push(label("Install updates automatically")),
                 ))
                 .push(dim("Volume", theme))

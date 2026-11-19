@@ -198,10 +198,32 @@ fn as_json(value: &impl serde::Serialize) -> Result<serde_json::Value, String> {
     serde_json::to_value(value).map_err(|error| error.to_string())
 }
 
+/// A model installed on this device, as the pane publishes it: a row of the
+/// `settings.agent-model` type, whose actions depend on the model and fit.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.agent-model", label = "Installed model")]
+pub(crate) struct InstalledModel;
+
+/// A model the apps load in their own process, as the pane publishes it: a
+/// row of the `settings.agent-model-in-process` type.
+#[derive(tilo_resource::Row)]
+#[row(kind = "settings.agent-model-in-process", label = "In-process model")]
+pub(crate) struct InProcessModel;
+
+/// The model the pane recommends for this device, as it publishes it: a row
+/// of the `settings.agent-model-recommendation` type.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.agent-model-recommendation",
+    label = "Recommended model"
+)]
+pub(crate) struct RecommendedModel;
+
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
 #[effect(operation = "settings.effect")]
 pub enum AgentModelsEffect {
     /// Stage the accelerator drivers the recommended model needs.
+    #[effect(kind = "outside")]
     #[effect(job)]
     SetUpAccelerator,
     /// Show or hide what downloading the recommended model involves.
@@ -223,6 +245,7 @@ pub enum AgentModelsEffect {
     },
     /// Download and install the recommended model or an in-process one,
     /// accepting its license.
+    #[effect(kind = "outside")]
     #[effect(job)]
     InstallModel {
         #[param("The model's id")]
@@ -231,18 +254,21 @@ pub enum AgentModelsEffect {
         revision: String,
     },
     /// Start serving an installed model.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     StartModel {
         #[param("The model's id")]
         model: String,
     },
     /// Stop serving a model.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     StopModel {
         #[param("The model's id")]
         model: String,
     },
     /// Install a model again after it failed.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     RetryModel {
         #[param("The model's id")]
@@ -251,6 +277,7 @@ pub enum AgentModelsEffect {
         revision: String,
     },
     /// Remove an installed model and its files.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     RemoveModel {
         #[param("The model's id")]
@@ -289,6 +316,7 @@ pub enum AgentModelsEffect {
     /// Download a variant of a Hugging Face model at the commit it was
     /// shown at, accepting its licence, and start it when a signed runtime
     /// here serves it.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     InstallHubModel {
         #[param("The model id, owner/name")]
@@ -300,6 +328,7 @@ pub enum AgentModelsEffect {
     },
     /// Ask the person to choose a GGUF model file on this device in the
     /// file chooser, and copy it into the model store.
+    #[effect(kind = "outside")]
     #[effect(job)]
     AddModelFile,
     /// Open a gated model's page on Hugging Face, where its terms are accepted.
@@ -310,31 +339,37 @@ pub enum AgentModelsEffect {
     },
     /// Keep a Hugging Face access token in this device's vault, for gated
     /// and private models.
+    #[effect(kind = "outside")]
     #[effect(job)]
     SaveHubToken {
         #[param(secret, "The token; what the token field holds when omitted")]
         token: Option<String>,
     },
     /// Remove the Hugging Face token or sign-in from this device's vault.
+    #[effect(kind = "outside")]
     #[effect(job, destructive)]
     RemoveHubToken,
     /// Sign in with Hugging Face in the browser, for gated models; the
     /// sign-in is kept in this device's vault in place of a token.
+    #[effect(kind = "outside")]
     #[effect(attended, label = "agent-sign-in-huggingface")]
     SignInWithHuggingFace,
     /// Sign in with Hugging Face by entering a code on its page, from any
     /// device: for a device without a browser.
+    #[effect(kind = "outside")]
     #[effect(attended)]
     SignInWithHuggingFaceCode,
     /// Stop a Hugging Face sign-in.
     #[effect(view)]
     CancelHuggingFaceSignIn,
     /// Reload the authoritative profiles and credential status.
+    #[effect(kind = "outside")]
     #[effect(job)]
     RefreshProviders,
     /// Add a provider from a known one, which fills its name, endpoint,
     /// protocol and key header; its key and model are set afterwards. Add
     /// the same one again for a second account.
+    #[effect(kind = "outside")]
     #[effect(job, label = "agent-vertex-add-provider")]
     AddProvider {
         #[param(
@@ -345,6 +380,7 @@ pub enum AgentModelsEffect {
     /// Ask the provider which models it offers, with its stored key or
     /// sign-in: shows whether the connection works, and answers the models
     /// to choose from with what each can do.
+    #[effect(kind = "outside")]
     #[effect(job, row, returns)]
     ListProviderModels {
         #[param("The provider's id")]
@@ -352,6 +388,7 @@ pub enum AgentModelsEffect {
     },
     /// Make one model the one agents use from this provider: one it listed,
     /// or any other id.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetProviderModel {
         #[param("The provider's id")]
@@ -360,6 +397,7 @@ pub enum AgentModelsEffect {
         model: String,
     },
     /// Speak another protocol to a provider.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetProviderProtocol {
         #[param("The provider's id")]
@@ -368,6 +406,7 @@ pub enum AgentModelsEffect {
         protocol: String,
     },
     /// Offer a provider to agents, or stop offering it.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetProviderEnabled {
         #[param("The provider's id")]
@@ -375,6 +414,7 @@ pub enum AgentModelsEffect {
         on: bool,
     },
     /// Name a provider, where it is, and the model agents use from it.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     SetProviderDetails {
         #[param("The provider's id")]
@@ -387,6 +427,7 @@ pub enum AgentModelsEffect {
         model: Option<String>,
     },
     /// Set this model's request allowance; omit both values to restore defaults.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetModelRequestLimits {
         provider: String,
@@ -401,6 +442,7 @@ pub enum AgentModelsEffect {
     /// Say what one model can do, over what its provider's list or Tilo's
     /// table of model families says; omit both to let them decide again.
     /// An agent plans only with a model that calls tools.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetModelCapabilities {
         #[param("The provider's id")]
@@ -413,6 +455,7 @@ pub enum AgentModelsEffect {
         tool_calling: Option<bool>,
     },
     /// Make a provider the one agents use unless told otherwise.
+    #[effect(kind = "outside")]
     #[effect(job, row, idempotent)]
     SetDefaultProvider {
         #[param("The provider's id")]
@@ -420,6 +463,7 @@ pub enum AgentModelsEffect {
     },
     /// Choose the model one agent plans with; omit both to let it use the
     /// default again.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetAgentModel {
         #[param("The agent's id")]
@@ -431,6 +475,7 @@ pub enum AgentModelsEffect {
     },
     /// Choose the model each kind of interaction runs on; omit both to let
     /// that kind follow the default again.
+    #[effect(kind = "outside")]
     #[effect(job, idempotent)]
     SetInteractionModel {
         #[param("`one_shot`, `task`, `subtask`, `request`, `classifier` or `dictation`")]
@@ -441,6 +486,7 @@ pub enum AgentModelsEffect {
         model: Option<String>,
     },
     /// Remove a provider.
+    #[effect(kind = "outside")]
     #[effect(job, row, destructive)]
     RemoveProvider {
         #[param("The provider's id")]
@@ -452,6 +498,7 @@ pub enum AgentModelsEffect {
     AddGoogleVertex,
     /// Sign in with Google in the browser for Vertex AI: for the provider
     /// being added, or again for an existing one whose sign-in ended.
+    #[effect(kind = "outside")]
     #[effect(label = "agent-vertex-sign-in")]
     SignInWithGoogle {
         #[param("The provider's id; omit for the one being added")]
@@ -463,6 +510,7 @@ pub enum AgentModelsEffect {
     /// Sign in to `ChatGPT`, GitHub Copilot or `OpenRouter`: for a provider
     /// to add, or again for an existing one. Finishes once the
     /// person has signed in and the provider is saved.
+    #[effect(kind = "outside")]
     #[effect(attended, job)]
     SignInToProvider {
         #[param("`chatgpt`, `github-copilot` or `openrouter`")]
@@ -477,6 +525,7 @@ pub enum AgentModelsEffect {
     AddGoogleGemini,
     /// Save the Gemini provider being added, once signed in with Google, or
     /// change the Cloud project an existing one bills.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     SetGeminiProvider {
         #[param("The provider's id; omit for the one being added")]
@@ -492,6 +541,7 @@ pub enum AgentModelsEffect {
     },
     /// Save the Vertex AI provider being added, once signed in, or change
     /// an existing one's project, location and model.
+    #[effect(kind = "outside")]
     #[effect(job, row)]
     SetVertexProvider {
         #[param("The provider's id; omit for the one being added")]
@@ -955,9 +1005,8 @@ impl AgentModelsArea {
             .iter()
             .map(|installed| {
                 model_actions(installed).into_iter().fold(
-                    LiveRow::new(
+                    LiveRow::typed::<InstalledModel>(
                         format!("settings.agent-model:{}", installed.package.id),
-                        "settings.agent-model",
                         installed.package.name.clone(),
                     ),
                     |row, action| row.operation(offer(model_effect(installed, action))),
@@ -967,9 +1016,8 @@ impl AgentModelsArea {
         // In-process models run inside the apps that use them on any CPU, so
         // neither the hardware fit nor accelerator setup blocks them.
         for local in &model.snapshot.in_process {
-            let mut row = LiveRow::new(
+            let mut row = LiveRow::typed::<InProcessModel>(
                 format!("settings.agent-model:{}", local.package.id),
-                "settings.agent-model-in-process",
                 local.package.name.clone(),
             );
             if local.installable() {
@@ -986,17 +1034,15 @@ impl AgentModelsArea {
             rows.push(row);
         }
         if let Some(package) = &model.snapshot.recommendation {
-            rows.push(
-                LiveRow::new(
-                    format!("settings.agent-model-recommendation:{}", package.id),
-                    "settings.agent-model-recommendation",
-                    package.name.clone(),
-                )
-                .operation(offer(AgentModelsEffect::InstallModel {
-                    model: package.id.clone(),
-                    revision: package.revision.clone(),
-                })),
+            let mut row = LiveRow::typed::<RecommendedModel>(
+                format!("settings.agent-model-recommendation:{}", package.id),
+                package.name.clone(),
             );
+            row = row.operation(offer(AgentModelsEffect::InstallModel {
+                model: package.id.clone(),
+                revision: package.revision.clone(),
+            }));
+            rows.push(row);
         }
         rows.extend(model.hub.rows());
         rows.extend(model.panel.rows().into_iter().map(|row| {

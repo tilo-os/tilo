@@ -23,7 +23,7 @@ pub enum TasksEffect {
     /// its own: a script or an agent that means to make one invokes the
     /// tracker's own action with a name. It edits nothing, so a viewer may
     /// open it too.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     NewProject,
 
     /// Open issue

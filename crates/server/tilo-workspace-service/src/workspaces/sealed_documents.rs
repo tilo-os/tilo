@@ -36,13 +36,34 @@ use super::{GovernedWorkspace, SystemTime, Workspaces};
 )]
 const COMPACTION_RETRY: usize = 256;
 
-/// The content keys of one record's channel, as the node holds them.
+/// The content keys of one document, as the node holds them: its readers'
+/// group's keys, scoped to the document.
 pub(super) struct DocumentKeys {
     keys: ContentKeys,
     artifact: ArtifactId,
 }
 
 impl DocumentKeys {
+    /// `keys`, of the group of `readers` in `workspace`, for document `doc`
+    /// ([`collab_types::content_artifact_id`]).
+    pub(super) fn of(keys: ContentKeys, workspace: &str, readers: &str, doc: &str) -> Self {
+        Self {
+            keys,
+            artifact: collab_types::content_artifact_id(workspace, readers, doc),
+        }
+    }
+
+    /// `keys`, the workspace's own, for a document of `app` every member
+    /// reads.
+    fn app_document(keys: ContentKeys, workspace: &str, (app, document): (&str, &str)) -> Self {
+        Self::of(
+            keys,
+            workspace,
+            collab_types::EVERY_MEMBER,
+            &collab_types::app_document_id(app, document),
+        )
+    }
+
     /// Open any write of the record's history, under any epoch the keys
     /// hold, a compaction included.
     pub(super) fn open(&self) -> impl FnMut(&SignedOp) -> Result<Vec<u8>, String> + '_ {
@@ -174,8 +195,14 @@ impl GovernedWorkspace {
     /// them, without opening a group it has none of: `None` when this host
     /// runs on a device that takes part in no group of the workspace.
     pub(super) async fn route_keys(&self) -> Option<Result<ContentKeys, String>> {
+        self.reader_keys(collab_types::EVERY_MEMBER).await
+    }
+
+    /// The keys of the group of `readers` in this workspace as this device
+    /// holds them, without opening a group it has none of: `None` when it takes part in none.
+    pub(super) async fn reader_keys(&self, readers: &str) -> Option<Result<ContentKeys, String>> {
         let device = self.device.as_ref()?;
-        device.group_keys(self.workspace(), false).await
+        device.group_keys(self.workspace(), readers, false).await
     }
 
     /// Whether this host holds the workspace's keys: it can then read sealed
@@ -206,15 +233,32 @@ impl GovernedWorkspace {
         if !self.peer().publication().is_sealed_document(app, record) {
             return Ok(None);
         }
-        let workspace = self.workspace();
-        let keys = self
-            .route_keys()
+        self.keys_of(
+            collab_types::EVERY_MEMBER,
+            &collab_types::app_document_id(app, record),
+        )
+        .await
+        .map(Some)
+    }
+
+    /// The keys of document `doc` that `readers` read, as the device this
+    /// service is on holds its readers' group's keys: what the document's
+    /// content opens and seals with.
+    ///
+    /// # Errors
+    ///
+    /// This device takes no part in the readers' group, or holds no
+    /// keys of it yet.
+    pub(super) async fn keys_of(&self, readers: &str, doc: &str) -> Result<DocumentKeys, String> {
+        let device = self
+            .device
+            .as_ref()
+            .ok_or("this device holds no group keys")?;
+        let keys = device
+            .group_keys(self.workspace(), readers, false)
             .await
-            .ok_or("the record is sealed and this host takes part in no channel")??;
-        Ok(Some(DocumentKeys {
-            keys,
-            artifact: collab_types::document_artifact_id(app, workspace, record),
-        }))
+            .ok_or("this device takes no part in the readers' group")??;
+        Ok(DocumentKeys::of(keys, self.workspace(), readers, doc))
     }
 
     /// The plaintext of `op`, a member's sealed write of `record` of `app`,
@@ -241,10 +285,7 @@ impl GovernedWorkspace {
         let Some(Ok(keys)) = self.route_keys().await else {
             return Ok(None);
         };
-        let keys = DocumentKeys {
-            keys,
-            artifact: collab_types::document_artifact_id(app, workspace, record),
-        };
+        let keys = DocumentKeys::app_document(keys, workspace, (app, record));
         let mut open = keys.open();
         open(op).map(Some)
     }
@@ -311,15 +352,15 @@ pub(super) async fn whole_document(
             .ok_or_else(|| "the host holds no copy of it".to_owned());
     }
     let device = device.ok_or("it is sealed and this host has no channel keys")?;
-    let keys = match device.group_keys(workspace, false).await {
+    let keys = match device
+        .group_keys(workspace, collab_types::EVERY_MEMBER, false)
+        .await
+    {
         None => return Err("it is sealed for a channel this host holds no keys of".to_owned()),
         Some(Err(error)) => return Err(format!("its channel's keys did not open: {error}")),
         Some(Ok(keys)) => keys,
     };
-    let keys = DocumentKeys {
-        keys,
-        artifact: collab_types::document_artifact_id(app, workspace, record),
-    };
+    let keys = DocumentKeys::app_document(keys, workspace, (app, record));
     let opened = peer
         .publication()
         .opened_document(app, record, &mut keys.open())
@@ -362,13 +403,13 @@ pub(crate) async fn unsent_writes(
     let Some(device) = device else {
         return Vec::new();
     };
-    let Some(Ok(keys)) = device.group_keys(workspace, false).await else {
+    let Some(Ok(keys)) = device
+        .group_keys(workspace, collab_types::EVERY_MEMBER, false)
+        .await
+    else {
         return Vec::new();
     };
-    let keys = DocumentKeys {
-        keys,
-        artifact: collab_types::document_artifact_id(app, workspace, record),
-    };
+    let keys = DocumentKeys::app_document(keys, workspace, (app, record));
     let opened = match peer
         .publication()
         .opened_document(app, record, &mut keys.open())
@@ -550,7 +591,10 @@ impl crate::compaction::GroupKeys for Workspaces {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ContentKeys>> + Send + 'a>> {
         Box::pin(async move {
             let device = self.device_keys()?;
-            device.group_keys(&route.cluster_id, false).await?.ok()
+            device
+                .group_keys(&route.cluster_id, collab_types::EVERY_MEMBER, false)
+                .await?
+                .ok()
         })
     }
 
@@ -593,7 +637,12 @@ impl Workspaces {
         let Some(device) = self.device_keys() else {
             return false;
         };
-        matches!(device.group_keys(workspace, true).await, Some(Ok(_)))
+        matches!(
+            device
+                .group_keys(workspace, collab_types::EVERY_MEMBER, true)
+                .await,
+            Some(Ok(_))
+        )
     }
 
     /// Everything the governor's copy holds of `record` of `app` in
@@ -892,13 +941,10 @@ impl Workspaces {
             return workspace.document_keys(app, record).await;
         };
         let keys = device
-            .group_keys(name, true)
+            .group_keys(name, collab_types::EVERY_MEMBER, true)
             .await
             .ok_or("the record is sealed and this host takes part in no channel")??;
-        Ok(Some(DocumentKeys {
-            keys,
-            artifact: collab_types::document_artifact_id(app, name, record),
-        }))
+        Ok(Some(DocumentKeys::app_document(keys, name, (app, record))))
     }
 
     /// Compact every sealed record history of `workspace` that has used most of

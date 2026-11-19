@@ -49,7 +49,7 @@ use crate::account::AccountStore;
 use crate::actions::{DraftData, Outgoing};
 use crate::i18n::CATALOG;
 #[path = "contact_recipients.rs"]
-mod contact_recipients;
+pub(crate) mod contact_recipients;
 #[path = "peer_copies.rs"]
 mod peer_copies;
 use peer_copies::kept_baseline;
@@ -749,13 +749,11 @@ impl MailApp {
             }
             "loading" => {
                 let mut st = self.shared.borrow_mut();
-                let fetch = first_fetch(&st.accounts.active_config());
-                let since = fetch.since();
+                let now = ui::time::now();
                 let fetch = ui::arriving::ArrivalClock::new(
-                    since
-                        .checked_sub(ui::time::Duration::from_secs(1))
-                        .unwrap_or(since),
-                    fetch.source().clone(),
+                    now.checked_sub(ui::time::Duration::from_secs(1))
+                        .unwrap_or(now),
+                    ui::arriving::Source::Remote,
                 );
                 st.first_fetch = Some(fetch);
                 let ids: Vec<MessageId> = st.mailbox.messages.keys().copied().collect();
@@ -3800,7 +3798,7 @@ impl Widget for MailApp {
                 {
                     let mut st = self.shared.borrow_mut();
                     let nothing_kept = st.mailbox.of_account(&cfg.email).next().is_none();
-                    st.first_fetch = nothing_kept.then(|| first_fetch(&cfg));
+                    st.first_fetch = nothing_kept.then(first_fetch);
                 }
                 self.state()
                     .post_engine(EngineRequest::connect(cfg.clone()));
@@ -4929,9 +4927,8 @@ impl Mailroom {
         }
         if let Some(stable) = id.strip_prefix("mail.thread:") {
             let (subject, messages) = self.resource_thread_rows(stable)?;
-            let mut thread = ui::framework::LiveRow::new(
+            let mut thread = ui::framework::LiveRow::typed::<crate::actions::ThreadItem>(
                 id,
-                "mail.thread",
                 if subject.is_empty() {
                     crate::i18n::untitled()
                 } else {

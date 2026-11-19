@@ -8,10 +8,13 @@ use ui::i18n::EmbeddedCatalog;
 #[cfg(feature = "samples")]
 use ui::tilo_resource::Invoke;
 use ui::widget::Element;
+#[cfg(feature = "samples")]
 use uuid::Uuid;
 
 use crate::app::DbClientApp;
+#[cfg(feature = "samples")]
 use crate::model::{ConnectionProfile, Engine};
+#[cfg(feature = "samples")]
 use crate::saved::{SavedConnection, id_of};
 
 pub use db_client_model::{DbEffect, Workspace, workspace};

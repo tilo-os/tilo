@@ -74,11 +74,21 @@ impl Stream {
     /// A stream on `api`'s wire.
     #[must_use]
     pub fn new(api: Api) -> Self {
+        Self::reading(api, false)
+    }
+
+    /// A stream of an answer to a request [`super::body`] wrote for `profile`.
+    #[must_use]
+    pub fn of(profile: &crate::ProviderProfile) -> Self {
+        Self::reading(Api::of(profile), profile.is_googles_endpoint())
+    }
+
+    fn reading(api: Api, google: bool) -> Self {
         Self {
             api,
             fold: match api {
                 Api::Anthropic => Fold::Anthropic(anthropic::Fold::default()),
-                Api::Chat => Fold::Chat(chat::Fold::default()),
+                Api::Chat => Fold::Chat(chat::Fold::new(google)),
                 Api::Responses | Api::ChatGpt => Fold::Responses(responses::Fold::default()),
             },
             line: Vec::new(),
@@ -194,6 +204,7 @@ impl Stream {
         if self.pending || !self.line.is_empty() {
             return Err(StreamError::Truncated);
         }
+        let google = matches!(&self.fold, Fold::Chat(fold) if fold.google());
         let answer = match self.fold {
             Fold::Anthropic(fold) if fold.finished() => fold.answer(),
             Fold::Chat(fold) if fold.finished() => Ok(fold.answer(out)),
@@ -201,7 +212,7 @@ impl Stream {
             _ => return Err(StreamError::Truncated),
         }
         .map_err(StreamError::Malformed)?;
-        let response = super::decode(self.api, &answer)
+        let response = super::decode(self.api, google, &answer)
             .map_err(|error| StreamError::Malformed(error.message))?;
         super::check(&response, request).map_err(|error| StreamError::Malformed(error.message))?;
         Ok(response)

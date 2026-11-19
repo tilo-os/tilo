@@ -326,9 +326,10 @@ fn an_apps_parts_live_in_the_bar_and_the_content_starts_under_it() {
         );
         let location = g.bar_for_tests().location_rect();
         assert!(bar.contains(location.center()), "{count} tabs: in the bar");
-        assert!(
-            !g.bar_grab_hit(location.center()),
-            "the location is no drag handle"
+        assert_eq!(
+            g.bar_grab_hit(location.center()),
+            count == 1,
+            "{count} tabs: a window of one tab is lifted by its whole bar, a bar of several keeps its presses"
         );
         assert!(g.edit_location() && g.editing_location());
     }

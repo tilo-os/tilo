@@ -5,8 +5,9 @@
 //! It listens on a fresh `wayland-N` socket, serves X11 clients one display per
 //! workspace (unless `--no-x11`), prints the socket and the MCP server it serves,
 //! and starts `command` with `WAYLAND_DISPLAY` set to it; with a command, the
-//! session lasts as long as it does. A nested session serves no bus unless a flag
-//! names one. SIGTERM, SIGINT and SIGHUP end the session as ending on its own does.
+//! session lasts as long as it does. A session serves its desktop services on the
+//! session bus its environment names, or on the one `--session-bus` names instead.
+//! SIGTERM, SIGINT and SIGHUP end the session as ending on its own does.
 
 #[cfg(target_os = "linux")]
 use tilo_session::desktop_services::{Bus, Buses};
@@ -222,7 +223,7 @@ struct CommandLine {
 /// guessed.
 #[cfg(target_os = "linux")]
 fn device_owner() -> std::io::Result<bool> {
-    let identity_dir = runtime_identity::identity_dir_from_env()?;
+    let identity_dir = tilo_identity::store::identity_dir_from_env()?;
     tilo_identity::provisioning::active_identity_owns_device(
         &identity_dir,
         &tilo_identity::provisioning::collaboration_identity_paths(),
@@ -463,8 +464,8 @@ fn bus(ours: &[String], flag: &str) -> Bus {
     }
 }
 
-/// What a session in a window of another desktop reaches of it: no bus of it unless a flag names
-/// one, and no displays exported to it.
+/// The buses `ours` names, and whether a session on `backend` exports its displays to the desktop
+/// around it.
 #[cfg(target_os = "linux")]
 fn reach(ours: &[String], backend: Backend) -> Reach {
     Reach::of(
@@ -1348,8 +1349,8 @@ fn search_options(
             &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
         ),
         places: tilo_desktop_search::providers::places::RecentPlaces::default(),
-        // The records the workspaces on this device hold, read now and followed as the apps of
-        // those workspaces name more.
+        // The session's own store; the records the workspaces hold are read from the engine once
+        // the session holds it.
         records: Some(tilo_session::Records::of(cli::data_home())),
         // No test source is mounted on a device: its search is over its own sources alone.
         extra_sources: Vec::new(),

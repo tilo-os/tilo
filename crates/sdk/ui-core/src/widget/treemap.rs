@@ -16,7 +16,7 @@ use crate::tokens::TextRole;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
-use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 #[derive(Clone, Debug)]
 pub struct TreemapStyle {
@@ -80,17 +80,7 @@ impl Treemap {
 
 impl TreemapMarks {
     fn content_rect(&self) -> Rect {
-        Rect::new(
-            self.frame.rect.x0 + 10.0,
-            self.frame.rect.y0
-                + if self.frame.title.is_empty() {
-                    10.0
-                } else {
-                    46.0
-                },
-            self.frame.rect.x1 - 10.0,
-            self.frame.rect.y1 - 10.0,
-        )
+        self.frame.inside()
     }
 
     fn valid_items(&self) -> Vec<usize> {
@@ -242,6 +232,10 @@ impl PlotMarks for TreemapMarks {
                 crate::widget::plot::value_item(&item.id, &item.label, &item.detail, item.value)
             })
             .collect()
+    }
+
+    fn place(&mut self, _tr: &mut TextRenderer, theme: &Theme) {
+        self.frame.margins = Margins::header(theme, &self.frame.title, 0);
     }
 
     fn paint(

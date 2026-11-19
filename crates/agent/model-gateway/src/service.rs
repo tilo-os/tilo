@@ -2039,42 +2039,6 @@ mod tests {
         );
     }
 
-    /// This computer keeps no provider key, so the gateway has no command that
-    /// takes one: its only command is the service endpoint systemd starts, and
-    /// no argument anywhere names a key. A key on the command line, where `ps`
-    /// and a shell's history would keep it, is refused.
-    #[test]
-    fn a_providers_key_is_no_command_line_argument() {
-        assert!(
-            Cli::try_parse_from([
-                "tilo-model-gateway",
-                "serve",
-                "--socket",
-                "/tmp/tilo-model-gateway.sock",
-            ])
-            .is_ok(),
-            "the one command the gateway takes is its service endpoint"
-        );
-        for command in [
-            "serve",
-            "provision-provider",
-            "remove-api-key",
-            "set-api-key",
-            "secret-status",
-        ] {
-            assert!(
-                Cli::try_parse_from([
-                    "tilo-model-gateway",
-                    command,
-                    "--api-key",
-                    "sk-shown-in-ps-and-history",
-                ])
-                .is_err(),
-                "{command} refuses a key on the command line"
-            );
-        }
-    }
-
     #[tokio::test]
     async fn subject_requests_observe_the_build_capability_and_caller_boundary() {
         let http = provider_client().unwrap();

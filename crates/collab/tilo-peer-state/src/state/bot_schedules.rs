@@ -125,7 +125,6 @@ impl PeerWorkspaceMut<'_> {
             BOT_SCHEDULES_KEY,
             &key,
             &device.device_public_key,
-            &device.user_public_key,
             Some(&json),
             now,
         )?;

@@ -5,7 +5,7 @@ use compat_catalogue::{Architecture, LaunchPlan, Layer, Runner};
 use launcher::capabilities::CapabilityPlan;
 use launcher::gpu::{IcdSearch, select_for_node};
 use launcher::sandbox::EgressProxyBind;
-use launcher::seccomp::SeccompProfile;
+use launcher::seccomp::{SeccompProfile, SyscallGrants};
 use thiserror::Error;
 
 use crate::store::{
@@ -71,13 +71,26 @@ pub struct RuntimeImage {
 }
 
 impl RuntimeImage {
+    /// Wine is a program loader: it lays out each Windows program's sections itself and then
+    /// makes them executable, which a 32-bit program (every NSIS installer) always needs, and
+    /// Windows programs generate code of their own (.NET, scripting engines). Under the
+    /// write-xor-execute baseline Wine's `mprotect` to executable was refused and setup ended
+    /// before showing anything, so a Wine capsule takes the profile for programs that make code.
     fn seccomp_profile(&self) -> Option<SeccompProfile> {
         if self.needs_nested_runtime {
             None
-        } else if self.translated {
-            Some(SeccompProfile::TiloJit)
         } else {
-            Some(SeccompProfile::TiloDefault)
+            Some(SeccompProfile::TiloJit)
+        }
+    }
+
+    /// Wine starts a 32-bit Windows program (every NSIS installer) inside its 64-bit process
+    /// and gives each of its threads a 32-bit segment with the one 32-bit system call that
+    /// sets one; without it such a program is killed before it starts.
+    fn seccomp_grants(&self) -> SyscallGrants {
+        SyscallGrants {
+            wow64_thread_area: self.seccomp_profile().is_some(),
+            ..SyscallGrants::default()
         }
     }
 
@@ -252,6 +265,9 @@ impl SystemRuntimeRegistry {
                     runtime_bind("/usr/bin/wine", "/usr/bin/wine"),
                     runtime_bind("/usr/bin/wineserver", "/usr/bin/wineserver"),
                     runtime_bind("/usr/bin/wineboot", "/usr/bin/wineboot"),
+                    // Wine's locale tables, fonts and the `wine.inf` it sets a prefix up from:
+                    // without them the wine server never starts, and no program opens.
+                    runtime_bind("/usr/share/wine", "/usr/share/wine"),
                 ],
                 sandbox_entrypoint: PathBuf::from("/usr/bin/wine"),
                 environment: Vec::new(),
@@ -350,7 +366,9 @@ pub struct LaunchDisplay {
     /// display a program is kept behind.
     pub runtime_dir: PathBuf,
     pub wayland_socket: PathBuf,
-    pub render_node: PathBuf,
+    /// The GPU's render node the program draws with, or `None` where the display has no GPU: Wine
+    /// then draws with the software renderer, as the desktop itself does there.
+    pub render_node: Option<PathBuf>,
 }
 
 impl LaunchDisplay {
@@ -360,20 +378,27 @@ impl LaunchDisplay {
         {
             return Err(PlanError::UnsafeWaylandSocket);
         }
-        let render_name = self
-            .render_node
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        if self.render_node.parent() != Some(Path::new("/dev/dri"))
-            || !render_name.strip_prefix("renderD").is_some_and(|suffix| {
-                !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
-            })
+        if let Some(node) = &self.render_node
+            && !is_render_node(node)
         {
-            return Err(PlanError::UnsafeRenderNode);
+            return Err(PlanError::UnsafeRenderNode(node.display().to_string()));
         }
         Ok(())
     }
+}
+
+/// Whether `node` is a GPU render node (`/dev/dri/renderD<N>`), the only device a launch binds into
+/// its sandbox.
+#[must_use]
+pub fn is_render_node(node: &Path) -> bool {
+    let name = node
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    node.parent() == Some(Path::new("/dev/dri"))
+        && name
+            .strip_prefix("renderD")
+            .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Where each launch's program shows its windows. The caller of the service
@@ -578,6 +603,8 @@ pub struct CapsuleCommandPlan {
     /// derived only from daemon configuration, capsule state, or resolved grants.
     pub bwrap_argv: Vec<String>,
     pub seccomp_profile: Option<SeccompProfile>,
+    /// What the filter of [`Self::seccomp_profile`] allows beyond it.
+    pub seccomp_grants: SyscallGrants,
     pub capsule_id: String,
     pub runner_label: String,
     pub network: NetworkShape,
@@ -687,7 +714,11 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
 
         let wayland =
             launcher::sandbox::wayland_bind_for(&self.display.wayland_socket, self.display.uid);
-        let gpu = select_for_node(&self.display.render_node, &self.icd_search);
+        let gpu = self
+            .display
+            .render_node
+            .as_deref()
+            .map(|node| select_for_node(node, &self.icd_search));
         let mut argv = Vec::new();
         launcher::sandbox::push_clean_environment(&mut argv);
         argv.extend(["--unshare-all".to_string()]);
@@ -786,14 +817,26 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
 
         launcher::sandbox::push_wayland_bind(&mut argv, &wayland);
         landlock_write.push(wayland.sandbox_socket.clone());
-        launcher::sandbox::push_gpu_selection(&mut argv, &gpu, true);
-        landlock_write.push(self.display.render_node.clone());
+        if let Some(gpu) = &gpu {
+            launcher::sandbox::push_gpu_selection(&mut argv, gpu, true);
+            landlock_write.push(gpu.node.clone());
+            landlock_read.extend(gpu.manifest_files());
+        } else {
+            // No GPU: no device node in the sandbox, and Wine's OpenGL and Vulkan load the
+            // software renderer the desktop draws with, as a native app's launch does there.
+            launcher::profile::hide_gpu_devices(&mut argv);
+            if let Some(pin) = launcher::gpu::inherited_software_pin()
+                .or_else(|| launcher::gpu::software_pin(&self.icd_search).ok())
+            {
+                launcher::sandbox::push_software_pin(&mut argv, &pin);
+                landlock_read.extend(pin.manifest_files());
+            }
+        }
         if route.runtime.layer == Layer::Proton {
             let ntsync = PathBuf::from("/dev/ntsync");
             bind(&mut argv, "--dev-bind", &ntsync, &ntsync);
             landlock_write.push(ntsync);
         }
-        landlock_read.extend(gpu.manifest_files());
         push_audio(&mut argv, lease, self.display.uid, &mut landlock_write);
         if let Some(proxy) = &lease.egress_proxy {
             launcher::sandbox::push_egress_proxy(&mut argv, proxy);
@@ -859,6 +902,7 @@ impl<'a, R: RuntimeRegistry> SandboxPlanner<'a, R> {
         Ok(CapsuleCommandPlan {
             bwrap_argv: argv,
             seccomp_profile: runtime.seccomp_profile(),
+            seccomp_grants: runtime.seccomp_grants(),
             capsule_id: capsule.id.clone(),
             runner_label: format!("{} {}", capsule.runner.family, capsule.runner.version),
             network,
@@ -1149,10 +1193,9 @@ pub enum PlanError {
     )]
     WindowsProviderNotIncluded,
     #[error(
-        "Windows support is not installed on this device. It is a separate download of about \
-         3 GB that is only fetched when you ask for it. Install it with \
-         `systemctl start tilo-extension@install:windows-compat.service` (as an administrator), \
-         then launch again. Nothing was started."
+        "Windows support is not installed on this device yet. It is a separate download of \
+         about 2 GB, fetched only when you ask for it: turn on Windows apps in Settings, \
+         then open the program again. Nothing was started."
     )]
     WindowsSupportNotInstalled,
     #[error(transparent)]
@@ -1169,8 +1212,11 @@ pub enum PlanError {
     UnsafeWaylandSocket,
     #[error("the program has no display to show its windows on: {0}")]
     NoDisplay(String),
-    #[error("GPU device is not a DRM render node")]
-    UnsafeRenderNode,
+    #[error(
+        "the display's GPU device {0} is not a render node (/dev/dri/renderD*), so it is not \
+         given to the program"
+    )]
+    UnsafeRenderNode(String),
     #[error("capsule does not match resolved route")]
     CapsuleRouteMismatch,
     #[error("derived capsule path escaped its configured root")]
@@ -1248,8 +1294,54 @@ mod tests {
             uid: 1000,
             runtime_dir: PathBuf::from("/xdg/1000"),
             wayland_socket: PathBuf::from("/xdg/1000/tilo-ws-test"),
-            render_node: PathBuf::from("/dev/dri/renderD999"),
+            render_node: Some(PathBuf::from("/dev/dri/renderD999")),
         }
+    }
+
+    /// Wine draws its windows with shared memory or the software renderer, so a display with no
+    /// GPU (a virtual machine without 3D) still starts Windows programs: with no device node in
+    /// the sandbox, never with a display's primary node in place of a render node.
+    #[test]
+    fn a_display_without_a_gpu_starts_the_program_with_no_device_node() {
+        let route = route(Layer::Wine);
+        let (_directory, store, state, program) = setup(&route);
+        let registry = SystemRuntimeRegistry::assuming_provider();
+        let host = LaunchDisplay {
+            render_node: None,
+            ..session()
+        };
+        let planner = SandboxPlanner::new(&store, &registry, &host).unwrap();
+        let command = planner
+            .plan(
+                &route,
+                &state,
+                &program,
+                &CapabilityPlan::empty(),
+                "workspace",
+                &LaunchLease::deny_all("lease"),
+            )
+            .unwrap();
+        let argv = &command.bwrap_argv;
+        let hidden = argv
+            .windows(2)
+            .rposition(|args| args == ["--tmpfs", "/dev/dri"])
+            .expect("the GPU's device directory is emptied");
+        assert!(
+            !argv[hidden..]
+                .iter()
+                .any(|arg| arg.starts_with("/dev/dri/")),
+            "no device node is bound over it: {argv:?}"
+        );
+
+        let card = LaunchDisplay {
+            render_node: Some(PathBuf::from("/dev/dri/card0")),
+            ..session()
+        };
+        assert!(matches!(
+            card.validate(),
+            Err(PlanError::UnsafeRenderNode(node)) if node == "/dev/dri/card0"
+        ));
+        assert!(host.validate().is_ok());
     }
 
     #[test]
@@ -1331,10 +1423,14 @@ mod tests {
                             .unwrap();
                         let expected_filter = match (host, layer) {
                             (_, Layer::Proton) => None,
-                            ("aarch64", _) => Some(SeccompProfile::TiloJit),
-                            _ => Some(SeccompProfile::TiloDefault),
+                            _ => Some(SeccompProfile::TiloJit),
                         };
                         assert_eq!(command.seccomp_profile, expected_filter);
+                        assert_eq!(
+                            command.seccomp_grants.wow64_thread_area,
+                            expected_filter.is_some(),
+                            "a Wine capsule may set its 32-bit thread area"
+                        );
                         assert!(!command.bwrap_argv.iter().any(|arg| arg == "--share-net"));
                         assert!(
                             command
@@ -1382,6 +1478,11 @@ mod tests {
                                     .iter()
                                     .any(|arg| arg == TRANSLATED_HELPER)
                             );
+                            if layer == Layer::Wine {
+                                assert!(command.bwrap_argv.windows(3).any(|args| {
+                                    args == ["--ro-bind", "/usr/share/wine", "/usr/share/wine"]
+                                }));
+                            }
                         }
                     }
                 }
@@ -1825,10 +1926,10 @@ mod tests {
             uid,
             runtime_dir: runtime,
             wayland_socket: socket.clone(),
-            render_node: PathBuf::from("/dev/dri/renderD128"),
+            render_node: Some(PathBuf::from("/dev/dri/renderD128")),
         };
         assert!(
-            host.render_node.exists(),
+            host.render_node.as_deref().is_some_and(Path::exists),
             "provide a dummy render-node bind source"
         );
         let planner = SandboxPlanner::new(&store, &TEST_REGISTRY, &host).unwrap();
@@ -2293,8 +2394,8 @@ mod payload_tests {
                 let message = error.to_string();
                 assert!(message.contains("not installed"), "{message}");
                 assert!(
-                    message.contains("tilo-extension@install:windows-compat.service"),
-                    "the message names the action: {message}"
+                    message.contains("Windows apps in Settings"),
+                    "the message names where to turn it on: {message}"
                 );
                 assert!(message.contains("Nothing was started"), "{message}");
             }

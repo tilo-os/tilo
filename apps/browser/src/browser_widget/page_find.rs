@@ -82,14 +82,14 @@ impl Findable for BrowserWidget {
 
 #[cfg(test)]
 mod tests {
-    use ui::webview::{WebViewCommand, WebViewEvent};
+    use tilo_webview::{WebViewCommand, WebViewEvent};
     use ui::widget::{InPlace, SearchDriver};
 
     use super::BrowserWidget;
 
     #[test]
     fn the_window_bars_search_finds_in_the_page_through_its_engine() {
-        let engine = ui::webview::test_engine::TestEngine::new();
+        let engine = tilo_webview::test_engine::TestEngine::new();
         let mut widget = BrowserWidget::with_engine(engine.clone(), true);
         assert_eq!(InPlace::of(&mut widget), InPlace::Document);
         let options = ui::widget::FindOptions::default();

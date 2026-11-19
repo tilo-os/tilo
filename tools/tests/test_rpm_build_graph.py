@@ -25,6 +25,7 @@ SUPPORT = {
     "local-model-service",
     "tilo-model-gateway",
     "tilo-cli",
+    "tilolang-process",
 }
 
 

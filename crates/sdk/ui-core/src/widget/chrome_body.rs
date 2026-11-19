@@ -200,6 +200,18 @@ impl ChromeBody {
         }
     }
 
+    /// The band past a square body's open side its shadow may fall in: the side facing away from
+    /// the screen edge it stands on.
+    fn open_side_reach(&self, rect: Rect) -> Rect {
+        const REACH: f64 = 96.0;
+        match self.edge {
+            ChromeEdge::Top => Rect::new(rect.x0, rect.y1, rect.x1, rect.y1 + REACH),
+            ChromeEdge::Bottom => Rect::new(rect.x0, rect.y0 - REACH, rect.x1, rect.y0),
+            ChromeEdge::Leading => Rect::new(rect.x1, rect.y0, rect.x1 + REACH, rect.y1),
+            ChromeEdge::Trailing => Rect::new(rect.x0 - REACH, rect.y0, rect.x0, rect.y1),
+        }
+    }
+
     fn paint_body(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let rect = self.inner().get_rect();
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -214,6 +226,13 @@ impl ChromeBody {
             // A rounded body floats over what it covers: its shadow falls outside it only,
             // so what shows through is not darkened.
             crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
+        } else {
+            // A square body stands on its screen edge: its shadow falls only past its open
+            // side, onto what it covers (below a top bar, beside a side rail).
+            let cast = self.open_side_reach(rect);
+            scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &cast);
+            crate::surface::floating_shadow(scene, transform, rect, 0.0, 1.0, theme);
+            scene.pop_layer();
         }
         let finish = theme.chrome_material(self.material);
         crate::backdrop::fill_role_flush(
@@ -274,7 +293,8 @@ impl Decorator for ChromeBody {
         self.inner_mut().build_layout(taffy, theme, node_map)
     }
 
-    /// What it holds on the bar's ground; a rounded body floats with its edge, as painted.
+    /// What it holds on the bar's ground; a rounded body floats with its edge, a square one casts its
+    /// shadow past its open side, as painted.
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         self.container.html(cx);
         let theme = cx.theme();
@@ -291,8 +311,16 @@ impl Decorator for ChromeBody {
             } else {
                 0.0
             },
+            inset: [0.0; 2],
         });
-        node.floats = rounded;
+        // A square body stands on its screen edge and casts its shadow past its open side only.
+        node.floats = true;
+        node.shadow_side = (!rounded).then_some(match self.edge {
+            ChromeEdge::Top => "bottom",
+            ChromeEdge::Bottom => "top",
+            ChromeEdge::Leading => "right",
+            ChromeEdge::Trailing => "left",
+        });
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -376,5 +404,41 @@ mod tests {
             });
             assert_eq!(body.material, ChromeMaterial::Glass);
         }
+    }
+
+    #[test]
+    fn a_square_bar_on_the_top_edge_casts_its_shadow_below_it_only() {
+        let theme = Theme::light();
+        let mut bar = ChromeBody::from_props(
+            "bar",
+            ChromeProps {
+                edge: Some(ChromeEdge::Top),
+                ..ChromeProps::default()
+            },
+        );
+        crate::testing::lay_out_in(&mut bar, 400.0, 40.0, &theme).unwrap();
+        let rect = bar.inner().get_rect();
+        assert!(rect.height() > 0.0, "the bar has a body: {rect:?}");
+        let mut scene = Scene::new();
+        let top = 60.0;
+        bar.paint_body(&mut scene, Affine::translate((0.0, top)), &theme);
+        let rgba = crate::offscreen::OffscreenRenderer::new(400, 240).render(&scene, Color::WHITE);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "test pixels"
+        )]
+        let at = |y: f64| crate::offscreen::OffscreenRenderer::sample(&rgba, 400, 200, y as u32).0;
+        let below = at(top + rect.y1 + 3.0);
+        let above = at(top + rect.y0 - 4.0);
+        let far = at(top + rect.y1 + 150.0);
+        assert!(
+            below + 4 < far,
+            "a shadow falls under the bar: {below} against {far}"
+        );
+        assert_eq!(
+            above, far,
+            "none falls above it, onto the screen edge it stands on"
+        );
     }
 }

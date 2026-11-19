@@ -1,5 +1,6 @@
 use super::projection::{ExactScalar, Node};
 use super::*;
+use crate::state::StateHistory as _;
 use automerge::{
     ObjId, ROOT, ReadDoc, ScalarValue,
     marks::{ExpandMark, Mark},

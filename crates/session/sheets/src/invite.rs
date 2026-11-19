@@ -39,6 +39,7 @@ impl InviteLinks {}
 #[effect(operation = "so.tilo.invite.link")]
 pub enum InviteEffect {
     /// Make an invitation
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Create {
         /// The part it brings someone in at, as the sheet lists it
@@ -52,6 +53,7 @@ pub enum InviteEffect {
         recipient: String,
     },
     /// Take an invitation back: its link admits nobody from now on
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Revoke {
         #[param("The invitation, by the id the sheet lists it under")]

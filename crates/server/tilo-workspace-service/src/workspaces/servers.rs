@@ -16,7 +16,8 @@
 //!
 //! Each entry also carries what the person asked that server to do
 //! ([`Asked`]): its health, a service's journal, a restart, a reboot, an
-//! update, a pause or resumption of updates, a rollback or a drain. Asking is
+//! update, a pause or resumption of updates, a rollback, a drain or making
+//! Tilo its default start. Asking is
 //! an action on the document, and so is answering; the server its entry names
 //! carries the request out and keeps what it found or did, and every device
 //! reads both. The action that asks (`server.status` and the others, served by
@@ -24,15 +25,17 @@
 //!
 //! The workspace's id follows from the person's root
 //! ([`admin_workspace_id`]), so each of their devices finds the same one
-//! without being told. It is made once, by the person's first server
-//! ([`found`]): a server enrolled when the device approving it knew of no
-//! earlier server of the person. Every later server knows the earlier ones
-//! from its enrollment and asks one of them to take it in ([`admit`]), which
-//! enters it in the document; the holders then hand it the workspace as they
-//! hand a server any workspace its entry names. A desktop never makes it: it
-//! asks a server that holds it to take it in ([`take_in`]), and from then on
-//! holds it like any other workspace of the person's. Once it holds the
-//! workspace, a server keeps its own entry's address current ([`enroll`]).
+//! without being told. It is made in the person's name when it is first needed
+//! ([`founded`]): the first machine planned, or the first server taken in. The
+//! founding history is the same on every device that makes it, so two of them
+//! that make it before they see one another make one workspace, and each names
+//! itself among its holders. A server never makes it; a later server asks an
+//! earlier one to take it in ([`admit`]), which enters it in the document, and
+//! the holders then hand it the workspace as they hand a server any workspace
+//! its entry names. A device that does not hold it asks a holder to take it in
+//! ([`take_in`]) and holds it like any other workspace of the person's from
+//! then on. Once it holds the workspace, a server keeps its own entry's
+//! address current ([`enroll`]).
 //!
 //! A device of the person that holds a workspace attaches the servers its
 //! document names as holders, and only those: one action on the document
@@ -40,6 +43,7 @@
 //! own entry's offer to what it answers devices, its update policy to what it
 //! follows, and a retired server lets go of everything it holds.
 
+pub use install_profile_model::plan::WaitingPlan;
 use serde::Deserialize;
 use tilo_resource::{Collection, Id, Invoke, Model, Refusal, Replica, resource};
 use tilo_server_protocol::servers::admin_workspace_id;
@@ -48,7 +52,9 @@ use tilo_user_identity::DeviceCert;
 
 use super::Workspaces;
 
+pub mod attach;
 pub mod device;
+pub mod machine;
 pub mod plan;
 
 /// The Servers workspace's document of the person's servers.
@@ -203,6 +209,73 @@ impl Servers {
             .filter(|server| !server.retired)
             .ok_or_else(|| Refusal::new("no such server"))
     }
+
+    /// The machines still to install, by the plan's id: the person's devices
+    /// read what each waits for, and the machine reads its own plan.
+    pub fn waiting(&self) -> impl Iterator<Item = (&Id, &Server)> {
+        self.servers
+            .iter()
+            .filter(|(_, server)| server.plan.planned())
+    }
+
+    /// The machines the person planned and has not installed, each as its
+    /// devices and the installer read it: the plan document, the drives its
+    /// machine reported since, and the questions it still asks.
+    ///
+    /// # Errors
+    /// An entry does not read back as a plan, which only a value kept outside
+    /// the plan's own rules makes.
+    pub fn waiting_plans(&self) -> Result<Vec<WaitingPlan>, String> {
+        let mut waiting = Vec::new();
+        for (_, server) in self.waiting() {
+            waiting.push(as_plan(server)?);
+        }
+        waiting.sort_by(|left, right| left.plan.plan.cmp(&right.plan.plan));
+        Ok(waiting)
+    }
+
+    /// The planned machine whose plan is `plan`, as [`Self::waiting_plans`]
+    /// tells it.
+    ///
+    /// # Errors
+    /// No machine is planned under that id, or its entry does not read back as
+    /// a plan.
+    pub fn waiting_plan(&self, plan: &str) -> Result<WaitingPlan, String> {
+        self.waiting()
+            .find(|(id, server)| id.as_str() == plan || server.plan.plan == plan)
+            .ok_or_else(|| "no planned machine is named by that id".to_owned())
+            .and_then(|(_, server)| as_plan(server))
+    }
+}
+
+/// `server`'s waiting entry as the plan its devices and machine read.
+fn as_plan(server: &Server) -> Result<WaitingPlan, String> {
+    let drives = server
+        .plan
+        .drives
+        .iter()
+        .map(|(_, drive)| install_profile_model::plan::Drive {
+            model: drive.model.clone(),
+            identity: drive.identity.clone(),
+            bytes: drive.bytes,
+            holds_data: drive.holds_data,
+            boots: drive.boots,
+        })
+        .collect();
+    let asks = server
+        .plan
+        .ask
+        .iter()
+        .map(|(choice, asked)| install_profile_model::plan::Question {
+            choice: choice.as_str().to_owned(),
+            reason: asked.reason.clone(),
+        })
+        .collect();
+    Ok(WaitingPlan {
+        plan: server.install_plan()?,
+        drives,
+        asks,
+    })
 }
 
 impl Server {
@@ -220,6 +293,30 @@ impl Server {
         self.asked
             .iter()
             .filter(|(_, asked)| asked.answer.is_empty())
+    }
+
+    /// The plan this entry keeps, as the document the machine installs from:
+    /// its name, everything it was planned with, what its person's devices
+    /// answered since, and what it still asks. The entry is the plan's only
+    /// home, so this is the same document for the person and for the machine.
+    ///
+    /// It is `Err` when the entry does not read back as a plan, which only a
+    /// value kept outside the plan's own rules makes.
+    ///
+    /// # Errors
+    /// The entry does not read back as a plan.
+    pub fn install_plan(&self) -> Result<install_profile_model::plan::Plan, String> {
+        let hosting = self
+            .holds
+            .iter()
+            .map(
+                |(workspace, holding)| install_profile_model::plan::Holding {
+                    workspace: workspace.as_str().to_owned(),
+                    mode: holding.mode.clone(),
+                },
+            )
+            .collect();
+        self.plan.document(&self.label, hosting)
     }
 
     /// What was asked of it and answered, newest first.
@@ -243,6 +340,34 @@ impl Server {
     }
 }
 
+/// The Servers workspace's [`SERVERS`] document as every device founds it: the
+/// empty document made as one change every device makes alike.
+///
+/// Two of the person's devices that first need the workspace before they can
+/// see each other each write the document's first change. The genesis here is
+/// made at time zero, under an actor derived from the document's identity alone
+/// ([`tilo_resource::genesis::actor`]), so both write the same change, and the
+/// entries each device writes afterwards go into the one `servers` map the
+/// genesis carries instead of into a map of their own.
+///
+/// # Errors
+/// The document's initializer fails, which is a bug in it.
+pub fn genesis(workspace: &str) -> Result<automerge::AutoCommit, String> {
+    use tilo_resource::Resource as _;
+    let mut doc = automerge::AutoCommit::new().with_actor(tilo_resource::genesis::actor(
+        "",
+        <Servers as tilo_resource::Resource>::KIND,
+        workspace,
+    ));
+    Servers::initialize(&mut doc).map_err(|error| error.to_string())?;
+    doc.commit_with(
+        automerge::transaction::CommitOptions::default()
+            .with_message(tilo_actions::FrameworkChange::Genesis.change_message())
+            .with_time(0),
+    );
+    Ok(doc)
+}
+
 #[resource(kind = "tilo.servers", read_content = Servers::read_document)]
 impl Servers {
     /// Plan a machine that is not installed yet: enter the secret-free plan
@@ -262,15 +387,18 @@ impl Servers {
             nonce,
             expires_at_ns,
             destination,
+            network,
             unlock,
             updates,
             disk,
             open,
+            hosting,
         } = PendingPlan::of(&document);
         match self.servers.get_mut(&id) {
             Some(server) => {
                 server.label = label;
                 server.plan.destination = destination;
+                server.plan.network = network;
                 server.plan.unlock = unlock;
                 server.plan.updates = updates;
                 server.plan.disk = disk;
@@ -278,6 +406,7 @@ impl Servers {
                 server.plan.revision = server.plan.revision.saturating_add(1);
                 server.plan.nonce = nonce;
                 server.plan.expires_at_ns = expires_at_ns;
+                server.holds = hosting;
                 plan::PLANNED.clone_into(&mut server.plan.status);
             }
             None => {
@@ -291,6 +420,7 @@ impl Servers {
                             nonce,
                             expires_at_ns,
                             destination,
+                            network,
                             unlock,
                             updates,
                             disk,
@@ -298,6 +428,7 @@ impl Servers {
                             revision: 1,
                             ..plan::Pending::default()
                         },
+                        holds: hosting,
                         ..Server::default()
                     },
                 );
@@ -332,17 +463,31 @@ impl Servers {
             .planned_by_nonce(&nonce)
             .map(|(id, _)| id.clone())
             .ok_or_else(|| Refusal::new("no planned machine answers that token"))?;
-        if self.servers.contains(&device) {
-            return Err(Refusal::new("that device already has an entry"));
+        if device != plan {
+            if self.servers.contains(&device) {
+                return Err(Refusal::new("that device already has an entry"));
+            }
+            let mut entry = self
+                .servers
+                .remove(&plan)
+                .ok_or_else(|| Refusal::new("no planned machine answers that token"))?;
+            plan::INSTALLING.clone_into(&mut entry.plan.status);
+            entry.plan.drives = drives;
+            entry.plan.ask = ask;
+            self.servers.push(device, entry);
+            return Ok(());
         }
-        let mut entry = self
+        // The machine enrolled and took its entry when it was approved; this
+        // is its own report of the drives it has and what it cannot settle,
+        // arriving once it holds the person's Servers workspace.
+        let entry = self
             .servers
-            .remove(&plan)
+            .get_mut(&device)
+            .filter(|entry| entry.plan.planned())
             .ok_or_else(|| Refusal::new("no planned machine answers that token"))?;
-        plan::INSTALLING.clone_into(&mut entry.plan.status);
         entry.plan.drives = drives;
         entry.plan.ask = ask;
-        self.servers.push(device, entry);
+        entry.plan.revision = entry.plan.revision.saturating_add(1);
         Ok(())
     }
 
@@ -864,10 +1009,12 @@ struct PendingPlan {
     nonce: String,
     expires_at_ns: u64,
     destination: String,
+    network: plan::AddressBy,
     unlock: String,
     updates: String,
     disk: String,
     open: String,
+    hosting: Collection<Holding>,
 }
 
 impl PendingPlan {
@@ -876,10 +1023,23 @@ impl PendingPlan {
             nonce: document.token.nonce.clone(),
             expires_at_ns: document.token.expires_at_ns,
             destination: document.destination.clone(),
+            network: plan::AddressBy::of(&document.network),
             unlock: document.unlock.clone(),
             updates: document.updates.clone(),
             disk: document.disk.encode(),
             open: document.open_choices().join(","),
+            hosting: document
+                .hosting
+                .iter()
+                .map(|held| {
+                    (
+                        Id::from_raw(held.workspace.clone()),
+                        Holding {
+                            mode: held.mode.clone(),
+                        },
+                    )
+                })
+                .collect(),
         }
     }
 }
@@ -992,8 +1152,10 @@ fn validate_label(label: &str) -> Result<String, Refusal> {
     Ok(label.to_owned())
 }
 
-/// Whether this device holds its person's Servers workspace: it made it, or the
-/// workspace names it among its holders, so it writes the document as its own.
+/// Whether this device holds its person's Servers workspace: the workspace
+/// names it among its holders, so it writes the document as its own. The
+/// founding history names no device — every one of the person's devices may
+/// make it — and names each one as it founds or is handed it.
 pub async fn holds_admin(workspaces: &Workspaces) -> bool {
     let own = workspaces.serving_certificate();
     let Some(state) = workspaces
@@ -1002,32 +1164,28 @@ pub async fn holds_admin(workspaces: &Workspaces) -> bool {
     else {
         return false;
     };
-    let governance = state.governance();
-    governance.founder() == Some(own.device_public_key)
-        || governance
-            .keeping_devices()
-            .iter()
-            .any(|hint| hint.host.device_public_key == own.device_public_key)
+    state
+        .governance()
+        .keeping_devices()
+        .iter()
+        .any(|hint| hint.host.device_public_key == own.device_public_key)
 }
 
-/// Make the Servers workspace of this device's person, as their first server,
-/// and enter this device in it, dialled at `endpoint`. A device that holds
-/// the workspace already only enters itself.
+/// Make this device's person's Servers workspace here, unless this device
+/// holds it already, and answer its id: what the first thing that needs it
+/// does — the first machine planned, or the first server taken in. Only one of
+/// the person's root-holding devices needs to make it: every other device
+/// either holds it already or asks a holder to take it in.
 ///
 /// # Errors
-/// The workspace could not be made, or the entry written.
-pub async fn found(
-    workspaces: &Workspaces,
-    endpoint: &iroh_base::EndpointAddr,
-) -> Result<String, String> {
+/// The workspace could not be made.
+pub async fn founded(workspaces: &Workspaces) -> Result<String, String> {
     let admin = admin_workspace_id(&workspaces.serving_certificate().user_public_key);
     if !holds_admin(workspaces).await {
         workspaces
             .create_workspace(ADMIN_WORKSPACE_NAME, Some(&admin))
             .await?;
     }
-    let cert = workspaces.serving_certificate().clone();
-    enter(workspaces, &cert, endpoint).await?;
     Ok(admin)
 }
 
@@ -1052,18 +1210,32 @@ pub async fn apply_on(
     action: Invoke<Servers>,
 ) -> Result<(), String> {
     let cert = workspaces.serving_certificate().clone();
-    let applied = workspaces
-        .author_workspace_document(workspace, &cert, SERVERS, |doc| {
+    // A device that writes the document before the workspace's copy of it
+    // reached it starts from the same genesis every other device does, so the
+    // two writes merge into one document rather than competing for its root.
+    let start = Box::new(genesis(workspace)?);
+    let applied = Box::pin(workspaces.author_workspace_document_from(
+        (workspace, &cert),
+        SERVERS,
+        Some(start),
+        |doc| {
             let mut replica = Replica::<Servers>::from_doc(std::mem::take(doc));
+            // This device's own actor: the genesis is one actor's change
+            // already, and two devices continuing it under that actor
+            // would make one sequence with two different changes.
+            replica
+                .doc_mut()
+                .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
             let applied = replica
                 .apply(action)
                 .map(drop)
                 .map_err(|error| error.to_string());
             std::mem::swap(doc, replica.doc_mut());
             applied
-        })
-        .await
-        .map_err(|error| error.to_string());
+        },
+    ))
+    .await
+    .map_err(|error| error.to_string());
     if applied.is_ok() {
         workspaces.note_document_write(workspace, SERVERS.0, SERVERS.1);
     }

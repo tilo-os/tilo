@@ -8,10 +8,13 @@ description = "Reports and moderation decisions, the resource a workspace's apps
 
 [dependencies]
 serde.workspace = true
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+serde_json.workspace = true
+automerge.workspace = true
+tilo-actions = { version = "0.1.0", path = "../../crates/collab/actions" }
+tilo-resource = { version = "0.1.0", path = "../../crates/sdk/tilo-resource" }
 
 [dev-dependencies]
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-resource = { path = "../../crates/sdk/tilo-resource", features = ["test-support"] }
 
 [lints]
 workspace = true

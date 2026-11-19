@@ -41,33 +41,6 @@ pub fn read_bounded(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Write `bytes` to `dir/name` durably and atomically. `public` selects 0644
-/// over 0600.
-pub fn write_atomic(dir: &Path, name: &str, bytes: &[u8], public: bool) -> std::io::Result<()> {
-    let path = dir.join(name);
-    #[cfg(unix)]
-    {
-        tilo_files::native::atomic::write_with_mode(
-            &path,
-            bytes,
-            if public { 0o644 } else { 0o600 },
-        )
-    }
-    #[cfg(windows)]
-    {
-        let _ = public;
-        tilo_files::native::atomic::write(&path, bytes)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (path, bytes, public);
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "staging journal storage is unsupported on this platform",
-        ))
-    }
-}
-
 #[cfg(unix)]
 pub mod secure {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};

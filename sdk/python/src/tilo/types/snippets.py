@@ -85,7 +85,7 @@ RemoveTagArgs = TypedDict("RemoveTagArgs", {
 
 class Library(Resource):
     """Snippet library — `snippets.library`."""
-    __surface__ = "so.tilo.snippets@530e3c69f46d7e0c"
+    __surface__ = "so.tilo.snippets@fa85cf3460aa8b5b"
     snippets: list[Entry[Snippet]]
 
     def new_snippet(self,

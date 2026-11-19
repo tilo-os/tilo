@@ -22,7 +22,7 @@ use std::time::Duration;
 use tilo_server_client::CertifyError;
 use tilo_server_client::https::{self, Origin};
 /// Where a server is dialed over iroh, and that with its certificate.
-pub use tilo_server_protocol::web::{HostAddress as ServerAddress, HostInfo as ServerInfo};
+pub use tilo_server_protocol::web::{ServerAddress, ServerInfo};
 use tilo_server_session::workspaces::{Refusal as WorkspaceRefusal, WorkspaceLabels};
 use tilo_session_client::PeerConfig;
 use tilo_session_client::device::{Device, DeviceRefusal};
@@ -88,12 +88,16 @@ pub enum ServerError {
     /// The server does not know the person yet, and says what makes them known there: its
     /// operator declares them an owner, or an invitation brings them in.
     NotOnThisServer(String),
+    /// The workspace keeps the key's grant as revoked: nothing it asks is
+    /// answered again, and its person approves another.
+    KeyRevoked,
 }
 
 impl std::fmt::Display for ServerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotFound => f.write_str("no such workspace of yours"),
+            Self::KeyRevoked => f.write_str("this key was revoked"),
             Self::AwaitingApproval(said) | Self::NotOnThisServer(said) => f.write_str(said),
             Self::NoAccountHere => f.write_str(
                 "This Tilo desktop answers its own workspaces only: do this in Tilo itself.",
@@ -134,6 +138,8 @@ impl std::fmt::Display for ServerError {
 impl From<CertifyError> for ServerError {
     fn from(error: CertifyError) -> Self {
         match error {
+            // A revoked key is told so wherever its workspace refuses it.
+            CertifyError::Denied(reason) if reason.contains("key_revoked") => Self::KeyRevoked,
             CertifyError::Denied(reason) => Self::Refused(reason),
             other => Self::Unavailable(other.to_string()),
         }
@@ -234,14 +240,14 @@ impl Server {
     pub async fn connect(self: &Arc<Self>, key: &GrantKey) -> Result<Connection, ServerError> {
         let info = match self.known.get() {
             Some(known) => known.clone(),
-            None => https::host_info(&self.host)
+            None => https::server_info(&self.host)
                 .await
                 .map_err(|error| ServerError::Unavailable(error.to_string()))?,
         };
         let host = info
             .address
             .as_ref()
-            .map(tilo_server_client::Host::published)
+            .map(tilo_server_client::ServerAddress::published)
             .ok_or_else(|| {
                 tracing::warn!(
                     relay = self.name(),
@@ -254,7 +260,7 @@ impl Server {
             PeerConfig {
                 host,
                 cert: key.cert().clone(),
-                host_cert: info.host_cert,
+                server_cert: info.server_cert,
                 revocations: tilo_user_identity::RevocationList::new(),
                 entering: None,
             },
@@ -710,8 +716,8 @@ impl Connection {
 
     /// The key as the shared way into a workspace takes it.
     #[must_use]
-    pub fn entering_key(&self) -> tilo_mcp::enter::Key {
-        tilo_mcp::enter::Key {
+    pub fn entering_key(&self) -> tilo_device_mcp::enter::Key {
+        tilo_device_mcp::enter::Key {
             key: self.key.key().clone(),
             cert: self.key.cert().clone(),
         }
@@ -733,16 +739,24 @@ impl Connection {
     /// the server for good.
     #[must_use]
     pub fn is_live(&self) -> bool {
+        // A workspace it entered that lets it in no more (a key its person revoked there) ends
+        // the session: the key's next call opens another, which that workspace refuses saying
+        // why, rather than going on answering from one it is no longer in.
         self.device.is_live()
+            && lock(&self.entered)
+                .values()
+                .filter_map(|entered| entered.get())
+                .all(|workspace| self.device.holds(*workspace))
     }
 
     /// Enter `workspace`, as every device enters one, in at most [`ENTERING`]:
     /// one the person does not have is not found, as one never made.
     async fn enter(&self, workspace: &str) -> Result<WorkspaceId, ServerError> {
-        let label = self.key.cert().device_label.clone();
+        // Listed in the workspace by the name its person approved it as.
+        let name = self.key.name();
         let began = std::time::Instant::now();
         let Ok(entered) =
-            tokio::time::timeout(ENTERING, self.device.enter_workspace(workspace, &label)).await
+            tokio::time::timeout(ENTERING, self.device.enter_workspace(workspace, name)).await
         else {
             tracing::warn!(
                 workspace,

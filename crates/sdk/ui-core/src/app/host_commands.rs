@@ -7,6 +7,7 @@ use crate::host_chrome::edit::{EDIT_OPERATION, EDIT_RESOURCE, edit_resource};
 use crate::host_chrome::model::{self, HostCommand, RecentChange};
 #[cfg(any(feature = "native", test))]
 use crate::platform::HostShortcut;
+use crate::state::StateHistory as _;
 
 /// Changes whenever a host command's label, enabled state or presence may
 /// have, so the host chrome rebuilds only then.
@@ -282,7 +283,7 @@ impl App {
     fn history_rows(&self) -> Vec<crate::widget::HistoryEntry> {
         self.history
             .as_ref()
-            .map(|history| history.current_entries())
+            .map(|history| history.current_entries(&self.state.doc))
             .unwrap_or_default()
     }
 

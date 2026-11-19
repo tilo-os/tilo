@@ -281,6 +281,8 @@ pub struct ListRowFace<'a> {
     check_pose: Option<crate::widget::checkbox::CheckPose>,
     card: bool,
     dense: bool,
+    /// Stands as a row of an outline ([`Self::outline`]).
+    outline: bool,
     /// The row's own height, where it is not the list's row height: an outline's row token.
     /// The row stands at it, taller only when what it holds needs more.
     row_height: Option<f64>,
@@ -367,6 +369,7 @@ impl<'a> ListRowFace<'a> {
             check_pose: None,
             card: false,
             dense: false,
+            outline: false,
             row_height: None,
         }
     }
@@ -409,6 +412,8 @@ impl<'a> ListRowFace<'a> {
             RowMetrics::card(theme)
         } else if self.dense {
             RowMetrics::dense(theme)
+        } else if self.outline {
+            RowMetrics::outline(theme)
         } else {
             RowMetrics::new(theme)
         }
@@ -518,8 +523,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A figure among the facts (how far a branch got, a temperature), between who it is
-    /// and how important it is.
+    /// A figure among the facts (how far a branch got, a temperature, a size), between who it
+    /// is and how important it is: a caption in dim ink, as the row's other facts.
     #[must_use]
     pub fn value(mut self, text: &'a str) -> Self {
         self.value = Some((text, RowValue::Body));
@@ -1088,6 +1093,8 @@ pub struct ListRow {
     nested: bool,
     depth: u32,
     chevron_column: f64,
+    /// The box the list holding the row lifts it in ([`Self::set_lift_box`]).
+    lift_box: Option<Rect>,
     column_badges: Option<std::rc::Rc<[String]>>,
     pub(crate) shared_leading: Option<f64>,
     pub(crate) shared_after_trailing: Option<f64>,
@@ -1138,6 +1145,8 @@ pub struct ListRow {
     card: bool,
     card_lines: u8,
     dense: bool,
+    /// Stands as a row of an outline ([`Self::outline`]).
+    outline: bool,
     row_height: Option<f64>,
 }
 
@@ -1175,6 +1184,7 @@ impl ListRow {
             nested: false,
             depth: 0,
             chevron_column: 0.0,
+            lift_box: None,
             column_badges: None,
             shared_leading: None,
             shared_after_trailing: None,
@@ -1221,6 +1231,7 @@ impl ListRow {
             card: false,
             card_lines: 1,
             dense: false,
+            outline: false,
             row_height: None,
         }
     }
@@ -1230,6 +1241,8 @@ impl ListRow {
             RowMetrics::card(theme)
         } else if self.dense {
             RowMetrics::dense(theme)
+        } else if self.outline {
+            RowMetrics::outline(theme)
         } else {
             RowMetrics::new(theme)
         }
@@ -1559,13 +1572,6 @@ impl ListRow {
         self
     }
 
-    /// Use canonical normalized public identity pixels; no files are opened.
-    #[cfg(feature = "local-daemons")]
-    #[must_use]
-    pub fn with_profile_photo(self, photo: &runtime_identity::ProfilePhoto) -> Self {
-        self.avatar_image(crate::widget::avatar::profile_image(photo))
-    }
-
     /// Make the leading avatar square: an account or a site, not a person.
     #[must_use]
     pub fn square(mut self) -> Self {
@@ -1705,8 +1711,19 @@ impl ListRow {
     /// ([`ListRowFace::struck`]).
     #[must_use]
     pub fn struck(mut self) -> Self {
-        self.struck = true;
+        self.set_struck();
         self
+    }
+
+    /// [`Self::struck`], for a row already built.
+    pub fn set_struck(&mut self) {
+        self.dirty |= !self.struck;
+        self.struck = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn is_struck(&self) -> bool {
+        self.struck
     }
 
     /// The row reads as subordinate to the rows around it: its title in the weaker ink
@@ -2054,16 +2071,6 @@ impl ListRow {
         // marks stand where the canvas paints them, around it.
         cx.children();
         cx.place_children();
-        if self.card {
-            // A card's surface, as the canvas lays it under the row.
-            let theme = cx.theme();
-            let raised = theme.tokens.colors.surfaces.raised;
-            cx.ground(crate::composition::Ground {
-                fill: Some(crate::composition::rgba8(raised)),
-                edge: Some(crate::composition::rgba8(crate::surface::edge_on(raised))),
-                radius: crate::widget::card::CardMetrics::new(theme).radius,
-            });
-        }
         let band = self.text_band();
         self.with_face(|face| face.compose(cx, band, check));
     }
@@ -2111,6 +2118,7 @@ impl ListRow {
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 (Some(field), item, &self.title),
                 (None, None),
+                None,
                 &mut |text, _, start, end| {
                     let (bands, caret) = face.title_span(band, (start, end), text, theme);
                     (bands, Some(caret))
@@ -2266,6 +2274,9 @@ impl ListRow {
         if self.dense {
             face = face.dense();
         }
+        if self.outline {
+            face = face.outline();
+        }
         if let Some(height) = self.row_height {
             face.row_height = Some(height);
         }
@@ -2394,7 +2405,9 @@ impl ListRow {
         if let Some(width) = trailing_width {
             face = face.trailing_width(width);
         }
-        if self.trailing_wrapped() {
+        if let Some(lift_box) = self.lift_box {
+            face = face.frame(lift_box);
+        } else if self.trailing_wrapped() {
             face = face.frame(self.outer());
         }
         if let Some(swipe) = &self.swipe
@@ -3440,6 +3453,7 @@ mod colour;
 
 mod paint;
 
+mod held;
 mod html;
 pub(crate) use paint::paint_code_badge;
 

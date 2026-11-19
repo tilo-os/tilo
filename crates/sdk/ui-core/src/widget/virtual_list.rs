@@ -301,10 +301,17 @@ pub trait RowActionRects {
     fn row_action_rects(&self) -> Vec<Rect>;
 }
 
+/// Where a list stands its rows, and who keeps the edge they start on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RowStance {
+    /// A list inside a page: the page keeps the edge, so the rows' words start on the list's own
+    /// edge, where the words over and under it start, and a row's lift hangs a bleed past it,
+    /// into the page's margin.
     Bleed,
+    /// Rows edge to edge, lifted inside their box.
     Flush,
+    /// A column's whole body: the list keeps the column's gutter itself, at its sides and over
+    /// its first row.
     Column,
 }
 
@@ -361,6 +368,9 @@ pub struct VirtualRows {
     is_focused: bool,
     drag_scroll: DragScroller,
     pressed_row: Option<(usize, ListKey)>,
+    /// The row press this list took, carried to an equivalent list built in its place before the
+    /// release ([`crate::pointer_replay`]).
+    held_row: crate::pointer_replay::HeldPress,
     reorder: ReorderController<ListKey>,
     reorder_validator: Option<ReorderValidator>,
     reorder_commit: Option<ReorderCommit>,
@@ -440,7 +450,7 @@ pub struct VirtualRows {
     view_count: Option<usize>,
     heads_nothing: std::cell::Cell<Option<bool>>,
     row_groups: HashMap<ListKey, Option<groups::Group>>,
-    tree: Option<Rc<dyn typed::KeyedMarks>>,
+    tree: Option<Rc<tree::Marks>>,
     tree_rows: HashMap<ListKey, TreeRow<ListKey>>,
     tree_hidden: HashSet<ListKey>,
     first_level_branch: Option<bool>,
@@ -526,6 +536,7 @@ impl VirtualRows {
             is_focused: false,
             drag_scroll: DragScroller::new(),
             pressed_row: None,
+            held_row: crate::pointer_replay::HeldPress::default(),
             reorder: ReorderController::new(),
             reorder_validator: None,
             reorder_commit: None,
@@ -538,7 +549,7 @@ impl VirtualRows {
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
-            lead: f64::from(crate::tokens::Spacing::BASE.s2),
+            lead: 0.0,
             chevron_column: 0.0,
             disclosure: f64::from(
                 crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related,
@@ -701,6 +712,16 @@ impl VirtualRows {
         self.viewport.set_edges(lead, trail)
     }
 
+    /// Everything the list draws: its box, and the bleed a row's lift hangs past either side of
+    /// it where the page around the list keeps the edge ([`RowStance::Bleed`]).
+    pub(super) fn drawn(&self) -> Rect {
+        let hang = match self.stance {
+            RowStance::Bleed => self.bleed,
+            RowStance::Flush | RowStance::Column => 0.0,
+        };
+        self.rect.inflate(hang, 0.0)
+    }
+
     fn trailing_inset(&self) -> f64 {
         let bar = if self.rows_beside_bar {
             self.gutter
@@ -709,7 +730,7 @@ impl VirtualRows {
         };
         match self.stance {
             RowStance::Column => self.bleed.max(bar + self.lift),
-            RowStance::Bleed | RowStance::Flush => self.lead + bar,
+            RowStance::Bleed | RowStance::Flush => bar,
         }
     }
 
@@ -1103,6 +1124,23 @@ impl VirtualRows {
 
     fn row_at_cursor(&self) -> Option<(usize, ListKey)> {
         self.row_at(self.last_cursor?)
+    }
+
+    /// What names the row of `key` across a rebuild of the list: the list's id with the row's
+    /// stable key. Empty, carrying no press, when the list has no id or its keys no stable name.
+    fn carried_row_key(&self, key: &ListKey) -> String {
+        match (self.test_id.as_deref(), self.semantic_key.as_ref()) {
+            (Some(id), Some(encode)) if !id.is_empty() => format!("{id}\u{1f}{}", encode(key)),
+            _ => String::new(),
+        }
+    }
+
+    /// The row under the pointer as a target its press is held on: its key and where it stands.
+    fn row_press_at_cursor(&self) -> Option<(ListKey, String, Rect)> {
+        let (index, key) = self.row_at_cursor()?;
+        let rect = self.row_box(index)?;
+        let carried = self.carried_row_key(&key);
+        Some((key, carried, rect))
     }
 
     pub fn key_at_point(&self, point: Point) -> Option<ListKey> {
@@ -1552,7 +1590,12 @@ impl Widget for VirtualRows {
             self.invalidate_rows(mounted);
         }
         self.disclosure = disclosure;
-        self.row_line = f64::from(theme.tokens.metrics.row_single);
+        // A tree's rows stand as an outline's ([`crate::widget::ListRow::set_outline`]).
+        self.row_line = if self.tree.is_some() {
+            f64::from(crate::widget::TREE_ROW_HEIGHT)
+        } else {
+            f64::from(theme.tokens.metrics.row_single)
+        };
         self.settle_lead();
         self.pill_height =
             crate::widget::ButtonFace::height(crate::widget::ControlSize::Regular, theme);
@@ -1879,6 +1922,12 @@ impl Widget for VirtualRows {
                     *ctx.handled = true;
                     return;
                 }
+                // The row is the press's target even when the list is built again before the
+                // release (a page beside it arriving): the list in its place completes it.
+                if let Some((_, carried, rect)) = self.row_press_at_cursor() {
+                    self.held_row
+                        .press(crate::pointer_replay::PressAt::one(&carried, rect));
+                }
                 if self.reorder_validator.is_some()
                     && self.reorder_commit.is_some()
                     && let Some((_, key)) = self.row_at_cursor()
@@ -1907,6 +1956,12 @@ impl Widget for VirtualRows {
                     *ctx.handled = true;
                     return;
                 }
+                let over = self.row_press_at_cursor();
+                let carried =
+                    self.held_row
+                        .release(over.as_ref().map(|(_, carried, rect)| {
+                            crate::pointer_replay::PressAt::one(carried, *rect)
+                        }));
                 if self.reorder.is_tracking() {
                     let source = self.reorder.source().cloned();
                     let active = self.reorder.is_active();
@@ -1933,6 +1988,12 @@ impl Widget for VirtualRows {
                 } else if let Some((_, key)) = pressed
                     && self.row_at_cursor().is_some_and(|(_, at)| at == key)
                 {
+                    self.press_row(key, *ctx.modifiers);
+                    *ctx.handled = true;
+                } else if carried == crate::pointer_replay::Release::Click(())
+                    && let Some((key, ..)) = over
+                {
+                    // A press the list built before this one took on the same row.
                     self.press_row(key, *ctx.modifiers);
                     *ctx.handled = true;
                 }
@@ -2129,6 +2190,10 @@ impl Widget for VirtualRows {
         self.rect
     }
 
+    fn paint_bounds(&self) -> Rect {
+        self.drawn()
+    }
+
     fn is_focusable(&self) -> bool {
         true
     }
@@ -2236,7 +2301,7 @@ impl Widget for VirtualRows {
             (drawing, presented) => drawing.is_some() != presented.is_some(),
         };
         if in_motion {
-            regions.push(self.rect);
+            regions.push(self.drawn());
             return;
         }
         let now = crate::motion::frame_now();
@@ -2249,7 +2314,7 @@ impl Widget for VirtualRows {
             }
             crate::scroll_copy::Since::Still | crate::scroll_copy::Since::Repaint => {
                 if shown_changed || (self.needs_redraw() || self.needs_animation_frame()) {
-                    regions.push(self.rect);
+                    regions.push(self.drawn());
                 }
             }
         }

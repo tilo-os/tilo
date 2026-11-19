@@ -1,5 +1,5 @@
 //! Where a person's identity signing key and a sealed vault's key end up on a
-//! real session: the production `runtime-identity` and `secret-vault` code,
+//! real session: the production `tilo_identity::store` and `secret-vault` code,
 //! not their test builds (which always choose files), against the built
 //! `tilo-secret-service` on a private session bus.
 
@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use ed25519_dalek::{Signature, SigningKey, Verifier};
-use runtime_identity::KeyProtection;
 use secret_vault::VaultBackend;
+use tilo_identity_client::KeyProtection;
 
 fn service() -> std::path::PathBuf {
     tilo_test_env::package_binary!("tilo-secret-service")
@@ -197,7 +197,7 @@ fn locator(seed: u8) -> String {
 }
 
 fn protection(identities: &Path, id: &str) -> KeyProtection {
-    runtime_identity::list_identities(identities)
+    tilo_identity::store::list_identities(identities)
         .unwrap()
         .into_iter()
         .find(|summary| summary.id == id)
@@ -235,7 +235,7 @@ fn assert_private_key_file(identities: &Path, seed: u8) {
 /// A host-side ownership read retrieves the stored key and signs with it.
 /// App launches read only public metadata, never the signing key.
 fn assert_stored_key_signs(record: &Path, seed: u8) {
-    let identity = runtime_identity::load_from_path(record.to_path_buf())
+    let identity = tilo_identity::store::load_from_path(record.to_path_buf())
         .unwrap_or_else(|error| panic!("loading stored key from {}: {error}", record.display()));
     let message = b"identity storage qualification";
     let signature = identity.sign(message).unwrap();
@@ -257,7 +257,8 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     // 1. No Secret Service answers: the key goes to the private file, and
     //    the record and Settings say so.
     let absent =
-        runtime_identity::import_identity(&identities, "absent", &legacy_record("A", 1)).unwrap();
+        tilo_identity::store::import_identity(&identities, "absent", &legacy_record("A", 1))
+            .unwrap();
     assert_eq!(protection(&identities, "absent"), KeyProtection::BrokerFile);
     assert_record_names(&absent, "broker-file-v1", 1);
     assert_private_key_file(&identities, 1);
@@ -273,7 +274,8 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     bus.start_service("device-a");
     assert_eq!(bus.status(), "open");
     let keyring =
-        runtime_identity::import_identity(&identities, "keyring", &legacy_record("K", 2)).unwrap();
+        tilo_identity::store::import_identity(&identities, "keyring", &legacy_record("K", 2))
+            .unwrap();
     assert_eq!(
         protection(&identities, "keyring"),
         KeyProtection::SecretService
@@ -288,7 +290,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
         "a key the Secret Service holds was also written to a file"
     );
     assert_stored_key_signs(&keyring, 2);
-    let launch_metadata = runtime_identity::load_metadata_from_path(&keyring).unwrap();
+    let launch_metadata = tilo_identity_client::load_metadata_from_path(&keyring).unwrap();
     let vault = bus.path("data/tilo/secrets/vault.tseal");
     let sealed = std::fs::read(&vault).unwrap();
     let hex_key = hex::encode([2_u8; 32]);
@@ -317,27 +319,28 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     let sealed_before = std::fs::read(&vault).unwrap();
     // App launch needs only public metadata; ownership must still refuse the
     // identity host's attempt to retrieve the locked signing key.
-    let metadata = runtime_identity::load_metadata_from_path(&keyring)
+    let metadata = tilo_identity_client::load_metadata_from_path(&keyring)
         .expect("a locked provider must not block public launch metadata");
     assert_eq!(
         metadata.group_public_key,
         SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes()
     );
     assert!(
-        runtime_identity::load_from_path(keyring.clone()).is_err(),
+        tilo_identity::store::load_from_path(keyring.clone()).is_err(),
         "a locked store released a key"
     );
     // Launch validation must not read the key, even while its store is locked.
     assert_eq!(
-        runtime_identity::load_metadata_from_path(&keyring).unwrap(),
+        tilo_identity_client::load_metadata_from_path(&keyring).unwrap(),
         launch_metadata
     );
     assert!(
-        runtime_identity::secure_identity(&identities, "keyring").is_err(),
+        tilo_identity::store::secure_identity(&identities, "keyring").is_err(),
         "securing a record whose store is locked claimed success"
     );
     let locked =
-        runtime_identity::import_identity(&identities, "locked", &legacy_record("L", 3)).unwrap();
+        tilo_identity::store::import_identity(&identities, "locked", &legacy_record("L", 3))
+            .unwrap();
     assert_eq!(protection(&identities, "locked"), KeyProtection::BrokerFile);
     assert_record_names(&locked, "broker-file-v1", 3);
     assert_private_key_file(&identities, 3);
@@ -363,7 +366,7 @@ fn identity_keys_prefer_the_secret_service_and_fall_back_truthfully_without_losi
     let prefix = resource_before.get(..resource_before.len() / 2).unwrap();
     std::fs::write(&truncated, prefix).unwrap();
     std::fs::set_permissions(&truncated, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let Err(error) = runtime_identity::load_metadata_from_path(&truncated) else {
+    let Err(error) = tilo_identity_client::load_metadata_from_path(&truncated) else {
         panic!("a truncated record launched");
     };
     assert!(
@@ -562,7 +565,7 @@ fn ownership_child() {
         // and keeps its key. A refusal of the others is then theirs alone.
         "dumpable-import" => {
             assert!(dumpable(), "the control child is not dumpable");
-            runtime_identity::import_identity(
+            tilo_identity::store::import_identity(
                 &child_env(CHILD_IDENTITIES),
                 "dumpable",
                 &legacy_record("C", 7),
@@ -573,7 +576,7 @@ fn ownership_child() {
         // and it has nothing to prove with.
         "unproven-import" => {
             turn_non_dumpable();
-            runtime_identity::import_identity(
+            tilo_identity::store::import_identity(
                 &child_env(CHILD_IDENTITIES),
                 "unproven",
                 &legacy_record("U", 4),
@@ -584,7 +587,7 @@ fn ownership_child() {
         // is refused.
         "other-device-import" => {
             load_device_key_like_the_compositor(&child_env(CHILD_DEVICE));
-            runtime_identity::import_identity(
+            tilo_identity::store::import_identity(
                 &child_env(CHILD_IDENTITIES),
                 "other-device",
                 &legacy_record("O", 5),
@@ -596,7 +599,7 @@ fn ownership_child() {
         // keeps reading it after the store restarts under it.
         "device-import" => {
             load_device_key_like_the_compositor(&child_env(CHILD_DEVICE));
-            let record = runtime_identity::import_identity(
+            let record = tilo_identity::store::import_identity(
                 &child_env(CHILD_IDENTITIES),
                 "device",
                 &legacy_record("D", 6),

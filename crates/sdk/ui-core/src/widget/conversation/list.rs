@@ -25,7 +25,9 @@ use super::band::SectionDividerFace;
 use super::day::{ConversationClock, ConversationDay, DayBreaks};
 use super::delivery::{DeliveryFace, DeliveryState};
 
-pub const RUN_WINDOW_SECS: i64 = 5 * 60;
+/// How close two messages by one author are to show as one group: the avatar, the name and the
+/// time stand over the first of them.
+pub const GROUPING_WINDOW_SECS: i64 = 5 * 60;
 
 /// The most of the column one bubble may take. A bubble that fills the column
 /// is no longer a bubble: you lose the side that says who is talking.
@@ -96,17 +98,63 @@ impl ConversationLine {
 ///
 /// The rule is the one [`run_breaks`] documents, kept in one place so the list's
 /// layout and its public answer cannot drift apart.
-fn starts_run(previous: Option<&ConversationLine>, line: &ConversationLine) -> bool {
+fn begins_group(previous: Option<&ConversationLine>, line: &ConversationLine) -> bool {
     match previous {
         None => true,
         Some(previous) => {
             previous.author != line.author
                 || previous.role != line.role
                 || line.at_ms.saturating_sub(previous.at_ms).abs()
-                    > RUN_WINDOW_SECS.saturating_mul(1_000)
-                || line.author.is_empty()
+                    > GROUPING_WINDOW_SECS.saturating_mul(1_000)
+                || (line.author.is_empty() && line.role == ConversationRole::Incoming)
         }
     }
+}
+
+/// What the caption under a line shows: its time, its delivery state, both or neither.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaptionShows {
+    pub time: bool,
+    pub delivery: bool,
+}
+
+impl CaptionShows {
+    #[must_use]
+    pub const fn any(self) -> bool {
+        self.time || self.delivery
+    }
+}
+
+/// What `line`'s caption shows, given the line under it.
+///
+/// A group of one person's lines says a thing once, under its last line that says it: a time the
+/// next line of the group repeats to the minute is left to that line, and so is a delivery state
+/// the next line shares (three messages read together read as one "Read" under the last of them).
+fn caption_shows(
+    clock: ConversationClock,
+    line: &ConversationLine,
+    next: Option<&ConversationLine>,
+) -> CaptionShows {
+    let continued = next.filter(|next| {
+        !begins_group(Some(line), next)
+            && clock.day(seconds(line.at_ms)) == clock.day(seconds(next.at_ms))
+    });
+    let minute = |line: &ConversationLine| seconds(line.at_ms).div_euclid(60);
+    CaptionShows {
+        time: continued.is_none_or(|next| minute(next) != minute(line)),
+        delivery: line.delivery.is_some()
+            && continued.is_none_or(|next| next.delivery != line.delivery),
+    }
+}
+
+/// What each line's caption shows, in order.
+#[must_use]
+pub fn captions(lines: &[ConversationLine], clock: ConversationClock) -> Vec<CaptionShows> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| caption_shows(clock, line, lines.get(index.saturating_add(1))))
+        .collect()
 }
 
 #[must_use]
@@ -114,7 +162,7 @@ pub fn run_breaks(lines: &[ConversationLine]) -> Vec<bool> {
     let mut previous: Option<&ConversationLine> = None;
     let mut starts: Vec<bool> = Vec::with_capacity(lines.len());
     for line in lines {
-        starts.push(starts_run(previous, line));
+        starts.push(begins_group(previous, line));
         previous = Some(line);
     }
     starts
@@ -134,12 +182,13 @@ enum Row {
         index: usize,
         y0: f64,
         y1: f64,
-        starts_run: bool,
+        begins_group: bool,
         bubble: Rect,
         text: Point,
         text_width: f32,
         author: Option<Rect>,
-        caption: Rect,
+        /// The time and delivery band under the bubble, when the line says either.
+        caption: Option<(Rect, CaptionShows)>,
     },
 }
 
@@ -529,16 +578,17 @@ impl<'a> ListFace<'a> {
                 });
                 y += height;
             }
-            let starts_run = starts_run(previous, line);
+            let begins_group = begins_group(previous, line);
             previous = Some(line);
-            y += if starts_run { run_gap } else { gap };
-            let author =
-                (starts_run && line.role == ConversationRole::Incoming && !line.author.is_empty())
-                    .then(|| {
-                        let band = Rect::new(column.left, y, column.right, y + author_line);
-                        y += author_line + f64::from(spacing.s1);
-                        band
-                    });
+            y += if begins_group { run_gap } else { gap };
+            let author = (begins_group
+                && line.role == ConversationRole::Incoming
+                && !line.author.is_empty())
+            .then(|| {
+                let band = Rect::new(column.left, y, column.right, y + author_line);
+                y += author_line + f64::from(spacing.s1);
+                band
+            });
             let (text_w, text_h) =
                 self.measure(cache, text, line, column.wrap, &body_style, &mut counts);
             let used_w = f64::from(text_w).min(column.inner_max);
@@ -549,14 +599,18 @@ impl<'a> ListFace<'a> {
                 ConversationRole::Outgoing => (column.right - bubble_w).max(column.left),
             };
             let bubble = Rect::new(bubble_x, y, bubble_x + bubble_w, y + bubble_h);
-            y = bubble.y1 + gap;
-            let caption = Rect::new(bubble.x0, y, bubble.x1, y + caption_line);
-            y = caption.y1;
+            y = bubble.y1;
+            let shows = caption_shows(self.clock, line, self.lines.get(index.saturating_add(1)));
+            let caption = shows.any().then(|| {
+                let band = Rect::new(bubble.x0, y + gap, bubble.x1, y + gap + caption_line);
+                y = band.y1;
+                (band, shows)
+            });
             rows.push(Row::Line {
                 index,
                 y0: rows.last().map_or(y0, Row::y1),
                 y1: y,
-                starts_run,
+                begins_group,
                 bubble,
                 text: Point::new(bubble.x0 + pad_x, bubble.y0 + pad_y),
                 text_width: crate::num::f32_of_f64((bubble_w - 2.0 * pad_x).max(1.0)),
@@ -729,35 +783,54 @@ impl<'a> ListFace<'a> {
                     paint.fill_round(*bubble, radius, fill);
                     let style = theme.text(TextRole::Body);
                     paint.text(&line.body, &style, ink, *text, Some(*text_width));
-                    self.paint_caption(paint, line, *caption);
+                    if let Some((band, shows)) = caption {
+                        self.paint_caption(paint, line, *band, *shows);
+                    }
                 }
             }
         }
         painted
     }
 
-    fn paint_caption(&self, paint: &mut PaintCtx<'_>, line: &ConversationLine, band: Rect) {
+    /// The caption under a line: its delivery state, then its time, the pair against the bubble's
+    /// own edge (the right one under yours), either one alone where the group says the other later.
+    fn paint_caption(
+        &self,
+        paint: &mut PaintCtx<'_>,
+        line: &ConversationLine,
+        band: Rect,
+        shows: CaptionShows,
+    ) {
         let theme = paint.theme;
         let style = theme.text(TextRole::Caption).numeric();
-        let time = self.clock.clock(seconds(line.at_ms));
-        let time_w = f64::from(paint.text.measure_style(&time, None, &style).0);
-        let mut x = match line.role {
-            ConversationRole::Incoming => band.x0,
-            ConversationRole::Outgoing => (band.x1 - time_w).max(band.x0),
+        let time = shows.time.then(|| self.clock.clock(seconds(line.at_ms)));
+        let time_w = time.as_ref().map_or(0.0, |time| {
+            f64::from(paint.text.measure_style(time, None, &style).0)
+        });
+        let face = line
+            .delivery
+            .filter(|_| shows.delivery)
+            .map(DeliveryFace::new);
+        let face_w = face
+            .as_ref()
+            .map_or(0.0, |face| face.width(paint.text, theme));
+        let gap = if time.is_some() && face.is_some() {
+            f64::from(theme.tokens.spacing.s2)
+        } else {
+            0.0
         };
-        let line_h = f64::from(paint.text.measure_style("Ag", None, &style).1);
-        let top = band.center().y - line_h / 2.0;
-        paint.text(&time, &style, theme.text_tertiary, Point::new(x, top), None);
-        x += time_w;
-        if let Some(state) = line.delivery {
-            let face = DeliveryFace::new(state);
-            let gap = f64::from(theme.tokens.spacing.s2);
-            let width = face.width(paint.text, theme);
-            let start = match line.role {
-                ConversationRole::Outgoing => band.x1 - time_w - gap - width,
-                ConversationRole::Incoming => x + gap,
-            };
+        let start = match line.role {
+            ConversationRole::Incoming => band.x0,
+            ConversationRole::Outgoing => (band.x1 - face_w - gap - time_w).max(band.x0),
+        };
+        if let Some(face) = &face {
             face.paint(paint, start, band);
+        }
+        if let Some(time) = &time {
+            let line_h = f64::from(paint.text.measure_style("Ag", None, &style).1);
+            let top = band.center().y - line_h / 2.0;
+            let x = start + face_w + gap;
+            paint.text(time, &style, theme.text_tertiary, Point::new(x, top), None);
         }
     }
 
@@ -878,6 +951,7 @@ impl Widget for ConversationList {
         let author_style = theme.text(TextRole::Caption);
         let rows = &self.cache.layout.rows;
         if rows.is_empty() {
+            let shows = captions(&self.lines, ConversationClock::local());
             // A page never paints the list, so it lays its lines out itself when no paint has.
             let step = self.rect.height() / crate::num::f64_of_usize(self.lines.len().max(1));
             for (index, line) in self.lines.iter().enumerate() {
@@ -911,7 +985,10 @@ impl Widget for ConversationList {
                 );
                 part.tag = Some("p");
                 part.own = Some(crate::composition::Own::Text(look));
-                if let Some(delivery) = line.delivery {
+                if let Some(delivery) = line
+                    .delivery
+                    .filter(|_| shows.get(index).is_some_and(|shows| shows.delivery))
+                {
                     let look = TextLook::new(delivery.label(), &caption, Some(theme.text_dim))
                         .with_max_lines(Some(1));
                     let part = item.part(
@@ -936,7 +1013,7 @@ impl Widget for ConversationList {
                         Rect::new(self.rect.x0, y0, self.rect.x1, y1),
                     );
                     part.tag = Some("li");
-                    part.painted(hash_of(label));
+                    part.painted_of(label);
                     part.semantics = Some(
                         crate::a11y::AccessNode::new(crate::a11y::Role::Heading { level: 3 })
                             .with_name(label.clone()),
@@ -982,6 +1059,7 @@ impl Widget for ConversationList {
                         fill: Some(crate::composition::rgba8(fill)),
                         edge: None,
                         radius: f64::from(theme.tokens.radii.control),
+                        inset: [0.0; 2],
                     });
                     let body_part = item.part(
                         "body",
@@ -999,13 +1077,19 @@ impl Widget for ConversationList {
                         &body,
                         Some(ink),
                     )));
-                    // Its time and how far it got, as painted under it, and said.
-                    let mut spoken = vec![ConversationClock::local().clock(seconds(line.at_ms))];
-                    if let Some(state) = line.delivery {
+                    // How far it got and its time, as painted under it, and said.
+                    let Some((caption_rect, shows)) = caption_rect else {
+                        continue;
+                    };
+                    let mut spoken = Vec::new();
+                    if let Some(state) = line.delivery.filter(|_| shows.delivery) {
                         spoken.push(state.label());
                     }
+                    if shows.time {
+                        spoken.push(ConversationClock::local().clock(seconds(line.at_ms)));
+                    }
                     let part = item.part("caption", "ConversationCaption", *caption_rect);
-                    part.painted(hash_of(&spoken));
+                    part.painted_of(&spoken);
                     part.semantics = Some(
                         crate::a11y::AccessNode::new(crate::a11y::Role::StaticText)
                             .with_name(spoken.join(", ")),
@@ -1178,12 +1262,4 @@ mod geometry_tests {
         }
         assert_eq!(checked, 2);
     }
-}
-
-/// A version for a picture showing `what`.
-fn hash_of(what: &impl std::hash::Hash) -> u64 {
-    use std::hash::Hasher;
-    let mut hash = std::collections::hash_map::DefaultHasher::new();
-    what.hash(&mut hash);
-    hash.finish()
 }

@@ -102,7 +102,7 @@ struct Facts {
     app: Option<String>,
     /// The other device of the person's it connected from, over iroh ([`crate::device_mcp`]);
     /// `None` for a program of this login.
-    origin: Option<tilo_mcp::devices::Origin>,
+    origin: Option<tilo_device_mcp::Origin>,
     /// The socket of this login it came in by: the session's own, or an environment's.
     entrance: Origin,
 }
@@ -177,6 +177,9 @@ struct Request {
     workspace: Option<String>,
     /// The agent key it presents ([`agent_key`]), which decides it without asking the person.
     key: Option<String>,
+    /// What the client calls its session ([`tilo_mcp::session_api::SESSION_NAME`]), as its own
+    /// harness names it ("Office Hours"): what the shell shows the agent by. Display only.
+    session_name: Option<String>,
     session: AgentSessionId,
     /// Answered by the loop once the person decided and the agent is a member the broker's roster
     /// lists ([`Members`]); dropped by the connection when its client leaves, which withdraws the
@@ -193,6 +196,8 @@ struct Waiting {
     session: AgentSessionId,
     /// The program the answer is remembered for (`claude-code`).
     agent: String,
+    /// What the client calls its session, when it named one: what the shell shows it by.
+    session_name: Option<String>,
     /// The question up for it; dropping it withdraws the question.
     asked: Option<Asked>,
     decide: tokio::sync::oneshot::Sender<Consent>,
@@ -661,6 +666,7 @@ impl Loop {
             facts,
             workspace: asked,
             session,
+            session_name,
             decide,
             ..
         } = request;
@@ -691,7 +697,12 @@ impl Loop {
         });
         if let Some(agent) = ahead {
             tracing::info!(client = %facts.client, pid = facts.pid, %agent, %workspace, "MCP server: what the person said ahead of time admits this client");
-            let consent = as_member(members, &facts, (&workspace, person));
+            let consent = as_member(
+                members,
+                &facts,
+                (&workspace, person),
+                session_name.as_deref(),
+            );
             self.sessions.admit(&session, &consent, &agent, &name);
             let _ = decide.send(consent);
             return;
@@ -723,6 +734,7 @@ impl Loop {
             workspace_name: name,
             session,
             agent,
+            session_name,
             asked: Some(asked),
             decide,
         });
@@ -772,7 +784,12 @@ impl Loop {
         let Some(remembered) = Lifetime::chosen(choice, tilo_clock::unix_now_ms()) else {
             return Consent::Refuse(word("mcp-server-declined"));
         };
-        let consent = as_member(members, &waiting.facts, (&waiting.workspace, person));
+        let consent = as_member(
+            members,
+            &waiting.facts,
+            (&waiting.workspace, person),
+            waiting.session_name.as_deref(),
+        );
         self.sessions.admit(
             &waiting.session,
             &consent,
@@ -842,7 +859,7 @@ impl Loop {
             }
         };
         std::thread::spawn(move || {
-            if let Err(error) = write_private(&path, &bytes) {
+            if let Err(error) = tilo_files::native::atomic::write_private(&path, &bytes) {
                 tracing::warn!(
                     %error,
                     path = %path.display(),
@@ -860,16 +877,24 @@ impl Loop {
 pub(crate) type Members<'a> = dyn Fn(&str, &str) -> Result<(String, String), String> + 'a;
 
 /// Admit the client `facts` describes, in `workspace` for `person`, as the person's agent member
-/// for its client, under the name the workspace calls that member by: every connection of it reads
-/// as the member, and the shell tells two of them apart by where each works from, beside the name.
-/// Refused where that member cannot be found, added or listed.
-fn as_member(members: &Members<'_>, facts: &Facts, (workspace, person): (&str, &str)) -> Consent {
+/// for its client, under the name the workspace calls that member by — or the session the client
+/// itself named, when its harness names one ("Office Hours"), which is what presence, notices and
+/// history show it by: every connection of it reads as the member, and the shell tells two of them
+/// apart by where each works from, beside the name. Refused where that member cannot be found,
+/// added or listed.
+fn as_member(
+    members: &Members<'_>,
+    facts: &Facts,
+    (workspace, person): (&str, &str),
+    session_name: Option<&str>,
+) -> Consent {
+    let named = session_name.map(str::trim).filter(|name| !name.is_empty());
     match members(workspace, &facts.client) {
         Ok((agent, name)) => Consent::Admit {
             workspace: workspace.to_owned(),
             agent,
             person: person.to_owned(),
-            name,
+            name: named.map_or(name, str::to_owned),
         },
         Err(reason) => {
             tracing::warn!(client = %facts.client, %workspace, %reason, "MCP server: the client's agent member is not added");
@@ -1007,29 +1032,6 @@ pub(crate) fn bind_private(path: &Path) -> io::Result<UnixListener> {
     let _ = std::fs::remove_file(&staged);
     let _ = std::fs::remove_dir(&staging);
     bound
-}
-
-/// Write `bytes` to `path` , readable by this account only.
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-    if let Some(parent) = path.parent() {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-    }
-    let staged = path.with_extension("json.tmp");
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&staged)?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    std::fs::rename(&staged, path)
 }
 
 /// What the kernel says about the process on the other end.
@@ -1858,17 +1860,13 @@ fn certify(
         now_ns.saturating_add(MAX_AGENT_CERT_NS),
     )
     .map_err(|error| format!("the agent certificate does not sign: {error}"))?;
+    let digest = tilo_identity_client::collaboration_join_digest(admitted.workspace)
+        .map_err(|error| error.to_string())?;
     runtime_collab::AgentJoinIdentity {
         workspace_id: admitted.workspace.to_owned(),
         device_certificate: serde_json::to_vec(certificate).map_err(|error| error.to_string())?,
         certificate: cert.encode(),
-        proof: key
-            .sign(
-                &runtime_identity::collaboration_join_digest(admitted.workspace)
-                    .map_err(|error| format!("the workspace's join cannot be signed: {error}"))?,
-            )
-            .to_bytes()
-            .to_vec(),
+        proof: key.sign(&digest).to_bytes().to_vec(),
     }
     .encode()
     .map_err(|error| error.to_string())
@@ -2455,7 +2453,7 @@ enum From {
     /// own socket ([`environments`]).
     Environment(u32, Arc<environments::Environment>),
     /// Another of the person's devices, over iroh ([`crate::device_mcp`]).
-    Device(Box<tilo_mcp::devices::Origin>),
+    Device(Box<tilo_device_mcp::Origin>),
     /// The login's confined shell runtime, by the pid that opened it ([`is_shell_runtime`]): it
     /// asks for its environments' sockets, and is served nothing else.
     ShellRuntime(u32),
@@ -2530,13 +2528,13 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     else {
         return;
     };
-    if let Some(forward) = tilo_mcp::devices::forward_request(&first) {
+    if let Some(forward) = tilo_device_mcp::forward_request(&first) {
         // A client of this login asks to be carried to another of the person's devices, which
         // decides whether it works there.
         tracing::info!(pid, device = %forward.device, "MCP server: a client asks to work on another device");
         match device_agents {
             Some(device_agents) => device_agents.forward(stream, &forward),
-            None => tilo_mcp::devices::refuse_forward(
+            None => tilo_device_mcp::refuse_forward(
                 stream,
                 "this desktop reaches none of your other devices".into(),
             ),
@@ -2730,6 +2728,7 @@ fn ask(
         facts,
         workspace: hello.workspace.clone(),
         key: hello.key.clone(),
+        session_name: hello.session_name.clone(),
         session,
         decide,
     };
@@ -2797,6 +2796,46 @@ pub(crate) fn awaited_sentence(name: &str, host: &str) -> String {
         "this device hasn't been admitted to {name} yet: {host}, the workspace's host, must be \
          reachable once to take it in"
     )
+}
+
+#[cfg(test)]
+mod sessions_in_the_shells_words {
+    use super::environments::Origin;
+    use super::{Consent, Facts, as_member};
+
+    /// A connection is admitted under the session its own harness names, when its client names
+    /// one: that is the name presence, notices and history show it by. A connection that names
+    /// none keeps the name the workspace calls its agent member by.
+    #[test]
+    fn a_named_session_is_admitted_by_its_own_name() {
+        let facts = Facts {
+            client: "Claude Code".to_owned(),
+            version: None,
+            pid: std::process::id(),
+            exe: None,
+            app: None,
+            origin: None,
+            entrance: Origin::Host,
+        };
+        let member =
+            |_: &str, _: &str| Ok(("agent:claude-code".to_owned(), "Claude Code".to_owned()));
+        let admitted = |named: Option<&str>| match as_member(
+            &member,
+            &facts,
+            ("workspace", "person"),
+            named,
+        ) {
+            Consent::Admit { name, .. } => name,
+            Consent::Refuse(why) => panic!("refused: {why}"),
+        };
+        assert_eq!(admitted(Some("Office Hours")), "Office Hours");
+        assert_eq!(
+            admitted(Some("  ")),
+            "Claude Code",
+            "a blank name names nothing"
+        );
+        assert_eq!(admitted(None), "Claude Code");
+    }
 }
 
 #[cfg(test)]

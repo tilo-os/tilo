@@ -39,6 +39,7 @@ pub mod native_fixture;
 pub mod project;
 pub mod resource;
 mod row_viewport;
+mod rows;
 #[cfg(feature = "samples")]
 mod sample_project;
 

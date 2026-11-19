@@ -525,3 +525,49 @@ fn a_control_a_relayout_slides_under_a_still_pointer_takes_the_click() {
     scene.harness.send(&button(ElementState::Released));
     assert_eq!(*scene.clicks.borrow(), vec!["first"]);
 }
+
+/// The centre of the place named `name` in a navigation list the harness shows.
+fn place_centre(harness: &mut FrameHarness, name: &str) -> Point {
+    fn find(node: &crate::a11y::AccessNode, name: &str) -> Option<Point> {
+        if node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some(name) {
+            let b = node.bounds?;
+            return Some(Point::new(
+                f64::midpoint(b.x0, b.x1),
+                f64::midpoint(b.y0, b.y1),
+            ));
+        }
+        node.children.iter().find_map(|child| find(child, name))
+    }
+    harness.relayout();
+    let snapshot = harness.inspection();
+    snapshot
+        .root
+        .nodes()
+        .iter()
+        .filter_map(|node| node.semantics.as_ref())
+        .find_map(|access| find(access, name))
+        .unwrap_or_else(|| panic!("no place {name}"))
+}
+
+/// A place in a sidebar is chosen by one press, also when the list was built again while the
+/// button was down: a page arriving beside it does not swallow the choice.
+#[test]
+fn a_navigation_place_carries_its_press_across_a_rebuild() {
+    assert_press_carries(
+        |clicks, generation| {
+            let mut ran = log(clicks, generation);
+            let places = vec![
+                crate::widget::NavItem::new("inbox", "Inbox"),
+                crate::widget::NavItem::new("drafts", "Drafts"),
+            ];
+            Box::new(
+                crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+                    "places", places,
+                )])
+                .selected("drafts")
+                .on_view("places", move |_| ran()),
+            )
+        },
+        |h| place_centre(h, "Inbox"),
+    );
+}

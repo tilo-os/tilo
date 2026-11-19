@@ -103,6 +103,10 @@ pub struct UnattendedChange {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceList {
     pub workspaces: Vec<Workspace>,
+    /// The listing as a person reads it ([`super::lines`]): what `tilo`
+    /// prints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -184,6 +188,10 @@ pub struct KeyRow {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct KeyList {
     pub keys: Vec<KeyRow>,
+    /// The listing as a person reads it ([`super::lines`]): what `tilo`
+    /// prints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -244,6 +252,11 @@ pub struct ActionRow {
     pub kind: String,
 }
 
+/// What a row a listing does not speak for is: a resource of its own, read.
+const fn a_resource() -> bool {
+    true
+}
+
 /// One row of a listing: a resource under the path listed, or an app.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Row {
@@ -258,8 +271,18 @@ pub struct Row {
     pub label: String,
     /// The app's type of it, or `app`.
     pub kind: String,
+    /// Whether a query with this row as its parent answers rows the workspace
+    /// holds now. An app holding no document here says no, though listing it
+    /// would start it on a new one; a walk reads what is there and starts
+    /// nothing.
     #[serde(default)]
     pub has_children: bool,
+    /// Whether a read answers the row as a resource of its own. A row that is
+    /// only a place inside it (an option or a choice, like a reading font or a
+    /// built-in folder) is part of what lists it and is never read alone; a
+    /// listing that does not say is read as it always was, every row read.
+    #[serde(default = "a_resource")]
+    pub reads: bool,
     /// The ids of the actions it offers, each described once in the
     /// listing's `kinds` under the row's `kind`.
     #[serde(default)]
@@ -566,7 +589,7 @@ pub struct View {
 }
 
 /// The workspace's people, each with their role, and the invitations still
-/// open.
+/// open, with `text`: the listing as a person reads it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Members(pub Map<String, Value>);
 
@@ -615,6 +638,10 @@ pub struct Servers {
     /// How many copies the workspace wants kept and where they stand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copies: Option<Value>,
+    /// The listing as a person reads it ([`super::lines`]): what `tilo`
+    /// prints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// One server keeping the workspace.
@@ -649,7 +676,8 @@ pub struct NewServer {
 }
 
 /// The addresses left at the workspace's entry while it takes people by
-/// invitation, oldest first, and whether the entry mails invitations.
+/// invitation, oldest first, and whether the entry mails invitations, with
+/// `text`: the listing as a person reads it.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WaitList(pub Map<String, Value>);
 

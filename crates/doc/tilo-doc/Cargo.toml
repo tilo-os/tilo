@@ -30,6 +30,8 @@ thiserror.workspace = true
 tracing.workspace = true
 # Ordering keys, history, batched writes and diffs shared by every resource.
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+# The anchor a change's text is named by, which an action's step carries.
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 
 [[test]]
 name = "it"

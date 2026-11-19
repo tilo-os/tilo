@@ -1172,14 +1172,11 @@ mod tests {
         phase a_message_says_who_said_it_where_and_when;
         {
             let index = Arc::new(AppContentIndex::in_memory());
-            // Long enough that the match sits well past the line's head: the
-            // excerpt is cut on both sides and says so.
-            let text = "We shipped the new palette yesterday and the animations still \
-                    stutter when the window resizes, so we spent the morning measuring \
-                    frames and cutting what we could from the first paint. The wheel is \
-                    next: it drags on every scroll and lands half a page off. Ada, can you \
-                    look at the wheel again before the demo tomorrow morning? The others \
-                    are on the palette in the meantime.";
+            let text = "We shipped the new palette yesterday and the animations still stutter \
+                    when the window resizes, and the wheel was reported by three more \
+                    people this morning; Ada, can you look at the wheel again before the \
+                    demo tomorrow morning? The venue needs the final slide deck today, \
+                    and Priya has the numbers in a sheet nobody can open yet.";
             let mut message = shaped(
                 note("chat.workspace/messages/m_wheel", text, false),
                 IndexKind::Message,

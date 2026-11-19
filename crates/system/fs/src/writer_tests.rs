@@ -180,8 +180,9 @@ tilo_test_env::scenario! {
         let resolver = procs.resolver();
         assert_eq!(resolver.resolve(600), Writer::App { id: "so.tilo.notes".into() });
         let notes = resolver.resolve(600).invoker(Some("ad")).unwrap();
-        assert_eq!(notes.acting.by, tilo_actions::Actor::App("so.tilo.notes".into()));
-        assert_eq!(notes.acting.acted_for_person(), Some("ad"));
+        // The person writes through the app, with their own access.
+        assert_eq!(notes.acting.person_id(), Some("ad"));
+        assert!(notes.acting.app().is_some_and(|app| app.as_str() == "so.tilo.notes"));
         assert_eq!(resolver.resolve(601), Writer::App { id: "so.tilo.my-app".into() });
         assert_eq!(
             resolver.resolve(602),

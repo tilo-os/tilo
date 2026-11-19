@@ -157,16 +157,6 @@ pub enum DesktopCommand {
         app: String,
         beside: Option<u64>,
     },
-    /// Retired with its own save path: a saved shortcut is one of the
-    /// workspace's settings, written where a setting is. It keeps the variants
-    /// after it at their encoded positions, and is refused.
-    RetiredSaveShortcut {
-        shortcut_json: String,
-    },
-    /// Retired with [`Self::RetiredSaveShortcut`].
-    RetiredDeleteShortcut {
-        id: String,
-    },
     /// Register topology namespace `salt` to the calling device, so it can
     /// publish its own windows (a session's legacy windows) into a workspace
     /// another device governs. Only the governor writes the registry; a
@@ -781,10 +771,6 @@ pub fn apply_command(
     create: &mut impl FnMut(&str, u64) -> Result<(String, TileContent), String>,
 ) -> Result<(), String> {
     match command {
-        DesktopCommand::RetiredSaveShortcut { .. }
-        | DesktopCommand::RetiredDeleteShortcut { .. } => {
-            return Err("shortcut commands are retired".into());
-        }
         DesktopCommand::SavePreset { .. } | DesktopCommand::AssignPreset { .. } => {
             return Err("only the workspace's native owner applies this command".into());
         }

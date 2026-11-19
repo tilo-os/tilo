@@ -932,6 +932,10 @@ impl ResourceApp for FileExplorerShell {
         &[ui::framework::PersonKind::shared::<
             fs_protocol::tree::FilesTree,
         >()];
+    /// A page shows the workspace's files in a window of its own (`crate::tree`), whose resource
+    /// the workspace takes as the app's too.
+    const OTHER_WINDOWS: &'static [ui::framework::OtherWindow] =
+        &[ui::framework::OtherWindow::of::<crate::tree::FilesTreeShell>()];
 
     fn view(cx: &mut ViewCx<FileExplorer>) -> Element {
         let lent = cx.take_lent::<crate::StartupInputs>();

@@ -57,6 +57,9 @@ dev-rust-views = ["dep:tube", "chat/samples"]
 lazy-search-feed = []
 
 [dependencies]
+# The device's one store, which apps write and read their resources in.
+tilo-resource-store = { version = "0.1.0", path = "../../collab/resource-store" }
+anyhow.workspace = true
 # A branch of a workspace takes an app's own copy of a record into the
 # workspace's, as every incoming change is taken in; a record read again takes
 # in what was appended to it since.
@@ -81,6 +84,7 @@ tilo-desktop = { path = "../desktop" }
 # The member's own client of the peer network: the boards of who is here and this
 # device's own word, which this session hosts with its own endpoint.
 tilo-session-client = { path = "../client" }
+tilo-session-actions = { path = "../session-actions" }
 # The roles every host runs: the shell's document and the layout it holds.
 tilo-session-core = { path = "../core" }
 tilo-desktop-model = { path = "../desktop-model" }
@@ -89,6 +93,7 @@ tilo-desktop-policy = { path = "../desktop-policy" }
 # This device's identity: the certificate it presents and the key it signs with, from the store its
 # host keeps them in.
 tilo-identity = { path = "../../runtime/tilo-identity" }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 # The action broker's half every host runs: what a step is taken by, the step service, the route.
 tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-desktop-surface = { path = "../desktop-surface" }
@@ -257,6 +262,9 @@ tilo-server-session = { path = "../../server/tilo-server-session" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
+# The one enrollment every image uses: the session answers a machine that asks
+# to join with the same code the image's helper does, for as long as it runs.
+tilo-enrollment = { path = "../../collab/tilo-enrollment" }
 # The device's certificate authority the broker admits a join with: the
 # identity store's selected identity and the devices it certifies now.
 tilo-identity-authority = { path = "../identity-authority" }
@@ -335,7 +343,6 @@ tilo-window-share = { path = "../window-share" }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "json"] }
 # The identity record the launcher bound and the person's own: the directories
 # whose changes a worker follows.
-runtime-identity = { path = "../../runtime/runtime-identity" }
 os-actions = { path = "../../system/os-actions" }
 # The person's `network-usage` section, which this device's traffic totals are
 # counted into, and the readings its verb takes.
@@ -347,6 +354,7 @@ tilo-native-media = { path = "../native-media" }
 # program of this login through once the person admits it.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 tilo-mcp = { path = "../../runtime/tilo-mcp" }
+tilo-device-mcp = { path = "../../runtime/device-mcp" }
 # The files daemon's link to the network: the session answers and dials for it
 # on the device's endpoint (`fs::net`).
 fs = { package = "tilo-fs", path = "../../system/fs", default-features = false, features = ["filesystem"] }
@@ -442,7 +450,12 @@ settings-store = { path = "../../system/settings-store", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 
 [dev-dependencies]
+# The page track and window-share tests drive a synchronous web engine.
+tilo-webview = { version = "0.1.0", path = "../../sdk/tilo-webview" }
 pollster.workspace = true
+# A check that answers a sheet as the person does asks the questions service the
+# sheets show, and reads its answer back.
+tilo-service = { path = "../service" }
 # The manager an app's window joins its workspace's record with: a test speaks as the window.
 collaboration = { path = "../../collab/collaboration" }
 # A Rust app's views, drawn by the shell as it draws a tilolang app's (one-app-model.md §2):
@@ -480,6 +493,9 @@ compat-catalogue = { path = "../../windows/compat-catalogue" }
 windows-vm = { path = "../../windows/windows-vm" }
 # The stand-in logind and UPower a power test serves over a socket pair.
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
+# A packet relay on this machine's loopback, for two of the person's devices
+# enrolling a machine in one process.
+iroh-relay = { version = "1.0.3", features = ["server"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }
 tilo-test-env = { path = "../../dev/test-env" }
 # The log a test's people write while it runs.

@@ -22,9 +22,10 @@
 //! every `tilo mcp` is a connection to it ([`held`]), as the API server
 //! holds one session per key for all of that key's runs.
 //!
-//! Every connection is one agent run, named for the agent ("Claude Code"),
-//! which History groups its actions under; the workspace shows the agent
-//! present with what it does while it runs.
+//! Every connection is one agent's work of its own, shown by the session the agent's harness
+//! names (`session_name`: "Office Hours"), else by the agent's product ("Claude Code"), which
+//! History groups its actions under; the workspace shows the agent present with what it does
+//! while it is here.
 
 pub(crate) mod held;
 
@@ -36,8 +37,8 @@ use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
+use tilo_session_actions::SessionActions;
 use tilo_session_client::device::Device as Entered;
-use tilo_session_client::remote::SessionActions;
 
 use crate::login::{Device, NOT_LOGGED_IN};
 
@@ -148,9 +149,10 @@ pub(crate) struct Shared<E> {
     entry: tokio::sync::Mutex<Entry>,
     /// Counts finished attempts, so a call that waits for one hears that it ended.
     attempts: tokio::sync::watch::Sender<u64>,
-    /// The program this holder was started from, once it holds the device ([`held::Program`]).
-    held_as: std::sync::OnceLock<held::Program>,
-    /// Told when a holder of a newer program asked this one to let it hold the device.
+    /// What this holder claims the device as, once it holds it: the program it was started
+    /// from, and whether the user service started it ([`held::Claim`]).
+    held_as: std::sync::OnceLock<held::Claim>,
+    /// Told when a holder that takes over from this one asked it to let it hold the device.
     stepping_down: tokio::sync::Notify,
 }
 
@@ -410,7 +412,7 @@ fn open(session: &Arc<Session>, device: &Device, run: &str) -> Result<Served, St
 pub fn serve(hold: bool) -> Result<ExitCode> {
     let device = match tilo_mcp::session_api::desktop_server() {
         Ok(Some(server)) => {
-            tilo_mcp::session_api::bridge(&server)?;
+            tilo_mcp::session_api::bridge(&server, tilo_mcp::session_api::session_name())?;
             return Ok(ExitCode::SUCCESS);
         }
         Ok(None) => crate::login::load(&crate::login::device_dir()?)?
@@ -527,16 +529,15 @@ async fn answer<E: Enter>(connection: &Connection<E>, line: &str) -> Option<Stri
     };
     if request.get("method").and_then(Value::as_str) == Some(STEP_DOWN) {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let newer = request
+        let asking = request
             .get("params")
-            .and_then(|params| params.get("program"))
-            .and_then(|program| serde_json::from_value::<held::Program>(program.clone()).ok());
+            .and_then(|params| serde_json::from_value::<held::Claim>(params.clone()).ok());
         let steps_down = connection
             .shared
             .held_as
             .get()
-            .zip(newer)
-            .is_some_and(|(own, newer)| newer.replaces(own));
+            .zip(asking)
+            .is_some_and(|(own, asking)| asking.takes_over(own));
         if steps_down {
             connection.shared.stepping_down.notify_one();
         }
@@ -619,8 +620,8 @@ fn account_or_people<E: Enter>(
 /// whether they are in sync.
 pub(crate) const PEER_STATUS: &str = "tilo/peer";
 
-/// What a holder starting from a newer program asks the one holding the device: to let it hold the
-/// device instead, with the program it was started from ([`held::Program`]).
+/// What a holder starting asks the one holding the device: to let it hold the device instead, as
+/// what it claims the device as ([`held::Claim`]): a newer program, or the user service.
 pub(crate) const STEP_DOWN: &str = "tilo/stepDown";
 
 /// The peer's answer to [`PEER_STATUS`].
@@ -631,13 +632,19 @@ async fn peer_status<E: Enter>(connection: &Connection<E>) -> Value {
         || "entering".to_owned(),
         |session| format!("{:?}", session.device.session().status().phase).to_lowercase(),
     );
-    let (mounted, failed, workspaces, complete) = match held::PEER.get() {
+    let connected = session
+        .as_ref()
+        .is_some_and(|session| session.device.is_live());
+    let (mut mounted, failed, workspaces, complete) = match held::PEER.get() {
         Some(peer) => {
             let (workspaces, complete) = peer.workspaces().await;
             (peer.mounted().await, peer.failures(), workspaces, complete)
         }
         None => (Vec::new(), Vec::new(), Vec::new(), false),
     };
+    for folder in &mut mounted {
+        folder.connected = connected;
+    }
     let not_in = held::NOT_IN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -8,27 +8,16 @@ use tilolang_runtime::{Actor, ResourceRef, UiNode, Value, ViewEvent, ViewInstanc
 use tilolang_tilo::host::Host;
 
 use crate::fixtures::Replica;
-use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call, helper};
-
-fn find_all<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
-    if node.kind == kind {
-        out.push(node);
-    }
-    for child in &node.children {
-        find_all(child, kind, out);
-    }
-}
-
-fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
-    let mut out = Vec::new();
-    find_all(node, kind, &mut out);
-    out
-}
+use crate::legibility::{
+    AGENT, NOTES_APP, RUN, Tidied, an_agent_tidies_notes_and_tasks, call, helper,
+};
 
 /// Every row of the view's list, as the list builds them.
 fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
     view.poll_patches().unwrap();
-    let list = all(view.tree(), "ui.VirtualList")
+    let list = view
+        .tree()
+        .of_kind("ui.VirtualList")
         .first()
         .expect("a list")
         .key
@@ -39,11 +28,11 @@ fn rows(view: &mut ViewInstance) -> Vec<UiNode> {
         .collect()
 }
 
-/// The resource each row presents, and the change mark the host placed on it, if any.
+/// The resource each row presents, and the change mark placed on it, if any.
 fn row_marks(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
     let mut out = Vec::new();
     for row in rows(view) {
-        for item in all(&row, "ui.ListItem") {
+        for item in row.of_kind("ui.ListItem") {
             let of = match item.props.get("item") {
                 Some(Value::Ref(r)) => r.target.id_string(),
                 other => panic!("a row presents its item: {other:?}"),
@@ -59,12 +48,12 @@ fn row_marks(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
     out
 }
 
-/// The resource each row of the view's tree presents, and the change mark the host placed on it,
-/// if any.
+/// The resource each row of the view's tree presents, and the change mark placed on it, if any.
 fn tree_marks(view: &mut ViewInstance) -> Vec<(String, Option<UiNode>)> {
     view.set_lazy_rows(false).unwrap();
     view.poll_patches().unwrap();
-    all(view.tree(), "ui.TreeViewNode")
+    view.tree()
+        .of_kind("ui.TreeViewNode")
         .into_iter()
         .map(|node| {
             let of = match node.props.get("item") {
@@ -127,7 +116,7 @@ tilo_test_env::scenario! {
             made,
             groceries,
             ..
-        } = a_run_in_notes_and_tasks();
+        } = an_agent_tidies_notes_and_tasks();
 
         // The notebook: the rows the run made or changed carry its mark, with who and which run;
         // no app code asked for it.
@@ -149,13 +138,13 @@ tilo_test_env::scenario! {
             said(marked(&marks, &made.id_string()).unwrap()),
             "created it"
         );
-        assert!(
-            said(marked(&marks, &groceries.id_string()).unwrap()).contains("title"),
-            "the renamed note says what changed: {}",
-            said(marked(&marks, &groceries.id_string()).unwrap())
+        assert_eq!(
+            said(marked(&marks, &groceries.id_string()).unwrap()),
+            "renamed",
+            "a write of the field a note is named by renames it"
         );
         // The window's header counts what changed in it, and by whom.
-        let window = all(notebook.tree(), "ui.ChangeMark")
+        let window = notebook.tree().of_kind("ui.ChangeMark")
             .into_iter()
             .find(|m| m.props.get("window") == Some(&Value::Bool(true)))
             .cloned()
@@ -203,16 +192,16 @@ tilo_test_env::scenario! {
         let marks = tree_marks(&mut notebook);
         assert!(marks.iter().all(|(_, mark)| mark.is_none()), "{marks:?}");
         assert!(
-            all(notebook.tree(), "ui.ChangeMark").is_empty(),
+            notebook.tree().of_kind("ui.ChangeMark").is_empty(),
             "the window's mark is gone"
         );
     }
 
     phase a_field_the_run_changed_takes_its_colour_and_says_what_it_held;
     {
-        let Tidied { ada, groceries, .. } = a_run_in_notes_and_tasks();
+        let Tidied { ada, groceries, .. } = an_agent_tidies_notes_and_tasks();
         let mut editor = ada.host.open_resource(&groceries, None).unwrap();
-        let changed: Vec<UiNode> = all(editor.tree(), "ui.TextInput")
+        let changed: Vec<UiNode> = editor.tree().of_kind("ui.TextInput")
             .into_iter()
             .filter(|input| actor(input, "changed_by").is_some())
             .cloned()
@@ -226,7 +215,7 @@ tilo_test_env::scenario! {
         );
         // The window of the note counts its one change.
         assert!(
-            all(editor.tree(), "ui.ChangeMark")
+            editor.tree().of_kind("ui.ChangeMark")
                 .iter()
                 .any(|m| m.props.get("count") == Some(&Value::Int(1))),
             "the note's window is marked"
@@ -235,7 +224,7 @@ tilo_test_env::scenario! {
         assert!(ada.host.runtime().mark_seen(&tilolang_tilo::personal::actor("ada"), &groceries).unwrap());
         editor.poll_patches().unwrap();
         assert!(
-            all(editor.tree(), "ui.TextInput")
+            editor.tree().of_kind("ui.TextInput")
                 .iter()
                 .all(|input| actor(input, "changed_by").is_none())
         );
@@ -253,7 +242,7 @@ tilo_test_env::scenario! {
         let rows = rows(&mut view);
         let placed: Vec<&UiNode> = rows
             .iter()
-            .flat_map(|row| all(row, "ui.ChangeMark"))
+            .flat_map(|row| row.of_kind("ui.ChangeMark"))
             .collect();
         assert_eq!(placed.len(), 1, "one mark, the view's: {rows:?}");
         assert_eq!(actor(placed[0], "by").as_deref(), Some(AGENT));
@@ -270,14 +259,16 @@ tilo_test_env::scenario! {
 fn the_header_names_everyone_who_changed_it() {
     const BO: &str = "bo";
     const SORTED: &str = "issue-8@8000000000000001";
-    let Tidied { mut ada, .. } = a_run_in_notes_and_tasks();
+    let Tidied { mut ada, .. } = an_agent_tidies_notes_and_tasks();
     let notes = Value::resource(&ada.host.root_of(NOTES_APP).unwrap());
     call(&ada, BO, NOTES_APP, "new_note", vec![notes]);
     ada.commit_in_run(BO, SORTED, "Sort the paper mail");
 
     let mut notebook = ada.view(NOTES_APP);
     notebook.poll_patches().unwrap();
-    let window = all(notebook.tree(), "ui.ChangeMark")
+    let window = notebook
+        .tree()
+        .of_kind("ui.ChangeMark")
         .into_iter()
         .find(|m| m.props.get("window") == Some(&Value::Bool(true)))
         .cloned()
@@ -299,13 +290,65 @@ fn the_header_names_everyone_who_changed_it() {
     );
 }
 
+/// A change the person watched land, its live mark on screen, is seen: its row and the window's
+/// header no longer tell them of it. A change someone else made while they were not looking
+/// keeps its marks.
+#[test]
+fn a_change_watched_landing_is_seen_and_one_made_unwatched_is_not() {
+    let Tidied {
+        mut ada,
+        groceries,
+        landlord,
+        ..
+    } = an_agent_tidies_notes_and_tasks();
+    let tasks = crate::legibility::TASKS_APP;
+    let (me, bo) = (
+        tilolang_tilo::personal::actor("ada"),
+        tilolang_tilo::personal::actor("bo"),
+    );
+    // Bo's earlier change of the task, unwatched, stands under the agent's.
+    call(
+        &ada,
+        &bo,
+        tasks,
+        "check",
+        vec![Value::resource(&landlord), Value::Bool(false)],
+    );
+    ada.commit();
+    call(
+        &ada,
+        &helper(),
+        tasks,
+        "check",
+        vec![Value::resource(&landlord), Value::Bool(true)],
+    );
+    ada.commit();
+
+    {
+        let runtime = ada.host.runtime();
+        // Who the live mark names matters: Bo did not rename the note.
+        assert!(!runtime.seen_live(&me, &groceries, &bo).unwrap());
+        assert!(runtime.seen_live(&me, &groceries, &helper()).unwrap());
+        // Bo's change, made while Ada was not looking, keeps the task marked: the agent's first, Bo's
+        // and the one she watched.
+        assert!(!runtime.seen_live(&me, &landlord, &helper()).unwrap());
+        assert_eq!(runtime.unseen(&me, &landlord).unwrap().len(), 3);
+    }
+    let marks = tree_marks(&mut ada.view(NOTES_APP));
+    assert!(
+        marked(&marks, &groceries.id_string()).is_none(),
+        "the row says nothing of a change the person watched land"
+    );
+}
+
 /// The rows the host placed in `tree`'s lists and trees for removed items: each one's title and
 /// mark.
 fn removed_rows(tree: &UiNode) -> Vec<(String, UiNode)> {
     let mut out = Vec::new();
-    for holder in all(tree, "ui.VirtualList")
+    for holder in tree
+        .of_kind("ui.VirtualList")
         .into_iter()
-        .chain(all(tree, "ui.TreeView"))
+        .chain(tree.of_kind("ui.TreeView"))
     {
         let Some(part) = holder
             .children
@@ -317,11 +360,12 @@ fn removed_rows(tree: &UiNode) -> Vec<(String, UiNode)> {
         for item in &part.children {
             assert_eq!(item.props.get("removed"), Some(&Value::Bool(true)));
             // A list's row is a list row under it; a tree's node says what it was called.
-            let title = all(item, "ui.ListRow")
+            let title = item
+                .of_kind("ui.ListRow")
                 .first()
                 .and_then(|row| row.props.get("title").cloned())
                 .or_else(|| item.props.get("label").cloned());
-            let mark = all(item, "ui.ChangeMark").first().map(|m| (*m).clone());
+            let mark = item.of_kind("ui.ChangeMark").first().map(|m| (*m).clone());
             if let (Some(Value::Text(title)), Some(mark)) = (title, mark) {
                 out.push((title, mark));
             }
@@ -332,7 +376,7 @@ fn removed_rows(tree: &UiNode) -> Vec<(String, UiNode)> {
 
 #[test]
 fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
-    let Tidied { ada, .. } = a_run_in_notes_and_tasks();
+    let Tidied { ada, .. } = an_agent_tidies_notes_and_tasks();
     let mut inbox = ada.view(crate::legibility::TASKS_APP);
     crate::tasks::go_to(&mut inbox, "Inbox");
     inbox.poll_patches().unwrap();
@@ -364,7 +408,7 @@ fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
 /// index knows what left each collection without reading the log.
 #[test]
 fn a_list_built_over_the_document_shows_what_left_it() {
-    let Tidied { ada, .. } = a_run_in_notes_and_tasks();
+    let Tidied { ada, .. } = an_agent_tidies_notes_and_tasks();
     let fresh = crate::legibility::built_over(&ada);
     assert!(
         fresh.store().stats().builds > 0,
@@ -417,7 +461,8 @@ view shelf(s: Shelf) {
 /// The window's mark of `view`: the header's, not a row's.
 fn window_mark(view: &mut ViewInstance) -> UiNode {
     view.poll_patches().unwrap();
-    all(view.tree(), "ui.ChangeMark")
+    view.tree()
+        .of_kind("ui.ChangeMark")
         .into_iter()
         .find(|mark| mark.props.get("window") == Some(&Value::Bool(true)))
         .cloned()
@@ -441,7 +486,7 @@ fn catch_up(mark: &UiNode) -> UiNode {
 
 /// The text a node says, at the font role `role`, anywhere under it.
 fn texts(node: &UiNode, role: &str) -> Vec<String> {
-    all(node, "ui.Text")
+    node.of_kind("ui.Text")
         .into_iter()
         .filter(|text| text.props.get("role") == Some(&Value::text(role)))
         .filter_map(|text| match text.props.get("value") {
@@ -453,7 +498,7 @@ fn texts(node: &UiNode, role: &str) -> Vec<String> {
 
 /// The buttons anywhere under `node`, by the label they carry.
 fn buttons(node: &UiNode) -> Vec<UiNode> {
-    all(node, "ui.Button").into_iter().cloned().collect()
+    node.of_kind("ui.Button").into_iter().cloned().collect()
 }
 
 fn labelled(node: &UiNode, label: &str) -> Option<UiNode> {
@@ -623,14 +668,14 @@ tilo_test_env::scenario! {
             ],
             "the catch-up names each item it changed, newest first, once"
         );
-        let seen_by: Vec<String> = all(&content, "ui.Avatar")
+        let seen_by: Vec<String> = content.of_kind("ui.Avatar")
             .into_iter()
             .filter_map(|avatar| actor(avatar, "who"))
             .collect();
         assert!(seen_by.contains(&SCOUT.to_owned()), "{seen_by:?}");
         assert!(seen_by.contains(&BO.to_owned()), "{seen_by:?}");
         assert!(
-            !all(&content, "ui.Time").is_empty(),
+            !content.of_kind("ui.Time").is_empty(),
             "each step says when it happened: {content:?}"
         );
     }
@@ -641,8 +686,7 @@ tilo_test_env::scenario! {
     {
         let (_away, _tasks, window) = a_day_away_at_today();
         let content = catch_up(&window);
-        let mut steps = Vec::new();
-        find_all(&content, "row", &mut steps);
+        let mut steps = content.of_kind("row");
         steps.retain(|step| {
             step.children
                 .last()
@@ -705,8 +749,7 @@ tilo_test_env::scenario! {
             "one document changed: {window:?}"
         );
         let content = catch_up(&window);
-        let mut lines = Vec::new();
-        find_all(&content, "row", &mut lines);
+        let mut lines = content.of_kind("row");
         lines.retain(|line| {
             line.children
                 .first()
@@ -731,7 +774,8 @@ tilo_test_env::scenario! {
 fn a_day_aways_catch_up_says_each_step_in_historys_words() {
     let (_away, _tasks, window) = a_day_away_at_today();
     let content = catch_up(&window);
-    let lines: Vec<String> = all(&content, "ui.Text")
+    let lines: Vec<String> = content
+        .of_kind("ui.Text")
         .into_iter()
         .filter_map(|text| match text.props.get("value") {
             Some(Value::Text(value)) => Some(value.clone()),
@@ -816,8 +860,7 @@ fn a_documents_history_costs_a_page_whatever_its_length() {
         "one document changed: {window:?}"
     );
     let content = catch_up(&window);
-    let mut lines = Vec::new();
-    find_all(&content, "row", &mut lines);
+    let mut lines = content.of_kind("row");
     lines.retain(|line| {
         line.children
             .first()
@@ -923,12 +966,13 @@ fn the_headers_mark_reads_the_changes_not_the_items() {
 /// a node of the tree, after its rows, with who removed it.
 #[test]
 fn a_note_the_run_removed_stands_struck_in_the_tree() {
-    let Tidied { ada, old, .. } = a_run_in_notes_and_tasks();
+    let Tidied { ada, old, .. } = an_agent_tidies_notes_and_tasks();
     let mut notebook = ada.view(NOTES_APP);
     notebook.poll_patches().unwrap();
     let struck = |view: &mut ViewInstance| -> Vec<UiNode> {
         view.poll_patches().unwrap();
-        all(view.tree(), "ui.TreeView")
+        view.tree()
+            .of_kind("ui.TreeView")
             .into_iter()
             .flat_map(|tree| tree.children.iter())
             .filter(|child| {
@@ -949,7 +993,8 @@ fn a_note_the_run_removed_stands_struck_in_the_tree() {
         matches!(node.props.get("item"), Some(Value::Ref(r)) if r.target.id_string() == old.id_string()),
         "it says the note it stood for: {node:?}"
     );
-    let mark = all(node, "ui.ChangeMark")
+    let mark = node
+        .of_kind("ui.ChangeMark")
         .into_iter()
         .find(|mark| mark.props.get("window") != Some(&Value::Bool(true)))
         .cloned()

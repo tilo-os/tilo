@@ -92,13 +92,6 @@ pub trait RemoteSource: Send + Sync + 'static {
     /// What its section is headed ("`YouTube` Music").
     fn label(&self) -> String;
 
-    /// Where its answers come from, as its section's placeholder names it
-    /// while one is on the way: a host serving the catalogue by default; a
-    /// member's library is a peer.
-    fn origin(&self) -> Source {
-        Source::host(self.label())
-    }
-
     /// Whether it answers `query` at all: a source does not know the
     /// person's own marks (Liked), so a query narrowed by them stays local.
     fn accepts(&self, query: &QuerySpec) -> bool {
@@ -1158,7 +1151,7 @@ impl QueryEngine {
                 .map(|item| (item.kind, item.id.clone()))
                 .collect();
         }
-        section.ask(slot.source.origin(), now);
+        section.ask(Source::Remote, now);
         let ready = slot
             .last_sent
             .map_or(now, |sent| sent.checked_add(THROTTLE).unwrap_or(now));

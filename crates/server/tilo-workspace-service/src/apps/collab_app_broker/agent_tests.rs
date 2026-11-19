@@ -14,6 +14,8 @@ use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
 #[path = "agent_connection_tests.rs"]
 mod agent_connection;
+#[path = "agent_tools_tests.rs"]
+mod agent_tools;
 #[path = "certified_agent_tests.rs"]
 mod certified_agents;
 #[path = "turns_tests.rs"]
@@ -151,9 +153,6 @@ impl CertificateAuthority for Native {
     }
 }
 impl OwnerCommitService for Native {
-    fn requires_workspace(&self, requested: &str) -> bool {
-        requested == workspace_id().to_string()
-    }
     fn health(&self) -> Result<(), String> {
         if self.opening.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("the native owner is still opening; try again in a moment".into());
@@ -226,7 +225,7 @@ impl crate::apps::services::WorkspaceGrants for Native {
 
 impl WorkspaceMemberships for Native {
     fn requires_workspace(&self, requested: &str) -> bool {
-        OwnerCommitService::requires_workspace(self, requested)
+        requested == workspace_id().to_string()
     }
     fn health(&self) -> Result<(), String> {
         self.owner.health()
@@ -263,7 +262,7 @@ impl crate::apps::services::AgentSessions for Native {
     }
 
     fn confines(&self, workspace: &str) -> bool {
-        OwnerCommitService::requires_workspace(self, workspace)
+        workspace == workspace_id().to_string()
     }
 
     fn turns(&self, _workspace: &str) -> Vec<crate::apps::services::AgentTurn> {
@@ -470,7 +469,7 @@ impl Fixture {
             proof: self
                 .native
                 .key
-                .sign(&runtime_identity::collaboration_join_digest(&workspace).unwrap())
+                .sign(&tilo_identity_client::collaboration_join_digest(&workspace).unwrap())
                 .to_bytes()
                 .to_vec(),
         }
@@ -556,7 +555,7 @@ async fn notes_target(f: &Fixture) -> (runtime_collab::ChannelHandle, Invocation
     let handle = Rc::new(f.app_handle(200, "so.tilo.notes", false));
     let target = wire_channel_rc(Rc::clone(&handle));
     target.publish_actions(&[notes_append()]).await.unwrap();
-    let stream = handle.invocation_feed(true).unwrap();
+    let (stream, _end) = handle.invocation_feed(true).unwrap();
     (target, stream)
 }
 fn grant_notes(f: &Fixture) {

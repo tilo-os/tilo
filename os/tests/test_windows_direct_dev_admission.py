@@ -33,7 +33,8 @@ def fixture(directory):
              'disk_guid': str(uuid.UUID(int=80)), 'partuuids': ids,
              'installed_update_origin': 'ostree-unverified-image:docker://' + origin,
              'selected_target': {'schema': 'tilo.installer-dev-target.v1', 'architecture': 'aarch64',
-                                'hardware_profile': 'lenovo-83ed', 'target_ref': image,
+                                'hardware_profile': 'lenovo-83ed',
+                                'repository': image.split('@', 1)[0],
                                 'target_digest': 'sha256:' + 'b' * 64, 'update_origin': origin,
                                 'provenance': {'source_revision': 'd' * 40, 'invocation_id': '51'}}}
     source = {'schema': 'tilo.windows-direct-vm-template-check.v1', 'disk_guid': guest['disk_guid'],
@@ -135,7 +136,8 @@ class AdmissionTests(unittest.TestCase):
                 paths[1].write_text(json.dumps(changed))
                 with self.assertRaises(ValueError):
                     admission.checked_proof(paths[1])
-            for field, value in (('target_ref', ci['image'][:-1] + '0'),
+            for field, value in (('repository',
+                                  ci['image'].split('@', 1)[0][:-1] + '0'),
                                  ('verifier_key_sha256', '4' * 64)):
                 changed = json.loads(json.dumps(board))
                 changed['guest_proof']['selected_target'][field] = value

@@ -9,6 +9,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 fn enroll_binary() -> PathBuf {
     tilo_test_env::package_binary!("tilo-enroll")
 }
@@ -45,7 +47,10 @@ impl Fixture {
                 .arg("--token-file")
                 .arg(self.root.path().join("no-token.txt"));
         }
-        command.args(arguments).output().expect("start tilo-enroll")
+        command
+            .args(arguments)
+            .output_locked()
+            .expect("start tilo-enroll")
     }
 
     /// The token file a deployment leaves on the machine.

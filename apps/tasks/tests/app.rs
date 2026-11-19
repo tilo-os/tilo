@@ -572,7 +572,10 @@ tilo_test_env::scenario! {
         assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
         assert!(
             app.harness()
-                .a11y_node_named("Assignee: Scribe")
+                .a11y_node_named(&format!(
+                    "Assignee: {}",
+                    ui::history_source::agent_spoken_label("Scribe")
+                ))
                 .is_some(),
             "an agent reads by name, and as an agent"
         );
@@ -1270,6 +1273,51 @@ fn new_issue_enabled(app: &mut TestApp<App>) -> bool {
     !node.is_disabled()
 }
 
+/// A person who opens Tasks where its issues come from the workspace (as in
+/// a page's window) and adds an issue at once, before the workspace said
+/// which part of the issue list is the newest, is not told the list has not
+/// arrived: the window asks for that part as it opens, the press waits for
+/// it, and the issue is made with its title once the workspace answered.
+#[test]
+fn an_issue_added_before_the_list_arrived_is_made_once_it_has() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<App>::awaiting_the_workspace(
+        "4d1f6c1e-2b7a-4c55-9a0e-6f3b2d8e1a90",
+        "so.tilo.tasks",
+    )
+    .expect("open");
+    app.settle();
+    let head = tasks::issue_list::chain().chain_head();
+    assert!(
+        app.wanted_resources().contains(&head),
+        "opening the list asks the workspace for its newest part"
+    );
+
+    app.harness()
+        .click_named("tasks-list-new-title")
+        .expect("focus the title");
+    app.harness().type_text("Ship it");
+    app.harness().key("Enter");
+    app.settle();
+    assert!(
+        app.harness().refusal_said().is_none(),
+        "nothing is refused over the window: {:?}",
+        app.harness().refusal_said()
+    );
+    assert!(app.refused().is_none(), "{:?}", app.refused());
+    assert!(held(&app).is_empty(), "nothing is made before the answer");
+
+    app.workspace_answered(head, ui::prelude::WorkspaceAnswer::HoldsNone);
+    app.workspace_answered(
+        tasks::issue_list::chain().part(0),
+        ui::prelude::WorkspaceAnswer::HoldsNone,
+    );
+    app.settle();
+    let titles: Vec<String> = held(&app).values().map(|issue| issue.title).collect();
+    assert_eq!(titles, ["Ship it"], "the press went ahead once it could");
+    assert!(app.harness().refusal_said().is_none());
+}
+
 /// The row that makes an issue cannot make one without a title: the view
 /// can only hand `create` a title it parsed, so the button is disabled and
 /// Enter does nothing while the field is blank, and nothing is refused or
@@ -1541,11 +1589,11 @@ fn an_agents_rename_and_comment_are_drawn_on_the_issue_page() {
             region: "title".into(),
             ranges: vec![InteractionTextRange {
                 block: issue.as_str().to_owned(),
-                start: 0,
+                start: 5,
                 end: 11,
             }],
         },
-        "all of the title, in the issue's block"
+        "the words the rename wrote (\"hall 4\"), in the issue's block"
     );
     // The comment answers the comment it made, under its issue: where its step landed.
     let made = app

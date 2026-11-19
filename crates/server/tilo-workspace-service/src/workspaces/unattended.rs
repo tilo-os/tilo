@@ -242,5 +242,6 @@ fn question(caller: &Caller, certificate: &DeviceCert, workspace: &str) -> Pendi
         workspace: workspace.to_owned(),
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(QUESTION_WAIT_NS),
         page: None,
+        ask: None,
     }
 }

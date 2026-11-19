@@ -121,6 +121,7 @@ impl Workspaces {
                     member_devices: Vec::new(),
                     member_user_roots: Vec::new(),
                 },
+                Vec::new(),
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -365,6 +366,7 @@ impl Workspaces {
                         member_devices: Vec::new(),
                         member_user_roots: Vec::new(),
                     },
+                    Vec::new(),
                 )
                 .await
                 .map_err(|error| error.to_string())?;

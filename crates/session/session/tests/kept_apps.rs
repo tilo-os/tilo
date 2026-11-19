@@ -22,6 +22,7 @@ use tilo_app_launch::kept::testing;
 use tilo_desktop_model::{Layout, Strip, StripId, TabId, TileContent, Workspace, WorkspaceId};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
 
@@ -50,7 +51,7 @@ extern "C" fn close_one(_: libc::c_int) {
 
 /// Not a test: the app a kept launch starts. It opens one window for each line of `titles` in its
 /// directory, writes its pid to `started` as it starts and the number of keys it was delivered to
-/// `keys`, and closes its last window on `SIGUSR1`. It ends with its keeper.
+/// `keys` (only those its open windows were delivered), and closes its last window on `SIGUSR1`. It ends with its keeper.
 #[test]
 fn kept_app() {
     let Ok(dir) = std::env::var(APP_DIR) else {
@@ -91,7 +92,18 @@ fn kept_app() {
             open -= 1;
             client.close(open);
         }
-        let pressed = client.seen.keys.iter().filter(|(_, down)| *down).count();
+        // A key for a window the app closed is lost, as a Windows program drops one for a window
+        // it hid: only the keys its open windows were delivered count.
+        let open_surfaces: Vec<_> = (0..open).map(|index| client.surface_id(index)).collect();
+        let pressed = client
+            .seen
+            .keys
+            .iter()
+            .zip(&client.seen.keys_on)
+            .filter(|((_, down), on)| {
+                *down && on.as_ref().is_some_and(|on| open_surfaces.contains(on))
+            })
+            .count();
         if pressed != keys {
             keys = pressed;
             fs::write(dir.join("keys"), keys.to_string()).expect("the keys recorded");
@@ -319,26 +331,34 @@ fn tab_showing(session: &mut Session, title: &str) -> Option<TabId> {
     })
 }
 
-/// Wait until every window `titles` names stands in a tab, and the keeper was told each one: the
-/// tabs by title.
+/// Wait until the keeper was told the tab each of the app's windows `titles` names stands in, and
+/// answer those tabs: what the keeper says of its windows is where the launch stands, not a tab
+/// that showed a window of the same name before this launch's own came.
 fn shown_and_told(rig: &Rig, pass: &mut Pass, titles: &[&str]) -> Vec<(String, TabId)> {
     let mut placed = Vec::new();
-    crate::common::wait_for(&mut pass.session, "every window is in a tab", |session| {
-        placed = titles
-            .iter()
-            .map(|title| Some(((*title).to_owned(), tab_showing(session, title)?)))
-            .collect::<Option<Vec<_>>>()
-            .unwrap_or_default();
-        (placed.len() == titles.len()).then_some(())
-    });
-    let mut expected: Vec<(String, Option<String>)> = placed
-        .iter()
-        .map(|(title, tab)| (title.clone(), Some(tab.to_string())))
-        .collect();
-    expected.sort();
-    until(&mut pass.session, "the keeper is told each tab", |_| {
-        rig.told() == expected
-    });
+    until(
+        &mut pass.session,
+        "the keeper is told each tab",
+        |session| {
+            let told = rig.told();
+            let found: Option<Vec<(String, TabId)>> = titles
+                .iter()
+                .map(|title| {
+                    let (_, placement) = told
+                        .iter()
+                        .find(|(told, placement)| told == title && placement.is_some())?;
+                    let tab: TabId = placement.as_deref()?.parse().ok()?;
+                    matches!(tile_of(session, tab), Some(TileContent::Foreign { .. }))
+                        .then(|| ((*title).to_owned(), tab))
+                })
+                .collect();
+            let Some(found) = found else {
+                return false;
+            };
+            placed = found;
+            true
+        },
+    );
     placed
 }
 
@@ -451,6 +471,45 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
     assert!(!dir.exists(), "a logout removes the keeper's directory");
 }
 
+/// A kept program's second window closes while it has the keyboard, the way Wine closes a dialog
+/// (its role goes, its surface stays): the keyboard goes back to the program's window that is still
+/// open, and the next key reaches it.
+#[test]
+fn a_kept_apps_closed_window_hands_the_keyboard_to_its_window_still_open() {
+    let _settled = ui::motion::testing::settled();
+    let titles = ["Untitled", "Open"];
+    let rig = Rig::new(&titles);
+    let mut pass = rig.desktop(false);
+    rig.launch(&pass);
+    let placed = shown_and_told(&rig, &mut pass, &titles);
+    let focused = |session: &mut Session| {
+        session
+            .compositor()
+            .focused_window()
+            .and_then(|window| window.title)
+    };
+    assert!(pass.session.handle().focus_tab(placed[1].1));
+    crate::common::wait_for(
+        &mut pass.session,
+        "the second window has the keyboard",
+        |session| (focused(session).as_deref() == Some("Open")).then_some(()),
+    );
+    let (_, pid, _) = rig.kept();
+    signal(pid, libc::SIGUSR1);
+    crate::common::wait_for(
+        &mut pass.session,
+        "the window that stays has the keyboard",
+        |session| (focused(session).as_deref() == Some("Untitled")).then_some(()),
+    );
+    crate::common::window::tap_key(&mut pass.session, KEY_A);
+    until(
+        &mut pass.session,
+        "the window still open hears the key",
+        |_| rig.keys() == 1,
+    );
+    pass.end(Teardown::Logout);
+}
+
 /// The command line the session starts an app that is not Tilo's with is one the real launcher
 /// takes: asked to plan the launch rather than make it, the launcher names the app the session
 /// asked for. A launcher that answers to another command opens no such app at all.
@@ -485,6 +544,48 @@ fn an_app_whose_keeper_stops_says_so_in_its_own_tab() {
         "the notice stands where the window was, and no other tab opens"
     );
     pass.end(Teardown::Logout);
+}
+
+/// A keeper killed with no word of how its app ended, while no desktop was there, took the app
+/// with it: the person is told it stopped working in the tab its window was in, and nothing else
+/// opens.
+#[test]
+fn a_keeper_killed_while_no_desktop_was_there_says_the_app_stopped_in_its_tab() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let mut first = rig.desktop(false);
+    rig.launch(&first);
+    let placed = shown_and_told(&rig, &mut first, &["Only"]);
+    let tab = placed[0].1;
+    let (dir, pid, _) = rig.kept();
+    first.end(Teardown::InPlaceRestart);
+    signal(parent_of(pid), libc::SIGKILL);
+    tilo_test_env::exited("the app of a keeper killed while away", pid);
+    assert!(
+        !dir.join("ended").exists(),
+        "its keeper never said how it ended"
+    );
+
+    let mut second = rig.desktop(true);
+    until(&mut second.session, "its tab says it stopped", |session| {
+        matches!(
+            tile_of(session, tab),
+            Some(TileContent::AppPlaceholder { .. })
+        )
+    });
+    for _ in 0..100 {
+        second.session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(
+        tabs(&second.session)
+            .into_iter()
+            .map(|(other, _)| other)
+            .collect::<Vec<_>>(),
+        [tab],
+        "the notice stands where the window was, and no other tab opens"
+    );
+    assert_eq!(rig.starts(), [pid], "and the app is not started again");
+    second.end(Teardown::Logout);
 }
 
 /// A program whose window names its app otherwise than the desktop entry it was launched by takes
@@ -543,7 +644,7 @@ fn the_launcher_takes_the_command_line_the_session_starts_an_app_with() {
         .arg("--dry-run")
         .env("XDG_DATA_HOME", rig.home.data())
         .env("XDG_DATA_DIRS", &nowhere)
-        .output()
+        .output_locked()
         .expect("the launcher answers");
     let said = String::from_utf8_lossy(&planned.stdout);
     assert!(
@@ -646,6 +747,41 @@ fn an_app_that_ended_while_no_desktop_was_there_closes_its_tab_and_says_it_stopp
     );
     assert_eq!(rig.starts(), [pid], "and the app is not started again");
     second.end(Teardown::Logout);
+}
+
+/// The tab an app that ended while the desktop was away stood in closes for good: the workspace's
+/// saved layout loses it as it does a tab the person closed, so the next login neither shows it
+/// nor starts the app for it.
+#[test]
+fn the_tab_of_an_app_that_ended_while_away_stays_closed_at_the_next_login() {
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::new(&["Only"]);
+    let tab = ended_while_away(&rig);
+    let [pid] = rig.starts()[..] else {
+        panic!("one start: {:?}", rig.starts());
+    };
+    let mut second = rig.desktop(true);
+    until(&mut second.session, "its tab closes", |session| {
+        !tabs(session).iter().any(|(other, _)| *other == tab)
+    });
+    second.end(Teardown::Logout);
+
+    // A fresh login lays the saved layout out and asks for what it holds within moments: long
+    // enough for a tab that came back to show, or for its app to be started.
+    let mut third = rig.desktop(false);
+    let looked = std::time::Instant::now();
+    while looked.elapsed() < Duration::from_secs(3)
+        && !tabs(&third.session).iter().any(|(other, _)| *other == tab)
+    {
+        third.session.step(Duration::from_millis(5)).expect("step");
+    }
+    assert!(
+        !tabs(&third.session).iter().any(|(other, _)| *other == tab),
+        "the closed tab stays closed at the next login: {:?}",
+        tabs(&third.session)
+    );
+    assert_eq!(rig.starts(), [pid], "and nothing starts the app for it");
+    third.end(Teardown::Logout);
 }
 
 #[test]
@@ -908,6 +1044,90 @@ fn a_kept_launchs_own_x11_display_is_served_to_the_input_method() {
     let _x11 = x11;
 }
 
+/// The lock and socket a kept launch's X11 display holds in `/tmp`, by the display's name in the
+/// keeper's directory `dir`.
+fn display_files(dir: &Path) -> [PathBuf; 2] {
+    let display = fs::read_to_string(dir.join("x11")).expect("the display's name");
+    let number = display.trim().trim_start_matches(':').to_owned();
+    [
+        PathBuf::from(format!("/tmp/.X{number}-lock")),
+        PathBuf::from(format!("/tmp/.X11-unix/X{number}")),
+    ]
+}
+
+/// The directory of the keeper `which` once its display is named there.
+fn named_display(rig: &Rig, pass: &mut Pass, which: &str) -> PathBuf {
+    crate::common::wait_for(
+        &mut pass.session,
+        format!("the {which} keeper names its display"),
+        |_| {
+            testing::described(&rig.root)
+                .into_iter()
+                .find_map(|(dir, _)| fs::read_to_string(dir.join("x11")).ok().map(|_| dir))
+        },
+    )
+}
+
+/// A kept launch's X11 display leaves nothing in `/tmp` however its keeper ends: killed while the
+/// desktop is up, when it has no moment to remove its own lock, or at the logout that ends it. The
+/// same app starts again in that session while the killed keeper's files are still being cleared:
+/// its new keeper names a display of its own, an X client reaches it, and the app starts again.
+#[test]
+fn a_kept_launchs_x11_display_leaves_nothing_in_tmp_however_its_keeper_ends() {
+    tilo_test_env::require_capability!(XServer, x_servers(), "the keeper's X11 display");
+    let _settled = ui::motion::testing::settled();
+    let rig = Rig::keeping_x11(&["Only"]);
+    let mut pass = rig.desktop(false);
+
+    // Killed while the desktop is up.
+    rig.launch(&pass);
+    shown_and_told(&rig, &mut pass, &["Only"]);
+    let first = display_files(&named_display(&rig, &mut pass, "first"));
+    assert!(
+        first.iter().all(|file| file.exists()),
+        "the keeper holds its display: {first:?}"
+    );
+    let (first_dir, pid, _) = rig.kept();
+    signal(parent_of(pid), libc::SIGKILL);
+    tilo_test_env::exited("the app of a keeper that is gone", pid);
+
+    // Started again in the same session, at once: its new keeper names a display of its own, an X
+    // client reaches it, and the app starts a second time.
+    rig.launch(&pass);
+    shown_and_told(&rig, &mut pass, &["Only"]);
+    assert_eq!(rig.starts().len(), 2, "the app started again");
+    let dir = named_display(&rig, &mut pass, "second");
+    assert_ne!(dir, first_dir, "a keeper of its own");
+    let files = display_files(&dir);
+    assert!(
+        files.iter().all(|file| file.exists()),
+        "the keeper holds its display: {files:?}"
+    );
+    let handed = testing::launcher_handed(&rig.home.home().join("tilo-launcher"));
+    assert!(
+        handed.iter().any(|arg| arg == "--x11-display"),
+        "the second launch is given a display: {handed:?}"
+    );
+    let x11 = connect_to_kept_display(&dir);
+    // The killed keeper's files go, and clearing them leaves the new keeper's alone.
+    if first != files {
+        tilo_test_env::wait_until("the killed keeper's display files go", || {
+            first.iter().all(|file| !file.exists())
+        });
+    }
+    assert!(
+        files.iter().all(|file| file.exists()),
+        "the new keeper's display files stay: {files:?}"
+    );
+
+    // Ended by the logout, its X server with it: the display leaves nothing behind.
+    pass.end(Teardown::Logout);
+    tilo_test_env::wait_until("the logout's keeper leaves no display files", || {
+        files.iter().all(|file| !file.exists())
+    });
+    let _x11 = x11;
+}
+
 /// The X program behind a kept launch can lose its server, as Xwayland does when its programs are
 /// killed: its windows leave the desktop, and the session goes on stepping.
 #[test]
@@ -1101,7 +1321,7 @@ fn start_service_keeper(rig: &Rig) -> std::process::Child {
         .arg(exe)
         .args(["--exact", "kept_apps::kept_app", "--nocapture"])
         .process_group(0)
-        .spawn()
+        .spawn_locked()
         .expect("the service's keeper starts")
 }
 

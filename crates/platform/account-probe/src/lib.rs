@@ -15,6 +15,8 @@ use web_time::Duration;
 use tilo_dav::{Credentials, DavClient, Depth, StatusCode, props};
 use tokio::time::timeout;
 
+#[cfg(test)]
+mod dav_reach_tests;
 pub mod imap;
 pub mod mail_servers;
 mod smtp;
@@ -190,7 +192,14 @@ impl LiveAccountTester {
         })
     }
 
-    fn dav(account: &accounts::Account, secret: &accounts::Secret) -> Result<String, String> {
+    /// A DAV account's sign-in at its server, reached `within` a reach where
+    /// one is given: a server's, judged at each connection. A device's own
+    /// tester gives none and reaches any address.
+    fn dav(
+        within: Option<&imap::Reach>,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+    ) -> Result<String, String> {
         let url = account
             .config
             .get(if account.type_id.as_str() == "webdav" {
@@ -220,6 +229,7 @@ impl LiveAccountTester {
             // belongs in setup; a stored endpoint must answer at its exact
             // origin.
             redirects: tilo_dav::Redirects::Refuse,
+            lookup: within.map(imap::Reach::lookup),
         })
         .map_err(|_| {
             tilo_net::lacks_authorities()
@@ -243,16 +253,29 @@ impl LiveAccountTester {
 }
 
 impl AccountTester for LiveAccountTester {
-    fn find_mail_servers(
-        &self,
-        address: &str,
-        allowed: &dyn Fn(&str) -> bool,
-    ) -> Result<mail_servers::MailServers, String> {
-        mail_servers::find(address, &mail_servers::Live::new(allowed))
-    }
-
     fn discover_calendars(
         &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+    ) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String> {
+        Self::calendars(None, account, secret)
+    }
+
+    fn test(
+        &self,
+        account: &accounts::Account,
+        secret: &accounts::Secret,
+    ) -> Result<String, String> {
+        Self::tested(None, account, secret)
+    }
+}
+
+impl LiveAccountTester {
+    /// The calendars of a `CalDAV` account, asked of its server `within` a
+    /// reach where one is given: a server's, judged at each connection. A
+    /// device's own tester gives none and reaches any address.
+    fn calendars(
+        within: Option<&imap::Reach>,
         account: &accounts::Account,
         secret: &accounts::Secret,
     ) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String> {
@@ -274,6 +297,7 @@ impl AccountTester for LiveAccountTester {
             timeout: Duration::from_secs(2),
             connect_timeout: Some(Duration::from_secs(2)),
             redirects: tilo_dav::Redirects::Refuse,
+            lookup: within.map(imap::Reach::lookup),
             ..tilo_dav::Options::default()
         })
         .map_err(|_| {
@@ -284,13 +308,19 @@ impl AccountTester for LiveAccountTester {
         tilo_dav::discovery::calendars(&client, &url)
     }
 
-    fn test(
-        &self,
+    /// Whether `account` signs in with `secret`, over connections `within` a
+    /// reach where one is given.
+    fn tested(
+        within: Option<&imap::Reach>,
         account: &accounts::Account,
         secret: &accounts::Secret,
     ) -> Result<String, String> {
         match account.type_id.as_str() {
-            "email" => Self::email(&imap::Reach::any(), account, secret),
+            "email" => Self::email(
+                &within.cloned().unwrap_or_else(imap::Reach::any),
+                account,
+                secret,
+            ),
             "caldav" => {
                 let configured = account
                     .config
@@ -298,7 +328,7 @@ impl AccountTester for LiveAccountTester {
                     .and_then(serde_json::Value::as_array)
                     .filter(|calendars| !calendars.is_empty())
                     .ok_or("Choose calendars in Edit account before checking this connection")?;
-                let discovered = self.discover_calendars(account, secret)?;
+                let discovered = Self::calendars(within, account, secret)?;
                 if !configured.iter().all(|calendar| {
                     calendar
                         .get("id")
@@ -309,25 +339,27 @@ impl AccountTester for LiveAccountTester {
                 }
                 Ok(format!("Found {} selected calendars", configured.len()))
             }
-            "webdav" | "nextcloud" => Self::dav(account, secret),
+            "webdav" | "nextcloud" => Self::dav(within, account, secret),
             _ => Err("unsupported account type".into()),
         }
     }
 }
 
-/// What proves accounts on a server: [`LiveAccountTester`], with the
-/// connections it makes for a mail account going only where its reach lets
-/// them ([`imap::Reach::public_unless`]). A device that keeps its person's
-/// own accounts reaches any address and uses [`LiveAccountTester`] itself.
-pub struct LiveWithin(pub imap::Reach);
+/// What proves accounts on a server: [`LiveAccountTester`], with every
+/// connection it makes for an account, for mail, a calendar or files, going
+/// only where its reach lets it ([`imap::Reach::public_unless`]), and which
+/// also works out an address's mail servers over the network
+/// ([`mail_servers::find`]). Only a person's server asks that, so an app that
+/// proves sign-ins takes [`LiveAccountTester`] and carries no DNS resolver.
+pub struct FindingAccountTester(pub imap::Reach);
 
-impl AccountTester for LiveWithin {
+impl AccountTester for FindingAccountTester {
     fn discover_calendars(
         &self,
         account: &accounts::Account,
         secret: &accounts::Secret,
     ) -> Result<Vec<tilo_dav::discovery::CalendarCollection>, String> {
-        LiveAccountTester.discover_calendars(account, secret)
+        LiveAccountTester::calendars(Some(&self.0), account, secret)
     }
 
     fn find_mail_servers(
@@ -346,13 +378,7 @@ impl AccountTester for LiveWithin {
         account: &accounts::Account,
         secret: &accounts::Secret,
     ) -> Result<String, String> {
-        // A mail account's sign-in is proved over connections within this
-        // reach; the other kinds go out as the device's tester sends them.
-        if account.type_id.as_str() == "email" {
-            LiveAccountTester::email(&self.0, account, secret)
-        } else {
-            LiveAccountTester.test(account, secret)
-        }
+        LiveAccountTester::tested(Some(&self.0), account, secret)
     }
 }
 
@@ -952,7 +978,7 @@ mod tests {
             )]);
             let account = dav_account(&format!("http://localhost:{}/dav/", server.port()));
             assert_eq!(
-                LiveAccountTester::dav(&account, &accounts::Secret::password("secret")),
+                LiveAccountTester::dav(None, &account, &accounts::Secret::password("secret")),
                 Ok("Server accepted the signed-in DAV request".into())
             );
             let request = server.next_request();
@@ -963,7 +989,7 @@ mod tests {
             let server = Responder::start(vec![Reply::status(401)]);
             let account = dav_account(&format!("http://localhost:{}/dav/", server.port()));
             assert_eq!(
-                LiveAccountTester::dav(&account, &accounts::Secret::password("wrong")),
+                LiveAccountTester::dav(None, &account, &accounts::Secret::password("wrong")),
                 Err("server rejected the saved credential".into())
             );
 
@@ -972,7 +998,7 @@ mod tests {
             let target_url = format!("http://localhost:{}/stolen", target.port());
             let redirect = Responder::start(vec![Reply::status(302).header("Location", &target_url)]);
             let account = dav_account(&format!("http://localhost:{}/dav", redirect.port()));
-            let result = LiveAccountTester::dav(&account, &accounts::Secret::password("secret"));
+            let result = LiveAccountTester::dav(None, &account, &accounts::Secret::password("secret"));
             assert_eq!(result, Err("server returned HTTP 302".into()));
             let first_request = redirect.next_request();
             assert!(

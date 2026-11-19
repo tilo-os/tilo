@@ -153,3 +153,107 @@ fn a_tree_removed_takes_every_name_with_it() {
     drop(endpoint);
     drop(runtime);
 }
+
+/// A process table naming this test's own thread as a desktop program (a text editor launched
+/// from the desktop, as its scope names it), so every request the kernel hands the mount from
+/// this thread comes from that program.
+fn editor_procs(dir: &Path) -> crate::writer::WriterResolver {
+    let proc = dir.join("proc");
+    let pid = std::process::id();
+    let tid = rustix::thread::gettid()
+        .as_raw_nonzero()
+        .get()
+        .unsigned_abs();
+    std::fs::create_dir_all(proc.join(pid.to_string())).unwrap();
+    std::fs::create_dir_all(proc.join(tid.to_string())).unwrap();
+    std::fs::write(proc.join("stat"), "cpu 1 2 3\nbtime 1700000000\n").unwrap();
+    std::fs::write(
+        proc.join(tid.to_string()).join("status"),
+        format!("Tgid:\t{pid}\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        proc.join(pid.to_string()).join("stat"),
+        format!(
+            "{pid} (gnome-text-edit) S 1 {pid} {pid} 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 7 0 0"
+        ),
+    )
+    .unwrap();
+    std::fs::write(proc.join(pid.to_string()).join("environ"), b"").unwrap();
+    std::fs::write(
+        proc.join(pid.to_string()).join("cgroup"),
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-org.gnome.TextEditor-4242.scope\n",
+    )
+    .unwrap();
+    let applications = dir.join("applications");
+    std::fs::create_dir_all(&applications).unwrap();
+    std::fs::write(
+        applications.join("org.gnome.TextEditor.desktop"),
+        "[Desktop Entry]\nName=Text Editor\n",
+    )
+    .unwrap();
+    crate::writer::WriterResolver::new(proc, vec![applications])
+}
+
+/// The workspace `w`, owned by someone else, where the person at this device (key `[3; 32]`,
+/// as [`mounted`] names them) holds `role`.
+fn policy_with(role: tilo_action_policy::Role) -> tilo_action_policy::WorkspacePolicy {
+    let mut policy = tilo_action_policy::WorkspacePolicy::new("w", "11".repeat(32));
+    policy.members.insert("03".repeat(32), role);
+    policy
+}
+
+/// An editor saving a file the way desktop editors do (a new file beside it, then renamed over
+/// it), from a program the desktop launched: the person's own access decides it, so an editor's
+/// save lands and a viewer's is refused as a read-only file system.
+#[test]
+fn a_desktop_editor_saves_with_its_person_s_access() {
+    require_fuse!();
+    for (role, saves) in [
+        (tilo_action_policy::Role::Editor, true),
+        (tilo_action_policy::Role::Viewer, false),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let at = tmp.path().join("mnt");
+        std::fs::create_dir(&at).unwrap();
+        let (fs, endpoint, runtime) = mounted(tmp.path());
+        // The file the person opens was already there.
+        fs.apply_local_file(Path::new("note.txt"), b"before", 1_000)
+            .unwrap();
+        let admission = crate::admission::FileAdmission::new(
+            &"03".repeat(32),
+            Box::new(move || Some(policy_with(role))),
+        )
+        .unwrap();
+        let fs = fs
+            .with_writers(Arc::new(editor_procs(tmp.path())))
+            .with_admission(Arc::new(admission));
+        let session = mount(fs, &at);
+
+        let save = (|| {
+            let staged = at.join(".goutputstream-ABC123");
+            let mut file = std::fs::File::create(&staged)?;
+            std::io::Write::write_all(&mut file, b"after")?;
+            file.sync_all()?;
+            drop(file);
+            std::fs::rename(&staged, at.join("note.txt"))
+        })();
+        let now = std::fs::read(at.join("note.txt")).unwrap();
+        unmount(session, &at);
+        drop(endpoint);
+        drop(runtime);
+
+        if saves {
+            save.unwrap();
+            assert_eq!(now, b"after", "{role:?}: the save lands");
+        } else {
+            let refused = save.unwrap_err();
+            assert_eq!(
+                refused.raw_os_error(),
+                Some(EROFS),
+                "{role:?}: refused as a read-only file system, not lost: {refused}"
+            );
+            assert_eq!(now, b"before", "{role:?}: the file is as it was");
+        }
+    }
+}

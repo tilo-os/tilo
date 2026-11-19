@@ -145,6 +145,7 @@ fn busy_workspace(messages_each: u64) -> BusyWorkspace {
         runs_work: false,
         label: String::new(),
         cloud: false,
+        moderates: false,
         workspace_id,
         endpoint_addr: iroh_base::EndpointAddr::new(
             iroh_base::EndpointId::from_bytes(&governor.device_public_key).unwrap(),

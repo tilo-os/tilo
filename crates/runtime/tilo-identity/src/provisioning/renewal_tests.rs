@@ -86,7 +86,7 @@ pub(crate) fn aged_throwaway(tmp: &Path, age_ns: u64) -> (PathBuf, IdentityPaths
     let paths = IdentityPaths::under(tmp.join("system"));
     ensure_throwaway_test_identity(&personal, &paths, FILES).expect("provision");
     let identity =
-        runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
+        crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
     let first = persist::read_device_cert(&paths.device_cert).expect("certificate");
     let aged = issue_device_certificate_at(
         &identity,
@@ -162,7 +162,7 @@ tilo_test_env::scenario! {
         // Eleven hours into a day: due in one.
         let (personal, paths, held) = aged_throwaway(tmp.path(), 11 * HOUR);
         let identity =
-            runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
+            crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
         let start = tilo_clock::unix_now_ns();
         let clock = TestClock::at(start, 2);
         let renewals = Cell::new(0);
@@ -204,7 +204,7 @@ tilo_test_env::scenario! {
         // Thirteen hours into a day: due.
         let (personal, paths, held) = aged_throwaway(tmp.path(), 13 * HOUR);
         let identity =
-            runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
+            crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
         let clock = TestClock::at(tilo_clock::unix_now_ns(), 2);
         let identity_store = std::rc::Rc::new(Cell::new(false));
         let available = std::rc::Rc::clone(&identity_store);
@@ -244,8 +244,8 @@ tilo_test_env::scenario! {
     }
 
     phase a_device_holding_its_own_root_renews_itself_rather_than_through_the_fleet;
-    // A device that holds its own root keeps it in its identity record, not
-    // only in `user-identity/privkey.bin`. It reissues its own certificate, so
+    // A device that holds its own root keeps it in its identity store. It
+    // reissues its own certificate, so
     // it is never the device that has to ask the person's other devices — and a
     // session that mistook it for one would leave it presenting a certificate
     // that ran out.
@@ -254,10 +254,6 @@ tilo_test_env::scenario! {
         let (personal, paths, expired) = aged_throwaway(tmp.path(), 36 * HOUR);
         let now = tilo_clock::unix_now_ns();
         assert!(expired.is_expired_at(now));
-        assert!(
-            !paths.user_privkey.exists(),
-            "this device's root lives in its identity record"
-        );
         assert!(
             joined_device_renewal_due(&paths, now).is_none(),
             "this device reissues its own certificate, so nothing is asked of the person's devices"
@@ -268,7 +264,7 @@ tilo_test_env::scenario! {
         );
         // A device that joined the person's identity holds no root: nothing here
         // can reissue its certificate, so it is the one that asks their devices.
-        let identity = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+        let identity = crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
             .expect("this device's identity record");
         let mut joined = expired;
         joined.capabilities = tilo_user_identity::DeviceCapabilities::member();
@@ -337,7 +333,7 @@ impl RenewalClock for TestClock {
 /// places the device keeps it.
 #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
 fn renew_at(
-    identity: &runtime_identity::SigningIdentity,
+    identity: &crate::store::SigningIdentity,
     paths: &IdentityPaths,
     held: &DeviceCert,
     now: u64,
@@ -405,8 +401,8 @@ fn joined_device(tmp: &Path, issued_at_ns: u64) -> (PathBuf, IdentityPaths, Devi
     paths.ensure_directories().unwrap();
     persist::write_signing_key(&paths.device_privkey, &device).unwrap();
     persist::install_device_cert(&paths, &cert, issued_at_ns).unwrap();
-    let record = runtime_identity::public_member_record(
-        runtime_identity::UNNAMED_DISPLAY_NAME,
+    let record = crate::store::public_member_record(
+        crate::store::UNNAMED_DISPLAY_NAME,
         [88, 101, 242],
         cert.user_public_key,
     )

@@ -6,6 +6,7 @@ format = 2
 kind = "typst-editor.workspace"
 label = "Typst workspace"
 version = 1
+shows = ["editor", "fit-width", "go-to-diagnostic", "go-to-heading", "go-to-page", "outline", "preview", "problems", "zoom-in", "zoom-out"]
 fields = [
   { path = "files", type = { collection = { named = "TypstFile" } }, stored = "collection" },
   { path = "files.*.name", type = "text", label = true },

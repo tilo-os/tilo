@@ -1707,7 +1707,9 @@ impl Widget for EmptyState {
             clippy::cast_possible_truncation,
             reason = "Taffy uses f32 layout sizes; measured text geometry is intentionally rounded to that precision"
         )]
-        let height = intrinsic_height as f32;
+        // Whole pixels up: the layout rounds the box to the pixel grid, and a box a fraction
+        // shorter than the stack would shed the glyph that fits.
+        let height = intrinsic_height.ceil() as f32;
         taffy::Size {
             width: measured_width,
             height,

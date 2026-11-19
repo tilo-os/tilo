@@ -41,6 +41,8 @@ tilo-server-client = { path = "../../server/tilo-server-client" }
 tilo-server-session = { path = "../../server/tilo-server-session" }
 # The action host another device of a workspace is, reached through the session.
 tilo-actions = { path = "../../collab/actions" }
+# Another device's actions, asked through this session.
+tilo-session-actions = { path = "../session-actions" }
 # Sorts without a copy of std's sort per call site, which kept the web desktop's start module large.
 tilo-sort = { path = "../../platform/tilo-sort" }
 # The signed hint a workspace's governance keeps of its host's address.
@@ -89,6 +91,10 @@ tokio = { workspace = true, features = ["sync", "macros"] }
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
+# A resource's content as the store hands it to be edited.
+automerge.workspace = true
+# Each workspace's resources, written and read through the store that places them.
+tilo-resource-store = { path = "../../collab/resource-store" }
 tracing.workspace = true
 
 [features]

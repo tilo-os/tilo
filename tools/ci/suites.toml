@@ -216,6 +216,7 @@ suites = [
   "os/tests/test_native_resume_admission.py",
   "os/tests/test_oci_image_diff.py",
   "os/tests/test_pack_apps_cleanup.py",
+  "os/tests/test_pack_apps_model.py",
   "os/tests/test_pack_apps_surface.py",
   "os/tests/test_shipped_runtimes.py",
   "os/tests/test_image_build_script_copies.py",
@@ -258,6 +259,9 @@ suites = [
   "os/tests/nearby_cleanup_test.py",
   "os/tests/vm_release_check_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
+  "os/tests/server_firstboot_sibling.sh",
+  "os/tests/disk_encrypt_finish_sibling.sh",
+  "os/tests/plan_network_keyfile.sh",
 ]
 
 [[group]]
@@ -284,6 +288,12 @@ suites = [
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",
 ]
+
+# The folder hand-over needs a tilo.sh stack and a FUSE mount, which no cheap suite has: the
+# peer-handover check brings both up in a job of its own.
+[[covered]]
+suite = "os/containers/tilo-sh/test-peer-handover.sh"
+check = "peer-handover"
 
 [[group]]
 name = "pipewire-echo-cancel"
@@ -358,11 +368,12 @@ inputs = [
   "keys/cosign.pub", "keys/cosign-dev.pub", "keys/extensions.pub", "keys/tpm2-pcr-signing.public.pem",
   "scripts/browser/build-host.py", "scripts/browser/cef-lock.json",
   "tools/apps/language_packs.py", "tools/apps/stage_sdk_services.py",
+  "tools/ci/app-models.sh",
   "tools/ci/install-xwayland-satellite.sh", "tools/ci/measure.sh", "tools/ci/runtime-dylib-lazy-link.py",
   "tools/ci/rustc-thin-app-wrapper.sh", "tools/ci/thin-app/sccache", "tools/font-catalog.py",
   "tools/policy/app_capability_usage.toml", "tools/policy/app_portability_rules.toml",
   "tools/protocols/airdrop_sender.py", "tools/test-assets-build.rs", "tools/test-assets.py",
-  "tools/web/wasm-opt-flags",
+  "tools/web/wasm-opt-flags", "tools/web/wasm-split",
 ]
 suites = ["os/tests/containerfile_sources.sh"]
 
@@ -492,7 +503,7 @@ inputs = [
   "os/external-assets/github-assets.tsv",
   "apps/browser/tilo-app.toml",
   "apps/browser/src/browser_widget/engine_runtime.rs",
-  "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
+  "crates/sdk/tilo-webview/src/chromium/runtime.rs",
 ]
 suites = [
   "scripts/browser/test_build_host.py",
@@ -1276,7 +1287,8 @@ inputs = [
   "os/usr/share/tilo/system-interfaces.toml",
   # A check runs inside the test environment, as cargo's runner starts every test.
   "tools/with-test-environment.sh",
-  # The web target embeds the wasm-opt argument list the pages build with.
+  # The web target and an app's model module embed the wasm-opt argument list
+  # the modules are built with.
   "tools/web/wasm-opt-flags",
 ]
 # The record-kinds tests read the sources of the local crates the apps depend on, the
@@ -1295,6 +1307,8 @@ readers = [
   # Android packaging copies the standalone font catalog out of the SDK.
   "crates/dev/tilo-app-cli/src/android.rs",
   "crates/dev/tilo-app-cli/src/targets/web.rs",
+  # The model module embeds the wasm-opt argument list ("tools/web/wasm-opt-flags").
+  "crates/dev/tilo-app-cli/src/model_wasm.rs",
   "crates/dev/tilo-app-cli/src/resource_kinds.rs",
   # Workspace certification's compute-package test reads real manifests.
   "crates/dev/tilo-app-cli/src/main.rs",
@@ -1611,8 +1625,10 @@ package = "tilo-session-client"
 # and the page read it. The page tests' driver serves the runtime module
 # built beside the page's sources: a run that is handed none builds it with the
 # script the CI setup uses, so that script and the build it runs are read too.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "crates/collab/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
-readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
+# The store's test reads an app's committed surface to check the types and verbs
+# it declares.
+inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "apps/tasks/surface.toml", "crates/collab/actions/tests/provider_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+readers = ["crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/src/engine.rs", "crates/session/client/tests/support/mod.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "it", filter = "test(voice_browsers::)" }
 
 [[cargo]]
@@ -2026,6 +2042,10 @@ suite = "os/tests/release_tools_image.sh"
 reason = "needs the built release-tools image"
 
 [[unrequired]]
+suite = "os/tests/registry_update_check.sh"
+reason = "runs inside a booted server, as root (tools/ci/host-assurance.sh)"
+
+[[unrequired]]
 suite = "os/tests/rollback-boot-check.sh"
 reason = "runs inside a booted guest, as root (TPM, LUKS)"
 
@@ -2157,7 +2177,7 @@ inputs = [
   "os/dev/assert-native-arch.sh",
   "os/scripts/verify-elf-hardening.sh",
   "apps/browser/tilo-app.toml",
-  "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
+  "crates/sdk/tilo-webview/src/chromium/runtime.rs",
   "os/Containerfile",
 ]
 readers = [

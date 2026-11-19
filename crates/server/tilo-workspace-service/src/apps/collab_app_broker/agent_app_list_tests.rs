@@ -368,7 +368,7 @@ tilo_test_env::scenario! {
             description: None,
             operation_kind: tilo_actions::OperationKind::Effect,
             params: Vec::new(),
-            contract: tilo_actions::ActionContract::view(),
+            contract: tilo_actions::ActionContract::screen(),
             view: None,
             input: super::super::PublishedInput::None,
         };
@@ -407,5 +407,110 @@ tilo_test_env::scenario! {
             "{rows:?}"
         );
         assert!(named("invoke").is_empty(), "a control is never named to an agent");
+    }
+
+    phase who_is_listed_an_effect_is_what_it_declares;
+    // An effect declared to only change the screen is never listed to an agent and is told of
+    // as the person's when named. One that writes and answers nothing is the agent's to call
+    // where its grants let it write, and is listed refused where they do not: whether it
+    // answers a value says nothing of whose it is.
+    {
+        let mut workspace = workspace();
+        workspace.deny(
+            Grantee::agent("clerk"),
+            &TreePath::root().app(NOTES),
+            KindSet::OUTSIDE,
+        );
+        let workspace_id = workspace.id().to_string();
+        let state = broker(vec![workspace], vec![NOTES], true);
+        let published = |action: &str, contract: tilo_actions::ActionContract| {
+            super::super::PublishedAction {
+                did: None,
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                resource: "notes.notebook".into(),
+                action: action.into(),
+                resource_kind: "notes.notebook".into(),
+                resource_label: "Notebook".into(),
+                action_label: action.into(),
+                keywords: Vec::new(),
+                icon: None,
+                description: None,
+                operation_kind: tilo_actions::OperationKind::Effect,
+                params: Vec::new(),
+                contract,
+                view: None,
+                input: super::super::PublishedInput::None,
+            }
+        };
+        let note = tilo_actions::ActionContract {
+            kind: tilo_actions::ActionKind::Outside,
+            ..tilo_actions::ActionContract::default()
+        };
+        state.replace_published_surfaces_for_test(vec![notes_running(
+            &workspace_id,
+            vec![
+                published("show-drafts", tilo_actions::ActionContract::screen()),
+                published("note", note),
+            ],
+        )]);
+        let named = |agent: &str, action: &str| {
+            state
+                .action_query(
+                    &turn_caller(agent, "owner", &workspace_id),
+                    &CatalogueQuery {
+                        provider: Some("9".into()),
+                        action: Some(action.into()),
+                        ..CatalogueQuery::default()
+                    },
+                )
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("the broker answers")
+                .expect("the agent may ask")
+                .rows
+                .into_iter()
+                .filter_map(|row| row.action)
+                .map(|action| action.contract.availability)
+                .collect::<Vec<_>>()
+        };
+        let listed = |agent: &str, action: &str| {
+            let page = state
+                .action_query(
+                    &turn_caller(agent, "owner", &workspace_id),
+                    &CatalogueQuery {
+                        provider: Some("9".into()),
+                        max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                        ..CatalogueQuery::default()
+                    },
+                )
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("the broker answers")
+                .expect("the agent may ask");
+            page.rows
+                .into_iter()
+                .filter_map(|row| row.action)
+                .find(|found| found.address.action == action)
+                .map(|found| found.contract.availability)
+        };
+        assert_eq!(listed("scribe", "show-drafts"), None, "never listed");
+        let shown = named("scribe", "show-drafts");
+        assert!(
+            matches!(shown.first().and_then(|a| a.refusal()), Some(("private_view", _))),
+            "{shown:?}"
+        );
+        assert_eq!(
+            listed("scribe", "note"),
+            Some(tilo_actions::Availability::Available),
+            "the agent may write"
+        );
+        let refused = listed("clerk", "note").expect("listed, refused");
+        assert!(
+            matches!(refused.refusal(), Some((code, _)) if code != "private_view"),
+            "{refused:?}"
+        );
     }
 }

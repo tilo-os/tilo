@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.typst-editor@f31407ab794a3630";
+export const SURFACE = "so.tilo.typst-editor@cc1a1e5d75eba881";
 
 export interface TypstFile {
   name: string;

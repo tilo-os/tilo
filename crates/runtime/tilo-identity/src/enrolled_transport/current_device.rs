@@ -135,13 +135,12 @@ impl CurrentDeviceReference {
         identity_directory: PathBuf,
     ) -> io::Result<Self> {
         let selector = identity.optional("active", true, 128)?;
-        let id = runtime_identity::selected_identity_id_from_bytes(
-            selector.as_deref().map(Vec::as_slice),
-        )?;
+        let id =
+            crate::store::selected_identity_id_from_bytes(selector.as_deref().map(Vec::as_slice))?;
         let record_name = format!("{id}.json");
         let record_bytes = identity.file(&record_name, true, MAX_BYTES)?;
         let metadata =
-            runtime_identity::load_metadata_from_bytes(&record_bytes).map_err(|_| invalid())?;
+            crate::store::load_metadata_from_bytes(&record_bytes).map_err(|_| invalid())?;
         let owner = system
             .child("user-identity", false)?
             .file("pubkey.bin", false, 32)?;
@@ -209,7 +208,7 @@ impl CurrentDeviceReference {
     /// # Errors
     /// Returns an error if revalidation fails before or after reading, the private
     /// record cannot be read, its hash changed, or its metadata is malformed.
-    pub fn metadata(&self) -> io::Result<runtime_identity::IdentityMetadata> {
+    pub fn metadata(&self) -> io::Result<tilo_identity_client::IdentityMetadata> {
         self.validate()?;
         let bytes = self
             .identity
@@ -217,7 +216,7 @@ impl CurrentDeviceReference {
         if <[u8; 32]>::from(Sha256::digest(&bytes)) != self.reference.record_sha256 {
             return Err(invalid());
         }
-        let metadata = runtime_identity::load_metadata_from_bytes(&bytes).map_err(|_| invalid())?;
+        let metadata = crate::store::load_metadata_from_bytes(&bytes).map_err(|_| invalid())?;
         self.validate()?;
         Ok(metadata)
     }
@@ -238,9 +237,8 @@ impl CurrentDeviceReference {
             .child("user-identity", false)?
             .file("pubkey.bin", false, 32)?;
         let selector = self.identity.optional("active", true, 128)?;
-        let id = runtime_identity::selected_identity_id_from_bytes(
-            selector.as_deref().map(Vec::as_slice),
-        )?;
+        let id =
+            crate::store::selected_identity_id_from_bytes(selector.as_deref().map(Vec::as_slice))?;
         if owner.as_slice() != self.public_key()
             || self
                 .system
@@ -471,7 +469,7 @@ impl ResolvedCurrentIdentity {
     /// # Errors
     /// Returns an error for failed revalidation, an unreadable or changed record,
     /// or malformed metadata; see [`CurrentDeviceReference::metadata`].
-    pub fn metadata(&self) -> io::Result<runtime_identity::IdentityMetadata> {
+    pub fn metadata(&self) -> io::Result<tilo_identity_client::IdentityMetadata> {
         self.current.metadata()
     }
     /// Load signing identity from the retained record through its secret provider.
@@ -480,7 +478,7 @@ impl ResolvedCurrentIdentity {
     /// Returns an error if revalidation fails before or after loading, the record
     /// cannot be read or its hash changed, or the canonical loader refuses malformed
     /// records, unavailable/mismatched secret providers or secret/public inconsistencies.
-    pub fn load(&self) -> io::Result<runtime_identity::SigningIdentity> {
+    pub fn load(&self) -> io::Result<crate::store::SigningIdentity> {
         self.current.validate()?;
         let bytes =
             self.current
@@ -490,7 +488,7 @@ impl ResolvedCurrentIdentity {
             return Err(invalid());
         }
         let identity =
-            runtime_identity::load_from_admitted_bytes(&bytes, &self.current.identity_directory)
+            crate::store::load_from_admitted_bytes(&bytes, &self.current.identity_directory)
                 .map_err(|_| invalid())?;
         self.current.validate()?;
         Ok(identity)

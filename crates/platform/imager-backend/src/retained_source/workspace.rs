@@ -41,7 +41,8 @@ pub fn temporary_directory(prefix: &str) -> io::Result<tempfile::TempDir> {
     }
 }
 
-#[cfg(all(test, not(target_os = "linux")))]
+#[cfg(test)]
+#[cfg(not(target_os = "linux"))]
 mod tests {
     use super::*;
 

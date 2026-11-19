@@ -53,54 +53,26 @@ struct Reveal {
 /// The placeholder steps of a read, painted in a rect: the immediate-mode counterpart of
 /// [`ArrivingView`], for a painter that draws its own rows.
 #[derive(Clone, Debug)]
-pub struct ArrivalFace<'a> {
+pub struct ArrivalFace {
     shape: SkeletonShape,
     step: Step,
-    source: &'a Source,
-    /// Whether this placeholder is the one in its region that says where its data comes from
-    /// ([`NamedOnce`]).
-    names: bool,
     /// How much of what it waits on has come, when that measures itself.
     progress: Option<Progress>,
 }
 
-/// The sources a pending region already named: each source is named once per region (a list's first
-/// row from it), not on every row.
-#[derive(Clone, Debug, Default)]
-pub struct NamedOnce(Vec<Source>);
-
-impl NamedOnce {
-    /// Whether `source` is named here: the first time it is asked.
-    pub fn claim(&mut self, source: &Source) -> bool {
-        if self.0.contains(source) {
-            return false;
-        }
-        self.0.push(source.clone());
-        true
-    }
-}
-
-impl<'a> ArrivalFace<'a> {
+impl ArrivalFace {
     /// What `clock`'s read shows at `now`, in `shape`.
     #[must_use]
-    pub fn new(shape: SkeletonShape, clock: &'a ArrivalClock, now: Instant) -> Self {
-        Self {
-            shape,
-            step: clock.step(now),
-            source: clock.source(),
-            names: true,
-            progress: None,
-        }
+    pub fn new(shape: SkeletonShape, clock: &ArrivalClock, now: Instant) -> Self {
+        Self::at_step(shape, clock.step(now))
     }
 
     /// The face of `step` itself, for the placeholder an arrival fades out.
     #[must_use]
-    pub fn at_step(shape: SkeletonShape, step: Step, source: &'a Source) -> Self {
+    pub fn at_step(shape: SkeletonShape, step: Step) -> Self {
         Self {
             shape,
             step,
-            source,
-            names: true,
             progress: None,
         }
     }
@@ -111,22 +83,6 @@ impl<'a> ArrivalFace<'a> {
     pub fn with_progress(mut self, progress: Option<Progress>) -> Self {
         self.progress = progress;
         self
-    }
-
-    /// Whether this placeholder says where its data comes from, once it would: a region names each
-    /// source once.
-    #[must_use]
-    pub fn naming(mut self, names: bool) -> Self {
-        self.names = names;
-        self
-    }
-
-    /// Name the source here only if no placeholder before it in `region` named it: one line per source
-    /// per region.
-    #[must_use]
-    pub fn named_once(self, region: &mut NamedOnce) -> Self {
-        let names = self.step == Step::Named && region.claim(self.source);
-        self.naming(names)
     }
 
     /// The step it paints.
@@ -140,25 +96,10 @@ impl<'a> ArrivalFace<'a> {
         SkeletonFace::new(self.shape).height(text, theme, width)
     }
 
-    /// What it says about where the data comes from, once it says it.
-    #[must_use]
-    pub fn caption(&self) -> Option<String> {
-        if self.step != Step::Named || !self.names {
-            return None;
-        }
-        let name = self.source.name()?;
-        let mut args = fluent::FluentArgs::new();
-        args.set("source", name.to_owned());
-        Some(crate::i18n::I18nManager::lookup(
-            "arriving-from",
-            Some(&args),
-        ))
-    }
-
-    /// How much has come, once the placeholder says anything.
+    /// How much has come, once the placeholder shows a skeleton.
     #[must_use]
     pub fn amount(&self) -> Option<String> {
-        if !matches!(self.step, Step::Skeleton | Step::Named) {
+        if self.step != Step::Skeleton {
             return None;
         }
         let progress = self.progress?;
@@ -174,20 +115,15 @@ impl<'a> ArrivalFace<'a> {
         Some(crate::i18n::I18nManager::lookup(key, Some(&args)))
     }
 
-    /// What it says, for a screen reader: where the data comes from and how much of it has come, or
-    /// that it is loading.
+    /// What it says, for a screen reader: how much of the data has come, or that it is loading.
     #[must_use]
     pub fn description(&self) -> String {
-        let said: Vec<String> = self.caption().into_iter().chain(self.amount()).collect();
-        if said.is_empty() {
-            crate::i18n::I18nManager::lookup_plain("arriving-loading")
-        } else {
-            said.join("\n")
-        }
+        self.amount()
+            .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("arriving-loading"))
     }
 
-    /// Paint the step in `rect`: nothing on the ground; the skeleton, with a line saying where the data
-    /// comes from in a place the shape keeps for it; under it how much has come, over its bar.
+    /// Paint the step in `rect`: nothing on the ground; the skeleton, and under it how much has come,
+    /// over its bar.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
@@ -195,27 +131,13 @@ impl<'a> ArrivalFace<'a> {
         if matches!(self.step, Step::Ground | Step::Shown) {
             return;
         }
-        let caption = self.caption();
         let line = ctx.line_box(TextRole::Caption);
         let gap = f64::from(ctx.theme.tokens.spacing.s1);
         let mut top = if self.shape == SkeletonShape::Ground {
-            if let Some(caption) = &caption {
-                crate::widget::skeleton::paint_caption(
-                    ctx,
-                    caption,
-                    (rect.x0, rect.y0),
-                    rect.width(),
-                    line,
-                );
-            }
-            if self.source.name().is_some() {
-                rect.y0 + line + gap
-            } else {
-                rect.y0
-            }
+            rect.y0
         } else {
             let skeleton = SkeletonFace::new(self.shape);
-            skeleton.paint_naming(ctx, rect, caption.as_deref());
+            skeleton.paint(ctx, rect);
             rect.y0 + skeleton.height(ctx.text, ctx.theme, rect.width()) + gap
         };
         let Some(amount) = self.amount() else {
@@ -234,34 +156,33 @@ impl<'a> ArrivalFace<'a> {
     }
 }
 
-/// Where a view stands, which read it stands for and what it waits on, for the views around it to
-/// tell whether a source is named already ([`names_source`]) and whether its read's failure shows
-/// already ([`speaks_failure`]).
+/// Where a view stands and which read it stands for, for the views around it to tell whether its
+/// read's failure shows already ([`speaks_failure`]).
 #[derive(Debug, Default)]
-struct NamingEntry {
+struct RegionEntry {
     rect: Cell<Rect>,
     /// The read the view shows ([`Arriving::identity`]).
     read: Cell<usize>,
-    /// The source while the view shows its placeholder.
-    pending: std::cell::RefCell<Option<Source>>,
+    /// Whether the view shows its placeholder.
+    pending: Cell<bool>,
     /// Whether the view shows its read's failure.
     failed: Cell<bool>,
 }
 
-impl NamingEntry {
+impl RegionEntry {
     /// Whether the view stands in a region: its placeholder or its failure shows, in a box that has a size.
     fn stands(&self) -> bool {
-        (self.pending.borrow().is_some() || self.failed.get()) && self.rect.get().height() > 0.0
+        (self.pending.get() || self.failed.get()) && self.rect.get().height() > 0.0
     }
 }
 
 thread_local! {
 /// Every pending view on this thread, weakly.
-    static PENDING_VIEWS: std::cell::RefCell<Vec<std::rc::Weak<NamingEntry>>> =
+    static PENDING_VIEWS: std::cell::RefCell<Vec<std::rc::Weak<RegionEntry>>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-fn register_naming(entry: &Rc<NamingEntry>) {
+fn register_region(entry: &Rc<RegionEntry>) {
     PENDING_VIEWS.with(|views| {
         let mut views = views.borrow_mut();
         views.retain(|view| view.strong_count() > 0);
@@ -285,24 +206,9 @@ fn adjoin(a: Rect, b: Rect, gap: f64) -> bool {
     (overlap_x && gap_y <= gap) || (overlap_y && gap_x <= gap)
 }
 
-/// Whether the view `me` names its source: of the boxes in its region (the boxes it adjoins, the
-/// boxes those adjoin, and so on, whatever they wait on), it is the first in reading order that
-/// waits on its source.
-fn names_source(me: &Rc<NamingEntry>, theme: &Theme) -> bool {
-    let Some(source) = me.pending.borrow().clone() else {
-        return false;
-    };
-    if source.name().is_none() {
-        return false;
-    }
-    first_in_region(me, theme, |other| {
-        other.pending.borrow().as_ref() == Some(&source)
-    })
-}
-
 /// Whether the view `me`, its read failed, shows the failure: of the boxes in its region, it is the
 /// first in reading order that stands for its read.
-fn speaks_failure(me: &Rc<NamingEntry>, theme: &Theme) -> bool {
+fn speaks_failure(me: &Rc<RegionEntry>, theme: &Theme) -> bool {
     let read = me.read.get();
     first_in_region(me, theme, |other| other.read.get() == read)
 }
@@ -310,9 +216,9 @@ fn speaks_failure(me: &Rc<NamingEntry>, theme: &Theme) -> bool {
 /// Whether no box in `me`'s region that is `alike` stands before it in reading order: `(top,
 /// left)`.
 fn first_in_region(
-    me: &Rc<NamingEntry>,
+    me: &Rc<RegionEntry>,
     theme: &Theme,
-    alike: impl Fn(&NamingEntry) -> bool,
+    alike: impl Fn(&RegionEntry) -> bool,
 ) -> bool {
     let mine = me.rect.get();
     let others: Vec<(Rect, bool)> = PENDING_VIEWS.with(|views| {
@@ -519,8 +425,8 @@ pub struct ArrivingView {
     inner: ModelView<Reveal>,
     /// The box the read reserves: the content's geometry from the first frame.
     reserve: Reserve,
-    /// This view's place among the pending views naming their sources.
-    naming: Rc<NamingEntry>,
+    /// This view's place among the pending views, for a shared read's failure to show once.
+    region: Rc<RegionEntry>,
     /// The revision of the read last looked at.
     observed: Option<u64>,
     /// The timing of the read pending now, or of the last one.
@@ -530,9 +436,6 @@ pub struct ArrivingView {
     replaced: Step,
     /// The placeholder step the last frame painted.
     drawn_step: Option<Step>,
-    /// Whether the placeholder last drawn named its source: the face its answer fades out keeps saying
-    /// it.
-    drawn_naming: bool,
     /// Whether layout moved which box shows a shared read's failure, for the next frame to build it
     /// there.
     respoken: bool,
@@ -583,22 +486,21 @@ impl ArrivingView {
                 }
             },
         );
-        let naming = Rc::new(NamingEntry::default());
-        naming.read.set(read.identity());
-        register_naming(&naming);
+        let region = Rc::new(RegionEntry::default());
+        region.read.set(read.identity());
+        register_region(&region);
         Self {
             arriving: read,
             shape,
             reveal,
             inner,
             reserve: Reserve::of(SkeletonShape::Page),
-            naming,
+            region,
             observed: None,
             clock: None,
             fade: CrossFade::new(Showing::Placeholder),
             replaced: Step::Ground,
             drawn_step: None,
-            drawn_naming: false,
             respoken: false,
             theme: None,
             rect: Rect::ZERO,
@@ -810,7 +712,7 @@ impl ArrivingView {
     fn speaks(&self) -> bool {
         self.theme
             .as_ref()
-            .is_none_or(|theme| speaks_failure(&self.naming, theme))
+            .is_none_or(|theme| speaks_failure(&self.region, theme))
     }
 
     /// Whether this frame's layout moved a shared read's failure to another box while this one still
@@ -842,22 +744,17 @@ impl ArrivingView {
         true
     }
 
-    fn paint_step(&self, ctx: &mut PaintCtx<'_>, step: Step, names: bool) {
-        let local = Source::Local;
-        let source = self.clock.as_ref().map_or(&local, ArrivalClock::source);
+    fn paint_step(&self, ctx: &mut PaintCtx<'_>, step: Step) {
         let rect = SkeletonFace::new(self.shape.get()).painted_rect(self.rect, ctx.theme);
-        ArrivalFace::at_step(self.shape.get(), step, source)
-            .naming(names)
-            .paint(ctx, rect);
+        ArrivalFace::at_step(self.shape.get(), step).paint(ctx, rect);
     }
 
     /// Tell the views around this one what it waits on, while its placeholder shows.
     fn note_pending(&self) {
-        let pending = (self.showing() == Showing::Placeholder)
-            .then(|| self.clock.as_ref().map(|clock| clock.source().clone()))
-            .flatten();
-        *self.naming.pending.borrow_mut() = pending;
-        self.naming.failed.set(self.showing() == Showing::Failure);
+        self.region
+            .pending
+            .set(self.showing() == Showing::Placeholder && self.clock.is_some());
+        self.region.failed.set(self.showing() == Showing::Failure);
     }
 
     /// Check that the answer is of the shape its box reserved: a row of another kind, a card of another
@@ -978,7 +875,7 @@ impl Widget for ArrivingView {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        self.naming.rect.set(self.rect);
+        self.region.rect.set(self.rect);
         // A view built after its read failed learns where it stands only
         // now: the next frame builds the failure in the box that shows it.
         self.respoken |= self.respeak();
@@ -1010,23 +907,19 @@ impl Widget for ArrivingView {
             return;
         }
         if self.showing() == Showing::Placeholder {
-            self.drawn_naming = names_source(&self.naming, theme);
             self.paint_step(
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 step,
-                self.drawn_naming,
             );
             return;
         }
         if let Some((_, opacity)) = self.fade.outgoing(now) {
             let replaced = self.replaced;
-            let names = self.drawn_naming;
             let rect = self.rect;
             layered(scene, transform, rect, opacity, |scene| {
                 self.paint_step(
                     &mut PaintCtx::new(scene, transform, text_renderer, theme),
                     replaced,
-                    names,
                 );
             });
         }
@@ -1173,12 +1066,7 @@ impl Widget for ArrivingView {
             return None;
         }
         let now = crate::time::now();
-        let local = Source::Local;
-        let source = self.clock.as_ref().map_or(&local, ArrivalClock::source);
-        let face = ArrivalFace::at_step(self.shape.get(), self.step(now), source);
-        let name = face
-            .caption()
-            .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("arriving-loading"));
+        let name = ArrivalFace::at_step(self.shape.get(), self.step(now)).description();
         Some(
             AccessNode::new(Role::Generic)
                 .with_name(name)

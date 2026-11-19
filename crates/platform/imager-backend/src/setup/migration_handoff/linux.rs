@@ -737,7 +737,8 @@ pub fn resolve_flatpak_source(
 }
 
 /// Mounts nothing and never interprets the plan's locator as an ambient path.
-#[cfg(all(test, feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(feature = "native-capture-qualification")]
 pub fn resolve(plan: &Plan, mountpoint: &Path) -> io::Result<ResolvedSource> {
     resolve_with(plan, mountpoint, &Facts::read()?, true)
 }

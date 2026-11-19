@@ -127,12 +127,6 @@ clocks-collection-start-stopwatch = Stoppuhr starten
 clocks-collection-pause-stopwatch = Stoppuhr pausieren
 clocks-collection-lap = Runde erfassen
 clocks-collection-reset-stopwatch = Stoppuhr zurücksetzen
-clocks-effects-open-alarm = Wecker hier öffnen
-clocks-effects-show = Bereich anzeigen
-clocks-effects-dismiss-notice = Hinweis schließen
-clocks-effects-snooze-alarm = Wecker schlummern lassen
-clocks-effects-float-timer = Timer schweben lassen
-clocks-effects-float-stopwatch = Stoppuhr schweben lassen
 clocks-on-devices = Uhren auf jedem Gerät
 clocks-on-devices-keep = Uhren dieses Geräts übernehmen
 

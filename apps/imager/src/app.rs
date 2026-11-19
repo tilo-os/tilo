@@ -34,7 +34,7 @@ use crate::model::{
 };
 use crate::page::{self, Frame};
 use crate::resource::CATALOG;
-use crate::resource::{Imager, ImagerEffect};
+use crate::resource::{ImageWrite, Imager, ImagerEffect, InstallerDownload};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use ui::framework::{
     Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs,
@@ -2968,10 +2968,10 @@ impl ImagerApp {
             .map(|target| self.target_row(target))
             .collect::<Vec<_>>();
         let phase = self.progress.phase.key();
-        rows.push(
-            LiveRow::new("imager.job", "imager.job", format!("Image write: {phase}"))
-                .effect(&ImagerEffect::Status),
-        );
+        rows.push(LiveRow::typed::<ImageWrite>(
+            "imager.job",
+            format!("Image write: {phase}"),
+        ));
         if let Some(download) = &self.release_download {
             let name = self
                 .releases
@@ -2983,16 +2983,11 @@ impl ImagerApp {
                 |progress| Self::download_status(&progress),
             );
             rows.push(
-                LiveRow::new(
-                    "imager.download",
-                    "imager.download",
-                    format!("Download {name}"),
-                )
-                .presentation(tilo_actions::ResourcePresentation {
-                    detail: Some(detail),
-                    ..tilo_actions::ResourcePresentation::default()
-                })
-                .effect(&ImagerEffect::CancelDownload),
+                LiveRow::typed::<InstallerDownload>("imager.download", format!("Download {name}"))
+                    .presentation(tilo_actions::ResourcePresentation {
+                        detail: Some(detail),
+                        ..tilo_actions::ResourcePresentation::default()
+                    }),
             );
         }
         rows
@@ -4088,7 +4083,7 @@ mod tests {
     fn begin_write_refuses_actual_protected_preparation_before_handoff_or_writer() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let root = tempfile::tempdir().unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let (prepared, artifact) =
@@ -4195,7 +4190,7 @@ mod tests {
     fn begin_write_refuses_actual_selected_apps_before_handoff_or_writer() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -4244,7 +4239,7 @@ mod tests {
     fn begin_write_refuses_actual_home_before_handoff_or_writer() {
         use std::os::unix::fs::PermissionsExt;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().canonicalize().unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -4361,7 +4356,7 @@ mod tests {
     fn prepared_guided_drive_continues_with_authenticated_profile_without_customize() {
         use imager_backend::setup::prepared_setup;
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let (prepared, public) = guided_profile_media_fixture(&root);

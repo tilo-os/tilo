@@ -131,6 +131,17 @@ kind = "undoable"
 id = "reset-stopwatch"
 kind = "undoable"
 
+[[resources.verbs]]
+id = "show"
+kind = "read"
+params = [
+  { name = "section", type = "text", required = true },
+]
+
+[[resources.verbs]]
+id = "dismiss-notice"
+kind = "read"
+
 [[resources.types]]
 name = "Alarm"
 fields = [

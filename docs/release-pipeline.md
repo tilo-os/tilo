@@ -9,7 +9,7 @@ does not fan out into unrelated builds:
 | Apps | Relevant `main` pushes, `app-<directory>-vX.Y.Z`, `apps-vX.Y.Z`, or a manual **Release / apps** run with `publish` | Affected apps on routine `main`; selected apps once per enabled native architecture for explicit releases | Independently versioned tapps and immutable collection bundles |
 | Desktop session | `desktop-vX.Y.Z`; scheduled/manual runs from `main` publish the OS payload | Enabled native host-package jobs; compiler objects shared per architecture | Debian, RPM, Arch and Nix packages plus checksums; immutable OS payload |
 | OS | `tools/ci/publish/os-release.sh` dispatched on a `vX.Y.Z` tag | Release image, sealed-image boot, boot signing, independent rebuild | Signed generation image, SBOM, provenance and freshness |
-| Server OS | A dispatch on a `vX.Y.Z` tag (t's `publish-host`) | The server's programs, the package-snapshot base, the image booted in a VM | The signed server image in `registry.tilo.so/tilo/tilo-host` under `sha-<commit>`, `<version>` and `latest` |
+| Server OS | A dispatch on a `vX.Y.Z` tag (t's `publish-host`) | The server's programs, the package-snapshot base, the sealed image booted in a VM under Secure Boot | The signed server image, its UKI signed for Secure Boot, in `registry.tilo.so/tilo/tilo-host` under `sha-<commit>`, `gen<N>`, `<version>` and `latest` |
 | Tilo Installer | Relevant protected `main` pushes; `imager-vX.Y.Z` for releases | Six native host-package jobs; signed installer media only on tags/manual rehearsals | Signed Linux/Windows and signed/notarized macOS downloads; immutable source-revision prereleases on main |
 | Python and TypeScript SDKs | A `vX.Y.Z` tag (t's `publish-sdks`, `on = ["tag:v…"]`) | The two packages built and read back, and their suites, which the publish needs | `tilo-sdk` on PyPI and `tilo-sdk` on npm, at the tag's version; re-running the tag's step skips what is already published |
 
@@ -202,6 +202,11 @@ tools/ci/publish/os-release.sh at a time:
   it holds the keys. `apply` verifies those signatures against the pinned
   keys, adds them under `/boot`, installs the image once more to prove the seal holds,
   and writes its SPDX SBOM and SLSA provenance.
+- Before the seal, `sign-os-loader-{arch}` (`sign-boot-loader.sh`, and
+  `sign-os-loader-lenovo-83ed` for a board) signs the image's systemd-boot with the same
+  EFI key and adds its `.efi.signed` companion, which `bootctl install` copies to the ESP;
+  the signature has to be inside the image the seal describes, so it cannot be added to an
+  installed disk afterwards.
 - `reproduce` builds the release image again in one step, every action
   from a compile without caches, and must get the same
   digest; a difference fails it with a report of where the images differ.
@@ -232,19 +237,24 @@ t dispatch publish-host --ref tag:vX.Y.Z --publish
 ```
 
 It builds what it needs and refuses to publish anything else: the server's programs
-(`host-binaries`), their base (`host-base`: the mirrored bootc base, the frozen package set and
-Firecracker) and the image above it (`image-host`); it proves the image in a container
-(`test-image-host`) and by installing and booting it in a VM (`host-assurance-x86_64`); and
-`sign-host` signs it with the release key in KMS, with a transparency-log entry. `publish-host`
-pushes it to `registry.tilo.so/tilo/tilo-host` as `sha-<commit>`, as `<version>`, and as `latest`
-only for a final version tag; a published tag is never moved. An image built from an RPM set no
+(`host-binaries`), their base (`host-base`: the mirrored bootc base, the frozen package set,
+Firecracker and the tools that seal a UKI) and the image above it (`image-host`, carrying the
+generation `generation-host` reads from the server's series), its boot loader signed into it
+with the release EFI key (`sign-host-loader`), its UKI sealed with the composefs
+digest its install computes (`seal-host`); it proves the image in a container (`test-image-host`) and by installing and
+booting it under Secure Boot in a VM (`host-assurance-x86_64`); `sign-host-boot` signs its UKIs
+and PCR 11 prediction with the EFI and PCR keys in KMS and `apply-host-boot` adds them, verified;
+and `sign-host` signs it with the release key in KMS, with a transparency-log entry, and attests
+its provenance. `publish-host` pushes it to `registry.tilo.so/tilo/tilo-host` as `sha-<commit>`,
+as `gen<N>` once, as `<version>`, and as `latest` only for a final version tag; a published tag
+is never moved. An image built from an RPM set no
 release published is refused by signing, so a release installs from a published package set.
 The image's container policy admits that repository, verified with the release key
 (`tools/signing/release_trust.py`), so a server installed with it as its update origin
 (`bootc install --target-imgref registry.tilo.so/tilo/tilo-host:latest`) updates from it.
 
-`t dispatch host-release-rehearsal --ref BRANCH` rehearses the signing and publishing path with a
-throwaway key into a local OCI layout, verifying the published image as its consumers do, with no
+`t dispatch host-release-rehearsal --ref BRANCH` rehearses the boot signing, signing and publishing
+path with throwaway keys into a local OCI layout, verifying the published image as its consumers do, with no
 credentials. It proves the release steps; it publishes nothing.
 
 ## The server's iteration loop
@@ -266,8 +276,9 @@ t test test-image-host host-assurance-x86_64
 
 `host-binaries` relinks the changed programs (the builder's compiler cache keeps a one-crate
 change at a relink), `image-host` lays them on the cached base, `test-image-host` checks the
-image in a container, and `host-assurance-x86_64` installs it on an encrypted disk and boots it,
-proving the services, the health verdict and the rollback. Nothing is signed or published on this
+image in a container, `seal-host` seals it, and `host-assurance-x86_64` signs it with throwaway
+keys, installs it and boots it under Secure Boot, proving the verified boot, the services, the
+health verdict and the rollback. Nothing is signed with a release key or published on this
 path. A local machine builds the same two layers with `os/build-host.sh`.
 
 ## Dev VM disks

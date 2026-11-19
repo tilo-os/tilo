@@ -32,15 +32,7 @@ class RetentionPolicy(TypedDict):
 
 class Workspace(Resource):
     """Backups — `backups.workspace`."""
-    __surface__ = "so.tilo.backups@6f8503c299024f50"
+    __surface__ = "so.tilo.backups@8c234e612d7e2a4f"
     policy: RetentionPolicy
-
-    def verify(self, *, snapshot_id: str) -> None:
-        """Runs the app's action."""
-        return self.action("verify", snapshot_id=snapshot_id)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"verify"})
 
 

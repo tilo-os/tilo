@@ -6,6 +6,7 @@ format = 2
 kind = "photos.library"
 label = "Library"
 version = 2
+shows = ["begin-people-merge", "browse-approved-people", "cancel-album-draft", "cancel-details", "clear-draft-captured-at", "clear-draft-folder", "clear-draft-location", "clear-draft-people", "clear-draft-tags", "delete-album-draft", "delete-local-people-data", "dismiss-import", "edit-album", "manage-people-recognition", "new-album", "next-albums-page", "next-library-page", "next-people-page", "next-places-page", "open-approved-person", "open-suggestion", "people-back", "people-page", "place-draft-on-map", "previous-albums-page", "previous-library-page", "previous-people-page", "previous-places-page", "read-library-analysis", "read-people", "read-person", "show-details-organize", "show-details-time-and-place", "show-fewer-photos", "show-import-details", "show-library", "show-more-photos", "toggle-hidden-suggestions", "view", "view-album", "view-albums", "view-favorites", "view-folder", "view-library", "view-library-analysis", "view-object", "view-people", "view-person", "view-pet", "view-place", "view-places", "view-tag", "view-timeline"]
 fields = [
   { path = "photos", type = { collection = { named = "LibraryPhoto" } }, stored = "collection" },
   { path = "photos.*.id", type = "text", readonly = true },

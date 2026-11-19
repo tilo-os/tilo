@@ -597,7 +597,7 @@ impl ResourceApp for PlayerApp {
 #[effect(operation = "test.gallery.effects", catalogue = "tests/locales")]
 pub enum GalleryEffect {
     /// Show a picture.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Show { picture: String },
 }
 

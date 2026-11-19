@@ -70,15 +70,18 @@ pub enum SlidesEffect {
         slide: String,
     },
     /// Insert picture
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable)]
     InsertPicture,
     /// Open presentation
+    #[effect(kind = "outside")]
     #[effect(job, cancellable, destructive)]
     OpenPresentation {
         #[param("Absolute path of the presentation; omit to use the system picker")]
         path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save presentation
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     SaveAs {
         #[param("Absolute path to write; omit to use the system picker")]

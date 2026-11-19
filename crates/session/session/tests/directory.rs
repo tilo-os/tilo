@@ -44,7 +44,7 @@ use tilo_desktop_model::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_server::workspaces::RemoveMemberRequest;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_protocol::directory::{DirectoryEntry, DirectoryPage, Face, entry_path};
 use tilo_server_protocol::workspaces::Role;
 use tilo_session::{Options, Session};
@@ -110,32 +110,15 @@ fn listing(session: &Session, name: &str) -> Listing {
         .unwrap_or_else(|| panic!("the sheet lists {name}"))
 }
 
-/// Write what the session shows where a person can look at it, when the run asked for shots:
-/// `TILO_SURFACE_SHOTS` names where they go.
+/// The join sheet as the person sees it, kept as `name.png` where the run asked for shots: a site's
+/// listings arrive after the sheet opens, and the frame on screen may still be the one before them.
 fn capture(session: &mut Session, name: &str) {
-    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
-    else {
-        return;
-    };
-    // Draw what the sheet holds now: a site's listings arrive after the sheet opens, and the frame
-    // on screen may still be the one before them.
     for _ in 0..3 {
         session
             .step(std::time::Duration::from_millis(1))
             .expect("step");
     }
-    let frame = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("a frame of the session");
-    let pixels = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
-        .expect("the frame's pixels fill it");
-    let mut png = Vec::new();
-    pixels
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .expect("the shot");
-    std::fs::create_dir_all(&directory).expect("the directory for shots");
-    std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
+    crate::common::shot(session, name);
 }
 
 /// What the shell says to the person now, each notice's title and body, live or kept behind its
@@ -176,6 +159,8 @@ fn community_entry(members: u32, now_ms: u64) -> DirectoryEntry {
         members,
         last_active_ms: Some(now_ms),
         community: true,
+        invitation_only: false,
+        wait_list: None,
     }
 }
 
@@ -194,6 +179,8 @@ fn club_entry(now_ms: u64) -> DirectoryEntry {
         members: 5,
         last_active_ms: Some(now_ms.saturating_sub(week)),
         community: false,
+        invitation_only: false,
+        wait_list: None,
     }
 }
 
@@ -368,6 +355,8 @@ fn page_listing_the_workspace_on_this_shell(held_name: &str, held_workspace: &st
         members: 3,
         last_active_ms: Some(now_ms()),
         community: false,
+        invitation_only: false,
+        wait_list: None,
     });
     page_of(entries)
 }
@@ -766,7 +755,7 @@ fn expired_throwaway_identity(
     .expect("this computer's throwaway identity");
     // The throwaway certificate lasts a day; issue it a day and a half ago,
     // so it has run out.
-    let identity = runtime_identity::load_from_path(identity_dir.join("primary.json"))
+    let identity = tilo_identity::store::load_from_path(identity_dir.join("primary.json"))
         .expect("this computer's identity");
     let held = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .expect("the throwaway certificate");
@@ -838,7 +827,7 @@ struct Lounge {
     _web: tilo_server::web::WebHandle,
     runtime: tokio::runtime::Runtime,
     workspaces: tilo_server::workspaces::Workspaces,
-    host_cert: tilo_user_identity::DeviceCert,
+    server_cert: tilo_user_identity::DeviceCert,
     /// The certificate of the site's page, the device that recorded in the workspace before anyone
     /// joined.
     page_device: tilo_user_identity::DeviceCert,
@@ -951,7 +940,7 @@ impl Lounge {
             _web: web,
             runtime,
             workspaces: host.workspaces,
-            host_cert: host.host_cert,
+            server_cert: host.server_cert,
             page_device: host.page_device,
             page_desktop: std::cell::RefCell::new(automerge::AutoCommit::new()),
             person,
@@ -976,7 +965,7 @@ fn lounge_key() -> [u8; 32] {
 struct LoungeHost {
     server: tilo_server::daemon::Server,
     workspaces: tilo_server::workspaces::Workspaces,
-    host_cert: tilo_user_identity::DeviceCert,
+    server_cert: tilo_user_identity::DeviceCert,
     /// The key and certificate of the site's page, the device that recorded in the workspace before
     /// anyone joined.
     page_key: ed25519_dalek::SigningKey,
@@ -989,7 +978,7 @@ impl LoungeHost {
     fn start(runtime: &tokio::runtime::Runtime, state: &std::path::Path) -> Self {
         let owner_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
         let host_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
-        let host_cert = certified(
+        let server_cert = certified(
             &owner_key,
             &host_key,
             "The lounge's host",
@@ -1012,7 +1001,7 @@ impl LoungeHost {
                     tilo_server::daemon::ServerIdentity {
                         user_public_key: owner_key.verifying_key().to_bytes(),
                         device_signing_key: host_key.clone(),
-                        device_cert: host_cert.clone(),
+                        device_cert: server_cert.clone(),
                         revocations: tilo_user_identity::RevocationList::new(),
                     },
                     test_server::relay_mode(),
@@ -1038,7 +1027,7 @@ impl LoungeHost {
         Self {
             server,
             workspaces,
-            host_cert,
+            server_cert,
             page_key,
             page_device,
             workspace,
@@ -1059,9 +1048,9 @@ impl LoungeHost {
             let _entered = runtime.enter();
             let page = tilo_session_client::start_session(
                 PeerConfig {
-                    host: Host::at(self.server.node_addr()),
+                    host: ServerAddress::at(self.server.node_addr()),
                     cert: self.page_device.clone(),
-                    host_cert: self.host_cert.clone(),
+                    server_cert: self.server_cert.clone(),
                     revocations: tilo_user_identity::RevocationList::new(),
                     entering: None,
                 },
@@ -1118,7 +1107,7 @@ impl LoungeHost {
                 self.workspaces
                     .publish(
                         &self.workspace,
-                        &self.host_cert,
+                        &self.server_cert,
                         tilo_server_protocol::directory::Listing {
                             description: "Where the site's people talk".to_owned(),
                             default_role: Role::Editor,
@@ -1129,7 +1118,7 @@ impl LoungeHost {
             }
             if admission == LoungeAdmission::InvitationOnly {
                 self.workspaces
-                    .list_invitation_only(&self.workspace, &self.host_cert, true)
+                    .list_invitation_only(&self.workspace, &self.server_cert, true)
                     .await
                     .expect("the lounge takes people by invitation");
             }
@@ -1172,6 +1161,8 @@ impl LoungeHost {
             members: 2,
             last_active_ms: Some(now_ms()),
             community: true,
+            invitation_only: false,
+            wait_list: None,
         }]);
         let site = Responder::handle(move |request| {
             let json = |body: String| {
@@ -1315,7 +1306,7 @@ impl Lounge {
             "the lounge to issue this person an invitation",
             self.workspaces.issue(
                 &self.workspace,
-                &self.host_cert,
+                &self.server_cert,
                 tilo_workspace_join::invitations::IssueInvitationRequest {
                     request_id: [0x61; 32],
                     role: tilo_workspace_join::Role::Editor,
@@ -1399,7 +1390,7 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
         "the lounge's owner is named here",
         |session| owner_on_shell(session, &lounge.workspace).is_some(),
     );
-    let host = hex::encode(lounge.host_cert.user_public_key);
+    let host = hex::encode(lounge.server_cert.user_public_key);
     assert_eq!(
         owner_on_shell(&session, &lounge.workspace).as_deref(),
         Some(host.as_str()),
@@ -1911,7 +1902,7 @@ fn chat_here(session: &Session, workspace: &str) -> Option<String> {
 
 /// The publisher the lounge's host is known by.
 fn host_publisher(lounge: &Lounge) -> String {
-    publisher_of(&lounge.host_cert)
+    publisher_of(&lounge.server_cert)
 }
 
 /// The publisher the lounge's page is known by.
@@ -2038,7 +2029,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
         "the lounge to remove this person",
         lounge.workspaces.remove_member(
             &lounge.workspace,
-            &lounge.host_cert,
+            &lounge.server_cert,
             RemoveMemberRequest {
                 request_id: [0x62; 32],
                 user_public_key: person,

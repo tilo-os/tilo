@@ -1,11 +1,11 @@
 //! Faces: who is here, as a row of overlapping avatars, at every scale the
-//! shell shows people (the top bar, a window's bar, a tab, a card in the
-//! overview). One painter so a person looks the same everywhere: their face
-//! inside a ring in their colour, dimmed while idle or away, with a soft
-//! breathing ring while they are in a call, and a drawn count badge for
-//! everyone past the last face.
+//! shell shows people (the top bar, a window's bar, a row, a card). One
+//! painter so a person looks the same everywhere: their face inside a ring in
+//! their colour, dimmed while idle or away, with a bright arc sweeping round
+//! the ring while they are active now (in a call, or an agent at work), and a
+//! drawn count badge for everyone past the last face.
 
-use vello::kurbo::{Circle, Point, Rect, RoundedRect, Shape, Stroke};
+use vello::kurbo::{Cap, Circle, Point, Rect, RoundedRect, Shape, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::paint::PaintCtx;
@@ -20,9 +20,9 @@ pub struct Face<'a> {
     pub colour: Color,
     /// Idle or away: the face dims.
     pub dimmed: bool,
-    /// In a voice channel, or an agent at work: a soft ring breathes around
-    /// the face, at this level (`ui::motion::Breathe`); `None` otherwise.
-    pub in_call: Option<f32>,
+    /// Active now, in a voice channel or an agent at work: an arc sweeps round the ring
+    /// ([`crate::motion::Sweep`]); `None` otherwise.
+    pub active: Option<crate::motion::Sweep>,
     /// A wave's bounce, as a scale (1 at rest; `ui::motion::Attention`).
     pub scale: f64,
 }
@@ -58,7 +58,7 @@ impl<'a> Face<'a> {
             avatar: avatar.presence(colour),
             colour,
             dimmed: false,
-            in_call: None,
+            active: None,
             scale: 1.0,
         }
     }
@@ -78,8 +78,13 @@ const RING: f64 = 2.0;
 /// The gap of ground between a face and its ring, and around the ring
 /// where faces overlap.
 const GAP: f64 = 1.0;
-/// How far the call ring reaches past the colour ring.
-const CALL_REACH: f64 = 3.0;
+/// How much of an active face's ring its sweeping arc is.
+const ARC: f64 = 0.3;
+/// How strong the rest of an active face's ring stays under its arc.
+const TRACK: f32 = 0.35;
+/// How far an agent's rounded square is drawn inside its face's place, so it covers as much of the
+/// bar as a person's disc: a square of the disc's side is a quarter larger than the disc.
+const SQUARE_INSET: f64 = 0.05;
 /// The widest a face's initials stand, as a share of the face's side: two
 /// letters at [`initials_style`](crate::widget::avatar)'s size, a little wide.
 const INITIALS_SPAN: f64 = 0.6;
@@ -98,12 +103,6 @@ impl FaceStack {
     pub const WINDOW: Self = Self {
         side: 20.0,
         overlap: 6.0,
-        max: 3,
-    };
-    /// A tab, or a card in the overview: up to three small faces.
-    pub const SMALL: Self = Self {
-        side: 16.0,
-        overlap: 5.0,
         max: 3,
     };
 
@@ -231,7 +230,7 @@ impl FaceStack {
 
 impl Face<'_> {
     /// How far a face's ground reaches past its disc: the gap, the colour
-    /// ring and the gap around it (the call ring, when shown, reaches further).
+    /// ring and the gap around it.
     pub const REACH: f64 = GAP + RING + GAP;
 
     /// The disc of a face whose ring and gap fill `outer` exactly: where a
@@ -242,8 +241,8 @@ impl Face<'_> {
         outer.inset(-(RING + GAP))
     }
 
-    /// Paint this face alone in `rect` over `ground`: the call ring, the
-    /// ground gap, the colour ring and the face itself, quietened while idle.
+    /// Paint this face alone in `rect` over `ground`: the ground gap, the colour
+    /// ring (swept while active) and the face itself, quietened while idle.
     /// Where a caller lays faces out itself (a column at a screen edge, a
     /// list row), so a person still looks as they do in every stack.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, ground: Color) {
@@ -261,11 +260,17 @@ fn outline(face: &Face<'_>, rect: Rect, corner: f64, reach: f64) -> vello::kurbo
     }
 }
 
-/// One face in `rect`: the call ring, the ground gap, the colour ring and
-/// the face. Idle or away, its colour is quietened against `ground`
-/// ([`crate::tokens::colors::PresencePalette::idle_on`]) rather than faded
-/// through, so the ring and the initial still read on any bar in any theme.
+/// One face in `rect`: the ground gap, the colour ring and the face. Idle or away, its colour is
+/// quietened against `ground` ([`crate::tokens::colors::PresencePalette::idle_on`]) rather than
+/// faded through, so the ring and the initial still read on any bar in any theme. Active, the ring
+/// widens to the ground's edge and a full-strength arc sweeps round it over the rest of it held
+/// quiet: within the face's own place, so a bar no taller than its faces still shows it whole.
 fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color) {
+    let rect = if face.avatar.is_square() {
+        rect.inset(-rect.width() * SQUARE_INSET)
+    } else {
+        rect
+    };
     // The agent mark's own corner (`agent_identity`), which its rings keep.
     let corner = (rect.width() * 0.22).min(f64::from(ctx.theme.tokens.radii.detail));
     let around = |reach: f64| outline(face, rect, corner, reach);
@@ -276,15 +281,6 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
         palette.ring_on(face.colour, ground)
     };
     let transform = ctx.transform;
-    if let Some(level) = face.in_call {
-        ctx.scene.stroke(
-            &Stroke::new(2.0),
-            transform,
-            colour.multiply_alpha(0.55 * level),
-            None,
-            &around(GAP + RING + CALL_REACH - 1.0),
-        );
-    }
     // Ground under the ring, so overlapping faces separate.
     ctx.scene.fill(
         Fill::NonZero,
@@ -293,13 +289,37 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
         None,
         &around(GAP + RING + GAP),
     );
-    ctx.scene.stroke(
-        &Stroke::new(RING),
-        transform,
-        colour,
-        None,
-        &around(GAP + RING / 2.0),
-    );
+    let ring = around(GAP + RING / 2.0);
+    let band = around(GAP + (RING + GAP) / 2.0);
+    match face.active {
+        None => ctx
+            .scene
+            .stroke(&Stroke::new(RING), transform, colour, None, &ring),
+        Some(crate::motion::Sweep::Still) => {
+            ctx.scene
+                .stroke(&Stroke::new(RING + GAP), transform, colour, None, &band);
+        }
+        Some(crate::motion::Sweep::Round(turn)) => {
+            ctx.scene.stroke(
+                &Stroke::new(RING),
+                transform,
+                colour.multiply_alpha(TRACK),
+                None,
+                &ring,
+            );
+            let length = band.perimeter(0.1);
+            let arc = length * ARC;
+            ctx.scene.stroke(
+                &Stroke::new(RING + GAP)
+                    .with_caps(Cap::Round)
+                    .with_dashes(-f64::from(turn) * length, [arc, length - arc]),
+                transform,
+                colour,
+                None,
+                &band,
+            );
+        }
+    }
     // The same face as everywhere this member is shown, so nobody reads as "ED" to themselves
     // and "E" to everyone else, and an agent wears its mark on the bar as in chat.
     let avatar = if face.dimmed {
@@ -314,32 +334,24 @@ fn paint_face(ctx: &mut PaintCtx<'_>, rect: Rect, face: &Face<'_>, ground: Color
 mod tests {
     use super::*;
 
+    /// Paint `faces` as the bar's stack over `ground` under `theme`, on an 80 by 60 picture.
+    fn render(theme: &crate::theme::Theme, faces: &[Face<'_>], ground: Color) -> Vec<u8> {
+        let mut scene = vello::Scene::new();
+        let mut text = crate::text_render::TextRenderer::new();
+        let mut ctx = PaintCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, &mut text, theme);
+        FaceStack::BAR.paint(&mut ctx, (60.0, 30.0), (faces, 0), ground);
+        crate::offscreen::OffscreenRenderer::new(80, 60).render(&scene, ground)
+    }
+
     /// A face in a stack wears the same initials as the person's own
     /// avatar: two visitors who share a first word ("Eager Dolphin",
     /// "Eager Badger") paint apart, and the letters are the first and last
     /// word's, as `initials_for_name` picks them.
     #[test]
     fn stacked_faces_wear_the_full_initials() {
-        use crate::offscreen::OffscreenRenderer;
         let theme = crate::theme::Theme::default();
         let blue = Color::from_rgb8(0x25, 0x63, 0xeb);
-        let render = |name: &str| {
-            let mut scene = vello::Scene::new();
-            let mut text = crate::text_render::TextRenderer::new();
-            let mut ctx = PaintCtx::new(
-                &mut scene,
-                vello::kurbo::Affine::IDENTITY,
-                &mut text,
-                &theme,
-            );
-            FaceStack::BAR.paint(
-                &mut ctx,
-                (60.0, 30.0),
-                (&[Face::new(name, "same-id", blue)], 0),
-                Color::BLACK,
-            );
-            OffscreenRenderer::new(80, 60).render(&scene, Color::BLACK)
-        };
+        let render = |name: &str| render(&theme, &[Face::new(name, "same-id", blue)], Color::BLACK);
         assert_ne!(
             render("Eager Dolphin"),
             render("Eager Badger"),
@@ -352,102 +364,130 @@ mod tests {
         );
     }
 
-    /// A dimmed face paints fainter than a present one; a call adds a ring
-    /// past the colour ring.
+    /// Every presence hue's face marks against the top bar it sits on, in dark and light: its
+    /// colour ring clears non-text contrast (3:1) on the bar's ground, quietened and never vanishing
+    /// while idle, and its initial clears on-fill contrast on the face. Active now (in a call, an
+    /// agent at work), an arc of the ring, wider than the ring at rest, marks at full strength and
+    /// sweeps round over the rest held quiet, all within the face's own place; where motion is
+    /// reduced, the whole wide ring, still.
     #[test]
-    fn idle_faces_dim_and_a_call_rings_them() {
-        use crate::offscreen::OffscreenRenderer;
-        let theme = crate::theme::Theme::default();
-        let render = |face: Face<'_>| {
-            let mut scene = vello::Scene::new();
-            let mut text = crate::text_render::TextRenderer::new();
-            let mut ctx = PaintCtx::new(
-                &mut scene,
-                vello::kurbo::Affine::IDENTITY,
-                &mut text,
-                &theme,
-            );
-            FaceStack::BAR.paint(&mut ctx, (60.0, 30.0), (&[face], 0), Color::BLACK);
-            OffscreenRenderer::new(80, 60).render(&scene, Color::BLACK)
-        };
-        let blue = Color::from_rgb8(0x25, 0x63, 0xeb);
-        let here = render(Face::new("Ada", "ada", blue));
-        let mut idle = Face::new("Ada", "ada", blue);
-        idle.dimmed = true;
-        let idle = render(idle);
-        let width = FaceStack::BAR.width(1);
-        let center_x = 60.0 - width / 2.0;
-        let ring_x = (center_x - 12.0 - GAP - RING / 2.0) as u32;
-        let lum = |rgba: &[u8]| {
-            let (r, g, b, _) = OffscreenRenderer::sample(rgba, 80, ring_x, 30);
-            u32::from(r) + u32::from(g) + u32::from(b)
-        };
-        assert!(lum(&idle) < lum(&here), "an idle face is fainter");
-
-        let mut calling = Face::new("Ada", "ada", blue);
-        calling.in_call = Some(1.0);
-        let calling = render(calling);
-        let call_x = (center_x - 12.0 - GAP - RING - CALL_REACH + 1.0) as u32;
-        let at = |rgba: &[u8]| {
-            let (r, g, b, _) = OffscreenRenderer::sample(rgba, 80, call_x, 30);
-            u32::from(r) + u32::from(g) + u32::from(b)
-        };
-        assert!(at(&calling) > at(&here), "someone in a call is ringed");
-    }
-
-    /// Every presence hue's face marks against the top bar it sits on, in
-    /// dark and light, present or idle: its colour ring as painted clears
-    /// non-text contrast (3:1) on the bar's ground, and its initial clears
-    /// on-fill contrast on the face. An idle face quietens and never
-    /// vanishes into the bar.
-    #[test]
-    fn every_hue_marks_on_the_bar_in_dark_and_light_present_or_idle() {
+    fn every_hue_marks_on_the_bar_idle_or_active() {
         use crate::color::contrast_ratio;
+        use crate::motion::Sweep;
         use crate::offscreen::OffscreenRenderer;
         use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST, PresenceHue};
+        let center_x = 60.0 - FaceStack::BAR.width(1) / 2.0;
+        // The ring at rest, the band past it the active ring widens over, and the band's middle.
+        let (ring, outside) = (12.0 + GAP + RING / 2.0, 12.0 + GAP + RING + GAP / 2.0);
+        let middle = 12.0 + GAP + (RING + GAP) / 2.0;
+        let angles: Vec<f64> = (0..36).map(|i| f64::from(i) * 10f64.to_radians()).collect();
         for (label, theme) in [
             ("dark", crate::theme::Theme::dark()),
             ("light", crate::theme::Theme::light()),
         ] {
             let bar = theme.tokens.colors.surfaces.base;
-            let palette = theme.tokens.colors.presence;
+            // How the pixel whose middle is nearest `radius` out at `angle` stands on the bar.
+            let at = |rgba: &[u8], radius: f64, angle: f64| {
+                let (x, y) = (center_x + radius * angle.cos(), 30.0 + radius * angle.sin());
+                let (r, g, b, _) = OffscreenRenderer::sample(rgba, 80, x as u32, y as u32);
+                contrast_ratio(Color::from_rgb8(r, g, b), bar)
+            };
+            let marks = |rgba: &[u8], radius: f64, angle: f64| {
+                at(rgba, radius, angle) >= NON_TEXT_MIN_CONTRAST - 0.05
+            };
             for hue in PresenceHue::ALL {
-                let identity = palette.hue(hue);
+                let colour = theme.tokens.colors.presence.hue(hue);
+                let face = |dimmed, active| Face {
+                    dimmed,
+                    active,
+                    ..Face::new("Ben Carter", "ben", colour)
+                };
+                let (here, idle) = (
+                    render(&theme, &[face(false, None)], bar),
+                    render(&theme, &[face(true, None)], bar),
+                );
+                let left = std::f64::consts::PI;
+                assert!(
+                    marks(&here, ring, left) && marks(&idle, ring, left),
+                    "{label} {hue:?}: ring"
+                );
+                // On the dark bar an idle face is also fainter.
+                assert!(
+                    label == "light" || at(&idle, ring, left) < at(&here, ring, left),
+                    "{label} {hue:?}: idle is fainter"
+                );
                 for dimmed in [false, true] {
-                    let mut face = Face::new("Ben Carter", "ben", identity);
-                    face.dimmed = dimmed;
-                    let mut scene = vello::Scene::new();
-                    let mut text = crate::text_render::TextRenderer::new();
-                    let mut ctx = PaintCtx::new(
-                        &mut scene,
-                        vello::kurbo::Affine::IDENTITY,
-                        &mut text,
-                        &theme,
-                    );
-                    FaceStack::BAR.paint(&mut ctx, (60.0, 30.0), (&[face], 0), bar);
-                    let rgba = OffscreenRenderer::new(80, 60).render(&scene, bar);
-                    let center_x = 60.0 - FaceStack::BAR.width(1) / 2.0;
-                    let ring_x = (center_x - 12.0 - GAP - RING / 2.0) as u32;
-                    let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 80, ring_x, 30);
-                    let ring = Color::from_rgb8(r, g, b);
-                    let ratio = contrast_ratio(ring, bar);
-                    assert!(
-                        ratio >= NON_TEXT_MIN_CONTRAST - 0.05,
-                        "{label} {hue:?} dimmed={dimmed}: ring {ratio:.2}:1 on the bar"
-                    );
-
-                    let avatar = AvatarFace::new("Ben", "ben").presence(identity);
-                    let avatar = if dimmed { avatar.idle_on(bar) } else { avatar };
-                    let fill = avatar.colour(&theme);
-                    let ink = crate::widget::avatar::initial_ink(fill, &theme);
-                    let ratio = contrast_ratio(ink, fill);
+                    let avatar = AvatarFace::new("Ben", "ben").presence(colour);
+                    let fill = if dimmed { avatar.idle_on(bar) } else { avatar }.colour(&theme);
+                    let ratio =
+                        contrast_ratio(crate::widget::avatar::initial_ink(fill, &theme), fill);
                     assert!(
                         ratio >= ON_FILL_MIN_CONTRAST,
-                        "{label} {hue:?} dimmed={dimmed}: initial {ratio:.2}:1 on the face"
+                        "{label} {hue:?} dimmed={dimmed}: {ratio:.2}:1"
                     );
                 }
+
+                assert!(
+                    [0.0, 0.5, 1.0, 1.5]
+                        .iter()
+                        .all(|&turns| at(&here, outside, turns * left) < 1.1),
+                    "{label} {hue:?}: at rest the ring stays narrow"
+                );
+                let still = render(&theme, &[face(false, Some(Sweep::Still))], bar);
+                assert!(
+                    angles.iter().all(|&a| marks(&still, middle, a)),
+                    "{label} {hue:?}: reduced motion lights the whole wide ring"
+                );
+                let lit = |turn: f32| {
+                    let swept = render(&theme, &[face(false, Some(Sweep::Round(turn)))], bar);
+                    angles
+                        .iter()
+                        .map(|&a| marks(&swept, middle, a))
+                        .collect::<Vec<bool>>()
+                };
+                let (start, later) = (lit(0.0), lit(0.5));
+                let count = start.iter().filter(|lit| **lit).count();
+                assert!(
+                    (6..=16).contains(&count),
+                    "{label} {hue:?}: an arc, {count} of 36 lit"
+                );
+                assert_ne!(start, later, "{label} {hue:?}: the arc moves round");
+                // Nothing reaches past the face's place: the bar is no taller than its faces.
+                let above = (30.0 - 12.0 - Face::REACH - 1.0) as u32;
+                let (r, g, b, _) = OffscreenRenderer::sample(&still, 80, center_x as u32, above);
+                assert_eq!(
+                    Color::from_rgb8(r, g, b).to_rgba8(),
+                    bar.to_rgba8(),
+                    "{label}"
+                );
             }
         }
+    }
+
+    /// An agent's rounded square keeps its shape but weighs what a person's disc does: in the
+    /// same colour it covers about as much of the bar as the disc.
+    #[test]
+    fn an_agent_face_weighs_what_a_person_face_does() {
+        let theme = crate::theme::Theme::dark();
+        let bar = theme.tokens.colors.surfaces.base;
+        let colour = theme
+            .tokens
+            .colors
+            .presence
+            .hue(crate::tokens::colors::PresenceHue::ALL[0]);
+        let ground = bar.to_rgba8();
+        let covered = |face: Face<'_>| {
+            render(&theme, &[face], bar)
+                .chunks_exact(4)
+                .filter(|px| (px[0], px[1], px[2]) != (ground.r, ground.g, ground.b))
+                .count()
+        };
+        let person = covered(Face::new("Ben Carter", "ben", colour));
+        let agent = covered(Face::new("Scribe", "scribe", colour).agent());
+        assert!(
+            agent * 100 <= person * 105 && agent * 100 >= person * 90,
+            "an agent covers {agent} px, a person {person} px"
+        );
     }
 
     tilo_test_env::scenario! {
@@ -507,7 +547,6 @@ mod tests {
             for (label, stack) in [
                 ("bar", FaceStack::BAR),
                 ("window", FaceStack::WINDOW),
-                ("small", FaceStack::SMALL),
                 ("in a control", FaceStack::in_face(24.0)),
             ] {
                 let theme = crate::theme::Theme::dark();

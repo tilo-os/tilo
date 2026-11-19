@@ -15,10 +15,11 @@ use std::path::Path;
 use std::rc::Rc;
 
 use super::{
-    CallError, Engine, EngineKind, EngineLimits, GROWTH_LIMITED, Host, HostFail, OUT_OF_FUEL,
-    Shared, Tiers, Translation, Wasm, tiering,
+    CallError, DEFAULT_LIMITS, Engine, EngineKind, EngineLimits, Host, HostFail, Shared, Tiers,
+    Translation, Wasm, tiering,
 };
 use crate::ids::ModuleHash;
+use tilo_wasm_host::{Failure, GROWTH_LIMITED, OUT_OF_FUEL};
 
 /// A module without imports: arithmetic, a loop, a loop that never ends, and memory growth.
 const MODULE: &str = r#"
@@ -60,6 +61,7 @@ fn limits() -> EngineLimits {
     EngineLimits {
         fuel_per_call: 10_000_000,
         max_memory_bytes: 1 << 24,
+        ..DEFAULT_LIMITS
     }
 }
 
@@ -178,10 +180,15 @@ tilo_test_env::scenario! {
             call(&engine, &module, "grow", &[]),
         );
         assert_eq!(engine.tier(&module), Some(EngineKind::Cranelift));
-        assert_eq!(on_wasmi.0, Err(CallError::OutOfFuel(OUT_OF_FUEL.into())));
+        assert_eq!(
+            on_wasmi.0,
+            Err(CallError::from(Failure::OutOfFuel(OUT_OF_FUEL.to_owned())))
+        );
         assert_eq!(
             on_wasmi.1,
-            Err(CallError::MemoryLimit(GROWTH_LIMITED.into()))
+            Err(CallError::from(Failure::MemoryLimit(
+                GROWTH_LIMITED.to_owned()
+            )))
         );
         assert_eq!(on_cranelift, on_wasmi);
         // A trap drops only the instance it happened in: the next call runs.
@@ -249,5 +256,171 @@ tilo_test_env::scenario! {
         // Compiled again and kept again, whole.
         assert_eq!(std::fs::read(&entry).unwrap().len(), kept.len());
         assert_ne!(std::fs::read(&entry).unwrap(), damaged);
+    }
+}
+
+/// A start module as a split bundle's is: memory, table and a function every app calls, and
+/// an entry per app that calls through the table entry its app's module fills.
+const RUNTIME: &str = r#"
+(module
+  (type $entry (func (result i32)))
+  (memory (export "memory") 1)
+  (table (export "__indirect_function_table") 2 2 funcref)
+  (func (export "double") (param i32) (result i32)
+    (i32.mul (local.get 0) (i32.const 2)))
+  (func (export "apply_a") (result i32)
+    (call_indirect (type $entry) (i32.const 0)))
+  (func (export "apply_b") (result i32)
+    (call_indirect (type $entry) (i32.const 1)))
+)
+"#;
+
+/// An app's module: imports what it uses of the start module by name, writes its own data and
+/// fills its table entry.
+fn app(entry: u32, at: u32, value: u32, add: u32) -> Vec<u8> {
+    wat::parse_str(format!(
+        r#"
+(module
+  (import "__wasm_split" "memory" (memory 1))
+  (import "__wasm_split" "__indirect_function_table" (table 2 2 funcref))
+  (import "__wasm_split" "double" (func $double (param i32) (result i32)))
+  (data (i32.const {at}) "{bytes}")
+  (func $entry (result i32)
+    (i32.add (call $double (i32.load (i32.const {at}))) (i32.const {add})))
+  (elem (i32.const {entry}) $entry)
+)
+"#,
+        bytes = value
+            .to_le_bytes()
+            .iter()
+            .fold(String::new(), |mut out, byte| {
+                use std::fmt::Write as _;
+                write!(out, "\\{byte:02x}").unwrap();
+                out
+            }),
+    ))
+    .unwrap()
+}
+
+tilo_test_env::scenario! {
+    fn a_linked_set_answers_as_one_module;
+
+    phase a_set_links_each_module_to_the_ones_before_it_on_both_tiers;
+    {
+        let process = Process::new(None);
+        process.top().pause(true);
+        let engine = process.engine();
+        let runtime = wat::parse_str(RUNTIME).unwrap();
+        let a = engine.compile_linked(&[&runtime, &app(0, 100, 21, 0)]).unwrap();
+        let b = engine.compile_linked(&[&runtime, &app(1, 104, 7, 1)]).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(engine.tier(&a), Some(EngineKind::Wasmi));
+        assert_eq!(call(&engine, &a, "apply_a", &[]).unwrap(), Some(Wasm::I32(42)));
+        assert_eq!(call(&engine, &b, "apply_b", &[]).unwrap(), Some(Wasm::I32(15)));
+        // `b`'s module is not in `a`'s set: its table entry is empty there.
+        assert!(call(&engine, &a, "apply_b", &[]).is_err());
+
+        process.top().pause(false);
+        engine.settle_compile(&a);
+        engine.settle_compile(&b);
+        assert_eq!(engine.compile_failure(&a), None);
+        assert_eq!(call(&engine, &a, "apply_a", &[]).unwrap(), Some(Wasm::I32(42)));
+        assert_eq!(engine.tier(&a), Some(EngineKind::Cranelift));
+        assert_eq!(call(&engine, &b, "apply_b", &[]).unwrap(), Some(Wasm::I32(15)));
+        assert_eq!(engine.tier(&b), Some(EngineKind::Cranelift));
+        assert!(call(&engine, &a, "apply_b", &[]).is_err());
+        // The runtime both sets share was compiled once, as a module of its own.
+        assert!(process.top().compiled(&ModuleHash::of_bytes(&runtime)).is_some());
+    }
+
+    phase an_import_no_module_before_it_exports_does_not_link;
+    {
+        let process = Process::new(None);
+        let engine = process.engine();
+        let runtime = wat::parse_str(RUNTIME.replace("\"double\"", "\"twice\"")).unwrap();
+        let refused = engine.compile_linked(&[&runtime, &app(0, 100, 1, 0)]);
+        assert!(
+            matches!(&refused, Err(CallError::Wasm(Failure::Link(_)))),
+            "{refused:?}"
+        );
+    }
+}
+
+/// A device whose one import of its own ABI answers the byte at an offset of the caller's
+/// memory, as the model ABI's imports read and write it.
+struct Peek;
+
+const PEEK_ABI: &[super::Imports] = &[("probe", "peek", "i", "i")];
+
+impl Host for Peek {
+    fn import(&self, _: usize, _: &[u8], _: &[Wasm]) -> Result<Option<Wasm>, HostFail> {
+        Err(HostFail::Trap("only probe::peek is answered".into()))
+    }
+
+    fn guest_abi(&self) -> &'static [super::Imports] {
+        PEEK_ABI
+    }
+
+    fn guest_import(
+        &self,
+        _: &str,
+        _: &str,
+        memory: &[u8],
+        args: &[Wasm],
+    ) -> Result<super::GuestAnswer, HostFail> {
+        let [Wasm::I32(at)] = args else {
+            return Err(HostFail::Trap("peek takes an offset".into()));
+        };
+        let byte = memory
+            .get(usize::try_from(*at).unwrap())
+            .ok_or_else(|| HostFail::Trap("no memory to peek at".into()))?;
+        Ok(super::GuestAnswer::Value(Wasm::I32(i32::from(*byte))))
+    }
+}
+
+tilo_test_env::scenario! {
+    fn an_import_a_later_module_calls_answers_in_the_first_ones_memory;
+
+    phase on_both_tiers;
+    {
+        let runtime = wat::parse_str(
+            r#"
+(module
+  (type $entry (func (result i32)))
+  (import "probe" "peek" (func $peek (param i32) (result i32)))
+  (memory (export "memory") 1)
+  (table (export "__indirect_function_table") 1 1 funcref)
+  (export "peek" (func $peek))
+  (func (export "apply") (result i32)
+    (call_indirect (type $entry) (i32.const 0)))
+)
+"#,
+        )
+        .unwrap();
+        let app = wat::parse_str(
+            r#"
+(module
+  (import "__wasm_split" "memory" (memory 1))
+  (import "__wasm_split" "__indirect_function_table" (table 1 1 funcref))
+  (import "__wasm_split" "peek" (func $peek (param i32) (result i32)))
+  (data (i32.const 200) "\4d")
+  (func $entry (result i32) (call $peek (i32.const 200)))
+  (elem (i32.const 0) $entry)
+)
+"#,
+        )
+        .unwrap();
+        let process = Process::new(None);
+        process.top().pause(true);
+        let engine = process.engine();
+        engine.link(PEEK_ABI).unwrap();
+        let set = engine.compile_linked(&[&runtime, &app]).unwrap();
+        let peek = || engine.call(&set, "apply", &[], Rc::new(Peek));
+        assert_eq!(engine.tier(&set), Some(EngineKind::Wasmi));
+        assert_eq!(peek().unwrap(), Some(Wasm::I32(0x4d)));
+        process.top().pause(false);
+        engine.settle_compile(&set);
+        assert_eq!(peek().unwrap(), Some(Wasm::I32(0x4d)));
+        assert_eq!(engine.tier(&set), Some(EngineKind::Cranelift));
     }
 }

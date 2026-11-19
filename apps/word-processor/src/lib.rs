@@ -34,6 +34,7 @@ pub mod model;
 mod outline_pane;
 mod paint_context;
 mod review_overlay;
+mod rows;
 mod ruler;
 pub mod semantic_read;
 mod style_color_picker;

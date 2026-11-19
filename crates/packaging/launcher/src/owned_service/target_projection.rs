@@ -78,8 +78,6 @@ impl TargetProjectionCredentials {
 pub enum TargetProjectionMode {
     SelectedFile,
     HomeDirectory,
-    /// Retired in place: a retained home is presented read-only, whole.
-    RetiredSelectedParent,
 }
 pub trait TargetProjectionAuthority: super::ServiceAuthority {
     fn projection_mode(&self) -> TargetProjectionMode;
@@ -178,10 +176,6 @@ impl Record {
         if mounted {
             self.baseline.validate(BASELINE)?;
         }
-        if self.mode == TargetProjectionMode::RetiredSelectedParent {
-            return Err(refused("Selected parent projection is retired"));
-        }
-
         if self.schema != 4
             || self.purpose != "retained-target-projection"
             || self.context_sha256 == [0; 32]
@@ -618,11 +612,6 @@ mod tests {
                 clone_mount_id: None,
             };
             record.validate(false).unwrap();
-            record.mode = TargetProjectionMode::RetiredSelectedParent;
-            assert_eq!(
-                record.validate(false).unwrap_err().kind(),
-                io::ErrorKind::PermissionDenied
-            );
             record.mode = TargetProjectionMode::HomeDirectory;
             record.schema = 2;
             assert_eq!(

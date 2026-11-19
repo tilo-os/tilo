@@ -3,8 +3,8 @@
 //! or reads comes from it (`apps/browser/chromium/README.md`, "Page clipboard").
 
 use std::sync::mpsc::{Receiver, TryRecvError};
+use tilo_webview::{WebViewCommand, WebViewEngine};
 use ui::clipboard::ClipboardTarget;
-use ui::webview::{WebViewCommand, WebViewEngine};
 
 const SECRET_ON_CLIPBOARD_FOR: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -57,9 +57,9 @@ impl PageClipboard {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex, mpsc};
+    use tilo_webview::WebViewEvent;
+    use tilo_webview::test_engine::TestEngine;
     use ui::clipboard::ClipboardBackend;
-    use ui::webview::WebViewEvent;
-    use ui::webview::test_engine::TestEngine;
 
     /// A system clipboard that keeps each copy as it was offered, and answers a read when
     /// the test says.

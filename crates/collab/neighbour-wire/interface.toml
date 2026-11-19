@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the server session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 57
+version = 58
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -171,6 +171,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DeviceCapabilities.foreign" = "#2 bool"
 "DeviceCapabilities.server_key" = "#6 bool"
 "DeviceCapabilities.stand_in" = "#5 bool"
+"DeviceCapabilities.workspace_service" = "#8 bool"
 "DeviceCert" = "struct"
 "DeviceCert.capabilities" = "#3 DeviceCapabilities"
 "DeviceCert.device_label" = "#2 String"
@@ -712,7 +713,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "SignedOp.author" = "#2 Ed25519PublicKey"
 "SignedOp.claims" = "#8 Vec<ChangeClaim> with=claims_wire"
 "SignedOp.encryption" = "#7 Option<EncryptionMetadata>"
-"SignedOp.governance" = "#10 Vec<[u8; 32]>"
+"SignedOp.governance" = "#10 Vec<[u8; 4]>"
 "SignedOp.kind" = "#4 OpKind"
 "SignedOp.payload" = "#0 Vec<u8> with=serde_bytes"
 "SignedOp.seq" = "#6 u64"

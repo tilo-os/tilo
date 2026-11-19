@@ -228,6 +228,8 @@ pub(crate) struct Session<'a> {
     /// What the person was told, as the session's own notifications service keeps it: the banners
     /// up and the centre behind them, whichever shell draws them.
     pub(crate) notifications: tilo_desktop_surface::DesktopNotifications,
+    /// The questions waiting for the person, as the session's services ask them.
+    pub(crate) questions: Option<&'a tilo_service::Questions>,
 }
 
 /// One request a connection sent the loop, and where its answer goes.
@@ -328,6 +330,8 @@ enum Op {
     ProfileStop,
     ProvisionTestIdentity,
     ProcessMemory,
+    /// The questions waiting for the person, as their sheets show them.
+    Questions,
     ResourceRead,
     Scroll,
     SearchRows,
@@ -343,7 +347,7 @@ enum Op {
 
 impl Op {
     /// Every op the protocol answers, in the order the refusal names them.
-    const ALL: [Self; 31] = [
+    const ALL: [Self; 32] = [
         Self::ActionsCancel,
         Self::ActionsEnumerate,
         Self::ActionsInvoke,
@@ -364,6 +368,7 @@ impl Op {
         Self::ProfileStatus,
         Self::ProfileStop,
         Self::ProvisionTestIdentity,
+        Self::Questions,
         Self::ResourceRead,
         Self::Scroll,
         Self::SearchRows,
@@ -400,6 +405,7 @@ impl Op {
             "profile_status" => Self::ProfileStatus,
             "profile_stop" => Self::ProfileStop,
             "provision_test_identity" => Self::ProvisionTestIdentity,
+            "questions" => Self::Questions,
             "resource_read" => Self::ResourceRead,
             "scroll" => Self::Scroll,
             "search_rows" => Self::SearchRows,
@@ -438,6 +444,7 @@ impl Op {
             Self::ProfileStatus => "profile_status",
             Self::ProfileStop => "profile_stop",
             Self::ProvisionTestIdentity => "provision_test_identity",
+            Self::Questions => "questions",
             Self::ResourceRead => "resource_read",
             Self::Scroll => "scroll",
             Self::SearchRows => "search_rows",
@@ -1171,6 +1178,26 @@ fn asked_of_shell(
         Op::ProfileStatus => json!({"answer": crate::diagnostics::reading()}),
         Op::ProfileStop => json!({"answer": {"profile": tilo_frame_metrics::profile::stop()}}),
         Op::StateDump => shown(ctx, session.handle.read(|tree| state_dump(tree, session))),
+        Op::Questions => {
+            let pending = session
+                .questions
+                .map(tilo_service::Questions::pending)
+                .unwrap_or_default();
+            let questions: Vec<Json> = pending
+                .into_iter()
+                .map(|question| {
+                    json!({
+                        "handle": question.handle,
+                        "resource": tilo_service::question_resource(&question.handle),
+                        "kind": question.kind,
+                        "app": question.app_id,
+                        "label": question.label,
+                        "details": question.details,
+                    })
+                })
+                .collect();
+            json!({"answer": {"questions": questions}})
+        }
         Op::KeepingDevices => session
             .handle
             .read(|tree| state::keeping_devices(tree, session, ctx)),

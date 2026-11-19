@@ -538,6 +538,7 @@ impl Widget for Badge {
                     ))),
                     edge: None,
                     radius,
+                    inset: [0.0; 2],
                 });
             }
             return;
@@ -549,6 +550,7 @@ impl Widget for Badge {
             fill: Some(rgba8(colors.fill)),
             edge: colors.edge.map(rgba8),
             radius,
+            inset: [0.0; 2],
         });
         // The pill is as wide as its words and their padding: they stand in its middle.
         cx.text(

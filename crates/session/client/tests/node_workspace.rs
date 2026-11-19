@@ -47,7 +47,8 @@ use tilo_server::web::{TlsSource, WebConfig};
 use tilo_server_client::https::invitation as invitation_offer;
 use tilo_server_client::invite::guest_certificate;
 use tilo_server_client::{
-    DeviceSigner, Host, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
+    DeviceSigner, IssuedRole, ServerAddress, SignError, SignFuture, certify_with_root,
+    issue_device_cert,
 };
 use tilo_server_protocol::workspaces::{
     JoinReply, PreAdmission, Role, WorkspaceNotice, WorkspacesReply, WorkspacesRequest,
@@ -285,15 +286,15 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         .await
         .unwrap();
     let https = DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
-    let host = Host::at(server.node_addr());
+    let host = ServerAddress::at(server.node_addr());
 
     // The page's own device, certified by the root against the node.
     let page_key = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let (page_cert, host_cert) = certify_with_root(&*https, &root, &page_key, "Ada's browser")
+    let (page_cert, server_cert) = certify_with_root(&*https, &root, &page_key, "Ada's browser")
         .await
         .unwrap();
-    assert_eq!(host_cert, node_cert);
-    let ada = start_peer(host.clone(), page_cert, host_cert.clone(), page_key);
+    assert_eq!(server_cert, node_cert);
+    let ada = start_peer(host.clone(), page_cert, server_cert.clone(), page_key);
     ready(&[&ada]).await;
 
     // The company workspace, governed by the node, with Ada as its owner.
@@ -418,7 +419,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     // written and reads all of it.
     let (bo, asked) = enters(
         host.clone(),
-        &host_cert,
+        &server_cert,
         (&bo_cert, &bo_key),
         &signed_invitation,
         None,
@@ -477,7 +478,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     .unwrap();
     let (guessing, wrong) = enters(
         host.clone(),
-        &host_cert,
+        &server_cert,
         (&cy_cert, &cy_key),
         &signed_invitation,
         Some(b"a guessed token"),
@@ -488,7 +489,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     guessing.close();
     let (cy_page, admitted) = enters(
         host.clone(),
-        &host_cert,
+        &server_cert,
         (&cy_cert, &cy_key),
         &signed_invitation,
         Some(token),
@@ -515,7 +516,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         "{notices:?}"
     );
     let cy_device = cy_cert.device_public_key;
-    let cy = start_peer(host.clone(), cy_cert, host_cert.clone(), cy_key);
+    let cy = start_peer(host.clone(), cy_cert, server_cert.clone(), cy_key);
     cy.send(Cmd::Join(acme.workspace_id)).unwrap();
     crate::support::holds(
         &cy,
@@ -552,8 +553,8 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
 /// A session of `cert`'s device whose first message carries `invitation` (with the pre-admission
 /// `token` where there is one), and what the workspace answered it.
 async fn enters(
-    host: tilo_server_client::Host,
-    host_cert: &tilo_user_identity::DeviceCert,
+    host: tilo_server_client::ServerAddress,
+    server_cert: &tilo_user_identity::DeviceCert,
     (cert, key): (&tilo_user_identity::DeviceCert, &SigningKey),
     invitation: &[u8],
     token: Option<&[u8]>,
@@ -564,10 +565,10 @@ async fn enters(
 ) {
     let held = tilo_session_client::device::Held {
         cert: cert.clone(),
-        host_cert: Some(host_cert.clone()),
+        server_cert: Some(server_cert.clone()),
     };
     let (_, entering) = tilo_session_client::device::invitation_entry(
-        host_cert,
+        server_cert,
         invitation,
         key,
         tilo_session_client::device::Entering {
@@ -584,7 +585,7 @@ async fn enters(
         tilo_session_client::PeerConfig {
             host,
             cert: cert.clone(),
-            host_cert: host_cert.clone(),
+            server_cert: server_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
             entering: Some(entering),
         },

@@ -34,8 +34,8 @@ runtime-collab = { path = "../../crates/runtime/runtime-collab" }
 # windowed app.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
-# A turn's work: the workspace's MCP tools over the session's action API, asked on this agent's
-# own connection, until the model answers.
+# A turn's work: the workspace's MCP tools, which the device's session lists and takes for this
+# agent on its own connection, until the model answers.
 tilo-agent-turn = { path = "../../crates/agent/agent-turn" }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 tilo-action-policy = { path = "../../crates/collab/action-policy" }
@@ -78,7 +78,7 @@ tempfile.workspace = true
 hex.workspace = true
 tilo-agent-web-tools = { path = "../../crates/agent/agent-web-tools", features = ["fixture-servers"] }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
-runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
+tilo-identity-client = { path = "../../crates/runtime/tilo-identity-client" }
 ed25519-dalek.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
 

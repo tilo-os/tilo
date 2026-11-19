@@ -6,6 +6,7 @@ format = 2
 kind = "snippets.library"
 label = "Snippet library"
 version = 1
+shows = ["read-folder", "read-tag", "reveal", "reveal-folder", "search"]
 fields = [
   { path = "snippets", type = { collection = { named = "Snippet" } }, stored = "collection" },
   { path = "snippets.*.title", type = "text", label = true },

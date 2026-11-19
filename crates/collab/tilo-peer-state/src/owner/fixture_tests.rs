@@ -355,8 +355,8 @@ fn median<T: Ord + Copy>(of: &[T], range: std::ops::Range<usize>) -> T {
 
 /// What a write costs does not grow with its record's history: a keystroke
 /// into a record of 2,000 changes writes about what one into a record of 100
-/// does, and reads about as much of what the record held already (to digest
-/// it, store it and check its size). After a restart the record is the
+/// does, and reads at most the document it changed (to digest it, store it
+/// and publish its checkpoint). After a restart the record is the
 /// state it was stored as, with the same digest, and every change reads
 /// back.
 #[tokio::test]
@@ -440,10 +440,6 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
         median(&times, 2_000..2_050),
     );
     assert!(
-        read_late <= read_early * 2,
-        "a write at 2,000 changes reads {read_late} bytes of its record, at 100 {read_early}"
-    );
-    assert!(
         late <= early * 2,
         "a write at 2,000 changes costs {late} bytes, at 100 {early}"
     );
@@ -455,19 +451,215 @@ async fn a_write_costs_what_it_changed_however_long_the_record_history() {
     let average = |of: &[usize], range: std::ops::Range<usize>| {
         of[range.clone()].iter().sum::<usize>() / range.len()
     };
-    for (what, of) in [("cost", &costs), ("read", &reads)] {
-        let (before, after) = (average(of, 100..1_000), average(of, 1_000..WRITES));
-        assert!(
-            after <= before * 2,
-            "writes past 1,000 changes {what} {after} bytes each on average, before {before}"
-        );
-    }
+    let (before, after) = (average(&costs, 100..1_000), average(&costs, 1_000..WRITES));
+    assert!(
+        after <= before * 2,
+        "writes past 1,000 changes cost {after} bytes each on average, before {before}"
+    );
+    // What a write reads is its own document at most: the checkpoint it
+    // publishes is of the document it changed, never of the workspace.
+    let own = app_document(&fixture, workspace).save().len();
+    assert!(
+        read_late <= own * 2,
+        "a write at 2,000 changes reads {read_late} bytes, its document is {own}"
+    );
     assert_eq!(
         app_document(&fixture, workspace).get_heads(),
         record.get_heads(),
         "the owner holds the record as the app that wrote it does"
     );
     reopens_as_it_was_stored(fixture.owner, &path, WRITES);
+}
+
+/// A workspace holds every document of every app in it, so what it holds is
+/// never capped whole: a workspace of 1,500 documents that hold more together
+/// than the 32 MiB a workspace's file was once capped at takes each new
+/// document's write at what it changed, as one of 300 documents does, and
+/// opens again with the next write costing what it changed.
+#[tokio::test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario in order: made, measured, opened again"
+)]
+async fn a_workspace_past_any_size_takes_writes_at_what_they_change() {
+    const DOCUMENTS: usize = 1_500;
+    /// Text that does not compress, as a document's own does not.
+    const TEXT: usize = 32 * 1024;
+    let fixture = fixture();
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
+    let path = fixture.directory.path().join("owner.json");
+    let written = |owner: &NativeWorkspaceOwner| {
+        let store: &dyn std::any::Any = &*owner.0.store;
+        store
+            .downcast_ref::<crate::owner::file_store::FileStore>()
+            .unwrap()
+            .written
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+    let text = |n: usize| {
+        let mut seed = blake3::hash(&n.to_le_bytes());
+        let mut text = String::with_capacity(TEXT);
+        while text.len() < TEXT {
+            text.push_str(&seed.to_hex());
+            seed = blake3::hash(seed.as_bytes());
+        }
+        text
+    };
+    let mut costs = Vec::with_capacity(DOCUMENTS);
+    let mut times = Vec::with_capacity(DOCUMENTS);
+    let mut order = 0_u64;
+    for n in 0..DOCUMENTS {
+        let document = format!("r{n}");
+        let before = written(&fixture.owner);
+        testing::start_resource(
+            &fixture.owner,
+            workspace,
+            "so.tilo.chat",
+            &document,
+            &fixture.key,
+            fixture.now,
+        );
+        times.push(write_text(
+            &fixture.owner,
+            &fixture.key,
+            fixture.now,
+            workspace,
+            &document,
+            &text(n),
+        ));
+        costs.push(written(&fixture.owner) - before);
+        if n % 50 == 49 {
+            answer_everything(&fixture, workspace, &mut order);
+        }
+    }
+    let (early, late) = (
+        median(&costs, 300..400),
+        median(&costs, DOCUMENTS - 100..DOCUMENTS),
+    );
+    let whole = serde_json::to_vec(&fixture.owner.0.authority.read().workspaces[&workspace])
+        .unwrap()
+        .len();
+    println!(
+        "a document made at 300 writes {early} bytes, at {DOCUMENTS} {late}; its write commits \
+         in {:?} and {:?}; the workspace's file whole is {whole} bytes",
+        median(&times, 300..400),
+        median(&times, DOCUMENTS - 100..DOCUMENTS),
+    );
+    assert!(
+        late <= early * 2,
+        "a document made at {DOCUMENTS} costs {late} bytes, at 300 {early}"
+    );
+    // Rewrites now and then included: a snapshot once the journal outgrows
+    // the last one costs about what the writes since it did.
+    let average =
+        |range: std::ops::Range<usize>| costs[range.clone()].iter().sum::<usize>() / range.len();
+    let (before, after) = (
+        average(300..DOCUMENTS / 2),
+        average(DOCUMENTS / 2..DOCUMENTS),
+    );
+    assert!(
+        after <= before * 2,
+        "documents in the later half cost {after} bytes each on average, before {before}"
+    );
+
+    // Opened again, it holds every document, and its next write appends what
+    // it changed rather than writing all the workspace holds first.
+    drop(fixture.owner);
+    let reopened = open_file(&path).unwrap();
+    let held = reopened
+        .with_current(workspace, |view| {
+            Ok((0..DOCUMENTS)
+                .filter(|n| {
+                    view.peer()
+                        .document("so.tilo.chat", &format!("r{n}"))
+                        .is_some()
+                })
+                .count())
+        })
+        .unwrap();
+    assert_eq!(held, DOCUMENTS, "every document opens again");
+    let before = written(&reopened);
+    write_text(
+        &reopened,
+        &fixture.key,
+        fixture.now,
+        workspace,
+        "r7",
+        "again",
+    );
+    let after_open = written(&reopened) - before;
+    assert!(
+        after_open <= early * 2,
+        "the first write after opening costs {after_open} bytes, a write before {early}"
+    );
+    assert!(
+        whole > 32 * 1024 * 1024,
+        "the workspace holds more than it was once capped at: {whole} bytes"
+    );
+}
+
+/// The workspace's holder keeps everything ownership sends it, as it answers
+/// a linked device: each answer lets the writes waiting behind it leave.
+fn answer_everything(fixture: &Fixture, workspace: crate::owner::WorkspaceId, order: &mut u64) {
+    loop {
+        let answers = fixture
+            .owner
+            .with_outgoing(workspace, fixture.now, |_, outgoing| {
+                Ok(outgoing
+                    .entries()
+                    .map(|entry| {
+                        *order = order.saturating_add(1);
+                        (entry.id(), crate::owner::HostAnswer::Durable(*order))
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>())
+            })
+            .unwrap();
+        if answers.is_empty() {
+            break;
+        }
+        fixture.owner.retire_answered(workspace, &answers).unwrap();
+    }
+}
+
+/// Write `text` into the chat app's document `document`, as its app signs it, and
+/// answer how long the owner took to commit it.
+fn write_text(
+    owner: &NativeWorkspaceOwner,
+    key: &SigningKey,
+    now: SystemTime,
+    workspace: crate::owner::WorkspaceId,
+    document: &str,
+    text: &str,
+) -> std::time::Duration {
+    use automerge::transaction::Transactable as _;
+    let message = owner
+        .with_current(workspace, |view| {
+            let held = view
+                .peer()
+                .document("so.tilo.chat", document)
+                .ok_or_else(|| "no document".to_owned())?;
+            let mut doc = automerge::AutoCommit::load(&held)
+                .map_err(|error| error.to_string())?
+                .with_actor(automerge::ActorId::from(b"so.tilo.chat".as_slice()));
+            let before = doc.get_heads();
+            doc.put(automerge::ROOT, "text", text)
+                .map_err(|error| error.to_string())?;
+            doc.commit_edit("fixture", "text");
+            view.peer()
+                .prepare_signed_mutation(
+                    "so.tilo.chat",
+                    document,
+                    crate::DocumentMutation::Incremental(doc.save_after(&before)),
+                    key,
+                    now,
+                )
+                .map(|(message, _)| message)
+        })
+        .unwrap();
+    let request = crate::owner::publication::request(&message).unwrap();
+    let started = std::time::Instant::now();
+    owner.commit_document(request, now).unwrap();
+    started.elapsed()
 }
 
 /// The record reopens from `path` as the state it was stored as, with the
@@ -504,4 +696,109 @@ fn reopens_as_it_was_stored(owner: NativeWorkspaceOwner, path: &std::path::Path,
             "{key} reads after a restart"
         );
     }
+}
+
+/// Make documents `made` of the chat app, empty, a batch of writes per owner turn.
+fn documents(
+    fixture: &Fixture,
+    workspace: crate::owner::WorkspaceId,
+    made: std::ops::Range<usize>,
+    order: &mut u64,
+) {
+    const BATCH: usize = 100;
+    let mut n = made.start;
+    while n < made.end {
+        let end = n.saturating_add(BATCH).min(made.end);
+        let requests = fixture
+            .owner
+            .with_current(workspace, |view| {
+                (n..end)
+                    .map(|n| {
+                        let message = view.peer().clone().publication_mut().publish_document(
+                            "so.tilo.chat",
+                            &format!("r{n}"),
+                            automerge::AutoCommit::new().save(),
+                            &fixture.key,
+                            fixture.now,
+                        )?;
+                        crate::owner::publication::request(&message)
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .unwrap();
+        fixture
+            .owner
+            .commit_documents(requests, fixture.now)
+            .unwrap();
+        answer_everything(fixture, workspace, order);
+        n = end;
+    }
+}
+
+/// A write costs what it changed, however many documents the workspace
+/// holds: its receipt's digest, the durable encoding it publishes and the
+/// journal entry it appends each take the document the write changed, not
+/// every document, and a commit in a workspace of 3,000 documents costs about
+/// what one in a workspace of 300 does. The digest is the one the workspace
+/// reopens with, and still changes with every write.
+#[tokio::test]
+async fn a_write_commits_at_what_it_changed_however_many_documents() {
+    const WRITES: usize = 21;
+    const SIZES: [usize; 2] = [300, 3_000];
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
+    let digest = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(workspace, |view| view.peer().durable_hash())
+            .unwrap()
+    };
+    let fixtures = SIZES.map(|size| {
+        let fixture = fixture();
+        documents(&fixture, workspace, 0..size, &mut 0);
+        fixture
+    });
+    // The two workspaces take their writes in turns, so whatever else the
+    // machine does meanwhile slows both alike.
+    let mut times = [Vec::new(), Vec::new()];
+    for n in 0..WRITES {
+        for ((fixture, size), times) in fixtures.iter().zip(SIZES).zip(&mut times) {
+            let before = digest(&fixture.owner);
+            crate::state::DOCUMENTS_WALKED.with(|walked| walked.set(0));
+            times.push(write_text(
+                &fixture.owner,
+                &fixture.key,
+                fixture.now,
+                workspace,
+                &format!("r{n}"),
+                &format!("text {n} at {size}"),
+            ));
+            // Its digest's leaf, and its part of the encoding published.
+            let walked = crate::state::DOCUMENTS_WALKED.with(std::cell::Cell::get);
+            assert_eq!(
+                walked, 2,
+                "a write at {size} documents takes {walked} documents again"
+            );
+            assert_ne!(digest(&fixture.owner), before, "a write changes the digest");
+        }
+    }
+    // The median of each: what a write costs, without the odd write that
+    // settles what the workspace's admissions hold.
+    let [early, late] = times.map(|mut times| {
+        times.sort();
+        times[WRITES / 2]
+    });
+    println!("a write commits at 300 documents in {early:?}, at 3,000 in {late:?}");
+    assert!(
+        late.as_secs_f64() <= early.as_secs_f64() * 1.5,
+        "a write commits in {late:?} at 3,000 documents, in {early:?} at 300"
+    );
+    let [_, fixture] = fixtures;
+    let path = fixture.directory.path().join("owner.json");
+    let before = digest(&fixture.owner);
+    drop(fixture.owner);
+    let reopened = open_file(&path).unwrap();
+    assert_eq!(
+        digest(&reopened),
+        before,
+        "the workspace reopens with the digest it was stored with"
+    );
 }

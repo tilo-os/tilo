@@ -3,8 +3,9 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use crate::{
     Durability, Lease, ReadyWake, Revision, SettleWatch, SharedLease, StorageKey, StoreError,
@@ -30,7 +31,7 @@ pub struct MemoryStore {
     namespace: String,
     queued: bool,
     state: RefCell<State>,
-    leases: Rc<RefCell<BTreeMap<StorageKey, Held>>>,
+    leases: Arc<Mutex<BTreeMap<StorageKey, Held>>>,
     claims: RefCell<BTreeMap<StorageKey, String>>,
     write_hook: RefCell<Option<Rc<dyn Fn()>>>,
     settle_wakes: RefCell<BTreeMap<StorageKey, Vec<ReadyWake>>>,
@@ -90,7 +91,7 @@ struct MemoryLease {
     key: StorageKey,
     shared: bool,
     primary: bool,
-    leases: Weak<RefCell<BTreeMap<StorageKey, Held>>>,
+    leases: Weak<Mutex<BTreeMap<StorageKey, Held>>>,
 }
 
 impl Drop for MemoryLease {
@@ -98,7 +99,7 @@ impl Drop for MemoryLease {
         let Some(leases) = self.leases.upgrade() else {
             return;
         };
-        let mut leases = leases.borrow_mut();
+        let mut leases = leases.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(held) = leases.get_mut(&self.key) else {
             return;
         };
@@ -142,7 +143,7 @@ impl MemoryStore {
             namespace,
             queued,
             state: RefCell::new(State::default()),
-            leases: Rc::default(),
+            leases: Arc::default(),
             claims: RefCell::default(),
             write_hook: RefCell::default(),
             settle_wakes: RefCell::default(),
@@ -403,7 +404,7 @@ impl crate::DurableStore for MemoryStore {
     }
 
     fn lease(&self, key: &StorageKey) -> Result<Lease, StoreError> {
-        let mut leases = self.leases.borrow_mut();
+        let mut leases = self.leases.lock().unwrap_or_else(PoisonError::into_inner);
         let held = leases.entry(key.clone()).or_default();
         if held.exclusive || held.shared > 0 {
             return Err(StoreError::Busy(key.to_string()));
@@ -414,7 +415,7 @@ impl crate::DurableStore for MemoryStore {
             key: key.clone(),
             shared: false,
             primary: false,
-            leases: Rc::downgrade(&self.leases),
+            leases: Arc::downgrade(&self.leases),
         }))
     }
 
@@ -472,7 +473,7 @@ impl crate::DurableStore for MemoryStore {
     }
 
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, StoreError> {
-        let mut leases = self.leases.borrow_mut();
+        let mut leases = self.leases.lock().unwrap_or_else(PoisonError::into_inner);
         let held = leases.entry(key.clone()).or_default();
         if held.exclusive {
             return Err(StoreError::Busy(key.to_string()));
@@ -486,7 +487,7 @@ impl crate::DurableStore for MemoryStore {
                 key: key.clone(),
                 shared: true,
                 primary,
-                leases: Rc::downgrade(&self.leases),
+                leases: Arc::downgrade(&self.leases),
             }),
             primary,
         })

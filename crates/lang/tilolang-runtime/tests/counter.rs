@@ -5,8 +5,8 @@ mod cases {
     use crate::common::*;
     use serde_json::json;
     use tilolang_runtime::{
-        AmStore, EngineLimits, InvokeOutcome, Patch, Runtime, RuntimeError, SignatureKind,
-        SimpleAuthority, Value,
+        AmStore, DEFAULT_LIMITS, EngineLimits, InvokeOutcome, Patch, Runtime, RuntimeError,
+        SignatureKind, SimpleAuthority, Value,
     };
 
     tilo_test_env::scenario! {
@@ -231,6 +231,7 @@ mod cases {
                 EngineLimits {
                     fuel_per_call: 200_000,
                     max_memory_bytes: 1 << 24,
+                    ..DEFAULT_LIMITS
                 },
             );
             let c = w.counter();

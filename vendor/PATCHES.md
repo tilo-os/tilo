@@ -8,14 +8,6 @@ synced folder's tree, edited once per file written into the folder, grew from
 1 GB to 4 GB in a minute during a git checkout. `vendor/hexane` shrinks the left
 half after a split; see `vendor/hexane/TILO-PATCH.md`.
 
-## iroh-blobs metadata database page cache
-
-`iroh-blobs` 0.103.1 opened its file store's redb database with redb's default page cache
-of 1 GiB, and blobs up to 16 KiB live in its pages. A synced folder that an agent keeps
-editing grew the process holding it toward that gigabyte. `vendor/iroh-blobs` lets the
-store's owner bound the cache (`Options::meta_cache_bytes`); Tilo's content store sets it
-to 32 MiB. See `vendor/iroh-blobs/TILO-PATCH.md`.
-
 ## iroh relay handshake without its confirmation's round trip
 
 `iroh-relay` 1.0.3 is the checksum-verified registry release with one opt-in
@@ -652,6 +644,14 @@ incremental save without applying them to a document, so a receiver reads
 each change's hash, message and dependencies (the signed claim of what each
 change is) before it decides to merge them.
 
+## `vendor/automerge`: a model module's documents are its host's
+
+Built with `--cfg tilo_model_guest`, `AutoCommit` is a handle on a document
+the host keeps: every read and write of an app's verb is one call to the host
+(`src/model_device`), which applies it to its own document. So an app's model
+module carries none of Automerge's storage, and the change is the host's
+Automerge's. See `vendor/automerge/TILO-PATCH.md`.
+
 ## `vendor/vello/src/image_source.rs` (new), `lib.rs`, `wgpu_engine.rs`: images drawn from a texture
 
 `Renderer::draw_image_from(image, Some(ImageSource { texture, origin,
@@ -968,15 +968,3 @@ the compositor gives it, then a redraw is asked for as for a toplevel.
 gives, so a panel that fits its content resizes in place. A
 compositor without the layer shell reports the window as uncreatable instead
 of opening a toplevel somewhere else.
-
-## getrandom's custom backend beside the `wasm_js` feature
-
-A WebAssembly module for a host that is not a page names getrandom's `custom`
-backend (`--cfg getrandom_backend="custom"`), which `src/backends.rs` selects
-before the `wasm_js` feature's. Cargo enables `wasm_js` for wasm targets in
-this repository whichever backend the cfg names, and 0.4.3's error text still
-names the `wasm_js` backend's own constant under a cfg that asks about the
-feature alone, so the module failed to compile. `vendor/getrandom` adds
-`not(getrandom_backend = "custom")` to that arm; a page's build, where the
-feature's backend is the one selected, compiles it as before. See
-`vendor/getrandom/TILO-PATCH.md`. Remove it once upstream releases the fix.

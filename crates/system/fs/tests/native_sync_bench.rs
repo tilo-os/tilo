@@ -49,7 +49,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use ed25519_dalek::SigningKey;
 use tilo_device_identity::{
     IdentityPaths, adopt_device_key,
-    persist::{write_device_cert, write_public_key, write_signing_key},
+    persist::{write_device_cert, write_public_key},
 };
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
@@ -115,9 +115,6 @@ fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], p
     let person = SigningKey::from_bytes(&person_seed);
     let device = adopt_device_key(&paths, &device_seed).unwrap();
     write_public_key(&paths.user_pubkey, &person.verifying_key().to_bytes()).unwrap();
-    if primary {
-        write_signing_key(&paths.user_privkey, &person).unwrap();
-    }
     let mut cert = DeviceCert {
         user_public_key: person.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -136,6 +133,30 @@ fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], p
     };
     sign_device_cert(&mut cert, &person).unwrap();
     write_device_cert(&paths.device_cert, &cert).unwrap();
+}
+
+/// The serving daemon's Files authority, signed by the person's identity as `tilo-server
+/// files-workspace-initialize` signs it: the daemon holds no root to sign one.
+fn publish_authority(cache: &Path, person_seed: [u8; 32], device_seed: [u8; 32], acl: &Path) {
+    use fs::workspace_authority::{WorkspaceAuthority, WorkspaceAuthorityEnvelope};
+    let person = SigningKey::from_bytes(&person_seed);
+    let device = SigningKey::from_bytes(&device_seed)
+        .verifying_key()
+        .to_bytes();
+    let workspace = fs::Ticket::workspace_id_for_topic(device);
+    let capabilities = fs::caps_file::authority(&std::fs::read(acl).unwrap(), acl).unwrap();
+    std::fs::create_dir_all(cache).unwrap();
+    let governor = person.verifying_key().to_bytes();
+    WorkspaceAuthority::open(
+        cache.join("workspace-authority.bin"),
+        workspace,
+        governor,
+        governor,
+        Vec::new(),
+    )
+    .unwrap()
+    .apply(WorkspaceAuthorityEnvelope::sign(workspace, 1, capabilities, false, &person).unwrap())
+    .unwrap();
 }
 
 fn full_access_acl(path: &Path, person_seed: [u8; 32]) {
@@ -461,6 +482,12 @@ fn start_pair_with(store_a: &Path, store_b: &Path, seed: u8, netns: bool) -> Pai
         false,
     );
     full_access_acl(&dir.join("acl.json"), person);
+    publish_authority(
+        &dir.join("host-cache"),
+        person,
+        [seed.wrapping_add(1); 32],
+        &dir.join("acl.json"),
+    );
     let delay = env_u64("TILO_FS_BENCH_DELAY_MS", 0);
     let netns = netns || env_u64("TILO_FS_BENCH_NETNS", 0) == 1;
     let link = (delay > 0 || netns).then(|| Link::new(delay));

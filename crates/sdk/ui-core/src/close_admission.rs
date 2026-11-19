@@ -47,6 +47,18 @@ impl Choice {
     }
 }
 
+/// How far a closing window has let go of the invocations the broker hands it.
+pub(crate) enum Leaving {
+    /// It takes invocations.
+    Staying,
+    /// It asked for no more; the ones already addressed to it are still coming.
+    Stopping,
+    /// Every one it was handed is answered; the answers are on their way to the broker.
+    Settling(crate::collaboration::DocumentPublicationReceipt),
+    /// None it was handed is left unanswered.
+    Left,
+}
+
 pub(crate) struct Admission {
     pub dialog: Option<Box<ModalDialog<Column>>>,
     pub reviewed: Vec<UnsavedDocument>,
@@ -59,6 +71,9 @@ pub(crate) struct Admission {
     pub save_poll_at: crate::time::Instant,
     pub save_waiting: bool,
     pub save_result: Option<Result<(), String>>,
+    pub leaving: Leaving,
+    /// The commits a close's save started, and the wake for their end.
+    pub saving: Option<(durable_store::waiting::Started, durable_store::ReadyWake)>,
     session: uuid::Uuid,
     choices: Vec<Choice>,
 }
@@ -76,6 +91,8 @@ impl Default for Admission {
             save_poll_at: crate::time::now(),
             save_waiting: false,
             save_result: None,
+            leaving: Leaving::Staying,
+            saving: None,
             session: uuid::Uuid::new_v4(),
             choices: Vec::new(),
         }
@@ -95,6 +112,9 @@ impl Admission {
     ) {
         self.session = uuid::Uuid::new_v4();
         self.choices = choices.to_vec();
+        // A decision stops the close: going on saves again.
+        self.ready = false;
+        self.saving = None;
         let resource = resource_for(self.session, choices);
         let mut content = Column::new()
             .with_intrinsic_height()
@@ -148,6 +168,7 @@ impl Admission {
         self.reviewed.clear();
         self.discarded.clear();
         self.ready = false;
+        self.saving = None;
         self.save_waiting = false;
         self.save_local = None;
         self.save_broker_request = None;

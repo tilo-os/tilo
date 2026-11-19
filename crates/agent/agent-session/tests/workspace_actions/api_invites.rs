@@ -64,14 +64,11 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     assert_eq!(invited["sent"], false, "{invited}");
     assert_eq!(invited["email"], "rosa@example.com", "{invited}");
     let link = invited["link"].as_str().unwrap().to_owned();
-    // The server's site is one only this computer reaches, so the link carries
-    // the invitation itself rather than shelving it at a site that opens
-    // nowhere else: `https://tilo.sh/#/w/<workspace>?invite=<signed bytes>`.
+    // The test's site is reached only from this computer, so it shelves nothing: the link
+    // carries the signed invitation itself, which opens wherever it is followed.
     assert!(
-        link.starts_with("https://tilo.sh/#/w/")
-            && link.contains(&format!("{workspace}?invite="))
-            && !link.contains("/i/"),
-        "the site's carried link: {link}"
+        link.contains('#') && link.contains("invite="),
+        "a link that carries its invitation: {link}"
     );
 
     // Ada's own page follows an invitation too, as a person's layout joins the
@@ -170,9 +167,9 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
     .await;
     assert_eq!(by_rosa["status"], "failed", "{by_rosa}");
 
-    // A key minted for the workspace enters it as Ada, at her role, and
-    // invites nobody either: it is a key of hers, not a person of the
-    // workspace.
+    // A key minted for the workspace enters it as Ada, at her role: a key of
+    // hers for that workspace, so it invites as she does, and is no person of
+    // the workspace itself.
     let minted = backend
         .did("account/keys#mint", json!({"workspace": workspace}))
         .await;
@@ -191,7 +188,7 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
         json!({"role": "viewer"}),
     )
     .await;
-    assert_eq!(by_agent["status"], "failed", "{by_agent}");
+    assert_eq!(by_agent["status"], "ok", "{by_agent}");
     let after = members(&mut backend, here, "workspace/members#list", json!({})).await;
     let after = after["result"]["members"].as_array().unwrap().clone();
     assert_eq!(
@@ -211,8 +208,8 @@ async fn a_backends_key_invites_a_reviewer_who_enters_with_a_key_of_their_own() 
 
 /// An owner's key lets a person in by their key, as an owner, through the
 /// action API: no invitation to hand over. That person's own key then reaches
-/// the workspace and brings someone in themself, and neither a key minted for
-/// the workspace nor anyone below an owner makes an owner.
+/// the workspace and brings someone in themself; nobody below an owner makes
+/// an owner, while a key minted for the workspace is its owner's own and does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
     let on_server = api_on_server(ISSUER).await;
@@ -304,7 +301,8 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
     assert_eq!(waiting["status"], "ok", "{waiting}");
     assert_eq!(waiting["result"]["entries"], json!([]), "{waiting}");
 
-    // A key minted for the workspace makes no owner.
+    // A key minted for the workspace is Ada's own there, an owner's, so it
+    // makes an owner as she does.
     let minted = ada_mcp
         .did("account/keys#mint", json!({"workspace": workspace}))
         .await;
@@ -324,7 +322,7 @@ async fn an_owners_key_adds_an_owner_by_key_whose_key_brings_people_in() {
         json!({"person": hex::encode(ivy.verifying_key().to_bytes()), "role": "owner"}),
     )
     .await;
-    assert_eq!(by_agent["status"], "failed", "{by_agent}");
+    assert_eq!(by_agent["status"], "ok", "{by_agent}");
 }
 
 /// An owner's key moves a member to another role through the action API,

@@ -182,7 +182,7 @@ NoteFileWrittenArgs = TypedDict("NoteFileWrittenArgs", {
 
 class Document(Resource):
     """Document — `word-processor.document`."""
-    __surface__ = "so.tilo.word-processor@44442b4a9bdfb6f5"
+    __surface__ = "so.tilo.word-processor@6e955cbec242485f"
     body: str
     comments: list[Entry[Comment]]
 

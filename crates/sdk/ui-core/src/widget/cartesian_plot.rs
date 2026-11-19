@@ -402,13 +402,6 @@ impl CartesianAnnotation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LegendPosition {
-    Hidden,
-    Top,
-    Bottom,
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CartesianZoom {
     #[default]
@@ -528,7 +521,8 @@ impl Default for CartesianAnimationStyle {
 pub struct CartesianStyle {
     pub x_axis: PlotAxis,
     pub y_axis: PlotAxis,
-    pub legend: LegendPosition,
+    /// The series' legend, under the title as on every chart.
+    pub show_legend: bool,
     pub rendering: CartesianRenderingStyle,
     pub tooltip: CartesianTooltipStyle,
     pub plot_padding: f64,
@@ -548,7 +542,7 @@ impl Default for CartesianStyle {
         Self {
             x_axis: PlotAxis::default(),
             y_axis: PlotAxis::default(),
-            legend: LegendPosition::Top,
+            show_legend: true,
             rendering: CartesianRenderingStyle::default(),
             tooltip: CartesianTooltipStyle::default(),
             plot_padding: 12.0,
@@ -967,10 +961,6 @@ impl CartesianMarks {
         let tight = f64::from(spacing.s1);
         let caption = theme.text(TextRole::Caption);
         let tick_line = f64::from(tr.measure_style("0", None, &caption).1);
-        let title_line = f64::from(
-            tr.measure_style("Ag", None, &theme.text(TextRole::Heading))
-                .1,
-        );
         let yd = self.domain(&self.style.y_axis, false);
         let widest_tick = Self::ticks(&self.style.y_axis, yd, self.frame.rect.height().max(1.0))
             .iter()
@@ -988,43 +978,19 @@ impl CartesianMarks {
         };
         let left = (y_title + widest_tick + gap).ceil();
         let right = self.style.plot_padding.max(gap);
-        let legend_rows = if self.style.legend == LegendPosition::Hidden {
-            0
-        } else {
+        let legend_rows = if self.style.show_legend {
             chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
                 self.frame.rect.x0,
                 self.frame.rect.x1 - right,
             )
-        };
-        let legend = if legend_rows == 0 {
-            0.0
         } else {
-            crate::num::f64_of_usize(legend_rows) * chart_legend::ROW_HEIGHT + gap
+            0
         };
-        let title = if self.frame.title.is_empty() {
-            0.0
-        } else {
-            title_line + gap
-        };
-        let legend_top = gap + title;
-        let top = legend_top
-            + if self.style.legend == LegendPosition::Top {
-                legend
-            } else {
-                0.0
-            }
-            + tick_line / 2.0
-            + gap;
-        let bottom = gap
-            + tick_line
-            + x_title
-            + gap
-            + if self.style.legend == LegendPosition::Bottom {
-                legend
-            } else {
-                0.0
-            };
+        let header = crate::widget::plot::Margins::header(theme, &self.frame.title, legend_rows);
+        let legend_top = header.legend;
+        let top = header.top + tick_line / 2.0;
+        let bottom = gap + tick_line + x_title;
         Bands {
             left,
             top: top.ceil(),
@@ -2322,22 +2288,16 @@ impl CartesianMarks {
     }
 
     fn legend_area(&self) -> Option<Rect> {
-        if self.style.legend == LegendPosition::Hidden {
+        if !self.style.show_legend {
             return None;
         }
-        let left = self.frame.rect.x0;
-        let right = self.frame.rect.x1 - self.bands.right;
-        let y = if self.style.legend == LegendPosition::Top {
-            self.frame.rect.y0 + self.bands.legend_top
-        } else {
-            let rows = chart_legend::rows(
-                self.series.iter().map(|series| series.name.as_str()),
-                left,
-                right,
-            );
-            self.frame.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT
-        };
-        Some(Rect::new(left, y, right, y))
+        let y = self.frame.rect.y0 + self.bands.legend_top;
+        Some(Rect::new(
+            self.frame.rect.x0,
+            y,
+            self.frame.rect.x1 - self.bands.right,
+            y,
+        ))
     }
 
     fn place_legend(&mut self) {
@@ -2774,7 +2734,7 @@ impl PlotMarks for CartesianMarks {
             .collect()
     }
     fn legend_interactive(&self) -> bool {
-        self.style.interactive_legend && self.style.legend != LegendPosition::Hidden
+        self.style.interactive_legend && self.style.show_legend
     }
     fn toggles(&self) -> Option<&chart_legend::SeriesToggles> {
         Some(&self.toggles)
@@ -2887,20 +2847,14 @@ impl PlotMarks for CartesianMarks {
         let plot = self.plot_rect();
         let xd = self.domain(&self.style.x_axis, true);
         let yd = self.domain(&self.style.y_axis, false);
-        if !self.frame.title.is_empty() {
-            tr.draw_style(
-                scene,
-                &self.frame.title,
-                theme.tokens.colors.text_primary,
-                transform
-                    * Affine::translate((
-                        self.frame.rect.x0 + self.bands.gap,
-                        self.frame.rect.y0 + self.bands.gap,
-                    )),
-                None,
-                &theme.text(TextRole::Heading),
-            );
-        }
+        crate::widget::chart_navigation::draw_title(
+            scene,
+            transform,
+            tr,
+            theme,
+            self.frame.rect,
+            &self.frame.title,
+        );
         self.draw_axes(scene, transform, tr, theme, plot, xd, yd);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &plot);
         self.draw_annotations(&mut AnnotationPaintContext {

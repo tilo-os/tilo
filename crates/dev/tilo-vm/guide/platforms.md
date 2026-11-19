@@ -62,6 +62,65 @@ version 4 (the version that carries feedback) built from the desktop's own
 feedback. So `wayland-info` on the desktop's socket lists no dma-buf global,
 while a client inside an app gets one.
 
+### Vulkan (`--vulkan`)
+
+`--gl` gives the guest OpenGL on the host GPU but leaves Vulkan to Mesa's CPU
+driver (lavapipe), so `vkcube` and DXVK (Direct3D through Vulkan, which Proton
+and most Windows games use) render in software. `vm create <name> --gl --vulkan`
+adds virtio-gpu Venus: the guest's Mesa `virtio` Vulkan driver hands its calls
+to virglrenderer, which executes them on the same render node through the host's
+Vulkan driver (RADV on AMD). It needs QEMU 9.2 or newer and virglrenderer
+built with Venus (`strings /usr/lib64/libvirglrenderer.so.1 | grep -m1 venus`).
+
+Venus starts virglrenderer's render server (`/usr/libexec/virgl_render_server`)
+as a child process of QEMU. libvirt starts QEMU with a seccomp sandbox that
+forbids exactly that (`-sandbox ...,spawn=deny`), and the guest then has no
+Vulkan device at all. So under libvirt `--vulkan` needs `seccomp_sandbox = 0`
+in the daemon's `qemu.conf` (`~/.config/libvirt/qemu.conf` for
+`qemu:///session`), read when the daemon starts; `vm create` refuses with that
+fix while the setting is missing. `--hypervisor qemu` starts QEMU without that
+sandbox and needs no change.
+
+Check it from inside the guest (vulkan-tools is not on the image):
+
+```sh
+tilo-vm vm ssh --raw <vm> -- '
+dnf install -y --transient vulkan-tools >/dev/null 2>&1
+vulkaninfo --summary 2>&1 | grep -E "deviceName|driverName"'
+```
+
+A Venus guest lists `driverName = venus` with the host GPU's name
+(`Virtio-GPU Venus (AMD Radeon ...)`) beside `llvmpipe`; without it only
+`llvmpipe` appears.
+
+### Sound (`--sound`)
+
+`vm create <name> --sound` gives the guest a virtio sound card whose output
+QEMU writes to `<disk>.wav` beside the VM's disk, never to this computer's
+speakers or its PipeWire. QEMU appends to the file while the guest plays a
+stream, so whether sound kept playing is a measurement:
+
+```sh
+tilo-vm vm sound <vm>              # seconds written, loudness of the last 2 s
+tilo-vm vm sound <vm> --window 5
+```
+
+"The sound kept playing across a desktop restart" is: a measurement after the
+restart shows more seconds than one before it, and its newest stretch is not
+silent. The file is overwritten when the VM starts again and removed by
+`vm rm`.
+
+### A VM inside the VM (`--memory-mb`)
+
+Every libvirt and qemu VM gets the host CPU (`host-passthrough`), so when the
+host allows nested virtualisation (`/sys/module/kvm_amd/parameters/nested` or
+`kvm_intel`'s reads `1`, or `Y`) the guest has `/dev/kvm` and can start its own
+KVM guests, such as the Windows appliance Tilo starts through libvirt. That
+appliance wants about 4 GiB of its own, so give the VM memory for it and the
+desktop: `vm create <name> --gl --memory-mb 10240`. Check `free -g` on the
+host first; the guest's memory is taken from it while the VM is up. Inside the
+guest, `test -w /dev/kvm && echo kvm` confirms it.
+
 ## Linux: libvirt's user session
 
 VMs live in libvirt's rootless per-user connection, `qemu:///session`: no

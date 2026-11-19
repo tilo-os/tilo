@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::launch_hold::{LAUNCH_REGISTRATION_FD_ENV, LAUNCH_REGISTRATION_STDIN_ENV};
-use launcher::run::{LaunchMode, RunOptions, launch_manifest, run_manifest};
+use launcher::run::{LaunchMode, LaunchOptions, launch_app, launch_manifest};
 
 fn wait_for_registration_fd(
     fd: RawFd,
@@ -141,12 +141,12 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["wayland_socket", "open", "open_uri"])]
         service: bool,
         /// A tilolang app whose instance a tilolang host runs: the process is its window alone, with no
-        /// collaboration connection (`RunOptions::tilolang_process`).
+        /// collaboration connection (`LaunchOptions::tilolang_process`).
         #[arg(long, conflicts_with = "service")]
         tilolang_process: bool,
         /// A tilolang app's connector for the origin named (`imap`), not a window: the process the
         /// session runs for an app whose types hold an outside service's resources, with the socket its
-        /// instances attach over (`RunOptions::tilolang_connector`).
+        /// instances attach over (`LaunchOptions::tilolang_connector`).
         #[arg(long, conflicts_with_all = ["service", "tilolang_process", "wayland_socket", "open", "open_uri"])]
         tilolang_connector: Option<String>,
         /// Trusted service argv, forwarded verbatim after the entrypoint.
@@ -455,7 +455,7 @@ fn windows_x11_sandbox(mut command: Vec<std::ffi::OsString>) -> ExitCode {
 }
 
 /// Fold an `i32` exit code (from [`std::process::ExitStatus::code`] or
-/// [`launcher::run::RunError::to_exit_code`]) into the `u8` [`ExitCode`] takes.
+/// [`launcher::run::LaunchError::to_exit_code`]) into the `u8` [`ExitCode`] takes.
 fn exit_code(code: i32) -> ExitCode {
     ExitCode::from(u8::try_from(code).unwrap_or(1))
 }
@@ -593,7 +593,7 @@ fn dispatch_command(
 
 /// Run the tilolang host the session started, on the socket it handed over at descriptor 3.
 fn tilolang_process(runtime: String, app_runtime: String, storage: PathBuf) -> ExitCode {
-    use launcher::run::tilolang_process::{ProcessLaunch, run_tilolang_process};
+    use launcher::run::tilolang_process::{ProcessLaunch, launch_tilolang_process};
     // SAFETY: the session hands the socket at this descriptor and nothing else owns it in this process.
     let socket = unsafe {
         <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(
@@ -605,7 +605,7 @@ fn tilolang_process(runtime: String, app_runtime: String, storage: PathBuf) -> E
         app_runtime,
         storage,
     };
-    match run_tilolang_process(&launch, socket, &launcher::run::RunOptions::default()) {
+    match launch_tilolang_process(&launch, socket, &launcher::run::LaunchOptions::default()) {
         Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
         Err(error) => {
             eprintln!("tilo-launcher: the tilolang host did not start: {error}");
@@ -898,14 +898,14 @@ struct RunCliArgs {
     rest: Vec<String>,
 }
 
-/// Build [`RunOptions`] from the `run` subcommand's flags and launch either the package's GUI
+/// Build [`LaunchOptions`] from the `run` subcommand's flags and launch either the package's GUI
 /// entrypoint or its explicitly requested managed-service entrypoint.
 fn run_gui_command(
     args: RunCliArgs,
     retained_endpoint: Option<launcher::retained_view::OrdinaryLaunchAdmission>,
 ) -> ExitCode {
     warn_deprecated_minimal_libs(args.minimal_libs);
-    let opts = RunOptions {
+    let opts = LaunchOptions {
         expected_package_hash: args.expected_package_hash,
         no_services: args.no_services,
         runtime_root: args.runtime,
@@ -972,7 +972,7 @@ fn run_gui_command(
                 }
             }
         } else {
-            run_manifest(&manifest, &args.payload_root, &opts)
+            launch_app(&manifest, &args.payload_root, &opts)
         }
     });
     report_launch_result(result, opts.app_id.as_deref())
@@ -989,7 +989,7 @@ fn warn_deprecated_minimal_libs(minimal_libs: bool) {
 }
 
 fn report_launch_result(
-    result: Result<std::process::ExitStatus, launcher::run::RunError>,
+    result: Result<std::process::ExitStatus, launcher::run::LaunchError>,
     app_id: Option<&str>,
 ) -> ExitCode {
     match result {
@@ -1020,8 +1020,8 @@ fn report_launch_result(
 fn verify_in_app_cgroup(
     manifest: &std::path::Path,
     payload_root: &std::path::Path,
-    opts: &RunOptions,
-) -> Result<launcher::manifest::ManifestView, launcher::run::RunError> {
+    opts: &LaunchOptions,
+) -> Result<launcher::manifest::ManifestView, launcher::run::LaunchError> {
     // A launcher already inside an app's cgroup (an app running another program of its own) has
     // nothing to join.
     let born_in_cgroup = launcher::app_cgroup::current_is_app_cgroup();
@@ -1224,7 +1224,7 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
         );
         return ExitCode::from(2);
     }
-    let opts = RunOptions {
+    let opts = LaunchOptions {
         no_services: args.no_services,
         mode: LaunchMode::Gui,
         landlock_enforce: true,
@@ -1239,7 +1239,7 @@ fn exec_installed(package: &str, args: ExecArgs) -> ExitCode {
         open_uri: args.open_uri,
         ..Default::default()
     };
-    match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
+    match launcher::run::launch_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => exit_code(status.code().unwrap_or(1)),
         Err(e) => {
             eprintln!("tilo-launcher: {e}");
@@ -1374,7 +1374,7 @@ fn run_installed(
             std::env::var("TILO_LAUNCHER_NO_MINIMAL_LIBS").as_deref(),
             Ok("1" | "true")
         );
-    let opts = RunOptions {
+    let opts = LaunchOptions {
         no_services,
         expected_package_hash: None,
         runtime_root: None,
@@ -1420,7 +1420,7 @@ fn run_installed(
         tilolang_process: false,
         tilolang_connector: None,
     };
-    match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
+    match launcher::run::launch_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
             if let Some(code) = status.code() {
                 exit_code(code)

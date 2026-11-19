@@ -158,6 +158,7 @@ pub fn for_plan(
     root_guid: &str,
     owned_boot_entry: &str,
     original_boot_order: Vec<String>,
+    install_plan: Option<install_profile_model::plan::Plan>,
     profile: serde_json::Map<String, serde_json::Value>,
 ) -> Handoff {
     Handoff {
@@ -181,6 +182,7 @@ pub fn for_plan(
             owned_boot_entry: owned_boot_entry.into(),
             original_boot_order,
             profile,
+            plan: install_plan,
             migration: None,
         },
     }
@@ -221,6 +223,7 @@ mod tests {
             plan.staging_root.partition_guid.as_deref().unwrap(),
             "0100",
             vec!["0001".into()],
+            None,
             profile,
         )
     }

@@ -12,10 +12,13 @@
 pub use tilo_server_protocol::servers::admin_workspace_id;
 pub use tilo_workspace_service::workspaces::servers::{
     Asked, HISTORY_KEPT, Holding, KEY_HOLDER, MINUTES_PER_DAY, SERVERS, STORE, Server, Servers,
-    UNLOCK_POLICIES, UPDATES, admit, apply, apply_on, device, device_id, enroll, found,
+    UNLOCK_POLICIES, UPDATES, admit, apply, apply_on, device, device_id, enroll, founded,
     holds_admin, name, plan, read, read_on, take_in,
 };
 
+pub use tilo_workspace_service::workspaces::servers::attach;
+
 pub mod applied;
+pub mod first_install;
 pub mod floor;
 pub mod policy;

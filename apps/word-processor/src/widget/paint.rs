@@ -1230,6 +1230,7 @@ impl Editor {
                 &mut ui::paint::PaintCtx::new(scene, ctf, text_renderer, theme),
                 (Some("body"), &l.id, &l.text),
                 (edited, selected),
+                None,
                 &mut |_, _, start, end| {
                     let (start, end) = (l.shown(start), l.shown(end));
                     let rects = layout

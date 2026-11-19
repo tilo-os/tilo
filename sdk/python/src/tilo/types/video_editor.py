@@ -401,7 +401,7 @@ LinkWithArgs = TypedDict("LinkWithArgs", {
 
 class Project(Resource):
     """Project — `video-editor.project`."""
-    __surface__ = "so.tilo.video-editor@1e9101e2655f4676"
+    __surface__ = "so.tilo.video-editor@733428da8248fd18"
     name: str
     fps: float
     width: int

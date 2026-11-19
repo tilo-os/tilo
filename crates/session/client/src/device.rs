@@ -7,8 +7,7 @@ use serde_json::{Map, Value};
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionTarget,
+    ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_server_client::login::Admission;
 #[cfg(not(target_arch = "wasm32"))]
@@ -21,11 +20,11 @@ use tilo_server_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 use web_time::Duration as Wait;
 
-use crate::remote::SessionActions;
 use crate::session::PeerConfig;
 use crate::{Cmd, Link, Outbox, TransportPhase};
 use crate::{MemoryPeerStore, PeerStore};
 use tilo_server_protocol::WorkspaceId;
+use tilo_session_actions::SessionActions;
 
 /// How long joining a workspace waits for its host to admit this device.
 const ADMITTING: Wait = Wait::from_secs(20);
@@ -42,7 +41,7 @@ pub struct Device {
     peer: Link,
     cert: DeviceCert,
     /// The host's own device: whose device answers a workspace's own actions.
-    host_cert: DeviceCert,
+    server_cert: DeviceCert,
     /// The workspace the device entered.
     workspace_id: WorkspaceId,
     /// What this device calls itself, as its host's journals name it.
@@ -66,7 +65,7 @@ impl Device {
         Self::of(
             crate::session::start_session(config.clone(), signer, store),
             config.cert,
-            config.host_cert,
+            config.server_cert,
             label,
         )
     }
@@ -85,7 +84,7 @@ impl Device {
         Self::of(
             crate::session::start_session_lent(config.clone(), signer, store, lent),
             config.cert,
-            config.host_cert,
+            config.server_cert,
             label,
         )
     }
@@ -93,11 +92,11 @@ impl Device {
     /// The device whose session `peer` already is: a page's, which started its session itself.
     /// `cert` must be the one `peer` was started with.
     #[must_use]
-    pub fn of(peer: Link, cert: DeviceCert, host_cert: DeviceCert, label: &str) -> Self {
+    pub fn of(peer: Link, cert: DeviceCert, server_cert: DeviceCert, label: &str) -> Self {
         Self {
             peer,
             cert,
-            host_cert,
+            server_cert,
             workspace_id: WorkspaceId::from_u128(0),
             label: label.to_owned(),
         }
@@ -121,9 +120,9 @@ impl Device {
     ) -> Self {
         Self::over(
             PeerConfig {
-                host: sign_in.host.clone(),
+                host: sign_in.server.clone(),
                 cert: sign_in.cert.clone(),
-                host_cert: sign_in.host_cert.clone(),
+                server_cert: sign_in.server_cert.clone(),
                 revocations: tilo_user_identity::RevocationList::new(),
                 entering,
             },
@@ -214,6 +213,13 @@ impl Device {
             self.peer.status().phase,
             TransportPhase::Closed | TransportPhase::Failed
         )
+    }
+
+    /// Whether the session still holds `workspace_id`: it was let in and has not been told since
+    /// that it may be there no more (taken out, or a key its person revoked there).
+    #[must_use]
+    pub fn holds(&self, workspace_id: WorkspaceId) -> bool {
+        self.peer.status().workspaces.contains_key(&workspace_id)
     }
 
     /// Join `workspace` (its UUID) and wait for its host to say this device is in: its id here.
@@ -562,7 +568,7 @@ impl Device {
     /// This device's actions in `workspace_id`, asked of the workspace's host.
     #[must_use]
     pub fn actions(&self, workspace_id: WorkspaceId) -> SessionActions {
-        SessionActions::new(&self.peer, workspace_id, self.host_cert.device_public_key)
+        SessionActions::new(&self.peer, workspace_id, self.server_cert.device_public_key)
     }
 
     /// Close the session: it says this device left, and stops.
@@ -597,11 +603,11 @@ const RENEWING_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
 
 /// A certificate a device holds from an earlier entry, and the host's own certificate as it was
 /// then: what the page keeps, as `{cert, hostCert}`.
-#[derive(Clone, Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Held {
     pub cert: DeviceCert,
     #[serde(rename = "hostCert")]
-    pub host_cert: Option<DeviceCert>,
+    pub server_cert: Option<DeviceCert>,
 }
 
 /// Whether `kept` and `current` are one host's certificates: the same person's same device.
@@ -649,13 +655,17 @@ pub fn reconnecting(
     now_ns: u64,
 ) -> Reconnecting {
     let answering = admitted
-        .and_then(|admitted| admitted.host_cert.as_ref())
+        .and_then(|admitted| admitted.server_cert.as_ref())
         .unwrap_or(host);
     let kept_elsewhere = kept
-        .and_then(|kept| kept.host_cert.as_ref())
+        .and_then(|kept| kept.server_cert.as_ref())
         .is_some_and(|kept| !same_host(kept, answering));
+    let kept_other_device = match (kept, admitted) {
+        (Some(kept), Some(admitted)) => !same_host(&kept.cert, &admitted.cert),
+        _ => false,
+    };
     match (kept, admitted) {
-        (_, Some(_)) if kept_elsewhere => Reconnecting::AdoptHost,
+        (_, Some(_)) if kept_elsewhere || kept_other_device => Reconnecting::AdoptHost,
         (_, Some(_)) => Reconnecting::Admitted,
         (Some(_), None) if kept_elsewhere => Reconnecting::HostChanged,
         (Some(kept), None) if !with_root || lasting(&kept.cert, now_ns) => Reconnecting::Kept,
@@ -683,7 +693,7 @@ pub async fn entering_certificate(
 ) -> Result<DeviceCert, DeviceRefusal> {
     let serves = |held: &&Held| {
         let same_host = held
-            .host_cert
+            .server_cert
             .as_ref()
             .is_some_and(|kept| same_host(kept, host));
         let person = root.is_none_or(|root| held.cert.user_public_key == root.device_public_key());
@@ -1248,7 +1258,7 @@ mod tests {
     fn held(device: u8, host: u8, expires_at_ns: Option<u64>) -> Held {
         Held {
             cert: cert(device, expires_at_ns),
-            host_cert: Some(cert(host, None)),
+            server_cert: Some(cert(host, None)),
         }
     }
 
@@ -1285,6 +1295,12 @@ mod tests {
             assert_eq!(
                 reconnecting(Some(&kept), Some(&admitted), &host, true, now),
                 Reconnecting::Admitted
+            );
+            // Same server, another device identity: move the previous device's state aside.
+            let other_device = held(3, 9, None);
+            assert_eq!(
+                reconnecting(Some(&kept), Some(&other_device), &host, true, now),
+                Reconnecting::AdoptHost
             );
             // A root renews what ends within a day; a paired device goes on until refused.
             let ending = held(2, 9, Some(now + day / 2));

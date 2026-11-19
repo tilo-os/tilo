@@ -2442,8 +2442,8 @@
       "doc": "Nodes that are views of their own, placed where each says (or in rows when none says), and the connections between them drawn under them: a pipeline, a flow, the parts of a system.",
       "props": [
         {
-          "name": "name",
-          "doc": "What the graph is, for assistive technology.",
+          "name": "title",
+          "doc": "What the graph is called: shown over it, as every chart's title is, and its name for assistive technology.",
           "type": {
             "option": "text"
           }
@@ -2487,7 +2487,7 @@
       ],
       "semantics": {
         "role": "Group",
-        "label": "name"
+        "label": "title"
       }
     },
     {
@@ -2787,6 +2787,13 @@
           "doc": "The resource the row shows, which activating the row opens.",
           "type": {
             "option": "resource"
+          }
+        },
+        {
+          "name": "edits",
+          "doc": "The field its title shows, by the address a field bound to it is named by: the item's id and the field's, as an action on it is addressed. An agent's rename there is drawn on the title, as on the field that edits it.",
+          "type": {
+            "option": "text"
           }
         },
         {
@@ -4224,10 +4231,15 @@
         },
         {
           "name": "icon",
-          "doc": "A glyph instead of the label, on an icon-only button.",
+          "doc": "A glyph before the label, or instead of it when `icon_only`.",
           "type": {
             "option": "icon"
           }
+        },
+        {
+          "name": "icon_only",
+          "doc": "The glyph alone, with the label as its tooltip and accessible name.",
+          "type": "bool"
         },
         {
           "name": "side",
@@ -4334,7 +4346,7 @@
         },
         {
           "name": "label",
-          "doc": "What is under way (\"Uploading\"); a named bar announces its progress without taking focus.",
+          "doc": "What is under way (\"Uploading\"), shown over the track; a named bar announces its progress without taking focus.",
           "type": {
             "option": "text"
           }
@@ -5307,7 +5319,7 @@
     },
     {
       "name": "TimePicker",
-      "doc": "A time of day, as three spinners for hours, minutes and seconds: the arrows step a spinner and so does the wheel over its cell. It is the time in the person's own zone today.",
+      "doc": "A time of day, as spinners for hours and minutes, and for seconds when the time holds some: the arrows step a spinner and so does the wheel over its cell. It is the time in the person's own zone today.",
       "props": [
         {
           "name": "label",
@@ -8077,7 +8089,7 @@
         },
         {
           "name": "done",
-          "doc": "The item is one the person has finished with — its box checked off — though its row may still stand in the list until they leave the place: a heading counts what is left to do, so it does not count this row ([`crate::widget::heading_count`]).",
+          "doc": "The item is one the person has finished with — its box checked off — though its row may still stand in the list until they leave the place: its title reads struck through, as a checked-off row's does, and a heading counts what is left to do, so it does not count this row ([`crate::widget::heading_count`]).",
           "type": "bool"
         },
         {

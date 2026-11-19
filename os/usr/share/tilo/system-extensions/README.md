@@ -272,7 +272,15 @@ A `sysext-raw` part is exactly one artifact (up to 6 GiB) pinned by URL, length
 and SHA-256 in a manifest signed by the same extension-manifest key as every
 other manifest. `tools/extensions/sysext_image.py manifest` writes it from the
 descriptor the build printed; `tools/ci/publish/extension-manifests.sh` pins
-it for each promoted image and `publish.sh` signs and publishes it unchanged. On the device
+it for each promoted image and `publish.sh` signs and publishes it unchanged.
+The image and its descriptor come from t's `os-windows-compat-<arch>` checks
+(the `windows-compat` image of `os/image/layers.toml`), which
+`publish-windows-compat-<arch>` uploads beside main's dev images
+(`tools/ci/publish/windows-compat-sysext.sh`): the image under its SHA-256, the
+descriptor under the commit of the dev image that installs it. An extension
+that does not resolve for an image (its upstream repository out of step with
+the base) keeps its last published manifest and fails the publishing check
+after the others are out, rather than holding them back. On the device
 the helper verifies the signature, downloads and hashes the file, and activation
 (every boot, offline) re-hashes it and links it into `/var/lib/extensions` as
 `<part>.raw` (copying when `/var/lib/extensions` and the state directory are
@@ -282,10 +290,11 @@ through the image's own `extension-release`. Remove deletes the image and its
 record; capsules and VM disks are untouched.
 
 The default path works without it. The compatibility planner refuses a launch
-with `WindowsSupportNotInstalled`, and `tilo-windows-provision` explains the
-missing media; both name the one action that fixes it:
-`systemctl start tilo-extension@install:windows-compat.service` (an
-administrator; the existing polkit rule already allows it).
+with `WindowsSupportNotInstalled`, which tells the person to turn on
+Windows apps in Settings (the action behind it is
+`systemctl start tilo-extension@install:windows-compat.service`, which the
+existing polkit rule allows an administrator), and `tilo-windows-provision`
+explains the missing media and names that action.
 
 ### Device state
 

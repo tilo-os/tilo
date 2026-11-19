@@ -346,7 +346,7 @@ mod tests {
     fn a_theme_change_redraws_the_cached_subtree() {
         let mut col = Column::new()
             .with_intrinsic_height()
-            .push(Box::new(crate::widget::Checkbox::new("probe", "probe")));
+            .push(Box::new(crate::widget::Checkbox::bound("probe", "probe")));
         let _ = lay_out(&mut col);
         let mut tr = TextRenderer::new();
         let presence = crate::presence::PresenceCtx::default();
@@ -366,7 +366,7 @@ mod tests {
         let light_alone = {
             let mut fresh = Column::new()
                 .with_intrinsic_height()
-                .push(Box::new(crate::widget::Checkbox::new("probe", "probe")));
+                .push(Box::new(crate::widget::Checkbox::bound("probe", "probe")));
             let _ = lay_out(&mut fresh);
             frame(&mut fresh, &Theme::light())
         };

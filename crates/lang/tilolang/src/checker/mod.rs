@@ -35,8 +35,8 @@ use crate::ast::{self, Item, StmtKind};
 use crate::diag::{Diagnostic, Span};
 use crate::ir::{self, Conv, Ek, Facts, ForList, FuncKind, LocalId, Stmt};
 use crate::resolve::{CKind, Callable, Env, ParamInfo, resolve_type_expr};
-use crate::types::{MergeKind, Ty};
-use std::collections::HashMap;
+use crate::types::{MergeKind, Ty, TypeKey};
+use std::collections::{BTreeSet, HashMap};
 
 type Ex = ir::Expr;
 
@@ -167,6 +167,57 @@ struct FnState {
     choosing: bool,
 }
 
+/// Refuse initial content that makes itself again: a type whose initial action inserts a
+/// resource whose own initial content, at some depth, inserts one of the first type, so making
+/// one would never end. `initials` holds each initial action's type, name and inserted types.
+fn initial_cycle(
+    diags: &mut Vec<Diagnostic>,
+    initials: &[(TypeKey, ast::Ident, BTreeSet<TypeKey>)],
+) {
+    for (start, name, _) in initials {
+        let mut path: Vec<&TypeKey> = vec![start];
+        let mut seen: BTreeSet<&TypeKey> = BTreeSet::new();
+        let mut found = None;
+        // Depth first from the type, along what each initial action inserts.
+        let mut stack: Vec<(usize, &TypeKey)> = vec![(0, start)];
+        while let Some((depth, at)) = stack.pop() {
+            path.truncate(depth);
+            path.push(at);
+            let Some((_, _, inserts)) = initials.iter().find(|(ty, _, _)| ty == at) else {
+                continue;
+            };
+            for next in inserts {
+                if next == start {
+                    found = Some(path.clone());
+                    break;
+                }
+                if seen.insert(next) {
+                    stack.push((depth.saturating_add(1), next));
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        let Some(path) = found else { continue };
+        let starts: Vec<String> = path
+            .iter()
+            .skip(1)
+            .chain(std::iter::once(&start))
+            .map(|key| format!("`{}`", key.name))
+            .collect();
+        diags.push(Diagnostic::new(
+            "E143",
+            name.span,
+            format!(
+                "making a `{}` would never end: it starts with a {}. Insert the inner ones from an action a person invokes instead",
+                start.name,
+                starts.join(", which starts with a ")
+            ),
+        ));
+    }
+}
+
 /// Where the UI being lowered stands, saved and restored around each block.
 #[derive(Clone, Copy, Default)]
 #[allow(
@@ -202,6 +253,9 @@ pub(crate) struct Checker<'a> {
     env: &'a Env,
     diags: &'a mut Vec<Diagnostic>,
     st: FnState,
+    /// The types of what the declaration being checked inserts into a collection: what an initial
+    /// action makes, each with its own initial content ([`initial_cycle`]).
+    inserted: BTreeSet<TypeKey>,
     /// Views made of UI loop bodies, in the order made; their functions follow the declared ones,
     /// from `synth_base` on.
     synth: Vec<(ir::Func, ir::SynthView)>,
@@ -272,6 +326,7 @@ fn lower(
         env,
         diags,
         st: FnState::default(),
+        inserted: BTreeSet::new(),
         synth: Vec::new(),
         synth_base: declared,
         states: Vec::new(),
@@ -286,6 +341,7 @@ fn lower(
     };
     let mut funcs = Vec::new();
     let mut declaring: Vec<(usize, Span)> = Vec::new();
+    let mut initials = Vec::new();
     for item in &module.items {
         let idx = funcs.len();
         let Some(callable) = env.callables.iter().find(|x| x.func == Some(idx)).cloned() else {
@@ -315,10 +371,17 @@ fn lower(
             }
         };
         funcs.push(f);
+        let inserted = std::mem::take(&mut c.inserted);
+        if let Item::Action(a) = item
+            && let Some((ast::ActionRole::Initial, _)) = a.role
+            && let Some(Ty::Record(target)) = callable.params.first().map(|p| &p.ty)
+        {
+            initials.push((target.clone(), a.name.clone(), inserted));
+        }
         if let Item::Action(a) = item
             && !matches!(
                 a.role.as_ref().map(|(role, _)| *role),
-                Some(ast::ActionRole::Migration)
+                Some(ast::ActionRole::Migration | ast::ActionRole::Initial)
             )
             && !c.last_writes.is_empty()
         {
@@ -356,6 +419,7 @@ fn lower(
         c.at = Some(written.span.start);
         funcs.push(c.run_default(action, d.param, written));
     }
+    initial_cycle(c.diags, &initials);
     c.check_proposals(module);
     c.check_one_command();
     let mut views = Vec::new();
@@ -460,6 +524,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         env,
         diags,
         st: FnState::default(),
+        inserted: BTreeSet::new(),
         synth: Vec::new(),
         synth_base: 0,
         states: Vec::new(),
@@ -509,6 +574,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         env,
         diags,
         st: FnState::default(),
+        inserted: BTreeSet::new(),
         synth: Vec::new(),
         synth_base: 0,
         states: Vec::new(),

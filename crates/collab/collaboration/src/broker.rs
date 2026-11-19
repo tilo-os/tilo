@@ -83,7 +83,7 @@ use inbound_document::{
     DecryptFailure, UndeliveredDocument, decrypt_document_payload, signed_document_event,
 };
 
-use crate::time::{Duration, Instant};
+use crate::time::Duration;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use runtime_portal::RawFd;
 use std::pin::Pin;
@@ -411,6 +411,9 @@ pub(super) struct BrokerTransport {
     pending_primary: Option<mpsc::Receiver<Result<RouteSpec, String>>>,
     /// The shovel dropped a primary-route reply unanswered: it has exited.
     worker_stopped: bool,
+    /// Every invocation stream ended after [`CollabTransport::stop_invocations`],
+    /// and the owner has taken every invocation they handed over.
+    invocations_stopped: bool,
     /// Durable commands the bounded queue had no room for, in submission
     /// order. They wait here for the shovel to catch up instead of
     /// disabling collaboration; see [`Self::enqueue`].
@@ -704,6 +707,10 @@ impl CollabTransport for BrokerTransport {
         self.invocation_owners.clear();
         self.state.begin_poll();
         self.flush_spill();
+        // Asked before the events are taken: a stream counts as ended only
+        // after the last invocation it handed over is queued, so every one
+        // of them is among the events taken below.
+        let stopped = self.state.invocation_feeds.lock_recover().stopped();
         while let Ok(mut evt) = self.inbound_rx.try_recv() {
             match evt._turn.take() {
                 Some(EventTurn::Invocation(turns, owner)) => {
@@ -717,6 +724,38 @@ impl CollabTransport for BrokerTransport {
             }
             out.push(evt.event);
         }
+        self.invocations_stopped |= stopped;
+    }
+
+    fn stop_invocations(&mut self) -> Result<(), TransportError> {
+        if !self.state.is_healthy() {
+            return Err(TransportError::Closed);
+        }
+        self.state.invocation_feeds.lock_recover().stop();
+        // Streams that ended already leave nothing to wait for: the next drain says so.
+        self.state.notify_events();
+        Ok(())
+    }
+
+    fn invocations_stopped(&self) -> bool {
+        self.invocations_stopped
+    }
+
+    fn resume_invocations(&mut self) -> Result<(), TransportError> {
+        if !self.state.is_healthy() {
+            return Err(TransportError::Closed);
+        }
+        {
+            let mut feeds = self.state.invocation_feeds.lock_recover();
+            if !feeds.stopping {
+                // Nothing to take back: the routes' streams were never ended.
+                return Ok(());
+            }
+            feeds.resume();
+        }
+        self.invocations_stopped = false;
+        // The ended streams stay ended: each joined route subscribes again.
+        self.enqueue(SdkCommand::ResumeInvocations)
     }
 
     fn set_document_owner_routes(&mut self, routes: Vec<RouteSpec>, document_generation: u64) {
@@ -999,6 +1038,9 @@ enum SdkCommand {
     FlushSettings,
     /// Send the app's live activity over the primary route.
     FlushLiveActivity,
+    /// Subscribe each joined route's invocation stream again, after the
+    /// owner called off the close that asked for no more.
+    ResumeInvocations,
     /// Report the channel-key schedule once the key round in flight settles.
     #[cfg(test)]
     KeyScheduleProbe(mpsc::SyncSender<KeyScheduleSeen>),
@@ -1089,15 +1131,15 @@ pub(crate) struct BridgeState {
     /// actions still waiting for the rest of them: what the app applies as
     /// one action, and what history reads.
     commits: Arc<std::sync::Mutex<crate::commits::Commits>>,
-    /// Why each route whose last join failed failed, by channel: a route
+    /// Why each route whose last join failed failed, by route key: a route
     /// that never joined says so instead of staying unready without a word.
     route_join_failures: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     /// The record routes whose queued changes were let go since their owner
     /// last asked ([`CollabTransport::take_unpublished_route`]).
     unpublished_routes: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    /// The kind each joined route's record holds, by channel: a change that
-    /// arrives on a route awaiting its first join re-joins it naming the kind
-    /// the owner opened the record with.
+    /// The kind each joined route's document holds, by route key: a change
+    /// that arrives on a route awaiting its first join re-joins it naming the
+    /// kind the owner opened the document with.
     route_resource_types: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     healthy: Arc<AtomicBool>,
     publication_failure: Arc<std::sync::Mutex<Option<DocumentPublicationError>>>,
@@ -1129,6 +1171,9 @@ pub(crate) struct BridgeState {
     /// pending. Written by the shovel, read by the owner through
     /// [`CollabTransport::join_hold`].
     join_hold: Arc<std::sync::Mutex<Option<super::JoinHold>>>,
+    /// The invocation streams of this connection's routes, and whether the
+    /// owner asked for no more invocations.
+    invocation_feeds: Arc<std::sync::Mutex<InvocationFeeds>>,
     /// How often a queued document mutation found its route not yet
     /// publishable and waited again.
     #[cfg(test)]
@@ -1327,6 +1372,7 @@ impl BridgeState {
             wake_pending: Arc::new(AtomicBool::new(false)),
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
             join_hold: Arc::default(),
+            invocation_feeds: Arc::default(),
             #[cfg(test)]
             publication_hold_waits: Arc::default(),
             #[cfg(all(test, unix))]
@@ -2032,7 +2078,7 @@ pub type EndpointChannelKeys = std::sync::Arc<
             &str,
             u64,
         )
-            -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>
+            -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable>
         + Send
         + Sync,
 >;
@@ -2099,7 +2145,7 @@ trait SdkCertifiedIdentity: Send + Sync {
         app_id: &str,
         document_id: &str,
         known_generation: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable>;
+    ) -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable>;
     fn device_certificate(&self) -> Option<&[u8]>;
     fn signing_public_key(&self) -> [u8; 32];
     fn sign_collaboration_join(
@@ -2115,15 +2161,15 @@ trait SdkCertifiedIdentity: Send + Sync {
     ) -> Result<[u8; 64], runtime_portal::NotAvailable>;
 }
 
-impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIdentity> {
+impl SdkCertifiedIdentity for std::sync::Arc<tilo_identity_client::BrokerSigningIdentity> {
     fn group_keys(
         &self,
         workspace_id: &str,
         app_id: &str,
         document_id: &str,
         known_generation: u64,
-    ) -> Result<runtime_identity::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
-        runtime_identity::BrokerSigningIdentity::group_keys(
+    ) -> Result<tilo_identity_client::wire::ChannelKeysReply, runtime_portal::NotAvailable> {
+        tilo_identity_client::BrokerSigningIdentity::group_keys(
             self.as_ref(),
             workspace_id,
             app_id,
@@ -2141,7 +2187,7 @@ impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIden
         &self,
         workspace_id: &str,
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        runtime_identity::BrokerSigningIdentity::sign_collaboration_join(
+        tilo_identity_client::BrokerSigningIdentity::sign_collaboration_join(
             self.as_ref(),
             workspace_id,
         )
@@ -2153,7 +2199,7 @@ impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIden
         document_id: &str,
         unsigned_op: &[u8],
     ) -> Result<[u8; 64], runtime_portal::NotAvailable> {
-        runtime_identity::BrokerSigningIdentity::sign_collaboration_op(
+        tilo_identity_client::BrokerSigningIdentity::sign_collaboration_op(
             self.as_ref(),
             workspace_id,
             app_id,
@@ -2162,10 +2208,6 @@ impl SdkCertifiedIdentity for std::sync::Arc<runtime_identity::BrokerSigningIden
         )
     }
 }
-
-#[cfg(all(test, unix))]
-#[path = "broker_identity_tests.rs"]
-mod identity_host_fixture;
 
 #[cfg_attr(
     not(unix),
@@ -2195,7 +2237,7 @@ struct LocalSdkJoinIdentity {
 
 enum LocalSdkDocumentSigner {
     Inherited(SdkDocumentSigner),
-    Host(runtime_identity::AsyncBrokerSigningIdentity),
+    Host(tilo_identity_client::AsyncBrokerSigningIdentity),
 }
 
 impl From<SdkJoinIdentity> for LocalSdkJoinIdentity {
@@ -2229,7 +2271,7 @@ fn harness_presentation() -> Vec<u8> {
 
 #[cfg(unix)]
 fn sdk_join_identity(cluster_id: Uuid) -> Result<SdkJoinIdentity, runtime_portal::NotAvailable> {
-    sdk_join_identity_from(runtime_identity::load()?, cluster_id)
+    sdk_join_identity_from(tilo_identity_client::load()?, cluster_id)
 }
 
 #[cfg_attr(
@@ -2292,7 +2334,7 @@ fn sdk_join_identity_from<I: SdkCertifiedIdentity + 'static>(
     reason = "the host identity transport is constructed and retained only on the shovel LocalSet"
 )]
 async fn sdk_join_identity_from_host(
-    mut identity: runtime_identity::AsyncBrokerSigningIdentity,
+    mut identity: tilo_identity_client::AsyncBrokerSigningIdentity,
     cluster_id: Uuid,
 ) -> Result<LocalSdkJoinIdentity, runtime_portal::NotAvailable> {
     let device_certificate = identity
@@ -2693,7 +2735,7 @@ impl CollaborationManager {
         identity: std::os::fd::BorrowedFd<'_>,
         route: RouteSpec,
     ) -> Result<Self, crate::NativeLaunchError> {
-        let signing = runtime_identity::inherited::connect_service(identity)
+        let signing = tilo_identity_client::inherited::connect_service(identity)
             .map_err(|error| native_launch_refusal(&error))?;
         let identity = sdk_join_identity_from(signing, route.cluster_id)
             .map_err(|error| native_launch_refusal(&error))?;
@@ -3248,6 +3290,7 @@ impl CollaborationManager {
             action_directory_tx,
             pending_primary: None,
             worker_stopped: false,
+            invocations_stopped: false,
             spill: std::collections::VecDeque::new(),
             barrier_slot: None,
             queued_barrier: std::sync::Weak::new(),
@@ -3494,7 +3537,7 @@ fn run_shovel(
                 match (connector.connect)(route).await {
                     Ok((collaboration_stream, identity_stream, descriptors)) => {
                         let identity =
-                            runtime_identity::AsyncBrokerSigningIdentity::from_connected_io(
+                            tilo_identity_client::AsyncBrokerSigningIdentity::from_connected_io(
                                 identity_stream,
                                 identity_timeout,
                             )
@@ -3956,7 +3999,7 @@ async fn drive_shovel(
             SdkCommand::Hello(hello) => {
                 // A route already joining beside this loop (the record this
                 // window prepared) joins once: a second join of the same
-                // channel replaces the committed read the first one staged,
+                // route replaces the committed read the first one staged,
                 // and leaves the owner with a route it cannot publish on.
                 // So this announcement joins nothing and takes the route as
                 // the primary one when that join ends.
@@ -4117,6 +4160,8 @@ async fn drive_shovel(
                         Err(DocumentPublicationError::Failed(reason))
                     })
                 }));
+                // An owner waiting on the receipt hears it now, not at its next input.
+                inbound_tx.state.notify_events();
             }
             SdkCommand::InstallEncryption { spec, group, reply } => {
                 let result =
@@ -4246,6 +4291,11 @@ async fn drive_shovel(
             SdkCommand::FlushLiveActivity => {
                 if let Some(link) = live_activity_link.as_ref() {
                     link.flush(false).await;
+                }
+            }
+            SdkCommand::ResumeInvocations => {
+                for route in routes.values() {
+                    route.take_invocations_again(&inbound_tx);
                 }
             }
             #[cfg(test)]
@@ -4482,7 +4532,7 @@ struct SdkRoute {
     committed: bool,
 }
 
-/// What publishing a route's document takes: its channel and its keys,
+/// What publishing a route's document takes: its broker connection and its keys,
 /// shared with the connection's [`DocumentQueue`].
 #[derive(Clone)]
 struct DocumentRoute {
@@ -4496,6 +4546,14 @@ impl std::ops::Deref for SdkRoute {
 
     fn deref(&self) -> &DocumentRoute {
         &self.document
+    }
+}
+
+impl SdkRoute {
+    /// Subscribe this route's invocation stream again, after the owner called off the close
+    /// that asked for no more.
+    fn take_invocations_again(&self, inbound_tx: &InboundBridge) {
+        take_invocations_once_current(self.channel.clone(), self.spec.clone(), inbound_tx.clone());
     }
 }
 
@@ -4634,22 +4692,21 @@ async fn publish_document(
     inbound_tx: &InboundBridge,
     role: RouteRole,
 ) -> bool {
-    match wait_for_document_publication(route, &inbound_tx.state).await {
+    match wait_for_document_publication(route, &inbound_tx.state, role).await {
         PublicationWait::Open => {}
         PublicationWait::Stopped => return false,
-        // A record's route can wait on another device (its keys come
-        // from one that holds them): only that record waits, and its
-        // owner sends it whole once the route opens.
-        PublicationWait::Late if role == RouteRole::Record => {
+        // A document beside the app's own can wait on another device (it,
+        // or its keys, come from one that holds them): only that document
+        // waits, and its owner sends it whole once the route opens.
+        PublicationWait::HeldBack(why) => {
+            tracing::warn!(%why, "collab: a document's route is not open to publish to");
             inbound_tx.state.route_unpublished(route.spec.channel_id());
             return false;
         }
-        PublicationWait::Late => {
-            inbound_tx.state.publication_failed(
-                "queued document publication",
-                "hydration did not become current before deadline",
-                true,
-            );
+        PublicationWait::Never(why) => {
+            inbound_tx
+                .state
+                .publication_failed("queued document publication", why, true);
             return false;
         }
     }
@@ -4991,14 +5048,23 @@ async fn spawn_context_stream(
     }
 }
 
+/// The delivery turns of an accepted invocation's document owner routes,
+/// held until the owner takes it, so no read withdraws the document it is
+/// delivered against.
 #[derive(Debug)]
 struct NativeInvocationTurn {
     permits: Vec<tokio::sync::OwnedSemaphorePermit>,
-    deadline: Instant,
 }
 
-// Use the existing three-second native publication hydration bound. The
-// accepted invocation stays on its original stream task, without another queue.
+/// Wait until every document owner route of `key` is current, and take their
+/// delivery turns. The route took this invocation only once it was current
+/// ([`take_invocations_once_current`]); a read catching up since is waited
+/// for, as long as it takes. It fails, saying why, only when the document
+/// was replaced or one of its routes will not become current.
+#[allow(
+    clippy::future_not_send,
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
+)]
 async fn native_invocation_delivery_turn(
     key: &str,
     state: &BridgeState,
@@ -5006,53 +5072,45 @@ async fn native_invocation_delivery_turn(
     let Some(generation) = state.document_reads.delivery_generation(key) else {
         return Ok(None);
     };
-    let deadline = crate::time::now() + Duration::from_secs(3);
     loop {
         // Enabled before the checks: a change between them still wakes it.
         let changed = state.document_reads.reader_wake();
+        let owners = state.document_reads.document_owner_routes(key);
+        if let Some(why) = owners
+            .iter()
+            .find_map(|owner| state.document_reads.unreadable(owner))
+        {
+            return Err(format!("the action's document cannot be read: {why}"));
+        }
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
             return Err("original invocation document ownership was retired".into());
         }
-        if crate::time::now() >= deadline {
-            return Err("original invocation capture did not become current".into());
-        }
-        let mut turns = Vec::new();
-        let owners = state.document_reads.document_owner_routes(key);
+        let mut permits = Vec::new();
         for owner in &owners {
             let semaphore = state.document_reads.delivery_turn(owner)?;
-            let remaining = deadline.saturating_duration_since(crate::time::now());
-            let turn = tokio::time::timeout(remaining, semaphore.acquire_owned())
-                .await
-                .map_err(|_| "original invocation capture did not become current")?
-                .map_err(|_| "original invocation delivery turn closed")?;
-            turns.push(turn);
+            permits.push(
+                semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "original invocation delivery turn closed")?,
+            );
         }
         if !state.is_healthy() || !state.document_reads.current(key, &generation) {
             return Err("original invocation document ownership was retired".into());
-        }
-        if crate::time::now() >= deadline {
-            return Err("original invocation capture did not become current".into());
         }
         if state.document_reads.document_owner_routes(key) == owners
             && owners
                 .iter()
                 .all(|owner| state.document_reads.publishable(owner))
         {
-            return Ok(Some(NativeInvocationTurn {
-                permits: turns,
-                deadline,
-            }));
+            return Ok(Some(NativeInvocationTurn { permits }));
         }
-        drop(turns);
-        let remaining = deadline.saturating_duration_since(crate::time::now());
-        if remaining.is_zero() {
-            return Err("original invocation capture did not become current".into());
-        }
-        let _ = tokio::time::timeout(remaining, changed).await;
+        drop(permits);
+        changed.await;
     }
 }
 
-// This existing host verb rechecks the original channel's current read
+// This existing call rechecks the original route's current read
 // ownership and exact pending job. A waited delivery cannot reuse stale authority.
 #[allow(
     clippy::future_not_send,
@@ -5089,7 +5147,7 @@ async fn recheck_native_invocation(
 }
 
 /// The code an invocation fails with when the app never took it: its document
-/// did not become current for it to run against.
+/// was replaced, or cannot be read for it to be delivered against.
 pub(crate) const UNDELIVERED_INVOCATION: &str = "action_not_delivered";
 
 /// Answer `invocation`, which the app never took (`why`), with its failure:
@@ -5138,6 +5196,108 @@ async fn fail_undelivered_invocation(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
+/// The invocation streams of one connection's routes, read until the broker
+/// ends them.
+#[derive(Default)]
+struct InvocationFeeds {
+    /// Each stream still read, by the number it was opened under.
+    open: std::collections::HashMap<u64, runtime_collab::InvocationStream>,
+    next: u64,
+    /// The owner asked for no more invocations: every stream is finished,
+    /// a stream opened later included.
+    stopping: bool,
+}
+
+impl InvocationFeeds {
+    /// Ask the broker to end every stream once it has handed over what it
+    /// holds, and every stream opened from now on as soon as it opens.
+    fn stop(&mut self) {
+        self.stopping = true;
+        for stream in self.open.values() {
+            stream.finish();
+        }
+    }
+
+    /// Take invocations again: the streams [`Self::stop`] ended are replaced
+    /// by the ones the connection's joined routes subscribe to next.
+    fn resume(&mut self) {
+        self.stopping = false;
+    }
+
+    /// Whether every stream ended after the owner asked for no more.
+    fn stopped(&self) -> bool {
+        self.stopping && self.open.is_empty()
+    }
+}
+
+/// One invocation stream being read; it stops counting as open when dropped,
+/// after its reader queued the last invocation it handed over.
+struct OpenInvocationFeed {
+    state: BridgeState,
+    number: u64,
+}
+
+impl OpenInvocationFeed {
+    fn open(state: &BridgeState, stream: &runtime_collab::InvocationStream) -> Self {
+        let mut held = state.invocation_feeds.lock_recover();
+        let number = held.next;
+        held.next += 1;
+        if held.stopping {
+            stream.finish();
+        }
+        held.open.insert(number, stream.clone());
+        drop(held);
+        Self {
+            state: state.clone(),
+            number,
+        }
+    }
+}
+
+impl Drop for OpenInvocationFeed {
+    fn drop(&mut self) {
+        let mut feeds = self.state.invocation_feeds.lock_recover();
+        feeds.open.remove(&self.number);
+        let stopped = feeds.stopped();
+        drop(feeds);
+        if stopped {
+            self.state.notify_events();
+        }
+    }
+}
+
+/// Take `spec`'s invocations once its route is current: its history read
+/// and merged, so the app can publish what an action changes. Until then the
+/// broker holds each invocation for an instance that can answer it, this one
+/// once it is current, rather than handing it to one that cannot. A route
+/// that will not become current takes none, and says why.
+fn take_invocations_once_current(
+    channel: runtime_collab::ChannelHandle,
+    spec: RouteSpec,
+    inbound_tx: InboundBridge,
+) {
+    tokio::task::spawn_local(async move {
+        let key = spec.channel_id();
+        let state = &inbound_tx.state;
+        loop {
+            // Enabled before the checks: a change between them still wakes it.
+            let changed = state.document_reads.reader_wake();
+            if !state.is_healthy() || state.invocation_feeds.lock_recover().stopping {
+                return;
+            }
+            if state.document_reads.publishable(&key) {
+                break;
+            }
+            if let Some(why) = state.document_reads.unreadable(&key) {
+                tracing::warn!(route = %key, %why, "collab: this route takes no invocations");
+                return;
+            }
+            changed.await;
+        }
+        spawn_invocation_stream(&channel, &spec, &inbound_tx).await;
+    });
+}
+
 async fn spawn_invocation_stream(
     channel: &runtime_collab::ChannelHandle,
     spec: &RouteSpec,
@@ -5145,9 +5305,12 @@ async fn spawn_invocation_stream(
 ) {
     if let Ok(stream) = channel.subscribe_stable_invocations().await {
         let tx = inbound_tx.clone();
-        let cancellation_channel = channel.clone();
+        let connection = channel.clone();
         let key = spec.channel_id();
+        let open = OpenInvocationFeed::open(&inbound_tx.state, &stream);
         tokio::task::spawn_local(async move {
+            // Counted as open until the last invocation it handed over is queued.
+            let _open = open;
             while let Ok(invocation) = stream.read().await {
                 // Bound to the document current on arrival: if the App
                 // replaces it before dispatch, the job is refused, never run
@@ -5159,35 +5322,26 @@ async fn spawn_invocation_stream(
                     // why, and the stream goes on to the next. Only a failure
                     // the broker may or may not have kept leaves its outcome
                     // unknown, which stops collaboration.
-                    Err(error) => match fail_undelivered_invocation(
-                        &cancellation_channel,
-                        &invocation,
-                        &error,
-                    )
-                    .await
-                    {
-                        Ok(()) => continue,
-                        Err(lost) => {
-                            tx.state
-                                .fail_closed("native invocation capture; outcome unknown");
-                            tracing::warn!(
-                                %error,
-                                %lost,
-                                "accepted invocation retains unknown outcome"
-                            );
-                            break;
+                    Err(error) => {
+                        match fail_undelivered_invocation(&connection, &invocation, &error).await {
+                            Ok(()) => continue,
+                            Err(lost) => {
+                                tx.state
+                                    .fail_closed("native invocation capture; outcome unknown");
+                                tracing::warn!(
+                                    %error,
+                                    %lost,
+                                    "accepted invocation retains unknown outcome"
+                                );
+                                break;
+                            }
                         }
-                    },
+                    }
                 };
-                if let Some(turn) = &turn {
-                    match tokio::time::timeout_at(
-                        tokio::time::Instant::from_std(turn.deadline),
-                        recheck_native_invocation(&cancellation_channel, &invocation),
-                    )
-                    .await
-                    {
-                        Ok(Ok(true)) if crate::time::now() < turn.deadline => {}
-                        Ok(Ok(false)) => continue,
+                if turn.is_some() {
+                    match recheck_native_invocation(&connection, &invocation).await {
+                        Ok(true) => {}
+                        Ok(false) => continue,
                         result => {
                             tx.state
                                 .fail_closed("native invocation authority; outcome unknown");
@@ -5221,11 +5375,11 @@ async fn spawn_invocation_stream(
                     break;
                 }
                 let cancellation_tx = tx.clone();
-                let channel = cancellation_channel.clone();
+                let watch = connection.clone();
                 tokio::task::spawn_local(async move {
                     loop {
                         tokio::time::sleep(crate::time::Duration::from_millis(100)).await;
-                        match channel.invocation_cancellation(id).await {
+                        match watch.invocation_cancellation(id).await {
                             Ok(false) => {}
                             Ok(true) => {
                                 let _ = cancellation_tx
@@ -5716,8 +5870,11 @@ async fn spawn_presence_stream(
 /// How a queued document's wait for its route ended.
 enum PublicationWait {
     Open,
-    /// The route did not open in time.
-    Late,
+    /// A document beside the app's own is held back: its route will not
+    /// open now (why), and its owner sends it whole once it does.
+    HeldBack(String),
+    /// The app's own route will not become current (why).
+    Never(String),
     /// The bridge stopped meanwhile; the failure is recorded.
     Stopped,
 }
@@ -5732,8 +5889,12 @@ enum RouteRole {
 }
 
 /// Keep the accepted request and its queue byte reservation on the worker
-/// stack while hydration catches up. No later barrier or command can overtake
-/// it. Hydration runs independently on this same LocalSet.
+/// stack while the route's read catches up, as long as that takes. No later
+/// barrier or command can overtake it. Reads proceed independently on this same
+/// LocalSet. The wait ends early only when the route will not become current,
+/// or the document beside the app's own has not reached this device, which may
+/// take as long as the device holding it stays away. The app's own document
+/// is waited for even then: nothing of the app publishes before it.
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
@@ -5741,8 +5902,8 @@ enum RouteRole {
 async fn wait_for_document_publication(
     route: &DocumentRoute,
     state: &BridgeState,
+    role: RouteRole,
 ) -> PublicationWait {
-    let deadline = tilo_rt::timer_now() + Duration::from_secs(3);
     let key = route.spec.channel_id();
     loop {
         // Enabled before the checks: a change between them still wakes it.
@@ -5755,16 +5916,21 @@ async fn wait_for_document_publication(
             );
             return PublicationWait::Stopped;
         }
-        // The deadline is final, even when readiness changes concurrently.
-        if tilo_rt::timer_now() >= deadline {
-            return PublicationWait::Late;
-        }
         if state.document_reads.publishable(&key) {
             return PublicationWait::Open;
         }
+        let beside = role != RouteRole::App;
+        match state.document_reads.unreadable(&key) {
+            Some(why) if beside => return PublicationWait::HeldBack(why),
+            Some(why) => return PublicationWait::Never(why),
+            None => {}
+        }
+        if let Some(why) = state.document_reads.not_here(&key).filter(|_| beside) {
+            return PublicationWait::HeldBack(why.to_owned());
+        }
         #[cfg(test)]
         state.publication_hold_waits.fetch_add(1, Ordering::AcqRel);
-        let _ = tokio::time::timeout_at(deadline, changed).await;
+        changed.await;
     }
 }
 
@@ -6751,6 +6917,18 @@ async fn dispatch_sdk_request(
             };
             let _ =
                 inbound_tx.send_reply(CollabEvent::RealtimeCommandResult { request_id, result });
+        }
+        CollabRequest::ResourceCommand {
+            request_id,
+            command,
+        } => {
+            let result = route
+                .channel
+                .resource_command(&command)
+                .await
+                .map_err(|error| error.to_string());
+            let _ =
+                inbound_tx.send_reply(CollabEvent::ResourceCommandResult { request_id, result });
         }
         CollabRequest::NearbyTransferCommand {
             request_id,

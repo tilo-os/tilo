@@ -1703,7 +1703,7 @@ impl ActorState {
         // ask came over that link, so the answer goes back the same way.
         if let Some(target) = target
             && let Some(link) = self.native_links.get(&ws)
-            && link.scope.host().host.device_public_key == *target.as_bytes()
+            && link.scope.host().host.is_of_device(target.as_bytes())
         {
             if let Err(error) = link.link.send(msg) {
                 tracing::debug!(ws = %ws, %error, "a record's content waits for the workspace's next link");

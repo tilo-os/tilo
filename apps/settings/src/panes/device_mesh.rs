@@ -341,17 +341,18 @@ fn runtime_status_tone(status: ServerRuntimeStatus) -> StatusTone {
 pub enum DeviceMeshEffect {
     /// The work this device takes from the person's other devices. A device
     /// that takes work runs services, so this asks first.
+    #[effect(kind = "outside")]
     #[effect(destructive, idempotent)]
     SetWork {
         #[param("Nothing, My own devices' work, or Anyone's work in my workspaces", choices = WORK_FROM)]
         work: String,
     },
     /// Take work only while charging.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
-    SetWorkWhileCharging {
-        on: bool,
-    },
+    SetWorkWhileCharging { on: bool },
     /// Keep processors or memory free.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     SetWorkRoom {
         #[param("processors or memory", choices = ROOM_PARTS)]
@@ -360,6 +361,7 @@ pub enum DeviceMeshEffect {
         percent: String,
     },
     /// Offer or stop one service of a device that takes work.
+    #[effect(kind = "outside")]
     #[effect(idempotent)]
     SetDeviceService {
         #[param("full_content_replication, inbound_server, remote_control_server, app_serving or compute", choices = SERVICES)]
@@ -367,10 +369,13 @@ pub enum DeviceMeshEffect {
         on: bool,
     },
     /// Look for a new home server nearby, then approve the one found.
+    #[effect(kind = "outside")]
     #[effect(label = "mesh-pair-home")]
     PairHomeServer,
+    #[effect(kind = "outside")]
     AddPersonalDevice,
     /// Rename a home server.
+    #[effect(kind = "outside")]
     #[effect(row)]
     RenameHomeServer {
         #[param("The home server's node id")]
@@ -379,15 +384,16 @@ pub enum DeviceMeshEffect {
         name: String,
     },
     /// Remove a home server; it stops serving the person's workspaces.
+    #[effect(kind = "outside", on = HomeServer)]
     #[effect(row, destructive, label = "mesh-remove-home-confirm")]
     RemoveHomeServer {
-        #[param("The home server's node id")]
+        #[param("The home server's row, or its node id")]
         device: String,
     },
     /// Ask, under a device's row, whether to remove it.
-    #[effect(view, row)]
+    #[effect(view, row, on = HomeServer)]
     ReviewRemoval {
-        #[param("The device's key or home server's node id")]
+        #[param("The device's key or home server's row, or node id")]
         device: String,
     },
     /// Keep the device whose removal was asked about.
@@ -526,31 +532,32 @@ impl DeviceMeshArea {
     }
 }
 
+/// A home server the person's devices sync through, as the pane publishes
+/// it: a row of the `settings.home-server` type, offering to show, rename
+/// and remove it.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "settings.home-server",
+    label = "Home server",
+    effects = DeviceMeshEffect
+)]
+pub(crate) struct HomeServer;
+
 fn home_server_row_id(node: &str) -> String {
     format!("settings.home-server:{node}")
 }
 
 fn home_server_row(peer: &tilo_server_protocol::HomePeerRegistration) -> LiveRow {
     let device = peer.device_node_id.clone();
-    LiveRow::new(
-        home_server_row_id(&device),
-        "settings.home-server",
-        peer.label.clone(),
-    )
-    .operation(
+    let mut row = LiveRow::typed::<HomeServer>(home_server_row_id(&device), peer.label.clone());
+    row = row.operation(
         SettingsEffect::from(DeviceMeshEffect::RenameHomeServer {
-            device: device.clone(),
+            device,
             name: peer.label.clone(),
         })
         .bound_asking(&["name"]),
-    )
-    .operation(
-        SettingsEffect::from(DeviceMeshEffect::ReviewRemoval {
-            device: device.clone(),
-        })
-        .bound(),
-    )
-    .operation(SettingsEffect::from(DeviceMeshEffect::RemoveHomeServer { device }).bound())
+    );
+    row
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1115,6 +1122,7 @@ impl DeviceMeshModel {
                 false
             }
             DeviceMeshEffect::RemoveHomeServer { device } => {
+                let device = crate::effects::row_entity(device, "settings.home-server");
                 let peer = self.home_peer(device)?;
                 self.start_home_peer_removal(&peer);
                 false
@@ -1131,7 +1139,8 @@ impl DeviceMeshModel {
     fn follow_removal(&mut self, effect: &DeviceMeshEffect) {
         match effect {
             DeviceMeshEffect::ReviewRemoval { device } => {
-                self.removing = Some(device.clone());
+                let device = crate::effects::row_entity(device, "settings.home-server");
+                self.removing = Some(device.to_owned());
                 self.device_rows.open(device);
             }
             DeviceMeshEffect::CancelRemoval | DeviceMeshEffect::RemoveHomeServer { .. } => {

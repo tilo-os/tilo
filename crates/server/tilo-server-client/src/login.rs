@@ -3,8 +3,8 @@
 //!
 //! A page opened a one-time pairing invite and copied a link
 //! ([`PairingLink`]). This computer makes its own device key, asks the
-//! workspace's host to have the person's root certify it ([`sign_in`]), and is
-//! then a device of theirs: a member for thirty days, the host pinned, no root
+//! workspace's server to have the person's root certify it ([`sign_in`]), and is
+//! then a device of theirs: a member for thirty days, the server pinned, no root
 //! anywhere here.
 //!
 //! Reading the code and signing in are a computer's work: a page writes the
@@ -23,7 +23,7 @@ use uuid::Uuid;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::error::CertifyError;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::host::Host;
+use crate::host::ServerAddress;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::https;
 #[cfg(not(target_arch = "wasm32"))]
@@ -45,7 +45,7 @@ const PAIR_INVITE_HEX: usize = 32;
 pub struct PairingLink {
     /// The page that wrote the link (`https://tilo.sh/`).
     pub site: String,
-    /// The workspace's host (`https://eu1.tilo.sh`).
+    /// The workspace's server (`https://eu1.tilo.sh`).
     pub host_origin: String,
     /// The workspace the person is in on that page.
     pub workspace: Uuid,
@@ -73,7 +73,10 @@ impl PairingLink {
                         \"Set up with your agent\" and copy the link it gives you."
                 .to_owned());
         }
-        let Scope::Workspace { host, id, .. } = link.target.scope.clone() else {
+        let Scope::Workspace {
+            host: server, id, ..
+        } = link.target.scope.clone()
+        else {
             return Err(
                 "This link opens a person's own desktop, not a workspace. Ask the page \
                         for a login code for a workspace."
@@ -113,14 +116,14 @@ impl PairingLink {
         let (user_public_key, invite) = pair_of(pair.expose())?;
         Ok(Self {
             site,
-            host_origin: host.as_str().to_owned(),
+            host_origin: server.as_str().to_owned(),
             workspace: id,
             user_public_key,
             invite,
         })
     }
 
-    /// The workspace as its host names it: the id in the link, hyphenated.
+    /// The workspace as its server names it: the id in the link, hyphenated.
     #[must_use]
     pub fn workspace_id(&self) -> String {
         self.workspace.hyphenated().to_string()
@@ -185,7 +188,7 @@ fn pair_of(pair: &str) -> Result<([u8; 32], Option<[u8; 16]>), String> {
 
 /// A workspace's public entry, as the site names it (`entry.json`'s home
 /// `admission`): its path, which names the workspace it lets people into. A
-/// device enters through it on its session with the workspace's host
+/// device enters through it on its session with the workspace's server
 /// ([`tilo_server_protocol::entering`]).
 pub struct Entry {
     /// The entry's path, below its origin (`…/directory/<workspace>/`).
@@ -203,7 +206,7 @@ impl Entry {
 }
 
 /// The entry of the site whose `entry.json` is `entry` to the workspace it
-/// keeps on the host at `host_origin`: its origin and path. Only HTTPS, but
+/// keeps on the server at `host_origin`: its origin and path. Only HTTPS, but
 /// for an entry on loopback.
 #[must_use]
 pub fn site_entry(entry: &serde_json::Value, host_origin: &str) -> Option<(String, String)> {
@@ -222,7 +225,7 @@ pub fn site_entry(entry: &serde_json::Value, host_origin: &str) -> Option<(Strin
     Some((format!("{scheme}://{authority}"), path.to_owned()))
 }
 
-/// The entry of the site at `site` to its workspace on the host at
+/// The entry of the site at `site` to its workspace on the server at
 /// `host_origin`, as its `entry.json` names it. A computer reads a site's
 /// `entry.json` through its own HTTPS client; a page's entry names its entry.
 #[cfg(not(target_arch = "wasm32"))]
@@ -243,26 +246,26 @@ pub struct SignIn {
     pub link: PairingLink,
     /// The agent that runs here, as the person's page names it.
     pub agent: String,
-    /// This device's label, as the person's devices list it: the name the host
+    /// This device's label, as the person's devices list it: the name the server
     /// gave it, which is the one asked for unless another device of the
     /// person reads by it already.
     pub label: String,
-    /// Where the workspace's host is reached.
-    pub host: Host,
+    /// Where the workspace's server is reached.
+    pub server: ServerAddress,
     /// This device's certificate: a member of the person's, for thirty days.
     pub cert: DeviceCert,
-    /// The host's certificate, pinned.
-    pub host_cert: DeviceCert,
+    /// The server's certificate, pinned.
+    pub server_cert: DeviceCert,
 }
 
-/// Ask `link`'s host to have the person's root certify `signer`'s device as
+/// Ask `link`'s server to have the person's root certify `signer`'s device as
 /// the agent `agent` on the computer labeled `label`. `on_pending` receives
 /// the pairing code to show while the person's other device answers.
 ///
 /// # Errors
 ///
 /// The person declined or nobody answered in time ([`CertifyError::Expired`]),
-/// the host was not reached or refused, or what it issued is not a certificate
+/// the server was not reached or refused, or what it issued is not a certificate
 /// for this device.
 #[cfg(not(target_arch = "wasm32"))]
 pub async fn sign_in(
@@ -273,19 +276,19 @@ pub async fn sign_in(
     signer: &dyn DeviceSigner,
     on_pending: impl FnOnce(&str),
 ) -> Result<SignIn, CertifyError> {
-    let info = https::host_info(client).await?;
-    let host = match &info.address {
-        Some(address) => Host::published(address),
+    let info = https::server_info(client).await?;
+    let server = match &info.address {
+        Some(address) => ServerAddress::published(address),
         None => {
             return Err(CertifyError::Denied(
-                "This workspace's host takes no device connections, so no computer can sign in to it."
+                "This workspace's server takes no device connections, so no computer can sign in to it."
                     .to_owned(),
             ));
         }
     };
     let invite = link.invite.unwrap_or([0; 16]);
-    let (cert, host_cert, label) = crate::certify::certify(
-        &host,
+    let (cert, server_cert, label) = crate::certify::certify(
+        &server,
         link.user_public_key,
         label,
         invite,
@@ -297,9 +300,9 @@ pub async fn sign_in(
         link: link.clone(),
         agent: agent.to_owned(),
         label,
-        host,
+        server,
         cert,
-        host_cert,
+        server_cert,
     })
 }
 
@@ -331,7 +334,7 @@ mod tests {
         hex::encode([seed; 16])
     }
 
-    /// The link the page writes: its workspace on its own host, with the
+    /// The link the page writes: its workspace on its own server, with the
     /// person's root and the invite it opened.
     #[test]
     fn reads_the_link_the_page_writes() {
@@ -348,7 +351,7 @@ mod tests {
         assert_eq!(link.invite, Some([0x7f; 16]));
     }
 
-    /// A page that hosts its own workspaces writes no host, and a workspace
+    /// A page that servers its own workspaces writes no server, and a workspace
     /// it names by its readable name too: both are the same link.
     #[test]
     fn reads_a_link_whose_page_is_the_host_and_that_names_the_workspace() {

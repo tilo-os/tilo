@@ -30,6 +30,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             Ok(installed) => (installed, None),
             Err(reason) => (Vec::new(), Some(reason)),
         };
+        // What each app holds rows of: a document this is served of holds
+        // what the app has, the workspace's own folder holds its files, and
+        // a service holds only windows. An app is no resource of its own.
+        let mut listed: Vec<(String, &str, &str, bool)> = Vec::new();
         for app_id in &running_ids {
             let label = installed
                 .iter()
@@ -42,18 +46,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     || tilo_actions::remote::is_resource_provider(provider))
                     && app["app_id"].as_str() == Some(app_id)
             });
-            let name = app_names(std::slice::from_ref(app_id)).join("");
             let state = if windowed { "running" } else { "service" };
-            lines.push(format!("{name}  {label}  {state}"));
-            rows.push(json!({
-                "path": name,
-                "name": name,
-                "label": label,
-                "kind": "app",
-                "state": state,
-                "has_children": true,
-                "actions": [],
-            }));
+            let name = app_names(std::slice::from_ref(app_id)).join("");
+            let holds = windowed || super::names_files(app_id);
+            listed.push((name, label, state, holds));
         }
         let mut unopened = false;
         for app in &installed {
@@ -65,17 +61,23 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     "installed, not yours to open"
                 };
                 let name = app_names(std::slice::from_ref(&app.app_id)).join("");
-                lines.push(format!("{name}  {}  {state}", app.label));
-                rows.push(json!({
-                    "path": name,
-                    "name": name,
-                    "label": app.label,
-                    "kind": "app",
-                    "state": state,
-                    "has_children": true,
-                    "actions": [],
-                }));
+                // Installing starts a document; a walk never makes one.
+                let holds = super::names_files(&app.app_id);
+                listed.push((name, &app.label, state, holds));
             }
+        }
+        for (name, label, state, holds) in listed {
+            lines.push(format!("{name}  {label}  {state}"));
+            rows.push(json!({
+                "path": name,
+                "name": name,
+                "label": label,
+                "kind": "app",
+                "state": state,
+                "has_children": holds,
+                "reads": false,
+                "actions": [],
+            }));
         }
         let total = lines.len();
         let mut text = String::from("apps");

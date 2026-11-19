@@ -2,6 +2,10 @@
 //! changes out of order or the host's empty document for a new record.
 
 use super::*;
+use std::rc::Rc;
+
+use automerge::transaction::Transactable as _;
+use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 use durable_store::MemoryStore;
 
 fn put_text(doc: &mut AutoCommit, key: &str, value: &str) {
@@ -158,8 +162,14 @@ tilo_test_env::scenario! {
         );
 
         // Merged on another window's route: this window's own merge finds nothing.
-        let answer = collab_types::DocumentMutation::Incremental(peer_change("reply"));
-        let merge = || crate::bound_dispatch::merge_remote_owned_document(&store, &want, &answer);
+        let answer = peer_change("reply");
+        let merge = || {
+            crate::bound_dispatch::merge_remote_owned_document(
+                &store,
+                &want,
+                crate::collaboration::Incoming::Changes(&answer),
+            )
+        };
         assert_eq!(merge().unwrap().changed, Some(true));
         assert_eq!(woken.load(Ordering::SeqCst), 3, "merged on a route");
         assert_eq!(merge().unwrap().changed, Some(false));

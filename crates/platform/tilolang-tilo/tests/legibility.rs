@@ -125,7 +125,7 @@ pub(crate) fn built_over(ada: &Replica) -> Host {
     host
 }
 
-pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
+pub(crate) fn an_agent_tidies_notes_and_tasks() -> Tidied {
     let (mut ada, _) = Replica::new(
         "ada",
         AutoCommit::new(),
@@ -244,7 +244,7 @@ fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() 
         dentist,
         landlord,
         stale,
-    } = a_run_in_notes_and_tasks();
+    } = an_agent_tidies_notes_and_tasks();
     let store = ada.host.store();
 
     // Each version names the run that made it and what it did.
@@ -301,7 +301,7 @@ fn a_runs_versions_in_two_apps_name_the_run_and_what_it_did_removals_included() 
 
 #[test]
 fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
-    let tidied = a_run_in_notes_and_tasks();
+    let tidied = an_agent_tidies_notes_and_tasks();
     let all = tidied.all().map(Clone::clone);
     let Tidied {
         mut ada,
@@ -512,7 +512,7 @@ tilo_test_env::scenario! {
             groceries,
             landlord,
             ..
-        } = a_run_in_notes_and_tasks();
+        } = an_agent_tidies_notes_and_tasks();
         // History takes the run back, as Ada.
         let scope = ui::history_source::steps::Scope::Session(RUN.to_owned());
         let entries: Vec<_> = tilo_resource::history::versions(&mut ada.doc)

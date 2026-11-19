@@ -3,12 +3,14 @@
 //!
 //! Their keys are typed by the person and kept in this computer's account vault; the review,
 //! the journal and every request to the service happen here. What comes over lands as the
-//! agent's run: an Outline document becomes a Notes page (`import-markdown`, under the id its
+//! agent's invocation: an Outline document becomes a Notes page (`import-markdown`, under the id its
 //! source decides, then `move-note` under its parent), an issue from Linear or Forgejo one in
-//! Tasks (`create` in the project or area its project or team, milestone or repository there
-//! became, then `comment`, `move-under` and `link` for the issues it relates to). Each keeps its origin: who wrote it on the service, when,
-//! its page there and the name the service gave it (`ENG-12`), so a person sees the original
-//! author and date while History says who moved it.
+//! Tasks (made by `create-many` in the project or area its project or team, milestone or
+//! repository there became, then `comment`, `move-under` and `link` for the issues it relates
+//! to). Items go over 200 at a time, and the actions after the first as groups of many, so a
+//! tracker of thousands of issues is a few dozen calls. Each keeps its origin: who wrote it on
+//! the service, when, its page there and the name the service gave it (`ENG-12`), so a person
+//! sees the original author and date while History says who moved it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -16,8 +18,8 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::{Result, anyhow, bail};
 use migration_sources::service::{
-    self, IncomingAuthor, IncomingGroup, IncomingIssue, IncomingPage, ServiceAddress,
-    ServiceJournal, ServiceKind, ServiceReview,
+    self, Delivered, IncomingAuthor, IncomingGroup, IncomingIssue, IncomingPage, RefusedItem,
+    ServiceAddress, ServiceJournal, ServiceKind, ServiceReview,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -35,14 +37,28 @@ pub const MAIL: &str = "mail";
 /// Where an email account joins the person's accounts (Mail's, which the person allows).
 const ADD_ACCOUNT: &str = "mail/mail.mailbox#add-account";
 
-const IMPORT_MARKDOWN: &str = "notes/notes.pages#import-markdown";
-const MOVE_NOTE: &str = "notes/notes.pages#move-note";
-const CREATE_ISSUE: &str = "tasks/tasks.issues#create";
+/// Notes' pages, where a page is imported and nested.
+const PAGES: &str = "notes/notes.pages";
+const IMPORT_MARKDOWN: &str = "import-markdown";
+const MOVE_NOTE: &str = "move-note";
+/// Tasks' issues, where an issue is made, commented on, nested and linked.
+const ISSUES: &str = "tasks/tasks.issues";
+const CREATE_MANY: &str = "tasks/tasks.issues#create-many";
 const CREATE_AREA: &str = "tasks/tasks.tracker#create-area";
-const SET_PROJECT: &str = "tasks/tasks.issues#set-project";
-const COMMENT: &str = "tasks/tasks.issues#comment";
-const MOVE_UNDER: &str = "tasks/tasks.issues#move-under";
-const LINK: &str = "tasks/tasks.issues#link";
+const COMMENT: &str = "comment";
+const MOVE_UNDER: &str = "move-under";
+const LINK: &str = "link";
+/// How many items an import hands over at once: what one `create-many` call makes.
+const LANDING_BATCH: usize = 200;
+/// The most issues one `create-many` call makes (Tasks' own bound).
+const ISSUES_PER_CALL: usize = 200;
+/// The most bytes of issues one `create-many` call carries: well within the text Tasks keeps in
+/// one part of its tracker.
+const ISSUES_BYTES: usize = 384 * 1024;
+/// The most members and bytes of arguments one grouped call carries: a group is one step of
+/// history, and one message of the workspace's session.
+const GROUP_MEMBERS: usize = 500;
+const GROUP_BYTES: usize = 256 * 1024;
 /// How Tasks names the kind of an issue a link points at.
 const ISSUE_KIND: &str = "tasks.tracker.issues";
 use tilo_app_id::apps::TASKS as TASKS_APP;
@@ -185,15 +201,15 @@ pub fn landed(place: &Place, source: &str) -> Result<usize> {
     Ok(service_journal(place, source)?.map_or(0, |journal| journal.landed.len()))
 }
 
-/// Forget what the run `run` brought (`keys`, as [`Lander::note`] kept them), after the
-/// workspace took it back: a later run brings it again.
+/// Forget what the import `invocation` brought (`keys`, as [`Lander::note`] kept them), after the
+/// workspace took it back: a later import brings it again.
 ///
 /// # Errors
 /// The journals could not be read or kept.
 pub fn forget(
     place: &Place,
     source: &str,
-    run: &str,
+    invocation: &str,
     keys: &std::collections::BTreeSet<String>,
 ) -> Result<()> {
     if let Some(mut journal) = service_journal(place, source)? {
@@ -206,13 +222,13 @@ pub fn forget(
     }
     let kept_path = place.path(source, "ids.json");
     if let Some(mut kept) = place.read::<Kept>(&kept_path)? {
-        kept.forget_invocation(run);
+        kept.forget_invocation(invocation);
         place.keep(&kept_path, &kept)?;
     }
     Ok(())
 }
 
-/// How a run notes an item of a service source's own journal in its own.
+/// How an import notes an item of a service source's own journal in its own.
 const NOTED: &str = "service:";
 
 /// Review the connected `source` now, keeping what was chosen and what already came over.
@@ -288,7 +304,7 @@ pub fn choose(place: &Place, review: &Review) -> Result<()> {
     keep_service(place, &review.source, &journal)
 }
 
-/// What a run brings, for its History entry.
+/// What an import brings, for its History entry.
 #[must_use]
 pub fn summary(review: &Review) -> String {
     let chosen = review.chosen();
@@ -326,39 +342,70 @@ pub fn land(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
     if review.source == MAIL {
         return land_mail(review, lander);
     }
+    let root = config_root()?;
+    land_with(&review.source, lander, |journal, landing, save, cancel| {
+        service::run(&root, journal, landing, save, cancel)
+    })
+}
+
+/// Bring `source`'s chosen items over as `hand_over` hands them to the workspace, keeping what each
+/// call made by its source's page beside the journal.
+pub(super) fn land_with(
+    source: &str,
+    lander: &mut Lander<'_>,
+    hand_over: impl FnOnce(
+        &mut ServiceJournal,
+        &mut dyn service::Landing,
+        &mut dyn FnMut(&ServiceJournal) -> Result<(), String>,
+        &AtomicBool,
+    ) -> Result<service::ServiceReport, service::ServiceError>,
+) -> Result<()> {
     let place = lander.place.clone();
-    let source = review.source.clone();
     let mut journal =
-        service_journal(&place, &source)?.ok_or_else(|| super::not_reviewed(&source))?;
+        service_journal(&place, source)?.ok_or_else(|| super::not_reviewed(source))?;
     journal.recovered();
-    let kept_path = place.path(&source, "ids.json");
+    let kept_path = place.path(source, "ids.json");
     let kept: Kept = place.read(&kept_path)?.unwrap_or_default();
     let cancel = AtomicBool::new(false);
     lander.open(if source == OUTLINE { "notes" } else { "tasks" });
     let mut landing = Landing {
         lander,
         kept,
+        kept_path: kept_path.clone(),
         failure: None,
     };
     let mut save = |journal: &ServiceJournal| -> Result<(), String> {
         place
-            .keep(&journal_path(&place, &source), journal)
+            .keep(&journal_path(&place, source), journal)
             .map_err(|error| error.to_string())
     };
-    let result = service::run(
-        &config_root()?,
-        &mut journal,
-        &mut landing,
-        &mut save,
-        &cancel,
-    );
+    let result = hand_over(&mut journal, &mut landing, &mut save, &cancel);
     place.keep(&kept_path, &landing.kept)?;
     if let Some(error) = landing.failure.take() {
         return Err(error);
     }
     let report = result.map_err(|error| anyhow!("{source}: {error}"))?;
     landing.lander.count("", 0, report.already_there)?;
-    Ok(())
+    refused(&report)
+}
+
+/// The import's end as the person reads it: what the workspace refused did not come over, each with
+/// its reason, and the next import tries it again.
+fn refused(report: &service::ServiceReport) -> Result<()> {
+    if report.refused.is_empty() {
+        return Ok(());
+    }
+    let each = report
+        .refused
+        .iter()
+        .map(|item| format!("{}: {}", item.name, item.why))
+        .collect::<Vec<_>>()
+        .join("\n");
+    bail!(
+        "{} brought over, {} refused by the workspace (`tilo migrate start` tries them again):\n{each}",
+        report.landed,
+        report.refused.len()
+    )
 }
 
 /// The chosen mail account into the person's accounts: its settings, through Mail's
@@ -375,7 +422,7 @@ fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
     lander.once(
         &format!("account:{}", config.email),
         "accounts",
-        |workspace, run| {
+        |workspace, invocation| {
             let arguments = json!({
                 "display_name": config.label(),
                 "email": config.email,
@@ -385,7 +432,7 @@ fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
                 "smtp_host": config.smtp_host,
                 "smtp_port": config.smtp_port,
             });
-            match workspace.act(run, ADD_ACCOUNT, arguments) {
+            match workspace.act(invocation, ADD_ACCOUNT, arguments) {
                 Ok(answer) if answer.said("already") => Ok(super::Landed::Already),
                 Ok(_) => Ok(super::Landed::One),
                 Err(error) => Err(super::thunderbird::mail_not_open(error, &config.email)),
@@ -394,7 +441,7 @@ fn land_mail(review: &Review, lander: &mut Lander<'_>) -> Result<()> {
     )
 }
 
-/// What a source's runs made in the workspace, kept beside its journal so a later run finds it:
+/// What a source's imports made in the workspace, kept beside its journal so a later import finds it:
 /// the Tasks issue each issue became and the project or area each team and project became, by
 /// their pages and keys, the links made between issues, and the links waiting for the issue
 /// they point at.
@@ -403,7 +450,7 @@ pub struct Kept {
     /// The Tasks issue each issue became, by its page on the service.
     #[serde(default)]
     pub issues: BTreeMap<String, String>,
-    /// The run that brought each issue, by its page.
+    /// The import that brought each issue, by its page.
     #[serde(default)]
     pub issue_runs: BTreeMap<String, String>,
     /// The project or area each project and team (or milestone and repository) became, by its
@@ -417,9 +464,16 @@ pub struct Kept {
     /// issue that relates to it, and how.
     #[serde(default)]
     pub waiting: BTreeMap<String, Vec<(String, String)>>,
+    /// Sub-issues made before their parent came over, by the parent's page: their pages.
+    #[serde(default)]
+    pub parents: BTreeMap<String, Vec<String>>,
+    /// The comments brought, as the issue's page and the comment's place in its thread
+    /// ([`comment_key`]).
+    #[serde(default)]
+    pub comments: std::collections::BTreeSet<String>,
 }
 
-/// A project or area a run made for a team, project, repository or milestone.
+/// A project or area an import made for a team, project, repository or milestone.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct KeptArea {
     pub id: String,
@@ -427,18 +481,27 @@ pub struct KeptArea {
 }
 
 impl Kept {
-    /// Forget what the run `run` made, after it was taken back.
-    pub fn forget_invocation(&mut self, run: &str) {
+    /// Forget what the import `invocation` made, after it was taken back.
+    pub fn forget_invocation(&mut self, invocation: &str) {
         let pages: Vec<String> = self
             .issue_runs
             .iter()
-            .filter(|(_, by)| *by == run)
+            .filter(|(_, by)| *by == invocation)
             .map(|(page, _)| page.clone())
             .collect();
         for page in &pages {
             self.issues.remove(page);
             self.issue_runs.remove(page);
             self.waiting.remove(page);
+            self.parents.remove(page);
+        }
+        self.comments.retain(|comment| {
+            !comment
+                .split_once('\u{0}')
+                .is_some_and(|(page, _)| pages.iter().any(|gone| gone == page))
+        });
+        for children in self.parents.values_mut() {
+            children.retain(|child| !pages.contains(child));
         }
         self.links.retain(|link| {
             !link
@@ -448,7 +511,7 @@ impl Kept {
         for waiting in self.waiting.values_mut() {
             waiting.retain(|(from, _)| !pages.contains(from));
         }
-        self.areas.retain(|_, area| area.run != run);
+        self.areas.retain(|_, area| area.run != invocation);
     }
 }
 
@@ -456,8 +519,128 @@ impl Kept {
 struct Landing<'a, 'b> {
     lander: &'a mut Lander<'b>,
     kept: Kept,
-    /// Why the run stopped, when the workspace did (rather than the service).
+    /// Where `kept` is saved, after every call that made something.
+    kept_path: std::path::PathBuf,
+    /// Why the import stopped, when the workspace did (rather than the service).
     failure: Option<anyhow::Error>,
+}
+
+/// One action of a grouped call: its verb on the resource the group acts on, and its arguments.
+struct Member {
+    verb: &'static str,
+    args: Value,
+}
+
+/// How `members` (each `size` bytes) are cut into calls of at most `count` members and `bytes`
+/// bytes, in order; a member larger than `bytes` is a call of its own.
+fn calls<T>(members: &[T], count: usize, bytes: usize, size: impl Fn(&T) -> usize) -> Vec<&[T]> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut held = 0_usize;
+    for (at, member) in members.iter().enumerate() {
+        let weight = size(member);
+        let full = at > start
+            && (at.saturating_sub(start) >= count || held.saturating_add(weight) > bytes);
+        if full {
+            out.extend(members.get(start..at));
+            start = at;
+            held = 0;
+        }
+        held = held.saturating_add(weight);
+    }
+    if start < members.len() {
+        out.extend(members.get(start..));
+    }
+    out
+}
+
+/// Apply `members` on `resource` (`tasks/tasks.issues`) as few grouped calls as a group's limits
+/// allow, in order. A group lands whole or not at all: one the workspace refuses is split in
+/// halves until the member it refused is alone, so every other member still lands. Answers per
+/// member: `None` when it landed, or the workspace's refusal of it.
+///
+/// # Errors
+/// The workspace could not be reached: what was answered before is landed.
+fn grouped(
+    workspace: &mut dyn super::workspace::Workspace,
+    invocation: &super::workspace::Invocation,
+    resource: &str,
+    members: &[Member],
+) -> Result<Vec<Option<anyhow::Error>>> {
+    let mut outcomes = Vec::with_capacity(members.len());
+    for call in calls(members, GROUP_MEMBERS, GROUP_BYTES, |member| {
+        member.args.to_string().len()
+    }) {
+        settle(workspace, invocation, resource, call, &mut outcomes)?;
+    }
+    Ok(outcomes)
+}
+
+fn settle(
+    workspace: &mut dyn super::workspace::Workspace,
+    invocation: &super::workspace::Invocation,
+    resource: &str,
+    members: &[Member],
+    outcomes: &mut Vec<Option<anyhow::Error>>,
+) -> Result<()> {
+    let answered = match members {
+        [] => return Ok(()),
+        [one] => workspace.act(
+            invocation,
+            &format!("{resource}#{}", one.verb),
+            one.args.clone(),
+        ),
+        many => {
+            let actions: Vec<Value> = many
+                .iter()
+                .map(|member| json!({"action": member.verb, "args": member.args}))
+                .collect();
+            workspace.act(
+                invocation,
+                &format!("{resource}#group"),
+                json!({"actions": actions}),
+            )
+        }
+    };
+    match answered {
+        Ok(_) => {
+            outcomes.extend(members.iter().map(|_| None));
+            Ok(())
+        }
+        Err(error) if super::workspace::Refused::of(&error).is_none() => Err(error),
+        Err(error) if members.len() == 1 => {
+            outcomes.push(Some(error));
+            Ok(())
+        }
+        Err(_) => {
+            let (first, rest) = members.split_at(members.len() / 2);
+            settle(workspace, invocation, resource, first, outcomes)?;
+            settle(workspace, invocation, resource, rest, outcomes)
+        }
+    }
+}
+
+/// The ids a call that made items answered, in the order it made them.
+fn made_ids(answer: &super::workspace::Answer) -> Vec<String> {
+    answer
+        .result()
+        .and_then(|value| value.get("made"))
+        .and_then(Value::as_array)
+        .map(|made| {
+            made.iter()
+                .filter_map(|item| item.get("id").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn refusal(key: &str, name: &str, error: &anyhow::Error) -> RefusedItem {
+    RefusedItem {
+        key: key.to_owned(),
+        name: name.to_owned(),
+        why: format!("{error:#}"),
+    }
 }
 
 impl Landing<'_, '_> {
@@ -475,7 +658,25 @@ impl Landing<'_, '_> {
         Ok(())
     }
 
-    /// The project or area `group` became, made now if no run made it yet: a project in Linear
+    fn keep(&self) -> Result<()> {
+        self.lander.place.keep(&self.kept_path, &self.kept)
+    }
+
+    /// Note what landed in the import's own journal, so taking the import back forgets it, and count it.
+    fn noted(&mut self, delivered: &Delivered, kind: &str) -> std::io::Result<()> {
+        let keys: Vec<String> = delivered
+            .landed
+            .iter()
+            .map(|key| format!("{NOTED}{key}"))
+            .collect();
+        let count = keys.len();
+        self.lander
+            .note(keys)
+            .and_then(|()| self.lander.count(kind, count, 0))
+            .map_err(|error| self.fail(error))
+    }
+
+    /// The project or area `group` became, made now if no import made it yet: a project in Linear
     /// (a milestone in Forgejo) becomes a project, a team (a repository) an area, each named as
     /// the service names it.
     fn area(&mut self, group: &IncomingGroup, kind: &str, service: &str) -> Result<String> {
@@ -488,9 +689,9 @@ impl Landing<'_, '_> {
         } else {
             group.name.trim()
         };
-        let run = self.lander.invocation.id.clone();
-        let (workspace, run_of) = self.lander.workspace()?;
-        let made = workspace.act(run_of, CREATE_AREA, json!({"name": name, "kind": kind}))?;
+        let made_by = self.lander.invocation.id.clone();
+        let (workspace, invocation) = self.lander.workspace()?;
+        let made = workspace.act(invocation, CREATE_AREA, json!({"name": name, "kind": kind}))?;
         let id = created_id(&made).ok_or_else(|| {
             anyhow!("Tasks made the {kind} {name} but did not say its id: {made:?}")
         })?;
@@ -498,232 +699,441 @@ impl Landing<'_, '_> {
             key,
             KeptArea {
                 id: id.clone(),
-                run,
+                run: made_by,
             },
         );
+        self.keep()?;
         self.lander.count("projects", 1, 0)?;
         Ok(id)
     }
 
-    /// Link `from` (an issue's page) to `to`, as `kind` says it relates, once both are here.
-    fn link(&mut self, from: &str, to: &str, kind: &str) -> Result<()> {
-        let pair = format!("{from}\u{0}{to}");
-        if self.kept.links.contains(&pair) {
+    /// The project or area an issue works towards: its project in Linear, else its team's area.
+    fn project_of(&mut self, issue: &IncomingIssue) -> Result<Option<String>> {
+        let service = service_name(&issue.source);
+        match (&issue.project, &issue.team) {
+            (Some(project), _) => self.area(project, "project", service).map(Some),
+            (None, Some(team)) => self.area(team, "area", service).map(Some),
+            (None, None) => Ok(None),
+        }
+    }
+
+    /// Make those of `issues` no import made yet, `create-many` at a time, keeping each one's id by
+    /// its page the moment the call answers. A sub-issue is made under its parent: in the same
+    /// call when the parent comes before it there, by the parent's id when an earlier call made
+    /// it, and otherwise moved under it once it comes.
+    fn make_all(
+        &mut self,
+        issues: &[IncomingIssue],
+        projects: &BTreeMap<String, String>,
+        refused: &mut Vec<RefusedItem>,
+    ) -> Result<()> {
+        let missing: Vec<(&IncomingIssue, Value)> = issues
+            .iter()
+            .filter(|issue| !self.kept.issues.contains_key(&issue.url))
+            .map(|issue| (issue, listed(issue, projects.get(&issue.url))))
+            .collect();
+        for call in calls(&missing, ISSUES_PER_CALL, ISSUES_BYTES, |(_, listed)| {
+            listed.to_string().len()
+        }) {
+            self.make(call, refused)?;
+        }
+        Ok(())
+    }
+
+    fn make(
+        &mut self,
+        issues: &[(&IncomingIssue, Value)],
+        refused: &mut Vec<RefusedItem>,
+    ) -> Result<()> {
+        if issues.is_empty() {
             return Ok(());
         }
-        let (Some(issue), Some(related)) = (
-            self.kept.issues.get(from).cloned(),
-            self.kept.issues.get(to).cloned(),
-        ) else {
-            return Ok(());
-        };
-        let label = format!("{} {}", relation_words(kind), reference_of(to));
-        let (workspace, run) = self.lander.workspace()?;
-        workspace.act(
-            run,
-            LINK,
-            json!({
-                "issue": issue,
-                "app": TASKS_APP,
-                "kind": ISSUE_KIND,
-                "resource": format!("tasks.issues/issues/{related}"),
-                "label": label.trim(),
-                "record": null,
-            }),
-        )?;
-        self.kept.links.insert(pair);
+        let mut list = Vec::with_capacity(issues.len());
+        for (at, (issue, listed)) in issues.iter().enumerate() {
+            let mut listed = listed.clone();
+            if let Some(parent) = &issue.parent {
+                let earlier = issues
+                    .get(..at)
+                    .and_then(|before| before.iter().position(|(other, _)| other.url == *parent));
+                let nested = match earlier {
+                    Some(place) => Some(("under", json!(place.saturating_add(1).to_string()))),
+                    None => self.kept.issues.get(parent).map(|id| ("parent", json!(id))),
+                };
+                if let (Some((field, value)), Some(fields)) = (nested, listed.as_object_mut()) {
+                    fields.insert(field.to_owned(), value);
+                }
+            }
+            list.push(listed);
+        }
+        let (workspace, invocation) = self.lander.workspace()?;
+        match workspace.act(invocation, CREATE_MANY, json!({"issues": list})) {
+            Ok(answer) => {
+                let ids = made_ids(&answer);
+                if ids.len() != issues.len() {
+                    bail!(
+                        "Tasks made {} issues but answered {} ids: {answer:?}",
+                        issues.len(),
+                        ids.len()
+                    );
+                }
+                let invocation = self.lander.invocation.id.clone();
+                for ((issue, _), id) in issues.iter().zip(ids) {
+                    self.kept.issues.insert(issue.url.clone(), id);
+                    self.kept
+                        .issue_runs
+                        .insert(issue.url.clone(), invocation.clone());
+                }
+                // What a call made is kept before anything else is asked: an import stopped after
+                // it finds every issue it made, and makes none twice.
+                self.keep()
+            }
+            Err(error) if super::workspace::Refused::of(&error).is_none() => Err(error),
+            Err(error) if issues.len() == 1 => {
+                if let Some((issue, _)) = issues.first() {
+                    refused.push(refusal(&issue.key, &issue.identifier, &error));
+                }
+                Ok(())
+            }
+            Err(_) => {
+                let (first, rest) = issues.split_at(issues.len() / 2);
+                self.make(first, refused)?;
+                self.make(rest, refused)
+            }
+        }
+    }
+
+    /// Land `issues`: the issues first, then their comments, the sub-issues waiting for them and
+    /// how they relate, each as grouped calls.
+    fn land_issues(&mut self, issues: &[IncomingIssue]) -> Result<Delivered> {
+        let mut refused = Vec::new();
+        let mut projects = BTreeMap::new();
+        for issue in issues {
+            if let Some(project) = self.project_of(issue)? {
+                projects.insert(issue.url.clone(), project);
+            }
+        }
+        self.make_all(issues, &projects, &mut refused)?;
+        let made: Vec<&IncomingIssue> = issues
+            .iter()
+            .filter(|issue| self.kept.issues.contains_key(&issue.url))
+            .collect();
+
+        // A sub-issue whose parent was not here when it was made waits for it.
+        for issue in &made {
+            if let Some(parent) = &issue.parent
+                && !self.kept.issues.contains_key(parent)
+            {
+                let children = self.kept.parents.entry(parent.clone()).or_default();
+                if !children.contains(&issue.url) {
+                    children.push(issue.url.clone());
+                }
+            }
+        }
+        self.comment_all(&made, &mut refused)?;
+        self.move_waiting(&made, &mut refused)?;
+        self.link_all(&made, &mut refused)?;
+        self.keep()?;
+
+        let failed: std::collections::BTreeSet<&str> =
+            refused.iter().map(|item| item.key.as_str()).collect();
+        let landed = made
+            .iter()
+            .filter(|issue| !failed.contains(issue.key.as_str()))
+            .map(|issue| issue.key.clone())
+            .collect();
+        Ok(Delivered { landed, refused })
+    }
+
+    /// The comments of `issues` no import brought yet, by their authors there and on their dates.
+    fn comment_all(
+        &mut self,
+        issues: &[&IncomingIssue],
+        refused: &mut Vec<RefusedItem>,
+    ) -> Result<()> {
+        let mut members = Vec::new();
+        let mut of = Vec::new();
+        for issue in issues {
+            let Some(id) = self.kept.issues.get(&issue.url) else {
+                continue;
+            };
+            for (at, comment) in issue.comments.iter().enumerate() {
+                let key = comment_key(&issue.url, at);
+                if comment.text.trim().is_empty() || self.kept.comments.contains(&key) {
+                    continue;
+                }
+                let author = (!comment.author.trim().is_empty()).then(|| IncomingAuthor {
+                    name: comment.author.clone(),
+                    handle: comment.handle.clone(),
+                });
+                let url = if comment.url.is_empty() {
+                    issue.url.as_str()
+                } else {
+                    comment.url.as_str()
+                };
+                let origin = origin_of(
+                    author.as_ref(),
+                    service_name(&issue.source),
+                    url,
+                    None,
+                    &comment.at,
+                    &comment.updated_at,
+                );
+                members.push(Member {
+                    verb: COMMENT,
+                    args: json!({"issue": id, "text": comment.text, "origin": origin}),
+                });
+                of.push((*issue, key));
+            }
+        }
+        let (workspace, invocation) = self.lander.workspace()?;
+        let outcomes = grouped(workspace, invocation, ISSUES, &members)?;
+        for ((issue, key), outcome) in of.into_iter().zip(outcomes) {
+            match outcome {
+                None => {
+                    self.kept.comments.insert(key);
+                }
+                Some(error) => refused.push(refusal(
+                    &issue.key,
+                    &format!("a comment on {}", issue.identifier),
+                    &error,
+                )),
+            }
+        }
         Ok(())
+    }
+
+    /// Move the sub-issues that waited for one of `issues` under it.
+    fn move_waiting(
+        &mut self,
+        issues: &[&IncomingIssue],
+        refused: &mut Vec<RefusedItem>,
+    ) -> Result<()> {
+        let mut members = Vec::new();
+        let mut of = Vec::new();
+        for issue in issues {
+            let Some(parent) = self.kept.issues.get(&issue.url).cloned() else {
+                continue;
+            };
+            for child in self.kept.parents.remove(&issue.url).unwrap_or_default() {
+                if let Some(id) = self.kept.issues.get(&child) {
+                    members.push(Member {
+                        verb: MOVE_UNDER,
+                        args: json!({"issue": id, "parent": parent}),
+                    });
+                    of.push(child);
+                }
+            }
+        }
+        let (workspace, invocation) = self.lander.workspace()?;
+        let outcomes = grouped(workspace, invocation, ISSUES, &members)?;
+        for (child, outcome) in of.into_iter().zip(outcomes) {
+            if let Some(error) = outcome {
+                refused.push(refusal(&child, &reference_of(&child), &error));
+            }
+        }
+        Ok(())
+    }
+
+    /// Link each of `issues` to the issues here it relates to, and those that waited for it.
+    fn link_all(
+        &mut self,
+        issues: &[&IncomingIssue],
+        refused: &mut Vec<RefusedItem>,
+    ) -> Result<()> {
+        let mut pairs: Vec<(String, String, String)> = Vec::new();
+        for issue in issues {
+            for relation in &issue.relations {
+                if self.kept.issues.contains_key(&relation.page) {
+                    pairs.push((
+                        issue.url.clone(),
+                        relation.page.clone(),
+                        relation.kind.clone(),
+                    ));
+                } else {
+                    let waiting = self.kept.waiting.entry(relation.page.clone()).or_default();
+                    let entry = (issue.url.clone(), relation.kind.clone());
+                    if !waiting.contains(&entry) {
+                        waiting.push(entry);
+                    }
+                }
+            }
+            for (from, kind) in self.kept.waiting.remove(&issue.url).unwrap_or_default() {
+                pairs.push((from, issue.url.clone(), kind));
+            }
+        }
+        let mut members = Vec::new();
+        let mut of = Vec::new();
+        let mut asked = std::collections::BTreeSet::new();
+        for (from, to, kind) in pairs {
+            let pair = format!("{from}\u{0}{to}");
+            if self.kept.links.contains(&pair) || !asked.insert(pair.clone()) {
+                continue;
+            }
+            let (Some(issue), Some(related)) =
+                (self.kept.issues.get(&from), self.kept.issues.get(&to))
+            else {
+                continue;
+            };
+            let label = format!("{} {}", relation_words(&kind), reference_of(&to));
+            members.push(Member {
+                verb: LINK,
+                args: json!({
+                    "issue": issue,
+                    "app": TASKS_APP,
+                    "kind": ISSUE_KIND,
+                    "resource": format!("tasks.issues/issues/{related}"),
+                    "label": label.trim(),
+                }),
+            });
+            of.push((from, pair));
+        }
+        let (workspace, invocation) = self.lander.workspace()?;
+        let outcomes = grouped(workspace, invocation, ISSUES, &members)?;
+        for ((from, pair), outcome) in of.into_iter().zip(outcomes) {
+            match outcome {
+                None => {
+                    self.kept.links.insert(pair);
+                }
+                Some(error) => {
+                    let key = issues
+                        .iter()
+                        .find(|issue| issue.url == from)
+                        .map_or(from.as_str(), |issue| issue.key.as_str());
+                    refused.push(refusal(
+                        key,
+                        &format!("a link of {}", reference_of(&from)),
+                        &error,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Land `pages` in Notes: each one's pictures, then the pages as grouped `import-markdown`,
+    /// each under the note its source decides, then those with a parent moved under it.
+    fn land_pages(&mut self, pages: &[IncomingPage]) -> Result<Delivered> {
+        let mut members = Vec::with_capacity(pages.len());
+        {
+            let (workspace, _) = self.lander.workspace()?;
+            for page in pages {
+                let mut images = Vec::new();
+                for picture in &page.pictures {
+                    images.push(workspace.put(&picture.bytes)?);
+                }
+                let markdown = page.markdown.clone();
+                let origin = origin_of(
+                    page.author.as_ref(),
+                    "Outline",
+                    &page.url,
+                    None,
+                    &page.created_at,
+                    &page.updated_at,
+                );
+                members.push(Member {
+                    verb: IMPORT_MARKDOWN,
+                    args: json!({"title": page.title, "markdown": markdown, "images": images,
+                                 "note": note_for(&page.source, &page.key), "origin": origin}),
+                });
+            }
+        }
+        let (workspace, invocation) = self.lander.workspace()?;
+        let imported = grouped(workspace, invocation, PAGES, &members)?;
+        let mut refused = Vec::new();
+        let mut landed = Vec::new();
+        let mut nestings = Vec::new();
+        let mut nested = Vec::new();
+        for (page, outcome) in pages.iter().zip(imported) {
+            match outcome {
+                // A page an earlier import brought is the person's now, as they left it.
+                Some(error) if already_imported(&error) => landed.push(page.key.clone()),
+                Some(error) => refused.push(refusal(&page.key, &page.title, &error)),
+                None => match &page.parent {
+                    Some(parent) => {
+                        nestings.push(Member {
+                            verb: MOVE_NOTE,
+                            args: json!({"page": note_for(&page.source, &page.key),
+                                         "parent": note_for(&page.source, parent),
+                                         "before": null}),
+                        });
+                        nested.push(page);
+                    }
+                    None => landed.push(page.key.clone()),
+                },
+            }
+        }
+        let (workspace, invocation) = self.lander.workspace()?;
+        let outcomes = grouped(workspace, invocation, PAGES, &nestings)?;
+        for (page, outcome) in nested.into_iter().zip(outcomes) {
+            match outcome {
+                None => landed.push(page.key.clone()),
+                Some(error) => refused.push(refusal(&page.key, &page.title, &error)),
+            }
+        }
+        Ok(Delivered { landed, refused })
     }
 }
 
 impl service::Landing for Landing<'_, '_> {
-    fn page(&mut self, page: &IncomingPage) -> std::io::Result<()> {
-        self.stop_check()?;
-        let result = (|| -> Result<()> {
-            let (workspace, run) = self.lander.workspace()?;
-            let mut images = Vec::new();
-            for picture in &page.pictures {
-                images.push(workspace.put(&picture.bytes)?);
-            }
-            let note = note_for(&page.source, &page.key);
-            let markdown = if page.url.is_empty() {
-                page.markdown.clone()
-            } else {
-                format!("{}\n\n[{}]({})", page.markdown, "Open in Outline", page.url)
-            };
-            let origin = origin_of(
-                page.author.as_ref(),
-                "Outline",
-                &page.url,
-                None,
-                &page.created_at,
-                &page.updated_at,
-            );
-            match workspace.act(
-                run,
-                IMPORT_MARKDOWN,
-                json!({"title": page.title, "markdown": markdown, "images": images, "note": note,
-                       "origin": origin}),
-            ) {
-                Ok(_) => {}
-                // A page an earlier run brought is the person's now, as they left it.
-                Err(error) if already_imported(&error) => return Ok(()),
-                Err(error) => return Err(error),
-            }
-            if let Some(parent) = &page.parent {
-                let parent = note_for(&page.source, parent);
-                workspace.act(
-                    run,
-                    MOVE_NOTE,
-                    json!({"page": note, "parent": parent, "before": null}),
-                )?;
-            }
-            Ok(())
-        })();
-        result.map_err(|error| self.fail(error))?;
-        self.lander
-            .note(&format!("{NOTED}{}", page.key))
-            .and_then(|()| self.lander.count("pages", 1, 0))
-            .map_err(|error| self.fail(error))
+    fn batch(&self) -> usize {
+        LANDING_BATCH
     }
 
-    fn issue(&mut self, issue: &IncomingIssue) -> std::io::Result<()> {
+    fn pages(&mut self, pages: &[IncomingPage]) -> std::io::Result<Delivered> {
         self.stop_check()?;
-        let result = self.land_issue(issue);
-        result.map_err(|error| self.fail(error))?;
-        self.lander
-            .note(&format!("{NOTED}{}", issue.key))
-            .and_then(|()| self.lander.count("issues", 1, 0))
-            .map_err(|error| self.fail(error))
+        let delivered = self.land_pages(pages).map_err(|error| self.fail(error))?;
+        self.noted(&delivered, "pages")?;
+        Ok(delivered)
+    }
+
+    fn issues(&mut self, issues: &[IncomingIssue]) -> std::io::Result<Delivered> {
+        self.stop_check()?;
+        let delivered = self.land_issues(issues).map_err(|error| self.fail(error))?;
+        self.noted(&delivered, "issues")?;
+        Ok(delivered)
     }
 }
 
-impl Landing<'_, '_> {
-    /// Each comment of `issue` on the Tasks issue `id`, by its author there and on its date.
-    fn comment_all(
-        workspace: &mut dyn super::workspace::Workspace,
-        run: &super::workspace::Invocation,
-        id: &str,
-        issue: &IncomingIssue,
-    ) -> Result<()> {
-        for comment in &issue.comments {
-            let author = (!comment.author.trim().is_empty()).then(|| IncomingAuthor {
-                name: comment.author.clone(),
-                handle: comment.handle.clone(),
-            });
-            let url = if comment.url.is_empty() {
-                issue.url.as_str()
-            } else {
-                comment.url.as_str()
-            };
-            let origin = origin_of(
-                author.as_ref(),
-                service_name(&issue.source),
-                url,
-                None,
-                &comment.at,
-                &comment.updated_at,
-            );
-            workspace.act(
-                run,
-                COMMENT,
-                json!({"issue": id, "text": comment.text, "origin": origin}),
-            )?;
-        }
-        Ok(())
-    }
+/// How a comment is named among what an import brought: its issue's page and its place there.
+fn comment_key(page: &str, at: usize) -> String {
+    format!("{page}\u{0}{at}")
+}
 
-    fn land_issue(&mut self, issue: &IncomingIssue) -> Result<()> {
-        // A project in Linear stays a project; an issue in none works towards its team's area.
-        let service = service_name(&issue.source);
-        let project = match (&issue.project, &issue.team) {
-            (Some(project), _) => Some(self.area(project, "project", service)?),
-            (None, Some(team)) => Some(self.area(team, "area", service)?),
-            (None, None) => None,
-        };
-        if let Some(id) = self.kept.issues.get(&issue.url).cloned() {
-            // An earlier run brought it before it had a project: it joins its project now.
-            if let Some(project) = &project {
-                let (workspace, run) = self.lander.workspace()?;
-                workspace.act(run, SET_PROJECT, json!({"issue": id, "project": project}))?;
-            }
-            return Ok(());
-        }
-        let origin = origin_of(
-            issue.author.as_ref(),
-            service,
-            &issue.url,
-            Some(&issue.identifier),
-            &issue.created_at,
-            &issue.updated_at,
-        );
-        let due_ms = issue
-            .due
-            .as_deref()
-            .and_then(|due| jiff::civil::Date::strptime("%Y-%m-%d", due).ok())
-            .and_then(|day| day.at(12, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC).ok())
-            .map(|noon| noon.timestamp().as_millisecond());
-        let title = if issue.title.trim().is_empty() {
-            issue.identifier.as_str()
-        } else {
-            issue.title.as_str()
-        };
-        let (workspace, run) = self.lander.workspace()?;
-        let created = workspace.act(
-            run,
-            CREATE_ISSUE,
-            json!({
-                "title": title.trim(),
-                "body": issue.body,
-                "status": issue.status,
-                "assignee": issue.assignee,
-                "url": issue.url,
-                "parent": null,
-                "project": project,
-                "priority": issue.priority,
-                "estimate": issue.estimate,
-                "due_ms": due_ms,
-                "labels": issue.labels,
-                "origin": origin,
-            }),
-        )?;
-        let id = created_id(&created).ok_or_else(|| {
-            anyhow!(
-                "Tasks made {} but did not say its id: {created:?}",
-                issue.identifier
-            )
-        })?;
-        Self::comment_all(workspace, run, &id, issue)?;
-        self.kept.issues.insert(issue.url.clone(), id.clone());
-        self.kept
-            .issue_runs
-            .insert(issue.url.clone(), self.lander.invocation.id.clone());
-        if let Some(parent) = issue
-            .parent
-            .as_ref()
-            .and_then(|parent| self.kept.issues.get(parent))
-            .cloned()
-        {
-            let (workspace, run) = self.lander.workspace()?;
-            workspace.act(run, MOVE_UNDER, json!({"issue": id, "parent": parent}))?;
-        }
-        // How it relates to the issues here, and theirs to it that waited for it.
-        for relation in &issue.relations {
-            if self.kept.issues.contains_key(&relation.page) {
-                self.link(&issue.url, &relation.page, &relation.kind)?;
-            } else {
-                self.kept
-                    .waiting
-                    .entry(relation.page.clone())
-                    .or_default()
-                    .push((issue.url.clone(), relation.kind.clone()));
-            }
-        }
-        for (from, kind) in self.kept.waiting.remove(&issue.url).unwrap_or_default() {
-            self.link(&from, &issue.url, &kind)?;
-        }
-        Ok(())
-    }
+/// `issue` as `create-many` takes it, working towards `project`.
+fn listed(issue: &IncomingIssue, project: Option<&String>) -> Value {
+    let service = service_name(&issue.source);
+    let origin = origin_of(
+        issue.author.as_ref(),
+        service,
+        &issue.url,
+        Some(&issue.identifier),
+        &issue.created_at,
+        &issue.updated_at,
+    );
+    let due_ms = issue
+        .due
+        .as_deref()
+        .and_then(|due| jiff::civil::Date::strptime("%Y-%m-%d", due).ok())
+        .and_then(|day| day.at(12, 0, 0, 0).to_zoned(jiff::tz::TimeZone::UTC).ok())
+        .map(|noon| noon.timestamp().as_millisecond());
+    let title = if issue.title.trim().is_empty() {
+        issue.identifier.as_str()
+    } else {
+        issue.title.as_str()
+    };
+    json!({
+        "title": title.trim(),
+        "body": issue.body,
+        "status": issue.status,
+        "assignee": issue.assignee,
+        "url": issue.url,
+        "project": project,
+        "priority": issue.priority,
+        "estimate": issue.estimate,
+        "due_ms": due_ms,
+        "labels": issue.labels,
+        "origin": origin,
+    })
 }
 
 /// How the service an issue came from names itself to people.

@@ -1349,7 +1349,6 @@ scenario "the bar's status" {
     stage(device.notifications, waiting())
     d.people.insert(LayoutPerson(key: "mia", name: "Mia Clayton"))
     d.people.insert(LayoutPerson(key: "sam", name: "Sam Okafor"))
-    seed(shell)
 }
 
 /// Who is here, and the menu a person's presence opens.
@@ -1501,6 +1500,40 @@ fn installed_apps() -> List<device.App> {
     ]
 }
 
+/// The agent models Settings publishes (`settings.agent_models`): two providers a person let agents
+/// use, and the model they answer with. A scenario that shows the canvas' composer stages it, so the
+/// model the composer switches stands beside the line the person types on.
+fn agent_models() -> settings.AgentModels {
+    return settings.AgentModels(
+        providers: [
+            settings.AgentProviderShown(
+                id: "anthropic",
+                label: "Anthropic",
+                enabled: true,
+                models: [
+                    settings.AgentModelShown(id: "claude", label: "Claude"),
+                    settings.AgentModelShown(id: "claude-haiku", label: "Claude Haiku"),
+                ],
+                model: "claude",
+                model_label: "Claude",
+            ),
+            settings.AgentProviderShown(
+                id: "local",
+                label: "On this device",
+                enabled: true,
+                models: [settings.AgentModelShown(id: "small", label: "Small")],
+                model: "small",
+                model_label: "Small",
+            ),
+        ],
+        in_use: settings.AgentModelInUse(
+            provider: "anthropic",
+            model: "claude",
+            model_label: "Claude",
+        ),
+    )
+}
+
 /// A shell of one note in the style named, with that place in front, and the style's own settings
 /// open over it: what a person sees who opens them from the bar's style menu.
 action a_style_settings(style: Text) -> Layout {
@@ -1632,11 +1665,13 @@ scenario "the strips style's settings" -> Layout {
 
 /// The frames style's own settings, over the canvas they change.
 scenario "the frames style's settings" -> Layout {
+    stage(settings.agent_models, agent_models())
     a_style_settings("so.tilo.shell:frames")
 }
 
 /// The frameless style's own settings, over the places they change.
 scenario "the frameless style's settings" -> Layout {
+    stage(settings.agent_models, agent_models())
     a_style_settings("so.tilo.shell:frameless")
 }
 
@@ -1718,6 +1753,7 @@ scenario "a canvas of clusters" -> Layout {
             shell: "so.tilo.shell.strips",
         ),
     )
+    stage(settings.agent_models, agent_models())
     a
 }
 
@@ -1764,6 +1800,7 @@ scenario "resources shown as content" -> Layout {
             shell: "so.tilo.shell.strips",
         ),
     )
+    stage(settings.agent_models, agent_models())
     a
 }
 
@@ -1825,7 +1862,6 @@ scenario "the traditional desktop" {
             ],
         ),
     )
-    seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "mail", title: "Mail", icon: "mail", badge: 3))
@@ -1937,7 +1973,6 @@ scenario "the traditional desktop, a terminal in front" {
             ],
         ),
     )
-    seed(shell)
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
     s.dock_items.insert(DockItem(key: "files", title: "Files", icon: "folder"))
@@ -1989,7 +2024,6 @@ scenario "the agents on the bar" {
             ],
         ),
     )
-    seed(shell)
     let s = shell
     if let part = s.bar_parts.find(p -> p.kind == BarPartKind.agent) { show_part(s, part, true) }
 }

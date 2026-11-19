@@ -63,12 +63,12 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::time::{Duration, Instant};
-use tilo_ui::webview::chromium::ChromiumEngine;
 use tilo_ui::webview::paint::stream::wire::{Payload, Receiver};
 use tilo_ui::webview::paint::stream::{BlobRef, Item};
 use tilo_ui::webview::paint::{self, PaintEngine};
-use tilo_ui::webview::{FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEvent};
 use tilo_ui::widget::{DrawChild, WebView};
+use tilo_webview::chromium::ChromiumEngine;
+use tilo_webview::{FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEvent};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
@@ -177,7 +177,7 @@ impl Counted {
     }
 }
 
-impl tilo_ui::webview::WebViewEngine for Counted {
+impl tilo_webview::WebViewEngine for Counted {
     fn set_visible(&self, visible: bool) {
         self.native.set_visible(visible);
     }

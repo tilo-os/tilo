@@ -117,5 +117,81 @@ class WorkspaceMemberTests(unittest.TestCase):
             )
 
 
+class StagedWorkspaceMemberTests(unittest.TestCase):
+    """The hook judges the manifests a commit stages, not every crate of the tree."""
+
+    def setUp(self) -> None:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from git_fixture import isolated_git_environment
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.environment = isolated_git_environment()
+        self.git("init", "-q")
+
+    def git(self, *args: str) -> None:
+        import subprocess
+        subprocess.check_output(["git", "-C", str(self.root), *args], env=self.environment)
+
+    def write(self, relative: str, contents: str) -> None:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+
+    def configure(self, members: list[str]) -> None:
+        rows = "\n".join(f'    "{member}",' for member in members)
+        self.write("Cargo.toml", f"[workspace]\nmembers = [\n{rows}\n]\n")
+
+    def commit(self) -> None:
+        self.git("-c", "user.name=Policy Test", "-c", "user.email=policy@example.org",
+                 "-c", "commit.gpgsign=false", "commit", "-qm", "the tree")
+
+    def stage(self, relative: str, contents: str) -> None:
+        self.write(relative, contents)
+        self.git("add", "--", relative)
+
+    def test_a_staged_member_on_the_workspace_edition_passes(self) -> None:
+        self.configure(["apps/editor"])
+        self.stage("apps/editor/Cargo.toml", '[package]\nname = "editor"\nversion = "0.1.0"\n'
+                   'edition = "2024"\n')
+        self.commit()
+        self.stage("apps/editor/Cargo.toml", '[package]\nname = "editor"\nversion = "0.2.0"\n'
+                   'edition = "2024"\n')
+        self.assertEqual(checker.staged_violations(self.root), [])
+
+    def test_a_crate_the_commit_stages_must_be_a_member_on_the_edition(self) -> None:
+        self.configure(["apps/editor"])
+        self.stage("apps/editor/Cargo.toml", '[package]\nname = "editor"\nversion = "0.1.0"\n'
+                   'edition = "2024"\n')
+        self.commit()
+        self.stage("apps/new/Cargo.toml", '[package]\nname = "new"\nversion = "0.1.0"\n'
+                   'edition = "2024"\n')
+        self.assertEqual(
+            checker.staged_violations(self.root),
+            ["crate is not a workspace member: apps/new"],
+        )
+        self.configure(["apps/editor", "apps/new"])
+        self.git("add", "--", "Cargo.toml")
+        self.stage("apps/new/Cargo.toml", '[package]\nname = "new"\nversion = "0.1.0"\n'
+                   'edition = "2021"\n')
+        self.assertEqual(
+            checker.staged_violations(self.root),
+            ["workspace member is on edition 2021, not 2024: apps/new"],
+        )
+
+    def test_a_crate_the_commit_does_not_stage_has_its_own_verdict(self) -> None:
+        self.configure(["apps/editor"])
+        self.stage("apps/editor/Cargo.toml", '[package]\nname = "editor"\nversion = "0.1.0"\n'
+                   'edition = "2024"\n')
+        self.commit()
+        # A crate outside the workspace that the commit leaves alone is the
+        # tree-wide audit's finding, and that audit still holds it.
+        self.write("apps/undeclared/Cargo.toml", '[package]\nname = "x"\nversion = "0.1.0"\n')
+        self.stage("apps/editor/Cargo.toml", '[package]\nname = "editor"\nversion = "0.2.0"\n'
+                   'edition = "2024"\n')
+        self.assertEqual(checker.staged_violations(self.root), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2814,8 +2814,9 @@ pub static UNIT_OPS: ModelOps = ModelOps {
         }
     },
     collect_text: |table, value, out| {
+        // The case the surface shows, not the token a value's JSON form spells.
         if let Some(name) = unit_wire_name(table, value) {
-            out.push(name.to_owned());
+            out.push(tilo_actions::field_type::label_of(name));
         }
     },
     check: |_, _| Ok(()),
@@ -3036,7 +3037,7 @@ where
 /// The functions of every type stored as JSON text.
 pub static JSON_OPS: ModelOps = ModelOps {
     without_absent: crate::shape::kept_whole,
-    fresh: fresh::stored_after,
+    fresh: fresh::json_made,
     to_json: |table, value| match table.json() {
         Some(json) => (json.to_value)(value),
         None => serde_json::Value::Null,
@@ -3227,7 +3228,7 @@ fn lists(table: &ModelTable) -> Result<&'static VecDesc, ModelError> {
 /// The functions of every `Vec`: a list of values.
 pub static VEC_OPS: ModelOps = ModelOps {
     without_absent: crate::shape::kept_whole,
-    fresh: fresh::stored_after,
+    fresh: fresh::list_made,
     to_json: |table, value| {
         let (Some(list), Some(items)) = (
             table.list(),

@@ -209,23 +209,19 @@ type DockItem {
 
 root shell: Shell
 
-/// A shell that has never been arranged: the bar's parts and the dock's, in the order the
-/// default shell shows them. The platform runs it once on the person's first shell, as it
-/// runs an app's migrations (`migration action`), so the document is theirs to change from
-/// then on.
-migration action seed(s: Shell) {
-    if s.bar_parts.is_empty() {
-        s.bar_parts.insert(BarPart(kind: .menu))
-        s.bar_parts.insert(BarPart(kind: .workspace))
-        s.bar_parts.insert(BarPart(kind: .strip))
-        s.bar_parts.insert(BarPart(kind: .agent, shown: false))
-        s.bar_parts.insert(BarPart(kind: .spacer))
-        s.bar_parts.insert(BarPart(kind: .clock))
-        s.bar_parts.insert(BarPart(kind: .spacer))
-        s.bar_parts.insert(BarPart(kind: .people))
-        s.bar_parts.insert(BarPart(kind: .status))
-    }
-    if s.dock_items.is_empty() and s.dock_launcher {
+/// What a new shell starts with: the bar's parts and the dock's, in the order the default shell
+/// shows them. The person arranges them from then on.
+initial action seed(s: Shell) {
+    s.bar_parts.insert(BarPart(kind: .menu))
+    s.bar_parts.insert(BarPart(kind: .workspace))
+    s.bar_parts.insert(BarPart(kind: .strip))
+    s.bar_parts.insert(BarPart(kind: .agent, shown: false))
+    s.bar_parts.insert(BarPart(kind: .spacer))
+    s.bar_parts.insert(BarPart(kind: .clock))
+    s.bar_parts.insert(BarPart(kind: .spacer))
+    s.bar_parts.insert(BarPart(kind: .people))
+    s.bar_parts.insert(BarPart(kind: .status))
+    if s.dock_launcher {
         s.dock_items.insert(DockItem(key: "launcher", icon: "layout-grid"))
     }
 }

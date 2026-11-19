@@ -6,6 +6,7 @@ format = 2
 kind = "tilo.messages"
 label = "Messages"
 version = 1
+shows = ["back", "cancel-link", "close-groups", "list-account-states", "list-people", "list-routes", "open-account-setup", "open-conversation", "open-person", "reset-first-enrollment", "select-route", "select-setup-account"]
 fields = [
   { path = "conversations", type = { collection = { named = "Conversation" } }, readonly = true, stored = "collection" },
   { path = "conversations.*.with", type = "text" },

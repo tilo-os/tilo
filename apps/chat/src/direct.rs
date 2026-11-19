@@ -9,9 +9,9 @@
 //! are the chat's messages in the chat's parts, beside every channel's; its
 //! read mark is this person's, in the resource.
 
+use crate::projection::ChatProjection as _;
 use tilo_actions::policy::MemberId;
 use ui::framework::{Effected, LiveRow};
-use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::{Id, Invoke};
 
 use crate::app::{ChatApp, Focus};
@@ -66,6 +66,8 @@ impl ChatApp {
         self.composer_main
             .set_placeholder(&self.conversation_placeholder(&channel));
         self.messages = chat.message_rows(&self.held_messages(), &channel);
+        // Opened to write in: the keyboard goes to its composer, away from a thread or an edit.
+        self.set_composer_focus();
         // The conversation in view is read by the pass that follows, as a
         // channel is ([`ChatApp::mark_active_read`]): a read receipt sent from
         // here would continue this view's invocation, whose reach is reading,
@@ -282,23 +284,20 @@ impl ChatApp {
             .iter()
             .filter_map(|channel| {
                 let public_key = self.direct_peer(channel)?;
-                Some(
-                    LiveRow::new(
-                        format!("chat.conversation:{public_key}"),
-                        "chat.conversation",
-                        &channel.name,
+                let bindings = ui::tilo_resource::RowBindings::new()
+                    .bind(
+                        ChatEffect::OPEN_DIRECT_CONVERSATION,
+                        [("public_key", public_key.clone().into())],
                     )
-                    .effect(&ChatEffect::OpenDirectConversation {
-                        public_key: public_key.clone(),
-                    })
-                    .operation(
-                        ChatEffect::SendDirectMessage {
-                            public_key,
-                            text: String::new(),
-                        }
-                        .bound_asking(&["text"]),
-                    ),
-                )
+                    .bind(
+                        ChatEffect::SEND_DIRECT_MESSAGE,
+                        [("public_key", public_key.clone().into())],
+                    );
+                Some(LiveRow::typed_with::<chat_model::rows::DirectConversation>(
+                    format!("chat.conversation:{public_key}"),
+                    &channel.name,
+                    &bindings,
+                ))
             })
             .collect()
     }

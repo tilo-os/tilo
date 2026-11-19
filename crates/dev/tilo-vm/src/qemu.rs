@@ -135,9 +135,15 @@ pub enum Display {
     /// The virtio GL device with egl-headless: the guest gets hardware GL
     /// (virgl), but a screendump only captures GL scanouts.
     Gl,
+    /// gl, and Vulkan on the same GPU through virtio-gpu Venus: virglrenderer
+    /// executes the guest's Vulkan calls on the render node.
+    Vulkan,
     /// The virtio GL device in a GTK window on this desktop.
     Window,
 }
+
+/// The guest-visible window of host GPU memory Venus maps blobs into.
+pub const VENUS_HOSTMEM: &str = "4G";
 
 /// The guest's input devices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -780,6 +786,12 @@ impl Machine {
                 "-display".into(),
                 format!("egl-headless,rendernode={rendernode}"),
             ],
+            Display::Vulkan => vec![
+                "-device".into(),
+                format!("{gl},{mode},blob=true,hostmem={VENUS_HOSTMEM},venus=true"),
+                "-display".into(),
+                format!("egl-headless,rendernode={rendernode}"),
+            ],
             Display::Window => vec![
                 "-device".into(),
                 format!("{gl},{mode}"),
@@ -852,6 +864,18 @@ impl Machine {
             "-smp".into(),
             self.smp.to_string(),
         ]);
+        if self.display == Display::Vulkan {
+            // Venus blobs share guest memory with the host renderer.
+            args.extend([
+                "-object".into(),
+                format!(
+                    "memory-backend-memfd,id=tilomem,size={}M,share=on",
+                    self.memory
+                ),
+                "-machine".into(),
+                "memory-backend=tilomem".into(),
+            ]);
+        }
         args.extend(resolved.firmware.pflash_args(resolved.varstore));
         for disk in &self.disks {
             args.extend(disk.args());
@@ -1007,7 +1031,7 @@ impl Machine {
         }
         let rendernode = resolve_rendernode(self.rendernode.as_deref())
             .map_err(|error| QemuError::new(error.to_string(), error.hint()))?;
-        if self.display == Display::Gl {
+        if matches!(self.display, Display::Gl | Display::Vulkan) {
             eprintln!(
                 "[tilo-vm] GL renders on {} ({})",
                 rendernode.path, rendernode.reason
@@ -1939,6 +1963,9 @@ mod tests {
                 None,
             );
             assert!(window.contains("-device virtio-vga-gl,xres=1920,yres=1080 -display gtk,gl=on"));
+            let vulkan = line(&machine(&["--display", "vulkan", "--memory", "2048"]), false, None);
+            assert!(vulkan.contains("-m 2048 -smp 4 -object memory-backend-memfd,id=tilomem,size=2048M,share=on -machine memory-backend=tilomem"), "{vulkan}");
+            assert!(vulkan.contains("-device virtio-vga-gl,xres=1280,yres=800,blob=true,hostmem=4G,venus=true -display egl-headless,rendernode=/dev/dri/renderD129"), "{vulkan}");
             let none = line(&machine(&["--display", "none"]), false, None);
             assert!(none.contains("-vga none -display none"));
             let m = machine(&["--cpu-variant", "host-no-sve"]);

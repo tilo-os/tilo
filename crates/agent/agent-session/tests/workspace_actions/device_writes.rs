@@ -7,7 +7,7 @@ use super::*;
 use serde_json::{Value, json};
 use tilo_mcp::McpServer;
 use tilo_peer_state::join::Role;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 const TASKS: &str = "so.tilo.tasks";
 const NOTES: &str = "so.tilo.notes";
@@ -178,10 +178,10 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
     use super::api_on_server::{accept_invitation, api_on_server, approved_key, headers, json_of};
     let on_server = Box::pin(api_on_server(ISSUER)).await;
     let api = Arc::clone(&on_server.api);
-    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
-    let page = enrol(&root, "Ada's browser", DeviceCapabilities::member());
-    let key = approved_key(&on_server, &root, &page, "backend").await;
-    let bearer = format!("Bearer {key}");
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let owner_page = enrol(&owner, "Ada's browser", DeviceCapabilities::member());
+    let owner_key = approved_key(&on_server, &owner, &owner_page, "backend").await;
+    let bearer = format!("Bearer {owner_key}");
     let pairs = [
         ("authorization", bearer.as_str()),
         ("content-type", "application/json"),
@@ -225,7 +225,7 @@ async fn a_group_whose_write_is_refused_is_answered_failed() {
     let mut owner = Mcp {
         api: &api,
         path: format!("/w/{workspace}/mcp"),
-        token: key,
+        token: owner_key,
         session: None,
     };
     owner.initialize().await;

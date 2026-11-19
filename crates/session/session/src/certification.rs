@@ -104,9 +104,9 @@ enum Route {
     /// Another of the person's devices found it and proposed its certificate here.
     Device { from: DeviceId, ask: Box<Ask> },
     /// It opened this device's pairing link, and waits at the host the link names.
-    Host {
+    ServerAddress {
         origin: String,
-        host: tilo_server_client::Host,
+        host: tilo_server_client::ServerAddress,
         person: [u8; 32],
         device: [u8; 32],
     },
@@ -117,7 +117,7 @@ impl Asking {
     pub(crate) const fn device(&self) -> [u8; 32] {
         match &self.route {
             Route::Device { ask, .. } => ask.cert.device_public_key,
-            Route::Host { device, .. } => *device,
+            Route::ServerAddress { device, .. } => *device,
         }
     }
 }
@@ -432,7 +432,7 @@ fn answer(
     };
     let (from, ask) = match asking.route {
         Route::Device { from, ask } => (from, ask),
-        Route::Host { host, person, .. } => {
+        Route::ServerAddress { host, person, .. } => {
             answer_at_host(&local, host, person, digest, approve)?;
             return Ok(Some(asking.label));
         }
@@ -467,7 +467,7 @@ fn answer(
 /// Blocks on the host.
 fn answer_at_host(
     local: &DeviceId,
-    host: tilo_server_client::Host,
+    host: tilo_server_client::ServerAddress,
     person: [u8; 32],
     digest: [u8; 32],
     approve: bool,
@@ -544,13 +544,13 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
     runtime.block_on(async {
         let client = tilo_workspace_directory::client()
             .map_err(|error| tilo_sheets::directory::said(&error))?;
-        let info = tilo_server_client::https::host_info(&tilo_server_client::https::Origin::new(
+        let info = tilo_server_client::https::server_info(&tilo_server_client::https::Origin::new(
             &client, origin,
         ))
         .await
         .map_err(|error| error.to_string())?;
         let address = info.address.ok_or("the host takes no device connections")?;
-        let host = tilo_server_client::Host::published(&address);
+        let host = tilo_server_client::ServerAddress::published(&address);
         let approver = tilo_server_client::MemberApprover::new(host.clone());
         let mut known = Vec::new();
         let waited = loop {
@@ -579,7 +579,7 @@ fn wait_at_host(local: &DeviceId, origin: &str, person: [u8; 32]) -> Result<(), 
 fn follow_host(
     local: &DeviceId,
     origin: &str,
-    host: &tilo_server_client::Host,
+    host: &tilo_server_client::ServerAddress,
     person: [u8; 32],
     pending: Vec<tilo_server_protocol::certify::PendingCertification>,
 ) {
@@ -587,7 +587,9 @@ fn follow_host(
     with_state(local, |state| {
         let digests: Vec<[u8; 32]> = pending.iter().map(|entry| entry.request_digest).collect();
         state.asking.retain(|asking| match &asking.route {
-            Route::Host { origin: at, .. } => at != origin || digests.contains(&asking.digest),
+            Route::ServerAddress { origin: at, .. } => {
+                at != origin || digests.contains(&asking.digest)
+            }
             Route::Device { .. } => true,
         });
         for entry in pending {
@@ -608,7 +610,7 @@ fn follow_host(
                 code: entry.pairing_code,
                 via: String::new(),
                 asked_at_ms,
-                route: Route::Host {
+                route: Route::ServerAddress {
                     origin: origin.to_owned(),
                     host: host.clone(),
                     person,
@@ -904,7 +906,7 @@ mod tests {
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason};
 
     /// The person's identity as first boot provisions it, in files.
-    fn identity() -> (tempfile::TempDir, runtime_identity::SigningIdentity) {
+    fn identity() -> (tempfile::TempDir, tilo_identity::store::SigningIdentity) {
         let root = tempfile::tempdir().expect("temp root");
         let dir = root.path().join("config/tilo/identity");
         let device = tilo_device_identity::IdentityPaths::under(root.path().join("system"));
@@ -927,7 +929,7 @@ mod tests {
     /// A device holding the person's key, or, with `revoked` , one the person removed.
     #[derive(Clone)]
     struct Held {
-        key: Arc<runtime_identity::SigningIdentity>,
+        key: Arc<tilo_identity::store::SigningIdentity>,
         revoked: bool,
     }
 
@@ -1337,7 +1339,7 @@ mod tests {
 
     /// A joined device of `root` 's person, labelled `label` , whose certificate ran out: the shape
     /// this laptop has, certified by the person's root and holding no root of its own.
-    fn joined_device(root: &runtime_identity::SigningIdentity, label: &str) -> Joined {
+    fn joined_device(root: &tilo_identity::store::SigningIdentity, label: &str) -> Joined {
         let dir = tempfile::tempdir().expect("a directory for a joined device");
         let paths = tilo_device_identity::IdentityPaths::under(dir.path().join("system"));
         paths.ensure_directories().expect("the identity tree");
@@ -1378,14 +1380,14 @@ mod tests {
     /// A [`Keys`] holding `root` , and knowing `current` as the certificate the fleet holds for a
     /// device.
     fn held_by(
-        root: Arc<runtime_identity::SigningIdentity>,
+        root: Arc<tilo_identity::store::SigningIdentity>,
         current: Option<DeviceCert>,
     ) -> HeldKeys {
         HeldKeys { root, current }
     }
 
     struct HeldKeys {
-        root: Arc<runtime_identity::SigningIdentity>,
+        root: Arc<tilo_identity::store::SigningIdentity>,
         current: Option<DeviceCert>,
     }
 
@@ -1530,12 +1532,12 @@ mod tests {
     /// A host of the person whose key `root` is, on this machine, serving the web a new device
     /// opens a pairing link on.
     async fn person_host(
-        root: &Arc<runtime_identity::SigningIdentity>,
+        root: &Arc<tilo_identity::store::SigningIdentity>,
         state: &std::path::Path,
     ) -> (tilo_server::daemon::Server, tilo_server::web::WebHandle) {
         let person = root.person();
         let host_key = ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]);
-        let mut host_cert = DeviceCert {
+        let mut server_cert = DeviceCert {
             user_public_key: person,
             device_public_key: host_key.verifying_key().to_bytes(),
             device_label: "Home".into(),
@@ -1549,7 +1551,7 @@ mod tests {
             key: Arc::clone(root),
             revoked: false,
         }));
-        tilo_user_identity::sign_device_cert_async(&mut host_cert, &root_signer)
+        tilo_user_identity::sign_device_cert_async(&mut server_cert, &root_signer)
             .await
             .unwrap();
         let server = tilo_server::daemon::Server::start_with_relay_mode(
@@ -1560,7 +1562,7 @@ mod tests {
             tilo_server::daemon::ServerIdentity {
                 user_public_key: person,
                 device_signing_key: host_key,
-                device_cert: host_cert,
+                device_cert: server_cert,
                 revocations: tilo_user_identity::RevocationList::new(),
             },
             test_server::relay_mode(),

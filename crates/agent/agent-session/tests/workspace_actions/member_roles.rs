@@ -93,7 +93,7 @@ impl Membership {
         self.workspaces
             .set_member_role(
                 WORKSPACE,
-                &self.member.endpoint.host_cert,
+                &self.member.endpoint.server_cert,
                 tilo_server::workspaces::SetMemberRoleRequest {
                     request_id: *blake3::hash(
                         format!("{role:?} {}", tilo_clock::unix_now_ns()).as_bytes(),
@@ -149,7 +149,7 @@ impl Membership {
 
 impl WorkspaceDocumentsLink for Membership {
     fn user_public_key(&self) -> [u8; 32] {
-        self.member.endpoint.host_cert.user_public_key
+        self.member.endpoint.server_cert.user_public_key
     }
     fn own_device(&self) -> HostDevice {
         self.member.clone()
@@ -205,7 +205,7 @@ impl WorkspaceDocumentsLink for Membership {
             "the member is asked"
         );
         self.asked.fetch_add(1, Ordering::SeqCst);
-        let answer = (*self.answer.lock().unwrap())?;
+        let answer = self.answer.lock().unwrap().clone()?;
         Some(Pending::ready(Ok(answer)))
     }
 }
@@ -1260,3 +1260,8 @@ async fn a_members_hand_over_that_failed_leaves_nothing_the_owner_writes_on() {
         "the member reads the workspace's agents: the two that were saved"
     );
 }
+
+// What a member is answered by the role the workspace's own governance holds stands below this
+// fixture too.
+#[path = "held_roles.rs"]
+mod held_roles;

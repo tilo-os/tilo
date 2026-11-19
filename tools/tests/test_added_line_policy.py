@@ -111,8 +111,8 @@ class ObjectReaderTests(unittest.TestCase):
                                else b":000000 100644 000 abc A\0notes.md\0")
                     with patch("added_line_policy.subprocess.Popen", return_value=process), \
                          patch("added_line_policy.staged_parents", return_value=["HEAD"]), \
-                         patch("added_line_policy.git", side_effect=lambda root, command, *args:
-                               b"" if command == "ls-tree" else listing):
+                         patch("added_line_policy.git", side_effect=lambda root, *args:
+                               b"" if "ls-tree" in args else listing):
                         with self.assertRaises(ValueError):
                             scan(ROOT, secrets_only=False)
 
@@ -120,8 +120,8 @@ class ObjectReaderTests(unittest.TestCase):
         process = self.process(b"abc blob 5\nclean\nold missing\n")
         with patch("added_line_policy.subprocess.Popen", return_value=process), \
              patch("added_line_policy.staged_parents", return_value=["HEAD"]), \
-             patch("added_line_policy.git", side_effect=lambda root, command, *args:
-                   b"100644 blob old\tnotes.md\0" if command == "ls-tree"
+             patch("added_line_policy.git", side_effect=lambda root, *args:
+                   b"100644 blob old\tnotes.md\0" if "ls-tree" in args
                    else b":100644 100644 old abc M\0notes.md\0"):
             with self.assertRaisesRegex(ValueError, "cannot inspect parent blob"):
                 scan_staged(ROOT, secrets_only=False)

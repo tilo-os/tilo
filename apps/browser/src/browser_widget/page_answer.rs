@@ -2,7 +2,7 @@
 //! resources it names, and a picture of the page kept as content.
 
 use super::BrowserWidget;
-use ui::webview::{PageReply, PageRequest};
+use tilo_webview::{PageReply, PageRequest};
 
 impl BrowserWidget {
     pub(super) fn page_success(
@@ -161,27 +161,27 @@ impl BrowserWidget {
             PageRequest::Outline { .. } => format!(
                 "`outline` reads on from a line between 1 and {}: the line a read that stopped \
                  short named, or the line of a `search` match",
-                ui::webview::page::MAX_OUTLINE_FROM
+                tilo_webview::page::MAX_OUTLINE_FROM
             ),
             PageRequest::Search { .. } => format!(
                 "`search` takes the words to find: 1 to {} characters",
-                ui::webview::page::MAX_SEARCH_UNITS
+                tilo_webview::page::MAX_SEARCH_UNITS
             ),
             PageRequest::Settle { .. } => format!(
                 "`settle` waits for the page to hold still for {} ms or more, {} ms at most in \
                  all, and takes the words to wait for, and the words to see gone, as 1 to {} \
                  characters each",
-                ui::webview::page::MIN_SETTLE_QUIET_MS,
-                ui::webview::page::MAX_SETTLE_MS,
-                ui::webview::page::MAX_SEARCH_UNITS
+                tilo_webview::page::MIN_SETTLE_QUIET_MS,
+                tilo_webview::page::MAX_SETTLE_MS,
+                tilo_webview::page::MAX_SEARCH_UNITS
             ),
             PageRequest::FillForm { .. } => format!(
                 "`fill_form` takes a form's id or signature of at most {} characters and at \
                  most {} answers by the names the form asks under, each a text, a number, true \
                  or false, or a list of texts; the form is sent with its first submit button \
                  or with the one a label names, not both ways at once",
-                ui::webview::page::MAX_FORM_UNITS,
-                ui::webview::page::MAX_FORM_ANSWERS
+                tilo_webview::page::MAX_FORM_UNITS,
+                tilo_webview::page::MAX_FORM_ANSWERS
             ),
             _ => format!(
                 "`{}` names no element of the page outline, or arguments the page cannot take",
@@ -196,7 +196,7 @@ impl BrowserWidget {
     /// `others_earlier`, how many older ones that leaves out. `None` when it
     /// says nothing. The entries are page content, like the rest.
     pub(super) fn page_resource_details(
-        record: &ui::webview::PageResourceNote,
+        record: &tilo_webview::PageResourceNote,
     ) -> Option<serde_json::Value> {
         if record.is_empty() {
             return None;

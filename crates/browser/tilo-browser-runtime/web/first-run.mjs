@@ -203,6 +203,7 @@ export function stepLines(polled, mode = 'setup') {
   const done = text => lines.push({text, done: true});
   if (mode === 'sign-in') {
     if (!polled?.resolved) return [{text: 'Waiting for your agent', wait: true}];
+    if (steps.has('failed') && !steps.has('approved')) return [{text: `${agent} could not sign this tab in`, failed: true}];
     if (!polled.claimed) return [{text: `${agent} is finding you…`}];
     done(`${polled.claimed.by || agent} vouched for you`);
     lines.push(steps.has('approved') ? {text: 'This tab is signed in', done: true} : {text: 'Signing this tab in…'});
@@ -747,6 +748,15 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       const agent = polled.agent || 'Your agent';
       view.steps(stepLines(polled, mode), {agent: polled.agent || null, detail: polled.detail || null});
       const failed = steps.includes('failed') && !steps.includes('entered');
+      // A sign-in the agent gave up on is over: the screen says why, once,
+      // with one way on, a fresh code.
+      if (failed && mode === 'sign-in' && !steps.includes('approved')) {
+        finished = true;
+        stop();
+        save({step: 'start', code: null, polled: null});
+        view.failed(polled.detail || `${agent} did not say why.`, mode);
+        return;
+      }
       view.agentFailed(failed ? (polled.detail || `${agent} did not say why.`) : null);
       if (!failed && mode === 'setup' && !steps.includes('restart') && now() - quietSince >= QUIET_MS) {
         view.net(`${agent} has reported nothing new for ${Math.round(QUIET_MS / 60_000)} minutes. Look at its window: it may be waiting for you.`);
@@ -1207,6 +1217,7 @@ export function domView(document) {
       say(text ? 'That prompt ran out before an agent used it. Here is a fresh one: copy it to try again.' : note ?? '');
     },
     problem(text) { $('first-run-problem').textContent = text; },
+    // It did not work: the reason, alone, and one button that makes a fresh code.
     failed(text, mode) {
       state('failed', mode);
       $('first-run').dataset.handed = 'false';

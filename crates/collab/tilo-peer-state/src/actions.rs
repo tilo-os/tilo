@@ -357,9 +357,10 @@ impl ActionService {
     }
 
     /// Take a connection from the endpoint `endpoint` as one from the device
-    /// `device`: a device whose endpoint is keyed apart from its device key,
-    /// as a Tilo server's is, asks from that endpoint and signs as the device.
-    /// Every other connection asks as the device its endpoint is keyed by.
+    /// `device`, and address what this device asks there to `device`: a
+    /// device whose endpoint is keyed apart from its device key, as a Tilo
+    /// server's is, asks and answers at that endpoint as the device. Every
+    /// other endpoint is the device it is keyed by.
     pub fn reach_device_at(&self, device: [u8; 32], endpoint: [u8; 32]) {
         if device != endpoint {
             self.0.endpoints.lock_recover().insert(endpoint, device);
@@ -454,7 +455,7 @@ impl ActionService {
             endpoint: endpoint.clone(),
             addr: addr.clone(),
             workspace: workspace.to_owned(),
-            target: *addr.id.as_bytes(),
+            target: self.device_of(*addr.id.as_bytes()),
             key: Arc::clone(&self.0.device),
             runtime: self.0.runtime.clone(),
             connection: Mutex::new(None),
@@ -464,15 +465,18 @@ impl ActionService {
     }
 
     /// The devices of `workspace` that may be offered work, other than this
-    /// one: certified, unrevoked and unexpired, its person a member, its
-    /// delegation live ([`StatePeer::permissions`](crate::StatePeer::permissions)).
+    /// one and any device's workspace service: certified, unrevoked and
+    /// unexpired, its person a member, its delegation live ([`StatePeer::permissions`](crate::StatePeer::permissions)).
     pub async fn key_holders(&self, workspace: &str) -> Vec<[u8; 32]> {
         let device = self.device();
         let mut key_holders = self
             .read_workspace(workspace, |peer| {
                 let now = tilo_clock::wall();
+                // A device's workspace service takes on no work of its own: it is
+                // reached as the device that certified it, which is asked.
                 peer.certificates()
                     .into_iter()
+                    .filter(|certificate| !certificate.capabilities.workspace_service)
                     .map(|certificate| certificate.device_public_key)
                     .filter(|source| peer.permissions(*source, now).is_ok())
                     .collect::<Vec<_>>()

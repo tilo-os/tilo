@@ -285,15 +285,9 @@ impl Closing {
             summary.insert("threads".into(), threads);
         }
         let path = self.dir.join("summary.json");
-        let partial = self.dir.join("summary.json.partial");
         let written = serde_json::to_vec_pretty(&self.summary)
             .map_err(io::Error::other)
-            .and_then(|bytes| {
-                let mut file = private_file(&partial)?;
-                file.write_all(&bytes)?;
-                file.sync_all()
-            })
-            .and_then(|()| std::fs::rename(&partial, &path));
+            .and_then(|bytes| tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600));
         match written {
             Ok(()) => eprintln!("compositor-profile: complete at {}", self.dir.display()),
             Err(error) => eprintln!(

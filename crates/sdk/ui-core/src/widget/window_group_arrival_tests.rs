@@ -4,7 +4,7 @@
 //! minimum), says where it comes from, and cross-fades in without moving anything; a failure takes
 //! the same place; and a window waiting between two steps asks for no frames.
 use super::*;
-use crate::arriving::{GRACE, MIN_SHOWN, NAME_SOURCE_AFTER, Source, Step, frame_budget};
+use crate::arriving::{GRACE, MIN_SHOWN, Source, Step, frame_budget};
 use crate::widget::{AppKind, TabDescriptor, TileContent};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -232,8 +232,8 @@ fn a_late_first_frame_reserves_the_ground_then_a_skeleton_then_cross_fades_in_pl
 }
 
 #[test]
-fn a_frame_from_another_device_reserves_its_place_at_once_and_names_its_source() {
-    let mut w = opening(Source::peer("Laptop"));
+fn a_frame_from_another_device_reserves_its_place_at_once_and_never_names_its_source() {
+    let mut w = opening(Source::Remote);
     assert_eq!(w.at(0, || Widget::holds_frame_until(&w.group, w.t0)), None);
     let first = w.frame(0);
     assert!(
@@ -241,22 +241,22 @@ fn a_frame_from_another_device_reserves_its_place_at_once_and_names_its_source()
         "another device's frame never holds this one's"
     );
     assert_eq!(first.step, Some(Step::Ground));
-    let named_at = u64::try_from(NAME_SOURCE_AFTER.as_millis()).unwrap();
-    let named = w.frame(named_at);
-    assert_eq!(named.step, Some(Step::Named));
-    let said = w.at(named_at, || {
+    let waiting = w.frame(60_000);
+    assert_eq!(waiting.step, Some(Step::Skeleton));
+    let said = w.at(60_000, || {
         Widget::accessibility(w.host()).and_then(|node| node.description)
     });
-    assert!(
-        said.as_deref().is_some_and(|said| said.contains("Laptop")),
-        "the placeholder says where the window comes from: {said:?}"
+    assert_eq!(
+        said.as_deref(),
+        Some("Loading"),
+        "a workspace is one place: the placeholder never says which device or host it waits on"
     );
-    assert_eq!(named.rects, first.rects);
+    assert_eq!(waiting.rects, first.rects);
 }
 
 #[test]
 fn a_skeleton_stays_its_minimum_before_the_first_frame_replaces_it() {
-    let mut w = opening(Source::peer("Laptop"));
+    let mut w = opening(Source::Remote);
     let grace = u64::try_from(GRACE.as_millis()).unwrap();
     let min = u64::try_from(MIN_SHOWN.as_millis()).unwrap();
     assert_eq!(w.frame(grace).step, Some(Step::Skeleton));
@@ -314,7 +314,7 @@ fn a_window_that_fails_to_start_shows_its_failure_in_the_place_it_reserved() {
 
 #[test]
 fn a_window_waiting_between_two_steps_asks_for_no_frames() {
-    let mut w = opening(Source::host("eu1.tilo.sh"));
+    let mut w = opening(Source::Remote);
     let _ = w.frame(0);
     assert!(!w.wants_frame(1), "the reserved ground draws nothing more");
     assert_eq!(
@@ -326,16 +326,12 @@ fn a_window_waiting_between_two_steps_asks_for_no_frames() {
     assert!(w.wants_frame(grace), "the skeleton's step draws one frame");
     let _ = w.frame(grace);
     assert!(!w.wants_frame(grace + 1));
-    assert_eq!(w.next_wake(grace + 1), Some(w.t0 + NAME_SOURCE_AFTER));
-    let named = u64::try_from(NAME_SOURCE_AFTER.as_millis()).unwrap();
-    let _ = w.frame(named);
-    assert!(!w.wants_frame(named + 1));
     assert!(
         !w.wants_frame(60_000),
         "a window waiting a minute draws nothing"
     );
     assert_eq!(
-        w.next_wake(named + 1),
+        w.next_wake(grace + 1),
         None,
         "nothing changes until its first frame lands"
     );

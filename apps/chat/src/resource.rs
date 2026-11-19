@@ -7,14 +7,13 @@
 //! join a voice channel's call), as live rows merged into the item
 //! resources the resource publishes ([`crate::effects`]).
 
+use crate::projection::ChatProjection as _;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_content::ContentStore;
 use ui::framework::{EffectAnswer, EffectCx, Publishes, ResourceApp, RunMode, SeedCx, ViewCx};
-use ui::tilo_resource::items::{item_of_resource, item_resource_id};
-use ui::tilo_resource::search_index::{IndexKind, IndexPerson};
-use ui::tilo_resource::{Id, Invoke, SearchEntry};
+use ui::tilo_resource::{Id, Invoke};
 use ui::widget::Element;
 
 use crate::app::{ChatApp, ChatRuntime, ChatWindow, SharedChat};
@@ -27,118 +26,11 @@ use crate::messages::chat_messages;
 #[cfg(feature = "samples")]
 use crate::parts::ChatMessages;
 
-impl Chat {
-    /// What search finds in the chat record: the workspace's channels,
-    /// conversations, categories, reviewed reports and people, each opening
-    /// the item it names.
-    ///
-    /// The messages are the messages' own document to offer
-    /// ([`ChatMessages::search`](crate::parts::ChatMessages::search)): they are kept
-    /// in parts beside this resource, and a device that never opened Chat finds
-    /// them there.
-    #[must_use]
-    pub fn search(&self) -> Vec<SearchEntry> {
-        let anchor = |field: &str, id: &Id| item_resource_id::<Self>(field, id);
-        let channels = self
-            .channels
-            .iter()
-            .filter(|(_, channel)| channel.is_channel())
-            .map(|(id, channel)| conversation_entry(id, &channel.name, &channel.topic));
-        // A conversation the resource holds as an item: a group of people, or a person and an
-        // agent. What it is called is its own name, which a kept one is made with, else what its
-        // members are called; the row shows those members beside it.
-        let conversations = self
-            .channels
-            .iter()
-            .filter(|(_, conversation)| !conversation.is_channel())
-            .map(|(id, _)| {
-                conversation_entry(
-                    id,
-                    &self.display_names(id, None, &std::collections::HashMap::new()),
-                    "",
-                )
-                .showing(self.member_rows(id))
-            });
-        let categories = self.categories.iter().map(|(id, category)| {
-            SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
-        });
-        // A report is found by what its message says: the summary, and the
-        // picks of one filed without words.
-        let feedback = self.feedback.iter().filter_map(|(id, report)| {
-            let message = crate::feedback::message::message(report)?;
-            Some(SearchEntry::new(&message.text, "Feedback").anchored(anchor("feedback", id)))
-        });
-        channels
-            .chain(conversations)
-            .chain(categories)
-            .chain(feedback)
-            .collect()
-    }
-
-    /// The people in the conversation `id`, as a row shows them: named by the
-    /// workspace's member list ([`ui::tilo_resource::members`]), else by what their own entry is
-    /// called.
-    fn member_rows(&self, id: &Id) -> Vec<IndexPerson> {
-        self.conversation_members(id)
-            .into_iter()
-            .map(|member| IndexPerson {
-                name: ui::tilo_resource::members::name_of(&member).unwrap_or_default(),
-                anchor: String::new(),
-                identity: member.id().to_owned(),
-                agent: !member.is_person(),
-            })
-            .collect()
-    }
-
-    /// What the chat resource holds, for a caller that reads it: with no item,
-    /// the workspace's channels; with a channel, what it is about. Its messages
-    /// are kept in parts beside the record: a caller reads them from the
-    /// chain the window publishes, or through the resource api.
-    pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
-        let Some(item) = item else {
-            return Ok(serde_json::json!({
-                "channels": self.channels.iter()
-                    .filter(|(_, channel)| !channel.archived && channel.is_channel())
-                    .map(|(id, channel)| serde_json::json!({
-                        "id": id,
-                        "name": channel.name,
-                        "topic": channel.topic,
-                        "voice": channel.kind == crate::model::ChannelKind::Voice,
-                    }))
-                    .collect::<Vec<_>>(),
-            }));
-        };
-        let (field, id) = item_of_resource::<Self>(item.as_str())
-            .map_or_else(|| ("", item.clone()), |(field, id)| (field, id));
-        let channel = self
-            .channels
-            .get(&id)
-            .filter(|_| field != "messages")
-            .ok_or_else(|| format!("there is no `{item}` in this chat"))?;
-        Ok(serde_json::json!({
-            "id": id,
-            "name": channel.name,
-            "topic": channel.topic,
-        }))
-    }
-}
-
 /// Chat as every host runs and mounts it: the chat widget is the window
 /// over [`Chat`], kept by the workspace as its own document.
 pub struct ChatShell;
 
-/// The glyph a conversation leads with when the row has no face of its own.
-const CONVERSATION_ICON: &str = "message-circle";
-
-/// The row that opens conversation `id`, as the window names it: its name and topic, among the
-/// resource's conversations. The resource's own search and the window's entries (a direct conversation
-/// the resource keeps no row for) are one row, so a hit opens the conversation by one anchor.
-pub(crate) fn conversation_entry(id: &Id, name: &str, topic: &str) -> SearchEntry {
-    SearchEntry::new(name.to_owned(), topic.to_owned())
-        .anchored(item_resource_id::<Chat>("channels", id))
-        .of_kind(IndexKind::Conversation)
-        .with_icon(CONVERSATION_ICON)
-}
+pub use chat_model::chat::conversation_entry;
 
 /// Every named scenario `--shots --scenario NAME` captures.
 #[cfg(feature = "samples")]
@@ -290,6 +182,7 @@ impl ResourceApp for ChatShell {
             .status(move || statuses.borrow().effect_statuses());
         let rows = Rc::clone(&chat);
         let row = Rc::clone(&chat);
+        let statuses = Rc::clone(&chat);
         // What the window lists that the resource keeps no row for: a direct conversation a send
         // opened, an agent's among them, named by what the workspace calls its agents. The
         // sidebar lists the same conversations, so search and the sidebar never name one
@@ -302,6 +195,8 @@ impl ResourceApp for ChatShell {
                 // resources the resource publishes.
                 .live_rows(move || rows.borrow().published_rows())
                 .live_row(move |id| row.borrow().published_row(id))
+                // A call's controls say they need the call it belongs to.
+                .row_status(move |id| statuses.borrow().row_status(id))
                 .search_entries(move || unrecorded.borrow().unrecorded_conversation_entries()),
             Box::new(window),
         );
@@ -483,12 +378,14 @@ fn long_thread_posts(me: &str) -> Vec<(Id, crate::chat::Message)> {
     let people = ["u_aria", "u_milo", "u_sora", "u_devon"];
     let count = 240_usize;
     // The newest of them ends where the demo conversation begins.
-    let newest = crate::demo::NOW.saturating_sub(100 * 60);
+    let newest = crate::demo::NOW
+        .saturating_sub(100 * 60)
+        .saturating_mul(1_000);
     (0..count)
         .map(|index| {
             let ago = i64::try_from(count.saturating_sub(index))
                 .unwrap_or_default()
-                .saturating_mul(900);
+                .saturating_mul(900_000);
             let author = if index % 5 == 4 {
                 me
             } else {
@@ -581,7 +478,7 @@ fn mention_post() -> (Id, crate::chat::Message) {
         ..crate::chat::Message::new(
             Id::from_raw("c_frontend"),
             ui::tilo_resource::MemberId::person("u_aria"),
-            crate::demo::NOW - 30,
+            crate::demo::NOW.saturating_mul(1_000) - 30_000,
             text.into(),
         )
     };
@@ -609,7 +506,7 @@ fn bridged_post() -> (Id, crate::chat::Message) {
         ..crate::chat::Message::new(
             Id::from_raw("c_crit"),
             ui::tilo_resource::MemberId::bot(DEMO_BRIDGE),
-            crate::demo::NOW - 60,
+            crate::demo::NOW.saturating_mul(1_000) - 60_000,
             "Joining from Discord: the warmer palette reads much better on my phone.".into(),
         )
     };
@@ -639,7 +536,7 @@ pub(crate) fn agent_summons() -> (Id, crate::chat::Message) {
         ..crate::chat::Message::new(
             Id::from_raw("c_crit"),
             ui::tilo_resource::MemberId::person(crate::model::ME),
-            crate::demo::NOW - 120,
+            crate::demo::NOW.saturating_mul(1_000) - 120_000,
             "@Tide add the revenue curve to Calculator and keep the current bounds.".into(),
         )
     };
@@ -677,7 +574,7 @@ pub(crate) fn went_on_messages() -> Vec<(Id, crate::chat::Message)> {
     let conversation = went_on_conversation();
     let me = ui::tilo_resource::MemberId::person(crate::model::ME);
     let first = Id::from_raw(WENT_ON_FIRST);
-    let asked = crate::demo::NOW - 120;
+    let asked = crate::demo::NOW.saturating_sub(120).saturating_mul(1_000);
     let left = crate::chat::Message {
         parent: Some(first.clone()),
         work: Some(crate::chat::Work {
@@ -685,14 +582,14 @@ pub(crate) fn went_on_messages() -> Vec<(Id, crate::chat::Message)> {
                 state: crate::model::AgentWorkState::ProviderFinished {
                     outcome: crate::agent_stream::AgentFinish::Complete,
                 },
-                since: asked + 10,
+                since: asked + 10_000,
             }),
             ..crate::chat::Work::default()
         }),
         ..crate::chat::Message::new(
             conversation.clone(),
             demo_agent(),
-            asked + 10,
+            asked + 10_000,
             String::new(),
         )
     };
@@ -712,7 +609,7 @@ pub(crate) fn went_on_messages() -> Vec<(Id, crate::chat::Message)> {
             crate::chat::Message::new(
                 conversation,
                 me,
-                asked + 60,
+                asked + 60_000,
                 "And say that I bring the numbers.".into(),
             ),
         ),

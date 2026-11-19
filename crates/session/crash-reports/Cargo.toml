@@ -19,6 +19,8 @@ bounded-command = { path = "../../system/bounded-command" }
 tilo-actions = { path = "../../collab/actions" }
 # The reports a session service publishes.
 tilo-service = { path = "../service" }
+# A report is a resource of a declared type.
+tilo-resource = { path = "../../sdk/tilo-resource" }
 # A report's time reads in the person's own date style.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 serde.workspace = true

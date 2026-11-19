@@ -1,6 +1,6 @@
 //! Host-only admission for a held migration subtree and a signed portable shim.
 use super::{QuiescentExit, ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey};
-use crate::run::RunError;
+use crate::run::LaunchError;
 use std::{
     fs::File,
     io::{self, Seek, Write},
@@ -506,7 +506,7 @@ impl CaptureAdmission {
         }
         Ok(())
     }
-    pub(super) fn configure(&self, options: &mut crate::run::RunOptions) {
+    pub(super) fn configure(&self, options: &mut crate::run::LaunchOptions) {
         options.bwrap_bin = Some(format!("/proc/self/fd/{}", executable::BWRAP_FD).into());
         options.runtime_root = Some(self.runtime.clone());
         options.require_runtime_publisher = Some(self.publisher.clone());
@@ -517,10 +517,10 @@ impl CaptureAdmission {
     pub(crate) fn resolve_runtime(
         &self,
         manifest: &crate::manifest::ManifestView,
-    ) -> Result<(PathBuf, String), RunError> {
+    ) -> Result<(PathBuf, String), LaunchError> {
         self.check()?;
         if manifest.runtime.as_deref() != Some(self.runtime_name.as_str()) {
-            return Err(RunError::InvalidServiceLaunch(
+            return Err(LaunchError::InvalidServiceLaunch(
                 "native capture runtime declaration changed".into(),
             ));
         }
@@ -670,21 +670,21 @@ pub fn run_capture(
     authority: Arc<dyn ServiceAuthority>,
     cancellation: ServiceCancellation,
     key: ServiceLeaseKey,
-) -> Result<QuiescentExit, RunError> {
-    run_capture_connected(launch, admission, authority, cancellation, key, None)
+) -> Result<QuiescentExit, LaunchError> {
+    launch_capture_connected(launch, admission, authority, cancellation, key, None)
 }
 /// Connect only to the authenticated peer of this exact capture namespace.
-pub fn run_capture_connected(
+pub fn launch_capture_connected(
     launch: ServiceLaunch,
     admission: CaptureAdmission,
     authority: Arc<dyn ServiceAuthority>,
     cancellation: ServiceCancellation,
     key: ServiceLeaseKey,
     connected: Option<super::ConnectedService>,
-) -> Result<QuiescentExit, RunError> {
+) -> Result<QuiescentExit, LaunchError> {
     admission.check()?;
     if !authority.network_hosts()?.is_empty() {
-        return Err(RunError::InvalidServiceLaunch(
+        return Err(LaunchError::InvalidServiceLaunch(
             "Migration capture must remain offline".into(),
         ));
     }
@@ -707,7 +707,7 @@ pub fn run_capture_connected_observed(
     cancellation: ServiceCancellation,
     key: ServiceLeaseKey,
     connected: Option<super::ConnectedService>,
-) -> super::SupervisedRun {
+) -> super::SupervisedLaunch {
     let reviewed = admission.check().and_then(|()| {
         if authority.network_hosts()?.is_empty() {
             Ok(())
@@ -716,7 +716,7 @@ pub fn run_capture_connected_observed(
         }
     });
     if let Err(error) = reviewed {
-        return super::SupervisedRun {
+        return super::SupervisedLaunch {
             result: Err(error.into()),
             shutdown: None,
         };
@@ -907,7 +907,7 @@ mod tests {
                     passthrough_argv: Vec::new(),
                 },
             ] {
-                let options = crate::run::RunOptions {
+                let options = crate::run::LaunchOptions {
                     mode,
                     runtime_root: Some(runtime.clone()),
                     require_runtime_publisher: Some(identity.public_key_hex()),
@@ -915,7 +915,7 @@ mod tests {
                 };
                 assert!(matches!(
                     crate::run::resolve_runtime(&manifest, &options),
-                    Err(RunError::RuntimeBundleSignature { .. })
+                    Err(LaunchError::RuntimeBundleSignature { .. })
                 ));
             }
             assert_eq!(

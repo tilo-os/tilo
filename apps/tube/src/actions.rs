@@ -32,37 +32,37 @@ pub enum TubeEffect {
         kind: String,
     },
     /// Open video.
-    #[effect(kind = "read")]
+    #[effect(screen, on = crate::model::Video, on = crate::rows::HistoryEntry)]
     OpenVideo {
         #[param("The video's id")]
         video: String,
     },
     /// Open creator.
-    #[effect(kind = "read")]
+    #[effect(screen, on = crate::model::Channel)]
     OpenCreator {
         #[param("The creator's channel id")]
         creator: String,
     },
     /// Open playlist.
-    #[effect(kind = "read")]
+    #[effect(screen, on = crate::model::Playlist)]
     OpenPlaylist {
         #[param("The playlist's id")]
         playlist: String,
     },
     /// Search for videos.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Search {
         #[param("What to search for")]
         query: NonBlank,
     },
     /// Play or pause.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     TogglePlayback,
     /// Seek to seconds.
     ///
     /// Moves the open video to a moment; a segment you chose to skip is
     /// skipped from there as during playback.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     Seek {
         #[param("Position in the open video, in seconds from its start")]
         seconds: f64,
@@ -71,14 +71,15 @@ pub enum TubeEffect {
     ///
     /// Jumps to the end of the marked segment playing now, one you chose to
     /// see with a skip button rather than skip on its own.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     SkipSegment,
     /// Copy share link.
-    #[effect(kind = "read")]
+    #[effect(own_device, kind = "read", on = crate::model::Video)]
     Share {
         #[param("The video's id")]
         video: String,
     },
+    #[effect(kind = "outside")]
     Download {
         #[param("The video's id")]
         video: String,
@@ -87,40 +88,44 @@ pub enum TubeEffect {
     ///
     /// Adds the video to your own watch history, which follows you to your
     /// other devices and never reaches members.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", on = crate::model::Video)]
     MarkWatched {
         #[param("The video's id")]
         video: String,
     },
     /// Remove from history.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", on = crate::rows::HistoryEntry)]
     ForgetWatched {
         #[param("The video's id")]
         video: String,
     },
     /// Clear watch history.
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, kind = "read", on = crate::rows::History)]
     ClearHistory,
     /// Pair using invite.
     ///
     /// Pairs a Grayjay device, which then reads and writes your
     /// subscriptions, history and settings.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     PairDevice {
         #[param(secret, "Grayjay pairing invite; redacted from logs and history")]
         invite: String,
     },
+    #[effect(kind = "outside", on = crate::rows::DeviceSync)]
     SyncDevices,
     /// Approve device.
     ///
     /// Lets a device that asked to pair read and write your subscriptions,
     /// history and settings.
+    #[effect(kind = "outside", on = crate::rows::Device)]
     #[effect(destructive)]
     ApproveDevice {
         #[param("The device's id")]
         device: String,
     },
     /// Revoke device access.
+    #[effect(kind = "outside", on = crate::rows::Device)]
     #[effect(destructive)]
     RevokeDevice {
         #[param("The device's id")]

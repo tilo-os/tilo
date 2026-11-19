@@ -6,6 +6,7 @@ format = 2
 kind = "chat.workspace"
 label = "Chat"
 version = 1
+shows = ["open-agent", "open-category", "open-channel", "open-direct-conversation", "reveal-message", "reveal-message-range", "show-agent-reasoning", "show-view", "toggle-category"]
 fields = [
   { path = "categories", type = { collection = { named = "Category" } }, readonly = true, stored = "collection" },
   { path = "categories.*.name", type = "text", label = true, readonly = true },
@@ -714,6 +715,7 @@ id = "post"
 incoming_message = true
 kind = "undoable"
 params = [
+  { name = "id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
   { name = "text", type = "text", required = true, schema = { type = "string" } },
   { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
@@ -895,6 +897,7 @@ params = [
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
   { name = "cause", type = { named = "Starting" }, required = true, schema = { type = "object", additionalProperties = false, properties = { key = { type = "string" }, kind = { type = "string" }, label = { type = "string" } }, required = ["kind", "key"] } },
   { name = "members", type = { option = { list = "any" } }, required = false, schema = { type = ["array", "null"], items = { oneOf = [{ type = "object", additionalProperties = false, properties = { person = { type = "string" } }, required = ["person"] }, { type = "object", additionalProperties = false, properties = { agent = { type = "string" } }, required = ["agent"] }, { type = "object", additionalProperties = false, properties = { bot = { type = "string" } }, required = ["bot"] }] } } },
+  { name = "message", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
 [[resources.verbs]]
@@ -1112,6 +1115,7 @@ fields = [
 [[resources.types]]
 name = "NewMessage"
 fields = [
+  { name = "id", type = { option = "text" } },
   { name = "channel", type = "text" },
   { name = "text", type = "text" },
   { name = "parent", type = { option = "text" } },

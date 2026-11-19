@@ -483,7 +483,12 @@ impl RecordStore {
         let name = Self::file_name(&record.operation_id)?;
         let bytes = serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?;
         secure::ensure_dir(&self.dir, false)?;
-        write_atomic(&self.dir, &name, &bytes, false).map_err(|e| format!("record write: {e}"))?;
+        #[cfg(unix)]
+        let written =
+            tilo_files::native::atomic::write_with_mode(&self.dir.join(&name), &bytes, 0o600);
+        #[cfg(not(unix))]
+        let written = tilo_files::native::atomic::write(&self.dir.join(&name), &bytes);
+        written.map_err(|e| format!("record write: {e}"))?;
         if let Some(public) = &self.public_dir {
             secure::ensure_dir(public, true)?;
             let mut display = record.clone();
@@ -491,8 +496,15 @@ impl RecordStore {
             display.profile.remove("tpm_handoff");
             let display_bytes =
                 serde_json::to_vec_pretty(&display).map_err(|error| error.to_string())?;
-            write_atomic(public, &name, &display_bytes, true)
-                .map_err(|e| format!("status write: {e}"))?;
+            #[cfg(unix)]
+            let written = tilo_files::native::atomic::write_with_mode(
+                &public.join(&name),
+                &display_bytes,
+                0o644,
+            );
+            #[cfg(not(unix))]
+            let written = tilo_files::native::atomic::write(&public.join(&name), &display_bytes);
+            written.map_err(|e| format!("status write: {e}"))?;
         }
         Ok(())
     }
@@ -559,7 +571,6 @@ pub fn pending_in(dir: &Path) -> Vec<Record> {
     out
 }
 
-pub use imager_backend::staging::record_io::write_atomic;
 use imager_backend::staging::record_io::{read_bounded, secure};
 
 #[cfg(all(test, target_os = "linux", feature = "installation"))]

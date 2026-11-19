@@ -40,8 +40,14 @@ use ui::shortcut_table::{KeyChord, ShortcutAction};
 /// The window menu's resource in the session's catalogue.
 pub const WINDOW_MENU: &str = "desktop:window-menu";
 
+/// The window menu as the shell publishes it: a reading of the window it is for and the rows the
+/// shell offers it, with the verbs that change it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.window-menu", label = "Window menu", effects = ShellEffect)]
+pub struct WindowMenu;
+
 /// What kind of resource [`WINDOW_MENU`] is.
-pub const WINDOW_MENU_KIND: &str = "desktop.window-menu";
+pub const WINDOW_MENU_KIND: &str = <WindowMenu as tilo_resource::words::RowType>::KIND;
 
 /// The part the window menu is drawn in, as the settings reading names it.
 pub const WINDOW_MENU_PART: &str = "window-menu";
@@ -116,15 +122,25 @@ params = [{ name = "row", required = true, type = "text" }]
 
 use tilo_session_core::shell::OVERLAYS;
 
+/// The surface stack as the shell publishes it: what stands over the windows and in what order.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.overlays", label = "Surfaces", effects = OverlayEffect)]
+pub struct Overlays;
+
 /// What kind of resource [`OVERLAYS`] is.
-pub const OVERLAYS_KIND: &str = "desktop.overlays";
+pub const OVERLAYS_KIND: &str = <Overlays as tilo_resource::words::RowType>::KIND;
 
 /// What holds the keyboard, in the session's catalogue: the window in front,
 /// or the surface over it.
 pub const FOCUS: &str = "desktop:focus";
 
+/// The keyboard's target as the shell publishes it: the surface a key goes to.
+#[derive(tilo_resource::Row)]
+#[row(kind = "desktop.focus", label = "Keyboard focus")]
+pub struct KeyboardFocus;
+
 /// What kind of resource [`FOCUS`] is.
-pub const FOCUS_KIND: &str = "desktop.focus";
+pub const FOCUS_KIND: &str = <KeyboardFocus as tilo_resource::words::RowType>::KIND;
 
 /// The window menu's state, as the session holds it: the rest of the shell's presentation — focus,
 /// the surface stack, which strip each display shows — is in the stack beside it.
@@ -159,6 +175,7 @@ pub enum ShellEffect {
     /// Open the window menu
     /// The window in front's, or the one named; the same verb closes a menu it finds open for that
     /// window.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "menu")]
     Open {
         /// The window to open the menu for, by its tab's id.
@@ -169,10 +186,12 @@ pub enum ShellEffect {
         anchor: Option<String>,
     },
     /// Close the window menu
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     Close,
     /// Choose a row
     /// Sends the command the row means, as the shell sends it from anywhere.
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Choose {
         /// The row's id, as the reading lists it.
@@ -188,6 +207,7 @@ pub enum OverlayEffect {
     /// Open a surface
     /// Named as the reading names it; the session's own surfaces only. A surface already up moves
     /// to where it is asked to stand.
+    #[effect(kind = "outside")]
     #[effect(own_device, icon = "layers")]
     OpenSurface {
         /// The surface, as the reading names it.
@@ -199,6 +219,7 @@ pub enum OverlayEffect {
         anchor: Option<String>,
     },
     /// Close a surface
+    #[effect(kind = "outside")]
     #[effect(own_device, idempotent)]
     CloseSurface {
         /// The surface, as the reading names it.
@@ -206,6 +227,7 @@ pub enum OverlayEffect {
         part: String,
     },
     /// Show the surface `surface` over the shell's windows, or close it when it is up.
+    #[effect(kind = "outside")]
     ShowSurface {
         #[param(
             "The surface: `none`, `overview`, `switcher`, `launcher`, `centre`, `quick-settings`, `workspaces`, `composer` or `conversation`"
@@ -215,6 +237,7 @@ pub enum OverlayEffect {
     /// Open the window switcher, or walk it `steps` windows on.
     /// Alt+Tab walks the workspace's windows; Alt and the grave key the ones the app in front
     /// shows.
+    #[effect(kind = "outside")]
     WalkSwitcher {
         #[param("How far to walk; 1 the next window, -1 the one before")]
         steps: Option<i64>,
@@ -227,16 +250,20 @@ pub enum OverlayEffect {
     /// Choose the window the walk reached, without crossing the ones between: `at` is its place
     /// among the windows the walk crosses, `0` the first of them and `-1` the last. Home, End and a
     /// card under the pointer choose by place.
+    #[effect(kind = "outside")]
     SelectSwitcher {
         #[param("The window's place among the ones the walk crosses; -1 for the last")]
         at: i64,
     },
     /// Go to the window the switcher's walk reached, and close the switcher.
+    #[effect(kind = "outside")]
     CommitSwitcher,
     /// Answer the question waiting on the person's avatar
+    #[effect(kind = "outside")]
     #[effect(row, label = "session-answer-ask")]
     AnswerAsk,
     /// Put the question waiting on the person's avatar off for now
+    #[effect(kind = "outside")]
     #[effect(row, label = "session-ask-later")]
     PutOffAsk,
 }
@@ -600,21 +627,25 @@ impl ShellService {
 impl Service for ShellService {
     fn resources(&self) -> Vec<ResourceSpec> {
         vec![
-            offer::<ShellEffect>(ResourceSpec::new(
-                WINDOW_MENU,
-                WINDOW_MENU_KIND,
-                crate::i18n::t("session-resource-window-menu"),
-            )),
-            offer::<OverlayEffect>(ResourceSpec::new(
-                OVERLAYS,
-                OVERLAYS_KIND,
-                crate::i18n::t("session-resource-surfaces"),
-            )),
-            ResourceSpec::new(
-                FOCUS,
-                FOCUS_KIND,
-                crate::i18n::t("session-resource-keyboard-focus"),
+            offer::<ShellEffect>(
+                tilo_resource::LiveRow::typed::<WindowMenu>(
+                    WINDOW_MENU,
+                    crate::i18n::t("session-resource-window-menu"),
+                )
+                .into_resource(),
             ),
+            offer::<OverlayEffect>(
+                tilo_resource::LiveRow::typed::<Overlays>(
+                    OVERLAYS,
+                    crate::i18n::t("session-resource-surfaces"),
+                )
+                .into_resource(),
+            ),
+            tilo_resource::LiveRow::typed::<KeyboardFocus>(
+                FOCUS,
+                crate::i18n::t("session-resource-keyboard-focus"),
+            )
+            .into_resource(),
         ]
     }
 

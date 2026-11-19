@@ -38,7 +38,7 @@ const NO_HOST: &str = "this page is in no workspace";
 /// it, as the workspace's host last answered.
 #[derive(Clone)]
 pub(crate) struct PageRecords {
-    pub records: WorkspaceResources,
+    pub stores: crate::workspace_resources::PageStores,
     pub permissions: SharedPermissions,
     pub administers: Arc<AtomicBool>,
     /// The shell the page shows, and its person.
@@ -60,13 +60,13 @@ impl PageRecords {
         author: String,
     ) -> Self {
         Self {
-            records: crate::workspace_resources::in_page(
-                owners,
-                &shared.stores,
-                workspace,
-                author.clone(),
-                true,
-            ),
+            stores: crate::workspace_resources::PageStores {
+                owners: owners.clone(),
+                stores: Rc::clone(&shared.stores),
+                workspace: workspace.to_owned(),
+                author: author.clone(),
+                replicated: true,
+            },
             permissions: permissions.clone(),
             administers: Arc::clone(&shared.administers),
             handle: handle.clone(),
@@ -83,7 +83,7 @@ impl AgentsHost for PageRecords {
         _person: &UserId,
     ) -> (WorkspaceResources, Option<LivePermissions>) {
         (
-            self.records.clone(),
+            self.stores.resources(),
             Some(LivePermissions::shared(self.permissions.clone())),
         )
     }
@@ -326,37 +326,6 @@ impl PageWorkspaceSettings {
         changed
     }
 
-    /// The sheet's General tab: which servers keep the workspace is its
-    /// owners' to choose, so the page shows them the tab once the server
-    /// answered with them, and a person who may not choose sees nothing of
-    /// them.
-    fn general(&self) -> sheet::General {
-        match &*self.servers.borrow() {
-            Some(servers) => sheet::General {
-                servers: Some(sheet::Servers {
-                    group: sheet::Group {
-                        title: t("workspace-settings-servers-title"),
-                        description: t("workspace-settings-servers-description"),
-                    },
-                    origin_label: t("workspace-settings-servers-origin-label"),
-                    add_label: t("workspace-settings-servers-add"),
-                    remove_label: t("workspace-settings-servers-remove"),
-                    here_label: t("workspace-settings-servers-here"),
-                    rows: servers
-                        .iter()
-                        .map(|server| sheet::Server {
-                            key: server.device.clone(),
-                            label: server.device.clone(),
-                            here: server.here,
-                        })
-                        .collect(),
-                }),
-                ..sheet::General::default()
-            },
-            None => sheet::General::default(),
-        }
-    }
-
     /// The sheet as the workspace stands for this page's person.
     fn settings(&self) -> sheet::Settings {
         let workspace = self.workspace.borrow();
@@ -446,6 +415,35 @@ impl PageWorkspaceSettings {
                 .unwrap_or_default(),
             notice: self.state.notice(),
             ..sheet::Settings::default()
+        }
+    }
+
+    /// Which servers keep the workspace, its owners' to choose: the page shows them the tab
+    /// once the server answered with them, and a person who may not choose sees nothing of them.
+    fn general(&self) -> sheet::General {
+        match &*self.servers.borrow() {
+            Some(servers) => sheet::General {
+                servers: Some(sheet::Servers {
+                    group: sheet::Group {
+                        title: t("workspace-settings-servers-title"),
+                        description: t("workspace-settings-servers-description"),
+                    },
+                    origin_label: t("workspace-settings-servers-origin-label"),
+                    add_label: t("workspace-settings-servers-add"),
+                    remove_label: t("workspace-settings-servers-remove"),
+                    here_label: t("workspace-settings-servers-here"),
+                    rows: servers
+                        .iter()
+                        .map(|server| sheet::Server {
+                            key: server.device.clone(),
+                            label: server.device.clone(),
+                            here: server.here,
+                        })
+                        .collect(),
+                }),
+                ..sheet::General::default()
+            },
+            None => sheet::General::default(),
         }
     }
 }

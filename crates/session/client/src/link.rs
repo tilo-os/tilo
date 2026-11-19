@@ -6,9 +6,9 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
-use crate::remote::Heard;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_actions::Heard;
 
 use crate::engine::Engine;
 use crate::network::{Closed, Cmd, Event, Outbox};
@@ -216,6 +216,27 @@ impl PeerStatus {
         self.failures.push(failure);
         if self.failures.len() > MAX_FAILURES {
             self.failures.remove(0);
+        }
+    }
+
+    /// Why the workspace `ws` cannot answer what this session asks of it now, in the words of what
+    /// failed: while the session is not connected, its newest failure; while it is but the
+    /// workspace has not let this device in, the workspace's refusal. `None` while the workspace
+    /// can answer, and while no failure was heard (a first connection still under way is slow, not
+    /// broken).
+    #[must_use]
+    pub fn unanswerable(&self, ws: WorkspaceId) -> Option<&str> {
+        let newest = |of: FailureKind| {
+            self.failures
+                .iter()
+                .rev()
+                .find(|failure| failure.kind == of)
+                .map(|failure| failure.message.as_str())
+        };
+        match self.phase {
+            TransportPhase::Connected if self.workspaces.get(&ws) == Some(&true) => None,
+            TransportPhase::Connected => newest(FailureKind::Admission),
+            _ => newest(FailureKind::Session),
         }
     }
 }
@@ -800,7 +821,7 @@ impl Outbox for Link {
 /// This session as what asking another device's actions needs ([`Heard`]): the frames it carries
 /// to a device's key, and what it heard back, on a queue of its own, so any number of askers on
 /// one session each hear every answer.
-impl From<&Link> for Arc<dyn crate::remote::RemoteSession> {
+impl From<&Link> for Arc<dyn tilo_session_actions::RemoteSession> {
     fn from(link: &Link) -> Self {
         Arc::new(Asking {
             outbox: Arc::clone(&link.outbox),
@@ -817,7 +838,7 @@ struct Asking {
     events: Events,
 }
 
-impl crate::remote::RemoteSession for Asking {
+impl tilo_session_actions::RemoteSession for Asking {
     fn send_remote_action(
         &self,
         workspace_id: WorkspaceId,
@@ -934,5 +955,47 @@ mod tests {
             ));
         }
         assert_eq!(status.failures.len(), MAX_FAILURES);
+    }
+
+    #[test]
+    fn a_workspace_that_cannot_answer_says_what_failed() {
+        let ws = WorkspaceId::parse("6f1c2a52-3c1e-4c55-9d8e-2b7f4f0e9a10").unwrap();
+        let said = |code, message: &str, kind| Failure {
+            message: message.to_owned(),
+            ..failure(code, kind)
+        };
+        let mut status = PeerStatus::connecting([0; 32]);
+        assert_eq!(
+            status.unanswerable(ws),
+            None,
+            "a first connection still under way is slow, not broken"
+        );
+        status.upsert(said(
+            "transport-unavailable",
+            "Couldn't reach the workspace's server",
+            FailureKind::Session,
+        ));
+        status.phase = TransportPhase::Offline;
+        assert_eq!(
+            status.unanswerable(ws),
+            Some("Couldn't reach the workspace's server")
+        );
+        status.phase = TransportPhase::Connected;
+        assert_eq!(
+            status.unanswerable(ws),
+            None,
+            "connected and not refused: the answer is on its way"
+        );
+        status.upsert(said(
+            "not-admitted",
+            "This workspace hasn't let this device in",
+            FailureKind::Admission,
+        ));
+        assert_eq!(
+            status.unanswerable(ws),
+            Some("This workspace hasn't let this device in")
+        );
+        status.workspaces.insert(ws, true);
+        assert_eq!(status.unanswerable(ws), None, "the workspace is ready");
     }
 }

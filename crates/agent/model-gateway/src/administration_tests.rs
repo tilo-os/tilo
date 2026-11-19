@@ -443,6 +443,7 @@ fn administration_end_to_end(name: &str, kind: &str) {
         .env_clear()
         .env("PATH", root.path())
         .env("XDG_CONFIG_HOME", root.path())
+        .env("XDG_DATA_HOME", root.path().join("data"))
         .env(MARKER, kind)
         .output_locked()
         .unwrap();

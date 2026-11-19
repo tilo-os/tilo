@@ -21,7 +21,7 @@ use super::{DOCUMENT_VERSION, Publication};
 pub(super) const FORMAT: Format = Format {
     name: "governed workspace document",
     version: DOCUMENT_VERSION,
-    oldest: DOCUMENT_VERSION,
+    oldest: 5,
     steps: &[],
 };
 

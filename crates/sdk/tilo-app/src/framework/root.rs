@@ -745,6 +745,32 @@ impl ResourceRoot {
         walk(self.content.as_ref(), self.resource.id, visit);
     }
 
+    /// What the surfaces say of the effects on the published entity `id`
+    /// now (`Publishes::row_status`), laid over its actions by the
+    /// publication.
+    fn row_statuses(&self, id: &str) -> Vec<super::effect::EffectStatus> {
+        let mut statuses = Vec::new();
+        self.surfaces(&mut |surface| statuses.extend(surface.row_status(id)));
+        statuses
+    }
+
+    /// How the surfaces say the item `id` of the collection `field` stands
+    /// now (`Publishes::item_presentation`), when they know what its document
+    /// does not hold.
+    fn item_presentation(
+        &self,
+        field: &str,
+        id: &str,
+    ) -> Option<tilo_actions::ResourcePresentation> {
+        let mut found = None;
+        self.surfaces(&mut |surface| {
+            if found.is_none() {
+                found = surface.item_presentation(field, id);
+            }
+        });
+        found
+    }
+
     /// Bind the edits views offer on the rows `rows` name
     /// ([`Publishes::row_edits`](super::Publishes::row_edits)).
     ///
@@ -752,6 +778,18 @@ impl ResourceRoot {
     /// costs the view plus surfaces × rows, never the view once per row. Each
     /// row binds its edits in tree order of the surfaces offering them.
     #[inline(never)]
+    /// Lay what the surfaces say of each row's effects over it, and over the
+    /// rows nested beneath it.
+    fn apply_row_statuses(&self, rows: &mut [ResourceSpec]) {
+        for row in rows {
+            let statuses = self.row_statuses(row.id.as_str());
+            if !statuses.is_empty() {
+                super::rows::apply_statuses(row, &statuses);
+            }
+            self.apply_row_statuses(&mut row.children);
+        }
+    }
+
     fn bind_row_declarations(&self, rows: &mut [ResourceSpec]) {
         // Every row, nested ones too (a playlist's tracks), asked of the
         // surfaces in one walk.
@@ -1049,7 +1087,7 @@ impl ResourceRoot {
             }
         });
         resource = self.typed.bind(resource, bound);
-        for status in &availability {
+        for status in availability.iter().filter(|status| status.item().is_none()) {
             for spec in resource
                 .actions
                 .iter_mut()
@@ -1060,6 +1098,23 @@ impl ResourceRoot {
         }
         if children {
             merge(&mut resource.children, rows);
+            // What the views say of the items and rows they published beside
+            // the document: an item's presentation from state the document
+            // does not hold, and an effect unavailable on one row.
+            let kind = resource.kind.clone();
+            // A row's status reaches it wherever it is published, nested ones
+            // too (a playlist's tracks, the cameras of a disconnected capture
+            // row), as its declarations do.
+            self.apply_row_statuses(&mut resource.children);
+            for child in &mut resource.children {
+                if let Some((field, id)) =
+                    tilo_resource::items::item_of_resource_in(&kind, child.id.as_str())
+                    && let Some(presentation) = self.item_presentation(field, id.as_str())
+                    && presentation.is_valid()
+                {
+                    child.presentation = Some(presentation);
+                }
+            }
             let _profile = tilo_resource::profiling::Phase::start("framework.row_declarations");
             self.bind_row_declarations(&mut resource.children);
             // The nested editors the views opened ([`Dispatcher::child`]):
@@ -1886,6 +1941,8 @@ impl RootModel for ResourceRoot {
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| "open needs the anchor of an item".to_owned())?;
             self.stages.open(anchor)?;
+            // Whichever window of the app shows the item, it comes forward with it.
+            self.native_presentation.request_activation();
             return Ok(Some(
                 ui_core::host_operation::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
@@ -2210,6 +2267,9 @@ impl RootSearch for ResourceRoot {
             }
         });
         let opens = self.dispatch.resource_id();
+        // An item of the app's own resource publishes an `open` of its own, so it keeps it rather
+        // than addressing the resource's. One a part keeps beside it opens through the resource's,
+        // told the item as its anchor.
         let is_item = self.resource.opens_as_item;
         ui_core::search::index_publication::merged_by_key(
             entries
@@ -2346,9 +2406,24 @@ impl RootPublishes for ResourceRoot {
         if let Some(item) = self.storage.chain_item(id) {
             return Some(item);
         }
+        // The chain itself is its head part's resource and the chain's own
+        // verbs, as the tree carries it: never the whole publication, which
+        // holds every item the chain keeps.
+        if let Some(mut head) = self.storage.chain_head(id) {
+            if self.stages.opens() {
+                offer_item_open(self.resource.opens_as_item, &mut head);
+            }
+            return Some(head);
+        }
         // A change from another window or member may not have reached
         // this view yet: an item it removed is gone, one it made is there.
-        if let Some(published) = find(&[self.current_publication(doc)], id) {
+        if let Some(mut published) = find(&[self.current_publication(doc)], id) {
+            // The publication's items are listed with the read each answers;
+            // this one is built alone, so it carries the same
+            // ([`Self::resources_for`]).
+            if let Some(table) = self.resource.resource_table {
+                offer_item_reads(&mut published, table, self.resource.kind);
+            }
             return Some(published);
         }
         let current = if self.follow_document(doc) {
@@ -2358,10 +2433,16 @@ impl RootPublishes for ResourceRoot {
         };
         let state = current.unwrap_or_else(|| self.typed.state());
         let mut child = self.typed.child(&*state, doc, id);
-        if self.resource.readable
-            && let Some(child) = &mut child
-        {
-            offer_document_reads(child, &|id| self.typed.document_child(&*state, id));
+        if let Some(child) = &mut child {
+            if self.resource.readable {
+                offer_document_reads(child, &|id| self.typed.document_child(&*state, id));
+            }
+            // The published tree offers each item of the app's collections a
+            // read of its own ([`Self::resources_for`]); one built alone carries
+            // the same, so an item's address answers the read it lists.
+            if let Some(table) = self.resource.resource_table {
+                offer_item_reads(child, table, self.resource.kind);
+            }
         }
         let mut row = None;
         self.surfaces(&mut |surface| {
@@ -2380,6 +2461,17 @@ impl RootPublishes for ResourceRoot {
         };
         if let Some(mut resolved) = resolved {
             self.bind_row_declarations(std::slice::from_mut(&mut resolved));
+            let statuses = self.row_statuses(resolved.id.as_str());
+            if !statuses.is_empty() {
+                super::rows::apply_statuses(&mut resolved, &statuses);
+            }
+            if let Some((field, item)) =
+                tilo_resource::items::item_of_resource_in(self.resource.kind, resolved.id.as_str())
+                && let Some(presentation) = self.item_presentation(field, item.as_str())
+                && presentation.is_valid()
+            {
+                resolved.presentation = Some(presentation);
+            }
             if self.stages.opens() {
                 offer_item_open(self.resource.opens_as_item, &mut resolved);
             }

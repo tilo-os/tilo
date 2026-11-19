@@ -15,7 +15,7 @@ pub(super) fn effect_operation(payload: &[u8]) -> BrowserOperation {
         .operation()
 }
 use std::sync::Arc;
-use ui::webview::WebViewEngine;
+use tilo_webview::WebViewEngine;
 
 pub(super) fn synced(widget: &mut BrowserWidget) -> (AutoCommit, ObjId) {
     let mut state = AutoCommit::new();
@@ -207,14 +207,14 @@ fn a_page_waiting_on_permission_names_the_request_in_what_it_reads() {
         outline: Some("- heading \"Where are you?\"\n".into()),
         data: None,
         image: None,
-        navigation: ui::webview::page::PageNavigation::None,
+        navigation: tilo_webview::page::PageNavigation::None,
         loading: false,
-        record: ui::webview::PageResourceNote::default(),
+        record: tilo_webview::PageResourceNote::default(),
     };
     let update = widget.page_success(
         ui::tilo_actions::InvocationId::new(),
         &reply,
-        &ui::webview::PageRequest::Outline {
+        &tilo_webview::PageRequest::Outline {
             from: None,
             frame: None,
         },
@@ -251,7 +251,7 @@ fn a_page_waiting_on_permission_names_the_request_in_what_it_reads() {
     let update = widget.page_success(
         ui::tilo_actions::InvocationId::new(),
         &reply,
-        &ui::webview::PageRequest::Outline {
+        &tilo_webview::PageRequest::Outline {
             from: None,
             frame: None,
         },
@@ -1348,7 +1348,7 @@ fn site_panel_stays_retained_composed_and_actionable() {
         assert!(
             widget
                 .site
-                .apply(WebViewEvent::SiteStatus(ui::webview::SiteStatus {
+                .apply(WebViewEvent::SiteStatus(tilo_webview::SiteStatus {
                     request_id: 1,
                     origin: "https://example.com".into(),
                     generation: 2,
@@ -1462,7 +1462,7 @@ fn site_protection_reload_updates_chrome_only_after_correlated_success() {
         fn send(&self, command: WebViewCommand) {
             self.capture.send(command);
         }
-        fn frames(&self) -> ui::webview::FrameSlot {
+        fn frames(&self) -> tilo_webview::FrameSlot {
             self.capture.frames()
         }
         fn drain_events(&self) -> Vec<WebViewEvent> {
@@ -1533,7 +1533,7 @@ fn site_protection_reload_updates_chrome_only_after_correlated_success() {
             .events
             .lock()
             .unwrap()
-            .push(WebViewEvent::SiteStatus(ui::webview::SiteStatus {
+            .push(WebViewEvent::SiteStatus(tilo_webview::SiteStatus {
                 request_id: status_request,
                 origin: ORIGIN.into(),
                 generation: GENERATION,
@@ -2085,7 +2085,7 @@ fn engine_surface_and_session_restore_keep_truthful_page_identity() {
         assert!(engine.frames().lock().unwrap().is_none());
         assert!(engine.drain_events().iter().any(|event| matches!(event,
             WebViewEvent::LoadFailed { error, .. }
-                if error == ui::webview::chromium::runtime::FAILED_MESSAGE)));
+                if error == tilo_webview::chromium::runtime::FAILED_MESSAGE)));
     }
 
     {
@@ -2120,7 +2120,7 @@ fn engine_surface_and_session_restore_keep_truthful_page_identity() {
                 _ => None,
             })
             .expect("navigation answers with the problem");
-        assert_eq!(message, ui::webview::chromium::runtime::FAILED_MESSAGE);
+        assert_eq!(message, tilo_webview::chromium::runtime::FAILED_MESSAGE);
         for developer_word in ["build-host", "TILO_", "python", "Chromium"] {
             assert!(!message.contains(developer_word), "{message}");
         }
@@ -2295,7 +2295,7 @@ fn engine_surface_and_session_restore_keep_truthful_page_identity() {
             fn send(&self, command: WebViewCommand) {
                 self.1.send(command);
             }
-            fn frames(&self) -> ui::webview::FrameSlot {
+            fn frames(&self) -> tilo_webview::FrameSlot {
                 self.1.frames()
             }
             fn drain_events(&self) -> Vec<WebViewEvent> {

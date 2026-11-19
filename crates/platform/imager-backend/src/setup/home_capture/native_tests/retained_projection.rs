@@ -6,11 +6,11 @@ use super::credentials::assert_kernel_credentials;
 use launcher::{
     owned_service::{
         self, RetainedIoAdmission, RetainedIoAuthority, RetainedIoCredentials, ServiceAuthority,
-        ServiceCancellation, ServiceEndpoint, ServiceLaunch, ServiceLeaseKey, SupervisedRun,
+        ServiceCancellation, ServiceEndpoint, ServiceLaunch, ServiceLeaseKey, SupervisedLaunch,
         TargetProjectionAdmission, TargetProjectionAuthority, TargetProjectionCredentials,
         TargetProjectionEndpoint,
     },
-    run::{LaunchMode, RunOptions},
+    run::{LaunchMode, LaunchOptions},
 };
 use runtime_fs::{
     DirEntry, EntryKind, Metadata, OpenMode,
@@ -99,7 +99,7 @@ struct Worker {
     cancel: ServiceCancellation,
     key: ServiceLeaseKey,
     working: tempfile::TempDir,
-    job: Option<JoinHandle<SupervisedRun>>,
+    job: Option<JoinHandle<SupervisedLaunch>>,
 }
 impl Worker {
     fn new(root: &Path) -> Self {
@@ -157,7 +157,7 @@ fn launch(service: TrustedCaptureService, worker: &Worker, argument: &str) -> Se
     ServiceLaunch {
         manifest: service.manifest.clone(),
         payload: service.payload.clone(),
-        options: RunOptions {
+        options: LaunchOptions {
             no_services: true,
             expected_package_hash: Some(service.package_hash.clone()),
             app_id: Some(owned_service::RETAINED_IO_PACKAGE_ID.into()),
@@ -165,7 +165,7 @@ fn launch(service: TrustedCaptureService, worker: &Worker, argument: &str) -> Se
             mode: LaunchMode::Service {
                 passthrough_argv: vec![argument.into()],
             },
-            ..RunOptions::default()
+            ..LaunchOptions::default()
         },
     }
 }

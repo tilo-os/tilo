@@ -100,8 +100,6 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         DesktopCommand::ReopenClosed { strip } => own_all(&[*strip]),
         DesktopCommand::CreateStrip { .. }
         | DesktopCommand::RenameWorkspace { .. }
-        | DesktopCommand::RetiredSaveShortcut { .. }
-        | DesktopCommand::RetiredDeleteShortcut { .. }
         | DesktopCommand::ClaimNamespace { .. }
         | DesktopCommand::SavePreset { .. }
         | DesktopCommand::AssignPreset { .. }

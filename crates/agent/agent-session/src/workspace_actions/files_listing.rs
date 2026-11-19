@@ -78,6 +78,17 @@ fn read(resource: String, kind: &str, label: &str, action: &str) -> ActionDescri
     }
 }
 
+/// Whether `query` asks for what the workspace's folder holds, or for one of its files by its
+/// action: a listing that reads the tree, which the query then waits for as a read of the
+/// tree's documents waits ([`super::keys::catalogue_keys`]).
+pub(super) fn wants_files(query: &CatalogueQuery) -> bool {
+    query.parent_resource.as_deref() == Some(folder_resource().as_str())
+        || query
+            .target
+            .as_ref()
+            .is_some_and(|target| fs_protocol::tree::file_of_resource(&target.resource).is_some())
+}
+
 impl Worker {
     /// The rows of `workspace_id`'s folder `query` asks for, for `caller`: the folder at the top
     /// level, and its files beneath it, by their paths. None for a caller who may not read what
@@ -96,11 +107,7 @@ impl Worker {
         }
         let provider = workspace_provider(cluster_id);
         let folder = folder_resource();
-        let wants_files = query.parent_resource.as_deref() == Some(folder.as_str())
-            || query.target.as_ref().is_some_and(|target| {
-                fs_protocol::tree::file_of_resource(&target.resource).is_some()
-            });
-        if !wants_files {
+        if !wants_files(query) {
             let mut row = CatalogueRow::for_action(
                 provider,
                 FILES_APP,

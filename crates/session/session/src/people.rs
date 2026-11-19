@@ -993,9 +993,15 @@ impl Panel {
             .is_some_and(|apps| apps.installed(&LaunchpadAppAction::message_person("").app_id))
     }
 
-    /// Carry out what the person chose in the card.
-    fn take_choice(&mut self) {
+    /// Carry out what the person chose in the card, however they chose it: a press, a key or an
+    /// assistive technology's activation. A choice that closes the card and takes the person
+    /// elsewhere (a conversation, a window, a page, an agent's card) leaves the panel with it, so
+    /// the keyboard goes where they were taken; Everyone here puts the roster in the card's place.
+    /// Answers whether the panel was left.
+    fn take_choice(&mut self) -> bool {
+        let mut leaves = false;
         while let Some(choice) = self.profile.take_choice() {
+            leaves |= choice.closes() && choice != ProfileChoice::EveryoneHere;
             match choice {
                 ProfileChoice::Follow(id) => {
                     let following = self
@@ -1081,6 +1087,10 @@ impl Panel {
                 | ProfileChoice::Visibility(_) => {}
             }
         }
+        if leaves {
+            self.dismiss();
+        }
+        leaves
     }
 
     /// Read who is here, as the live session wrote them into the shell's member rows this frame: the
@@ -2000,16 +2010,14 @@ impl Widget for Panel {
                 path,
             );
             let modal = self.profile.modal_capture().is_some();
-            self.take_choice();
-            if !self.profile.is_open() {
-                // The card closed itself. Its place is the roster's, so the roster stands there
-                // again when the card's choice asks for everyone here; a choice that takes the
-                // person elsewhere (a conversation, an agent's card) leaves nothing here.
-                if self.shown.borrow().card_open.is_some() {
-                    self.dismiss();
-                    *ctx.handled = true;
-                    return;
-                }
+            // The card closed itself: by a choice that took the person elsewhere, or by Escape.
+            // Its place is the roster's only when the choice asked for everyone here.
+            if self.take_choice()
+                || (!self.profile.is_open() && self.shown.borrow().card_open.is_some())
+            {
+                self.dismiss();
+                *ctx.handled = true;
+                return;
             }
             if *ctx.handled || modal {
                 *ctx.handled = true;

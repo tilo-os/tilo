@@ -253,6 +253,16 @@ impl Key {
         Self(bytes)
     }
 
+    /// The complete state at `heads`, which nothing waits past.
+    pub(crate) fn complete(heads: &[ChangeHash]) -> Self {
+        let mut heads = heads.to_vec();
+        heads.sort_unstable();
+        let mut bytes = Vec::with_capacity(heads.len().saturating_mul(32).saturating_add(8));
+        push_hashes(&mut bytes, &heads);
+        push_hashes(&mut bytes, &[]);
+        Self(bytes)
+    }
+
     pub(crate) fn is_blank(&self) -> bool {
         self.complete_heads().is_some_and(|heads| heads.is_empty())
     }

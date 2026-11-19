@@ -27,7 +27,7 @@ mod permissions;
 
 pub use agents::{
     AccessApp, Agent, AgentReview, Agents, Bot, Exception, Intro, KindLine, Limit, ModelChoice,
-    Models,
+    Models, Moderation,
 };
 pub use apps::{AppRow, Apps};
 pub use emoji::{Emoji, EmojiPane, Notice, Picture};
@@ -65,6 +65,7 @@ pub enum WorkspaceSettingsEffect {
     #[effect(own_device, kind = "read")]
     Close,
     /// Rename the workspace
+    #[effect(kind = "outside")]
     Rename {
         #[param("The workspace's new name")]
         name: String,
@@ -73,24 +74,28 @@ pub enum WorkspaceSettingsEffect {
     #[effect(own_device, kind = "read")]
     Invite,
     /// Show the workspace on one of your devices, or keep it off
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     ToggleDevice {
         #[param("The device, by its key in the list")]
         device: String,
     },
     /// Move the workspace one place earlier or later among yours
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     Move {
         #[param("-1 for earlier, 1 for later")]
         step: i32,
     },
     /// Have another server keep the workspace as well, by its site
+    #[effect(kind = "outside")]
     #[effect(attended)]
     AddServer {
         #[param("The other server's site, like https://tilo.sh")]
         origin: String,
     },
     /// Have a server keep the workspace no more
+    #[effect(kind = "outside")]
     #[effect(attended)]
     RemoveServer {
         #[param("The server, by its device key in the list")]
@@ -98,13 +103,16 @@ pub enum WorkspaceSettingsEffect {
     },
     /// Take this workspace off your device's desktop, leaving it to the
     /// people in it
+    #[effect(kind = "outside")]
     #[effect(destructive, attended)]
     Delete,
     /// Delete this workspace, with everything in it: it is yours, on this
     /// device only, with nobody else in it
+    #[effect(kind = "outside")]
     #[effect(destructive, attended)]
     DeleteWorkspace,
     /// Give a member of the workspace another role
+    #[effect(kind = "outside")]
     #[effect(attended)]
     SetRole {
         #[param("The member, by their key in the list")]
@@ -113,12 +121,14 @@ pub enum WorkspaceSettingsEffect {
         role: String,
     },
     /// Remove a member from the workspace
+    #[effect(kind = "outside")]
     #[effect(destructive, attended)]
     RemoveMember {
         #[param("The member, by their key in the list")]
         member: String,
     },
     /// Take back your delegation of your own work to a server
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     RevokeDelegation {
         #[param("The server, by its device key in the list")]
@@ -145,6 +155,7 @@ pub enum WorkspaceSettingsEffect {
     #[effect(own_device, kind = "read")]
     EndReview,
     /// Answer what an agent may do of one kind in one app
+    #[effect(kind = "outside")]
     #[effect(attended)]
     SetAgentAnswer {
         #[param("The agent, by its key in the list")]
@@ -157,6 +168,7 @@ pub enum WorkspaceSettingsEffect {
         answer: String,
     },
     /// Return an agent's answers in one app to its admission's
+    #[effect(kind = "outside")]
     #[effect(attended)]
     ResetAgentApp {
         #[param("The agent, by its key in the list")]
@@ -165,6 +177,7 @@ pub enum WorkspaceSettingsEffect {
         scope: String,
     },
     /// Choose the model an agent plans with
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     SetAgentModel {
         #[param("The agent, by its key in the list")]
@@ -173,6 +186,7 @@ pub enum WorkspaceSettingsEffect {
         model: String,
     },
     /// Set the most an agent may spend in a day
+    #[effect(kind = "outside")]
     #[effect(attended)]
     SetAgentSpendLimit {
         #[param("The agent, by its key in the list")]
@@ -181,6 +195,7 @@ pub enum WorkspaceSettingsEffect {
         dollars: String,
     },
     /// Take an agent out of the workspace
+    #[effect(kind = "outside")]
     #[effect(destructive, attended)]
     RemoveAgent {
         #[param("The agent, by its key in the list")]
@@ -190,12 +205,21 @@ pub enum WorkspaceSettingsEffect {
     #[effect(own_device, kind = "read")]
     AddBot,
     /// Take back the workspace's request for a bot: its host stops it
+    #[effect(kind = "outside")]
     #[effect(destructive, attended)]
     RemoveBot {
         #[param("The bot, by its directory entry")]
         bot: String,
     },
+    /// Turn the moderation agent on the workspace's server on or off
+    #[effect(kind = "outside")]
+    #[effect(attended)]
+    SetModeration {
+        #[param("Whether it answers reports")]
+        on: bool,
+    },
     /// Give someone in the workspace a permission beyond their role
+    #[effect(kind = "outside")]
     #[effect(privileged, attended)]
     Grant {
         #[param("Who: member:…, agent:… or app:…, by its key in the composer")]
@@ -206,27 +230,32 @@ pub enum WorkspaceSettingsEffect {
         until: Option<u64>,
     },
     /// Revoke a permission the workspace gives
+    #[effect(kind = "outside")]
     #[effect(destructive, attended)]
     Revoke {
         #[param("The permission, by its key in the list")]
         grant: String,
     },
     /// Have the next app open a kind of file or link for everyone here
+    #[effect(kind = "outside")]
     #[effect(attended)]
     NextWorkspaceDefault {
         #[param("The kind of file or link, by its key in the list")]
         resource: String,
     },
     /// Have the next app open a kind of file or link for you here
+    #[effect(kind = "outside")]
     #[effect(own_device)]
     NextPersonalDefault {
         #[param("The kind of file or link, by its key in the list")]
         resource: String,
     },
     /// Choose a picture and add it as one of the workspace's emoji
+    #[effect(kind = "outside")]
     #[effect(own_device, attended)]
     AddEmoji,
     /// Remove one of the workspace's emoji
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     RemoveEmoji {
         #[param("The emoji's name, without colons")]
@@ -606,6 +635,8 @@ impl ResourceApp for WorkspaceSettingsApp {
             "people-revoking",
             "agents",
             "agents-empty",
+            "agents-moderation",
+            "agents-moderation-member",
             "agent-review",
             "permissions",
             "permissions-until",
@@ -698,6 +729,7 @@ pub fn scenario(name: Option<&str>) -> Settings {
             agents: Agents {
                 agents: Vec::new(),
                 bots: Vec::new(),
+                moderation: None,
                 intro: Intro {
                     title: "No agents".to_owned(),
                     ..agents::sample().intro
@@ -706,6 +738,28 @@ pub fn scenario(name: Option<&str>) -> Settings {
             },
             ..sample()
         },
+        // The workspace's server offers moderation, and nothing else works here yet.
+        Some(name @ ("agents-moderation" | "agents-moderation-member")) => {
+            let member = name == "agents-moderation-member";
+            let shown = agents::sample();
+            Settings {
+                tab: Tab::Agents,
+                agents: Agents {
+                    agents: Vec::new(),
+                    bots: Vec::new(),
+                    manage: !member,
+                    moderation: shown.moderation.clone().map(|moderation| Moderation {
+                        on: member,
+                        switchable: !member,
+                        ..moderation
+                    }),
+                    footnote: member
+                        .then(|| "Only the workspace owner can change permissions.".to_owned()),
+                    ..shown
+                },
+                ..sample()
+            }
+        }
         Some("agent-review") => Settings {
             tab: Tab::Agents,
             agents: Agents {

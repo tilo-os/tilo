@@ -224,22 +224,29 @@ pub enum MailEffect {
     #[effect(returns, kind = "read")]
     Count,
     /// Fetch new mail.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     Fetch { from: String },
     /// Connect to the server.
+    #[effect(kind = "outside")]
     Connect,
     /// Promise an answer without starting anything.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Stall,
     /// Settle an external receipt as the original caller.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Receipt,
     /// A read receipt cannot authorize a document edit.
     #[effect(job, kind = "read")]
     ReadReceipt,
     /// Note what was read, as an edit.
-    #[effect(kind = "read")]
+    #[effect(kind = "undoable")]
     Note { text: String },
+    /// Show the drafts folder: it only changes this screen.
+    #[effect(screen)]
+    ShowDrafts,
     /// Show the sent folder.
     #[effect(view)]
     ShowSent,
@@ -295,7 +302,7 @@ impl ResourceApp for MailApp {
                     },
                 ))
             }
-            MailEffect::Connect => Ok(Effected::done()),
+            MailEffect::Connect | MailEffect::ShowDrafts => Ok(Effected::done()),
             MailEffect::Stall => Ok(Effected::Pending),
             MailEffect::Receipt | MailEffect::ReadReceipt => Ok(deferred_receipt(cx)),
             MailEffect::Note { text } => {
@@ -461,7 +468,7 @@ tilo_test_env::scenario! {
         let mut capture = TestApp::<MailApp>::capture(None).unwrap();
         let live_surface = live.agent_surface();
         let captured_surface = capture.agent_surface();
-        for id in ["count", "fetch", "connect", "stall", "note", "show-sent"] {
+        for id in ["count", "fetch", "connect", "stall", "note", "show-sent", "show-drafts"] {
             let live_spec = effect(&live_surface, id).unwrap();
             let captured_spec = effect(&captured_surface, id).unwrap();
             assert_eq!(
@@ -513,25 +520,36 @@ tilo_test_env::scenario! {
             .is_err()
         );
 
-        // The effect runs; the edit it submits is refused, and says so.
-        app.effect(&MailEffect::Note {
-            text: "seen".into(),
-        })
-        .unwrap();
+        // An effect that writes is not a viewer's, whatever it answers, and nothing is written.
+        assert!(
+            app.effect(&MailEffect::Note {
+                text: "seen".into(),
+            })
+            .is_err()
+        );
         app.settle();
         assert_eq!(app.state().fetched, "");
-        let tree = app.harness().inspection_json().unwrap();
-        assert!(
-            tree.contains("Refused apply: this mailbox is open to view only")
-                || tree.contains("Refused fetched: this mailbox is open to view only"),
-            "{tree}"
-        );
     }
 
     phase an_effect_lends_its_invoker_no_more_than_they_were_admitted_for;
     {
         let mut app = TestApp::<MailApp>::new().unwrap();
-        // A viewer may take a read effect, but not the edit it submits.
+        // An effect declared to only change the screen is refused to an agent as the
+        // person's alone.
+        let refused = app
+            .effect_by(&MemberId::agent("viewer"), &MailEffect::ShowDrafts)
+            .expect_err("a screen effect is the person's");
+        assert!(
+            matches!(
+                &refused,
+                tilo_actions::ApiError::Unavailable { code, .. } if code == "private_view"
+            ),
+            "{refused:?}"
+        );
+
+        // One that writes and answers nothing is a viewer's no more than any write: refused at
+        // once as not theirs to take, saying why, and nothing is written.
+        app.set_role(tilo_app::Role::Viewer);
         let refused = app
             .effect_by(
                 &MemberId::agent("viewer"),
@@ -539,16 +557,42 @@ tilo_test_env::scenario! {
                     text: "seen".into(),
                 },
             )
-            .unwrap_err();
+            .expect_err("a viewer writes nothing");
         assert!(
             matches!(
                 &refused,
-                tilo_actions::ApiError::Unavailable { code, .. } if code == "permission_denied"
+                tilo_actions::ApiError::Unavailable { code, reason }
+                    if code == "permission_denied" && !reason.is_empty()
             ),
             "{refused:?}"
         );
         app.settle();
         assert_eq!(app.state().fetched, "", "nothing was written");
+        // A name nothing publishes is unknown, to a viewer as to anyone.
+        let unknown = app
+            .call_by(
+                tilo_actions::ActionInvoker::member(MemberId::agent("viewer")),
+                "test.mailbox",
+                "no-such-effect",
+                serde_json::json!({}),
+            )
+            .expect_err("nothing is called that");
+        assert!(
+            matches!(&unknown, tilo_actions::ApiError::Unknown(address) if address.action == "no-such-effect"),
+            "{unknown:?}"
+        );
+
+        // The writer's is kept.
+        app.set_role(tilo_app::Role::Owner);
+        app.effect_by(
+            &MemberId::agent("writer"),
+            &MailEffect::Note {
+                text: "seen".into(),
+            },
+        )
+        .unwrap();
+        app.settle();
+        assert_eq!(app.state().fetched, "seen", "the writer's edit is kept");
 
         // Someone admitted to write gets the edit their effect submits, as
         // theirs.
@@ -839,9 +883,11 @@ fn delayed_receipt_completion_cannot_exceed_its_original_read_admission() {
 #[effect(operation = "test.tally.effects", catalogue = "tests/locales")]
 pub enum TallyEffect {
     /// Tally.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     Tally,
     /// Count a row.
+    #[effect(kind = "outside")]
     Count {
         #[param("How much the row counts")]
         by: u32,
@@ -1299,6 +1345,7 @@ impl Widget for Counter {
 #[effect(operation = "test.counter.effects", catalogue = "tests/locales")]
 pub enum CounterEffect {
     /// Count.
+    #[effect(kind = "outside")]
     Count {
         #[param("How much to count")]
         by: u32,
@@ -1350,6 +1397,7 @@ impl ResourceApp for CounterApp {
 #[effect(operation = "test.hosted-counter.effects", catalogue = "tests/locales")]
 pub enum HostedCounterEffect {
     /// Count off the UI thread.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     CountLater {
         #[param("How much to count")]
@@ -1503,8 +1551,10 @@ impl Widget for Mounting {
 #[effect(operation = "test.mounting.effects", catalogue = "tests/locales")]
 pub enum MountingEffect {
     /// Mount the child window.
+    #[effect(kind = "outside")]
     OpenChild,
     /// Let the child window go.
+    #[effect(kind = "outside")]
     CloseChild,
 }
 
@@ -1594,12 +1644,15 @@ impl ResourceApp for MirrorApp {
 #[effect(operation = "test.mailbox.files", catalogue = "tests/locales")]
 pub enum FileEffect {
     /// Import a message from a file.
+    #[effect(kind = "outside")]
     #[effect(job)]
     Import,
     /// Export what was fetched to a file.
+    #[effect(kind = "outside")]
     #[effect(job, returns)]
     Export,
     /// Sync with a device that is busy.
+    #[effect(kind = "outside")]
     #[effect(job)]
     SyncDevice,
 }
@@ -1988,9 +2041,11 @@ fn a_job_nobody_invoked_says_how_far_it_is_until_it_ends() {
 #[effect(operation = "test.mailbox.device", catalogue = "tests/locales")]
 pub enum DeviceEffect {
     /// Choose a mail folder on this computer.
+    #[effect(kind = "outside")]
     #[effect(attended)]
     ChooseFolder,
     /// Empty the mail folder on this computer.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     EmptyLocalFolder,
 }
@@ -2023,6 +2078,7 @@ impl ResourceApp for FolderApp {
 #[effect(operation = "test.mailbox.disks", catalogue = "tests/locales")]
 pub enum DiskEffect {
     /// Erase a disk.
+    #[effect(kind = "outside")]
     #[effect(risk = "erase_risk")]
     Erase { disk: String },
 }

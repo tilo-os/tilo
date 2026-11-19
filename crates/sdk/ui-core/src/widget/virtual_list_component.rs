@@ -23,7 +23,7 @@ use crate::tokens::{Rhythm, TextRole};
 use crate::widget::arrange::{
     Align, Fit, Length, MEASURE_REM, Page, Part, Row, Stack, TranscriptEdges,
 };
-use crate::widget::conversation::list::RUN_WINDOW_SECS;
+use crate::widget::conversation::list::GROUPING_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, SectionDivider};
 use crate::widget::{
     Attachments, Avatar, AvatarSize, ContextMenuArea, Decorator, Element, ListRow, ListRowProps,
@@ -98,8 +98,9 @@ pub struct ListItemProps {
     /// tail title, closed until the person opens them.
     pub tail: bool,
     /// The item is one the person has finished with — its box checked off — though its row may
-    /// still stand in the list until they leave the place: a heading counts what is left to do,
-    /// so it does not count this row ([`crate::widget::heading_count`]).
+    /// still stand in the list until they leave the place: its title reads struck through, as a
+    /// checked-off row's does, and a heading counts what is left to do, so it does not count this
+    /// row ([`crate::widget::heading_count`]).
     pub done: bool,
     /// The item the view shows just over this one in its group: the place the actions offered
     /// on the row take when one reads a place (`above`). None for the first of a group.
@@ -392,6 +393,15 @@ impl PartType for DescribedRows {
 }
 
 impl DescribedRows {
+    /// Rows of `items` given whole.
+    #[cfg(test)]
+    pub(crate) fn given(items: Vec<ListItemProps>) -> Self {
+        Self {
+            held: Held::Given(Rc::new(items)),
+            ..Self::default()
+        }
+    }
+
     /// The same items, to read from elsewhere (what an event of the list reports).
     fn reader(&self) -> Self {
         Self {
@@ -958,6 +968,7 @@ fn bare_row(
             detail,
             change,
             removed,
+            done,
             menu,
             parent_title,
             progress,
@@ -996,7 +1007,7 @@ fn bare_row(
                 if let Some(person) = presence {
                     row = row.presence(&person);
                 }
-                if removed {
+                if removed || done {
                     row = row.struck();
                 }
                 if let Some(mark) = change.and_then(ChangeMarkProps::row) {
@@ -1013,7 +1024,10 @@ fn bare_row(
                 }
                 Box::new(row) as Element
             }
-            ItemRow::View(view) => {
+            ItemRow::View(mut view) => {
+                if done {
+                    strike_row(view.as_mut());
+                }
                 let view = with_mark(
                     view,
                     change.and_then(|change| change.face(&format!("{key}~change"))),
@@ -1084,6 +1098,19 @@ fn nesting_parent(
 
 /// `row` with a change mark after it, on its line, when it has one: beside the row's own line,
 /// or at `align` down it where what the mark stands beside is an item's page.
+/// Strike the title of the first list row in an item's view: an item done with reads as done
+/// whether its view is a bare row or a row with more under it (its reactions, its replies).
+fn strike_row(view: &mut dyn Widget) -> bool {
+    if let Some(row) = view
+        .as_any_mut()
+        .and_then(|any| any.downcast_mut::<ListRow>())
+    {
+        row.set_struck();
+        return true;
+    }
+    view.children_mut().into_iter().any(strike_row)
+}
+
 fn with_mark(row: Element, mark: Option<crate::widget::Chip>, align: Align) -> Element {
     match mark {
         Some(mark) => {
@@ -1124,9 +1151,9 @@ fn attach(row: Element, swipe: Option<SwipeActionProps>, attached: Attachments) 
 }
 
 /// A message of a transcript: its item's row, under its author and the time when the item names
-/// them. A run of one author's messages, each within [`RUN_WINDOW_SECS`] of the one before it on
-/// the same day, shows the author's avatar and name once, over its first message; the others line
-/// up under it.
+/// them. One author's messages, each within [`GROUPING_WINDOW_SECS`] of the one before it on the
+/// same day, show the author's avatar and name once, over the first of them; the others line up
+/// under it.
 fn message_of(
     rows: &DescribedRows,
     key: &str,
@@ -1166,7 +1193,7 @@ fn message_of(
                 .is_some_and(|who| who.identity == author.identity)
                 && match (then, at) {
                     (Some(then), Some(at)) => {
-                        (0..=RUN_WINDOW_SECS).contains(&at.0.saturating_sub(then.0))
+                        (0..=GROUPING_WINDOW_SECS).contains(&at.0.saturating_sub(then.0))
                     }
                     _ => true,
                 }
@@ -1668,20 +1695,18 @@ mod tests {
 
     /// The rows of a list given its items whole: a row a title each.
     fn given_rows(count: usize) -> DescribedRows {
-        let items = (0..count)
-            .map(|at| ListItemProps {
-                key: format!("row-{at}"),
-                row: ItemRow::Row(Box::new(ListRowProps {
-                    title: format!("row {at}"),
-                    ..ListRowProps::default()
-                })),
-                ..ListItemProps::default()
-            })
-            .collect();
-        DescribedRows {
-            held: Held::Given(Rc::new(items)),
-            ..DescribedRows::default()
-        }
+        DescribedRows::given(
+            (0..count)
+                .map(|at| ListItemProps {
+                    key: format!("row-{at}"),
+                    row: ItemRow::Row(Box::new(ListRowProps {
+                        title: format!("row {at}"),
+                        ..ListRowProps::default()
+                    })),
+                    ..ListItemProps::default()
+                })
+                .collect(),
+        )
     }
 
     /// The props of a list of `rows` that is a column's whole body.
@@ -2811,5 +2836,47 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// An item the person is done with reads as done: its row's title struck through, whether
+    /// the row is a bare list row or a view holding one with more under it.
+    #[test]
+    fn a_done_item_reads_struck_through_in_either_kind_of_row() {
+        fn first_row(widget: &mut dyn Widget) -> Option<&mut ListRow> {
+            if widget.as_any().is_some_and(|any| any.is::<ListRow>()) {
+                return widget.as_any_mut()?.downcast_mut::<ListRow>();
+            }
+            widget.children_mut().into_iter().find_map(first_row)
+        }
+        let row = |done| ListItemProps {
+            key: "bare".into(),
+            done,
+            row: ItemRow::Row(Box::new(ListRowProps {
+                title: "Bump the version".into(),
+                ..ListRowProps::default()
+            })),
+            ..ListItemProps::default()
+        };
+        for done in [false, true] {
+            let rows = DescribedRows::given(vec![row(done)]);
+            let (mut built, _, _) = bare_row(
+                &rows,
+                "bare",
+                crate::motion::Feel::Standard,
+                None,
+                RowBuild::default(),
+            )
+            .expect("the item has a row");
+            let struck = first_row(built.as_mut()).expect("a list row").is_struck();
+            assert_eq!(struck, done, "a list row of an item done: {done}");
+        }
+        // A view holding the row with more under it: the row in it reads struck.
+        let mut view: Element = Box::new(
+            Stack::stack()
+                .push(Box::new(ListRow::new("view-row", "Bump the version")))
+                .push(Box::new(Text::new("under it"))),
+        );
+        assert!(strike_row(view.as_mut()), "the view holds a row to strike");
+        assert!(first_row(view.as_mut()).expect("a list row").is_struck());
     }
 }

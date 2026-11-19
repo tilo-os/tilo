@@ -774,15 +774,14 @@ impl Takes for Reply {
 /// Wait for `answer`, a model's answer on its way, and put what the model writes meanwhile
 /// (`writes`) into `reply`, each piece the moment it comes: what arrives while a piece is on
 /// its way goes with the next. Words go in whole: a blank a model wrote last waits for the
-/// word after it, and is left out at the answer's end. When the answer is there, `whole`
-/// reads its words, and what of them the provider said only at the end goes into the reply
-/// as well.
-pub(super) async fn follow<T, E>(
+/// word after it, and is left out at the answer's end. What of the answer's words the provider
+/// said only at the end is put in when the answer is there ([`Takes::lacks`]).
+pub(super) async fn follow<R>(
     reply: &(impl Takes + Sync),
-    mut answer: tokio::task::JoinHandle<Result<T, E>>,
+    answer: impl std::future::Future<Output = R>,
     writes: &Writes,
-    whole: impl FnOnce(&T) -> String,
-) -> Result<Result<T, E>, tokio::task::JoinError> {
+) -> R {
+    let mut answer = std::pin::pin!(answer);
     reply.asked_anew();
     let mut words = String::new();
     let mut thoughts = String::new();
@@ -814,11 +813,6 @@ pub(super) async fn follow<T, E>(
     reply.think(thoughts.trim_end()).await;
     words.push_str(&writes.take());
     reply.take(settled(&words).trim_end()).await;
-    if let Ok(Ok(answer)) = &answer
-        && let Some(rest) = reply.lacks(&whole(answer))
-    {
-        reply.take(&rest).await;
-    }
     answer
 }
 
@@ -920,7 +914,7 @@ mod tests {
                 (10, "for May."),
             ],
         );
-        let answered = follow(&kept, model, &writes, |()| String::new()).await;
+        let answered = follow(&kept, model, &writes).await;
         assert!(matches!(answered, Ok(Ok(()))), "the model answered");
         assert_eq!(
             kept.pieces(),
@@ -946,7 +940,7 @@ mod tests {
             &writes,
             &[(0, "One "), (5, "two "), (5, "three "), (5, "four.")],
         );
-        let answered = follow(&kept, model, &writes, |()| String::new()).await;
+        let answered = follow(&kept, model, &writes).await;
         assert!(matches!(answered, Ok(Ok(()))), "the model answered");
         assert_eq!(
             kept.pieces(),
@@ -988,7 +982,7 @@ mod tests {
             &[(0, "The plan names "), (10, "one month: "), (10, "May.")],
             &[(50, "The launch "), (10, "is in May.")],
         );
-        let answered = follow(&kept, model, &writes, |()| String::new()).await;
+        let answered = follow(&kept, model, &writes).await;
         assert!(matches!(answered, Ok(Ok(()))), "the model answered");
         assert_eq!(
             kept.thoughts(),

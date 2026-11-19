@@ -7,12 +7,8 @@ use tilo_peer_state::owner::NativeWorkspaceOwner;
 
 /// What the session holding the native owner answers for its commits.
 pub trait OwnerService: collab_types::signer::MaybeSendSync + 'static {
-    /// Whether `workspace`'s app records are documents the owner commits:
-    /// a workspace held here whose host takes part in no channels.
-    fn commits_documents(&self, workspace: WorkspaceId) -> bool;
-    /// Whether `workspace`'s replica is projected here, its records committed
-    /// documents or sealed channels: a workspace held here, with its
-    /// governance.
+    /// Whether `workspace`'s replica is projected here: a workspace held here,
+    /// with its governance.
     fn projects_workspace(&self, workspace: WorkspaceId) -> bool;
     /// The owner if it is open, never waiting: `unavailable` when there is
     /// none.

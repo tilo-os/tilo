@@ -24,7 +24,7 @@ pub struct Memo {
 )]
 impl Memo {
     /// Retitle the memo.
-    #[action]
+    #[action(field = "title")]
     pub fn retitle(&mut self, title: String) {
         self.title = title;
     }
@@ -331,6 +331,100 @@ tilo_test_env::scenario! {
             .unwrap();
         assert_eq!(memo.remarks.len(), 2);
         assert!(memo.lines.is_empty());
+    }
+
+    phase a_carrier_writes_only_what_its_member_may_write;
+    {
+        // An agent its person let write one field is offered the typed edit and
+        // the group, and each one it sends is decided by the value it carries:
+        // its own field goes through, another field is refused and written
+        // nowhere.
+        let app = TestApp::<MemoApp>::new().unwrap();
+        let definition = tilo_app::framework::definition::<MemoApp>();
+        let titled = PermissionContext::agent_granted(
+            "scribe",
+            &TreePath::root().app(MemoApp::ID).rest().field("title"),
+            KindSet::READ_UNDOABLE,
+        );
+        let mut view = tilo_app::framework::AttachedView::open(
+            definition,
+            TEST_WORKSPACE,
+            tilo_app::resource::DocumentCheckout::new(
+                app.checkout().id.clone(),
+                definition.resource_type.clone(),
+            ),
+            app.read_document(|doc| doc.clone().save()),
+            &tilo_app::tilo_resource::MemberId::person("scribe"),
+            titled,
+            false,
+        )
+        .unwrap();
+        let mine = Memo::RETITLE.with("Mine").build(0).unwrap();
+        let other = Memo::ADD_LINE.with("sneaky").build(0).unwrap();
+        let memo = |view: &tilo_app::framework::AttachedView| {
+            view.read(|doc| <Memo as tilo_resource::Resource>::read(doc).unwrap())
+                .unwrap()
+        };
+
+        view.invoke_typed(&Invoke::<Memo>::apply(&mine).unwrap(), false)
+            .expect("the field its person let it write");
+        assert_eq!(memo(&view).title, "Mine");
+
+        // The same typed edit, another field: refused as a permission the
+        // workspace does not give, and it writes nothing.
+        let refused = view
+            .invoke_typed(&Invoke::<Memo>::apply(&other).unwrap(), false)
+            .expect_err("another field");
+        assert!(
+            matches!(
+                &refused,
+                tilo_actions::api::ApiError::Unavailable { code, .. } if code == "permission_denied"
+            ),
+            "{refused:?}"
+        );
+        let after = memo(&view);
+        assert_eq!(after.title, "Mine", "the refused call wrote nothing");
+        assert!(after.lines.is_empty(), "and added no line");
+
+        // A field edit carrying another field is refused the same way.
+        let elsewhere = Invoke::<Memo>::edit(
+            &Memo::paths().lines.insert(0, &"sneaky".to_owned()),
+        )
+        .unwrap();
+        let refused = view
+            .invoke_typed(&elsewhere, false)
+            .expect_err("a field edit of another field");
+        assert!(
+            matches!(
+                &refused,
+                tilo_actions::api::ApiError::Unavailable { code, .. } if code == "permission_denied"
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(memo(&view).title, "Mine");
+        assert!(memo(&view).lines.is_empty(), "no line was written");
+
+        // A member the workspace lets write the whole document edits that field
+        // through the same call: the refusal above is the grant, not the call.
+        let mut whole = tilo_app::framework::AttachedView::open(
+            definition,
+            TEST_WORKSPACE,
+            tilo_app::resource::DocumentCheckout::new(
+                app.checkout().id.clone(),
+                definition.resource_type.clone(),
+            ),
+            app.read_document(|doc| doc.clone().save()),
+            &tilo_app::tilo_resource::MemberId::person("writer"),
+            PermissionContext::agent_granted(
+                "writer",
+                &TreePath::root().app(MemoApp::ID),
+                KindSet::READ_UNDOABLE,
+            ),
+            false,
+        )
+        .unwrap();
+        whole.invoke_typed(&elsewhere, false).expect("a writer");
+        assert_eq!(memo(&whole).lines.len(), 1);
     }
 }
 

@@ -128,6 +128,10 @@ enum Cmd {
         /// lost, stolen, retired, or compromised.
         #[arg(long, default_value = "compromised")]
         reason: String,
+        /// The person's identity directory, whose active identity holds the
+        /// root that signs; this account's own when left out.
+        #[arg(long)]
+        identity_dir: Option<PathBuf>,
     },
 }
 
@@ -308,7 +312,8 @@ fn command(config: &std::path::Path, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::RevokeDevice {
             device_pubkey_hex,
             reason,
-        } => cmd_revoke_device(config, &device_pubkey_hex, &reason),
+            identity_dir,
+        } => cmd_revoke_device(config, &device_pubkey_hex, &reason, identity_dir),
         Cmd::Rollout { ask } => cmd_rollout(config, ask).map(drop),
     }
 }
@@ -420,7 +425,7 @@ fn sign_host_revocation(
     target: [u8; 32],
 ) -> anyhow::Result<tilo_user_identity::RevocationEntry> {
     let paths = tilo_device_identity::IdentityPaths::under(identity_root);
-    let root = tilo_server::root_signer::load_root(identity_root, identity_dir)?;
+    let root = tilo_server::root_signer::load_root(identity_dir)?;
     let user = tilo_device_identity::persist::read_public_key(&paths.user_pubkey)?;
     if root.public_key() != user {
         anyhow::bail!("active signing record belongs to another person");
@@ -694,15 +699,13 @@ fn cmd_revoke_device(
     config: &std::path::Path,
     device_pubkey_hex: &str,
     reason: &str,
+    identity_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let cfg = load(config)?;
-    let paths = tilo_device_identity::IdentityPaths::under(&cfg.identity_root);
-    if !paths.user_privkey.exists() {
-        anyhow::bail!(
-            "cannot revoke: no user root private key at {}. Run this from your primary device.",
-            paths.user_privkey.display()
-        );
-    }
+    let identity_dir = match identity_dir {
+        Some(dir) => dir,
+        None => tilo_identity::store::identity_dir_from_env()?,
+    };
     let pk = device_key(device_pubkey_hex)?;
     let reason = match reason {
         "lost" => tilo_user_identity::RevocationReason::Lost,
@@ -711,8 +714,8 @@ fn cmd_revoke_device(
         "compromised" => tilo_user_identity::RevocationReason::Compromised,
         _ => anyhow::bail!("reason must be lost, stolen, retired, or compromised"),
     };
-    let root = tilo_device_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
-    tilo_server::root_signer::revoke_device(&cfg.state_root, &root, pk, reason)?;
+    let root = tilo_server::root_signer::load_root(Some(&identity_dir))?;
+    tilo_server::root_signer::revoke_device(&cfg.state_root, root.as_ref(), pk, reason)?;
     println!("revoked device {} ({reason:?})", hex::encode(pk));
     println!("a running tilo-server disconnects the device within one second");
     Ok(())
@@ -738,7 +741,6 @@ mod tests {
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
             .unwrap();
-            assert!(!paths.user_privkey.exists());
             let user = tilo_device_identity::persist::read_public_key(&paths.user_pubkey).unwrap();
             let revocation = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap();
             tilo_user_identity::verify_revocation_entry(&revocation).unwrap();
@@ -754,7 +756,6 @@ mod tests {
             let error = sign_host_revocation(&identity_root, Some(&identities), [72; 32]).unwrap_err();
             assert!(error.to_string().contains("another person"));
             assert!(!pending_decommissions_path(&temp.path().join("tilo")).exists());
-            assert!(!paths.user_privkey.exists());
         }
 
         phase canonical_revocation_aggregate_is_verified_deduplicated_and_private;

@@ -39,7 +39,6 @@ use ui::widget::{FloatingSurfaceProvider, Widget};
 use crate::basemap::Basemap;
 use crate::canvas::{self, MapPalette, MapView};
 use crate::draw;
-use crate::endpoint_editor::GEOCODER;
 use crate::endpoint_editor::{Endpoint, EndpointEditor, EndpointEffect, EndpointFrame};
 use crate::failure;
 use crate::geo::{self, Projection};

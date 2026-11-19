@@ -8,11 +8,11 @@ use super::{
 };
 use launcher::{
     owned_service::{
-        self, ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey, SupervisedRun,
-        TargetProjectionAdmission, TargetProjectionAuthority, TargetProjectionCredentials,
-        TargetProjectionEndpoint, TargetProjectionMode,
+        self, ServiceAuthority, ServiceCancellation, ServiceLaunch, ServiceLeaseKey,
+        SupervisedLaunch, TargetProjectionAdmission, TargetProjectionAuthority,
+        TargetProjectionCredentials, TargetProjectionEndpoint, TargetProjectionMode,
     },
-    run::{LaunchMode, RunOptions},
+    run::{LaunchMode, LaunchOptions},
 };
 use runtime_fs::{
     directory_connection::DirectoryConnection, selected_client::SelectedFileConnection,
@@ -92,7 +92,7 @@ pub(super) struct RetainedProjectionSession {
     relay: Option<RetainedSourceRelay>,
     endpoint: Option<Arc<TargetProjectionEndpoint>>,
     cancellation: ServiceCancellation,
-    job: Option<JoinHandle<SupervisedRun>>,
+    job: Option<JoinHandle<SupervisedLaunch>>,
     key: ServiceLeaseKey,
     parent: Option<File>,
     working: Option<tempfile::TempDir>,
@@ -156,9 +156,6 @@ impl RetainedProjectionSession {
         hash.update([match mode {
             TargetProjectionMode::SelectedFile => 1,
             TargetProjectionMode::HomeDirectory => 2,
-            TargetProjectionMode::RetiredSelectedParent => return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "Selected parent requires genuine root edit admission and filtered source composition")),
         }]);
         hash.update(input.binding().context_sha256.as_bytes());
         hash.update(source_view);
@@ -191,7 +188,7 @@ impl RetainedProjectionSession {
         let launch = ServiceLaunch {
             manifest: service.manifest.clone(),
             payload: service.payload.clone(),
-            options: RunOptions {
+            options: LaunchOptions {
                 no_services: true,
                 expected_package_hash: Some(service.package_hash.clone()),
                 app_id: Some(owned_service::RETAINED_IO_PACKAGE_ID.into()),
@@ -199,7 +196,7 @@ impl RetainedProjectionSession {
                 mode: LaunchMode::Service {
                     passthrough_argv: vec!["--tilo-retained-target-projection".into()],
                 },
-                ..RunOptions::default()
+                ..LaunchOptions::default()
             },
         };
         let child_cancel = cancellation.clone();

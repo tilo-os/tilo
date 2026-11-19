@@ -114,4 +114,4 @@ terminal-commands-output-cut = Frühere Ausgabe nicht gezeigt
 terminal-commands-stop = Stoppen
 terminal-commands-send = Eingabe
 terminal-commands-placeholder = Befehl eingeben
-terminal-commands-on-a-computer = Die Shell dieser Sitzung ist auf dem Computer von jemandem. Ihre Befehle stehen hier; getippt wird dort.
+terminal-commands-on-a-computer = Die Shell dieser Sitzung läuft auf dem Computer von jemand anderem. Ihre Ausgabe kommt hier an; getippt wird dort.

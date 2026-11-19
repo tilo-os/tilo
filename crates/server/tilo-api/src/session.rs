@@ -152,7 +152,7 @@ type Labels = tilo_server_session::workspaces::WorkspaceLabels;
 /// A session in a workspace one of the person's devices hosts, entered at
 /// that device's MCP server: the device serves the whole session, its people
 /// and its windows included, and shows the agent there itself.
-struct OnDevice(tilo_mcp::enter::Entered);
+struct OnDevice(tilo_device_mcp::enter::Entered);
 
 /// One workspace's session, once whoever entered it holds it: a lock per
 /// workspace, so entering one does not hold another's requests.
@@ -204,8 +204,8 @@ pub struct Call {
 /// any tool ran.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallError {
-    /// The typed code: `not_found`, `beyond_scope`, `invalid_request` or
-    /// `unavailable`.
+    /// The typed code: `not_found`, `beyond_scope`, `invalid_request`,
+    /// `key_revoked` or `unavailable`.
     pub code: &'static str,
     pub message: String,
 }
@@ -215,6 +215,14 @@ impl CallError {
         Self {
             code: "beyond_scope",
             message: "this key reaches another workspace only".into(),
+        }
+    }
+
+    /// A call the workspace could not finish, for `message`.
+    pub(crate) fn unavailable(message: String) -> Self {
+        Self {
+            code: "unavailable",
+            message,
         }
     }
 
@@ -233,6 +241,9 @@ impl CallError {
             .unwrap_or("the call was refused")
             .to_owned();
         let code = match error.get("code").and_then(Value::as_i64) {
+            _ if error.pointer("/data/code").and_then(Value::as_str) == Some("key_revoked") => {
+                "key_revoked"
+            }
             Some(-32602) if message.contains("no such workspace") => "not_found",
             Some(-32602 | -32600 | -32700 | -32601) => "invalid_request",
             _ => "unavailable",
@@ -497,6 +508,13 @@ impl Session {
             Err(ServerError::NotFound) => {
                 return Reply::one(error(&id, -32602, "no such workspace"));
             }
+            // Said as such, so its caller asks the person for another key.
+            Err(revoked @ ServerError::KeyRevoked) => {
+                return Reply::one(json!({"jsonrpc": "2.0", "id": id, "error": {
+                    "code": -32000, "message": revoked.to_string(),
+                    "data": {"code": "key_revoked", "next_steps": [crate::APPROVE_AGAIN]},
+                }}));
+            }
             Err(other) => return Reply::one(error(&id, -32000, &other.to_string())),
         };
         timing_done("api.enter", entering);
@@ -543,9 +561,13 @@ impl Session {
             .endpoint()
             .await
             .map_err(|error| error.to_string())?;
-        let on_device =
-            tilo_mcp::enter::enter(&endpoint, &connection.entering_key(), workspace, &address)
-                .await?;
+        let on_device = tilo_device_mcp::enter::enter(
+            &endpoint,
+            &connection.entering_key(),
+            workspace,
+            &address,
+        )
+        .await?;
         let session = Arc::new(OnDevice(on_device));
         *entered = Some(Arc::clone(&session));
         drop(entered);
@@ -913,7 +935,7 @@ impl Session {
         workspace: &str,
         name: &str,
         arguments: Value,
-    ) -> Result<Value, String> {
+    ) -> Result<Value, CallError> {
         self.touch();
         let reply = self
             .serve(
@@ -922,16 +944,9 @@ impl Session {
                         "params":{"name":name,"arguments":arguments}}),
             )
             .await;
-        let message = reply
-            .messages
-            .last()
-            .ok_or("your workspace didn't answer; try again in a minute")?;
+        let message = reply.messages.last().ok_or_else(CallError::unanswered)?;
         if let Some(error) = message.get("error") {
-            return Err(error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("the workspace refused")
-                .to_owned());
+            return Err(CallError::of(error));
         }
         Ok(message.get("result").cloned().unwrap_or_default())
     }

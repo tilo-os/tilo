@@ -129,9 +129,9 @@ pub const TREE_VERBS: [&str; 7] = [
     UNDO,
 ];
 
-/// The verb of Files that takes back a call's changes of a workspace's own folder, by the
-/// invocation the call answered: History's undo of that step, in every document of the tree
-/// it wrote.
+/// The verb of Files that takes back a change of a workspace's own folder: a call's, by the
+/// invocation the call answered, in every document of the tree it wrote; or one change
+/// [`HISTORY`] lists, by its `step`. Either is History's undo of that step.
 pub const UNDO: &str = "undo";
 
 /// Whether `action` is one of [`TREE_VERBS`].
@@ -169,12 +169,18 @@ pub fn file_of_resource(resource: &str) -> Option<&str> {
         .filter(|path| !path.is_empty())
 }
 
+/// The read of Files that answers the changes of a workspace's own folder, newest last: what
+/// each did to which path, who did it and for whom, and the change [`UNDO`] takes back by its
+/// `step`. Whoever wrote it (a person, an agent through a mounted folder, a call by a path) is
+/// named as History names them.
+pub const HISTORY: &str = "history";
+
 /// Whether `action` is one of the reads of a workspace's own folder by a path in the workspace
-/// ([`LIST`], [`READ_TEXT`]), which whoever holds its tree answers as it carries out
-/// [`TREE_VERBS`]: with no window, and with every device of its people off.
+/// ([`LIST`], [`READ_TEXT`], [`HISTORY`]), which whoever holds its tree answers as it carries
+/// out [`TREE_VERBS`]: with no window, and with every device of its people off.
 #[must_use]
 pub fn is_tree_read(action: &str) -> bool {
-    matches!(action, LIST | READ_TEXT)
+    matches!(action, LIST | READ_TEXT | HISTORY)
 }
 
 /// The verb of Files that writes a file into a workspace's own folder by a path in the
@@ -567,6 +573,27 @@ impl Resource for FilesTree {
                 })
             })
             .describe("Take a file or folder out of the trash, back where it was."),
+            ActionDecl::new(
+                verbs::LIST_CHUNK,
+                "List a part of the tree",
+                vec![ActionParam::required(
+                    "chunk",
+                    ParamType::Integer,
+                    "The number of the part, as a node's document id names it",
+                )],
+                |args, _| {
+                    let chunk = args
+                        .whole("chunk")
+                        .and_then(|chunk| TreeChunk::try_from(chunk).ok())
+                        .filter(|chunk| *chunk >= crate::files::FIRST_TREE_CHUNK)
+                        .ok_or("`chunk` is the number of a part of the tree, from 1")?;
+                    Ok(FileAction::ListChunk { chunk })
+                },
+            )
+            .describe(
+                "Make a part of the tree known to everyone who opens it, before the first \
+                 file or folder is made in it; in the tree's own document.",
+            ),
         ]
     }
 }

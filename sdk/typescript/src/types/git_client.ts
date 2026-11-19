@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.git-client@6d8bc9cabb47c522";
+export const SURFACE = "so.tilo.git-client@0368dff8fb39f175";
 
 export interface Branch {
   name: string;
@@ -102,8 +102,8 @@ export interface Tag {
   message: string | null;
 }
 
-/** The arguments of `record-repository`. */
-export interface RecordRepositoryArgs {
+/** The arguments of `store-repository`. */
+export interface StoreRepositoryArgs {
   shared: SharedRepo;
 }
 
@@ -111,11 +111,11 @@ export interface RecordRepositoryArgs {
 export interface Repo extends tilo.Resource {
   repository: string;
   readonly shared: unknown;
-  recordRepository(args: {
+  storeRepository(args: {
     shared: SharedRepo;
   }): Promise<void>;
-  /** Runs `record-repository` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  recordRepositoryMany(items: RecordRepositoryArgs[]): Promise<tilo.ActionAnswer[]>;
+  /** Runs `store-repository` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  storeRepositoryMany(items: StoreRepositoryArgs[]): Promise<tilo.ActionAnswer[]>;
   diffLayout(): Promise<void>;
   syntaxHighlight(): Promise<void>;
   showWhitespace(): Promise<void>;
@@ -124,7 +124,7 @@ export interface Repo extends tilo.Resource {
 
 /** The actions `Repo` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const REPO_ACTIONS = ["recordRepository", "recordRepositoryMany", "diffLayout", "syntaxHighlight", "showWhitespace", "wrapLines"] as const;
+export const REPO_ACTIONS = ["storeRepository", "storeRepositoryMany", "diffLayout", "syntaxHighlight", "showWhitespace", "wrapLines"] as const;
 
 /** The `git_client.repo` kind at `path`. */
 export function repo(ws: tilo.Workspace, path: string): Repo {

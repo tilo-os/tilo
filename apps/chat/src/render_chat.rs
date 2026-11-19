@@ -581,10 +581,10 @@ pub(crate) fn typing_line(
     }
 }
 
-/// The local time of `ts` as the person reads clocks: the toolkit's clock, the
+/// The local time of `at_ms` as the person reads clocks: the toolkit's clock, the
 /// same one Messages shows on every line.
-fn clock_label(ts: i64) -> String {
-    ConversationClock::local().clock(ts)
+pub(crate) fn clock_label(at_ms: i64) -> String {
+    ConversationClock::local().clock(at_ms.div_euclid(1_000))
 }
 
 /// What a message's header says where its time stands: its time, or that it
@@ -599,9 +599,9 @@ fn time_label(m: &crate::model::Message) -> String {
 
 /// "Today", "Yesterday", the weekday, or the date: the toolkit's day label,
 /// the same rule Messages uses for its dividers.
-fn day_label(ts: i64) -> String {
+fn day_label(at_ms: i64) -> String {
     let clock = ConversationClock::local();
-    clock.day_label(clock.day(ts))
+    clock.day_label(clock.day(at_ms.div_euclid(1_000)))
 }
 
 /// The icon that says what kind of file an attachment is.
@@ -920,14 +920,14 @@ mod tests {
             sending: false,
         };
         // Two hours apart across midnight, and one three days later.
-        let start = 1_782_828_300_i64;
+        let start = 1_782_828_300_000_i64;
         app.messages = vec![
             line("a", start),
-            line("b", start.saturating_add(3_600)),
-            line("c", start.saturating_add(4 * 86_400)),
+            line("b", start.saturating_add(3_600_000)),
+            line("c", start.saturating_add(4 * 86_400_000)),
         ];
         let groups = crate::model::group_messages(&app.messages, true);
-        let clock = ui::widget::ConversationClock::at(0, start);
+        let clock = ui::widget::ConversationClock::at(0, start.div_euclid(1_000));
         let (items, _) =
             app.measure_message_rows(&mut text, &theme, &groups, 400.0, clock, (0.0, f64::MAX));
 
@@ -1062,7 +1062,7 @@ mod tests {
             // While it works, one line counts the dispatched operations, and opens them.
             let running = AgentWork::new(AgentWorkState::Taken, 42).with_trace(steps.clone());
             let shown = AgentWorkPresentation::of(&running, false, false).unwrap();
-            assert_eq!(shown.summary.as_deref(), Some("Working · 3 steps"));
+            assert_eq!(shown.summary.as_deref(), Some("Working (3 steps)"));
             assert_eq!(shown.did, None);
             assert!(shown.steps.is_empty() && shown.opens);
             assert_eq!(
@@ -1098,7 +1098,7 @@ mod tests {
             let closed = AgentWorkPresentation::of(&at_work, false, false).unwrap();
             assert_eq!(
                 closed.summary.as_deref(),
-                Some("Append paragraph: word-processor · 58 steps"),
+                Some("Append paragraph: word-processor (58 steps)"),
                 "one line says the step the turn is at and how many it has taken"
             );
             assert_eq!(closed.did, None);

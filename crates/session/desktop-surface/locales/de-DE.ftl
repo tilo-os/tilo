@@ -505,7 +505,6 @@ workspace-settings-allows-reach = { $what } erreichen
 workspace-settings-allows-edit = { $what } bearbeiten
 workspace-settings-allows-view = { $what } ansehen
 workspace-settings-allows-action = „{ $action }“ in { $app } verwenden
-workspace-settings-subject-foreign-device = Geräte, die nicht die eigenen sind
 workspace-settings-granted-by-person = erteilt von { $id }
 workspace-settings-granted-by-you = von dir erteilt
 workspace-settings-granted-by-agent = erteilt von Agent { $id }
@@ -515,7 +514,6 @@ workspace-settings-section-apps = Apps
 workspace-settings-section-people = Personen
 workspace-settings-section-agents = Agenten
 workspace-settings-section-roles = Rollen
-workspace-settings-subject-bot = Bot { $id }
 workspace-settings-subject-role = alle mit der Rolle { $role }
 workspace-settings-grant-network = Netzwerkzugriff
 workspace-settings-grant-read-files = Dateien des Arbeitsbereichs lesen
@@ -572,6 +570,10 @@ workspace-settings-bot-starting = Startet
 workspace-settings-bot-paused = Angehalten
 workspace-settings-bot-running = Läuft
 workspace-settings-bot-version = Version { $version }
+workspace-settings-moderation = Moderation
+workspace-settings-moderation-detail = Beantwortet Meldungen im Chat und kann jemanden einschränken und seine Nachrichten zurücknehmen.
+workspace-settings-moderation-on = An
+workspace-settings-moderation-off = Aus
 workspace-settings-remove-bot = Entfernen
 workspace-settings-agents-header = Agenten
 workspace-settings-retire-agent = Entfernen
@@ -888,19 +890,6 @@ overview-strip-rename = Umbenennen
 overview-strip-move-up = Nach oben
 overview-strip-move-down = Nach unten
 browser-new-workspace-name = Arbeitsbereich { $number }
-workspace-notice-joined = { $name } ist dazugekommen
-workspace-notice-agent-finished = { $agent } ist fertig
-workspace-notice-agent-card = Karte öffnen
-workspace-notice-agent-open = In { $app } öffnen
-workspace-notice-agent-finished-changes = { $agent } ist fertig: { $count ->
-    [one] 1 Änderung
-   *[other] { $count } Änderungen
-}
-workspace-notice-agent-finished-in = { $agent } ist fertig: { $count ->
-    [one] 1 Änderung
-   *[other] { $count } Änderungen
-} in { $workspace }
-workspace-notice-renamed = Der Arbeitsbereich heißt jetzt { $workspace }
 # Was der Schreibtisch sagt, wenn etwas nicht geschehen ist, worum jemand
 # gebeten hat: wonach gefragt wurde, warum, und die Taste, die es erneut versucht.
 answer-app-not-opened = { $app } konnte nicht geöffnet werden
@@ -1351,6 +1340,11 @@ profile-agent-now = Gerade
 task-programs-resource = Aufgabenprogramme
 task-programs-run = Ein Programm ausführen
 task-programs-run-detail = Führt ein Programm als Schritt der Aufgabe aus und antwortet, was es gelesen oder geändert hat.
+agent-tools-resource = Agentenwerkzeuge
+agent-tools-list = Werkzeuge auflisten
+agent-tools-list-detail = Listet die Werkzeuge, mit denen ein Agent in seiner Sitzung arbeitet.
+agent-tools-call = Ein Werkzeug aufrufen
+agent-tools-call-detail = Führt eines der Werkzeuge des Agenten als Schritt seiner Sitzung aus und antwortet, was es gesagt hat.
 
 ## What a grant covers when it covers the whole tree
 workspace-settings-scope-everything = Alles

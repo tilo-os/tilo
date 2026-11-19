@@ -6,6 +6,7 @@ format = 2
 kind = "tube.library"
 label = "Tube"
 version = 1
+shows = ["filter-search", "show-screen", "toggle-sidebar"]
 fields = [
   { path = "likes", type = { set = "text" } },
   { path = "queue", type = { set = "text" } },
@@ -32,27 +33,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "open-video"
-kind = "read"
-params = [
-  { name = "video", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "open-creator"
-kind = "read"
-params = [
-  { name = "creator", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "open-playlist"
-kind = "read"
-params = [
-  { name = "playlist", type = "text", required = true },
-]
-
-[[resources.verbs]]
 id = "search"
 kind = "read"
 params = [
@@ -72,32 +52,6 @@ params = [
 
 [[resources.verbs]]
 id = "skip-segment"
-kind = "read"
-
-[[resources.verbs]]
-id = "share"
-kind = "read"
-params = [
-  { name = "video", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "mark-watched"
-kind = "read"
-params = [
-  { name = "video", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "forget-watched"
-kind = "read"
-params = [
-  { name = "video", type = "text", required = true },
-]
-
-[[resources.verbs]]
-id = "clear-history"
-destructive = true
 kind = "read"
 
 [[resources.verbs]]

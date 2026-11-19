@@ -54,6 +54,19 @@ dependencies = ["wasm-bindgen"]
 name = "wasm-bindgen"
 version = "0.1.0"
 """
+# A crate from outside the workspace, which the page crate reads and the native
+# crate does not: main changing it is a change only one of them builds.
+SERDE = """
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a"
+"""
+LOCKED_SERDE = LOCK.replace('dependencies = ["wasm-bindgen"]',
+                            'dependencies = ["wasm-bindgen", "serde"]') + SERDE
+PAGE_WITH_SERDE = (CRATE.format(name="fixture-web")
+                   + '\n[dependencies]\nwasm-bindgen = { path = "../fake-binding" }\nserde = "1"\n')
 LIB = """pub fn answer() -> u32 {{
     {answer}
 }}
@@ -127,8 +140,9 @@ class PrePushLintTests(unittest.TestCase):
         self.write("Cargo.toml", WORKSPACE)
         self.write("Cargo.lock", LOCK)
         self.write("clippy.toml", CLIPPY_TOML)
-        # Running the hook compiles its Python; the repository ignores that as well.
-        self.write(".gitignore", "__pycache__/\n.claude/\n")
+        # Running the hook compiles its Python and writes the page's Clippy
+        # configuration into the build directory; the repository ignores both.
+        self.write(".gitignore", "__pycache__/\n.claude/\ntarget/\n")
         self.write("native/Cargo.toml", CRATE.format(name="fixture-native"))
         self.write("native/src/lib.rs", LIB.format(answer=42))
         self.write("web/Cargo.toml", CRATE.format(name="fixture-web")
@@ -223,8 +237,7 @@ class PrePushLintTests(unittest.TestCase):
         """Run the hook as Git would, with the ref lines it writes for a push.
 
         `wide` runs the lint t's lint-head runs on main instead, over the same refs. `also`
-        names more refs the same push sends the head to, as tools/integrate.sh sends it to
-        integration and main at once.
+        names more refs the same push sends the head to.
         """
         self.log.unlink(missing_ok=True)
         remote_oid = self.base if remote_oid is None else remote_oid
@@ -287,52 +300,20 @@ class PrePushLintTests(unittest.TestCase):
         self.assertIn("is not the commit checked out here", result.stderr)
         self.assertEqual(self.calls(), [])
 
-    def test_a_push_to_integration_compiles_nothing(self):
-        # Work in progress is pushed unlinted and tested once when it is done.
+    def test_a_push_to_another_branch_compiles_nothing(self):
+        # Only main is linted; a branch of one's own is pushed as it is.
         self.write("native/src/lib.rs", LIB.format(answer=62))
         self.commit("feat: answer 62")
-        for ref in ("refs/heads/integration", "refs/heads/topic"):
-            result = self.push(ref=ref)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse(self.log.exists(), f"a push to {ref} compiled something")
+        result = self.push(ref="refs/heads/topic")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.log.exists(), "a push to a topic branch compiled something")
 
-    def test_a_push_that_would_rewrite_integration_is_refused(self):
-        # Integration holds everyone's unfinished work; a forced push that does not contain its
-        # head drops the commits after it.
-        self.write("native/src/lib.rs", LIB.format(answer=63))
-        self.commit("feat: answer 63")
-        result = self.push(remote_oid="1" * 40, ref="refs/heads/integration")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("would drop the commits after it", result.stderr)
-        self.assertEqual(self.calls(), [])
-        self.assertEqual(self.push(ref="refs/heads/integration").returncode, 0,
-                         "a push that fast-forwards integration goes through")
-
-    def test_an_agent_moves_main_only_to_what_integration_holds(self):
-        # main fast-forwards only to a commit integration has: an agent that sends main a commit
-        # of its own is told where it goes instead, and nothing is compiled for it.
+    def test_an_agent_pushes_main_directly(self):
         self.write("native/src/lib.rs", LIB.format(answer=64))
         self.commit("feat: answer 64")
         result = self.push(agent=True)
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("main moves only to what integration holds", result.stderr)
-        self.assertIn("tools/integrate.sh", result.stderr)
-        self.assertEqual(self.calls(), [])
-
-    def test_integrate_moves_main_and_integration_together(self):
-        # tools/integrate.sh sends the tested commit to integration and main in one push.
-        self.write("native/src/lib.rs", LIB.format(answer=65))
-        self.commit("feat: answer 65")
-        result = self.push(agent=True, also=("refs/heads/integration",))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(self.calls(), "the main side of the push was not linted")
-
-    def test_a_person_pushing_main_by_hand_is_not_held_to_integration(self):
-        self.write("native/src/lib.rs", LIB.format(answer=66))
-        self.commit("feat: answer 66")
-        result = self.push()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("integration holds", result.stderr)
+        self.assertTrue(self.calls(), "the push to main was not linted")
 
     def test_a_push_main_has_moved_past_is_refused_before_anything_is_compiled(self):
         # The remote reports main's head when the push begins; a push that does not contain it
@@ -563,6 +544,54 @@ class PrePushLintTests(unittest.TestCase):
         ]))
         # Formatting reads only the pushed package, which is as it was.
         self.assertNotIn("fmt --check", self.log.read_text())
+
+    def test_a_rebase_onto_commits_that_do_not_reach_the_package_reuses_its_pass(self):
+        # Main takes an app and a dependency of another member, which the pushed
+        # package never reads: the push is the one that passed. Relinting it
+        # here takes minutes, and main gains a commit every minute or two.
+        self.write("Cargo.lock", LOCKED_SERDE)
+        self.write("web/Cargo.toml", PAGE_WITH_SERDE)
+        self.commit("chore: the page crate reads serde")
+        self.base = self.head()
+        self.write("native/src/lib.rs", LIB.format(answer=70))
+        self.commit("feat: answer 70")
+        first = self.push()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        self.outlive_the_rebase_window()
+        main = self.rebase({
+            "Cargo.toml": WORKSPACE.replace(
+                'members = ["native", "web", "fake-binding"]',
+                'members = ["native", "web", "fake-binding", "extra"]'),
+            "Cargo.lock": LOCKED_SERDE.replace('name = "serde"\nversion = "1.0.0"',
+                                               'name = "serde"\nversion = "1.0.1"'),
+            "extra/Cargo.toml": CRATE.format(name="extra"),
+            "extra/src/lib.rs": "pub fn extra() {}\n",
+        })
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], "nothing the native crate builds changed")
+        self.assertIn("passed before on the same inputs", retry.stderr)
+
+    def test_a_retry_after_a_dependency_the_package_uses_changed_lints_again(self):
+        # A resolved dependency of the pushed package moved: the code it
+        # compiles against is not the code the earlier pass built.
+        self.write("Cargo.lock", LOCKED_SERDE)
+        self.write("web/Cargo.toml", PAGE_WITH_SERDE)
+        self.commit("chore: the page crate reads serde")
+        self.base = self.head()
+        self.write("web/src/lib.rs", LIB.format(answer=72))
+        self.commit("feat: answer 72 in the page")
+        self.assertEqual(self.push(wide=True).returncode, 0)
+        self.outlive_the_rebase_window()
+        main = self.rebase({"Cargo.lock": LOCKED_SERDE.replace(
+            'name = "serde"\nversion = "1.0.0"', 'name = "serde"\nversion = "1.0.1"')})
+        retry = self.push(remote_oid=main, wide=True)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(sorted(self.calls()), sorted([
+            "clippy --locked --target wasm32-unknown-unknown -p fixture-web -- -D warnings",
+            NATIVE_CLIPPY.replace("native", "web"),
+        ]))
 
     def test_a_retry_after_a_file_the_build_includes_changed_lints_again(self):
         self.write("docs/answer.txt", "42\n")

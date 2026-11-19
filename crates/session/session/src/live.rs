@@ -551,7 +551,7 @@ impl Shared {
         workspace: WorkspaceId,
         devices: &[Device],
     ) -> Result<Arc<dyn SessionAuthorization>, Refusal> {
-        let host = self.engine.host_of(workspace);
+        let host = self.engine.holder_of(workspace);
         let request = bind(peer, grant, devices, host, self.device, now_ns())?;
         // A device that sealed under an epoch this relay already moved past would publish nothing
         // anyone opens: it is refused at the preface.
@@ -642,7 +642,7 @@ impl Shared {
                 return None;
             }
         };
-        let Some(relay) = relay_of(&devices, self.engine.host_of(workspace), now_ns()) else {
+        let Some(relay) = relay_of(&devices, self.engine.holder_of(workspace), now_ns()) else {
             // No member may relay it: the workspace has no live session.
             if self.live_sessions.lock_recover().contains_key(&workspace) {
                 tracing::info!(%workspace, "no member relays this workspace's live session any more");
@@ -859,7 +859,7 @@ impl Shared {
         // its endpoint's, not its device key's.
         let addr = self
             .engine
-            .workspace_host(workspace)
+            .holder_address(workspace)
             .as_ref()
             .filter(|(pinned, _)| *pinned == serving)
             .map_or_else(|| EndpointAddr::new(relay_id), |(_, addr)| addr.clone());
@@ -1081,13 +1081,12 @@ impl Live {
     }
 
     /// This device came to hold another workspace: its host admitted this device, as the person's
-    /// list or an invitation brought it. The workspace is given its reconciler now, which asks
-    /// for its keys and joins its relay.
+    /// list or an invitation brought it, or this device founded it. Every workspace held here that
+    /// has no live session yet is given its reconciler now, which asks for its keys and joins its
+    /// relay.
     ///
-    /// Nothing else says so. The channel service announces a workspace's keys once this device
-    /// asked for them, and the live session is what asks: until something else moved a key of some
-    /// workspace here, a workspace taken in while the session ran had no live session, and said nothing
-    /// of it.
+    /// The session's own passes say so, not the key service: it announces a workspace's keys once
+    /// this device asked for them, and the live session is what asks.
     pub(crate) fn workspace_arrived(&self) {
         self.shared.readopt.notify_one();
     }

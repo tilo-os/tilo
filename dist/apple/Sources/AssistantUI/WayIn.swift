@@ -43,8 +43,9 @@ public struct WayIn: View {
                 .padding(.top, 6)
                 // A device that goes on from an approval can be paired afresh while it does:
                 // no count of seconds ends its try, so its person is never left without a way.
-                if model.joinApproved != nil {
-                    Flow(spacing: 10, lineSpacing: 10) { pairButtons(isMain: false) }
+                Flow(spacing: 10, lineSpacing: 10) {
+                    if model.joinApproved != nil { pairButtons(isMain: false) }
+                    Button(AssistantWords.cancel.said) { model.signOut() }.buttonStyle(WayButton())
                 }
             } else if case .confirming(let code) = model.session {
                 // The code the other device asks about, large enough to compare at a glance.
@@ -61,6 +62,8 @@ public struct WayIn: View {
                         Text(sentence).font(.small125).foregroundStyle(Token.ink3)
                             .multilineTextAlignment(.center).frame(maxWidth: 420)
                     }
+                    Button(AssistantWords.cancel.said) { model.signOut() }.buttonStyle(WayButton())
+                        .padding(.top, 6)
                 }
                 .padding(.top, 6)
             } else {

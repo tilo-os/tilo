@@ -39,6 +39,7 @@ enum By {
 struct Part {
     doc: AutoCommit,
     chat: Chat,
+    now_ms: i64,
 }
 
 impl Part {
@@ -46,6 +47,7 @@ impl Part {
         Self {
             doc: AutoCommit::new(),
             chat: crate::demo::demo(),
+            now_ms: 1_000,
         }
     }
 
@@ -60,7 +62,17 @@ impl Part {
             By::BotOf(person) => replica.as_bot_for(BOT, person),
             By::BotAlone => replica.as_member(MemberId::bot(BOT)),
         };
-        apply_part_doc_as(&mut self.doc, &self.chat, attribute, Some(1_000), invoke)
+        let applied = apply_part_doc_as(
+            &mut self.doc,
+            &self.chat,
+            attribute,
+            Some(self.now_ms),
+            invoke,
+        );
+        if applied.is_ok() {
+            self.now_ms = self.now_ms.saturating_add(1);
+        }
+        applied
     }
 
     fn read(&self) -> ChatMessages {

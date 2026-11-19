@@ -261,9 +261,9 @@ pub(super) fn answer_socket_requests(
         open(stream, request, pid, serving.clone());
         return None;
     }
-    if *entrance != Origin::Host && tilo_mcp::devices::forward_request(first).is_some() {
+    if *entrance != Origin::Host && tilo_device_mcp::forward_request(first).is_some() {
         // A program in an environment works in that environment's workspace, on this device.
-        tilo_mcp::devices::refuse_forward(stream, word("mcp-server-environment-workspace"));
+        tilo_device_mcp::refuse_forward(stream, word("mcp-server-environment-workspace"));
         return None;
     }
     Some(stream)

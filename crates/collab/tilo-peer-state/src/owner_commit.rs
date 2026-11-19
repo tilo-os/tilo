@@ -285,16 +285,10 @@ impl OwnerCommitReceipt {
 /// Implemented by the single durable session owner, not by a remote caller.
 /// Failure may follow an application effect and therefore means uncertainty.
 pub trait OwnerCommitService: Send + Sync {
-    /// Whether this workspace must cross this installed owner's durable boundary.
-    /// Scoped native owners retain this requirement while incomplete or fenced.
-    fn requires_workspace(&self, _workspace: &str) -> bool {
-        true
-    }
     /// Whether `workspace`'s effect receipts cross this owner's durable boundary.
-    /// Each device records its own in the workspace, whichever model the workspace's
-    /// records follow.
-    fn records_effects(&self, workspace: &str) -> bool {
-        self.requires_workspace(workspace)
+    /// Each device records its own in the workspace.
+    fn records_effects(&self, _workspace: &str) -> bool {
+        true
     }
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture;
     /// [`Self::commit`] for a document write, with the resource kind of its
@@ -331,7 +325,8 @@ pub trait OwnerCommitService: Send + Sync {
 impl OwnerCommitReceipt {
     /// Check that this receipt answers `asked`, a document write of this
     /// device, with `committed`: the same write of the same author to the
-    /// same record, at most signed again under another sequence
+    /// same document, at most signed again under another sequence and naming
+    /// the governance the owner took it under
     /// ([`OwnerCommitService::commit_local_document`]).
     pub fn validate_local_document(
         &self,
@@ -357,6 +352,7 @@ impl OwnerCommitReceipt {
         };
         let mut resigned = (**taken).clone();
         resigned.seq = envelope.seq;
+        resigned.governance.clone_from(&envelope.governance);
         resigned.signature = envelope.signature;
         if asked.workspace != committed.workspace
             || app != taken_app

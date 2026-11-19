@@ -229,6 +229,9 @@
     unused_parens,
     while_true
 )]
+// TILO(model-device): a model module's documents are its host's, so the storage
+// this crate carries goes unused there (src/model_device).
+#![cfg_attr(tilo_model_guest, allow(dead_code, unused_imports))]
 
 #[doc(hidden)]
 #[macro_export]
@@ -262,6 +265,10 @@ macro_rules! __log {
 
 pub mod anonymize;
 mod author;
+#[cfg(not(tilo_model_guest))]
+mod autocommit;
+#[cfg(tilo_model_guest)]
+#[path = "autocommit_hosted.rs"]
 mod autocommit;
 mod automerge;
 mod autoserde;
@@ -281,6 +288,7 @@ pub use iter::Span;
 #[doc(hidden)]
 pub mod legacy;
 pub mod marks;
+pub mod model_device;
 pub mod op_set2;
 pub mod patches;
 mod read;

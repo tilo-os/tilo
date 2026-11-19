@@ -1,5 +1,6 @@
 //! Real certified HTTPS submit/retry and a canonical retained receipt.
 use super::*;
+use chat::projection::ChatProjection as _;
 use tilo_actions::MemberId;
 use tilo_agent_session::ReplicaActor;
 use tilo_session_client::Outbox;

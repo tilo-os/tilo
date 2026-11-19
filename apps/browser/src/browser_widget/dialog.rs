@@ -7,7 +7,7 @@
 //! A question an action's input opened is no failure of that action: it succeeds, and its
 //! answer carries the question, so the agent answers it without another read.
 
-use ui::webview::{PageDialog, PageDialogKind};
+use tilo_webview::{PageDialog, PageDialogKind};
 
 fn quote_page(text: &str) -> String {
     const MAX: usize = 512;

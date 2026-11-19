@@ -11,8 +11,7 @@ struct Shared {
 impl Shared {
     fn current(&self) -> bool {
         self.owner.is_some()
-            && self.owner
-                == crate::local_identity::bound().map(|identity| identity.group_public_key)
+            && self.owner == crate::local_identity::load().map(|identity| identity.group_public_key)
             && self.generation == crate::local_identity::generation()
     }
 }
@@ -38,7 +37,7 @@ impl Vocabulary for Shared {
 /// Reader for input consumers of the current authenticated app channel.
 pub fn reader() -> Arc<dyn Vocabulary> {
     Arc::new(Shared {
-        owner: crate::local_identity::bound().map(|identity| identity.group_public_key),
+        owner: crate::local_identity::load().map(|identity| identity.group_public_key),
         generation: crate::local_identity::generation(),
     })
 }

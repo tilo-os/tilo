@@ -965,16 +965,6 @@ fn cmd_unpack(dest: &Path, file: &Path) -> Result<()> {
 
 // .tapp I/O
 
-struct PendingTapp(PathBuf);
-
-impl Drop for PendingTapp {
-    fn drop(&mut self) {
-        if !self.0.as_os_str().is_empty() {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-}
-
 /// Write `meta` (full when `payload` is given, thin otherwise) to `path`
 /// atomically, enforcing the application size ceiling on the result.
 fn write_tapp(path: &Path, meta: &PackageMeta, payload: Option<&dyn BlobSource>) -> Result<()> {
@@ -994,28 +984,30 @@ fn write_tapp_within(
     payload: Option<&dyn BlobSource>,
     limit: Option<u64>,
 ) -> Result<()> {
-    let temp = path.with_extension(format!("tapp.tmp.{}", std::process::id()));
-    let file = File::options()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .with_context(|| format!("create temporary package {}", temp.display()))?;
-    let mut pending = PendingTapp(temp.clone());
-    let mut file = tilo_app_package::tapp::write(std::io::BufWriter::new(file), meta, payload)
-        .context("write package archive")?;
-    file.flush().context("flush package archive")?;
-    drop(file);
-    let archive_size = std::fs::metadata(&temp)
-        .with_context(|| format!("stat temporary package {}", temp.display()))?
-        .len();
-    if let Some(limit) = limit
-        && archive_size > limit
-    {
-        bail!("application tapp is {archive_size} bytes; limit is {limit} bytes");
-    }
-    std::fs::rename(&temp, path).with_context(|| format!("install package {}", path.display()))?;
-    pending.0.clear();
-    Ok(())
+    tilo_files::native::atomic::write_streaming(path, |temp| {
+        let mut archive =
+            tilo_app_package::tapp::write(std::io::BufWriter::new(&mut *temp), meta, payload)
+                .map_err(|error| {
+                    std::io::Error::other(format!("write package archive: {error}"))
+                })?;
+        archive
+            .flush()
+            .map_err(|error| std::io::Error::other(format!("flush package archive: {error}")))?;
+        drop(archive);
+        let archive_size = temp
+            .metadata()
+            .map_err(|error| std::io::Error::other(format!("stat temporary package: {error}")))?
+            .len();
+        if let Some(limit) = limit
+            && archive_size > limit
+        {
+            return Err(std::io::Error::other(format!(
+                "application tapp is {archive_size} bytes; limit is {limit} bytes"
+            )));
+        }
+        Ok(())
+    })
+    .with_context(|| format!("install package {}", path.display()))
 }
 
 /// Decode the archive at `path`. With `keep_blobs` the carried payload is

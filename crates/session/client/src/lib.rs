@@ -39,7 +39,6 @@ pub mod message_policy;
 pub mod narration;
 pub mod network;
 pub mod presence;
-pub mod remote;
 mod replica;
 /// This session's presence tracks, as a member's client says on them.
 pub mod saying;
@@ -67,7 +66,7 @@ pub use presence::OwnPresence;
 pub use saying::saying;
 #[cfg(not(target_arch = "wasm32"))]
 pub use session::{Lent, start_session_lent};
-pub use session::{PeerConfig, SessionMemberHost, member_host, start_session};
+pub use session::{PeerConfig, SessionMemberServer, member_server, start_session};
 pub use states::{SyncState, WorkspaceState};
 pub use tilo_live::presence::Call as InCall;
 pub use tilo_live::presence::{LiveCall, LiveCaller};

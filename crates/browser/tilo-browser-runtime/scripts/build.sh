@@ -312,9 +312,14 @@ fi
 local began=$SECONDS
 "$cargo" "${compile[@]}"
 took "compile ($cargo_profile)" "$began"
-# Read Cargo's artifact location; never redirect it.
-target_dir=$("$cargo" "${metadata[@]}" |
-  python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+# Read Cargo's artifact location; never redirect it. A build told its directory by an absolute
+# `CARGO_TARGET_DIR` (a cargo drop-in may) already knows it: asking cargo loads the whole
+# workspace's manifests again, beside the compile it just ran.
+target_dir=${CARGO_TARGET_DIR:-}
+if [[ $target_dir != /* ]]; then
+  target_dir=$("$cargo" "${metadata[@]}" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+fi
 mkdir -p "$out/pkg"
 linked="$target_dir/wasm32-unknown-unknown/$artifact/${package//-/_}.wasm"
 # The linked module this pkg/ was made from, and how; empty when there is
@@ -492,8 +497,11 @@ wasm_on_builder() {
   "$cargo" --fetch "$stage" exec bash "$script" "$stage" "$run" "${args[@]}" >&2 || {
     echo 'the wasm phase failed on the builder (above)' >&2; exit 1;
   }
-  target_dir=$("$cargo" metadata --format-version 1 --no-deps --offline |
-    python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+  target_dir=${CARGO_TARGET_DIR:-}
+  if [[ $target_dir != /* ]]; then
+    target_dir=$("$cargo" metadata --format-version 1 --no-deps --offline |
+      python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+  fi
   local dir=$target_dir/$stage file missing=()
   # What a build of it writes: a directory without these is a fetch that
   # brought too little, never a bundle, and says which file it looked for.

@@ -742,7 +742,7 @@ tilo_test_env::scenario! {
             ])
             .unwrap()
             .forward,
-            Some(tilo_mcp::devices::Forward {
+            Some(tilo_device_mcp::Forward {
                 device: "Build box".into(),
                 workspace: None
             })
@@ -1009,6 +1009,7 @@ fn the_server_writes_the_workspace_and_key_into_the_initialize_alone() {
     let asking = tilo_mcp::session_api::Asking {
         workspace: Some("w-1".into()),
         key: Some("tilo_ak_0123".into()),
+        session_name: Some("Office Hours".into()),
     };
     let total =
         tilo_mcp::session_api::relay_asking(&mut sent.as_bytes(), &mut relayed, &asking).unwrap();
@@ -1050,5 +1051,10 @@ fn the_server_writes_the_workspace_and_key_into_the_initialize_alone() {
         hello.request.pointer(tilo_mcp::session_api::KEY),
         None,
         "the key is kept out of the request the API goes on to answer"
+    );
+    assert_eq!(
+        hello.session_name.as_deref(),
+        Some("Office Hours"),
+        "the session the client named rides in the initialize, and the API reads it"
     );
 }

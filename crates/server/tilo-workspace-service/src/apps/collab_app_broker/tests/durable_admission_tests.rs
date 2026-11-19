@@ -461,7 +461,7 @@ async fn invocation_journal_uuid_collisions_never_reach_application_stream() {
                 }
                 let membership = fixture.membership.as_ref().unwrap().clone();
                 drop(channel);
-                let gone = Arc::downgrade(&fixture.state);
+                let gone = fixture.state.gone();
                 drop(fixture);
                 broker_gone(gone).await;
                 let (mut reopened, _, mut again) = durable_fixture(root.path(), Some(membership));
@@ -593,7 +593,7 @@ async fn invocation_journal_real_effect_once_across_concurrent_duplicate_respons
                 );
                 tree.persist_path = Some(root.path().join("state.json"));
             }
-            let gone = Arc::downgrade(&fixture.state);
+            let gone = fixture.state.gone();
             drop(fixture);
             broker_gone(gone).await;
             let (mut restarted, caller, _) = durable_fixture(root.path(), Some(membership));
@@ -632,7 +632,7 @@ async fn invocation_journal_crash_boundaries_never_repeat_real_effect() {
                 assert!(fixture.invocation_rx.try_recv().is_err());
             }
             let membership = fixture.membership.clone().unwrap();
-            let gone = Arc::downgrade(&fixture.state);
+            let gone = fixture.state.gone();
             drop(fixture);
             broker_gone(gone).await;
             let (mut restarted, caller, _) = durable_fixture(root.path(), Some(membership));

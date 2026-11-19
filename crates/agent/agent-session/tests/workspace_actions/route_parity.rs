@@ -95,7 +95,7 @@ fn workspace_policy(member: &str) -> tilo_action_policy::WorkspacePolicy {
 
 impl WorkspaceDocumentsLink for Member {
     fn user_public_key(&self) -> [u8; 32] {
-        self.host.endpoint.host_cert.user_public_key
+        self.host.endpoint.server_cert.user_public_key
     }
     fn own_device(&self) -> HostDevice {
         self.host.clone()
@@ -434,6 +434,7 @@ fn claimed_run() -> tilo_actions::ActionContext {
             label: Some("Not me".into()),
             kind: tilo_actions::context::AGENT_SESSION_GROUP.into(),
             declared_id: None,
+            session: None,
         }),
         ..tilo_actions::ActionContext::default()
     }
@@ -695,6 +696,7 @@ async fn both_routes_decide_every_callers_actions_alike() {
     let mut commands_ran = 0;
     // The agents and keys whose note the host made: each made a run.
     let mut agents = Vec::new();
+    let mut notes_status: Vec<String> = Vec::new();
     for (app, action, arguments) in invocations {
         let (route, all) = &every[app];
         let descriptor = all
@@ -725,6 +727,12 @@ async fn both_routes_decide_every_callers_actions_alike() {
                         | ActionCallError::UnknownAction
                         | ActionCallError::ConfirmationRequired { .. },
                 } => Admitted::Refused,
+                // The workspace refused the change the action made: the
+                // invocation is one it would refuse again, whatever the
+                // action answered.
+                ReceiptStatus::Failed { error } if error.code == "write_refused" => {
+                    Admitted::Refused
+                }
                 _ if was_asked => Admitted::AsksFirst,
                 // It ran: what the action answered is its own.
                 ReceiptStatus::Completed { .. } | ReceiptStatus::Failed { .. } => Admitted::Runs,
@@ -734,6 +742,9 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 differences.push(format!(
                     "{who} {app}#{action}: the host {by_host:?} ({status:?}), the broker {by_broker:?}"
                 ));
+            }
+            if app == NOTES {
+                notes_status.push(format!("{who}: {status:?}"));
             }
             if app == NOTES && by_host == Admitted::Runs && caller.agent_session().is_some() {
                 agents.push((
@@ -803,7 +814,11 @@ async fn both_routes_decide_every_callers_actions_alike() {
                 kind != tilo_actions::context::AGENT_SESSION_GROUP || id == "agent-session:claimed"
             })
         {
-            differences.push(format!("{name}'s changes on the host: runs {named:?}"));
+            differences.push(format!(
+                "{name}'s changes on the server: sessions {named:?} of {}",
+                groups.len()
+            ));
+            differences.push(format!("notes statuses: {notes_status:#?}"));
         }
     }
     if groups
@@ -938,7 +953,7 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     let codex = Browser::open(&hosted, &computer, &host).await;
     let _ = tilo_session_client::device::session_as_agent(&codex.peer, "Codex").await;
     let person = hex::encode(root.verifying_key().to_bytes());
-    let actions = tilo_session_client::remote::SessionActions::new(
+    let actions = tilo_session_actions::SessionActions::new(
         &codex.peer,
         codex.workspace,
         host.cert.device_public_key,
@@ -990,13 +1005,14 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     }
 }
 
-/// Seen on another person's host: a workspace a node someone else runs
-/// governs (a Lounge's), a member's agent through `tilo mcp`'s path is seen
-/// once, named and narrated, as the run that host speaks for, by the member's
-/// own page, and the host's device is listed as its operator's, the
-/// workspace's owner, never as the member's. A member device that says a run
-/// on the host's track is not heard, and one it says on the live session is
-/// its own, never the host's.
+/// Seen on a server another person keeps: a workspace it governs (a
+/// Lounge's), a member's agent through `tilo mcp`'s path is seen once, named
+/// and narrated, as the work the server speaks for, by the member's own
+/// page, and the server's device is its operator's, who enrolled it: the
+/// server joins its person's identity, and holding the workspace never makes
+/// it a member of it. A member device that claims to speak for an agent on
+/// the server's track is not heard, and one that says so on the live session
+/// is its own, never the server's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     use tilo_peer_state::join::Role;
@@ -1027,7 +1043,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         super::resource_support::open_admitted_peer(&hosted, &computer, &host, &cluster).await;
     let _ = tilo_session_client::device::session_as_agent(&agent.peer, "Claude Code").await;
     let person = hex::encode(guest.verifying_key().to_bytes());
-    let actions = tilo_session_client::remote::SessionActions::new(
+    let actions = tilo_session_actions::SessionActions::new(
         &agent.peer,
         agent.workspace,
         host.cert.device_public_key,
@@ -1036,8 +1052,8 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
         .with_agent_session("session-guest");
     let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
 
-    // The host founded the workspace, so its operator owns it and the host
-    // is the owner's device: the page lists it as the operator's.
+    // The server serves the workspace and is no member of it: the member list names whose
+    // each device is, and it is its operator's, who enrolled it.
     let host_key = hex::encode(host.cert.device_public_key);
     let members = loop {
         browser.pump();
@@ -1056,7 +1072,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     assert_eq!(
         members.get(&host_key),
         Some(&hex::encode(operator.verifying_key().to_bytes())),
-        "the host is listed as another person's device: {members:?}"
+        "the serving device is not listed as its operator's: {members:?}"
     );
 
     // A member device that says it speaks for a run, as the host would: on

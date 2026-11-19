@@ -190,7 +190,94 @@ fn builder_succeeded(
     Ok(())
 }
 
+/// Starts the build at `line`, checks the layer's header with `check`, and
+/// pipes the layer's tar into `sink`'s stdin.
+fn stream_layer(
+    line: &hypervisor::CommandLine,
+    root: &std::path::Path,
+    sink: &hypervisor::CommandLine,
+    check: impl FnOnce(&builderlayer::Packed) -> Result<(), CliError>,
+) -> Result<(), CliError> {
+    let mut child = AppBuilder(start_builder(line, root)?);
+    let stdout = child.0.stdout.take().ok_or_else(|| {
+        CliError::io("start the remote builder")(std::io::Error::other("no stdout"))
+    })?;
+    let mut stream = Stream::new(BufReader::with_capacity(2 << 20, stdout));
+    let packed = match stream.header(&mut std::io::stderr()) {
+        Ok(packed) => packed,
+        Err(error) => {
+            drop(stream);
+            let error = CliError::io("read the remote builder's header")(error);
+            return Err(builder_header_error(&mut child, line, &error));
+        }
+    };
+    check(&packed)?;
+    let mut unpack = Command::new(&sink.program)
+        .args(&sink.args)
+        .envs(sink.env.iter().map(|(k, v)| (k, v)))
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(CliError::io("start unpacking the layer over SSH"))?;
+    let copied = match unpack.stdin.take() {
+        Some(mut stdin) => std::io::copy(&mut stream, &mut stdin)
+            .map(drop)
+            .map_err(CliError::io("send the layer over SSH")),
+        None => Err(CliError::io("send the layer over SSH")(
+            std::io::Error::other("no stdin"),
+        )),
+    };
+    let status = unpack
+        .wait()
+        .map_err(CliError::io("wait for the layer's unpacking"))?;
+    copied?;
+    if !status.success() {
+        return Err(CliError::CommandFailed {
+            command: sink.display(),
+            status: status.to_string(),
+            stderr: "unpacking the layer over SSH failed; its output is above".into(),
+        });
+    }
+    drop(stream);
+    builder_succeeded(&mut child, line)
+}
+
 impl App {
+    /// Builds `component` for `arch` and unpacks the layer over plain SSH
+    /// with `sink`, past the VM's daemon: what replaces a tilo-vmd that
+    /// speaks another protocol, which no upload through it reaches.
+    pub(super) fn pack_layer_over_ssh(
+        &mut self,
+        component: &Component,
+        builder: &[String],
+        arch: &str,
+        sink: &hypervisor::CommandLine,
+    ) -> Result<(), CliError> {
+        let worktree = self.worktree.clone().ok_or(CliError::NotInWorktree)?;
+        self.runner.cwd = Some(worktree.root.clone());
+        let metadata = self.cargo_metadata()?;
+        let extra = build::dev_features(&metadata, &component.packages);
+        let inputs = crate::source_inputs::Snapshot::create(&worktree, &component.name)?;
+        let inventory = inputs
+            .file
+            .path()
+            .strip_prefix(&worktree.root)
+            .map_err(|error| CliError::InvalidInput(error.to_string()))?;
+        let line = builderlayer::remote_command(builder, component, &extra)
+            .arg("--source-inventory")
+            .arg(inventory.display().to_string());
+        if !self.json {
+            eprintln!(
+                "tilo-vm: building {} with {} and unpacking it over SSH",
+                component.name,
+                line.display()
+            );
+        }
+        stream_layer(&line, &worktree.root, sink, |packed| {
+            validate_header(packed, &component.name, &inputs.digest, arch, &[])
+        })?;
+        inputs.unchanged(&worktree.root)
+    }
+
     pub(super) fn build_layer_remote(
         &mut self,
         remote: &mut Remote,
@@ -501,6 +588,61 @@ for line in sys.stdin:
             .header(&mut Vec::new())
             .map_err(CliError::io("fixture layer header"))?;
         Ok((packed, framed))
+    }
+
+    tilo_test_env::scenario! {
+        fn a_layer_reaches_a_daemon_of_another_protocol_unpacked_past_it;
+
+        phase the_built_layer_is_unpacked_by_the_sink_whole;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let tree = dir.path().join("tree");
+            std::fs::create_dir_all(tree.join("usr/libexec/tilo")).unwrap();
+            std::fs::write(tree.join("usr/libexec/tilo/tilo-vmd"), b"replacement daemon").unwrap();
+            let (_, framed) = framed_fixture(&tree, &[]).unwrap();
+            let built = dir.path().join("built");
+            std::fs::write(&built, framed).unwrap();
+            // The builder prints the framed layer; the sink unpacks what reaches its stdin,
+            // as `ssh <vm> <bridge_unpack_line>` does on the VM.
+            let line = hypervisor::CommandLine::new("sh", &["-c", "cat \"$0\""])
+                .arg(built.display().to_string());
+            let unpacked = dir.path().join("vmd-bridge");
+            let sink = hypervisor::CommandLine::new(
+                "sh",
+                &["-c", "mkdir -p \"$0\" && tar -x --no-same-owner -C \"$0\""],
+            )
+            .arg(unpacked.display().to_string());
+            stream_layer(&line, dir.path(), &sink, |packed| {
+                assert_eq!(packed.component, "shell");
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                std::fs::read(unpacked.join("usr/libexec/tilo/tilo-vmd")).unwrap(),
+                b"replacement daemon"
+            );
+        }
+
+        phase a_refused_header_unpacks_nothing;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let tree = dir.path().join("tree");
+            std::fs::create_dir_all(&tree).unwrap();
+            std::fs::write(tree.join("file"), b"x").unwrap();
+            let (_, framed) = framed_fixture(&tree, &[]).unwrap();
+            let built = dir.path().join("built");
+            std::fs::write(&built, framed).unwrap();
+            let line = hypervisor::CommandLine::new("sh", &["-c", "cat \"$0\""])
+                .arg(built.display().to_string());
+            let unpacked = dir.path().join("vmd-bridge");
+            let sink = hypervisor::CommandLine::new("sh", &["-c", "mkdir -p \"$0\""])
+                .arg(unpacked.display().to_string());
+            let refused = stream_layer(&line, dir.path(), &sink, |_| {
+                Err(CliError::InvalidInput("another architecture".into()))
+            });
+            assert!(matches!(refused, Err(CliError::InvalidInput(_))));
+            assert!(!unpacked.exists());
+        }
     }
 
     tilo_test_env::scenario! {

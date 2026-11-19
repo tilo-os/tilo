@@ -49,7 +49,7 @@ pub use plan::{
     AudioBinding, AudioProtocol, CapsuleCommandPlan, KeptDisplay, KeptProgram, LaunchDisplay,
     LaunchDisplays, LaunchLease, LaunchResourceBroker, NetworkShape, PlanError, ResourceError,
     ResourceRequest, RuntimeImage, RuntimeRegistry, SandboxPlanner, SystemRuntimeRegistry,
-    TakenBack,
+    TakenBack, is_render_node,
 };
 pub use protocol::{
     ManagedApplication, ManagedInstallation, PROTOCOL_VERSION, ProgramEnd, ProtocolError,

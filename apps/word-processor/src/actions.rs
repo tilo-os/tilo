@@ -14,11 +14,6 @@ pub mod view_ops;
 use automerge::AutoCommit;
 use std::collections::HashSet;
 
-use tilo_actions::ContextRequirement;
-use ui::tilo_resource::Effect as _;
-
-use crate::effects::WordProcessorEffect;
-
 pub use tilo_document::action::*;
 pub use tilo_document::block_edit::Placement;
 
@@ -49,6 +44,19 @@ pub struct SearchTarget {
 }
 
 pub const MAX_RESOURCE_SEARCH_HITS: usize = 64;
+
+/// The id a Find hit is published under: the block it is in and its range.
+pub(crate) fn search_hit_id(block: &str, start: usize, end: usize) -> String {
+    format!("word-processor.search-hit:{block}:{start}:{end}")
+}
+
+/// The block and range a Find hit's row id names.
+pub(crate) fn parse_search_hit(row: &str) -> Option<(String, usize, usize)> {
+    let rest = row.strip_prefix("word-processor.search-hit:")?;
+    let (rest, end) = rest.rsplit_once(':')?;
+    let (block, start) = rest.rsplit_once(':')?;
+    Some((block.to_owned(), start.parse().ok()?, end.parse().ok()?))
+}
 pub const MAX_RESOURCE_REVISIONS: usize = 64;
 
 fn short(text: &str, fallback: &str) -> String {
@@ -123,9 +131,8 @@ pub(crate) fn search_rows(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<ui::fram
         .map(|hit| hit.block.clone())
         .collect();
     let blocks = tilo_doc::model::materialize_blocks(doc, &containers, &hits);
-    let mut search = ui::framework::LiveRow::new(
+    let mut search = ui::framework::LiveRow::typed::<crate::rows::SearchResults>(
         "word-processor.search-results",
-        "word_processor.search-results",
         "Search results",
     );
     let mut seen = HashSet::new();
@@ -138,25 +145,10 @@ pub(crate) fn search_rows(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<ui::fram
     {
         let label = range_label(&blocks, &hit.block, hit.start, hit.end)
             .unwrap_or_else(|| format!("Result {}", result_index + 1));
-        search = search.row(
-            ui::framework::LiveRow::new(
-                format!(
-                    "word-processor.search-hit:{}:{}:{}",
-                    hit.block, hit.start, hit.end
-                ),
-                "word_processor.search-hit",
-                label,
-            )
-            .operation(
-                WordProcessorEffect::GoTo {
-                    block: hit.block.clone(),
-                    start: hit.start,
-                    end: hit.end,
-                }
-                .bound()
-                .requires(ContextRequirement::FindHits),
-            ),
-        );
+        search = search.row(ui::framework::LiveRow::typed::<crate::rows::SearchHit>(
+            search_hit_id(&hit.block, hit.start, hit.end),
+            label,
+        ));
     }
     vec![search]
 }
@@ -226,7 +218,7 @@ mod tests {
             let encoded = spec_encoding(spec, None);
             assert_eq!(
                 crate::effects::decode(&encoded),
-                Some(WordProcessorEffect::ZoomReset),
+                Some(crate::effects::WordProcessorEffect::ZoomReset),
                 "the resource action decodes to the one canonical reset effect"
             );
         }
@@ -366,7 +358,7 @@ mod tests {
                 .expect("bounded search result group");
             assert_eq!(results.children.len(), MAX_RESOURCE_SEARCH_HITS);
             assert!(results.children.iter().all(|hit| {
-                hit.actions.iter().any(|action| action.id == "go-to")
+                hit.actions.iter().any(|action| action.id == "go-to-hit")
                     && hit.id.as_str().contains(&block)
             }));
             assert_eq!(

@@ -10,6 +10,7 @@ use ui::tilo_resource::{self, Effect};
 use ui::widget::Element;
 
 use crate::app::MapsApp;
+use crate::rows::{OfflineRegion, PastSearch, Place, Poi, SearchResult};
 #[cfg(feature = "samples")]
 use crate::scenario::Sample;
 use crate::workspace::Workspace;
@@ -20,7 +21,7 @@ use crate::workspace::Workspace;
 #[effect(operation = "maps.effect")]
 pub enum MapsEffect {
     /// Search maps.
-    #[effect(kind = "read")]
+    #[effect(screen, on = PastSearch)]
     Search {
         #[param("Place, address, or category, e.g. museum near me")]
         query: String,
@@ -29,34 +30,34 @@ pub enum MapsEffect {
     #[effect(job, kind = "read")]
     Locate,
     /// Show traffic.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ToggleTraffic,
     /// Open place.
-    #[effect(kind = "read")]
+    #[effect(screen, on = SearchResult, on = Place)]
     OpenPlace {
         #[param("The place's id")]
         place: String,
     },
     /// Get directions.
-    #[effect(kind = "read")]
+    #[effect(screen, on = SearchResult, on = Place)]
     Directions {
         #[param("The place's id")]
         place: String,
     },
     /// Open point of interest.
-    #[effect(kind = "read")]
+    #[effect(screen, on = Poi)]
     OpenPoi {
         #[param("The point of interest's id")]
         poi: String,
     },
     /// Get directions to point of interest.
-    #[effect(kind = "read")]
+    #[effect(screen, on = Poi)]
     PoiDirections {
         #[param("The point of interest's id")]
         poi: String,
     },
     /// Show a point on the map.
-    #[effect(kind = "read")]
+    #[effect(screen)]
     ShowPoint {
         #[param("Latitude, in degrees north")]
         lat: f64,
@@ -64,7 +65,7 @@ pub enum MapsEffect {
         lon: f64,
     },
     /// Delete offline area.
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, kind = "read", on = OfflineRegion)]
     DeleteOfflineArea {
         #[param("The offline area's id")]
         area: String,
@@ -293,7 +294,7 @@ mod tests {
         let area = crate::sample::regions().remove(0);
         app.person::<OfflineAreas>()
             .unwrap()
-            .invoke(&OfflineAreas::RECORD.with(("test-device".to_owned(), area.clone())))
+            .invoke(&OfflineAreas::REMEMBER.with(("test-device".to_owned(), area.clone())))
             .unwrap();
         app.harness().relayout();
         let row = format!("maps.region:{}", area.id);

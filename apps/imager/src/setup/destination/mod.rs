@@ -53,6 +53,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(invocation) = unattended::Invocation::from_args(std::env::args_os().skip(1))? {
         return invocation.run();
     }
+    if let Some(planned) = unattended::PlannedInvocation::find() {
+        return planned.install();
+    }
     LIVE_INSTALLER.store(true, std::sync::atomic::Ordering::Relaxed);
     ui::framework::run::<crate::resource::ImagerShell>();
     Ok(())

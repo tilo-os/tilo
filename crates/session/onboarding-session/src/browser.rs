@@ -47,8 +47,8 @@ fn authorized_device(identity: &Path, certificate: &[u8]) -> io::Result<([u8; 32
     if !tilo_identity::provisioning::active_identity_owns_device(identity, &paths)? {
         return Err(failure());
     }
-    let active = runtime_identity::resolve_active_identity(identity).ok_or_else(failure)?;
-    let metadata = runtime_identity::load_metadata_from_path(&active).map_err(|_| failure())?;
+    let active = tilo_identity_client::resolve_active_identity(identity).ok_or_else(failure)?;
+    let metadata = tilo_identity_client::load_metadata_from_path(&active).map_err(|_| failure())?;
     let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
         .map_err(|_| failure())?;
     let proof_cert: tilo_user_identity::DeviceCert =
@@ -361,7 +361,7 @@ pub mod fixtures {
                 .join(".local/state/tilo/prepared-setup/activated.json"),
         )
         .unwrap();
-        let signer = runtime_identity::load_from_path(identity.join("primary.json")).unwrap();
+        let signer = tilo_identity::store::load_from_path(identity.join("primary.json")).unwrap();
         let plan = browser_continuity::Plan::new(
             "browser-binding".into(),
             signer.group_public_key(),
@@ -484,7 +484,7 @@ pub mod fixtures {
     pub fn deferred_projection_fixture(home: &Path, identity: &Path) -> (PathBuf, PathBuf) {
         let paths = crate::firstboot::collaboration_identity_paths();
         crate::firstboot::ensure_collaboration_identity(identity, &paths).unwrap();
-        let signer = runtime_identity::load_from_path(identity.join("primary.json")).unwrap();
+        let signer = tilo_identity::store::load_from_path(identity.join("primary.json")).unwrap();
         let operation = uuid::Uuid::new_v4().to_string();
         let plans = home.join(".local/state/tilo/migration-handoff");
         std::fs::create_dir_all(&plans).unwrap();
@@ -574,7 +574,7 @@ mod tests {
         env.set("HOME", home.path());
         env.set("XDG_CONFIG_HOME", home.path().join(".config"));
         env.set("TILO_IDENTITY_ROOT", home.path().join("system"));
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let (root, projection) = deferred_projection_fixture(home.path(), &identity);
         assert_eq!(
             deferred_projection(home.path(), &identity).unwrap(),
@@ -623,7 +623,7 @@ mod tests {
         env.set("HOME", home.path());
         env.set("XDG_CONFIG_HOME", home.path().join(".config"));
         env.set("TILO_IDENTITY_ROOT", home.path().join("system"));
-        env.set(runtime_identity::FILE_SECRETS_ENV, "1");
+        env.set(tilo_identity::store::FILE_SECRETS_ENV, "1");
         let mut pending =
             Pending::open(home.path().into(), identity.clone(), declaration.clone()).unwrap();
         let prepared = Prepared::open(home.path()).unwrap();

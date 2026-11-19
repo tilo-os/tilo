@@ -237,6 +237,11 @@ pub struct WindowGroup {
     pending_new_tab: Option<u64>,
     pending_tab_reorder: Option<(usize, usize)>,
     pending_close_commit: Vec<u64>,
+    /// The resource the window's bar carries when a person picks it up, by its published
+    /// address: what a press that travels publishes on the drag bus, so the pointer carries the
+    /// window to the device beside this one as it rearranges the strip here. `None` for a window
+    /// whose bar carries nothing (a foreign window's).
+    carries: Option<String>,
     closing_at: Option<Instant>,
     close_duration: Duration,
     /// The close was a shortcut's or an action's: it lands, so the group is
@@ -411,6 +416,7 @@ impl WindowGroup {
             window_events: Vec::new(),
             pending_new_tab: None,
             pending_close_commit: Vec::new(),
+            carries: None,
         }
     }
     pub fn width(&self) -> WindowWidth {
@@ -1606,10 +1612,17 @@ impl WindowGroup {
         if self.held_bar.is_some() {
             return true;
         }
-        if self.new_tab_hit(p) {
-            return false;
+        // A window the bar lifts from wherever it is not a control — one that stands on a canvas,
+        // and one of a single tab, which its bar shows as its title. A bar of several tabs keeps
+        // its presses for tab drags.
+        if self.bar.lifts_the_window() {
+            return self.carry_grab_hit(p);
         }
-        if self.bar.toolbar_hit(p) || self.search.hit(p) || self.window_control_hit(p) {
+        if self.new_tab_hit(p)
+            || self.bar.toolbar_hit(p)
+            || self.search.hit(p)
+            || self.window_control_hit(p)
+        {
             return false;
         }
         !self.tab_rects().iter().any(|r| r.contains(p))
@@ -1907,6 +1920,30 @@ impl WindowGroup {
 
     pub fn active_tab_id(&self) -> u64 {
         self.bar.active_id()
+    }
+
+    /// The window's bar carries `carries` now; whether that is news.
+    pub fn set_carries(&mut self, carries: Option<String>) -> bool {
+        if self.carries == carries {
+            return false;
+        }
+        self.carries = carries;
+        true
+    }
+
+    #[must_use]
+    pub fn carries(&self) -> Option<&str> {
+        self.carries.as_deref()
+    }
+
+    /// What the window is called in a drag of it, as its bar shows it.
+    #[must_use]
+    pub fn name(&self) -> String {
+        self.tabs()
+            .iter()
+            .find(|tab| tab.id == self.active_tab_id())
+            .map(|tab| tab.title.clone())
+            .unwrap_or_default()
     }
 
     /// Layout bounds and the control targets cached by production paint.
@@ -4198,7 +4235,7 @@ mod tests {
             // Another device's frame never holds this one's: the place is
             // reserved from the first frame.
             let mut g = crate::time::testing::with_monotonic_time(t0, || {
-                group_opening("Notes", false, crate::arriving::Source::peer("Laptop"))
+                group_opening("Notes", false, crate::arriving::Source::Remote)
             });
             crate::time::testing::with_monotonic_time(t0, || {
                 assert_eq!(Widget::holds_frame_until(&g, t0), None);

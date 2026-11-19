@@ -20,7 +20,7 @@ tilo_test_env::scenario! {
             record: record.into(),
         };
         let mut candidate = committed.clone();
-        assert!(Shared::ptr_eq(
+        assert!(super::documents::Documents::ptr_eq(
             &candidate.core.documents,
             &committed.core.documents
         ));

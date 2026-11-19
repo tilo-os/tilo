@@ -118,6 +118,7 @@ tilo_test_env::scenario! {
                 stand_in: false,
                 server_key: false,
                 browser_pages: false,
+                workspace_service: false,
             },
             issued_at_ns: 1_000_000,
             expires_at_ns: None,
@@ -395,7 +396,7 @@ tilo_test_env::scenario! {
         let bytes = crate::canonical::canonical_bytes(&admin).unwrap();
         let marker = 32 + 32 + 1 + "golden".len();
         assert_eq!(bytes[marker + 1], EXTENDED_ADMINISTER);
-        for extended in [0, EXTENDED_FOREIGN, 4, 0x80] {
+        for extended in [0, EXTENDED_FOREIGN, 4] {
             let mut changed = bytes.clone();
             changed[marker + 1] = extended;
             assert!(
@@ -1060,10 +1061,9 @@ tilo_test_env::scenario! {
             serde_json::to_string(&capabilities).unwrap(),
             r#"{"can_own_workspaces":false,"can_admit_devices":false,"agent":"all","server_key":true}"#
         );
-        // A bit the decoder does not know is refused, as decoders before the
-        // marker refuse the marker's.
+        // A flag byte other than 0 or 1 is refused.
         assert!(
-            postcard::from_bytes::<DeviceCapabilities>(&[3, EXTENDED_AGENT | 128, 0, 0, 0, 0, 0])
+            postcard::from_bytes::<DeviceCapabilities>(&[3, EXTENDED_AGENT, 0, 2, 0, 0, 0])
                 .is_err()
         );
         let lasting = [None, Some(1_000 + 10 * MAX_AGENT_GRANT_LIFETIME_NS)];
@@ -1091,14 +1091,16 @@ tilo_test_env::scenario! {
             Err(DeviceCertError::Expired)
         );
 
-        // Only a grant reaching all workspaces is a server key, and a grant
-        // without the marker (an agent's, through consent) still expires.
+        // A key the person made for one workspace is theirs too and lasts
+        // the same; a server key reaches somewhere, and a grant without the
+        // marker (an agent's, through consent) still expires.
         let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let mut one = chosen.clone();
+        one.capabilities = DeviceCapabilities::own_key_grant(AgentScope::Workspace([7; 16]));
+        one.expires_at_ns = None;
+        sign_device_cert(&mut one, &root).unwrap();
+        verify_device_cert_at(&one, 1_000 + 5 * MAX_AGENT_GRANT_LIFETIME_NS).unwrap();
         for capabilities in [
-            DeviceCapabilities {
-                server_key: true,
-                ..DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16]))
-            },
             DeviceCapabilities {
                 agent: None,
                 ..DeviceCapabilities::server_key_grant()
@@ -1192,18 +1194,25 @@ fn a_server_key_mints_keys_that_expire_and_end_with_it() {
         minted.capabilities.agent,
         Some(AgentScope::Workspace([7; 16]))
     );
-    assert!(!minted.capabilities.server_key);
+    // A key the person made mints keys of theirs.
+    assert!(minted.capabilities.server_key);
     let mut forever = mint(3_000);
     forever.expires_at_ns = None;
-    let mut longer = mint(2_001 + MAX_AGENT_GRANT_LIFETIME_NS);
-    for mut refused in [forever, longer.clone()] {
+    let longer = mint(2_001 + MAX_AGENT_GRANT_LIFETIME_NS);
+    // Nor does it lose the marker its issuer gave it.
+    let mut unmarked = mint(3_000);
+    unmarked.capabilities.server_key = false;
+    for (case, mut refused) in [
+        ("forever", forever),
+        ("longer", longer),
+        ("unmarked", unmarked),
+    ] {
         assert_eq!(
             sign_device_cert(&mut refused, &key),
-            Err(DeviceCertError::InvalidAgentGrant)
+            Err(DeviceCertError::InvalidIssuer),
+            "{case}"
         );
     }
-    longer.capabilities.server_key = true;
-    assert!(sign_device_cert(&mut longer, &key).is_err());
 
     let mut entry = crate::RevocationEntry {
         user_public_key: server.user_public_key,
@@ -1217,4 +1226,135 @@ fn a_server_key_mints_keys_that_expire_and_end_with_it() {
     revocations.insert(entry).unwrap();
     assert!(revocations.refuses(&server));
     assert!(revocations.refuses_at(&minted, 2_500));
+}
+
+/// A device of the person `root`, root-signed with `capabilities`, valid
+/// from 1 000 until `expires_at_ns`.
+fn root_signed_device(
+    root: &ed25519_dalek::SigningKey,
+    key: &ed25519_dalek::SigningKey,
+    capabilities: DeviceCapabilities,
+    expires_at_ns: Option<u64>,
+) -> DeviceCert {
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "Laptop".into(),
+        capabilities,
+        issued_at_ns: 1_000,
+        expires_at_ns,
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).unwrap();
+    cert
+}
+
+tilo_test_env::scenario! {
+    fn a_device_certifies_its_own_workspace_service;
+
+    phase the_service_verifies_under_its_device_and_round_trips;
+    {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let device = root_signed_device(&root, &key, DeviceCapabilities::member(), None);
+        let mut service = prepare_service_cert(&device, [9; 32], "Laptop's service", 2_000);
+        sign_device_cert(&mut service, &key).unwrap();
+        verify_device_cert_at(&service, 2_500).unwrap();
+        assert_eq!(service.user_public_key, device.user_public_key);
+        assert_eq!(service.signer_public_key(), device.device_public_key);
+        assert!(service.capabilities.workspace_service);
+        assert!(service.capabilities.can_own_workspaces);
+        // The service writes for the device that certified it, and that device for itself.
+        assert_eq!(service.writes_for(), device.device_public_key);
+        assert_eq!(device.writes_for(), device.device_public_key);
+        assert!(service.is_of_device(&device.device_public_key));
+        assert!(!device.is_of_device(&service.device_public_key));
+        let wire = postcard::to_allocvec(&service).unwrap();
+        assert_eq!(postcard::from_bytes::<DeviceCert>(&wire).unwrap(), service);
+        let json = serde_json::to_string(&service).unwrap();
+        assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), service);
+        // The root's signature is not the device's.
+        assert_eq!(
+            verify_device_cert(&forced(service, &root)),
+            Err(DeviceCertError::BadSignature)
+        );
+    }
+
+    phase the_service_stays_within_its_device;
+    {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let device = root_signed_device(&root, &key, DeviceCapabilities::member(), Some(10_000));
+        let refused = |cert: DeviceCert| {
+            assert_eq!(
+                verify_device_cert(&forced(cert, &key)),
+                Err(DeviceCertError::InvalidIssuer)
+            );
+        };
+        let service = || prepare_service_cert(&device, [9; 32], "service", 2_000);
+        // More than the device may do.
+        let mut wider = service();
+        wider.capabilities.can_admit_devices = true;
+        refused(wider);
+        // Longer than the device's certificate.
+        let mut longer = service();
+        longer.expires_at_ns = Some(10_001);
+        refused(longer);
+        let mut forever = service();
+        forever.expires_at_ns = None;
+        refused(forever);
+        // Before the device was certified.
+        let mut early = service();
+        early.issued_at_ns = 500;
+        refused(early);
+        // The device's own key.
+        let mut same = service();
+        same.device_public_key = device.device_public_key;
+        refused(same);
+        // Another person's device.
+        let mut other = service();
+        other.user_public_key = [3; 32];
+        refused(other);
+        // No device issued it: the root alone makes no workspace service.
+        let mut rootless = service();
+        rootless.issuer = None;
+        assert_eq!(
+            verify_device_cert(&forced(rootless, &root)),
+            Err(DeviceCertError::InvalidIssuer)
+        );
+        // An agent's grant issues no workspace service.
+        let grant = root_signed_device(
+            &root,
+            &key,
+            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+            Some(10_000),
+        );
+        let mut from_grant = prepare_service_cert(&device, [9; 32], "service", 2_000);
+        from_grant.issuer = Some(Box::new(grant));
+        assert!(verify_device_cert(&forced(from_grant, &key)).is_err());
+    }
+
+    phase revoking_the_device_ends_its_service;
+    {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let device = root_signed_device(&root, &key, DeviceCapabilities::member(), None);
+        let mut service = prepare_service_cert(&device, [9; 32], "service", 2_000);
+        sign_device_cert(&mut service, &key).unwrap();
+        let mut revocations = crate::RevocationList::new();
+        assert!(!revocations.refuses(&service));
+        let mut entry = crate::RevocationEntry {
+            user_public_key: device.user_public_key,
+            revoked_device_public_key: device.device_public_key,
+            revoked_at_ns: 5_000,
+            reason: crate::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        crate::revocation::sign_revocation_entry(&mut entry, &root).unwrap();
+        revocations.insert(entry).unwrap();
+        // Even what the service signed before the device was revoked.
+        assert!(revocations.refuses(&service));
+        assert!(revocations.refuses_at(&service, 3_000));
+    }
 }

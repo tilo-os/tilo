@@ -29,7 +29,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_server_client::Host;
+use tilo_server_client::ServerAddress;
 use tilo_server_protocol::WorkspaceId;
 use tilo_session_client::device::{Entering, entry_request};
 use tilo_session_client::{Cmd, Event, Events, Link, MemoryPeerStore, Outbox as _};
@@ -43,14 +43,14 @@ fn new_key() -> SigningKey {
 
 /// A page of a fresh person entering `workspace` through its entry.
 async fn arrive(
-    host: Host,
-    host_cert: &tilo_user_identity::DeviceCert,
+    host: ServerAddress,
+    server_cert: &tilo_user_identity::DeviceCert,
     workspace: &str,
     name: &str,
 ) -> Link {
     let (root, key) = (new_key(), new_key());
     let (cert, entry) = entry_request(
-        host_cert,
+        server_cert,
         workspace,
         &key,
         Entering {
@@ -66,7 +66,7 @@ async fn arrive(
     enter_page(
         host,
         cert,
-        host_cert.clone(),
+        server_cert.clone(),
         key,
         std::sync::Arc::new(MemoryPeerStore::default()),
         entry,
@@ -216,7 +216,8 @@ async fn every_landing_a_page_is_told_of_is_a_record_it_holds() {
         .unwrap();
     let address = host.server.node_addr();
     let relay_url = address.relay_urls().next().cloned();
-    let page_host = || Host::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
+    let page_host =
+        || ServerAddress::through(iroh::EndpointAddr::new(address.id), relay_url.clone());
     let workspace_id = WorkspaceId::parse(&lounge.workspace).unwrap();
     let written_document = notes(&lounge.workspace, "");
     let fresh_record = notes(

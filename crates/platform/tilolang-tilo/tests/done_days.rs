@@ -5,7 +5,7 @@ use automerge::AutoCommit;
 use tilolang_runtime::{Value, ViewInstance};
 
 use crate::fixtures::Replica;
-use crate::tasks::{all, call, go_to, home_list_titles, workspace};
+use crate::tasks::{call, go_to, home_list_titles, workspace};
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
@@ -17,7 +17,7 @@ const APP: &str = "so.tilo.lang.tasks";
 /// whether that heading says the day the task was finished rather than the day it is due.
 fn home_row_groups(view: &mut ViewInstance) -> Vec<(String, bool)> {
     view.poll_patches().unwrap();
-    let lists = all(view.tree(), "ui.VirtualList");
+    let lists = view.tree().of_kind("ui.VirtualList");
     let Some(list) = lists.first() else {
         return Vec::new();
     };
@@ -27,7 +27,7 @@ fn home_row_groups(view: &mut ViewInstance) -> Vec<(String, bool)> {
         let Some(row) = view.row(&list, index).unwrap().cloned() else {
             continue;
         };
-        let Some(item) = all(&row, "ui.ListItem").first().copied() else {
+        let Some(item) = row.of_kind("ui.ListItem").first().copied() else {
             continue;
         };
         let group = match item.props.get("group") {

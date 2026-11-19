@@ -38,6 +38,8 @@ use crate::{
 
 /// Where the one Windows appliance keeps its disk, firmware and bridge state.
 const APPLIANCE_ROOT: &str = "/var/lib/tilo/windows";
+/// Why a computer without an appliance offers none.
+const NOT_SET_UP: &str = "The Windows appliance is not set up on this computer.";
 
 /// What the session that serves the service supplies.
 pub struct SessionSide {
@@ -196,8 +198,16 @@ fn native_rail_surface_available() -> bool {
 fn appliance_delegate(displays: Arc<dyn LaunchDisplays>) -> Result<Arc<dyn VmDelegate>, String> {
     let domain_uuid = match std::fs::read_to_string(format!("{APPLIANCE_ROOT}/domain.uuid")) {
         Ok(uuid) => uuid,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err("The Windows appliance is not set up on this computer.".to_string());
+        // The system keeps the appliance's directory to itself (tmpfiles makes it root's,
+        // mode 0700): a session that may not look into it has no appliance it could reach,
+        // which to the person is the same as none being set up.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            return Err(NOT_SET_UP.to_string());
         }
         Err(error) => return Err(format!("could not read the appliance's identity: {error}")),
     };
@@ -336,9 +346,11 @@ impl VmDelegate for LazyVmDelegate {
         &self,
         workspace_id: &str,
     ) -> Result<Option<VmInstallation>, windows_vm::LaunchError> {
-        self.get()
-            .map_err(windows_vm::AgentError::Transport)?
-            .refresh_installation_status(workspace_id)
+        // Without an appliance nothing is being set up in it: the manager asks this every
+        // time it lists, and must not be told the appliance's absence as a failure.
+        self.get().ok().map_or(Ok(None), |delegate| {
+            delegate.refresh_installation_status(workspace_id)
+        })
     }
 
     fn publish_install_candidate(
@@ -361,9 +373,11 @@ impl VmDelegate for LazyVmDelegate {
         &self,
         workspace_id: &str,
     ) -> Result<Option<VmUninstallation>, windows_vm::LaunchError> {
-        self.get()
-            .map_err(windows_vm::AgentError::Transport)?
-            .refresh_uninstallation_status(workspace_id)
+        // Without an appliance nothing is being set up in it: the manager asks this every
+        // time it lists, and must not be told the appliance's absence as a failure.
+        self.get().ok().map_or(Ok(None), |delegate| {
+            delegate.refresh_uninstallation_status(workspace_id)
+        })
     }
 
     fn remove_published_application(&self, entry_id: &str) -> Result<(), windows_vm::LaunchError> {
@@ -435,6 +449,25 @@ mod tests {
                 "counted".to_string(),
             ))
         }
+    }
+
+    /// A computer without an appliance has nothing being set up in it: the status the manager
+    /// asks for each time it lists is none, not a failure it shows the person.
+    #[test]
+    fn without_an_appliance_nothing_is_being_set_up() {
+        let lazy = LazyVmDelegate::new(|| Err(NOT_SET_UP.to_string()));
+        assert!(matches!(
+            lazy.refresh_installation_status("workspace"),
+            Ok(None)
+        ));
+        assert!(matches!(
+            lazy.refresh_uninstallation_status("workspace"),
+            Ok(None)
+        ));
+        assert!(
+            !lazy.availability().available,
+            "it still says the appliance is unavailable"
+        );
     }
 
     /// Until the appliance is set up every request says why it is unavailable and looks again;

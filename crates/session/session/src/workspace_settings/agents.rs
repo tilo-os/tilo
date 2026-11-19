@@ -165,14 +165,14 @@ impl Agents {
     }
 
     /// The Agents tab as it stands for `person` : the agents that work in the workspace from Chat's
-    /// record, the services the workspace runs beside them, and — for `review` — what one of them
-    /// may do.
+    /// record, the services beside them — its server's moderation agent where
+    /// `moderation` says its server offers one — and, for `review`, what one of them may do.
     pub(crate) fn pane(
         &self,
         tree: &Layout,
         person: &UserId,
-        names: &PeopleNames,
-        apps: &dyn domain::AppDirectory,
+        (names, apps): (&PeopleNames, &dyn domain::AppDirectory),
+        moderation: bool,
         review: Option<&str>,
     ) -> sheet::Agents {
         let Some(workspace) = tree.active_workspace() else {
@@ -187,7 +187,9 @@ impl Agents {
         let may = May {
             manage: self.host.manages(workspace, person),
         };
-        Self::pane_of(workspace, &record, (names, apps), may, review)
+        let mut pane = Self::pane_of(workspace, &record, (names, apps), may, review);
+        pane.moderation = moderation.then(|| moderation_row(workspace, may));
+        pane
     }
 
     /// The tab with nothing to show here: no workspace in front, or the agents could not be opened
@@ -313,6 +315,8 @@ impl Agents {
                     detail: domain::bot_detail(bot),
                 })
                 .collect(),
+            // Shown where the workspace's server offers it ([`Self::pane`]).
+            moderation: None,
             bots_empty: t("workspace-settings-bots-empty"),
             footnote: (!manage).then(|| t("workspace-settings-owner-only")),
             review,
@@ -913,6 +917,23 @@ impl Agents {
                 }),
             )
             .map_err(|error| error.to_string())
+    }
+}
+
+/// The row of the moderation agent the workspace's server offers: on while the workspace holds its
+/// grant, and turned by whoever may grant.
+fn moderation_row(workspace: &Workspace, may: May) -> sheet::Moderation {
+    let on = domain::moderates(workspace);
+    sheet::Moderation {
+        name: t("workspace-settings-moderation"),
+        detail: t("workspace-settings-moderation-detail"),
+        on,
+        switchable: may.manage,
+        state: t(if on {
+            "workspace-settings-moderation-on"
+        } else {
+            "workspace-settings-moderation-off"
+        }),
     }
 }
 

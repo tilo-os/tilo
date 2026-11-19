@@ -54,13 +54,35 @@ fn shows(shown: &[String], word: &str) -> bool {
     shown.iter().any(|seen| seen.contains(word))
 }
 
-/// Open the gallery as its window does on a store that holds nothing: the root is made, its
-/// package's migrations do what they do on it, and what they wrote is committed before the view
-/// is drawn.
+/// Open the gallery as its window does on a store that holds nothing: the root is made with what
+/// a new gallery starts with, one change committed before the view is drawn.
 fn window(ids: &str) -> Replica {
     let (mut replica, _packages) = Replica::new("ada", AutoCommit::new(), &[(GALLERY, ids)]);
-    replica.host.root_of(APP).expect("the gallery's root");
-    replica.commit();
+    let root = replica.host.root_of(APP).expect("the gallery's root");
+    assert_eq!(
+        replica.commit(),
+        1,
+        "the gallery and all it starts with are its making"
+    );
+    let person =
+        tilolang_runtime::Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada"));
+    {
+        let runtime = replica.host.runtime();
+        assert!(
+            runtime.unseen(&person, &root).unwrap().is_empty(),
+            "nothing of what the gallery starts with is a change to catch anyone up on"
+        );
+        assert_eq!(
+            runtime.read(&root, "controls_title").unwrap(),
+            Value::Text("Controls".into()),
+            "the gallery's text fields start at the words its type declares"
+        );
+        let history = runtime.versions(&root).unwrap();
+        assert!(
+            history.len() == 1 && history[0].action == tilolang_runtime::store::CREATE_ACTION,
+            "the gallery's history is its making: {history:?}"
+        );
+    }
     replica
 }
 
@@ -123,6 +145,7 @@ fn a_store_with_nothing_in_it_shows_every_group_filled() {
     for (view, word) in [
         ("data", "Readme.md"),
         ("data", "Moved to Done"),
+        ("data", "Are we ready to ship the release tomorrow?"),
         ("media", "Dawn"),
         ("shell_parts", "Tasks"),
     ] {

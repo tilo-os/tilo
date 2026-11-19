@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 use ui::tilo_resource;
 use ui::tilo_resource::MemberId;
+use ui::widget::conversation::list::GROUPING_WINDOW_SECS;
 
 /// String identifier (UUID or stable seed key). Used as Automerge map
 /// keys so it must round-trip as a plain string.
@@ -19,58 +20,7 @@ pub type Id = String;
 /// to this; the call host tile represents this user's camera.
 pub const ME: &str = "u_me";
 
-/// Two messages by the same author land in one visual group when they're
-/// within this many seconds of each other (Slack/Discord convention).
-pub const GROUP_WINDOW_SECS: i64 = 5 * 60;
-
-/// A text channel holds a conversation; a voice channel holds a call.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    ui::tilo_resource::Model,
-    ui::tilo_resource::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ChannelKind {
-    #[default]
-    Text,
-    Voice,
-}
-
-impl std::str::FromStr for ChannelKind {
-    type Err = std::convert::Infallible;
-
-    /// Never fails: an unrecognised key defaults to [`ChannelKind::Text`].
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "voice" => ChannelKind::Voice,
-            _ => ChannelKind::Text,
-        })
-    }
-}
-
-impl ChannelKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ChannelKind::Voice => "voice",
-            ChannelKind::Text => "text",
-        }
-    }
-    /// How a channel of this kind is named in a label: `#name` for a text
-    /// channel, "name, voice channel" for a voice channel.
-    pub fn label(self, name: &str) -> String {
-        match self {
-            ChannelKind::Text => format!("#{name}"),
-            ChannelKind::Voice => format!("{name}, voice channel"),
-        }
-    }
-}
+pub use chat_model::ChannelKind;
 
 /// Whether someone is around.
 #[derive(
@@ -221,6 +171,7 @@ pub type Reaction = ui::tilo_resource::ReactionGroup;
 /// One prior version of a message body, captured when the author edits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditEntry {
+    /// When this text was written, in milliseconds since the epoch.
     pub ts: i64,
     pub text: String,
 }
@@ -230,6 +181,8 @@ pub struct Message {
     pub id: Id,
     pub channel: Id,
     pub author: MemberId,
+    /// When it was written, in milliseconds since the epoch: the action's own
+    /// time. Messages are ordered by it, so it is read to the millisecond.
     pub ts: i64,
     /// The body's plain text (see [`crate::body`]): what search, agents,
     /// notifications and edit history read.
@@ -373,7 +326,7 @@ pub struct AgentWork {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<crate::agent_stream::AgentStream>,
     pub state: AgentWorkState,
-    /// Epoch seconds at which the agent entered `state`.
+    /// Milliseconds since the epoch at which the agent entered `state`.
     pub since: i64,
     /// The run's working resource of a failure, for whoever debugs it later: the
     /// transport's error, the partial answer, the provider's exposed reasoning.
@@ -667,7 +620,7 @@ pub struct MessageGroup {
 }
 
 /// Group consecutive messages by the same author, shown the same way, within
-/// [`GROUP_WINDOW_SECS`]. A bridge's lines are all its own but each shows the
+/// [`GROUPING_WINDOW_SECS`]. A bridge's lines are all its own but each shows the
 /// outside person who wrote it, so a line in another appearance starts a
 /// group of its own.
 ///
@@ -698,7 +651,8 @@ pub fn group_messages(messages: &[Message], threads: bool) -> Vec<MessageGroup> 
                             // What started a turn stands alone, under its own name.
                             && prev.cause.is_none()
                             && m.cause.is_none()
-                            && (m.ts - prev.ts).abs() <= GROUP_WINDOW_SECS
+                            && (m.ts - prev.ts).abs()
+                                <= GROUPING_WINDOW_SECS.saturating_mul(1_000)
                     })
         });
         if extend {
@@ -748,25 +702,6 @@ pub fn thread_members(messages: &[Message], parent_id: &str) -> Vec<MemberId> {
     seen
 }
 
-/// An epoch-seconds timestamp's time of day, as the person reads clocks.
-pub fn clock(ts: i64) -> String {
-    let secs_in_day = ts.rem_euclid(86_400);
-    ui::clock::hour_minute(
-        ui::num::u32_of_i64(secs_in_day / 3600),
-        ui::num::u32_of_i64(secs_in_day % 3600 / 60),
-    )
-}
-
-/// Human relative label for a message timestamp relative to `now` —
-/// "Today" / "Yesterday" / "3 days ago", in the desktop's language. Used
-/// for the date divider.
-pub fn day_label(ts: i64, now: i64) -> String {
-    let day = ts.div_euclid(86_400);
-    let today = now.div_euclid(86_400);
-    let ago = (today - day).max(0);
-    ui::format::near_day(-ago).unwrap_or_else(|| ui::format::relative(ago * 86_400))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -812,8 +747,8 @@ mod tests {
             {
                 let msgs = vec![
                     msg("a", "u1", 0, None),
-                    msg("b", "u1", 60, None),
-                    msg("c", "u1", 120, None),
+                    msg("b", "u1", 60_000, None),
+                    msg("c", "u1", 120_000, None),
                 ];
                 let groups = group_messages(&msgs, true);
                 assert_eq!(groups.len(), 1);
@@ -823,8 +758,8 @@ mod tests {
             {
                 let msgs = vec![
                     msg("a", "u1", 0, None),
-                    msg("b", "u2", 30, None),       // author change
-                    msg("c", "u2", 30 + 999, None), // gap > window
+                    msg("b", "u2", 30_000, None), // author change
+                    msg("c", "u2", 30_000 + GROUPING_WINDOW_SECS * 1_000 + 1, None), // gap > window
                 ];
                 let groups = group_messages(&msgs, true);
                 assert_eq!(groups.len(), 3);
@@ -986,26 +921,6 @@ mod tests {
                 },
             ] {
                 assert!(!AgentWork::new(state.clone(), 5).left_nothing(), "{state:?}");
-            }
-        }
-
-        phase timestamps_format_as_the_persons_clock_and_a_relative_day;
-        {
-            // Phase: clock_reads_the_time_of_day_in_the_configured_style.
-            {
-                let hm = ui::clock::hour_minute;
-                assert_eq!(clock(0), hm(0, 0));
-                assert_eq!(clock(14 * 3600 + 32 * 60), hm(14, 32));
-                assert_eq!(clock(23 * 3600 + 59 * 60), hm(23, 59));
-                assert_eq!(clock(3 * 86_400 + 14 * 3600 + 32 * 60), hm(14, 32));
-                assert_eq!(clock(-60), hm(23, 59), "before the epoch wraps the day");
-            }
-            // Phase: day_label_relative.
-            {
-                let now = 100 * 86_400 + 3600;
-                assert_eq!(day_label(now, now), "Today");
-                assert_eq!(day_label(now - 86_400, now), "Yesterday");
-                assert_eq!(day_label(now - 3 * 86_400, now), "3 days ago");
             }
         }
     }

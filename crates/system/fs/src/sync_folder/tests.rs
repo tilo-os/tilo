@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use collab_types::Ed25519PublicKey;
 use fs_protocol::{FileActor, FileDocumentId};
 
-use super::{Pass, STAGING_PREFIX, SyncFolder};
+use super::{Pass, SyncFolder};
 use crate::fs::QuickFS;
 use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
@@ -108,7 +108,9 @@ async fn a_workspace_file_reaches_the_folder_whole() {
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     assert!(
-        names.iter().all(|name| !name.starts_with(STAGING_PREFIX)),
+        names
+            .iter()
+            .all(|name| !tilo_files::native::atomic::is_temporary_name(std::ffi::OsStr::new(name))),
         "{names:?}"
     );
 

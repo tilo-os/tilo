@@ -459,7 +459,6 @@ impl PeerWorkspaceMut<'_> {
             HELD_COPIES_KEY,
             &hex::encode(device.device_public_key),
             &device.device_public_key,
-            &device.user_public_key,
             Some(&json),
             now,
         )?;

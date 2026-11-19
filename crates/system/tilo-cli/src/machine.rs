@@ -4,21 +4,27 @@
 //! `tilo machine add` makes an install plan ([`install_profile_model::plan`])
 //! through [`install_plan::Choices`], the same structure the installer's own
 //! window fills in, and mints the single-use, expiring enrollment token it
-//! goes with. The plan is kept in this computer's store of the person's; the
-//! token is written to a file whose path, never the token, the installer
-//! commands name. Every choice given here is made; every one left out is open,
-//! and the machine asks one of the person's devices to answer it against the
-//! machine's real hardware.
+//! goes with. The plan is the machine's entry in the person's Servers
+//! workspace, written through the running session's action API
+//! (`machine.plan`), so every one of their devices reads it there and the
+//! installer's window shows the same list; this computer keeps only the token,
+//! in a file whose path, never the token, the installer commands name. Every
+//! choice given here is made; every one left out is open, and the machine asks
+//! one of the person's devices to answer it against the machine's real
+//! hardware.
 //!
 //! The plan is secret-free: it names the token by its nonce and expiry, so the
 //! document can travel through the person's devices, a log or an action's
 //! answer without exposing the token.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
 use clap::Subcommand;
 use install_profile_model::plan::{self, DiskRule, Holding, Network, Plan};
+use tilo_actions::ActionAddress;
+use tilo_actions::remote::machines;
+use tilo_control::front::{self, Spelling};
 use tilo_device_identity::IdentityPaths;
 
 use crate::identity;
@@ -32,7 +38,7 @@ pub enum MachineCmd {
     /// Plan a machine, mint its single-use token and print how the plan
     /// reaches it.
     Add(Box<AddArgs>),
-    /// The machines this computer planned and has not seen install yet.
+    /// The machines you planned and have not seen install yet.
     List,
     /// One planned machine: its choices, what is open, and how it reaches the
     /// machine.
@@ -40,9 +46,6 @@ pub enum MachineCmd {
     Show {
         /// The plan's id, as `tilo machine list` prints it.
         plan: String,
-        /// Where the installer is served, for the rescue-system command.
-        #[arg(long, default_value = INSTALLER_URL)]
-        installer_url: String,
     },
 }
 
@@ -71,7 +74,8 @@ pub struct AddArgs {
     /// Its addresses as `address/prefix`, comma separated (static only).
     #[arg(long)]
     addresses: Option<String>,
-    /// Its gateway (static only).
+    /// Its default gateways, one for each address family, comma separated
+    /// (static only).
     #[arg(long)]
     gateway: Option<String>,
     /// Its DNS servers, comma separated (static only).
@@ -92,7 +96,7 @@ pub struct AddArgs {
     #[arg(long)]
     no_workspaces: bool,
     /// Where the minted token is written, and what the installer commands
-    /// name; defaults beside the plan.
+    /// name; defaults under this computer's identity.
     #[arg(long, value_name = "FILE")]
     token_file: Option<PathBuf>,
     /// Where the installer is served, for the rescue-system command.
@@ -103,12 +107,39 @@ pub struct AddArgs {
 pub fn serve(cmd: MachineCmd) -> Result<std::process::ExitCode> {
     match cmd {
         MachineCmd::Add(add) => plan_and_mint(&add),
-        MachineCmd::List => list(),
-        MachineCmd::Show {
-            plan,
-            installer_url,
-        } => show(&plan, &installer_url),
+        MachineCmd::List => ask(
+            machines::LIST,
+            "List the machines you planned",
+            &serde_json::json!({}),
+        ),
+        MachineCmd::Show { plan } => ask(
+            machines::SHOW,
+            "Show a machine you planned",
+            &serde_json::json!({ "plan": plan.trim() }),
+        ),
     }
+}
+
+/// Ask the local session the machine step `step` with `args`, printing what
+/// it answers: the same action the installer's window presses.
+fn ask(step: &str, title: &str, args: &serde_json::Value) -> Result<std::process::ExitCode> {
+    let sockets = crate::desktop::sockets();
+    let mut stdout = std::io::stdout();
+    let mut stderr = std::io::stderr();
+    let mut io = front::Io {
+        out: &mut stdout,
+        err: &mut stderr,
+    };
+    let address = ActionAddress::new(machines::RESOURCE, step).encode();
+    let code = front::run_address(
+        &sockets,
+        (machines::PROVIDER, &address, title),
+        args,
+        &Spelling::tilo(),
+        &mut io,
+    );
+    std::io::Write::flush(&mut stdout)?;
+    Ok(std::process::ExitCode::from(code))
 }
 
 fn choices(add: &AddArgs) -> Result<install_plan::Choices> {
@@ -174,95 +205,28 @@ fn choices(add: &AddArgs) -> Result<install_plan::Choices> {
 
 fn plan_and_mint(add: &AddArgs) -> Result<std::process::ExitCode> {
     let choices = choices(add)?;
-    let requested_token_file = add.token_file.clone();
     let dir = identity::dir()?;
     let paths = IdentityPaths::under(&dir);
     let home_peers = tilo_server_protocol::home_peer_registry_path(&dir);
     let (token, named) = install_plan::mint(&paths, &home_peers).map_err(anyhow::Error::msg)?;
-    let plan = choices
-        .plan(&install_plan::new_id(), named)
-        .map_err(anyhow::Error::msg)?;
-    let stored = install_plan::store(&dir, &plan, &token, requested_token_file.as_deref())
-        .map_err(anyhow::Error::msg)?;
-    println!("plan {} ({})", plan.plan, display_name(&plan));
-    println!("kept {}", stored.plan_file.display());
-    Ok(print_how_it_reaches(
-        &plan,
-        &stored.token_file,
-        &add.installer_url,
-    ))
-}
-
-/// Print how the plan reaches its machine: the token's path is named, never
-/// its bytes.
-fn print_how_it_reaches(
-    plan: &Plan,
-    token_file: &Path,
-    installer_url: &str,
-) -> std::process::ExitCode {
-    println!(
-        "token {} (single use, expires in 24 hours)",
-        token_file.display()
-    );
-    let commands = plan::commands(
-        plan,
-        installer_url.trim_end_matches('/'),
-        &token_file.display().to_string(),
-        architecture(),
-    );
-    println!("medium    {}", commands.medium);
-    println!("netboot   {}", commands.netboot);
-    println!("alongside {}", commands.alongside);
-    if !plan.complete() {
-        println!(
-            "waiting   {} still open; your devices answer them against the machine's hardware",
-            plan.open_choices().join(", ")
-        );
+    let id = install_plan::new_id();
+    let plan = choices.plan(&id, named).map_err(anyhow::Error::msg)?;
+    let token_file = add
+        .token_file
+        .clone()
+        .unwrap_or_else(|| install_plan::plans_dir(&dir).join(format!("{id}.token")));
+    let args = serde_json::json!({
+        "plan": serde_json::to_string(&plan).map_err(|error| anyhow::anyhow!(error.to_string()))?,
+        "label": display_name(&plan),
+        "token_file": token_file.display().to_string(),
+        "installer_url": add.installer_url,
+    });
+    let code = ask(machines::PLAN, "Plan a machine", &args)?;
+    if code != std::process::ExitCode::SUCCESS {
+        return Ok(code);
     }
-    std::process::ExitCode::SUCCESS
-}
-
-fn list() -> Result<std::process::ExitCode> {
-    let dir = identity::dir()?;
-    let found = install_plan::plan_files(&dir).context("this computer's plans cannot be read")?;
-    if found.is_empty() {
-        bail!("this computer knows no planned machine; `tilo machine add --name nas` makes one");
-    }
-    for path in found {
-        match install_plan::read(&path) {
-            Ok(plan) => println!(
-                "{}\t{}\t{}\t{}",
-                plan.plan,
-                display_name(&plan),
-                plan.destination,
-                if plan.complete() { "complete" } else { "open" }
-            ),
-            Err(error) => println!("{error}"),
-        }
-    }
-    Ok(std::process::ExitCode::SUCCESS)
-}
-
-fn show(plan_id: &str, installer_url: &str) -> Result<std::process::ExitCode> {
-    let dir = identity::dir()?;
-    let plan_id = plan_id.trim();
-    if plan_id.len() != 32 || !plan_id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
-        bail!("a plan is named by its 32-character id; `tilo machine list` prints them");
-    }
-    let plan = install_plan::read(&install_plan::plans_dir(&dir).join(format!("{plan_id}.json")))
-        .map_err(anyhow::Error::msg)?;
-    println!("{}", serde_json::to_string_pretty(&plan)?);
-    let token_file = install_plan::plans_dir(&dir).join(format!("{plan_id}.token"));
-    let commands = plan::commands(
-        &plan,
-        installer_url.trim_end_matches('/'),
-        &token_file.display().to_string(),
-        architecture(),
-    );
-    println!("medium    {}", commands.medium);
-    println!("netboot   {}", commands.netboot);
-    println!("alongside {}", commands.alongside);
-    Ok(std::process::ExitCode::SUCCESS)
+    install_plan::store_token(&dir, &id, &token, Some(&token_file)).map_err(anyhow::Error::msg)?;
+    Ok(code)
 }
 
 /// The plan as a person names it.
@@ -296,8 +260,4 @@ fn open_or<T>(text: &str, parse: impl FnOnce(&str) -> Result<T>) -> Result<Optio
         return Ok(None);
     }
     parse(text.trim()).map(Some)
-}
-
-fn architecture() -> &'static str {
-    std::env::consts::ARCH
 }

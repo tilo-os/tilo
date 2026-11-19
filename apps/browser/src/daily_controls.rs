@@ -2,11 +2,11 @@
 //!
 //! While the desktop's window bar hosts the window its search drives find;
 //! outside a Tilo session the window's own find bar does.
+use tilo_webview::{SharedEngine, WebViewCommand, WebViewEvent};
 use ui::{
     LocalState,
     icons::Icon,
     tokens::TextRole,
-    webview::{SharedEngine, WebViewCommand, WebViewEvent},
     widget::{Button, Container, Row, Text, TextInput, Widget},
 };
 
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn find_and_zoom_state_is_per_tab_race_free_and_bounded() {
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
             let mut first = DailyControls::default();
             let second = DailyControls::default();
@@ -435,7 +435,7 @@ mod tests {
         }
 
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture;
             let mut controls = DailyControls::default();
             controls.act(Action::Open, &engine);
@@ -456,7 +456,7 @@ mod tests {
         }
 
         {
-            let capture = ui::webview::test_engine::TestEngine::new();
+            let capture = tilo_webview::test_engine::TestEngine::new();
             let engine: SharedEngine = capture.clone();
             let mut first = DailyControls::default();
             let second = DailyControls::default();

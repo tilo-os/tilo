@@ -11,12 +11,13 @@ use serde_json::json;
 use std::sync::Mutex;
 use tilo_actions::remote::server_account::Refusal;
 use tilo_actions::remote::{CataloguePage, CatalogueQuery};
+use tilo_agent_session::ModelChoice;
 use tilo_mcp::McpServer;
 use tilo_server::hosted_browser::{
     APP, BrowserMeter, BrowserSessions, HostedBrowsers, TITLE, Window,
 };
 use tilo_server_protocol::hosted::Material;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 /// The provider a fake environment's window publishes under: its peer
 /// in the session holding it, as a window's is.

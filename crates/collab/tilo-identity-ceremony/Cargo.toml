@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "The identity record a ceremony writes and the store it keeps it in."
 
 [dependencies]
-runtime-identity = { package = "tilo-identity-client", path = "../../runtime/tilo-identity-client" }
+tilo-identity-client = { path = "../../runtime/tilo-identity-client" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 collab-types = { version = "0.1.0", path = "../collab-types" }
 threshold-identity = { version = "0.1.0", path = "../threshold-identity" }

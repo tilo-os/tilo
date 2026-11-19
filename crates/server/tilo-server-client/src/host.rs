@@ -1,15 +1,15 @@
-//! Where a workspace's host is reached, and the one place that decides how a
+//! Where a workspace's server is reached, and the one place that decides how a
 //! device dials it.
 //!
-//! Every device reaches its host over iroh, whatever it runs on. A native
-//! device dials the host's own addresses or the relay it names; a page has no
+//! Every device reaches its server over iroh, whatever it runs on. A native
+//! device dials the server's own addresses or the relay it names; a page has no
 //! UDP socket, so every packet it sends goes through that relay. The relay is
-//! part of the host's address ([`Host::addr`]), never a separate field beside
-//! it, so whatever dials a host (the session, its live sessions, certification)
+//! part of the server's address ([`ServerAddress::addr`]), never a separate field beside
+//! it, so whatever dials a server (the session, its live sessions, certification)
 //! dials it the same way.
 //!
 //! How a device reaches it is its [`Carrier`]: a page's is the browser's
-//! WebTransport, to the host's own listener ([`WebLink`]); a native device's
+//! WebTransport, to the server's own listener ([`WebLink`]); a native device's
 //! is iroh, direct unless it is asked to go through the relay. A native
 //! device can take the page's way too, which is how a feature is shown to
 //! work over every carrier ([`crate::link`] dials each).
@@ -20,21 +20,21 @@ use tilo_server_protocol::web::WebLink;
 #[cfg(feature = "dial")]
 use crate::LinkError;
 
-/// How a device's packets reach its host.
+/// How a device's packets reach its server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Carrier {
-    /// The host's own addresses, and its relay when no direct path opens: a
+    /// The server's own addresses, and its relay when no direct path opens: a
     /// native device's.
     Direct,
-    /// Only the packet relay the host names, over iroh.
+    /// Only the packet relay the server names, over iroh.
     Relay,
-    /// The host's WebTransport listener: a page's, with the browser's own
+    /// The server's WebTransport listener: a page's, with the browser's own
     /// transport, and a native device's when asked to go the page's way.
     WebTransport,
 }
 
 impl Carrier {
-    /// The carrier this build has: a page reaches its host over the
+    /// The carrier this build has: a page reaches its server over the
     /// browser's WebTransport, a native device over iroh.
     pub const OWN: Self = if cfg!(target_family = "wasm") {
         Self::WebTransport
@@ -43,9 +43,9 @@ impl Carrier {
     };
 }
 
-/// A workspace's host (`tilo-server`), as a device reaches it.
+/// A workspace's server (`tilo-server`), as a device reaches it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Host {
+pub struct ServerAddress {
     /// Its iroh endpoint, with the relay it is dialled through when it names
     /// one.
     addr: EndpointAddr,
@@ -55,8 +55,8 @@ pub struct Host {
     web: Option<WebLink>,
 }
 
-impl Host {
-    /// The host at `addr`, dialled through the relay `addr` names, if any.
+impl ServerAddress {
+    /// The server at `addr`, dialled through the relay `addr` names, if any.
     #[must_use]
     pub const fn at(addr: EndpointAddr) -> Self {
         Self {
@@ -66,7 +66,7 @@ impl Host {
         }
     }
 
-    /// This host, reached over `carrier`.
+    /// This server, reached over `carrier`.
     #[must_use]
     pub fn over(self, carrier: Carrier) -> Self {
         Self { carrier, ..self }
@@ -93,19 +93,19 @@ impl Host {
         }
     }
 
-    /// Where the host takes WebTransport sessions, when it does.
+    /// Where the server takes WebTransport sessions, when it does.
     #[must_use]
     pub const fn web(&self) -> Option<&WebLink> {
         self.web.as_ref()
     }
 
-    /// How this device reaches the host.
+    /// How this device reaches the server.
     #[must_use]
     pub const fn carrier(&self) -> Carrier {
         self.carrier
     }
 
-    /// The host at `addr`, dialled through `relay` when it names one, and
+    /// The server at `addr`, dialled through `relay` when it names one, and
     /// otherwise through the relay `addr` names.
     #[must_use]
     pub fn through(addr: EndpointAddr, relay: Option<RelayUrl>) -> Self {
@@ -115,9 +115,9 @@ impl Host {
         })
     }
 
-    /// The host where it says it is reached (`/host`).
+    /// The server where it says it is reached (`/server`).
     #[must_use]
-    pub fn published(address: &tilo_server_protocol::web::HostAddress) -> Self {
+    pub fn published(address: &tilo_server_protocol::web::ServerAddress) -> Self {
         let relay = address
             .relay_url
             .as_deref()
@@ -137,32 +137,32 @@ impl Host {
         }
     }
 
-    /// The relay the host is dialled through, if it names one.
+    /// The relay the server is dialled through, if it names one.
     #[must_use]
     pub fn relay(&self) -> Option<&RelayUrl> {
         self.addr.relay_urls().next()
     }
 
-    /// An endpoint to dial this host from over its [`Carrier`], speaking as
-    /// `key` (a fresh key when `None`), bound to the host's relay when it
-    /// names one. Everything that dials a host binds here.
+    /// An endpoint to dial this server from over its [`Carrier`], speaking as
+    /// `key` (a fresh key when `None`), bound to the server's relay when it
+    /// names one. Everything that dials a server binds here.
     ///
     /// # Errors
     ///
     /// [`LinkError::Unavailable`] when the endpoint does not bind, or, over
-    /// the relay, when the host names none: an endpoint with no direct
-    /// transport and no relay could never reach the host.
+    /// the relay, when the server names none: an endpoint with no direct
+    /// transport and no relay could never reach the server.
     #[cfg(feature = "dial")]
     pub async fn bind(&self, key: Option<[u8; 32]>) -> Result<iroh::Endpoint, LinkError> {
         let relay = self.relay().cloned();
         if self.carrier == Carrier::WebTransport {
             return Err(LinkError::Unavailable(
-                "a host reached over WebTransport is dialled without an endpoint".into(),
+                "a server reached over WebTransport is dialled without an endpoint".into(),
             ));
         }
         if self.carrier == Carrier::Relay && relay.is_none() {
             return Err(LinkError::Unavailable(
-                "the host named no relay a page can reach it through".into(),
+                "the server named no relay a page can reach it through".into(),
             ));
         }
         let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal);
@@ -193,21 +193,21 @@ impl Host {
 ///
 /// A device entering a workspace waits first for its replay: the workspace's
 /// governance and its shared desktop, about half a megabyte for a few hundred
-/// members, which its host writes to the connection at once. From QUIC's
+/// members, which its server writes to the connection at once. From QUIC's
 /// default window (14,720 bytes, RFC 9002) slow start doubles it every round
 /// trip, so that half megabyte took six round trips, every one a wait the
 /// visitor sees; from 768 KiB it takes one. The same default paced the
 /// device's own first flight, its hello, to a packet every 65 ms at a 400 ms
-/// round trip, behind the handshake's own frames. A page reaches its host
-/// through the host's packet relay, whose TCP connection paces what the
-/// network carries and whose queue holds this much; a host's endpoint, which
+/// round trip, behind the handshake's own frames. A page reaches its server
+/// through the server's packet relay, whose TCP connection paces what the
+/// network carries and whose queue holds this much; a server's endpoint, which
 /// devices also dial directly, is paced over the round trip, so the window
 /// goes out as a steady stream rather than one burst.
 #[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
 pub const INITIAL_WINDOW: u64 = 768 * 1024;
 
 /// The QUIC transport of an endpoint that sends a workspace's replay or
-/// reaches its host through the relay: iroh's, starting from
+/// reaches its server through the relay: iroh's, starting from
 /// [`INITIAL_WINDOW`].
 #[cfg(all(feature = "dial", not(target_arch = "wasm32")))]
 #[must_use]
@@ -223,23 +223,23 @@ pub fn transport() -> iroh::endpoint::QuicTransportConfig {
 mod tests {
     #![allow(clippy::unwrap_used, reason = "a test's parse is its assertion")]
 
-    use super::{Carrier, Host};
+    use super::{Carrier, ServerAddress};
     use iroh_base::{EndpointAddr, RelayUrl, SecretKey};
-    use tilo_server_protocol::web::HostAddress;
+    use tilo_server_protocol::web::ServerAddress as WebServerAddress;
 
     #[test]
     fn a_host_is_dialled_through_the_relay_its_address_names() {
         let key = SecretKey::from_bytes(&[7; 32]).public();
         let relay: RelayUrl = "https://relay.example".parse().unwrap();
-        let named = Host::at(EndpointAddr::new(key).with_relay_url(relay.clone()));
+        let named = ServerAddress::at(EndpointAddr::new(key).with_relay_url(relay.clone()));
         assert_eq!(named.relay(), Some(&relay));
-        assert_eq!(Host::at(EndpointAddr::new(key)).relay(), None);
+        assert_eq!(ServerAddress::at(EndpointAddr::new(key)).relay(), None);
     }
 
     #[test]
     fn a_published_host_is_dialled_through_the_relay_it_publishes() {
         let key = SecretKey::from_bytes(&[7; 32]).public();
-        let published = Host::published(&HostAddress {
+        let published = ServerAddress::published(&WebServerAddress {
             endpoint_addr: EndpointAddr::new(key),
             relay_url: Some("https://relay.example".into()),
             web: None,
@@ -258,9 +258,9 @@ mod tests {
         let addr = EndpointAddr::new(key)
             .with_relay_url(relay.clone())
             .with_ip_addr("127.0.0.1:4433".parse().unwrap());
-        let direct = Host::at(addr.clone()).over(Carrier::Direct);
+        let direct = ServerAddress::at(addr.clone()).over(Carrier::Direct);
         assert_eq!(direct.addr(), addr);
-        let relayed = Host::at(addr).over(Carrier::Relay);
+        let relayed = ServerAddress::at(addr).over(Carrier::Relay);
         assert_eq!(relayed.addr(), EndpointAddr::new(key).with_relay_url(relay));
     }
 }

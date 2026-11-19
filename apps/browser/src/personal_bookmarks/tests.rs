@@ -14,7 +14,7 @@ impl ResourceApp for TestBrowser {
     const TITLE: &'static str = "Browser";
     fn view(cx: &mut ViewCx<Self::Resource>) -> Element {
         let engine = cx
-            .take_lent::<std::sync::Arc<ui::webview::test_engine::TestEngine>>()
+            .take_lent::<std::sync::Arc<tilo_webview::test_engine::TestEngine>>()
             .unwrap();
         crate::resource::browser_view(
             cx,
@@ -82,9 +82,9 @@ fn bundle() -> ImportBundle {
 }
 fn live() -> (
     TestApp<TestBrowser>,
-    std::sync::Arc<ui::webview::test_engine::TestEngine>,
+    std::sync::Arc<tilo_webview::test_engine::TestEngine>,
 ) {
-    let engine = ui::webview::test_engine::TestEngine::new();
+    let engine = tilo_webview::test_engine::TestEngine::new();
     let app =
         TestApp::<TestBrowser>::for_person_with_lent(&"68".repeat(32), engine.clone()).unwrap();
     (app, engine)

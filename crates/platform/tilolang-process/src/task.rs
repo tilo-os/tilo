@@ -1490,15 +1490,12 @@ mod tests {
             );
             assert_eq!(answer["changed"], 2, "{answer:#}");
             // Both steps reach the task's history on the documents the apps publish, so `undo task`
-            // takes them back like any tl app's. An answer that names no invocation carries none:
-            // the step is taken back on the document itself.
+            // takes them back like any tl app's.
             assert_eq!(
                 answer["history"],
                 json!([
-                    {"app": "so.tilo.chat", "resource": "chat.workspace", "published": false,
-                     "invocation": null},
-                    {"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false,
-                     "invocation": null},
+                    {"app": "so.tilo.chat", "resource": "chat.workspace", "published": false, "invocation": null},
+                    {"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false, "invocation": null},
                 ])
             );
         }
@@ -1529,12 +1526,9 @@ mod tests {
             assert_eq!(invoked.len(), 1, "{calls:#?}");
             assert_eq!(invoked[0]["resource"], "chain:issues", "{calls:#?}");
             assert_eq!(invoked[0]["action"], "create", "{calls:#?}");
-            // The step changed the issues the tracker keeps beside its document, so it is taken
-            // back there, and the app answered no invocation to name a part with.
             assert_eq!(
                 answer["history"],
-                json!([{"app": "so.tilo.tasks", "resource": "chain:issues", "published": false,
-                        "invocation": null}]),
+                json!([{"app": "so.tilo.tasks", "resource": "chain:issues", "published": false, "invocation": null}]),
                 "{answer:#}"
             );
         }

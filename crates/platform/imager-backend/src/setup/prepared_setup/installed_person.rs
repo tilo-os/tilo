@@ -525,5 +525,6 @@ fn read_public_certificate(file: &File) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[cfg(all(test, target_os = "linux", feature = "native-capture-qualification"))]
+#[cfg(test)]
+#[cfg(all(target_os = "linux", feature = "native-capture-qualification"))]
 mod native_tests;

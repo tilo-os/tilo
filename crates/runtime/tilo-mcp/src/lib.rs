@@ -2,10 +2,12 @@
 //! a desktop or another device through. Headless: an agent's bridge, the
 //! `tilo` command and the API serve it without the app toolkit.
 
+pub mod agent_tools;
+
 pub mod devices;
-pub mod enter;
 mod images;
 pub mod lines;
+mod session;
 pub mod session_api;
 pub mod task_hosts;
 #[cfg(any(test, feature = "test-support"))]
@@ -13,7 +15,7 @@ pub mod test_hosts;
 mod turn;
 
 pub use images::MediaReader;
-use images::{IMAGES, MAX_IMAGE_BYTES, MAX_IMAGES, image_mime};
+use images::{IMAGES, PictureSource};
 
 #[path = "mcp_agent.rs"]
 mod agent;
@@ -41,6 +43,9 @@ mod turns;
 
 #[path = "mcp_refusal.rs"]
 mod refusal;
+#[path = "mcp_rows.rs"]
+mod rows;
+use rows::{offer_open_path, page_json, resource_list};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use step::{DeclaredInvocation, STEP, STEP_INVOCATION, SURFACE_STRUCTURED};
@@ -65,6 +70,13 @@ pub type Observation = std::sync::Arc<
         + Sync,
 >;
 
+/// The root resource whose read answers a path, and that read: what an app's
+/// directory answered once its root resources were read for one that answers
+/// a place offering no read of its own.
+type SweptRead = Option<(String, tilo_actions::ActionDescriptor)>;
+
+pub(crate) use session::Session;
+
 /// One MCP session. Its requests are answered through `&self`, so a client
 /// may overlap them: a `tilo_status`, reading or cancelling, answers while a
 /// `tilo_do` of the same session waits for its action.
@@ -79,8 +91,8 @@ pub struct McpServer<H> {
     actor: String,
     /// One transport-issued execution scope, independent of history labels.
     caller: Caller,
-    /// The agent's group every invocation of this connection is attributed to.
-    agent_session: std::sync::Mutex<Option<tilo_actions::WorkGroup>>,
+    /// The session every invocation of this connection is attributed to.
+    agent_session: std::sync::Mutex<Option<Session>>,
     /// The page a listing answers when a call names no `detail`; a client
     /// that parses v1 rows pins `full` for its session at `initialize`.
     detail: std::sync::Mutex<Detail>,
@@ -129,6 +141,14 @@ pub struct McpServer<H> {
     task_hosts: Option<std::sync::Arc<dyn TaskHosts>>,
     /// The program connection to the task's host, once its first program started it.
     task: tokio::sync::Mutex<Option<agent::TaskLink>>,
+    /// How long the task's program is given to start and answer a listing's
+    /// catalogue ([`QUERY_ANSWER_WAIT`], the wait a listing gives its own
+    /// answers).
+    task_answer_wait: std::time::Duration,
+    /// Whether this session's task program was given up on for a listing: one
+    /// that did not start or answer in time is not started again by every
+    /// listing after it. A program's call starts another, and clears this.
+    task_given_up: std::sync::atomic::AtomicBool,
     /// The person's other devices as the host reaches them, which
     /// [`crate::devices::DEVICES_TOOL`] lists; `None` for a host that
     /// reaches none.
@@ -145,6 +165,11 @@ pub struct McpServer<H> {
     /// or moved is refused by the server, and resolved again then.
     resolved_paths:
         std::sync::Mutex<std::collections::HashMap<String, agent::resolved::ResolvedAction>>,
+    /// The root resource whose read answers a path an app's directory holds
+    /// none of its own for, by the app and the revision its directory was read
+    /// at: reading every root resource to find it is done once, not once a
+    /// call.
+    swept_reads: std::sync::Mutex<std::collections::HashMap<(String, String), SweptRead>>,
     /// The documents whose window this session's changes showed the person
     /// ([`McpServer::changed_shown`]).
     showed: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -155,6 +180,10 @@ pub struct McpServer<H> {
     /// Who waits for the next run event of this session: one of its invocations
     /// starting, being held for its person, or ending ([`McpServer::invocations_moved`]).
     pub(crate) invocation_waiters: std::sync::Mutex<Vec<tilo_actions::remote::Completer<()>>>,
+    /// Whether a call that names no wait is held until its action has ended, however long
+    /// that takes ([`McpServer::for_turn`]). Any other server answers such a call `pending`
+    /// after [`DEFAULT_WAIT_MS`].
+    until_ended: bool,
 }
 
 pub use agent::{PersonStep, literals_in};
@@ -601,12 +630,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             task_hosts: None,
             devices: None,
             task: tokio::sync::Mutex::new(None),
+            task_answer_wait: QUERY_ANSWER_WAIT,
+            task_given_up: std::sync::atomic::AtomicBool::new(false),
             acted: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             resolved_paths: std::sync::Mutex::default(),
+            swept_reads: std::sync::Mutex::default(),
             showed: std::sync::Mutex::default(),
             invocations: std::sync::Mutex::default(),
             invocation_waiters: std::sync::Mutex::default(),
+            until_ended: false,
         }
     }
 
@@ -621,6 +654,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub fn with_task_hosts(mut self, hosts: Option<std::sync::Arc<dyn TaskHosts>>) -> Self {
         self.task_hosts = hosts;
+        self
+    }
+
+    /// Give the task's program `wait` to start and answer: what a test shortens, so a
+    /// program that never answers is observable without a minute's wait.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_task_answer_wait(mut self, wait: std::time::Duration) -> Self {
+        self.task_answer_wait = wait;
         self
     }
     /// Tell `watch` of each look this session makes at an invocation, and what
@@ -797,28 +839,26 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         target: Option<&RemoteActionTarget>,
     ) {
         let stamp = value.pointer("/update/output/value/agent").cloned();
-        let Some(media) = self.media.clone() else {
-            return;
-        };
         if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
             return;
         }
-        let hashes: Vec<String> = value
-            .pointer("/update/output/resources")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .filter_map(tilo_actions::content_hash)
-            .take(MAX_IMAGES)
-            .map(str::to_owned)
-            .collect();
-        let Some(app_id) = self.produced_by().get(&invocation).cloned() else {
-            return;
-        };
-        if hashes.is_empty() {
+        let pictures = images::named_pictures(value);
+        if pictures.is_empty() {
             return;
         }
+        // Where the pictures are read: on a desktop, from the store the app wrote them to, in
+        // its own scope; through a device's session with its workspace (`tilo mcp` on a
+        // computer, the API's agent sessions), from the workspace, as `tilo_get` reads them.
+        let source = match (self.media.clone(), self.workspace_gets()) {
+            (Some(media), _) => {
+                let Some(app_id) = self.produced_by().get(&invocation).cloned() else {
+                    return;
+                };
+                PictureSource::Media(media, app_id)
+            }
+            (None, Some(gets)) => PictureSource::Workspace(gets, Box::new(self.caller())),
+            (None, None) => return,
+        };
         let effect = match self.is_effect(invocation, stamp.as_ref()) {
             EffectOf::Ran(effect) => effect,
             EffectOf::Unsaid => match target {
@@ -829,6 +869,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         if effect {
             return;
         }
+        let hashes = pictures.iter().map(|(hash, _)| hash.clone()).collect();
         let (hashes, unchanged) = self.not_yet_shown(hashes, invocation, again);
         if let Some(earlier) = unchanged.first()
             && let Some(fields) = value.as_object_mut()
@@ -842,23 +883,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .into(),
             );
         }
-        if hashes.is_empty() {
+        let fresh: Vec<(String, String)> = pictures
+            .into_iter()
+            .filter(|(hash, _)| hashes.contains(hash))
+            .collect();
+        if fresh.is_empty() {
             return;
         }
-        let read = tokio::task::spawn_blocking(move || {
-            hashes
-                .iter()
-                .filter_map(|hash| media.read(&app_id, hash).ok().flatten())
-                .filter(|bytes| bytes.len() <= MAX_IMAGE_BYTES)
-                .filter_map(|bytes| {
-                    use base64::Engine as _;
-                    let mime = image_mime(&bytes)?;
-                    Some(json!({"type":"image","mimeType":mime,"data":base64::engine::general_purpose::STANDARD.encode(&bytes)}))
-                })
-                .collect::<Vec<_>>()
-        })
-        .await
-        .unwrap_or_default();
+        let read = source.images(fresh).await;
         if !read.is_empty()
             && let Some(fields) = value.as_object_mut()
         {
@@ -1207,25 +1239,40 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         tools
     }
     /// Attribute every invocation of this connection to one agent session, so
-    /// history, undo and activity tell concurrent agents apart. Provenance
-    /// only: authority stays the profile actor's. A connection is asked
-    /// nothing, so the session has no label of its own.
+    /// history, undo and activity tell concurrent agents apart. The session is
+    /// labelled as its caller is, and a client that names its session in
+    /// `initialize` (the session-name it sends) settles the label then.
+    /// Provenance only: authority stays the profile actor's.
     #[must_use]
     pub fn with_agent_session(mut self, id: impl Into<String>) -> Self {
         *self
             .agent_session
             .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tilo_actions::WorkGroup {
-            id: id.into(),
-            label: None,
-            kind: "agent-session".into(),
-            declared_id: None,
-        });
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Session::Named(id.into()));
         self
     }
-    /// The agent run this session's invocations are attributed to now.
-    fn agent_session(&self) -> Option<tilo_actions::WorkGroup> {
-        self.agent_session.lock_recover().clone()
+    /// This connection's session, as it stands now, named as its caller is.
+    fn group(&self) -> Option<tilo_actions::WorkGroup> {
+        self.agent_session
+            .lock_recover()
+            .as_ref()
+            .map(|session| session.group(&self.caller))
+    }
+    /// The id this connection's session goes by, once it names one.
+    fn session_id(&self) -> Option<String> {
+        self.group().map(|group| group.id)
+    }
+    /// The group this connection's invocations are attributed to: its session,
+    /// as the invocation a call declares itself a step of names it.
+    fn agent_session(
+        &self,
+        declared: Option<&DeclaredInvocation>,
+    ) -> Option<tilo_actions::WorkGroup> {
+        let mut group = self.group()?;
+        if let Some(declared) = declared {
+            declared.onto(&mut group);
+        }
+        Some(group)
     }
     /// The page detail this session answers with when a call names none.
     fn detail(&self) -> Detail {
@@ -1293,7 +1340,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 Err(message) => return Some(error(&id, -32602, message)),
             },
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools":self.tools()})),
+            "tools/list" => Ok(json!({"tools":self.tools_told()})),
             "tools/call" => self.call_tool(params, metadata.as_ref()).await,
             "resources/list" => self.resources(params).await,
             "resources/read" => self.read_resource(params).await,
@@ -1418,20 +1465,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             None | Some(Value::Null) => None,
             Some(session) => Some(continued_session(session)?),
         };
-        // A connection is asked nothing when it opens: its session has no label of its own.
-        let run = {
-            let mut run = self.agent_session.lock_recover();
-            if run.is_none() || continued.is_some() {
-                let label = run.take().and_then(|run| run.label);
-                *run = Some(tilo_actions::WorkGroup {
-                    id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
-                    label,
-                    kind: "agent-session".into(),
-                    declared_id: None,
-                });
+        {
+            let mut session = self.agent_session.lock_recover();
+            if session.is_none() || continued.is_some() {
+                let id = continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4()));
+                *session = Some(Session::Named(id));
             }
-            run.as_ref().map(|run| run.id.clone())
-        };
+        }
+        session::name_from_initialize(&self.caller, &mut self.agent_session.lock_recover(), params);
+        let session = self.session_id();
         let mut server = json!({"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")});
         // The agent this session is (a server connection's task agent), so it
         // can tell the person which agent to give access to.
@@ -1440,7 +1482,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             fields.insert("agent".into(), json!(agent));
         }
-        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"session":run,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
+        let mut answer = json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3,"session":session,"execution_id":self.caller.execution_id()}}},"serverInfo":server});
         if let Some(fields) = answer.as_object_mut() {
             fields.insert("instructions".into(), json!(AGENT_INSTRUCTIONS));
         }
@@ -1986,10 +2028,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .invocation_id
             .as_deref()
             .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
-        let wait =
-            std::time::Duration::from_millis(a.wait_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS));
+        let wait = self.held_for(a.wait_ms);
         // A launch is answered once the instance it started is up.
-        let wait = launching.as_ref().map_or(wait, |_| wait.max(LAUNCH_WAIT));
+        let wait = launching
+            .as_ref()
+            .map_or(wait, |_| wait.at_least(LAUNCH_WAIT));
         let mut target = RemoteActionTarget {
             provider,
             address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
@@ -2069,13 +2112,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Complete an `open` of `app_id`'s answer `value` with the instance it
     /// started: the file at `path` opened in it, its directory and the
     /// file's first page.
-    async fn answer_open(
-        &self,
-        value: &mut Value,
-        app_id: &str,
-        path: Option<String>,
-        wait: std::time::Duration,
-    ) {
+    async fn answer_open(&self, value: &mut Value, app_id: &str, path: Option<String>, wait: Hold) {
         // The instance the host started, as it names it. A host that names
         // none (one older than this answer, or one that could not tell
         // which instance it started) leaves the caller to list them rather
@@ -2143,7 +2180,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         &self,
         peer: u64,
         reader: tilo_actions::ActionAddress,
-        wait: std::time::Duration,
+        wait: Hold,
     ) -> Value {
         let mut answer = serde_json::Map::new();
         answer.insert(
@@ -2198,7 +2235,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         mut arguments: serde_json::Map<String, Value>,
         invocation: tilo_actions::InvocationId,
         revision: Option<String>,
-        wait: std::time::Duration,
+        wait: Hold,
         record: &mut Option<(tilo_actions::InvocationId, &RemoteActionTarget)>,
     ) -> Result<Value, BridgeError> {
         let literal = self
@@ -2232,7 +2269,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         arguments: serde_json::Map<String, Value>,
         invocation: tilo_actions::InvocationId,
         revision: Option<String>,
-        wait: std::time::Duration,
+        wait: Hold,
         record: &mut Option<(tilo_actions::InvocationId, &RemoteActionTarget)>,
     ) -> Result<Value, BridgeError> {
         let mut value = self
@@ -2249,7 +2286,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         arguments: serde_json::Map<String, Value>,
         invocation: tilo_actions::InvocationId,
         revision: Option<String>,
-        wait: std::time::Duration,
+        wait: Hold,
         record: &mut Option<(tilo_actions::InvocationId, &RemoteActionTarget)>,
     ) -> Result<Value, BridgeError> {
         if revision.as_deref() == Some("") {
@@ -2312,7 +2349,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// Open `path` in instance `peer` through the app's own action, so the
     /// app reads it inside its sandbox, under the file grants it holds: the
     /// action the app declares as opening paths ([`Self::path_opener`]).
-    async fn open_path(&self, peer: u64, path: &str, wait: std::time::Duration) -> Value {
+    async fn open_path(&self, peer: u64, path: &str, wait: Hold) -> Value {
         let provider = peer.to_string();
         let opener = match self.path_opener(&provider, path).await {
             Ok(Some(opener)) => opener,
@@ -2553,19 +2590,17 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
         Ok((page, truncated))
     }
-    /// The invocation's update once it is terminal, or after `wait`.
+    /// The invocation's update once it is terminal, or after `wait`. A call held until its
+    /// action has ended ([`Hold::UntilEnded`]) is answered only then, for as long as its
+    /// provider says the action is under way.
     ///
     /// Woken by the host when the invocation may have changed, not on a
     /// timer: an action that finishes at once answers at once. A host that
     /// cannot tell is observed every [`SETTLE_POLL`]. Waiting is authorized
     /// exactly as observing: a host offers no change of an invocation this
     /// caller may not observe.
-    async fn settled(
-        &self,
-        id: tilo_actions::InvocationId,
-        wait: std::time::Duration,
-    ) -> Result<Value, String> {
-        let deadline = tokio::time::Instant::now().checked_add(wait);
+    async fn settled(&self, id: tilo_actions::InvocationId, wait: Hold) -> Result<Value, String> {
+        let began = tokio::time::Instant::now();
         loop {
             // Asked before observing, so a change in between still wakes it.
             let change = self.host().next_change(&self.caller(), &id);
@@ -2574,6 +2609,39 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if let Some(state) = state.as_ref().filter(|state| state.update.is_terminal()) {
                 return Ok(state_json(id, state));
             }
+            // Its person is asked to allow it. A person who may not be there is no tool: a
+            // call held until its action has ended is answered now, and its turn goes on.
+            if matches!(wait, Hold::UntilEnded)
+                && let Some(state) = state.as_ref().filter(|state| person_asked(&state.update))
+            {
+                return Ok(state_json(id, state));
+            }
+            let wait = match wait {
+                Hold::For(wait) => wait,
+                // Held for as long as its provider says the action is under way: nothing
+                // is answered meanwhile and no clock ends the wait. Whoever waits may let go.
+                Hold::UntilEnded
+                    if state.as_ref().is_some_and(|state| {
+                        matches!(
+                            state.update,
+                            tilo_actions::InvocationUpdate::Accepted { .. }
+                                | tilo_actions::InvocationUpdate::Progress { .. }
+                        )
+                    }) =>
+                {
+                    match change {
+                        Some(change) => {
+                            let _ = tokio::time::timeout(HELD_LOOK, change).await;
+                        }
+                        None => tokio::time::sleep(SETTLE_POLL).await,
+                    }
+                    continue;
+                }
+                // An action that answers as it goes (a live read never ends), or one its
+                // provider says nothing of, is answered with what there is, as to any caller.
+                Hold::UntilEnded => std::time::Duration::from_millis(DEFAULT_WAIT_MS),
+            };
+            let deadline = began.checked_add(wait);
             let Some(deadline) =
                 deadline.filter(|deadline| tokio::time::Instant::now() < *deadline)
             else {
@@ -2607,6 +2675,26 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
         }
     }
+    /// How long a call that named `wait_ms`, or none, is held for its action. A caller that
+    /// named a wait asked to be answered `pending` after it. One that named none is answered
+    /// so after [`DEFAULT_WAIT_MS`], except on a turn's own server, whose call waits for its
+    /// tool until the tool has ended.
+    fn held_for(&self, wait_ms: Option<u64>) -> Hold {
+        match wait_ms {
+            Some(wait_ms) => Hold::For(std::time::Duration::from_millis(wait_ms.min(MAX_WAIT_MS))),
+            None if self.until_ended => Hold::UntilEnded,
+            None => Hold::For(std::time::Duration::from_millis(DEFAULT_WAIT_MS)),
+        }
+    }
+    /// The session's tools as it is told them: a server that holds a call until its action
+    /// has ended says so of `tilo_do`.
+    fn tools_told(&self) -> Vec<Value> {
+        let mut tools = self.tools();
+        if self.until_ended {
+            agent::held_until_ended(&mut tools);
+        }
+        tools
+    }
     /// The action host every caller shares; this bridge is one more caller.
     fn host(&self) -> &H {
         &self.host
@@ -2615,24 +2703,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// actor, and the undo step of the tool call they are made in
     /// ([`STEP`]).
     fn context(&self) -> Option<tilo_actions::ActionContext> {
-        self.agent_session().map(|mut run| {
-            // A call naming the invocation it is a step of (`_meta` invocation) is
-            // attributed to that run's title, which is what people read in
-            // history and see in presence, not the connection's own label,
-            // and names the run's id, which tells the agent's runs apart
-            // there. It says both as its own: a host that names the run
-            // itself still keeps what the agent declared.
-            if let Some(declared) = DeclaredInvocation::current() {
-                declared.onto(&mut run);
-            }
-            tilo_actions::ActionContext {
-                group: Some(run),
-                // Who acts is the caller the session was admitted as: an agent for its person,
-                // or the person themselves. Its actor names an agent `agent:<id>`, never a person.
-                invoker: Some(tilo_actions::ActionInvoker::admitted(self.caller.acting())),
-                gesture: STEP.try_with(|step| *step).ok(),
-                ..tilo_actions::ActionContext::default()
-            }
+        // A call naming the invocation it is a step of (`_meta` invocation) is
+        // attributed to the title the client gave it, which is what people read
+        // in history and see in presence, and names the invocation's id, which
+        // tells the agent's calls apart there.
+        let group = self.agent_session(DeclaredInvocation::current().as_ref())?;
+        Some(tilo_actions::ActionContext {
+            group: Some(group),
+            // Who acts is the caller the session was admitted as: an agent for its person,
+            // or the person themselves. Its actor names an agent `agent:<id>`, never a person.
+            invoker: Some(tilo_actions::ActionInvoker::admitted(self.caller.acting())),
+            gesture: STEP.try_with(|step| *step).ok(),
+            ..tilo_actions::ActionContext::default()
         })
     }
     /// The fixed profile actor, confined to the profile's workspace.
@@ -2772,6 +2854,39 @@ const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so 
 /// than told the run is still pending after 30.
 const DEFAULT_WAIT_MS: u64 = 5_000;
 const MAX_WAIT_MS: u64 = 60_000;
+/// Whether `update` says that its invocation's person is asked to allow it: nothing of it
+/// happened yet, and nothing will for as long as they take to answer. Its provider says so
+/// by a progress whose phase is the protocol's own word for a confirmation that is required.
+fn person_asked(update: &tilo_actions::InvocationUpdate) -> bool {
+    matches!(
+        update,
+        tilo_actions::InvocationUpdate::Progress { phase, .. }
+            if phase == tilo_actions::remote::CONFIRMATION_REQUIRED_CODE
+    )
+}
+/// How long a call is held for its action.
+#[derive(Clone, Copy)]
+enum Hold {
+    /// Until the action has ended: a turn's own call that named no wait. Nothing is answered
+    /// meanwhile, and whoever waits may let go of it, as a turn does when its person stops it.
+    UntilEnded,
+    /// This long: an action still under way then is answered `pending`, with the id
+    /// `tilo_status` takes.
+    For(std::time::Duration),
+}
+
+impl Hold {
+    /// At least `least`, where the hold has an end at all.
+    fn at_least(self, least: std::time::Duration) -> Self {
+        match self {
+            Self::UntilEnded => self,
+            Self::For(wait) => Self::For(wait.max(least)),
+        }
+    }
+}
+/// How often a call held until its action has ended looks at it again where no wake came.
+/// A look ends nothing.
+const HELD_LOOK: std::time::Duration = std::time::Duration::from_secs(1);
 /// Actions one `calls` batch runs. A document's edits and its save fit;
 /// more than this is several turns.
 const MAX_CALLS: usize = 32;
@@ -2810,32 +2925,9 @@ const RESOURCE_NAME_BYTES: usize = 64;
 /// for: an app's own row, the row of a widget bound to it, and the widget's
 /// page are three, and no app draws its directory deeper than that.
 const NAMED_DEPTH: usize = 3;
-/// How many resources an error names before it stops.
-const LISTED_RESOURCES: usize = 16;
 
 fn empty_object() -> Value {
     json!({})
-}
-/// `rows`' resources as `label (kind)`, each once.
-fn resource_list(rows: &[CatalogueRow]) -> String {
-    let mut seen = Vec::<&str>::new();
-    let mut listed = Vec::<String>::new();
-    for row in rows {
-        if seen.contains(&row.resource.id.as_str()) {
-            continue;
-        }
-        seen.push(&row.resource.id);
-        if listed.len() == LISTED_RESOURCES {
-            listed.push("…".into());
-            break;
-        }
-        listed.push(format!("{} ({})", row.resource.label, row.resource.kind));
-    }
-    if listed.is_empty() {
-        "it lists none".into()
-    } else {
-        listed.join(", ")
-    }
 }
 /// The `path` an application `open` names, taken out of its arguments: the
 /// workspace launches the app empty and this bridge hands the path to the
@@ -2847,73 +2939,6 @@ fn take_path(arguments: &mut serde_json::Map<String, Value>) -> Result<Option<St
         Some(_) => Err("path must be a non-empty string".into()),
     }
 }
-/// Offer `path` on the workspace's application `open` actions, which this
-/// bridge opens through the launched app's own action.
-fn offer_open_path(page: &mut CataloguePage) {
-    for action in page.rows.iter_mut().filter_map(|row| row.action.as_mut()) {
-        let app = action
-            .address
-            .resource
-            .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX);
-        if action.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
-            && app.is_some_and(|app| !app.starts_with("host:"))
-            && !action.params.iter().any(|param| param.name == "path")
-        {
-            action.params.push(tilo_actions::ActionParam::optional(
-                "path",
-                tilo_actions::ParamType::Text,
-                "A file to open in it; the app reads only files it was granted",
-            ));
-        }
-    }
-}
-fn page_json(page: &CataloguePage) -> Value {
-    json!({"revision":page.revision,"rows":page.rows.iter().map(browsed_row_json).collect::<Vec<_>>(),"next_cursor":page.next_cursor,"exhausted":page.exhausted,"stale_cursor":page.stale_cursor,"budget_exhausted":page.budget_exhausted})
-}
-/// A parameter schema larger than this is left to `tilo_resolve` in a
-/// browsed page: one rich-text `apply` schema is tens of kilobytes, and an
-/// agent pays for every byte of every page it reads.
-const BROWSED_SCHEMA_BYTES: usize = 1024;
-/// [`row_json`] with large parameter schemas replaced by a pointer to
-/// `tilo_resolve`, which returns them in full.
-fn browsed_row_json(row: &CatalogueRow) -> Value {
-    let mut value = row_json(row);
-    if let Some(params) = value
-        .pointer_mut("/descriptor/params")
-        .and_then(Value::as_array_mut)
-    {
-        for param in params {
-            let large = param
-                .get("schema")
-                .is_some_and(|schema| schema.to_string().len() > BROWSED_SCHEMA_BYTES);
-            if large && let Some(param) = param.as_object_mut() {
-                param.remove("schema");
-                param.insert(
-                    "schema_omitted".into(),
-                    json!("large schema: tilo_resolve this action to read it"),
-                );
-            }
-        }
-    }
-    value
-}
-fn row_json(row: &CatalogueRow) -> Value {
-    let descriptor = row.action.as_ref().map(|action| {
-        json!({"resource":action.address.resource,"action":action.address.action,"resource_kind":action.resource_kind,"resource_label":action.resource_label,"action_label":action.action_label,"description":action.description,"operation_kind":action.kind,"params":action.params,"contract":action.contract})
-    });
-    json!({
-        "parent_resource":row.parent_resource,
-        "resource":row.resource.id,
-        "resource_kind":row.resource.kind,
-        "resource_label":row.resource.label,
-        "action":row.action.as_ref().map(|action| &action.address.action),
-        "descriptor":descriptor,
-        "has_children":row.has_children,
-        "visibility_action":row.visibility.as_ref().map(|visibility| &visibility.action),
-        "visibility_contract":row.visibility.as_ref().map(|visibility| &visibility.contract),
-    })
-}
-
 /// Every tool a session offers: its surface's, then the ones its host and its
 /// server add.
 fn definitions(content_puts: bool, content_gets: bool, devices: bool) -> Vec<Value> {
@@ -2940,10 +2965,8 @@ pub fn tools_json() -> Value {
     json!({"tools": definitions(true, true, true)})
 }
 #[cfg(test)]
-#[cfg(test)]
 #[path = "mcp_serve_tests.rs"]
 mod serve_tests;
-#[cfg(test)]
 #[cfg(test)]
 #[path = "mcp_tests.rs"]
 mod tests;

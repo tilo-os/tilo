@@ -14,15 +14,18 @@ pub use hex_editor_model::buffer::parse_bytes;
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "hex_editor.effects")]
 pub enum HexEffect {
+    #[effect(kind = "outside")]
     #[effect(attended, job, cancellable, label = "hex-editor-open-file")]
     OpenFile {
         #[param("absolute path of the file to open; omit to use the system file picker")]
         path: Option<tilo_resource::AbsolutePath>,
     },
     /// Save the buffer to the file it was opened from, or choose one.
+    #[effect(kind = "outside")]
     #[effect(job, cancellable)]
     Save,
     /// Save the buffer to another file, replacing what is there.
+    #[effect(kind = "outside")]
     #[effect(destructive)]
     SaveAs {
         #[param("absolute path of the save destination")]

@@ -374,3 +374,57 @@ fn assignee(doc: &AutoCommit) -> Option<String> {
         },
     }
 }
+
+/// A file made by one step and written by a later one, the write undone first: undoing the
+/// making then takes the file whole. The later write was taken back, so it holds nothing of the
+/// file back, and neither does the undo that took it back; while it stands, the file it wrote in
+/// stays, as anything somebody wrote in since does.
+#[test]
+fn a_step_undone_since_holds_no_earlier_step_back() {
+    let made = |doc: &mut AutoCommit| {
+        let mut doc_with_nodes = AutoCommit::new();
+        doc_with_nodes.set_actor(ActorId::from(GENESIS));
+        let nodes = doc_with_nodes
+            .put_object(ROOT, "nodes", ObjType::Map)
+            .unwrap();
+        doc_with_nodes.commit();
+        *doc = doc_with_nodes;
+        step(doc, AGENT, None, |doc| {
+            let file = doc.put_object(&nodes, "notes.md", ObjType::Map).unwrap();
+            doc.put(&file, "size", 0_i64).unwrap();
+        });
+        let making = doc.get_heads()[0];
+        step(doc, BOB, None, |doc| {
+            let (_, file) = doc.get(&nodes, "notes.md").unwrap().unwrap();
+            doc.put(&file, "size", 12_i64).unwrap();
+            doc.put(&file, "content", "hello there").unwrap();
+        });
+        let writing = doc.get_heads()[0];
+        (nodes, making, writing)
+    };
+    let take_back = |doc: &mut AutoCommit, actor: &[u8], change: &automerge::ChangeHash| {
+        doc.set_actor(ActorId::from(actor));
+        super::undo_step(doc, &scope(actor), change, plain, &TestWords)
+            .expect("undo is never refused");
+        doc.commit();
+    };
+
+    // The write stands: the file Bob wrote in stays.
+    let mut doc = AutoCommit::new();
+    let (nodes, making, _) = made(&mut doc);
+    take_back(&mut doc, AGENT, &making);
+    assert!(
+        doc.get(&nodes, "notes.md").unwrap().is_some(),
+        "Bob's write keeps the file"
+    );
+
+    // The write undone first: undoing the making takes the file.
+    let mut doc = AutoCommit::new();
+    let (nodes, making, writing) = made(&mut doc);
+    take_back(&mut doc, BOB, &writing);
+    take_back(&mut doc, AGENT, &making);
+    assert!(
+        doc.get(&nodes, "notes.md").unwrap().is_none(),
+        "the file is gone once its write and its making are undone"
+    );
+}

@@ -6,6 +6,7 @@ format = 2
 kind = "chip_design.project"
 label = "Chip Design"
 version = 1
+shows = ["inspect", "inspect-evidence", "inspect-operator", "open-evidence-subflow", "operator-graph", "select-output", "zoom-graph"]
 fields = [
   { path = "reports", type = { map = "text" }, readonly = true },
   { path = "verifications", type = { map = "text" }, readonly = true },

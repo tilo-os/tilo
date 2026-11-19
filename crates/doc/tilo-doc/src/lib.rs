@@ -20,6 +20,7 @@ pub mod schema;
 pub mod semantic_read;
 pub mod sheet;
 pub mod snapshot;
+pub mod written;
 
 pub use diff::{
     AttrChange, BlockDiff, BlockOp, CellChange, CellOp, DiffSummary, DocDiff, PropChange, RunOp,

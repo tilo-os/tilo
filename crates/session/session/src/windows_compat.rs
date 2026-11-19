@@ -129,16 +129,7 @@ fn write_identities(identities: &BTreeMap<(String, String), String>) {
     let Ok(text) = serde_json::to_string(&seen) else {
         return;
     };
-    if let Some(dir) = path.parent()
-        && let Err(error) = std::fs::create_dir_all(dir)
-    {
-        tracing::warn!(%error, "the Windows programs' windows are not saved");
-        return;
-    }
-    // Written beside and moved over, so a start that reads it never sees half of one.
-    let beside = path.with_extension("json.new");
-    if let Err(error) = std::fs::write(&beside, text).and_then(|()| std::fs::rename(&beside, &path))
-    {
+    if let Err(error) = tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes()) {
         tracing::warn!(%error, "the Windows programs' windows are not saved");
     }
 }
@@ -409,9 +400,9 @@ impl LaunchDisplays for Display {
         };
         let wayland_socket = wayland_socket
             .ok_or_else(|| "this session has not bound its display yet".to_owned())?;
-        let render_node = render_node.ok_or_else(|| {
-            "this session draws without a GPU, which Windows programs need".to_owned()
-        })?;
+        // A display's primary node (`card*`), which the compositor names where the machine has no
+        // render node, is no GPU to give a program: it draws in software then.
+        let render_node = render_node.filter(|node| compat_service::is_render_node(node));
         Ok(LaunchDisplay {
             uid: rustix::process::geteuid().as_raw(),
             runtime_dir: tilo_paths::xdg::runtime_dir_or_default(),

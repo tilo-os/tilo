@@ -106,6 +106,7 @@ tilo-fuse-engine = { path = "../../crates/runtime/engines/fuse", optional = true
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 tilo-identity = { path = "../../crates/runtime/tilo-identity" }
+tilo-identity-client = { path = "../../crates/runtime/tilo-identity-client" }
 tilo-server-protocol = { path = "../../crates/server/tilo-server-protocol" }
 automerge.workspace = true
 cap-fs-ext = "3.4.6"
@@ -115,7 +116,6 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true
-runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 hex.workspace = true
 sha2.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }

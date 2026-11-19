@@ -236,7 +236,7 @@ impl PeerGovernanceMut<'_> {
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
         edit(&mut doc).map_err(err)?;
-        self.peer.commit_governance(&mut doc, key, now);
+        super::commit_governance(&mut doc, super::now_secs(now));
         if doc.get_heads() == before {
             return Ok(false);
         }

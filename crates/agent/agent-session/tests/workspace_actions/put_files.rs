@@ -13,16 +13,17 @@
     reason = "an answer's ASCII prefix; a slip is the failure it reports"
 )]
 
-use super::hosted_documents::{content_in, form_pdf, put, tool};
+use super::hosted_documents::{content_in, form_pdf, json_in, put, tool};
 use super::*;
 use base64::Engine as _;
 use collab_types::DocumentMutation;
 use fs_protocol::files::FileNodeKind;
 use fs_protocol::tree::{FILES_APP, ROOT_ID, Tree};
-use serde_json::json;
+use serde_json::{Value, json};
+use tilo_agent_session::ModelChoice;
 use tilo_fs::tree_document::document_id as tree_document;
 use tilo_mcp::McpServer;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 
 /// The tree the workspace's host keeps, as the records its members read: the
 /// tree's own record and each chunk it lists.
@@ -64,6 +65,13 @@ pub(super) async fn tree_kept(
 /// its changes, each to its own record. The chunks go first, because the
 /// tree's own record names them.
 async fn publish(laptop: &Browser, folder: &mut tilo_fs::Namespace) {
+    write_tree(laptop, folder).unwrap();
+    laptop.durable().await;
+}
+
+/// [`publish`] without waiting for the server to keep it: the first write the laptop's own
+/// replica refuses, if one is.
+fn write_tree(laptop: &Browser, folder: &mut tilo_fs::Namespace) -> Result<(), String> {
     let mut writes = folder.document_writes(&BTreeMap::new());
     writes.sort_by_key(|write| std::cmp::Reverse(write.chunk));
     for write in writes {
@@ -78,13 +86,13 @@ async fn publish(laptop: &Browser, folder: &mut tilo_fs::Namespace) {
                 route.clone(),
                 &DocumentMutation::Snapshot(automerge::AutoCommit::new().save()),
             )
-            .unwrap();
+            .map_err(|error| format!("{error:?}"))?;
         laptop
             .peer
             .write(route, &DocumentMutation::Incremental(write.changes))
-            .unwrap();
+            .map_err(|error| format!("{error:?}"))?;
     }
-    laptop.durable().await;
+    Ok(())
 }
 
 /// The host's tree once it reads as `ready` says, or as it stands after ten seconds. An
@@ -605,6 +613,336 @@ async fn a_put_file_goes_into_the_tree_a_computer_wrote_first() {
         file_at(&tree, "", "contract.txt").is_some(),
         "the laptop's file is still there"
     );
+}
+
+/// A member who edits a public workspace founds its file tree from their computer's mounted
+/// folder, as Files' own new-file and new-folder are theirs to take: the file they put there
+/// lands. A viewer's computer founds nothing and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_editor_founds_a_public_workspace_tree_and_a_viewer_does_not() {
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
+    let serving = enrol(&owner, "lounge-server", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
+        &owner,
+        &serving,
+        state.path(),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+    )
+    .await;
+    let workspaces = hosted.server.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .publish(
+            &lounge.workspace,
+            &serving.cert,
+            tilo_server_protocol::directory::Listing {
+                description: "Everyone".into(),
+                default_role: tilo_peer_state::join::Role::Viewer,
+            },
+        )
+        .await
+        .unwrap();
+    let workspace = lounge.workspace.clone();
+    let (editor, _) = tilo_user_identity::UserIdentity::generate("Editor", 1);
+    let (viewer, _) = tilo_user_identity::UserIdentity::generate("Viewer", 1);
+    let editing = enrol(&editor, "editor laptop", DeviceCapabilities::member());
+    let viewing = enrol(&viewer, "viewer laptop", DeviceCapabilities::member());
+    for (device, role) in [
+        (&editing, tilo_peer_state::join::Role::Editor),
+        (&viewing, tilo_peer_state::join::Role::Viewer),
+    ] {
+        super::resource_support::admit_person(&hosted, &serving, &workspace, device, role).await;
+    }
+    let kept = || async {
+        workspaces
+            .resource_document(&workspace, FILES_APP, &tree_document())
+            .await
+            .unwrap()
+    };
+
+    // The viewer's computer mounts the workspace first: what it founds stays its own.
+    let viewer_laptop =
+        super::resource_support::open_admitted_peer(&hosted, &viewing, &serving, &workspace).await;
+    let mut theirs = tilo_fs::Namespace::new(hex::encode(viewing.cert.device_public_key)).unwrap();
+    theirs
+        .create_file(tilo_fs::ROOT_INO, "notes.txt", None, 0, 1)
+        .unwrap();
+    let refused = write_tree(&viewer_laptop, &mut theirs);
+    let settled = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < settled {
+        assert!(
+            kept().await.is_none(),
+            "a viewer founded the tree ({refused:?})"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // The editor's computer founds it with a file in it, and the file lands.
+    let editor_laptop =
+        super::resource_support::open_admitted_peer(&hosted, &editing, &serving, &workspace).await;
+    let mut folder = tilo_fs::Namespace::new(hex::encode(editing.cert.device_public_key)).unwrap();
+    folder
+        .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
+        .unwrap();
+    publish(&editor_laptop, &mut folder).await;
+    let deadline = tilo_test_env::hang_deadline();
+    while kept().await.is_none() {
+        assert!(Instant::now() < deadline, "the editor's tree never lands");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let tree = tree_when(&hosted, &workspace, |tree| {
+        file_at(tree, "", "contract.txt").is_some()
+    })
+    .await;
+    assert!(
+        file_at(&tree, "", "contract.txt").is_some(),
+        "the editor's file lands"
+    );
+    assert!(
+        file_at(&tree, "", "notes.txt").is_none(),
+        "the viewer's file stays out"
+    );
+}
+
+/// In a public workspace, whose server sends a device a document only once it opens it, the tree a
+/// computer's mounted folder founds after the server's action service looked for it, and found
+/// none, is the tree the service then reads and writes: an agent lists the computer's file and
+/// makes a folder beside it. What an agent on the computer then writes through the mounted
+/// folder, Files' History names as that agent's for its person, and its undo takes it back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tree_a_computer_founds_after_the_service_found_none_is_read_and_written() {
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
+    let serving = enrol(&owner, "lounge-server", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let hosted = crate::harness::hosted::start(
+        &owner,
+        &serving,
+        state.path(),
+        Options::offering(crate::common::catalogue, ModelChoice::Scripted),
+    )
+    .await;
+    let workspaces = hosted.server.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .publish(
+            &lounge.workspace,
+            &serving.cert,
+            tilo_server_protocol::directory::Listing {
+                description: "Everyone".into(),
+                default_role: tilo_peer_state::join::Role::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    let workspace = lounge.workspace.clone();
+    let computer = enrol(
+        &owner,
+        "Claude Code on laptop",
+        DeviceCapabilities::member(),
+    );
+    let laptop =
+        super::resource_support::open_admitted_peer(&hosted, &computer, &serving, &workspace).await;
+    let server = McpServer::new(
+        SessionActions::new(
+            &laptop.peer,
+            laptop.workspace,
+            serving.cert.device_public_key,
+        ),
+        workspace.clone(),
+        hex::encode(owner.verifying_key().to_bytes()),
+    );
+
+    // The service looks at the workspace's files before any folder wrote them: it finds none.
+    let before = tool(&server, "tilo_ls", json!({"path": "files"})).await;
+    assert!(!before.contains("contract.txt"), "{before}");
+
+    // The laptop's mounted folder founds the tree with a file in it.
+    let mut folder = tilo_fs::Namespace::new(hex::encode(computer.cert.device_public_key)).unwrap();
+    folder
+        .create_file(tilo_fs::ROOT_INO, "contract.txt", None, 0, 1)
+        .unwrap();
+    publish(&laptop, &mut folder).await;
+    assert!(
+        file_at(
+            &tree_when(&hosted, &workspace, |tree| file_at(
+                tree,
+                "",
+                "contract.txt"
+            )
+            .is_some())
+            .await,
+            "",
+            "contract.txt"
+        )
+        .is_some(),
+        "the server keeps the laptop's tree"
+    );
+
+    // The service reads the tree the laptop founded, and writes into it.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let listed = tool(&server, "tilo_ls", json!({"path": "files"})).await;
+        if listed.contains("contract.txt") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the service never lists the laptop's file: {listed}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tool(
+        &server,
+        "tilo_do",
+        json!({"path": "files#new-folder", "args": {"parent": "", "name": "Drafts"}}),
+    )
+    .await;
+    let tree = tree_when(&hosted, &workspace, |tree| {
+        file_at(tree, "", "Drafts").is_some()
+    })
+    .await;
+    assert!(
+        file_at(&tree, "", "Drafts").is_some(),
+        "the agent's folder is in the tree"
+    );
+    assert!(
+        file_at(&tree, "", "contract.txt").is_some(),
+        "beside the laptop's file"
+    );
+
+    // A coding agent on the laptop makes a file through the mounted folder and then writes it,
+    // for its person: two steps.
+    let person = hex::encode(owner.verifying_key().to_bytes());
+    let agent = tilo_actions::ActionInvoker::admitted(
+        &tilo_actions::Acting::agent("claude")
+            .handed()
+            .in_session("0f3c"),
+    )
+    .named(Some("Claude Code".into()))
+    .acting_for(person.as_str());
+    let as_agent = || {
+        tilo_fs::namespace::acting_as(Some(
+            tilo_actions::ActionContext::default().with_invoker(agent.clone()),
+        ))
+    };
+    let made = {
+        let _acting = as_agent();
+        folder
+            .create_file(tilo_fs::ROOT_INO, "agent-notes.md", None, 0, 2)
+            .unwrap()
+    };
+    publish(&laptop, &mut folder).await;
+    {
+        let _acting = as_agent();
+        assert!(folder.set_content(made, None, 12, 3));
+    }
+    publish(&laptop, &mut folder).await;
+
+    // Files' History names both steps by the file's path, the agent and its person.
+    let deadline = tilo_test_env::hang_deadline();
+    let steps = loop {
+        let history = json_in(
+            &tool(
+                &server,
+                "tilo_do",
+                json!({"path": "files#history", "args": {"last": 20}}),
+            )
+            .await,
+        );
+        let steps: Vec<Value> = history["versions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|version| version["path"] == "agent-notes.md")
+            .cloned()
+            .collect();
+        if steps.len() == 2 {
+            break steps;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "History never lists the agent's two steps: {history}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    for step in &steps {
+        assert_eq!(step["actor"]["name"], "Claude Code", "{step}");
+        assert!(
+            step.to_string().contains(&person),
+            "the change is the agent's for its person: {step}"
+        );
+    }
+    let did = |step: &Value| {
+        step["what"]["action"]["action"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (making, writing) = match (did(&steps[0]).as_str(), did(&steps[1]).as_str()) {
+        ("new-file", "write") => (&steps[0], &steps[1]),
+        ("write", "new-file") => (&steps[1], &steps[0]),
+        other => panic!("a making and a write: {other:?}"),
+    };
+
+    // Files' undo of the write and then of the making takes the file away whole, and leaves
+    // the rest of the folder.
+    for step in [writing, making] {
+        let undone = json_in(
+            &tool(
+                &server,
+                "tilo_do",
+                json!({"path": "files#undo", "args": {"step": step["change"]}}),
+            )
+            .await,
+        );
+        assert_eq!(undone["taken"], 1, "{undone}");
+    }
+    let tree = tree_when(&hosted, &workspace, |tree| {
+        file_at(tree, "", "agent-notes.md").is_none()
+    })
+    .await;
+    assert!(
+        file_at(&tree, "", "agent-notes.md").is_none(),
+        "no empty file is left behind"
+    );
+    assert!(file_at(&tree, "", "contract.txt").is_some());
+    assert!(file_at(&tree, "", "Drafts").is_some());
+    // The laptop's mounted folder, taking what the workspace keeps, shows no such file either.
+    folder
+        .take_documents(kept_documents(&hosted, &workspace).await)
+        .unwrap();
+    assert!(folder.lookup(tilo_fs::ROOT_INO, "agent-notes.md").is_none());
+    assert!(folder.lookup(tilo_fs::ROOT_INO, "contract.txt").is_some());
+}
+
+/// The tree's documents the workspace keeps, by chunk: what a mounted folder takes in.
+async fn kept_documents(
+    hosted: &crate::harness::hosted::Hosted,
+    workspace: &str,
+) -> Vec<(fs_protocol::TreeChunk, Vec<u8>)> {
+    let workspaces = hosted.server.workspaces().unwrap();
+    let index = workspaces
+        .resource_document(workspace, FILES_APP, &tree_document())
+        .await
+        .unwrap()
+        .expect("the workspace keeps its tree");
+    let listed = fs_protocol::tree::listed_chunks(&automerge::AutoCommit::load(&index).unwrap());
+    let mut documents = vec![(0, index)];
+    for chunk in listed {
+        if let Some(document) = workspaces
+            .resource_document(
+                workspace,
+                FILES_APP,
+                &fs_protocol::tree::chunk_document_id(chunk),
+            )
+            .await
+            .unwrap()
+        {
+            documents.push((chunk, document));
+        }
+    }
+    documents
 }
 
 /// Files' verbs by a path in the workspace, on the tree the workspace's server keeps.

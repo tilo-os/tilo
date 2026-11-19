@@ -13,7 +13,7 @@ pub mod performed;
 mod tests;
 
 pub use coach::{Coach, Current, Phase, Timing};
-pub use layer::{HintLayer, HintLook, HintPlace, Stand};
+pub use layer::{HintLayer, HintLook, HintPlace};
 
 use crate::time::Duration;
 

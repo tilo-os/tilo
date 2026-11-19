@@ -1,5 +1,5 @@
-//! A turn's work: the workspace's MCP tools over the session's action API, asked on this agent's
-//! link, and the model the agent answers with, until the model answers the person.
+//! A turn's work: the workspace's MCP tools, which the device's session answers for this agent on
+//! its link, and the model the agent answers with, until the model answers the person.
 //!
 //! What the turn does is told as it goes: each call is a progress line of the turn's answer, and
 //! each call that changes something, or reaches the web, is a step on the reply to the person's
@@ -15,7 +15,7 @@ use agent_provider_config::protocol::ToolCall;
 use anyhow::Result;
 use serde_json::Value;
 use tilo_actions::task_step::TaskStep;
-use tilo_agent_turn::{Answer, Asked as TurnAsked, Doing, McpServer, Outcome, SessionActions};
+use tilo_agent_turn::{Answer, Asked as TurnAsked, Doing, Outcome, SessionActions, SessionTools};
 use tilo_agent_web_tools as web;
 use ui::lock::MutexRecover as _;
 
@@ -67,16 +67,16 @@ impl Telling {
     }
 }
 
-impl Doing<SessionActions> for Telling {
+impl Doing<SessionTools<SessionActions>> for Telling {
     fn stopped(&self) -> bool {
         self.stop.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    async fn calling(&self, call: &ToolCall) {
+    async fn calling(&self, call: &ToolCall, _: tilo_agent_turn::Step) {
         self.tell(Told::Calling(call.clone()));
     }
 
-    fn called(&self, call: &ToolCall, answer: &Answer) {
+    fn called(&self, call: &ToolCall, _: tilo_agent_turn::Step, answer: &Answer) {
         self.tell(Told::Called {
             call: call.clone(),
             failed: answer.is_error.then(|| answer.text.clone()),
@@ -251,12 +251,8 @@ impl Session {
             .model_timeout
             .max(std::time::Duration::from_secs(1));
         asked.key = format!("{}:{:?}", self.cfg.agent_id, run.invocation);
-        let server = McpServer::new(
-            self.actions.clone(),
-            self.cfg.cluster.to_string(),
-            self.cfg.agent_id.clone(),
-        )
-        .agent_named(&self.cfg.name);
+        // The session takes every call as the turn this agent answers, in its agent session.
+        let tools = SessionTools::new(self.actions.clone(), self.caller());
         let (told, hearing) = mpsc::channel();
         let telling = Arc::new(Telling {
             stop: Arc::clone(&stop),
@@ -267,7 +263,7 @@ impl Session {
         let doing = Arc::clone(&telling);
         let budgeted = asked.budget;
         let (outcome, cost) = self.carry(
-            async move { tilo_agent_turn::work(&server, model, &asked, &*doing).await },
+            async move { tilo_agent_turn::work(&tools, model, &asked, &*doing).await },
             Some(&Watching {
                 run,
                 stop: &stop,

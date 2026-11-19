@@ -248,10 +248,7 @@ impl Owner {
     }
 }
 
-/// One key's exclusive writer lease ([`FsStore::hold`]); dropping it lets
-/// the key go.
-pub struct Held(#[allow(dead_code, reason = "held for the lock it keeps")] FsLease);
-
+/// One key's lease as [`FsStore::lease`] makes it: a document's owner, or a view's place.
 struct FsLease {
     _view_lock: Option<Arc<advisory_lock::FileLock>>,
     key: StorageKey,
@@ -481,25 +478,42 @@ impl FsStore {
         &self.root
     }
 
-    /// Become `key`'s only writer, as [`DurableStore::lease`] does, with a
-    /// lease any thread may hold: a holder shared across threads (the
-    /// device's settings) keeps it beside the documents it writes.
+    /// The key's only writer, as [`DurableStore::lease`] makes one. A document or a view has one;
+    /// a document's shared writers are [`DurableStore::lease_shared`]'s.
     ///
     /// # Errors
-    /// [`DurableError::Busy`] when another owner, in this process or another,
-    /// holds the key; an invalid key or one that is not a document.
-    pub fn hold(&self, key: &StorageKey) -> Result<Held, DurableError> {
-        let Target::Document(directory) = self.target(key)? else {
-            return Err(DurableError::InvalidKey {
-                key: key.to_string(),
-                reason: "only a document has one holder".into(),
-            });
-        };
-        if lock(&self.shared.state).owners.contains_key(key) {
-            return Err(DurableError::Busy(key.to_string()));
+    /// [`DurableError::Busy`] when another owner, in this process or another, holds the key; an
+    /// invalid key.
+    fn lease_lease(&self, key: &StorageKey) -> Result<FsLease, DurableError> {
+        match self.target(key)? {
+            Target::Document(directory) => {
+                if lock(&self.shared.state).owners.contains_key(key) {
+                    return Err(DurableError::Busy(key.to_string()));
+                }
+                let owner = Arc::new(open_owner(&directory)?);
+                self.register(key, owner)
+            }
+            Target::View(path) => {
+                let mut state = lock(&self.shared.state);
+                if state.view_leases.contains_key(key) {
+                    return Err(DurableError::Busy(key.to_string()));
+                }
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent).map_err(|e| io_err("creating view directory", e))?;
+                }
+                // Never unlink this check: an old handle and a new pathname
+                // must not admit two writers to the same bounded place.
+                let check = Arc::new(acquire_lock(&path.with_extension("lock"), true)?);
+                state.view_leases.insert(key.clone(), check.clone());
+                drop(state);
+                Ok(FsLease {
+                    _view_lock: Some(check),
+                    key: key.clone(),
+                    owner: None,
+                    shared: Arc::downgrade(&self.shared),
+                })
+            }
         }
-        let owner = Arc::new(open_owner(&directory)?);
-        Ok(Held(self.register(key, owner)?))
     }
 
     /// A app's directory.
@@ -902,7 +916,11 @@ impl DurableStore for FsStore {
     fn flush_without_waiting(&self, key: &StorageKey) -> Result<(), DurableError> {
         self.target(key)?;
         let mut state = lock(&self.shared.state);
-        if let Some((_, _, message)) = state.keys.get(key).and_then(|status| status.failed.last()) {
+        // A failure a write still under way may replace is not the outcome yet.
+        if !state.outstanding(key)
+            && let Some((_, _, message)) =
+                state.keys.get(key).and_then(|status| status.failed.last())
+        {
             return Err(DurableError::Failed {
                 context: key.to_string(),
                 message: message.clone(),
@@ -925,6 +943,23 @@ impl DurableStore for FsStore {
         drop(state);
         self.ensure_worker()?;
         self.shared.changed.notify_all();
+        let (shared, started) = (Arc::clone(&self.shared), key.clone());
+        durable_store::waiting::started(Box::new(move |wake| {
+            let mut state = lock(&shared.state);
+            if arm_settle_wake(&mut state, &started, Arc::clone(wake)) == SettleWatch::Armed {
+                return None;
+            }
+            Some(
+                match state
+                    .keys
+                    .get(&started)
+                    .and_then(|status| status.failed.last())
+                {
+                    Some((_, _, message)) => Err(format!("{started}: {message}")),
+                    None => Ok(()),
+                },
+            )
+        }));
         Err(DurableError::Pending(format!(
             "{key} is being made durable"
         )))
@@ -945,35 +980,7 @@ impl DurableStore for FsStore {
                 .lease_without_waiting(key, &target, Access::Exclusive, &wake)
                 .map(|(lease, _)| lease);
         }
-        match target {
-            Target::Document(directory) => {
-                if lock(&self.shared.state).owners.contains_key(key) {
-                    return Err(DurableError::Busy(key.to_string()));
-                }
-                let owner = Arc::new(open_owner(&directory)?);
-                Ok(Box::new(self.register(key, owner)?))
-            }
-            Target::View(path) => {
-                let mut state = lock(&self.shared.state);
-                if state.view_leases.contains_key(key) {
-                    return Err(DurableError::Busy(key.to_string()));
-                }
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent).map_err(|e| io_err("creating view directory", e))?;
-                }
-                // Never unlink this check: an old handle and a new pathname
-                // must not admit two writers to the same bounded slot.
-                let check = Arc::new(acquire_lock(&path.with_extension("lock"), true)?);
-                state.view_leases.insert(key.clone(), check.clone());
-                drop(state);
-                Ok(Box::new(FsLease {
-                    _view_lock: Some(check),
-                    key: key.clone(),
-                    owner: None,
-                    shared: Arc::downgrade(&self.shared),
-                }))
-            }
-        }
+        Ok(Box::new(self.lease_lease(key)?))
     }
 
     fn lease_shared(&self, key: &StorageKey) -> Result<SharedLease, DurableError> {
@@ -1251,6 +1258,19 @@ impl FsStore {
     }
 }
 
+/// Writer threads of stores dropped where no wait is allowed: each commits what
+/// was queued and then ends ([`finish_writes`]).
+static FINISHING: Mutex<Vec<thread::JoinHandle<()>>> = Mutex::new(Vec::new());
+
+/// Wait for the writers of the stores dropped on a thread that must not wait,
+/// so a process that ends next keeps every write they were handed.
+pub fn finish_writes() {
+    let writers = std::mem::take(&mut *lock(&FINISHING));
+    for writer in writers {
+        let _ = writer.join();
+    }
+}
+
 impl Drop for FsStore {
     fn drop(&mut self) {
         if durable_store::waiting::forbidden() {
@@ -1258,7 +1278,12 @@ impl Drop for FsStore {
             // commits everything queued as it stops, and ends by itself.
             lock(&self.shared.state).stopping = true;
             self.shared.changed.notify_all();
-            drop(lock(&self.worker).take());
+            let worker = lock(&self.worker).take();
+            if let Some(worker) = worker {
+                let mut finishing = lock(&FINISHING);
+                finishing.retain(|writer| !writer.is_finished());
+                finishing.push(worker);
+            }
             return;
         }
         if let Err(error) = self.flush(None) {
@@ -2150,8 +2175,9 @@ mod tests {
                 assert_eq!(store.durability(&key, second), Durability::Durable);
                 assert_eq!(store.read(&key).unwrap().unwrap().bytes, b"ab");
             }
-            // Phase `dropping_the_store_commits_accepted_writes`.
-            {
+            // Phase `dropping_the_store_commits_accepted_writes`: where the dropping
+            // thread may wait, and where it may not and the process waits at its end.
+            for forbidden in [false, true] {
                 let tmp = TempDir::new().unwrap();
                 let key = StorageKey::view("D", "A", 1);
                 {
@@ -2159,7 +2185,11 @@ mod tests {
                     store
                         .write(&key, WriteOp::Replace(b"kept".to_vec()), None)
                         .unwrap();
+                    let _loop = forbidden
+                        .then(durable_store::waiting::forbid_strictly_on_this_thread);
+                    drop(store);
                 }
+                finish_writes();
                 assert_eq!(
                     FsStore::new(tmp.path()).read(&key).unwrap().unwrap().bytes,
                     b"kept"

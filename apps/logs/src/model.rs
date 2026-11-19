@@ -1,6 +1,7 @@
 //! Pure data model for the Logs viewer — syslog priorities, a single journal entry, and the
 //! filter predicate.
 
+use ui::tilo_resource;
 use ui::widget::Tone;
 
 pub use logs_model::{Logs, Priority};
@@ -28,8 +29,10 @@ pub fn filter_of(logs: &Logs) -> Filter {
     }
 }
 
-/// One flattened journal resource.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+/// One flattened journal resource: a row of the journal, an item of the
+/// `logs.entry` type the app publishes.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, tilo_resource::Row)]
+#[row(kind = "logs.entry", label = "Log entry", effects = crate::actions::JournalEffect)]
 pub struct LogEntry {
     pub realtime_us: u64,
     pub unit: String,

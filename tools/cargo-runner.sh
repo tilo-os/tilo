@@ -7,12 +7,17 @@
 # inside tools/with-test-environment.sh: a fresh HOME and XDG tree and no
 # desktop session. Whoever runs a test and however, it cannot reach their
 # session bus, systemd user manager, logind, portals, media players, keyring
-# or display. A run that is already inside that environment (CI,
-# tools/test-env.sh) keeps it. Started as root in the
-# CI image, they run as its test user (tools/as-test-user.sh).
+# or display. A job that is already inside that environment (CI,
+# tools/test-env.sh for a command that is itself the test) keeps it. Started as
+# root in the CI image, they execute as its test user (tools/as-test-user.sh).
 #
 # `cargo run` targets (target/<profile>/<bin>, examples) start unchanged:
-# that is how a developer tries an app against their own desktop.
+# that is how a developer tries an app against their own desktop. The one
+# exception is a command tools/test-env.sh wrapped: it prepares the test
+# environment (a private audio endpoint, the fixtures, the capabilities the
+# image promises) and writes it beside the build directory, so that a build's
+# scripts never carry it. Every target such a command starts then gets it, and
+# the isolation above, the way the test harnesses do.
 #
 # A suite starts a process per test, so what a start costs here it pays tens
 # of thousands of times. This shell is therefore the only one a start runs:
@@ -26,17 +31,17 @@ if [ "$#" -eq 0 ]; then
     echo "usage: $0 BINARY [ARG ...]" >&2
     exit 2
 fi
-case $1 in
-    */deps/* | */rustdoctest*/*) ;;
-    *) exec "$@" ;;
-esac
-
 case ${BASH_SOURCE[0]} in
     */*) tools=${BASH_SOURCE[0]%/*} ;;
     *) tools=. ;;
 esac
 # shellcheck source=tools/with-test-environment.sh
 source "$tools/with-test-environment.sh"
+
+harness=0
+case $1 in
+    */deps/* | */rustdoctest*/*) harness=1 ;;
+esac
 
 # The build directory: the nearest directory above the binary that holds
 # cargo's .rustc_info.json (`dirname`, one level at a time).
@@ -48,28 +53,61 @@ while [ "$dir" != / ] && [ "$dir" != . ] && [ ! -e "$dir/.rustc_info.json" ]; do
     esac
     [ -n "$dir" ] || dir=/
 done
+
+# The test environment tools/test-env.sh prepared, beside the build directory:
+# its first line names the command that wrote it, so a file a killed command
+# left behind is not read. A command whose tests get their environment from
+# itself (a nextest command's ci profile, .config/nextest.toml) leaves none,
+# and its `cargo run` targets start unchanged.
+handoff=0
+env_file=$dir/test-env-vars
+if [ -r "$env_file" ]; then
+    {
+        IFS= read -r owner || true
+        if [ "${owner%%=*}" = pid ] && kill -0 "${owner#pid=}" 2>/dev/null; then
+            while IFS= read -r line; do
+                [ -z "$line" ] || export "${line%%=*}=${line#*=}"
+            done
+            handoff=1
+        fi
+    } <"$env_file"
+fi
+if [ "$handoff" = 0 ] && [ "$harness" = 0 ]; then
+    exec "$@"
+fi
+
 # The build tree ($dir, which holds the profile directories) and the
 # build directory's tmp (CARGO_TARGET_TMPDIR) that tests write into are
 # the test user's too: cargo made them as whoever built. A test that
 # writes beside the build's output — review images, fixture caches,
 # prepared catalogs — lands in the tree, and root's mode 0755
 # directories there would refuse it.
-if [ -e "$dir/.rustc_info.json" ]; then
-    tilo_test_user_own_tree "$dir"
-fi
-# The tmp goes over whenever it is root's (-O: this shell's user owns it, and a
-# handover happens only as root), which is what cargo leaves after a build as
-# root; one that is not root's is the test user's from an earlier start or
-# from the job's walk, and starts no chown.
-if [ -n "$tilo_test_user" ] && [ -d "$dir/tmp" ] && [ -O "$dir/tmp" ]; then
-    tilo_test_user_own "$dir/tmp"
+if [ "$harness" = 1 ]; then
+    if [ -e "$dir/.rustc_info.json" ]; then
+        tilo_test_user_own_tree "$dir"
+    fi
+    # The tmp goes over whenever it is root's (-O: this shell's user owns it, and a
+    # handover happens only as root), which is what cargo leaves after a build as
+    # root; one that is not root's is the test user's from an earlier start or
+    # from the job's walk, and starts no chown.
+    if [ -n "$tilo_test_user" ] && [ -d "$dir/tmp" ] && [ -O "$dir/tmp" ]; then
+        tilo_test_user_own "$dir/tmp"
+    fi
 fi
 
 if tilo_test_environment_intact; then
-    tilo_test_user_exec "$@"
+    if [ "$harness" = 1 ]; then
+        tilo_test_user_exec "$@"
+    fi
+    exec "$@"
 fi
 tilo_test_environment_enter
 # In a subshell that becomes the test: this shell stays to remove the
-# environment after it.
-if (tilo_test_user_exec "$@"); then status=0; else status=$?; fi
+# environment after it. A program a wrapped command starts executes as the
+# caller, as tools/with-test-environment.sh starts it.
+if [ "$harness" = 1 ]; then
+    if (tilo_test_user_exec "$@"); then status=0; else status=$?; fi
+else
+    if "$@"; then status=0; else status=$?; fi
+fi
 exit "$status"

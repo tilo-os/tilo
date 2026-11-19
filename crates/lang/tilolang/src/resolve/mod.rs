@@ -1711,6 +1711,7 @@ impl Resolver<'_> {
             func += 1;
         }
         self.one_primary(module);
+        self.initial_actions(module);
     }
 
     /// A view of the module expanded where it is called: its name taken, its body checked at each
@@ -1906,6 +1907,77 @@ impl Resolver<'_> {
         }
         self.err("E091", name.span, prims::unknown_icon(&name.name));
         None
+    }
+
+    /// What an `initial action` may be: it takes one resource of a type of the package's own and
+    /// nothing else, answers nothing, reads nothing a replay would have to answer and holds no
+    /// requirement, since the platform applies it wherever such a resource is made. A type has
+    /// one, and a type whose origin derives its content has none.
+    fn initial_actions(&mut self, module: &ast::Module) {
+        let mut seen: Vec<(TypeKey, String)> = Vec::new();
+        for item in &module.items {
+            let Item::Action(a) = item else { continue };
+            let Some((ast::ActionRole::Initial, span)) = a.role else {
+                continue;
+            };
+            let name = &a.name.name;
+            let target = self
+                .env
+                .own_callable(name)
+                .and_then(|c| c.params.first())
+                .and_then(|p| match &p.ty {
+                    Ty::Record(key) if key.app == self.env.app && !crate::host::is_value(key) => {
+                        Some(key.clone())
+                    }
+                    _ => None,
+                });
+            let Some(target) = target else {
+                self.err("E143", span, format!("an initial action says what a new resource of one of the package's types starts with, so it takes that resource first; `{name}` takes none. Write `initial action {name}(r: T)` with `T` a type of this package"));
+                continue;
+            };
+            let refusal = if a.params.len() > 1 {
+                Some(format!(
+                    "the platform applies `{name}` as each `{0}` is made, with nothing but the new `{0}`; it takes no other parameter. Remove the others",
+                    target.name
+                ))
+            } else if a.result.is_some() {
+                Some(format!(
+                    "the platform applies `{name}` as each `{}` is made and reads no answer; remove its result type",
+                    target.name
+                ))
+            } else if !a.uses.is_empty() {
+                Some(format!(
+                    "a new `{}` starts the same wherever and whenever it is made, so `{name}` reads no effect; remove `uses`",
+                    target.name
+                ))
+            } else if !a.requires.is_empty() || !a.applies.is_empty() {
+                Some(format!(
+                    "every new `{}` starts with what `{name}` writes, so it holds no `require` or `applies`; write the condition as an `if` in its body",
+                    target.name
+                ))
+            } else if self
+                .env
+                .type_info(&target)
+                .and_then(|info| info.origin.as_deref())
+                .is_some_and(crate::origin::is_derived)
+            {
+                Some(format!(
+                    "`{}` holds what its origin derives, written again at every start; it starts with nothing of its own, so it has no initial action. Remove `{name}`",
+                    target.name
+                ))
+            } else {
+                None
+            };
+            if let Some(refusal) = refusal {
+                self.err("E143", span, refusal);
+                continue;
+            }
+            if let Some((_, first)) = seen.iter().find(|(k, _)| *k == target) {
+                self.err("E143", span, format!("`{}` already starts with `{first}`; a type has one initial action. Write what `{name}` adds in `{first}`", target.name));
+                continue;
+            }
+            seen.push((target, name.clone()));
+        }
     }
 
     /// At most one `primary` action per target type (its first parameter's record type).

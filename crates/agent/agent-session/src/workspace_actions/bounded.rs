@@ -348,6 +348,8 @@ pub(super) struct About {
     pub(super) record: String,
     /// The document the action acts on.
     pub(super) route: DocumentRoute,
+    /// What the call carries, where it carries its resource's other actions.
+    pub(super) carries: super::carried::Carries,
 }
 
 /// The question the person is put about `request`, which `caller` asks the
@@ -373,18 +375,22 @@ pub(super) fn question(
         .filter(|title| *title != agent)
         .unwrap_or_default();
     let contract = &about.descriptor.contract;
+    // What is asked about is what would be done: for a call that carries other actions,
+    // those, by their own names.
+    let draft = about.draft();
     Ok(ConfirmationQuestion {
         id,
         device_label: agent,
         agent: caller.acting().agent_id().unwrap_or_default().to_owned(),
         workspace: workspace.to_owned(),
         title,
-        action_label: about.descriptor.action_label.clone(),
+        arguments: draft.summary(),
+        action_label: draft.action_label,
         resource_label: about.record.clone(),
-        arguments: tilo_actions::Draft::render(&about.descriptor, &about.arguments).summary(),
         risk: contract.risk.name().to_owned(),
         kind: contract.kind.to_string(),
-        undoable: contract.can_be_undone(),
+        undoable: draft.undoable,
+        ask: None,
     })
 }
 
@@ -430,7 +436,7 @@ pub(super) fn member_actor(
 ) -> Result<crate::ReplicaActor, ActionCallError> {
     let own = own_device.key.verifying_key().to_bytes();
     let device = (who.caller.device_public_key() == Some(&own)).then(|| {
-        tilo_actions::InvokerDevice::certified(own, &own_device.endpoint.host_cert.device_label)
+        tilo_actions::InvokerDevice::certified(own, &own_device.endpoint.server_cert.device_label)
     });
     Ok(crate::ReplicaActor::Member {
         access: bounded_access(policy, who)?,
@@ -524,7 +530,7 @@ pub(super) fn policy_for(
                 agent_bound: Vec::new(),
             }
         }
-        Some(_) | None => return Err(ActionCallError::NotPermitted),
+        Some(_) | None => return Err(not_admitted(shared, workspace_id, who)),
     };
     // An agent a person's device handed its session to is held to the bound the workspace's
     // list of its agents keeps for it: the own person's agents as much as anyone's, so what
@@ -536,6 +542,31 @@ pub(super) fn policy_for(
         policy.agent_bound = link.workspace_agent(workspace_id, &who.caller);
     }
     Ok(policy)
+}
+
+/// The refusal of a caller the workspace's policy does not admit: a key the
+/// workspace keeps as revoked is told so, with the one command that approves
+/// another, so every caller knows what to do; anyone else is a plain refusal.
+fn not_admitted(
+    shared: &super::Shared,
+    workspace_id: WorkspaceId,
+    who: &Bounded,
+) -> ActionCallError {
+    let revoked = shared
+        .link
+        .get()
+        .is_some_and(|link| link.key_revoked(workspace_id, &who.person_caller));
+    if revoked {
+        ActionCallError::Refused {
+            reason: format!(
+                "{}: this key was revoked. {}",
+                tilo_actions::remote::KEY_REVOKED,
+                tilo_actions::remote::APPROVE_AGAIN
+            ),
+        }
+    } else {
+        ActionCallError::NotPermitted
+    }
 }
 
 /// Whether `caller` may do `kind` across the workspace `workspace_id`
@@ -577,8 +608,8 @@ pub(super) fn governed(shared: &super::Shared, workspace_id: WorkspaceId) -> boo
         link.admits(
             workspace_id,
             &Caller::authenticated(
-                device.endpoint.host_cert.user_public_key,
-                device.endpoint.host_cert.device_public_key,
+                device.endpoint.server_cert.user_public_key,
+                device.endpoint.server_cert.device_public_key,
             ),
         )
     })
@@ -670,6 +701,21 @@ impl Worker {
         bounded_permissions(&policy, who).ok()
     }
 
+    /// Set aside the least recently used replicas within bounds until one more fits.
+    fn evict_bounded(&mut self) {
+        while self.bounded.len() >= super::MAX_MOUNTED {
+            let Some(oldest) = self
+                .bounded
+                .iter()
+                .min_by_key(|(_, held)| held.held.used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.bounded.remove(&oldest);
+        }
+    }
+
     /// `who`'s replica of the record at `route` (a part: of the record it is
     /// held beside), opened as them on their access now, or the one held
     /// for them while that access is unchanged.
@@ -688,7 +734,11 @@ impl Worker {
         // record that does not exist.
         let holder = self.mount_held(route, state).map_err(unavailable)?;
         let key = (holder.clone(), who.person.clone(), who.agent.clone());
-        if let Some(held) = self.parked.unpark(&key, super::publish::REUSE_WAIT) {
+        // A replica set aside heard of nothing written while it was: it merges what the
+        // workspace holds whole, as one opened anew does.
+        let unparked = self.parked.unpark(&key, super::publish::REUSE_WAIT);
+        let whole = unparked.is_some();
+        if let Some(held) = unparked {
             self.bounded.insert(key.clone(), held);
         }
         self.clock = self.clock.wrapping_add(1);
@@ -719,17 +769,7 @@ impl Worker {
         }
         if !current {
             self.bounded.remove(&key);
-            while self.bounded.len() >= super::MAX_MOUNTED {
-                let Some(oldest) = self
-                    .bounded
-                    .iter()
-                    .min_by_key(|(_, held)| held.held.used)
-                    .map(|(key, _)| key.clone())
-                else {
-                    break;
-                };
-                self.bounded.remove(&oldest);
-            }
+            self.evict_bounded();
             let (bytes, heads) = state.document(&holder).map_err(unavailable)?;
             let app = ConfinedReplica::open(
                 &self.catalogue,
@@ -771,10 +811,15 @@ impl Worker {
             .get_mut(&key)
             .ok_or_else(|| unavailable("the record did not mount".into()))?;
         held.held.used = clock;
-        // A replica taken back from a save that outlived the grace was set
-        // aside when the workspace last caught up: what others wrote since is
-        // merged before it acts, only the changes after the heads it holds.
-        super::catch_up::catch_up(&holder, &mut held.held, state, None);
+        // What others wrote since it was last used is merged before it acts, only the
+        // changes after the heads it holds; a replica opened anew or taken back from a save
+        // that outlived the grace merges what the workspace holds of every part it has.
+        let behind = held.held.behind.take();
+        if whole || !current {
+            super::catch_up::catch_up(&holder, &mut held.held, state, None);
+        } else if let Some(behind) = behind {
+            super::catch_up::catch_up(&holder, &mut held.held, state, Some(&behind));
+        }
         super::catch_up::hold_parts(&holder, &mut held.held, state);
         super::catch_up::tell_kept(&mut held.held, state, kept);
         if holder != *route && !held.held.parts.contains_key(route) {
@@ -886,6 +931,12 @@ impl Worker {
             }
             return None;
         };
+        // Kept as asked before the answer can land: whoever follows the invocation reads
+        // that its person is asked, and need not wait for them.
+        let waiting = asked_on_devices(invocation);
+        if let Some(entry) = self.log().entries.get_mut(&invocation) {
+            entry.update = waiting.clone();
+        }
         let shared = Arc::clone(&self.shared);
         let asking = Asking {
             workspace_id,
@@ -893,11 +944,11 @@ impl Worker {
             binding: ApprovalBinding::of(workspace_id, caller, request),
         };
         asked.then(move |reply| shared.answered(asking, reply.as_ref()));
-        Some(InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }).receipt())
+        Some(InvocationState::new(invocation, waiting).receipt())
     }
 
     /// `invocation` waits for the person's answer, asked as `about` says.
-    fn waits_for_person(&self, invocation: InvocationId, about: About) -> Outcome {
+    pub(super) fn waits_for_person(&self, invocation: InvocationId, about: About) -> Outcome {
         if let Some(entry) = self.log().entries.get_mut(&invocation) {
             entry.about = Some(Box::new(about));
         }
@@ -905,13 +956,14 @@ impl Worker {
     }
 
     /// What the person is asked about running `descriptor` with `arguments`
-    /// on the record at `route` ([`About`]).
+    /// on the record at `route`, which carries `carries` ([`About`]).
     pub(super) fn about(
         &self,
         workspace_id: WorkspaceId,
         route: &DocumentRoute,
         descriptor: &tilo_actions::ActionDescriptor,
         arguments: serde_json::Map<String, serde_json::Value>,
+        carries: super::carried::Carries,
     ) -> About {
         About {
             record: self
@@ -920,6 +972,7 @@ impl Worker {
             descriptor: descriptor.clone(),
             arguments,
             route: route.clone(),
+            carries,
         }
     }
 
@@ -968,8 +1021,11 @@ impl Worker {
             .ok_or(Outcome::Rejected(ActionCallError::UnknownAction))?;
         // What the caller's own view offers, asked for by address: the record
         // publishes to its owner what the caller may not run, which tells a
-        // refused action from one that does not exist.
+        // refused action from one that does not exist. The owner's copy is
+        // brought up to date for that answer alone: a caller's own actions
+        // never catch this device's copy up (`Worker::perform`).
         let Some(descriptor) = held.held.app.descriptor(&target.address) else {
+            self.brought_up_to_date(&key.0, state);
             return Err(Outcome::Rejected(
                 if self.publishes(&key.0, &target.address) {
                     ActionCallError::NotPermitted
@@ -1019,7 +1075,14 @@ impl Worker {
                 return Err(Outcome::Rejected(own_word_refused()));
             }
             Err(tilo_actions::api::ApiError::ConfirmationRequired) => {
-                let about = self.about(workspace_id, route, &descriptor, arguments);
+                // What it carries is read by the names its resource offers this caller.
+                let carries = super::carried::read(&descriptor, &arguments, |action| {
+                    held.held.app.descriptor(&tilo_actions::ActionAddress::new(
+                        target.address.resource.as_str(),
+                        action,
+                    ))
+                });
+                let about = self.about(workspace_id, route, &descriptor, arguments, carries);
                 return Err(self.waits_for_person(request.invocation, about));
             }
             Err(error) => return Err(super::api_outcome(&error)),
@@ -1044,6 +1107,7 @@ impl Worker {
         // It holds what it wrote: the next merge into it takes only what
         // others wrote since, never its own change read back.
         super::caught_up_with_own(&holder, &mut held.held, &wrote);
+        self.behind_all_but(&super::Writer::Bounded(key.clone()), &wrote);
         self.bounded.insert(key, held);
         Ok((output, left_at))
     }
@@ -1131,6 +1195,24 @@ pub(super) fn placed((anchor, head): (LiveAnchor, LiveAnchor)) -> ActorPlace {
     }
 }
 
+/// What an invocation says while its person is asked to allow it on their devices.
+const ASKED_ON_DEVICES: &str = "Its person is asked about this on their devices, and it is done \
+     when they allow it there. Nothing happened yet.";
+
+/// How `invocation` stands while its person is asked to allow it: under way, with nothing
+/// of it done. The phase is the protocol's own word for a confirmation that is required, so
+/// whoever follows the invocation can tell it from one that is merely slow.
+fn asked_on_devices(invocation: InvocationId) -> InvocationUpdate {
+    InvocationUpdate::Progress {
+        invocation,
+        sequence: 1,
+        phase: tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned(),
+        completed: None,
+        total: None,
+        message: Some(ASKED_ON_DEVICES.to_owned()),
+    }
+}
+
 /// What a bounded caller's invocation waiting on the person needs to go on.
 pub(super) struct Asking {
     pub(super) workspace_id: WorkspaceId,
@@ -1188,6 +1270,10 @@ impl super::Shared {
                 Ok(token) => {
                     if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation) {
                         entry.approval = Some(token);
+                        // Allowed: it is under way now, and no longer waits for its person.
+                        if !entry.update.is_terminal() {
+                            entry.update = InvocationUpdate::Accepted { invocation };
+                        }
                     }
                     let (done, _) = tilo_actions::remote::pending();
                     let job = super::Job::Invoke {
@@ -1207,7 +1293,10 @@ impl super::Shared {
                 }
                 Err(error) => failed(&error),
             },
-            Some(Ok(ConfirmationReply::Deny)) => failed("the person did not allow it"),
+            // A reply answers an agent's own question, never an action's.
+            Some(Ok(ConfirmationReply::Deny | ConfirmationReply::Replied(_))) => {
+                failed("the person did not allow it")
+            }
             Some(Err(_)) | None => failed("the person did not answer in time"),
         };
         if let Some(entry) = self.log.lock_recover().entries.get_mut(&invocation)

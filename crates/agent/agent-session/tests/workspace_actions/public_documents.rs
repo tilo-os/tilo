@@ -29,7 +29,7 @@ use tilo_actions::remote::{CataloguePage, ReceiptStatus};
 use tilo_mcp::McpServer;
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::directory::Listing;
-use tilo_session_client::remote::SessionActions;
+use tilo_session_actions::SessionActions;
 use tilo_user_identity::DeviceCapabilities;
 
 const NOTES: &str = "so.tilo.notes";
@@ -168,22 +168,22 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         !page.rows.is_empty(),
         "the note publishes its actions to the member"
     );
-    // The note is a page of the record: it is listed where it stands, under
-    // the notes the record keeps, which the app publishes beside its notebook
-    // rather than under it.
+    // The note is a page of the app's resource: the notebook stands at that
+    // resource's own level, and beside it the chain its notes are kept in,
+    // which a caller reading a level at a time goes on into.
     assert!(
         page.rows
             .iter()
             .any(|row| row.resource.id == "notes.notebook"),
-        "the host lists the notebook the note is in: {page:?}"
+        "the service lists the notebook the note is in: {page:?}"
     );
     let Some(kept) = page
         .rows
         .iter()
-        .find(|row| row.resource.kind == "notes.pages")
+        .find(|row| row.resource.kind == "notes.pages" && row.has_children)
         .map(|row| row.resource.id.clone())
     else {
-        panic!("the host lists the notes the record keeps: {page:?}");
+        panic!("the service lists the chain the notebook's notes are kept in: {page:?}");
     };
     let pages = catalogue_under(&mut member, &provider, Some(&kept))
         .await
@@ -348,7 +348,7 @@ async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
 /// channel it opens with is where a post goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_sent() {
-    let (hosted, host, workspace, _state) = lounge_with_chat().await;
+    let (hosted, host, workspace, _state) = Box::pin(lounge_with_chat()).await;
 
     // A member of the workspace, through its action API.
     let (member_root, _) = tilo_user_identity::UserIdentity::generate("Member", 2);
@@ -407,7 +407,9 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
             InvokeArgument::Json(arguments),
         )
     };
-    let receipt = member.invoke(posted("c_general")).await;
+    // A post follows its receipt as a page does: the service answers accepted
+    // while the change's save is still landing.
+    let receipt = member.invoke_settled(posted("c_general")).await;
     assert!(
         matches!(receipt.status, ReceiptStatus::Completed { .. }),
         "the post reached the workspace's own chat: {:?}",
@@ -415,7 +417,7 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
     );
     // A channel the workspace's chat does not have is refused: the service read
     // the chat the workspace holds, not one of its own.
-    let refused = member.invoke(posted("c_missing")).await;
+    let refused = member.invoke_settled(posted("c_missing")).await;
     assert!(
         !matches!(refused.status, ReceiptStatus::Completed { .. }),
         "a channel the chat has not got took a post: {:?}",
@@ -449,7 +451,7 @@ async fn chat_history(hosted: &Hosted, workspace: &str) -> (Vec<u8>, usize) {
 /// chat's genesis over the one people talk in.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
-    let (hosted, host, workspace, _state) = lounge_with_chat().await;
+    let (hosted, host, workspace, _state) = Box::pin(lounge_with_chat()).await;
     let before = chat_history(&hosted, &workspace).await;
 
     // A member of the workspace, whose device runs their agent.
@@ -495,7 +497,7 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     arguments.insert("channel".into(), serde_json::json!(format!("c_{CHANNEL}")));
     arguments.insert("text".into(), serde_json::json!("hello from the agent"));
     let posted = member
-        .invoke(request(
+        .invoke_settled(request(
             &record_provider(&chat),
             ActionAddress::new(
                 ui::resource::chain_resource_id(&chat::parts::chain()),

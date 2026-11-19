@@ -533,8 +533,16 @@ fn an_issue_and_a_project_are_named_by_their_names() {
             ..NewIssue::titled(nb("Lost"))
         }))
         .expect_err("no project is named Nowhere");
-    assert!(why.contains("no project or area named Nowhere"), "{why}");
-    assert!(why.contains("Launch"), "what there is follows: {why}");
+    // The model's catalogue owns the words: what it refuses with names the
+    // project asked for and the ones there are.
+    let expected = ui::tilo_resource::word!(
+        "tasks-areas-not-found",
+        catalogue = "../tasks-model/locales",
+        asked = "Nowhere".to_owned(),
+        holds = "Launch".to_owned()
+    )
+    .read();
+    assert_eq!(why, expected);
     // An issue's parent is named the same way, by the title it is read under.
     board
         .apply(IssueList::CREATE.with(NewIssue {

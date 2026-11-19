@@ -367,7 +367,7 @@ async fn a_devices_invocation_answers_across_restart_and_a_failed_write() {
             assert!(fixture.invocation_rx.try_recv().is_err());
             let _ = silent_wire;
             // Restart on the same journal and workspace tree.
-            let gone = Arc::downgrade(&fixture.state);
+            let gone = fixture.state.gone();
             drop(api);
             drop(fixture);
             broker_gone(gone).await;

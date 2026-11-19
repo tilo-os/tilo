@@ -257,7 +257,7 @@ pub trait IdentityKey {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl IdentityKey for runtime_identity::SigningIdentity {
+impl IdentityKey for crate::store::SigningIdentity {
     fn person(&self) -> [u8; 32] {
         self.group_public_key()
     }
@@ -308,6 +308,18 @@ impl PersonSigner {
     pub fn new(key: Box<dyn IdentityKey + Send + Sync>) -> Self {
         Self(key)
     }
+
+    fn sign_whole(&self, message: &[u8]) -> Result<[u8; 64], String> {
+        match self.0.sign_whole(message) {
+            Ok(Some(signature)) => Ok(signature),
+            Ok(None) => Err(
+                "this device holds only part of your identity's key, so your other devices sign \
+                 with it"
+                    .into(),
+            ),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl collab_types::signer::DeviceSigner for PersonSigner {
@@ -316,17 +328,23 @@ impl collab_types::signer::DeviceSigner for PersonSigner {
     }
 
     fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
-        use collab_types::signer::SignError;
-        let signed = match self.0.sign_whole(&message) {
-            Ok(Some(signature)) => Ok(signature),
-            Ok(None) => Err(SignError(
-                "this device holds only part of your identity's key, so your other devices sign \
-                 with it"
-                    .into(),
-            )),
-            Err(error) => Err(SignError(error)),
-        };
+        let signed = self
+            .sign_whole(&message)
+            .map_err(collab_types::signer::SignError);
         Box::pin(std::future::ready(signed))
+    }
+}
+
+/// The statements a person's root makes (device certificates, revocations)
+/// sign through the same key as its commands.
+impl tilo_user_identity::StatementSigner for PersonSigner {
+    fn public_key(&self) -> [u8; 32] {
+        self.0.person()
+    }
+
+    fn sign_digest(&self, digest: &[u8; 32]) -> Result<[u8; 64], tilo_user_identity::SignError> {
+        self.sign_whole(digest)
+            .map_err(tilo_user_identity::SignError)
     }
 }
 

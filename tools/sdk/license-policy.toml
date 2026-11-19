@@ -107,6 +107,7 @@ client_side = [
     "tilo-secrets",            # where a device keeps its keys
     "tilo-selector",
     "tilo-sort",
+    "tilo-unlock-protocol",   # how a boot opened its system volume, in the server's status
     "tilo-user-identity",
     "tilo-wake",
     "tilo-words",              # what a declared name is called in a sentence

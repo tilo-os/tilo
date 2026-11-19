@@ -14,6 +14,7 @@ use settings_store::device_vpn::{
 use ui::LocalState;
 use ui::framework::LiveRow;
 use ui::icons::Icon;
+use ui::tilo_resource;
 use ui::tilo_resource::Effect as _;
 use ui::widget::{Button, ListRow, Toggle};
 
@@ -93,6 +94,22 @@ fn exit_user_row_id(device: &str) -> String {
     format!("vpn.exit-user:{device}")
 }
 
+/// Another of the person's devices this one can route through, as the pane
+/// publishes it: a row of the `vpn.device` type.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "vpn.device", label = "VPN device")]
+pub(crate) struct VpnDevice;
+
+/// A device using this one as its VPN, as the pane publishes it: a row of
+/// the `vpn.exit-user` type, offering to stop it.
+#[derive(ui::tilo_resource::Row)]
+#[row(
+    kind = "vpn.exit-user",
+    label = "VPN client device",
+    effects = VpnEffect
+)]
+pub(crate) struct ExitUserRow;
+
 impl NetworkModel {
     pub(crate) fn follow_device_vpn(&mut self) -> Option<Rc<dyn Any>> {
         if !self.reach.devices {
@@ -159,32 +176,20 @@ impl NetworkModel {
     }
 
     fn through_live(row: &DeviceVpnRow) -> LiveRow {
-        LiveRow::new(
-            through_row_id(&row.device),
-            "vpn.device",
-            through_name(&row.label),
-        )
-        .operation(
+        let mut live =
+            LiveRow::typed::<VpnDevice>(through_row_id(&row.device), through_name(&row.label));
+        live = live.operation(
             SettingsEffect::from(VpnEffect::SetDeviceVpn {
                 device: row.device.clone(),
                 on: !row.is_on(),
             })
             .bound_asking(&["on"]),
-        )
+        );
+        live
     }
 
     fn exit_user_live(user: &ExitUser) -> LiveRow {
-        LiveRow::new(
-            exit_user_row_id(&user.device),
-            "vpn.exit-user",
-            shown_label(&user.label),
-        )
-        .operation(
-            SettingsEffect::from(VpnEffect::StopDeviceExit {
-                device: user.device.clone(),
-            })
-            .bound(),
-        )
+        LiveRow::typed::<ExitUserRow>(exit_user_row_id(&user.device), shown_label(&user.label))
     }
 }
 
