@@ -338,6 +338,7 @@ impl Desktop {
         }
         let handle = self.handle.clone();
         let names = Rc::clone(&self.shared.content_names);
+        let windows = super::prepare::content_of(self.shared.peer);
         let wake = self.shared.clone();
         wasm_bindgen_futures::spawn_local(async move {
             #[expect(
@@ -358,7 +359,7 @@ impl Desktop {
             };
             match copy(&page, &files, into.as_deref(), &report).await {
                 Ok(copied) => {
-                    let opened = open(&handle, &names, &copied, &opens);
+                    let opened = open(&handle, &names, (page.content(), &windows), &copied, &opens);
                     let mut line = dropped_files::added_line(
                         &copied.top,
                         copied.files.len(),
@@ -551,14 +552,20 @@ async fn keep(
         .map_err(|error| error.to_string())
 }
 
-/// Open the files of `copied` as `opens` says; what opened, as the drop's end says it.
+/// Open the files of `copied` as `opens` says; what opened, as the drop's end says it. Each file
+/// is kept in the tree's content (`kept`), and an app's window reads what it is handed from the
+/// content the desktop's windows share (`windows`): a file opened is handed over there first.
 fn open(
     handle: &tilo_desktop_surface::DesktopHandle,
     names: &std::cell::RefCell<std::collections::HashMap<String, String>>,
+    (kept, windows): (&tilo_content::ContentStore, &tilo_content::ContentStore),
     copied: &Copied,
     opens: &Opens,
 ) -> Option<String> {
     let launch = |app: &str, file: &CopiedFile| {
+        if let Err(why) = crate::content_open::hand_over(kept, windows, &file.hash) {
+            tracing::warn!(%why, file = %file.name, "a dropped file was not handed to its app");
+        }
         names
             .borrow_mut()
             .insert(file.hash.clone(), file.name.clone());

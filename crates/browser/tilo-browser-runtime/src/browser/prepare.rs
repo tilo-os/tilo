@@ -50,9 +50,13 @@ pub(super) fn desktop_inputs(
 
 /// The content store a mount lends its windows: its workspace's, or one of its own outside any.
 pub(super) fn content(config: &Config) -> tilo_content::ContentStore {
-    config
-        .peer
-        .and_then(crate::replicated::content)
+    content_of(config.peer)
+}
+
+/// The content the windows of the desktop of `peer` read and keep (a page with no peer keeps its
+/// own): what a window another hands a file to reads it from.
+pub(super) fn content_of(peer: Option<u32>) -> tilo_content::ContentStore {
+    peer.and_then(crate::replicated::content)
         .unwrap_or_else(tilo_content::ContentStore::page_files)
 }
 

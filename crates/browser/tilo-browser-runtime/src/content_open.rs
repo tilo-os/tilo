@@ -59,6 +59,39 @@ pub(crate) fn opened_file(
     OpenFile::new(&name, media_type, bytes)
 }
 
+/// Keep the file whose content is `hash` in `kept` (its manifest and the chunks it lists, or its
+/// bytes whole) in `windows` too, under the same addresses: a file dropped on the shell is kept in
+/// the workspace tree's content, and the window it opens in reads the content windows share.
+///
+/// # Errors
+/// What `kept` lacks of the file, or what `windows` refused to keep.
+pub(crate) fn hand_over(
+    kept: &ContentStore,
+    windows: &ContentStore,
+    hash: &str,
+) -> Result<(), String> {
+    let gone = || format!("{hash} is not kept here");
+    let bytes = kept.read(hash).ok_or_else(gone)?;
+    let mut parts = Vec::new();
+    if fs_content::is_manifest(&bytes) {
+        let manifest = fs_content::Manifest::decode(&bytes).map_err(|error| error.to_string())?;
+        for chunk in manifest.chunks() {
+            let chunk = hex::encode(chunk.hash);
+            parts.push(
+                kept.read(&chunk)
+                    .ok_or_else(|| format!("{chunk} is not kept here"))?,
+            );
+        }
+    }
+    parts.push(bytes);
+    for part in parts {
+        windows
+            .put_public(&part)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +161,26 @@ mod tests {
         assert_eq!(file.media_type(), "text/csv");
         let (file, _) = opened_file(&table, &content, Some("data.TSV")).unwrap();
         assert_eq!(file.media_type(), "text/tab-separated-values");
+    }
+
+    #[test]
+    fn a_dropped_file_is_handed_whole_to_the_content_windows_read() {
+        let (kept, windows) = (store(), store());
+        let mut csv = b"name,amount\n".to_vec();
+        csv.extend((0..40_000_u32).flat_map(|n| format!("item {n},{n}\n").into_bytes()));
+        let mut stream = fs_content::Streamed::new(csv.len() as u64, None);
+        let mut keep = |_: &fs_content::ChunkRef, bytes: &[u8]| {
+            kept.put_public(bytes).unwrap();
+        };
+        stream.push(&csv, &mut keep).unwrap();
+        let (manifest, _) = stream.finish(&mut keep).unwrap();
+        let hash = kept.put_public(&manifest.encode()).unwrap();
+        assert!(opened_file(&hash, &windows, Some("big.csv")).is_err());
+
+        hand_over(&kept, &windows, &hash).unwrap();
+        let (file, _) = opened_file(&hash, &windows, Some("big.csv")).unwrap();
+        assert_eq!(file.media_type(), "text/csv");
+        assert_eq!(file.bytes(), csv.as_slice());
+        assert!(hand_over(&kept, &windows, &"ab".repeat(32)).is_err());
     }
 }
