@@ -1,7 +1,7 @@
 //! Waking the windows that read a store when another replica's change
 //! arrives in it, and what the workspace said of records it asked for.
 
-use super::{DocumentId, ResourceStore};
+use super::{DocumentCheckout, DocumentId, ResourceStore, ResourceType};
 
 impl ResourceStore {
     /// Wake the window `reader` belongs to whenever another replica's change
@@ -68,6 +68,34 @@ impl ResourceStore {
         {
             set.wanted.borrow_mut().insert(id);
         }
+    }
+
+    /// Whether `id`, not here, is one this store asks its workspace for and the answer is
+    /// still owed; it is wanted from the workspace until then
+    /// ([`Self::wanted_resources`]).
+    pub(super) fn awaits_workspace(&self, want: &DocumentCheckout) -> bool {
+        let Ok(set) = self.0.try_borrow() else {
+            return false;
+        };
+        if !set.asks_workspace.get() || set.answered.borrow().contains_key(&want.id) {
+            return false;
+        }
+        set.wanted.borrow_mut().insert(want.id.clone());
+        set.wanted_kinds
+            .borrow_mut()
+            .insert(want.id.clone(), want.kind.clone());
+        true
+    }
+
+    /// The kind this store opened `id` as, when it asks its workspace for it yet
+    /// ([`Self::wanted_resources`]): what a document of the app's own that its window opened
+    /// from the workspace is held beside the window as when it arrives.
+    #[must_use]
+    pub fn wanted_kind(&self, id: &DocumentId) -> Option<ResourceType> {
+        self.0
+            .try_borrow()
+            .ok()
+            .and_then(|set| set.wanted_kinds.borrow().get(id).cloned())
     }
 
     /// Whether the workspace's hosts answered for `id`

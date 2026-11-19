@@ -306,6 +306,7 @@ fn records_of_many_workspaces_share_the_pools_workers_and_outlive_one_that_stops
                     name: String::new(),
                 },
                 Seed::New,
+                false,
             )
             .unwrap();
             record.take_mutation().unwrap();

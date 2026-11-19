@@ -411,6 +411,7 @@ impl Workspaces {
                 &tilo_actions::MemberId::person(hex::encode(governor.user_public_key)),
                 &tilo_agent_session::ReplicaActor::Owner,
                 seed,
+                false,
             )
             .map_err(|error| CollaborationError::new(error.to_string()))?;
             if record.is_empty() != source.document_id().is_package_primary() {

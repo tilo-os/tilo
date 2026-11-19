@@ -151,6 +151,10 @@ pub struct OpenView<'a> {
     permissions: PermissionContext,
     created: bool,
     content: Option<tilo_content::ContentStore>,
+    /// The view's store asks its workspace for each document it opens and does not hold
+    /// ([`ResourceStore::ask_workspace_for_missing`]): what whoever holds the view answers, as
+    /// a page's workspace does for its windows.
+    asks_workspace: bool,
 }
 
 impl OpenView<'_> {
@@ -181,6 +185,16 @@ impl OpenView<'_> {
     #[must_use]
     pub fn lending(mut self, store: tilo_content::ContentStore) -> Self {
         self.content = Some(store);
+        self
+    }
+
+    /// Have the view's store ask its workspace for the documents it opens and does not hold:
+    /// one not here is then on its way rather than founded, until the workspace hands it over
+    /// or answers it holds none of it
+    /// ([`ResourceStore::ask_workspace_for_missing`]).
+    #[must_use]
+    pub fn asking_the_workspace(mut self) -> Self {
+        self.asks_workspace = true;
         self
     }
 
@@ -258,21 +272,25 @@ impl AttachedView {
             permissions: PermissionContext::permissive(),
             created: false,
             content: None,
+            asks_workspace: false,
         }
     }
 
-    /// Give `context` what whoever holds the view lends it: the workspace's content, and for
-    /// an app that keeps documents for its whole workspace
-    /// ([`collab_types::WORKSPACE_DOCUMENTS`]) its own `store` for them, which opens only once
-    /// each was handed over or is known to be new; until then they are on their way, which
-    /// asks nothing and founds nothing. With those still awaited, and whether the app
-    /// keeps any. Another app's are not handed to this view at all.
+    /// Give `context` what whoever holds the view lends it: the workspace's content, and its own
+    /// `store` for the documents the view opens from its workspace, which for an app that keeps
+    /// documents for its whole workspace ([`collab_types::WORKSPACE_DOCUMENTS`]) opens only
+    /// once each was handed over or is known to be new; until then they are on their way, which
+    /// asks nothing and founds nothing. The rest of the app's own documents (the workspace's
+    /// folder, which a Files window opens) are opened from it as a window does. With those
+    /// still awaited, and whether the app keeps any. Another app's are not handed to this view
+    /// at all.
     fn lent(
         context: &mut ui_core::application::ProcessContext,
         lends: Option<tilo_content::ContentStore>,
         definition: &'static ApplicationDefinition,
         store: &ResourceStore,
         me: &MemberId,
+        asks_workspace: bool,
     ) -> (Awaited, bool) {
         if let Some(lends) = lends {
             context.provide_content(lends);
@@ -289,7 +307,10 @@ impl AttachedView {
                 .collect(),
         ));
         let keeps = !awaited.borrow().is_empty();
-        if keeps {
+        // A view whose documents come from its workspace is lent the store it keeps them in: an
+        // app that keeps none for the workspace, and whose store asks its workspace for what
+        // its window opens, still opens the workspace's own documents beside its own.
+        if keeps || asks_workspace {
             let (waiting, own, store) = (Rc::clone(&awaited), definition.app_id(), store.clone());
             context.provide_workspace_resources(
                 ui_core::resource::workspace::WorkspaceResources::new(me.clone(), move |owner| {
@@ -304,6 +325,11 @@ impl AttachedView {
         (awaited, keeps)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one view opened: its store, its context and its first frame, in the order they \
+                  depend on each other"
+    )]
     fn open_view(view: OpenView<'_>) -> Result<Self, String> {
         let OpenView {
             definition,
@@ -314,6 +340,7 @@ impl AttachedView {
             permissions,
             created,
             content,
+            asks_workspace,
         } = view;
         let invoker = &invoker;
         let me = member_of(invoker)?;
@@ -361,8 +388,19 @@ impl AttachedView {
             &target,
         )
         .map_err(|error| error.to_string())?;
-        let (awaited, keeps_for_workspace) =
-            Self::lent(&mut context, content, definition, &records, me);
+        // Asked before the view's first frame opens anything, so a document the workspace
+        // holds is on its way rather than founded here.
+        if asks_workspace {
+            records.ask_workspace_for_missing();
+        }
+        let (awaited, keeps_for_workspace) = Self::lent(
+            &mut context,
+            content,
+            definition,
+            &records,
+            me,
+            asks_workspace,
+        );
         let component = definition
             .instantiate(context, target, RestoreInput::None)
             .map_err(|error| error.to_string())?;
@@ -1305,12 +1343,12 @@ impl AttachedView {
         })
     }
 
-    /// Have the app open what it keeps for its whole workspace, once the view was told of
-    /// all of it. Its declaration asked for each once, when the view opened and they were
-    /// still awaited, and a view no window shows is laid out and never refreshed, so nothing
-    /// else asks again.
+    /// Have the app open what it asked its workspace for, once the view was told of all of
+    /// it. Its declaration asked for each once, when the view opened and they were still
+    /// awaited, and a view no window shows is laid out and never refreshed, so nothing else
+    /// asks again.
     fn take_up_kept(&mut self) {
-        if !self.keeps_for_workspace || !self.awaited.borrow().is_empty() {
+        if self.keeps_for_workspace && !self.awaited.borrow().is_empty() {
             return;
         }
         let _ = self
@@ -1319,19 +1357,20 @@ impl AttachedView {
             .with_widget_mut(|root: &mut super::root::ResourceRoot| root.storage.open_arrived());
     }
 
-    /// What the app keeps for its whole workspace that is open here and holds something of
+    /// The documents the view opened from its workspace beside its own — what the app keeps for
+    /// its whole workspace ([`Self::kept_for_workspace`]) and the app's own documents a window
+    /// opens from it (the workspace's folder a Files window shows) — that hold something of
     /// this member's to send: one a peer's change was merged into, or one founded here that
-    /// holds more than its founding. One only founded is nobody's change yet, and sending
-    /// it would be a write by a member who made none.
+    /// holds more than its founding. One only founded is nobody's change yet, and sending it
+    /// would be a write by a member who made none.
     fn kept_changed(&self) -> Vec<DocumentCheckout> {
-        if !self.keeps_for_workspace {
-            return Vec::new();
-        }
         let founding = tilo_actions::FrameworkChange::Genesis.change_message();
         self.records
             .open_resources()
             .into_iter()
-            .filter(|checkout| self.kept_for_workspace(&checkout.id).is_some())
+            .filter(|checkout| {
+                checkout.id != self.checkout.id && checkout.id.chain_part().is_none()
+            })
             .filter(|checkout| {
                 self.beside.contains_key(&checkout.id)
                     || self
@@ -1417,24 +1456,47 @@ impl AttachedView {
         Ok(taken)
     }
 
-    /// Merge a peer's change into `record`, a part of one of the app's
-    /// chains ([`Self::beside`]), opening it first when the view holds it
-    /// not yet (a part another device started). Changes that build on
-    /// nothing the part holds are left alone: `Ok(false)`. Whether it
-    /// changed.
+    /// `document` as one the view opened from its workspace: a document of its own that its
+    /// store asked its workspace for (a Files window's tree and its chunks), which the store
+    /// now holds or was opened as. `None` for anything else, which no document here may take.
+    fn opened_from_workspace(
+        &self,
+        document: &ui_core::resource::DocumentId,
+    ) -> Option<DocumentCheckout> {
+        if let Some(opened) = self
+            .records
+            .open_resources()
+            .into_iter()
+            .find(|checkout| checkout.id == *document)
+        {
+            return Some(opened);
+        }
+        let kind = self.records.wanted_kind(document)?;
+        Some(DocumentCheckout::new(document.clone(), kind))
+    }
+
+    /// Merge a peer's change into `document`, a part of one of the app's
+    /// chains ([`Self::beside`]), a document the app keeps for its workspace, or one its window
+    /// opened from it ([`Self::opened_from_workspace`]), opening it first when the view holds
+    /// it not yet (a part another device started). Changes that build on nothing the part
+    /// holds are left alone: `Ok(false)`. Whether it changed.
     pub fn merge_resource(
         &mut self,
-        record: &ui_core::resource::DocumentId,
+        document: &ui_core::resource::DocumentId,
         mutation: &DocumentMutation,
     ) -> Result<bool, String> {
-        let checkout = self.beside(record).ok_or_else(|| {
-            format!(
-                "{} is not a part of a chain {} keeps",
-                record.as_str(),
-                self.definition.app_id()
-            )
-        })?;
-        let opened = !self.records.is_ready(record);
+        let held = self.beside(document);
+        let from_workspace = held.is_none();
+        let checkout = held
+            .or_else(|| self.opened_from_workspace(document))
+            .ok_or_else(|| {
+                format!(
+                    "{} is no document {} holds beside its own",
+                    document.as_str(),
+                    self.definition.app_id()
+                )
+            })?;
+        let opened = !self.records.is_ready(document);
         if opened && self.records.try_open_resource(&checkout).is_err() {
             // Kept as the peer sent it, then opened as the view's own are.
             let DocumentMutation::Snapshot(bytes) = mutation else {
@@ -1444,7 +1506,7 @@ impl AttachedView {
                 StorageKey::Record {
                     package: self.definition.app_id().into(),
                     workspace: self.workspace.clone(),
-                    record: record.as_str().into(),
+                    record: document.as_str().into(),
                 },
                 bytes.clone(),
                 None,
@@ -1456,7 +1518,7 @@ impl AttachedView {
         if let DocumentMutation::Incremental(bytes) = mutation
             && !self
                 .records
-                .with(record, |doc| DocumentSync::builds_on(doc, bytes))
+                .with(document, |doc| DocumentSync::builds_on(doc, bytes))
                 .unwrap_or(false)
         {
             return Ok(false);
@@ -1466,19 +1528,24 @@ impl AttachedView {
         // publish whole: it starts from what the record already holds.
         let heads = self
             .records
-            .with(record, ui_core::automerge::AutoCommit::get_heads)
+            .with(document, ui_core::automerge::AutoCommit::get_heads)
             .unwrap_or_default();
         let sync = self
             .beside
-            .entry(record.clone())
+            .entry(document.clone())
             .or_insert_with(move || DocumentSync::delivered(heads));
         if sync.snapshotted() {
-            sync.set_aside(&self.records, record)
-                .map_err(|error| set_aside_failed(record, &error))?;
+            sync.set_aside(&self.records, document)
+                .map_err(|error| set_aside_failed(document, &error))?;
         }
         let changed = sync.merge(&self.records, &checkout, mutation.clone())?;
         // What the workspace holds of it is here now: nothing founds another.
-        self.awaited.borrow_mut().remove(record);
+        self.awaited.borrow_mut().remove(document);
+        if from_workspace {
+            // The window that asked its workspace for it opens it at its next frame, as it
+            // does one the workspace delivered: what it waited for arrived.
+            self.records.note_kept();
+        }
         self.take_up_kept();
         // A part opened here is new to the view even when the change merged
         // into it is what it opened from, and what the view asks the

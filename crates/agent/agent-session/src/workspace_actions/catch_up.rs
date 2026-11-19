@@ -64,6 +64,10 @@ pub(super) fn catch_up(
     }
 }
 
+/// The rounds of [`Worker::hand_wanted`]: how many documents a view's ask for further
+/// documents may lead to within one action.
+const WANTED_ROUNDS: usize = 4;
+
 /// The rounds of [`hold_parts`]: each takes the parts a chain wants after
 /// the last round handed it one, so a chain held whole takes all of its
 /// parts in the second round; the bound only keeps a mistake from asking
@@ -199,6 +203,34 @@ fn hold(route: &DocumentRoute, mounted: &mut Mounted, state: &WorkspaceState) {
     }
 }
 
+/// The documents the view opened from its workspace that `holder` holds not yet, as routes:
+/// everything its store asked its workspace for, other than the parts of its chains
+/// ([`hold_parts`] hands those) and the document itself. A Files window opens the workspace's
+/// folder and each chunk it lists this way; a window whose app keeps nothing beside its own asks
+/// for nothing.
+pub(super) fn wanted_untold(
+    holder: &DocumentRoute,
+    mounted: Option<&Mounted>,
+) -> Vec<DocumentRoute> {
+    let Some(mounted) = mounted else {
+        return Vec::new();
+    };
+    let own = mounted.app.document_id();
+    mounted
+        .app
+        .wanted_resources()
+        .into_iter()
+        .filter(|document| document != own)
+        .filter(|document| document.chain_part().is_none() && !document.is_chain_head())
+        .map(|document| DocumentRoute {
+            app_id: holder.app_id.clone(),
+            cluster_id: holder.cluster_id.clone(),
+            document: document.as_str().to_owned(),
+        })
+        .filter(|route| !mounted.parts.contains_key(route) && !mounted.foreign.contains(route))
+        .collect()
+}
+
 /// The routes of what `holder`'s app keeps for its whole workspace beside its own document
 /// ([`collab_types::WORKSPACE_DOCUMENTS`]: Chat's of the workspace's agents and emoji) that
 /// `mounted` was told nothing of yet. Empty for every app that keeps none, which is nearly
@@ -319,6 +351,26 @@ impl Worker {
         }
         hold_parts(holder, mounted, state);
         tell_kept(mounted, state, kept);
+        // What the view opened from the workspace, after the chains are handed over: a part
+        // of one is left to [`hold_parts`].
+        self.hand_wanted(holder, state);
+    }
+
+    /// Hand `mounted` each document its view opens from the workspace and does not hold yet,
+    /// until it asks for none: one it was handed opens a part of itself, or names the chunks of
+    /// a tree, which it then asks for ([`wanted_untold`]). The rounds are bounded so a view
+    /// that keeps asking for what the workspace holds none of does not hold the action.
+    fn hand_wanted(&mut self, holder: &DocumentRoute, state: &WorkspaceState) {
+        for _ in 0..WANTED_ROUNDS {
+            let wanted = self.kept_held(wanted_untold(holder, self.mounted.get(holder)));
+            if wanted.is_empty() {
+                return;
+            }
+            let Some(mounted) = self.mounted.get_mut(holder) else {
+                return;
+            };
+            tell_kept(mounted, state, wanted);
+        }
     }
 
     /// Whether the workspace holds each of `routes`, as far as it answered. One still on
@@ -459,6 +511,7 @@ impl Worker {
                     record: reads::document_id(&route.document)?,
                     changes: vec![bytes],
                 },
+                true,
             )
             .map_err(|error| error.to_string())?;
             let app = self.lend(app, &route.cluster_id);

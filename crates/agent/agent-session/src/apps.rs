@@ -455,7 +455,9 @@ impl Replica {
         actor: ReplicaActor,
         seed: Seed,
     ) -> Result<Self, AppError> {
-        Self::open_lending(catalogue, app_id, workspace, member, actor, seed, None)
+        Self::open_lending(
+            catalogue, app_id, workspace, member, actor, seed, false, None,
+        )
     }
 
     /// [`Self::open`], lending the record's view `content`, as a host lends
@@ -473,6 +475,7 @@ impl Replica {
         member: &MemberId,
         actor: ReplicaActor,
         seed: Seed,
+        asks_workspace: bool,
         content: Option<tilo_content::ContentStore>,
     ) -> Result<Self, AppError> {
         let definition = catalogue
@@ -510,6 +513,11 @@ impl Replica {
             .for_invoker(&invoker)
             .with_permissions(permissions)
             .created(created);
+        let opening = if asks_workspace {
+            opening.asking_the_workspace()
+        } else {
+            opening
+        };
         let view = match content {
             Some(store) => opening.lending(store),
             None => opening,

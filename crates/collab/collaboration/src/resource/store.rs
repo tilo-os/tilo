@@ -156,6 +156,10 @@ pub struct ResourceSet {
     /// The records not here that were opened while [`Self::asks_workspace`]:
     /// what the workspace is asked for ([`ResourceStore::wanted_resources`]).
     wanted: std::cell::RefCell<std::collections::BTreeSet<DocumentId>>,
+    /// The kind each of `wanted` was opened as, by id: what a document the view opened from
+    /// its workspace is held beside it as when it arrives
+    /// ([`ResourceStore::wanted_kind`]).
+    wanted_kinds: std::cell::RefCell<std::collections::BTreeMap<DocumentId, ResourceType>>,
     /// The windows that read this store's records, woken when another replica's change arrives,
     /// which no input or wake of theirs announces.
     readers: std::cell::RefCell<Vec<crate::WakeHandle>>,
@@ -226,6 +230,7 @@ impl ResourceSet {
             answered: std::cell::RefCell::default(),
             asks_workspace: std::cell::Cell::new(false),
             wanted: std::cell::RefCell::default(),
+            wanted_kinds: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
@@ -261,6 +266,7 @@ impl ResourceSet {
             answered: std::cell::RefCell::default(),
             asks_workspace: std::cell::Cell::new(false),
             wanted: std::cell::RefCell::default(),
+            wanted_kinds: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: None,
         }
@@ -1339,6 +1345,7 @@ impl ResourceOwners {
             answered: std::cell::RefCell::default(),
             asks_workspace: std::cell::Cell::new(false),
             wanted: std::cell::RefCell::default(),
+            wanted_kinds: std::cell::RefCell::default(),
             readers: std::cell::RefCell::default(),
             _profile_lifetime: self.profile_lifetime.clone(),
         });
@@ -2144,7 +2151,7 @@ impl ResourceStore {
             {
                 Err(ResourceOpenError::NotYours)
             }
-            Err(ResourceOpenError::MissingResource) if self.awaits_workspace(&want.id) => {
+            Err(ResourceOpenError::MissingResource) if self.awaits_workspace(want) => {
                 Err(ResourceOpenError::Arriving)
             }
             Ok(outcome) => {
@@ -2196,19 +2203,6 @@ impl ResourceStore {
             .try_borrow()
             .map(|set| set.wanted.borrow().iter().cloned().collect())
             .unwrap_or_default()
-    }
-
-    /// Whether `id`, not here, waits for the workspace's hosts to send it or
-    /// to say they have none of it; it is wanted from them then.
-    fn awaits_workspace(&self, id: &DocumentId) -> bool {
-        let Ok(set) = self.0.try_borrow() else {
-            return false;
-        };
-        if !set.asks_workspace.get() || set.answered.borrow().contains_key(id) {
-            return false;
-        }
-        set.wanted.borrow_mut().insert(id.clone());
-        true
     }
 
     /// Reserve a New identity with its check and no document/history/writer yet:

@@ -88,7 +88,7 @@ pub fn confined(
     actor: &ReplicaActor,
     seed: Seed,
 ) -> Result<ConfinedReplica, AppError> {
-    ConfinedReplica::open(&catalogue(), app, WORKSPACE, who, actor, seed)
+    ConfinedReplica::open(&catalogue(), app, WORKSPACE, who, actor, seed, false)
 }
 
 /// A record's document as JSON: a page's replica, or the copy an agent's

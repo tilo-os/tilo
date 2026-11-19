@@ -234,8 +234,9 @@ impl Worker {
                 member,
                 actor,
                 seed,
+                asks_workspace,
             } => match decode(&actor) {
-                Ok(actor) => self.open(&app_id, &workspace, &member, actor, seed),
+                Ok(actor) => self.open(&app_id, &workspace, &member, actor, seed, asks_workspace),
                 Err(reason) => Reply::Failed(reason),
             },
             Request::ViewsLoad { app_id, doc } => self.load_views(app_id, &doc),
@@ -372,6 +373,7 @@ impl Worker {
         member: &MemberId,
         actor: ReplicaActor,
         seed: Option<(String, Vec<Vec<u8>>)>,
+        asks_workspace: bool,
     ) -> Reply {
         if self.mode != Mode::Replica || self.replica.is_some() {
             return Reply::Failed("this slot holds one record".into());
@@ -391,6 +393,7 @@ impl Worker {
             member,
             actor,
             seed,
+            asks_workspace,
             Some(self.content.store.clone()),
         ) {
             Ok(replica) => {

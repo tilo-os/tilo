@@ -206,6 +206,7 @@ fn a_pdf_pinned_and_read_at_once_lays_nothing_out() {
             &MemberId::person("ada"),
             ReplicaActor::Owner,
             Seed::New,
+            false,
             Some(content),
         )
         .unwrap();
@@ -272,6 +273,7 @@ fn a_sheets_actions_cost_the_same_at_ten_rows_and_two_thousand() {
             &MemberId::person("ada"),
             ReplicaActor::Owner,
             Seed::New,
+            false,
             Some(tilo_content::ContentStore::memory_in_workspace()),
         )
         .unwrap();
@@ -359,6 +361,7 @@ fn a_sheet_read_and_exported_lays_nothing_out() {
             &MemberId::person("ada"),
             ReplicaActor::Owner,
             Seed::New,
+            false,
             Some(tilo_content::ContentStore::memory_in_workspace()),
         )
         .unwrap();

@@ -166,6 +166,7 @@ fn an_agent_reads_searches_drafts_and_exports_mail_delivered_without_a_server() 
             name: String::new(),
         },
         Seed::New,
+        false,
     )
     .expect("a Mail record is held in a confined worker")
     .lending(workspace.clone());
@@ -357,6 +358,7 @@ fn an_agent_is_offered_adding_an_account_its_person_is_asked_for() {
             name: String::new(),
         },
         Seed::New,
+        false,
     )
     .expect("a Mail record is held in a confined worker");
     let add = operation(&agent, "add-account");

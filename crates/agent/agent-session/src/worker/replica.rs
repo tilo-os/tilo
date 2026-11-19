@@ -97,6 +97,10 @@ struct Inner {
     /// for a store that asks nothing): told again to a worker that replaces it, since what
     /// the app keeps for its whole workspace opens only on that word.
     told: BTreeMap<String, ui::resource::WorkspaceAnswer>,
+    /// The documents the store asked its workspace for
+    /// ([`ConfinedReplica::wanted_resources`]): the app's own that it opens from the workspace,
+    /// and holds beside its own once one is handed over.
+    asked: BTreeSet<DocumentId>,
     /// The action last found by its address (both as JSON: the address, and the worker's
     /// answer), while nothing asked of the worker since could change that answer
     /// ([`Request::moves_nothing`]). One request of the service asks for the same address
@@ -104,6 +108,17 @@ struct Inner {
     /// effect, what its change is called), and each answer costs the worker a look at what
     /// the document publishes, which grows with what it holds.
     found: Option<(String, String)>,
+}
+
+/// Whether `document` is one the store asked its workspace for, which this replica may hold
+/// beside its own: a document the view opened from the workspace (the folder a Files window
+/// shows), or one the workspace answered it holds none of, which the view founded.
+fn beside_asked(inner: &Inner, document: &DocumentId) -> bool {
+    inner.asked.contains(document)
+        || inner
+            .asks_workspace
+            .as_ref()
+            .is_some_and(|answers| answers.contains_key(document.as_str()))
 }
 
 impl Inner {
@@ -158,6 +173,7 @@ impl ConfinedReplica {
         member: &tilo_actions::MemberId,
         actor: &ReplicaActor,
         seed: Seed,
+        asks_workspace: bool,
     ) -> Result<Self, AppError> {
         let actor =
             serde_json::to_string(actor).map_err(|error| worker_error(error.to_string()))?;
@@ -187,6 +203,7 @@ impl ConfinedReplica {
                 member: member.clone(),
                 actor: actor.clone(),
                 seed,
+                asks_workspace,
             })
             .map_err(|stopped| worker_error(stopped.to_string()))?;
         let record = match reply {
@@ -217,8 +234,9 @@ impl ConfinedReplica {
                 beside_dirty: false,
                 kept: Vec::new(),
                 held: BTreeSet::new(),
-                asks_workspace: None,
+                asks_workspace: asks_workspace.then(BTreeMap::new),
                 told: BTreeMap::new(),
+                asked: BTreeSet::new(),
                 found: None,
             }),
         };
@@ -389,6 +407,7 @@ impl ConfinedReplica {
                 member: self.member.clone(),
                 actor: self.actor.clone(),
                 seed: Some((self.record.as_str().to_owned(), vec![inner.mirror.save()])),
+                asks_workspace: inner.asks_workspace.is_some(),
             })
             .map_err(worker)?
         {
@@ -477,18 +496,24 @@ impl ConfinedReplica {
         done(reply)
     }
 
-    /// What the record's store asks its workspace's hosts for:
-    /// [`crate::Replica::wanted_resources`]. Empty when the worker cannot answer.
+    /// What the held document's store asks its workspace for:
+    /// [`crate::Replica::wanted_resources`]. Empty when the worker cannot answer. What it
+    /// names is kept: one the workspace hands over is held beside this one
+    /// ([`Self::apply_document`]), as a chain's part is.
     #[must_use]
     pub fn wanted_resources(&self) -> Vec<DocumentId> {
-        let reply = self.call(&mut self.lock(), &Request::Wanted);
-        match reply {
-            Ok(Reply::Wanted(records)) => records
+        let mut inner = self.lock();
+        let reply = self.call(&mut inner, &Request::Wanted);
+        let wanted: Vec<DocumentId> = match reply {
+            Ok(Reply::Wanted(asked)) => asked
                 .iter()
-                .filter_map(|record| super::serve::parse_document(record))
+                .filter_map(|document| super::serve::parse_document(document))
                 .collect(),
             _ => Vec::new(),
-        }
+        };
+        inner.asked.extend(wanted.iter().cloned());
+        drop(inner);
+        wanted
     }
 
     /// The workspace's hosts hold none of `record`:
@@ -1181,31 +1206,34 @@ impl ConfinedReplica {
     /// As [`Self::apply`]; a record that is no part of a chain is refused.
     pub fn apply_document(
         &self,
-        record: &DocumentId,
+        document: &DocumentId,
         mutation: &DocumentMutation,
     ) -> Result<(), AppError> {
-        if record == &self.record {
+        if document == &self.record {
             return self.apply(mutation);
-        }
-        if record.chain_part().is_none() && !self.keeps_for_workspace(record) {
-            return Err(AppError::Merge(format!(
-                "{} is held on its own, not beside {}",
-                record.as_str(),
-                self.record.as_str()
-            )));
         }
         let (snapshot, bytes) = match mutation {
             DocumentMutation::Snapshot(bytes) => (true, bytes),
             DocumentMutation::Incremental(bytes) => (false, bytes),
         };
         let mut inner = self.lock();
+        if document.chain_part().is_none()
+            && !self.keeps_for_workspace(document)
+            && !beside_asked(&inner, document)
+        {
+            return Err(AppError::Merge(format!(
+                "{} is held on its own, not beside {}",
+                document.as_str(),
+                self.record.as_str()
+            )));
+        }
         // Admitted here before the worker sees it, as the held record's own
         // changes are ([`Self::apply`]): a whole document into a copy of the
         // part's mirror, kept once the worker took it; an increment into the
         // mirror itself, which then holds more than the worker, never less.
         // A part's mirror grows with every post: copying it for each one
         // made a post cost what the part already holds.
-        let candidate = match inner.beside.get_mut(record) {
+        let candidate = match inner.beside.get_mut(document) {
             Some(mirror) if !snapshot => {
                 // What the part holds already (this replica's own write
                 // coming back from the workspace) is no change to it.
@@ -1232,7 +1260,7 @@ impl ConfinedReplica {
         let reply = self.call(
             &mut inner,
             &Request::ApplyDocument {
-                record: record.as_str().to_owned(),
+                record: document.as_str().to_owned(),
                 snapshot,
                 bytes: bytes.clone(),
             },
@@ -1240,7 +1268,7 @@ impl ConfinedReplica {
         let result = match reply {
             Ok(Reply::Done) => {
                 if let Some(candidate) = candidate {
-                    inner.beside.insert(record.clone(), candidate);
+                    inner.beside.insert(document.clone(), candidate);
                 }
                 // A write that waited for this part (a post made while the
                 // chain's newest part was on its way) is applied as it lands.
@@ -1285,7 +1313,7 @@ impl ConfinedReplica {
         };
         let mut out = Vec::new();
         for (record, snapshot, bytes) in taken {
-            match self.admit_beside(&mut inner.beside, &record, snapshot, bytes) {
+            match self.admit_beside(&mut inner, &record, snapshot, bytes) {
                 Ok(taken) => out.push(taken),
                 Err(error) => {
                     // A worker that sends what is not admitted is not asked
@@ -1304,26 +1332,35 @@ impl ConfinedReplica {
     /// on top of it.
     fn admit_beside(
         &self,
-        beside: &mut BTreeMap<DocumentId, Deferred>,
+        inner: &mut Inner,
         record: &str,
         snapshot: bool,
         bytes: Vec<u8>,
     ) -> Result<(DocumentId, DocumentMutation), AppError> {
-        let record = DocumentId::parse(record)
-            .filter(|record| {
-                (record.chain_part().is_some() || self.keeps_for_workspace(record))
-                    && record != &self.record
+        let parsed = DocumentId::parse(record);
+        // Whether the store asked its workspace for it, read before its mirror is borrowed.
+        let asked = parsed
+            .as_ref()
+            .is_some_and(|document| beside_asked(inner, document));
+        let beside = &mut inner.beside;
+        let document = parsed
+            .filter(|document| {
+                (document.chain_part().is_some()
+                    || self.keeps_for_workspace(document)
+                    || beside.contains_key(document)
+                    || asked)
+                    && document != &self.record
             })
-            .ok_or_else(|| worker_error("the worker named a record it does not hold beside"))?;
-        match (snapshot, beside.get_mut(&record)) {
+            .ok_or_else(|| worker_error("the worker named one it does not hold beside"))?;
+        match (snapshot, beside.get_mut(&document)) {
             (true, None) => {
                 let mirror = tilo_automerge_isolate::load(&bytes)
                     .map_err(|error| AppError::Merge(error.to_string()))?;
-                beside.insert(record.clone(), Deferred::from(mirror));
-                Ok((record, DocumentMutation::Snapshot(bytes)))
+                beside.insert(document.clone(), Deferred::from(mirror));
+                Ok((document, DocumentMutation::Snapshot(bytes)))
             }
             (false, Some(mirror)) => match mirror.admit(&bytes, Dependencies::RequireComplete) {
-                Ok(Applied::Changed(_)) => Ok((record, DocumentMutation::Incremental(bytes))),
+                Ok(Applied::Changed(_)) => Ok((document, DocumentMutation::Incremental(bytes))),
                 Ok(Applied::MissingDependencies) => Err(AppError::Merge(
                     "the worker's change builds on nothing the part holds".into(),
                 )),
@@ -1645,6 +1682,7 @@ mod tests {
                 name: String::new(),
             },
             Seed::New,
+            false,
         )
         .unwrap();
         assert!(
