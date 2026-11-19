@@ -1821,6 +1821,7 @@ export async function pairDevice(options) {
     let deviceKeyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
     const info = siteServer(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
     if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
+    if (info.address.web?.origin) webTransportGuard().allowOrigin(info.address.web.origin);
     // The server names this device: the name asked for, or the next numbered one
     // when another of the person's devices reads by it already. If this browser's
     // kept device key was revoked, mint a fresh key and retry once.
@@ -1835,6 +1836,8 @@ export async function pairDevice(options) {
       certified = await runtime.certifyDevice(userPublicKey, label, options.invite ?? null, deviceKeyForWasm,
         code => options.onPairingCode?.(code), JSON.stringify(info.address));
     }
+    if (info.address.web?.origin) webTransportGuard().allowOrigin(info.address.web.origin);
+    webTransportGuard().allowOrigin(origin);
     const enrolled = JSON.parse(certified).label ?? label;
     const common = {...options, identity: undefined, label: enrolled, profile, deviceKey: own, runtime};
     if (!entry) return connect({...common, deviceCertificate: certified});

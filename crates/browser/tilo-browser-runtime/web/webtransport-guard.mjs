@@ -101,7 +101,33 @@ export function installWebTransportGuard({
   const NativeWebTransport = scope.WebTransport;
   const nativeClose = NativeWebTransport.prototype?.close;
   const active = new Set();
+  const entriesByTransport = new WeakMap();
   const origins = new Map();
+
+  const hostnameOf = origin => {
+    try { return new URL(String(origin)).hostname; } catch { return ''; }
+  };
+
+  // Intercept WebTransport.prototype.close as well as own-property close so
+  // wasm-bindgen WebIDL calls mark intentional client teardown cleanly.
+  if (NativeWebTransport.prototype && typeof nativeClose === 'function') {
+    try {
+      Object.defineProperty(NativeWebTransport.prototype, 'close', {
+        configurable: true,
+        writable: true,
+        value(info) {
+          const tracked = entriesByTransport.get(this);
+          if (tracked) {
+            tracked.close(info);
+            return;
+          }
+          return info === undefined ? nativeClose.call(this) : nativeClose.call(this, info);
+        },
+      });
+    } catch {
+      // Non-configurable prototype; own-property wrapper still applies below.
+    }
+  }
 
   const originState = key => {
     let state = origins.get(key);
@@ -162,25 +188,32 @@ export function installWebTransportGuard({
     return closeOrigin(key);
   };
 
-  const allowOrigin = origin => {
-    const key = transportOrigin(origin);
-    const state = origins.get(key);
-    if (!state) return;
-    state.halted = false;
+  const clearState = state => {
     state.failures = 0;
     state.nextAllowedAt = 0;
     state.openUntil = 0;
     state.trips = 0;
   };
 
+  const allowOrigin = origin => {
+    const key = transportOrigin(origin);
+    const serverName = hostnameOf(key);
+    for (const [candidate, state] of origins) {
+      if (candidate === key || (serverName && hostnameOf(candidate) === serverName)) {
+        state.halted = false;
+        clearState(state);
+      }
+    }
+  };
+
   const resetOrigin = origin => {
     const key = transportOrigin(origin);
-    const state = origins.get(key);
-    if (!state || state.halted) return;
-    state.failures = 0;
-    state.nextAllowedAt = 0;
-    state.openUntil = 0;
-    state.trips = 0;
+    const serverName = hostnameOf(key);
+    for (const [candidate, state] of origins) {
+      if (!state.halted && (candidate === key || (serverName && hostnameOf(candidate) === serverName))) {
+        clearState(state);
+      }
+    }
   };
 
   /** Sweep unready stale transports if the active ceiling is hit. */
@@ -235,9 +268,9 @@ export function installWebTransportGuard({
       noteFailure(key);
     };
 
-    const rawClose = typeof transport.close === 'function'
-      ? transport.close.bind(transport)
-      : (typeof nativeClose === 'function' ? nativeClose.bind(transport) : null);
+    const rawClose = typeof nativeClose === 'function'
+      ? nativeClose.bind(transport)
+      : (typeof transport.close === 'function' ? transport.close.bind(transport) : null);
 
     const closeOnce = info => {
       if (closed) return;
@@ -264,6 +297,7 @@ export function installWebTransportGuard({
       },
     };
     active.add(entry);
+    entriesByTransport.set(transport, entry);
 
     // Intercept caller-initiated close() so we clear timers and distinguish
     // intentional client teardown from server-side drops.
@@ -314,7 +348,16 @@ export function installWebTransportGuard({
     }
 
     if (transport.closed && typeof transport.closed.then === 'function') {
-      const onSettled = () => {
+      const onResolved = info => {
+        const cleanClose = closedByClient || (opened && (info?.closeCode ?? 0) === 0);
+        if (!cleanClose && (!opened || (now() - openedAt) < shortLivedMs)) {
+          markFailureOnce();
+        } else if (opened) {
+          noteSuccess(key);
+        }
+        closeOnce();
+      };
+      const onRejected = () => {
         if (!closedByClient && (!opened || (now() - openedAt) < shortLivedMs)) {
           markFailureOnce();
         } else if (opened && (now() - openedAt) >= shortLivedMs) {
@@ -322,7 +365,7 @@ export function installWebTransportGuard({
         }
         closeOnce();
       };
-      transport.closed.then(onSettled, onSettled);
+      transport.closed.then(onResolved, onRejected);
     }
 
     return transport;
