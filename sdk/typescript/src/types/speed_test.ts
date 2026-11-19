@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.speed-test@303db65a9e1defad";
+export const SURFACE = "so.tilo.speed-test@2a7cffc1a6df2345";
 
 export interface Measurement {
   at_ms: number;

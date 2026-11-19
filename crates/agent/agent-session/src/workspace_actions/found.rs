@@ -321,6 +321,7 @@ impl Worker {
         // And the files of the workspace's folder, by their paths there, for a caller who may
         // read them.
         if within.is_everything()
+            && self.may_on_tree(workspace_id, caller, &[])
             && self.reads_files_cached(workspace_id, who.as_ref(), &cluster_id)
         {
             found.extend(self.found_files(workspace_id, &cluster_id, needle, MOST_FOUND));

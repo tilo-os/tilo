@@ -237,7 +237,7 @@ mod tests {
         .unwrap();
         app.settle();
         let record = app
-            .person::<crate::personal_bookmarks::PersonalBookmarks>()
+            .profile_resource::<crate::personal_bookmarks::PersonalBookmarks>()
             .unwrap();
         let trees = record.get().imported_trees();
         let tree = &trees[0];

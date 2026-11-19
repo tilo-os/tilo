@@ -1,5 +1,5 @@
 //! What the mailbox knows of each message: a collection the framework keeps
-//! beside the person's own mailbox, which decides where each message is
+//! beside the workspace mailbox, which decides where each message is
 //! stored, so that marking one message read in a mailbox of fifty thousand
 //! costs that message. The mailbox itself ([`crate::resource::Mail`]) keeps
 //! its folders, drafts, sends and checks, none of which grow with the mail.
@@ -354,6 +354,32 @@ impl MessageStates {
         }
     }
 
+    /// Recover a message and its flags from the member's earlier mailbox.
+    #[action(external, writes = messages, writes = held)]
+    pub fn import_previous_message(
+        &mut self,
+        id: String,
+        state: serde_json::Value,
+        body: Option<serde_json::Value>,
+    ) -> Result<(), Refusal> {
+        let key = message_key(&id).ok_or_else(no_message)?;
+        if self.holds(&key) {
+            return Ok(());
+        }
+        let mut state =
+            MessageState::from_json(&state).map_err(|error| Refusal::new(error.to_string()))?;
+        // An earlier server operation must never run as an import side effect.
+        state.server = None;
+        if let Some(body) = body.filter(|_| !state.purged) {
+            let body = crate::held::HeldMessage::from_json(&body)
+                .map_err(|error| Refusal::new(error.to_string()))?;
+            body.check()?;
+            self.held.push(key.clone(), body);
+        }
+        self.messages.push(key, state);
+        Ok(())
+    }
+
     /// Deliver message
     ///
     /// Puts an incoming message in the mailbox itself, in a folder, as mail
@@ -460,6 +486,13 @@ pub fn prepare(
                 // with a late fetch.
                 let retired = mail.retired_copy_ids();
                 messages.retain(|baseline| !retired.contains(baseline.id.trim()));
+            }
+            MessageStatesAction::ImportPreviousMessage(verb::ImportPreviousMessage {
+                id, ..
+            }) if message_key(id)
+                .is_some_and(|key| parts.iter().any(|(_, part)| part.holds(&key))) =>
+            {
+                return Err("the workspace mailbox already has this message".to_owned());
             }
             MessageStatesAction::DeliverMessage(verb::DeliverMessage { message }) => {
                 crate::held::prepare_delivery(message, parts)?;
@@ -630,7 +663,7 @@ pub fn owed(part: &MessageStates) -> Vec<(Id, ServerUpdate)> {
 impl ui::framework::Chained for MessageStates {
     type Base = Mail;
 
-    /// Never used: the messages live only beside the person's mailbox.
+    /// The workspace's message-state chain.
     fn chain() -> ui::resource::DocumentId {
         ui::resource::DocumentId::derived(
             "mail-messages",
@@ -638,11 +671,7 @@ impl ui::framework::Chained for MessageStates {
         )
     }
 
-    /// The parts are the person's own mailbox's (`mailbox.part(n)`),
-    /// so they are as private as it and sync with it. A mailbox kept as the
-    /// app's own document of the workspace (someone with no root identity,
-    /// on one device) has its parts under the chain's own name: that
-    /// document has no parts of its own.
+    /// Locate the workspace chain or an older member mailbox's original parts.
     fn chain_beside(base: &ui::resource::DocumentId) -> ui::resource::DocumentId {
         if base.is_package_primary() {
             Self::chain()

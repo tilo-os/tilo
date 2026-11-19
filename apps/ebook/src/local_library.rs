@@ -1,15 +1,11 @@
-//! Where each device opens the library's books from.
-//!
-//! A source path is a local portal grant on one device, not part of the
-//! shared library: each device keeps its grants and watched folders as its
-//! own entry in a resource beside the library ([`BookFiles`]), so reopening a
-//! book or watching a folder survives restart without putting a path into
-//! the library's document.
+//! Where this device opens the library's books from. Paths and watched folders
+//! stay with the device that holds their portal grants.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 
-use ui::framework::PersonResource;
+use ui::framework::ViewCx;
+use ui::storage::{Scope, Settings, SettingsSchema};
 use ui::tilo_resource::{self, Model, Refusal, resource};
 
 const MAX_ENTRIES: usize = 200;
@@ -72,11 +68,20 @@ impl BookFiles {
     }
 }
 
+#[derive(Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DeviceBookFiles {
+    #[serde(default)]
+    by_workspace: BTreeMap<String, Stored>,
+}
+
+impl SettingsSchema for DeviceBookFiles {
+    const SCOPE: Scope = Scope::DeviceLocal;
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct LocalLibrary {
-    /// Where the grants are kept: the [`BookFiles`] resource and this
-    /// device's id. `None` keeps them in memory only.
-    store: Option<(PersonResource<BookFiles>, String)>,
+    /// The device settings and workspace where the paths were granted.
+    store: Option<(Settings<DeviceBookFiles>, String)>,
     pub(crate) books: HashMap<String, PathBuf>,
     pub(crate) watched_folders: Vec<PathBuf>,
 }
@@ -91,13 +96,41 @@ impl std::fmt::Debug for LocalLibrary {
 }
 
 impl LocalLibrary {
-    /// `device`'s grants in `record`, which [`Self::save`] writes back to.
-    pub(crate) fn load(record: PersonResource<BookFiles>, device: String) -> Self {
-        let stored = record.with(|files| {
-            Self::from_stored(&files.devices.get(&device).cloned().unwrap_or_default())
-        });
+    pub(crate) fn open(cx: &ViewCx<crate::resource::Ebook>) -> Self {
+        let workspace = cx.workspace().unwrap_or_default();
+        let settings = cx.settings::<DeviceBookFiles>();
+        if !settings.get().by_workspace.contains_key(&workspace)
+            && let Some(device) = cx.device()
+        {
+            let opener = cx.resource_opener::<BookFiles>(ui::apps::EBOOK);
+            match opener.legacy_member_state() {
+                Ok(Some(previous)) => {
+                    if let Some(held) = previous.devices.get(device)
+                        && let Err(error) = settings.update(|state| {
+                            state
+                                .by_workspace
+                                .entry(workspace.clone())
+                                .or_insert_with(|| Self::from_stored(held).stored());
+                        })
+                    {
+                        tracing::warn!(%error, "could not restore local book files");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read earlier local book files"),
+            }
+        }
+        Self::load(settings.settings().clone(), workspace)
+    }
+
+    pub(crate) fn load(settings: Settings<DeviceBookFiles>, workspace: String) -> Self {
+        let stored = settings
+            .get()
+            .by_workspace
+            .get(&workspace)
+            .map_or_else(Self::default, Self::from_stored);
         Self {
-            store: Some((record, device)),
+            store: Some((settings, workspace)),
             ..stored
         }
     }
@@ -127,21 +160,16 @@ impl LocalLibrary {
     }
 
     pub(crate) fn save(&self) {
-        let Some((record, device)) = &self.store else {
+        let Some((settings, workspace)) = &self.store else {
             return;
         };
         let stored = self.stored();
-        if record.with(|files| files.devices.get(device) == Some(&stored)) {
+        if settings.get().by_workspace.get(workspace) == Some(&stored) {
             return;
         }
-        let keep = serde_json::to_value(&stored)
-            .map_err(|error| error.to_string())
-            .and_then(|kept| {
-                record
-                    .invoke(&BookFiles::KEEP.with((device.clone(), kept)))
-                    .map_err(|error| error.to_string())
-            });
-        if let Err(error) = keep {
+        if let Err(error) = settings.update(|state| {
+            state.by_workspace.insert(workspace.clone(), stored);
+        }) {
             tracing::warn!(%error, "ebook: couldn't persist local library capabilities");
         }
     }

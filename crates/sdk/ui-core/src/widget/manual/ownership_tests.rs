@@ -53,7 +53,6 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
         optional: vec![],
         opens: &[],
         workspace_resource: false,
-        member_resource: false,
         opens_before_resource: false,
         create: |_, _, _| unreachable!(),
     };

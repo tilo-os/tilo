@@ -1,4 +1,4 @@
-//! The person's command history across every session (docs/app-model/ush.md, "Search and
+//! The workspace's command history across sessions (docs/app-model/ush.md, "Search and
 //! history").
 
 use ui::tilo_resource::{
@@ -6,6 +6,70 @@ use ui::tilo_resource::{
 };
 
 pub const MAX_REMEMBERED: usize = 10_000;
+pub(crate) use ui::tilo_actions::policy::roles::WORKSPACE_TERMINAL_HISTORY_DOCUMENT as DOCUMENT;
+pub(crate) type HistoryRecord = ui::framework::WorkspaceResource<CommandHistory>;
+
+pub(crate) fn import_previous(
+    opener: &ui::framework::ResourceOpener<CommandHistory>,
+) -> Result<usize, String> {
+    let record = opener
+        .open(DOCUMENT)
+        .filter(|record| record.may_read() && record.may("import-run"))
+        .ok_or("the workspace must grant permission to import commands")?;
+    let Some(previous) = opener.legacy_member_state()? else {
+        return Ok(0);
+    };
+    let held: std::collections::HashSet<_> = record
+        .get()
+        .remembered
+        .values()
+        .map(|run| run.run.clone())
+        .collect();
+    let mut imported = 0;
+    for run in previous
+        .remembered
+        .values()
+        .filter(|run| !held.contains(&run.run))
+    {
+        let environment = run.environment.as_ref().map(|target| target.0.clone());
+        let workspace_run = matches!(
+            environment
+                .as_deref()
+                .and_then(crate::target::SessionTarget::decode),
+            Some(crate::target::SessionTarget::Environment { .. })
+        );
+        if !workspace_run || run.command.0.trim().is_empty() {
+            continue;
+        }
+        record
+            .invoke(&CommandHistory::IMPORT_RUN.with(Ran {
+                command: run.command.0.clone(),
+                cwd: run.cwd.0.clone(),
+                environment,
+                exit: run.exit,
+                ended_ms: run.ended_ms,
+                actor: run.actor.clone(),
+                session: run.session.0.clone(),
+                run: run.run.clone(),
+            }))
+            .map_err(|error| error.to_string())?;
+        imported += usize::from(
+            record
+                .get()
+                .remembered
+                .values()
+                .any(|entry| entry.run == run.run),
+        );
+    }
+    Ok(imported)
+}
+
+pub(crate) fn is_device_shell(target: Option<&str>) -> bool {
+    matches!(
+        target.and_then(crate::target::SessionTarget::decode),
+        Some(crate::target::SessionTarget::Host | crate::target::SessionTarget::LinuxVm { .. })
+    )
+}
 
 #[derive(Model, Clone, Debug, Default, PartialEq)]
 pub struct CommandHistory {
@@ -68,11 +132,17 @@ impl CommandHistory {
         cx: &mut ActionCx,
         #[param("The run, as its session recorded it", flatten)] ran: Ran,
     ) -> Result<(), Refusal> {
-        if ran.command.trim().is_empty() || ran.command.len() > crate::resource::MAX_COMMAND_BYTES {
-            return Err(Refusal::new("a run names its command line"));
-        }
-        self.keep(cx, ran);
-        Ok(())
+        self.keep(cx, ran, false)
+    }
+
+    /// Place an older workspace run in its chronological position.
+    #[action(external, writes = remembered)]
+    pub fn import_run(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The previous run", flatten)] ran: Ran,
+    ) -> Result<(), Refusal> {
+        self.keep(cx, ran, true)
     }
 
     pub fn matching<'a>(&'a self, text: &'a str) -> impl Iterator<Item = &'a Remembered> {
@@ -82,21 +152,31 @@ impl CommandHistory {
             .filter(move |run| run.command.0.contains(text))
     }
 
-    fn keep(&mut self, cx: &mut ActionCx, ran: Ran) {
+    fn keep(&mut self, cx: &mut ActionCx, ran: Ran, historical: bool) -> Result<(), Refusal> {
+        if ran.command.trim().is_empty() || ran.command.len() > crate::resource::MAX_COMMAND_BYTES {
+            return Err(Refusal::new("a run names its command line"));
+        }
         if self
             .remembered
             .values()
             .any(|remembered| remembered.run == ran.run)
         {
-            return;
+            return Ok(());
         }
-        while self.remembered.len() >= MAX_REMEMBERED {
-            let Some(oldest) = self.remembered.ids().next().cloned() else {
-                break;
-            };
-            self.remembered.remove(&oldest);
+        let len = self.remembered.len();
+        let position = if historical {
+            self.remembered
+                .values()
+                .position(|run| run.ended_ms > ran.ended_ms)
+                .unwrap_or(len)
+        } else {
+            len
+        };
+        if position == 0 && len >= MAX_REMEMBERED {
+            return Ok(());
         }
-        self.remembered.push(
+        self.remembered.insert(
+            position,
             cx.id(),
             Remembered {
                 command: Atom(ran.command),
@@ -109,5 +189,12 @@ impl CommandHistory {
                 run: ran.run,
             },
         );
+        while self.remembered.len() > MAX_REMEMBERED {
+            let Some(oldest) = self.remembered.ids().next().cloned() else {
+                break;
+            };
+            self.remembered.remove(&oldest);
+        }
+        Ok(())
     }
 }

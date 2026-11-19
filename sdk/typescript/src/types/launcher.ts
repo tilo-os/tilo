@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.launcher@6bbfc1de536cfb07";
+export const SURFACE = "so.tilo.launcher@34370c55e1d500a7";
 
 /** Search — `launcher.search`. */
 export interface Search extends tilo.Resource {

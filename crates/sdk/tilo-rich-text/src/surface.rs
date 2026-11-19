@@ -280,7 +280,7 @@ impl<S: RichTextSource + 'static> RichTextSurface<S> {
 impl RichTextSurface<dyn ErasedSource> {
     /// [`RichTextSurface::present_now`], compiled once.
     fn present_now_dyn(&mut self) {
-        if self.source.revision() != self.revision {
+        if !self.source.can_read() || self.source.revision() != self.revision {
             self.present_state(None);
         }
     }
@@ -559,6 +559,14 @@ impl RichTextSurface<dyn ErasedSource> {
     /// show an edit the document did not take (a refused one), to be shown
     /// as the document has them.
     fn present_state(&mut self, local: Option<&Range<usize>>) {
+        if !self.source.can_read() {
+            self.editor.present_blocks(&[]);
+            self.presented.clear();
+            self.sources.clear();
+            self.revision = None;
+            self.cursor = None;
+            return;
+        }
         if !self.keyed
             && let Some(keys) = self.source.presence_keys()
         {
@@ -658,7 +666,7 @@ impl RichTextSurface<dyn ErasedSource> {
         }
         self.commit(edits);
         self.source.sync(edits.doc());
-        if self.source.revision() != self.revision {
+        if !self.source.can_read() || self.source.revision() != self.revision {
             self.present_state(None);
         }
         let Some((range, boundary)) = self.editor.selected_block_move(up) else {
@@ -728,7 +736,7 @@ impl RichTextSurface<dyn ErasedSource> {
         }
         self.commit(edits);
         self.source.sync(edits.doc());
-        if self.source.revision() != self.revision {
+        if !self.source.can_read() || self.source.revision() != self.revision {
             self.present_state(None);
         }
         let range = match target {
@@ -871,7 +879,7 @@ impl RichTextSurface<dyn ErasedSource> {
     fn sync_dyn(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         self.source.sync(state);
-        if self.source.revision() != self.revision {
+        if !self.source.can_read() || self.source.revision() != self.revision {
             self.present_state(None);
         }
         self.editor.sync(state, path);

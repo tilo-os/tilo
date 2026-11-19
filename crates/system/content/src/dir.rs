@@ -788,6 +788,12 @@ impl ContentBackend for DirBackend {
 }
 
 impl DirBackend {
+    pub(crate) fn written_before(&self, hash: &str, before: SystemTime) -> bool {
+        Self::path_in(&self.root, hash)
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
+            .is_some_and(|written| written < before)
+    }
+
     /// Remove every item not in `live` that was last written before `before`: what a store
     /// collects when an item may be referenced only after it is written (an upload a record
     /// names once it is kept). Writing an item that is already here counts as writing it.
@@ -800,12 +806,7 @@ impl DirBackend {
         live: &BTreeSet<String>,
         before: SystemTime,
     ) -> Result<Collected, ContentError> {
-        self.remove_where(|hash| {
-            !live.contains(hash)
-                && Self::path_in(&self.root, hash)
-                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
-                    .is_some_and(|written| written < before)
-        })
+        self.remove_where(|hash| !live.contains(hash) && self.written_before(hash, before))
     }
 
     fn written_now(&self, path: &Path) {

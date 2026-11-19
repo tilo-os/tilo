@@ -527,21 +527,18 @@ impl Shared {
     }
 
     /// The tab showing `app`'s record `record`, by route, among the windows the shell has now,
-    /// in the order it holds them. The empty route is the app's own record here: the
-    /// workspace's, or the person's own of an app whose manifest says each member keeps their
-    /// own (the only one this page opens is its person's). A window that closed keeps its
+    /// in the order it holds them. The empty route names the app's workspace primary.
+    /// A window that closed keeps its
     /// record bound for a reopen, and is no window to go to or to run an action in.
     pub fn tab_on(&self, handle: &DesktopHandle, app: &str, record: &str) -> Option<TabId> {
         let definition = application(app)?;
         let kind = definition.resource_type.clone();
-        let own = definition.member_resource;
-        let shows = |route: &str| route == record || (record.is_empty() && own);
         let records = self.records.borrow();
         handle.read(|tree| {
             tree.tabs().map(|tab| tab.id).find(|tab| {
                 records
                     .get(tab)
-                    .is_some_and(|checkout| shows(checkout.id.route()) && checkout.kind == kind)
+                    .is_some_and(|checkout| checkout.id.route() == record && checkout.kind == kind)
             })
         })
     }
@@ -550,8 +547,8 @@ impl Shared {
     /// own): where an open of it goes, in place of a second window on what one shows. The
     /// window whose record this page bound is that window ([`Self::tab_on`]), the one an
     /// open's action then runs in. Before a window's record is bound (its bytes still on
-    /// their way), any window of an app that keeps one record, the workspace's or the
-    /// person's own, is on that record: Settings and Mail show one thing however many windows
+    /// their way), any window of an app that keeps one workspace record
+    /// is on that record: Settings and Mail show one thing however many windows
     /// they have. An app whose windows each keep a document of their own has no window on a
     /// record none of them named, so an open that names none opens a window.
     pub fn window_on(&self, handle: &DesktopHandle, app: &str, record: &str) -> Option<TabId> {
@@ -559,9 +556,7 @@ impl Shared {
             return Some(tab);
         }
         let definition = application(app)?;
-        if !record.is_empty()
-            || !(definition.member_resource || definition.keeps_workspace_resource())
-        {
+        if !record.is_empty() || !definition.keeps_workspace_resource() {
             return None;
         }
         handle
@@ -1081,10 +1076,7 @@ impl Tiles {
         }
         let store = self.store(definition)?;
         let (target, named_new) = self.launch_target(definition, &store, tab.id)?;
-        // A member's own record is theirs to start whatever their role; the
-        // workspace's record waits for someone who writes there.
-        let own = definition.member_resource && named_new.is_some();
-        if !own && (named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew)) {
+        if named_new.is_some() || matches!(target, LaunchTarget::PrimaryNew) {
             self.may_start_record(tab)?;
         }
         // The view this window saved, never one a closed window left under the same id.
@@ -1169,8 +1161,14 @@ impl Tiles {
         let handed = self.shared.opened_content.borrow_mut().remove(&instance);
         if let Some(hash) = handed {
             let name = self.shared.content_names.borrow().get(&hash).cloned();
-            let (file, _) =
-                crate::content_open::opened_file(&hash, &self.inputs.content, name.as_deref())?;
+            let (file, _) = crate::content_open::opened_file(
+                &hash,
+                &self.inputs.content,
+                name.as_deref(),
+                self.inputs
+                    .peer
+                    .map(|peer| (peer, self.inputs.workspace.as_str())),
+            )?;
             context.provide_open_file(file);
         }
         if let Some(page) = self.shared.page_stores(&self.inputs.author) {
@@ -1369,9 +1367,7 @@ impl Tiles {
         Err(Unready::Notice(notice))
     }
 
-    /// The record `tab` opens: its saved one, the person's own record of an
-    /// app each member keeps their own of, the workspace's own record, or a
-    /// new one.
+    /// The record `tab` opens: its saved record, the workspace primary, or a new record.
     fn launch_target(
         &self,
         definition: &'static ApplicationDefinition,
@@ -1387,33 +1383,8 @@ impl Tiles {
                 },
                 None,
             )),
-            None => self
-                .own_target(definition, store, tab)
-                .unwrap_or_else(|| self.workspace_target(definition, store, tab)),
+            None => self.workspace_target(definition, store, tab),
         }
-    }
-
-    /// The person's own record of an app that keeps one per member
-    /// ([`crate::app_page::own_opening`]), made on first use.
-    fn own_target(
-        &self,
-        definition: &'static ApplicationDefinition,
-        store: &ResourceStore,
-        tab: TabId,
-    ) -> Option<Result<(LaunchTarget, Option<DocumentId>), Unready>> {
-        let author = MemberId::person(self.inputs.author.clone());
-        let opening = crate::app_page::own_opening(definition, store, &author)?;
-        Some(match opening {
-            Ok(crate::app_page::Opening::Target(target)) => Ok((target, None)),
-            Ok(crate::app_page::Opening::New(id)) => Ok((LaunchTarget::New, Some(id))),
-            Ok(crate::app_page::Opening::Arriving) => {
-                Err(self.unopened(tab, &ui::resource::ResourceOpenError::Arriving))
-            }
-            Err(crate::app_page::Unopened::Records(error)) => Err(self.unopened(tab, &error)),
-            Err(crate::app_page::Unopened::InvalidRecord) => {
-                Err(Unready::Notice("invalid record id".into()))
-            }
-        })
     }
 
     /// The record a window that names none opens in the workspace: the

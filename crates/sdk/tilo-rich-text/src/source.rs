@@ -30,6 +30,11 @@ pub trait RichTextSource {
     /// Whether edits will be refused.
     fn read_only(&self) -> bool;
 
+    /// Whether current permissions allow the editor to show the text.
+    fn can_read(&self) -> bool {
+        true
+    }
+
     /// Bring the state up to date with `doc`, every paragraph read.
     fn sync(&mut self, doc: &Doc);
 
@@ -63,6 +68,8 @@ pub trait RichTextSource {
 pub trait ErasedSource {
     /// [`RichTextSource::read_only`].
     fn erased_read_only(&self) -> bool;
+    /// [`RichTextSource::can_read`].
+    fn erased_can_read(&self) -> bool;
     /// [`RichTextSource::sync`].
     fn erased_sync(&mut self, doc: &Doc);
     /// [`RichTextSource::revision`].
@@ -88,6 +95,10 @@ pub trait ErasedSource {
 impl<S: RichTextSource> ErasedSource for S {
     fn erased_read_only(&self) -> bool {
         self.read_only()
+    }
+
+    fn erased_can_read(&self) -> bool {
+        self.can_read()
     }
 
     fn erased_sync(&mut self, doc: &Doc) {
@@ -122,6 +133,10 @@ impl<S: RichTextSource> ErasedSource for S {
 impl RichTextSource for dyn ErasedSource {
     fn read_only(&self) -> bool {
         self.erased_read_only()
+    }
+
+    fn can_read(&self) -> bool {
+        self.erased_can_read()
     }
 
     fn sync(&mut self, doc: &Doc) {
@@ -285,6 +300,41 @@ impl FieldState {
     }
 }
 
+enum FieldRecord<P: Resource> {
+    Person(PersonResource<P>),
+    Workspace(ui::framework::WorkspaceResource<P>),
+}
+
+impl<P: Resource> FieldRecord<P> {
+    fn read_allowed(&self) -> bool {
+        match self {
+            Self::Person(_) => true,
+            Self::Workspace(record) => record.may_read(),
+        }
+    }
+
+    fn get(&self) -> &ui::resource::StoredResource {
+        match self {
+            Self::Person(record) => record.record(),
+            Self::Workspace(record) => record.record(),
+        }
+    }
+
+    fn start(&self, action: &Invoke<P>) -> Result<(), ActionError> {
+        match self {
+            Self::Person(record) => record.invoke(action),
+            Self::Workspace(record) => record.invoke(action),
+        }
+    }
+
+    fn apply(&self, action: &P::Action) -> Result<(), ActionError> {
+        match self {
+            Self::Person(record) => record.apply(action),
+            Self::Workspace(record) => record.act(action),
+        }
+    }
+}
+
 /// Rich text stored in a field of another resource — a message body, a
 /// note's page, a comment — edited as a child resource of it.
 ///
@@ -437,10 +487,8 @@ impl RichTextSource for RichTextField {
 /// Makes an edit of a person record's rich-text field the record's action.
 type Wrap<P> = Box<dyn Fn(&RichTextAction) -> <P as Resource>::Action>;
 
-/// Rich text stored in a field of a record the app keeps beside the one it
-/// shows ([`PersonResource`]): a draft, a note. It is the person's own record
-/// in the workspace, kept apart from the record the app shows; no other
-/// member reads or changes it.
+/// Rich text in a personal or workspace record kept beside the document
+/// the app shows. Workspace fields follow the current grants.
 ///
 /// `locate` finds the field's map in the record; `wrap` turns an edit of
 /// it into the record's own action (a field edit at its path), so the
@@ -448,7 +496,7 @@ type Wrap<P> = Box<dyn Fn(&RichTextAction) -> <P as Resource>::Action>;
 /// that creates the field, applied before the first edit of a field that
 /// does not exist yet.
 pub struct PersonField<P: Resource> {
-    record: PersonResource<P>,
+    record: FieldRecord<P>,
     locate: Locate,
     wrap: Wrap<P>,
     start: Option<Box<dyn Fn() -> Invoke<P>>>,
@@ -466,7 +514,24 @@ impl<P: Resource> PersonField<P> {
         wrap: impl Fn(&RichTextAction) -> P::Action + 'static,
     ) -> Self {
         Self {
-            record,
+            record: FieldRecord::Person(record),
+            locate: Box::new(locate),
+            wrap: Box::new(wrap),
+            start: None,
+            field: None,
+            heads: None,
+        }
+    }
+
+    /// The rich text field in a workspace record. The record's current
+    /// grants authorize each read and edit.
+    pub fn workspace(
+        record: ui::framework::WorkspaceResource<P>,
+        locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
+        wrap: impl Fn(&RichTextAction) -> P::Action + 'static,
+    ) -> Self {
+        Self {
+            record: FieldRecord::Workspace(record),
             locate: Box::new(locate),
             wrap: Box::new(wrap),
             start: None,
@@ -489,7 +554,7 @@ impl<P: Resource> PersonField<P> {
         if self.field.is_none()
             && let Some(start) = &self.start
         {
-            self.record.invoke(&start())?;
+            self.record.start(&start())?;
             self.refresh();
         }
         Ok(())
@@ -498,7 +563,12 @@ impl<P: Resource> PersonField<P> {
     /// Read the field again from the record when the record moved: an
     /// edit here, or one from the person's other device.
     fn refresh(&mut self) {
-        let heads = self.record.record().heads();
+        if !self.record.read_allowed() {
+            self.field = None;
+            self.heads = None;
+            return;
+        }
+        let heads = self.record.get().heads();
         if self.heads.as_ref() == Some(&heads) && self.field.is_some() {
             return;
         }
@@ -506,7 +576,7 @@ impl<P: Resource> PersonField<P> {
             .field
             .as_ref()
             .map_or(0, |field| field.revision.wrapping_add(1));
-        let read = self.record.record().read(|doc| {
+        let read = self.record.get().read(|doc| {
             let root = (self.locate)(doc)?;
             FieldState::read_only(doc, root, revision).ok()
         });
@@ -517,7 +587,14 @@ impl<P: Resource> PersonField<P> {
 
 impl<P: Resource> RichTextSource for PersonField<P> {
     fn read_only(&self) -> bool {
-        !self.record.editable()
+        match &self.record {
+            FieldRecord::Person(record) => !record.editable(),
+            FieldRecord::Workspace(record) => !record.may_read() || !record.may("start-draft"),
+        }
+    }
+
+    fn can_read(&self) -> bool {
+        self.record.read_allowed()
     }
 
     fn sync(&mut self, _doc: &Doc) {
@@ -534,7 +611,10 @@ impl<P: Resource> RichTextSource for PersonField<P> {
     }
 
     fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
-        self.field.as_ref().map(|field| read(&field.state))
+        self.field
+            .as_ref()
+            .filter(|_| self.record.read_allowed())
+            .map(|field| read(&field.state))
     }
 
     fn apply(&mut self, _edits: &mut Edits<'_>, edit: &RichTextAction) -> Result<(), ActionError> {
@@ -550,6 +630,10 @@ impl<P: Resource> RichTextSource for PersonField<P> {
 impl<S: RichTextSource> RichTextSource for Rc<std::cell::RefCell<S>> {
     fn read_only(&self) -> bool {
         self.borrow().read_only()
+    }
+
+    fn can_read(&self) -> bool {
+        self.borrow().can_read()
     }
 
     fn sync(&mut self, doc: &Doc) {

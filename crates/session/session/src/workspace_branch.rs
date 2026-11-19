@@ -180,7 +180,7 @@ async fn found(
     changes: &[u8],
     until: Instant,
 ) -> Result<(), String> {
-    let sealed = Some(seal_keys(engine, workspace, until).await?);
+    let sealed = Some(seal_keys(engine, workspace, (app, record), until).await?);
     engine
         .write_resource(workspace, (app, record), changes, true, sealed.as_ref())
         .await
@@ -236,20 +236,30 @@ pub(crate) async fn copy(
         _ => Sources::new(),
     };
     let founds = engine.filter(|engine| engine.holds(to));
+    let can_read = engine
+        .filter(|engine| engine.holds(from))
+        .map(|engine| engine.document_read_policy(from));
     let copied = tilo_rt::io::run(move || {
-        let records = make_copies(&places, from, to, sources, &mut branched);
-        Ok((branched, records))
+        let permits = |app: &str, document_id: &str| {
+            can_read
+                .as_ref()
+                .is_none_or(|check| check(app, document_id))
+        };
+        let documents = make_copies(&places, from, to, sources, &mut branched, &permits);
+        Ok((branched, documents))
     });
     let (mut branched, records) = copied.await.unwrap_or_else(|error| {
         let mut branched = Branched::default();
         branched.missing.push(error.to_string());
         (branched, Vec::new())
     });
-    for ((app, record), changes) in records {
+    for ((app, document_id), changes) in records {
         let Some(engine) = founds else { break };
-        match found(engine, to, (&app, &record), &changes, until).await {
+        match found(engine, to, (&app, &document_id), &changes, until).await {
             Ok(()) => branched.records = branched.records.saturating_add(1),
-            Err(error) => branched.missing.push(format!("{record} of {app}: {error}")),
+            Err(error) => branched
+                .missing
+                .push(format!("{document_id} of {app}: {error}")),
         }
     }
     branched
@@ -264,10 +274,11 @@ fn make_copies(
     to: WorkspaceId,
     mut sources: Sources,
     branched: &mut Branched,
+    can_read: &dyn Fn(&str, &str) -> bool,
 ) -> Vec<((String, String), Vec<u8>)> {
     let mut local: Local = BTreeMap::new();
     if let Some(data_home) = &places.data_home {
-        match copy_app_data(data_home, from, to, &mut sources, &mut local) {
+        match copy_app_data(data_home, from, to, &mut sources, &mut local, can_read) {
             Ok(copied) => branched.app_data = copied,
             Err(error) => branched.missing.push(error),
         }
@@ -275,6 +286,9 @@ fn make_copies(
     let workspace = to.to_string();
     let mut records = Vec::new();
     for ((app, record), source) in sources {
+        if !can_read(&app, &record) {
+            continue;
+        }
         let mut doc = match ui::resource::transfer::branch(&source, &workspace) {
             Ok(doc) => doc,
             Err(error) => {
@@ -366,11 +380,12 @@ fn read_resources(
 async fn seal_keys(
     engine: &Engine,
     workspace: WorkspaceId,
+    route: (&str, &str),
     until: Instant,
 ) -> Result<key_group::ContentKeys, String> {
     loop {
         let mut events = events(engine);
-        match engine.seal_keys(workspace)? {
+        match engine.resource_write_keys(workspace, route)? {
             SealKeys::Here(keys) => return Ok(keys),
             SealKeys::NoSecretStore => {
                 return Err("this device holds no secret store to keep its keys in".to_owned());
@@ -466,6 +481,7 @@ fn copy_app_data(
     to: WorkspaceId,
     sources: &mut Sources,
     local: &mut Local,
+    can_read: &dyn Fn(&str, &str) -> bool,
 ) -> Result<Copied, String> {
     let workspaces = data_home.join(launcher::appdir::WORKSPACES_DIR);
     let (from_id, to_id) = (from.to_string(), to.to_string());
@@ -478,7 +494,15 @@ fn copy_app_data(
         &source,
         &target,
         Strategy::Clone,
-        &mut |path| placed(path, &from_id, &to_id),
+        &mut |path| {
+            let parts: Vec<_> = path.iter().filter_map(|part| part.to_str()).collect();
+            if let Some((app, document_id)) = resource_of(&parts, &from_id)
+                && !can_read(&app, &document_id)
+            {
+                return None;
+            }
+            placed(path, &from_id, &to_id)
+        },
         &mut |_| {},
     )
     .map_err(|error| format!("what the apps keep for the workspace: {error}"))?;
@@ -495,6 +519,12 @@ fn copy_app_data(
         };
         let into = target.join(place.with_file_name(app_state::DOCUMENT_FILE));
         let parts: Vec<&str> = relative.iter().filter_map(|part| part.to_str()).collect();
+        let route = resource_of(&parts, &from_id);
+        if let Some((app, document_id)) = &route
+            && !can_read(app, document_id)
+        {
+            continue;
+        }
         let bytes = std::fs::read(&document).map_err(|error| error.to_string())?;
         let loaded = AutoCommit::load_with_options(
             &bytes,
@@ -502,7 +532,7 @@ fn copy_app_data(
         )
         .map_err(|error| format!("{}: {error}", relative.display()));
         let mut held = loaded?;
-        if let Some(route) = resource_of(&parts, &from_id)
+        if let Some(route) = route
             && let Some(source) = sources.get_mut(&route)
         {
             // The same record, as an app on this device last wrote it: its changes are the

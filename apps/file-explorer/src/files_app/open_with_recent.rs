@@ -4,10 +4,10 @@ use super::FilesState;
 use crate::command::FileCommand;
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
-use crate::recent::{RecentResource, RecentUse};
+use crate::recent::{RecentFiles, RecentUse};
 use runtime_portal::tools::DocumentApp;
 use std::path::{Path, PathBuf};
-use ui::tilo_resource::{AbsolutePath, Invoke};
+use ui::tilo_resource::AbsolutePath;
 use ui::widget::context_menu::MenuItem;
 
 pub(super) const SUBMENU_APPS: usize = 6;
@@ -207,46 +207,38 @@ impl FilesState {
             return;
         }
         let at = ui::time::unix_now_ms();
-        let shown = AbsolutePath::new(path).ok();
-        self.edit_recent(
-            |device| shown.map(|path| RecentResource::NOTE.with((device, path, last_use, at))),
-            |recent| recent.note(path, last_use, at),
-        );
+        self.edit_recent(|recent| recent.note(path, last_use, at));
     }
 
     pub(super) fn recent_moved(&mut self, from: &Path, to: &Path) {
-        let shown = AbsolutePath::new(from).ok().zip(AbsolutePath::new(to).ok());
-        self.edit_recent(
-            |device| shown.map(|(from, to)| RecentResource::MOVED.with((device, from, to))),
-            |recent| recent.moved(from, to),
-        );
-    }
-
-    fn recent_resource(&self) -> Option<(&ui::framework::PersonResource<RecentResource>, &str)> {
-        self.recent_resource.as_ref().zip(self.device.as_deref())
-    }
-
-    fn edit_recent(
-        &mut self,
-        edit: impl FnOnce(String) -> Option<Invoke<RecentResource>>,
-        change: impl FnOnce(&mut crate::recent::RecentFiles),
-    ) {
-        match self.recent_resource() {
-            Some((record, device)) => {
-                if let Some(edit) = edit(device.to_owned())
-                    && let Err(error) = record.invoke(&edit)
-                {
-                    tracing::warn!(%error, "could not save recent files");
-                }
-            }
-            None => change(&mut self.recent),
+        if AbsolutePath::new(from).is_ok() && AbsolutePath::new(to).is_ok() {
+            self.edit_recent(|recent| recent.moved(from, to));
         }
     }
 
-    pub(super) fn recent_list(&self) -> crate::recent::RecentFiles {
-        self.recent_resource().map_or_else(
+    fn edit_recent(&mut self, change: impl FnOnce(&mut RecentFiles)) {
+        if let Some((settings, workspace)) = &self.recent_settings {
+            if let Err(error) = settings.update(|state| {
+                change(state.by_workspace.entry(workspace.clone()).or_default());
+            }) {
+                tracing::warn!(%error, "could not save recent files");
+            }
+        } else {
+            change(&mut self.recent);
+        }
+    }
+
+    pub(super) fn recent_list(&self) -> RecentFiles {
+        self.recent_settings.as_ref().map_or_else(
             || self.recent.clone(),
-            |(record, device)| record.with(|recent| recent.on(device)),
+            |(settings, workspace)| {
+                settings
+                    .get()
+                    .by_workspace
+                    .get(workspace)
+                    .cloned()
+                    .unwrap_or_default()
+            },
         )
     }
 
@@ -275,13 +267,9 @@ impl FilesState {
     }
 
     pub(super) fn apply_forget_recent(&mut self, path: &Path) -> bool {
-        let shown = AbsolutePath::new(path).ok();
-        self.edit_recent(
-            |device| shown.map(|path| RecentResource::FORGET.with((device, path))),
-            |recent| {
-                recent.forget(path);
-            },
-        );
+        self.edit_recent(|recent| {
+            recent.forget(path);
+        });
         if self.is_recent_view() {
             self.refresh();
         }

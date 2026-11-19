@@ -19,6 +19,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc};
 
 mod history_access;
+mod retained;
 pub use history_access::HistoryUnavailable;
 pub mod sync;
 pub use sync::{DocumentSync, Outbound};

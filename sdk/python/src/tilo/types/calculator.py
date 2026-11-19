@@ -77,7 +77,7 @@ DeleteSurfaceArgs = TypedDict("DeleteSurfaceArgs", {
 
 class Document(Resource):
     """Calculator — `calculator.document`."""
-    __surface__ = "so.tilo.calculator@52956067930d21b2"
+    __surface__ = "so.tilo.calculator@3763b53280ea2b07"
     @property
     def history(self) -> list[Entry[HistoryEntry]]:
         """Read only."""

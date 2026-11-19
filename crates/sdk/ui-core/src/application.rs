@@ -49,10 +49,6 @@ pub struct ApplicationDefinition {
     /// shares), rather than a record per window: every window of the app in the workspace opens it, and
     /// the first creates it.
     pub workspace_resource: bool,
-    /// The record a window opens when it names none is the person record of the workspace
-    /// ([`DocumentId::of_member`]) rather than the workspace's record of the app: what it keeps there
-    /// (their mail) only their devices read.
-    pub member_resource: bool,
     /// The app's window shows before the workspace's record is read: a record this device has opens
     /// off the frame, and the component takes it in when it is decoded
     /// ([`ProcessContext::resource_opening`]).
@@ -389,6 +385,7 @@ impl Reopener {
         definition: &ApplicationDefinition,
         record: DocumentId,
     ) -> Result<(ProcessContext, LaunchTarget), LaunchError> {
+        definition.refuse_archived_document(&self.records, &self.author, &record)?;
         let checkout = DocumentCheckout::new(record.clone(), definition.resource_type.clone());
         let (target, new_resource) = match self.records.try_open_resource(&checkout) {
             Ok(_) => (
@@ -561,6 +558,14 @@ impl ProcessContext {
             if !permissions.borrow().check(required) {
                 return Err(LaunchError::CapabilityDenied(required.clone()));
             }
+        }
+        let named = match target {
+            LaunchTarget::New => new_document_id.as_ref(),
+            LaunchTarget::PrimaryNew => None,
+            LaunchTarget::Record { checkout, .. } => Some(&checkout.id),
+        };
+        if let Some(named) = named {
+            definition.refuse_archived_document(&records, &author, named)?;
         }
         let (record, reservation) = match target {
             LaunchTarget::New => {
@@ -998,15 +1003,27 @@ impl Drop for ProcessContext {
     }
 }
 impl ApplicationDefinition {
-    /// The record a window of `author` opens when it names none, when the app keeps each member
-    /// ([`Self::member_resource`]): their own record of the workspace.
-    #[must_use]
-    pub fn member_resource_of(&self, author: &MemberId) -> Option<DocumentCheckout> {
-        self.member_resource
-            .then(|| author.person_id())
-            .flatten()
-            .and_then(|person| DocumentId::of_member(person, self.resource_type.as_str()))
-            .map(|id| DocumentCheckout::new(id, self.resource_type.clone()))
+    fn refuse_archived_document(
+        &self,
+        records: &ResourceStore,
+        author: &MemberId,
+        id: &DocumentId,
+    ) -> Result<(), LaunchError> {
+        if id.is_package_primary() || records.app_and_home().1 == crate::resource::PERSONAL_SCOPE {
+            return Ok(());
+        }
+        let Some(person) = author.person_id() else {
+            return Ok(());
+        };
+        let mut root = [0; 32];
+        if hex::decode_to_slice(person, &mut root).is_ok()
+            && collab_types::OwnResource::recognise(self.app_id(), id.as_str(), root).is_some()
+        {
+            return Err(LaunchError::Record(
+                ResourceOpenError::ArchivedMemberDocument,
+            ));
+        }
+        Ok(())
     }
 
     /// Whether the app keeps one record per workspace, its package primary, rather than a record per
@@ -2377,10 +2394,10 @@ mod bound_lifetime_tests {
                 optional: vec![],
                 opens: &[],
                 workspace_resource: false,
-                member_resource: false,
                 opens_before_resource: false,
                 create: factory,
             };
+            let person = "ab".repeat(32);
             let supplied = DocumentId::for_tab(55);
             let prepare = |target, supplied| {
                 ProcessContext::prepare_scoped(
@@ -2393,7 +2410,7 @@ mod bound_lifetime_tests {
                         permissions: crate::permissions::SharedPermissions::new(
                             PermissionContext::permissive(),
                         ),
-                        author: MemberId::person("probe-author"),
+                        author: MemberId::person(&person),
                         action_context: tilo_actions::ActionContext::default(),
                     },
                     target,
@@ -2411,6 +2428,27 @@ mod bound_lifetime_tests {
             ));
             let primary = prepare(&LaunchTarget::PrimaryNew, None).unwrap();
             assert!(primary.record.id.is_package_primary());
+
+            crate::app_surface::register_package(
+                definition.app_id(),
+                b"[[resources]]\nkind = \"probe\"\nlabel = \"Probe\"\nversion = 1\nown = true\n",
+            );
+            let archived = DocumentId::of_member(&person, definition.resource_type.as_str())
+                .expect("the member's earlier document id");
+            assert!(matches!(
+                prepare(&LaunchTarget::New, Some(archived.clone())),
+                Err(LaunchError::Record(ResourceOpenError::ArchivedMemberDocument))
+            ));
+            assert!(matches!(
+                prepare(
+                    &LaunchTarget::Record {
+                        checkout: DocumentCheckout::new(archived, definition.resource_type.clone()),
+                        reveal: None,
+                    },
+                    None,
+                ),
+                Err(LaunchError::Record(ResourceOpenError::ArchivedMemberDocument))
+            ));
         }
 
         phase existing_package_primary_is_local_while_invalid_ordinary_records_are_rejected;
@@ -2428,7 +2466,6 @@ mod bound_lifetime_tests {
                 optional: vec![],
                 opens: &[],
                 workspace_resource: false,
-                member_resource: false,
                 opens_before_resource: false,
                 create: factory,
             };
@@ -2492,7 +2529,6 @@ mod bound_lifetime_tests {
                     optional: vec![],
                     opens: &[],
                     workspace_resource: false,
-                    member_resource: false,
                     opens_before_resource: false,
                     create: factory,
                 };
@@ -2583,7 +2619,6 @@ mod bound_lifetime_tests {
                     optional: vec![],
                     opens: &[],
                     workspace_resource: false,
-                    member_resource: false,
                     opens_before_resource: false,
                     create: factory,
                 };

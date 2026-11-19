@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-player@bb6bf2b768952ba1";
+export const SURFACE = "so.tilo.video-player@a870aba2955fda21";
 
 export interface Playlist {
   name: string;
@@ -91,19 +91,6 @@ export interface SetTransportArgs {
   epoch_ms: number;
 }
 
-/** The arguments of `keep`. */
-export interface KeepArgs {
-  device: string;
-  rows: unknown;
-}
-
-/** The arguments of `stood`. */
-export interface StoodArgs {
-  device: string;
-  id: string;
-  position_ms: number;
-}
-
 /** Video Player — `video-player.library`. */
 export interface Library extends tilo.Resource {
   playlists: Array<tilo.Entry<Playlist>>;
@@ -167,32 +154,5 @@ export const LIBRARY_ACTIONS = ["createPlaylist", "createPlaylistMany", "deleteP
 /** The `video-player.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {
   return resourceProxy(ws, path, SURFACE, LIBRARY_ACTIONS) as unknown as Library;
-}
-
-/** Recent videos — `video-player.recent`. */
-export interface Recent extends tilo.Resource {
-  devices: Record<string, unknown>;
-  keep(args: {
-    device: string;
-    rows: unknown;
-  }): Promise<void>;
-  /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
-  stood(args: {
-    device: string;
-    id: string;
-    position_ms: number;
-  }): Promise<void>;
-  /** Runs `stood` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  stoodMany(items: StoodArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `Recent` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const RECENT_ACTIONS = ["keep", "keepMany", "stood", "stoodMany"] as const;
-
-/** The `video-player.recent` kind at `path`. */
-export function recent(ws: tilo.Workspace, path: string): Recent {
-  return resourceProxy(ws, path, SURFACE, RECENT_ACTIONS) as unknown as Recent;
 }
 

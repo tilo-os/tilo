@@ -109,7 +109,7 @@ DisconnectArgs = TypedDict("DisconnectArgs", {
 
 class Project(Resource):
     """Chip Design — `chip_design.project`."""
-    __surface__ = "so.tilo.chip-design@298902c837db4f1e"
+    __surface__ = "so.tilo.chip-design@5852f96bbfe9c3da"
     @property
     def reports(self) -> dict[str, str]:
         """Read only."""

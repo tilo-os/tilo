@@ -45,7 +45,9 @@ pub fn print_file(header: Option<&AppHeader>, items: &[Item], comments: &[Commen
             [one] => options.push(format!("previously: {one}")),
             many => options.push(format!("previously: [{}]", many.join(", "))),
         }
-        if app.own_resources {
+        if app.profile_resources {
+            options.push("resources: .profile".to_owned());
+        } else if app.own_resources {
             options.push("resources: .own".to_owned());
         }
         if !app.web.is_empty() {

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.activity@fc8884dd13a243c5";
+export const SURFACE = "so.tilo.activity@fe5e26e58568ed26";
 
 /** The arguments of `clear-filters`. */
 export interface ClearFiltersArgs {

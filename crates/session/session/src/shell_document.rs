@@ -1,7 +1,7 @@
 //! The shell's own record, kept as the person's real record: where its document lives on this
 //! device, and how it reaches the person's other devices.
 //!
-//! The shell keeps the person's shell choices in its own record (`resources: .own`): the style,
+//! The shell keeps the person's shell choices in their profile (`resources: .profile`): the style,
 //! the bar and the dock, the strips' and the frames' settings, and the person's layout. That
 //! record is the person's as any app's is, so it is kept where an app's own record of the person's
 //! is kept: one document opened through `app_state` — the store `ui::resource` opens a record
@@ -27,7 +27,7 @@ use automerge::{AutoCommit, ChangeHash};
 use tilo_automerge::ApplyIncoming as _;
 
 /// The app whose record this is: the shell package the session runs, which declares
-/// `resources: .own` (`apps/tl/shell/app.tl`).
+/// `resources: .profile` (`apps/tl/shell/app.tl`).
 pub(crate) const APP: &str = "so.tilo.shell";
 
 /// Where the shell's record lives in this session, and what became of the one it kept.
@@ -219,9 +219,8 @@ impl ShellRecord {
     }
 }
 
-/// The record id the shell's own record takes: the one an app declaring `resources: .own` names for
-/// `person` (of the package kind `tl.so.tilo.shell`, read and changed by that person's devices alone),
-/// and, for a person without a root identity, the id every device derives alike.
+/// Keep the shell document's existing id within the person's profile so their settings and
+/// layout keep their history. An uncertified profile uses a device-local id.
 fn document_id(person: &str) -> String {
     tilolang_tilo::member_document_of(APP, person).unwrap_or_else(|| {
         ui::resource::person::document_id(&ui::resource::ResourceType::new(APP))

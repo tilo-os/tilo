@@ -45,6 +45,8 @@ pub struct AppHeader {
     /// `(resources: .own)`: each member keeps the app's resources in their own document there, which only
     /// that person's devices read; the default `.shared` keeps them where every member reads.
     pub own_resources: bool,
+    /// The app keeps its data in the person's profile (`resources: .profile`).
+    pub profile_resources: bool,
     /// `(web: ["example.com", "*.rss.org"])`: the hosts `uses web` requests may reach; any other is
     /// refused. `*.rss.org` covers subdomains, not `rss.org`.
     pub web: Vec<String>,

@@ -533,13 +533,16 @@ impl<R: Resource> ResourceEnv<R> {
         }
     }
 
-    /// The app's record of `P` ([`PersonResource`](super::PersonResource)):
-    /// one per kind, kept with the app's other records in the workspace it
-    /// is open in and synced with it. `None` where the host keeps no such
-    /// records (a view of a past version, a private window) or the record
-    /// cannot be opened.
+    /// The app's fixture record of `P` from the previous storage model.
+    #[cfg(feature = "test-support")]
     pub fn person<P: Resource>(&self) -> Option<super::PersonResource<P>> {
         self.storage.person::<P>()
+    }
+
+    /// The app's record of `P` in the person's profile. Its route is in the
+    /// person's own cluster, independent of which workspace opened the app.
+    pub fn profile_resource<P: Resource>(&self) -> Option<super::PersonResource<P>> {
+        self.storage.profile_resource::<P>()
     }
 
     /// The record `P` that `owner` keeps in the window's workspace and every app

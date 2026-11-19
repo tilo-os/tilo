@@ -27,8 +27,6 @@ optional = ["files.open", "app-files", "settings", "media.decode", "media.sessio
 
 [resources]
 kinds = ["video-player.library", "video-player.recent"]
-# Each member keeps one of each as their own; nobody else in the workspace receives it.
-own = ["video-player.recent"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -1342,30 +1342,79 @@ impl DirectSync {
         self.0.replica.lock().governance().removed_device(device)
     }
 
-    /// What `device` may be sent: a person's own record goes to that person's
-    /// devices alone, never to another member's, whatever its role. Every
-    /// other frame reaches it.
+    /// What the recipient may read when each frame is sent.
     fn reach_of(&self, device: [u8; 32]) -> impl Fn(&NeighbourMsg) -> bool + use<> {
-        let replica = self.0.replica.lock();
-        let person = replica
-            .certificates()
-            .into_iter()
-            .find(|certificate| certificate.device_public_key == device)
-            .map(|certificate| certificate.user_public_key);
-        let owned = replica.own_resources();
-        drop(replica);
+        let link = self.clone();
         move |message| match message {
             NeighbourMsg::AppDocument {
                 app_id,
                 document_id,
                 own,
+                readers,
                 ..
-            } => own
-                .as_ref()
-                .filter(|own| own.names(document_id))
-                .map(|own| own.owner)
-                .or_else(|| owned.get(&(app_id.clone(), document_id.clone())).copied())
-                .is_none_or(|owner| person == Some(owner)),
+            } => {
+                let replica = link.0.replica.lock();
+                let owner = own
+                    .as_ref()
+                    .filter(|own| own.names(document_id))
+                    .map(|own| own.owner)
+                    .or_else(|| {
+                        replica
+                            .own_resource(app_id, document_id)
+                            .map(|own| own.owner)
+                    });
+                let person_matches = owner.is_none_or(|owner| {
+                    replica.certificates().iter().any(|certificate| {
+                        certificate.device_public_key == device
+                            && certificate.user_public_key == owner
+                    })
+                });
+                let named_matches = readers.as_deref().is_none_or(|readers| {
+                    let Some(collab_types::Readers::People(people)) =
+                        collab_types::Readers::parse(readers)
+                    else {
+                        return false;
+                    };
+                    replica.certificates().iter().any(|certificate| {
+                        certificate.device_public_key == device
+                            && people.contains(&certificate.user_public_key)
+                    })
+                });
+                person_matches
+                    && named_matches
+                    && (!replica.has_governance()
+                        || replica
+                            .check_document_read(device, app_id, document_id, tilo_clock::wall())
+                            .is_ok())
+            }
+            NeighbourMsg::MlsGovernance { workspace, .. }
+            | NeighbourMsg::MlsAccessRequest { workspace, .. } => {
+                match neighbour_wire::KeyScope::parse(workspace) {
+                    Some(neighbour_wire::KeyScope::Document {
+                        app,
+                        document,
+                        readers,
+                        ..
+                    }) => {
+                        let replica = link.0.replica.lock();
+                        let now = tilo_clock::wall();
+                        readers.as_deref().is_none_or(|readers| {
+                            let Some(collab_types::Readers::People(people)) =
+                                collab_types::Readers::parse(readers)
+                            else {
+                                return false;
+                            };
+                            replica.certificates().iter().any(|certificate| {
+                                certificate.device_public_key == device
+                                    && people.contains(&certificate.user_public_key)
+                            })
+                        }) && replica
+                            .check_document_read(device, &app, &document, now)
+                            .is_ok()
+                    }
+                    _ => true,
+                }
+            }
             _ => true,
         }
     }

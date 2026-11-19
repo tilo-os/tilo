@@ -32,7 +32,7 @@ NameDriveArgs = TypedDict("NameDriveArgs", {
 
 class System(Resource):
     """Storage devices — `disks.system`."""
-    __surface__ = "so.tilo.disks@ffbe70038c92814e"
+    __surface__ = "so.tilo.disks@16aeb729799dc193"
     names: dict[str, str]
 
     def name_drive(self,

@@ -32,8 +32,8 @@ pub use agents::{
 pub use apps::{AppRow, Apps};
 pub use emoji::{Emoji, EmojiPane, Notice, Picture};
 pub use general::{Device, General, Group, Server, Servers};
-pub use people::{Decision, Delegation, Holder, Offers, People, Person, RoleChoice};
-pub use permissions::{Choice, Composer, Holders, Permission, Permissions};
+pub use people::{Decision, Delegation, Holder, Offers, People, Person, RoleChoice, RoleEditor};
+pub use permissions::{Choice, Composer, DocumentAccess, Holders, Permission, Permissions};
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.workspace-settings";
@@ -119,6 +119,42 @@ pub enum WorkspaceSettingsEffect {
         member: String,
         #[param("viewer, commenter or editor")]
         role: String,
+    },
+    /// Create a role, or rename an existing role
+    #[effect(kind = "outside", attended)]
+    SaveCustomRole {
+        #[param("The stable role key, or empty to create a role")]
+        role: String,
+        #[param("The role's display name")]
+        name: String,
+    },
+    /// Add or remove a custom role from one member
+    #[effect(kind = "outside", attended)]
+    SetCustomRole {
+        #[param("The member, by their key in the list")]
+        member: String,
+        #[param("The custom role, by its stable key")]
+        role: String,
+        #[param("Whether to assign the role")]
+        assigned: bool,
+    },
+    /// Remove a custom role and its rules
+    #[effect(kind = "outside", destructive, attended)]
+    RemoveCustomRole {
+        #[param("The custom role, by its stable key")]
+        role: String,
+    },
+    /// Set who can view or edit at the workspace, app or document scope
+    #[effect(kind = "outside", attended)]
+    SetDocumentAccess {
+        #[param("everyone, role:<key>, or member:<key>")]
+        who: String,
+        #[param("The app that publishes the document, or empty to set defaults")]
+        app: String,
+        #[param("The document key, or the app whose default to set when app is empty")]
+        document: String,
+        #[param("inherit, no-access, view, or edit")]
+        access: String,
     },
     /// Remove a member from the workspace
     #[effect(kind = "outside")]
@@ -348,6 +384,8 @@ pub struct Settings {
 pub enum Confirm {
     /// Remove the member `member`, called `name`.
     RemoveMember { member: String, name: String },
+    /// Remove the custom role named here.
+    RemoveRole { role: String, name: String },
     /// Revoke the delegation of `name`'s work to the server `server`.
     RevokeDelegation { server: String, name: String },
     /// Revoke the permission `grant`, which `holder` holds.
@@ -365,6 +403,7 @@ struct Local {
     draft: permissions::Draft,
     /// Whether a new agent's form is open.
     creating: bool,
+    editing_role: Option<String>,
 }
 
 /// What the shell lends the sheet: whether it is up, what it shows, and
@@ -387,6 +426,7 @@ pub struct WorkspaceSettingsState {
 #[derive(Clone)]
 struct Drawn {
     new_agent: LocalState<String>,
+    role_name: LocalState<String>,
     new_model: LocalState<String>,
     limit: LocalState<String>,
     /// The site another server is added by, as typed.
@@ -508,6 +548,7 @@ impl WorkspaceSettingsState {
             .borrow_mut()
             .get_or_insert_with(|| Drawn {
                 new_agent: LocalState::new(String::new()),
+                role_name: LocalState::new(String::new()),
                 new_model: LocalState::new(String::new()),
                 limit: LocalState::new(String::new()),
                 server_origin: LocalState::new(String::new()),
@@ -519,6 +560,7 @@ impl WorkspaceSettingsState {
             shown,
             name,
             new_agent: drawn.new_agent,
+            role_name: drawn.role_name,
             new_model: drawn.new_model,
             limit: drawn.limit,
             server_origin: drawn.server_origin,
@@ -581,6 +623,7 @@ impl ResourceApp for WorkspaceSettingsApp {
         };
         let name = cx.local(initial.name.clone());
         let new_agent = cx.local(String::new());
+        let role_name = cx.local(String::new());
         let new_model = cx.local(String::new());
         let limit = cx.local(String::new());
         let server_origin = cx.local(String::new());
@@ -605,6 +648,7 @@ impl ResourceApp for WorkspaceSettingsApp {
             shown: shown.clone(),
             name,
             new_agent,
+            role_name,
             new_model,
             limit,
             server_origin,
@@ -846,6 +890,7 @@ struct Parts {
     name: LocalState<String>,
     /// The name a new agent is given as typed.
     new_agent: LocalState<String>,
+    role_name: LocalState<String>,
     /// The model a new agent plans with as chosen.
     new_model: LocalState<String>,
     /// What an agent may spend a day as its keeper typed it.
@@ -1057,6 +1102,9 @@ impl Confirm {
             Self::Revoke { grant, .. } => WorkspaceSettingsEffect::Revoke {
                 grant: grant.clone(),
             },
+            Self::RemoveRole { role, .. } => {
+                WorkspaceSettingsEffect::RemoveCustomRole { role: role.clone() }
+            }
             Self::DeleteWorkspace => WorkspaceSettingsEffect::DeleteWorkspace,
         }
     }
@@ -1067,6 +1115,9 @@ impl Confirm {
             Self::RemoveMember { name, .. } => (&settings.people.remove_decision, name.clone()),
             Self::RevokeDelegation { name, .. } => (&settings.people.revoke_decision, name.clone()),
             Self::Revoke { holder, .. } => (&settings.permissions.revoke_decision, holder.clone()),
+            Self::RemoveRole { name, .. } => {
+                (&settings.people.role_editor.remove_decision, name.clone())
+            }
             Self::DeleteWorkspace => (&settings.general.delete_decision, settings.name.clone()),
         }
     }

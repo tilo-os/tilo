@@ -25,7 +25,6 @@ __all__ = [
     "SharedTransport",
     "TimestampAnnotation",
     "Library",
-    "Recent",
     "CreatePlaylistArgs",
     "DeletePlaylistArgs",
     "AddToPlaylistArgs",
@@ -33,8 +32,6 @@ __all__ = [
     "AddAnnotationArgs",
     "DeleteAnnotationArgs",
     "SetTransportArgs",
-    "KeepArgs",
-    "StoodArgs",
 ]
 
 class Playlist(TypedDict):
@@ -100,22 +97,9 @@ SetTransportArgs = TypedDict("SetTransportArgs", {
 })
 """The arguments of `set-transport`."""
 
-KeepArgs = TypedDict("KeepArgs", {
-    "device": "str",
-    "rows": "Any",
-})
-"""The arguments of `keep`."""
-
-StoodArgs = TypedDict("StoodArgs", {
-    "device": "str",
-    "id": "str",
-    "position_ms": "int",
-})
-"""The arguments of `stood`."""
-
 class Library(Resource):
     """Video Player — `video-player.library`."""
-    __surface__ = "so.tilo.video-player@bb6bf2b768952ba1"
+    __surface__ = "so.tilo.video-player@a870aba2955fda21"
     playlists: list[Entry[Playlist]]
     items: list[Entry[PlaylistItem]]
     annotations: list[Entry[TimestampAnnotation]]
@@ -223,40 +207,5 @@ class Library(Resource):
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
     __actions__ = frozenset({"create_playlist", "create_playlist_many", "delete_playlist", "delete_playlist_many", "add_to_playlist", "add_to_playlist_many", "add_to_watch_later", "add_to_watch_later_many", "add_annotation", "add_annotation_many", "delete_annotation", "delete_annotation_many", "set_transport", "set_transport_many", "open_video", "clear_recent"})
-
-
-class Recent(Resource):
-    """Recent videos — `video-player.recent`."""
-    __surface__ = "so.tilo.video-player@bb6bf2b768952ba1"
-    devices: dict[str, Any]
-
-    def keep(self,
-        *,
-        device: str,
-        rows: Any,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("keep", device=device, rows=rows)
-
-    def keep_many(self, items: list[KeepArgs]) -> list[dict[str, Any]]:
-        """Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("keep", items)
-
-    def stood(self,
-        *,
-        device: str,
-        id: str,
-        position_ms: int,
-    ) -> None:
-        """Runs the app's action."""
-        return self.action("stood", device=device, id=id, position_ms=position_ms)
-
-    def stood_many(self, items: list[StoodArgs]) -> list[dict[str, Any]]:
-        """Runs `stood` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
-        return self.many("stood", items)
-
-    # The actions a call reaches before the resource is read: `await tracker.create(...)`
-    # needs no `load()` first.
-    __actions__ = frozenset({"keep", "keep_many", "stood", "stood_many"})
 
 

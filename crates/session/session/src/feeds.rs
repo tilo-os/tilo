@@ -49,7 +49,11 @@ impl crate::Session {
         let personal = portal
             .and_then(|portal| portal.consents().grants().changes())
             .map_or(0, |changes| *changes.borrow());
-        let revision = (self.shared.handle.revision(), personal);
+        let revision = (
+            self.shared.handle.revision(),
+            personal,
+            tilo_identity::policy_change::epoch(),
+        );
         // A list the daemon did not take stands for nothing: until one does,
         // the session hands the same revision over again.
         let unpublished = self

@@ -555,7 +555,10 @@ pub struct FilesState {
     widths_at_press: Option<std::collections::BTreeMap<String, u32>>,
     thumbs: Option<Arc<ThumbnailService>>,
     recent: crate::recent::RecentFiles,
-    recent_resource: Option<ui::framework::PersonResource<crate::recent::RecentResource>>,
+    recent_settings: Option<(
+        ui::framework::Setting<crate::resource::DeviceRecentFiles>,
+        String,
+    )>,
     open_request: crate::open_with::OpenRequest,
     document_candidates: crate::open_with::CandidateList,
     open_replies: crate::open_with::OpenReplies,
@@ -901,7 +904,7 @@ impl FileExplorerWidget {
             widths_at_press: None,
             thumbs,
             recent: crate::recent::RecentFiles::default(),
-            recent_resource: None,
+            recent_settings: None,
             open_with_cache: RefCell::new(HashMap::new()),
             entry_ids: RefCell::default(),
             entry_rows: RefCell::default(),
@@ -925,13 +928,16 @@ impl FilesState {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::FileExplorer>,
         preferences: ui::framework::Setting<crate::resource::FilesPreferences>,
-        recent: Option<ui::framework::PersonResource<crate::recent::RecentResource>>,
+        recent: Option<(
+            ui::framework::Setting<crate::resource::DeviceRecentFiles>,
+            String,
+        )>,
         device: Option<String>,
         ops_drain: Option<ui::framework::Projection>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.preferences = Some(preferences);
-        self.recent_resource = recent;
+        self.recent_settings = recent;
         self.device = device;
         self.ops_drain = ops_drain;
         self.adopt_preferences();

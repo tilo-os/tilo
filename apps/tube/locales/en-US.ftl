@@ -190,7 +190,7 @@ tube-library-replies = Changed the replies
 tube-reply-to-comment = Replied { $text }
 tube-retract = Retracted the reply { $item }
 
-## History: the person's own watch history
+## Workspace watch history
 
 tube-record = Watched a video
 tube-import = Brought in videos watched on another device
@@ -256,3 +256,4 @@ tube-effect-set-segment-handling = Set segment handling
 
 ## What the app is called in a window and in the launcher
 tube-app-title = Tube
+tube-effect-import-previous-watch-history = Import previous watch history

@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.assistant@fa7c8ab9dd5af608";
+export const SURFACE = "so.tilo.assistant@e18330603fcec75a";
 
 /** Assistant window — `assistant.window`. */
 export interface Window extends tilo.Resource {

@@ -214,7 +214,7 @@ ImportMarkdownFilesArgs = TypedDict("ImportMarkdownFilesArgs", {
 
 class Notebook(Resource):
     """Notebook — `notes.notebook`."""
-    __surface__ = "so.tilo.notes@720ddd431e823e96"
+    __surface__ = "so.tilo.notes@b3e8fc158bf04291"
     tags: list[Entry[Tag]]
 
     def new_tag(self, *, name: str) -> None:
@@ -253,7 +253,7 @@ class Notebook(Resource):
 
 class Pages(Resource):
     """Notes — `notes.pages`."""
-    __surface__ = "so.tilo.notes@720ddd431e823e96"
+    __surface__ = "so.tilo.notes@b3e8fc158bf04291"
     pages: list[Entry[Page]]
     @property
     def images(self) -> dict[str, Any]:

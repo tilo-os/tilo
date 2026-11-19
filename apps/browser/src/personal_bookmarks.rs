@@ -40,6 +40,8 @@ pub struct PersonalBookmarks {
     pub trees: Map<ImportedTree>,
     #[model(readonly)]
     pub hidden: Set<String>,
+    #[model(readonly, default = false)]
+    pub(crate) restored_previous: bool,
 }
 
 /// The library as the window shows it: its bookmarks, one row per address, and its
@@ -80,6 +82,22 @@ impl PersonalBookmarks {
     read_content = PersonalBookmarks::read_document
 )]
 impl PersonalBookmarks {
+    /// Restore the earlier profile data.
+    #[action(by_app, housekeeping, writes = added, writes = removed, writes = receipts, writes = trees, writes = hidden, writes = restored_previous)]
+    pub fn restore_previous(&mut self, previous: serde_json::Value) -> Result<(), Refusal> {
+        if self != &Self::default() {
+            return Ok(());
+        }
+        let previous =
+            Self::from_json(&previous).map_err(|error| Refusal::new(error.to_string()))?;
+        previous.check()?;
+        *self = Self {
+            restored_previous: true,
+            ..previous
+        };
+        Ok(())
+    }
+
     /// Bookmark a page.
     #[action]
     pub fn add_bookmark(

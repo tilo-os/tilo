@@ -1,10 +1,30 @@
-//! What is being written and has not been sent, in a resource beside the conversations and
-//! kept in the workspace Messages is open in. A draft survives the window closing and never
-//! enters a conversation's record: nothing here is sent, queued or shown to anyone else.
+//! Unsent text by conversation in the workspace. It enters the conversation only on send.
 
 use std::collections::BTreeMap;
 
+use ui::framework::{ResourceOpener, WorkspaceResource};
 use ui::tilo_resource::Refusal;
+
+pub(crate) use ui::tilo_actions::policy::roles::WORKSPACE_MESSAGE_DRAFTS_DOCUMENT as DOCUMENT;
+pub(crate) type DraftRecord = WorkspaceResource<MessageDrafts>;
+
+pub(crate) fn import_previous(
+    opener: &ResourceOpener<MessageDrafts>,
+    conversation: String,
+) -> Result<(), String> {
+    let workspace = opener
+        .open(DOCUMENT)
+        .filter(|record| record.may_read() && record.may("import-previous"))
+        .ok_or("the workspace must grant permission to import drafts")?;
+    if let Some(previous) = opener.legacy_member_state()?
+        && let Some(body) = previous.drafts.get(&conversation)
+    {
+        workspace
+            .invoke(&MessageDrafts::IMPORT_PREVIOUS.with((conversation, body.clone())))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
 use ui::tilo_resource::{self, Model};
 
 const MAX_DRAFT_CHARS: usize = 16 * 1024;
@@ -12,11 +32,14 @@ const MAX_DRAFT_CHARS: usize = 16 * 1024;
 /// limit.
 const MAX_KEY_CHARS: usize = 512;
 
-/// The person's unsent message text, by conversation.
+/// The workspace's unsent message text, by conversation.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct MessageDrafts {
     /// The text of each unsent message, under its conversation.
     pub drafts: BTreeMap<String, String>,
+    /// A conversation already edited or dismissed in the workspace.
+    #[model(readonly, default = BTreeMap::new())]
+    pub handled: BTreeMap<String, bool>,
 }
 
 #[ui::tilo_resource::resource(kind = "messages.drafts", params = drafts)]
@@ -38,6 +61,7 @@ impl MessageDrafts {
         if body.chars().count() > MAX_DRAFT_CHARS {
             return Err(Refusal::new("a draft is at most 16 000 characters"));
         }
+        self.handled.insert(conversation.clone(), true);
         if body.trim().is_empty() {
             self.drafts.remove(&conversation);
         } else {
@@ -54,7 +78,26 @@ impl MessageDrafts {
         &mut self,
         #[param("The conversation whose draft goes")] conversation: String,
     ) {
-        self.drafts.remove(&conversation);
+        if self.drafts.remove(&conversation).is_some() {
+            self.handled.insert(conversation, true);
+        }
+    }
+
+    /// Restore the previous draft for a conversation.
+    #[action(external, writes = drafts, writes = handled)]
+    pub fn import_previous(&mut self, conversation: String, body: String) -> Result<(), Refusal> {
+        if self.handled.contains_key(&conversation) || self.drafts.contains_key(&conversation) {
+            return Ok(());
+        }
+        self.keep_draft(conversation, body)
+    }
+
+    /// Remove only the draft still matching the delivered text.
+    #[action(housekeeping, writes = drafts, writes = handled)]
+    pub fn sent(&mut self, conversation: String, delivered: String) {
+        if self.drafts.get(&conversation) == Some(&delivered) {
+            self.drop_draft(conversation);
+        }
     }
 }
 

@@ -48,19 +48,20 @@ impl<'peer> PeerPublication<'peer> {
     /// a checkpoint of the record's channel that opens to the document.
     pub fn draft_sealed_compaction(
         self,
-        (app, record): (&str, &str),
+        (app, document_id): (&str, &str),
+        readers: Option<&str>,
         rebuilt: Option<Vec<u8>>,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
         seal: &mut SealCheckpoint<'_>,
         author: [u8; 32],
         now: SystemTime,
     ) -> Result<Vec<SignedOp>, String> {
-        let document = self.document((app, record))?;
+        let document = self.document((app, document_id))?;
         // Numbered under the writes it folds: the last of this author's own, 0 when it folds
-        // none of them. The device that signs a compaction writes the record as well (a host
+        // none of them. The device that signs a compaction writes the document as well (a host
         // does what its agents and callers do), numbering each write after its last one of the
-        // record, and a reader refuses a write numbered at or below one it took as a replay: a
-        // page that opens the record by the fold would refuse every write the author makes
+        // document, and a reader refuses a write numbered at or below one it took as a replay: a
+        // page that opens the document by the fold would refuse every write the author makes
         // next if the fold were numbered past them.
         let seq = document
             .sealed
@@ -70,7 +71,7 @@ impl<'peer> PeerPublication<'peer> {
             .max()
             .unwrap_or(0);
         self.draft(
-            (app, record),
+            ((app, document_id), readers),
             document,
             rebuilt,
             open,
@@ -88,17 +89,18 @@ impl<'peer> PeerPublication<'peer> {
     /// As [`Self::draft_sealed_compaction`].
     pub fn draft_sealed_compaction_of(
         self,
-        (app, record): (&str, &str),
+        (app, document_id): (&str, &str),
+        readers: Option<&str>,
         history: Vec<SignedOp>,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
         seal: &mut SealCheckpoint<'_>,
         (author, seq): ([u8; 32], u64),
         now: SystemTime,
     ) -> Result<Vec<SignedOp>, String> {
-        let mut document = self.document((app, record))?.clone();
+        let mut document = self.document((app, document_id))?.clone();
         document.sealed = history.into();
         self.draft(
-            (app, record),
+            ((app, document_id), readers),
             &document,
             None,
             open,
@@ -114,6 +116,22 @@ impl<'peer> PeerPublication<'peer> {
         self.document((app, record))
             .map(|document| document.sealed.to_vec())
             .unwrap_or_default()
+    }
+
+    /// Once a document starts using its own group, keep it scoped through
+    /// subsequent writes and compaction.
+    #[must_use]
+    pub fn has_document_keys(self, app: &str, document_id: &str) -> bool {
+        self.document((app, document_id)).is_ok_and(|document| {
+            document.sealed.iter().any(|op| {
+                op.encryption.is_some_and(|metadata| {
+                    matches!(
+                        metadata.scheme,
+                        collab_types::EncryptionScheme::DocumentContentKey { .. }
+                    )
+                })
+            })
+        })
     }
 
     /// Whether the sealed history of `record` of `app` holds `write` as itself.
@@ -183,7 +201,7 @@ impl<'peer> PeerPublication<'peer> {
 
     fn draft(
         self,
-        (app, record): (&str, &str),
+        ((app, document_id), readers): ((&str, &str), Option<&str>),
         document: &super::Document,
         rebuilt: Option<Vec<u8>>,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
@@ -197,7 +215,7 @@ impl<'peer> PeerPublication<'peer> {
         };
         AutoCommit::load(&rebuilt).map_err(err)?;
         if document.sealed.is_empty() {
-            return Err("the record holds no sealed history to compact".into());
+            return Err("the document holds no sealed history to compact".into());
         }
         let snapshot = DocumentMutation::Snapshot(rebuilt);
         // A snapshot larger than one op goes as a segmented transfer: the
@@ -205,13 +223,20 @@ impl<'peer> PeerPublication<'peer> {
         let mut sealed = Vec::new();
         for (index, frame) in snapshot.encode_frames().map_err(err)?.iter().enumerate() {
             let (metadata, ciphertext) = seal(frame)?;
+            self.peer.check_document_key_scope(
+                (app, document_id),
+                readers,
+                Some(metadata),
+                now,
+                false,
+            )?;
             let retention = if index == 0 {
                 ContentRetention::Checkpoint
             } else {
                 ContentRetention::Delta
             };
             if metadata.retention() != Some(retention) {
-                return Err("a sealed compaction is a checkpoint for the record".into());
+                return Err("a sealed compaction is a checkpoint for the document".into());
             }
             sealed.push((metadata, ciphertext));
         }
@@ -237,9 +262,9 @@ impl<'peer> PeerPublication<'peer> {
         let op = |payload, metadata| {
             SignedOp::new_unsigned_with_encryption(
                 payload,
-                collab_types::document_artifact_id(app, &self.peer.core.workspace, record),
+                collab_types::document_artifact_id(app, &self.peer.core.workspace, document_id),
                 Ed25519PublicKey::from_bytes(author),
-                collab_types::document_attestation_id(app, &self.peer.core.workspace, record),
+                collab_types::document_attestation_id(app, &self.peer.core.workspace, document_id),
                 OpKind::Compaction,
                 now,
                 seq,
@@ -254,9 +279,9 @@ impl<'peer> PeerPublication<'peer> {
             )
             .collect();
         // Keyless replicas cannot tell an unreadable compaction from a good
-        // one, so only one that opens to the merged record leaves here.
+        // one, so only one that opens to the merged document_id leaves here.
         if opened_whole(&ops, open)?.as_ref() != Some(&snapshot) {
-            return Err("the sealed compaction does not open to the merged record".into());
+            return Err("the sealed compaction does not open to the merged document_id".into());
         }
         Ok(ops)
     }
@@ -286,6 +311,7 @@ impl PeerPublicationMut<'_> {
         self,
         app: &str,
         record: &str,
+        readers: Option<&str>,
         ops: Vec<SignedOp>,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
@@ -302,7 +328,7 @@ impl PeerPublicationMut<'_> {
             candidate.gather_compaction_piece((app, record), segment.clone())?;
         }
         // The compaction completes what its segments began.
-        candidate.admit_new_local_document(app, record, op.clone(), now)?;
+        candidate.admit_new_local_document_read_by((app, record), readers, op.clone(), now)?;
         *self.peer = candidate;
         Ok(std::iter::once(op)
             .chain(segments)
@@ -311,7 +337,7 @@ impl PeerPublicationMut<'_> {
                 app_id: app.into(),
                 cluster_id: self.peer.core.workspace.clone(),
                 own: self.peer.core.own_write(app, record, op.author.as_bytes()),
-                readers: None,
+                readers: readers.map(str::to_owned),
                 document_id: record.into(),
                 envelope: Box::new(op),
             })
@@ -1229,6 +1255,7 @@ impl PeerPublicationMut<'_> {
         let plaintext = mutation.encode().map_err(err)?;
         let mut op = self.peer.draft_write(
             (app, record),
+            None,
             &plaintext,
             Some(seal),
             key.device_public_key(),

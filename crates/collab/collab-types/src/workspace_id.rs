@@ -40,6 +40,28 @@ impl WorkspaceId {
         self.0
     }
 
+    /// The MLS wire uses the workspace-id field for document groups.
+    /// These use a reserved UUID variant distinct from workspace UUIDs.
+    #[must_use]
+    pub const fn is_document_key_group(self) -> bool {
+        self.0.as_bytes()[8] >> 5 == 7
+    }
+
+    /// The independent key group for a document in this workspace.
+    #[must_use]
+    pub fn document_key_group(self, app: &str, document: &str) -> Self {
+        let mut hash = blake3::Hasher::new_derive_key("tilo document key group v1");
+        hash.update(self.as_uuid().as_bytes());
+        hash.update(&u64::try_from(app.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hash.update(app.as_bytes());
+        hash.update(document.as_bytes());
+        let mut id = [0; 16];
+        hash.finalize_xof().fill(&mut id);
+        // Reserve a non-RFC variant so this cannot alias a workspace or personal store.
+        id[8] |= 0xe0;
+        Self::from_u128(u128::from_be_bytes(id))
+    }
+
     /// A workspace id built from a number, for tests that count workspaces.
     #[must_use]
     pub const fn from_u128(value: u128) -> Self {

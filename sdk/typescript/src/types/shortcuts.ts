@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.shortcuts@720723bfb1ff289c";
+export const SURFACE = "so.tilo.shortcuts@07f5724db001dde6";
 
 export interface Draft {
   name: string;

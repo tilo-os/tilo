@@ -451,7 +451,8 @@ struct Here {
 }
 
 struct RunHistory {
-    record: ui::framework::PersonResource<crate::history::CommandHistory>,
+    record: crate::history::HistoryRecord,
+    opener: ui::framework::ResourceOpener<crate::history::CommandHistory>,
     session: String,
     me: ui::tilo_resource::MemberId,
 }
@@ -1877,6 +1878,9 @@ impl TerminalWidget {
             return Err("agents may not send input to the device's own shell".into());
         }
         match effect {
+            E::ImportPreviousHistory => {
+                self.import_previous_history()?;
+            }
             E::InspectSession | E::ReadScreen => {
                 return Err(
                     "inspecting and reading the session are answered by the resource's read-only handler".into(),
@@ -2062,15 +2066,22 @@ impl TerminalWidget {
 
     pub(crate) fn remember_in(
         &mut self,
-        record: ui::framework::PersonResource<crate::history::CommandHistory>,
+        record: crate::history::HistoryRecord,
+        opener: ui::framework::ResourceOpener<crate::history::CommandHistory>,
         session: String,
         me: ui::tilo_resource::MemberId,
     ) {
         self.commands.history = Some(RunHistory {
             record,
+            opener,
             session,
             me,
         });
+    }
+
+    pub(crate) fn import_previous_history(&self) -> Result<usize, String> {
+        let history = self.commands.history.as_ref().ok_or("the workspace history is unavailable")?;
+        crate::history::import_previous(&history.opener)
     }
 
     /// A new process: what the last one had not run settles as failed.
@@ -2170,10 +2181,15 @@ impl TerminalWidget {
         };
         let b64 = base64::engine::general_purpose::STANDARD;
         let limit = ask.limit.clamp(1, 256);
-        let (entries, end) = self.commands.history.as_ref().map_or_else(
+        let (entries, end) = self.commands.history.as_ref().filter(|history| {
+            history.record.may_read()
+                && !self.sessions.target.as_ref().is_some_and(|target| {
+                    matches!(target, crate::target::SessionTarget::Host | crate::target::SessionTarget::LinuxVm { .. })
+                })
+        }).map_or_else(
             || (Vec::new(), true),
             |history| {
-                history.record.with(|history| {
+                let history = history.record.get();
                     let mut seen = std::collections::HashSet::new();
                     let mut lines = history
                         .matching(&ask.matching)
@@ -2194,8 +2210,7 @@ impl TerminalWidget {
                         bytes += encoded.len() + 1;
                         entries.push(encoded);
                     }
-                    (entries, end)
-                })
+                (entries, end)
             },
         );
         let answer = format!(
@@ -2398,6 +2413,9 @@ impl TerminalWidget {
         let Some(history) = &self.commands.history else {
             return;
         };
+        if !history.record.may_read() || crate::history::is_device_shell(ran.environment.as_deref()) {
+            return;
+        }
         if ran.actor.is_none() {
             ran.actor = Some(history.me.clone());
         }

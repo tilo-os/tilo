@@ -1,10 +1,10 @@
 //! Sending uses the host-lent service and the same exact route as history.
+use crate::drafts::{DraftRecord, MessageDrafts};
 use crate::{
     CATALOG, Messages, MessagesEffect,
     view::{Choice, Selection, Sources},
 };
 use tilo_messaging::{MessagingClient, SendRequest};
-use ui::framework::PersonResource;
 use ui::{
     LocalState,
     framework::{EffectAnswer, EffectCx, EffectStatus, Effected},
@@ -16,14 +16,15 @@ pub(crate) struct Sending {
     pub(crate) draft: LocalState<String>,
     pub(crate) operation: LocalState<String>,
     generation: LocalState<u64>,
-    drafts: Option<PersonResource<crate::drafts::MessageDrafts>>,
+    drafts: Option<DraftRecord>,
     open: LocalState<String>,
+    last_stored: LocalState<Option<String>>,
 }
 impl Sending {
     pub(crate) fn new(
         client: Option<MessagingClient>,
         actor: Option<&ui::tilo_resource::PersonId>,
-        drafts: Option<PersonResource<crate::drafts::MessageDrafts>>,
+        drafts: Option<DraftRecord>,
         direct: bool,
     ) -> Self {
         Self {
@@ -34,88 +35,63 @@ impl Sending {
             generation: LocalState::new(0),
             drafts,
             open: LocalState::new(String::new()),
+            last_stored: LocalState::new(None),
         }
     }
 
-    /// Seed the composer with the words the person left in `choice`'s conversation, when it
-    /// is not the one already open.
+    /// Follow the draft for the open conversation, including changes from other members.
     pub(crate) fn open_draft(&self, choice: &Choice) {
         let key = crate::drafts::key(choice);
-        if self.open.get() == key {
-            return;
-        }
         let stored = self
             .drafts
             .as_ref()
-            .and_then(|record| record.get().drafts.get(&key).cloned())
-            .unwrap_or_default();
+            .filter(|record| record.may_read())
+            .map(|record| record.get().drafts.get(&key).cloned().unwrap_or_default());
+        if self.open.get() == key && self.last_stored.get() == stored {
+            return;
+        }
         self.open.set(key);
-        self.draft.set(stored);
+        self.last_stored.set(stored.clone());
+        self.draft.set(stored.unwrap_or_default());
     }
 
-    /// Keep what the person has typed, so closing the window does not lose it.
+    /// Keep what has been typed so closing the window does not lose it.
     pub(crate) fn keep_draft(&self, body: &str) {
-        let Some(record) = &self.drafts else {
+        let Some(record) = self.drafts.as_ref().filter(|record| record.may_read()) else {
             return;
         };
         let key = self.open.get();
-        if key.is_empty() {
+        if key.is_empty() || self.last_stored.get().as_deref() == Some(body) {
             return;
         }
-        let stored = record.get().drafts.get(&key).cloned().unwrap_or_default();
-        if stored == body {
-            return;
-        }
-        let _ = record.apply(&ui::tilo_resource::Stamped {
-            operation: crate::drafts::MessageDraftsAction::KeepDraft(
-                crate::drafts::drafts::KeepDraft {
-                    conversation: key,
-                    body: body.to_owned(),
-                },
-            ),
-            now_ms: ui::tilo_resource::origin_now_ms(),
-        });
-    }
-
-    /// Drop the words typed for the conversation that is no longer there: a route the
-    /// directory forgot or re-reviewed takes its draft with it.
-    pub(crate) fn forget_draft(&self) {
-        let Some(record) = &self.drafts else {
-            return;
-        };
-        let key = self.open.get();
-        if key.is_empty() || !record.get().drafts.contains_key(&key) {
-            return;
-        }
-        let _ = record.apply(&ui::tilo_resource::Stamped {
-            operation: crate::drafts::MessageDraftsAction::DropDraft(
-                crate::drafts::drafts::DropDraft { conversation: key },
-            ),
-            now_ms: ui::tilo_resource::origin_now_ms(),
-        });
-    }
-
-    /// The draft `key`'s conversation holds, once it has been sent: removed only while it
-    /// is still exactly what was sent, so a word typed while the send was in flight is the
-    /// next message rather than a lost one.
-    fn sent_draft(&self, key: &str, sent: &str) {
-        let Some(record) = &self.drafts else {
-            return;
-        };
         if record
-            .get()
-            .drafts
-            .get(key)
-            .is_some_and(|held| held == sent)
+            .invoke(&MessageDrafts::KEEP_DRAFT.with((key, body.to_owned())))
+            .is_ok()
         {
-            let _ = record.apply(&ui::tilo_resource::Stamped {
-                operation: crate::drafts::MessageDraftsAction::DropDraft(
-                    crate::drafts::drafts::DropDraft {
-                        conversation: key.to_owned(),
-                    },
-                ),
-                now_ms: ui::tilo_resource::origin_now_ms(),
-            });
+            let stored = if body.trim().is_empty() {
+                String::new()
+            } else {
+                body.to_owned()
+            };
+            self.last_stored.set(Some(stored));
+        }
+    }
+
+    /// Drop the draft for a route that was forgotten or re-reviewed.
+    pub(crate) fn forget_draft(&self) {
+        let Some(record) = self.drafts.as_ref().filter(|record| record.may_read()) else {
+            return;
+        };
+        let key = self.open.get();
+        if !key.is_empty() && record.get().drafts.contains_key(&key) {
+            let _ = record.invoke(&MessageDrafts::DROP_DRAFT.with(key));
+        }
+    }
+
+    /// Remove the delivered text without clearing a newer draft.
+    fn sent_draft(&self, key: &str, sent: &str) {
+        if let Some(record) = self.drafts.as_ref().filter(|record| record.may_read()) {
+            let _ = record.invoke(&MessageDrafts::SENT.with((key.to_owned(), sent.to_owned())));
         }
     }
 
@@ -126,6 +102,7 @@ impl Sending {
         self.generation.set(self.generation.get().saturating_add(1));
         self.draft.set(String::new());
         self.open.set(String::new());
+        self.last_stored.set(None);
         self.operation.set(uuid::Uuid::new_v4().to_string());
     }
     pub(crate) fn available(&self) -> bool {

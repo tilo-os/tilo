@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.db-client@2cf0df7278c3e582";
+export const SURFACE = "so.tilo.db-client@f4a9771cec06f9d0";
 
 /** One of "sqlite", "postgres", "mysql". */
 export type Engine = "sqlite" | "postgres" | "mysql";

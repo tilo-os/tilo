@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@76b61dcfa066393c";
+export const SURFACE = "so.tilo.chat@29329f9ba5f656e6";
 
 export interface Category {
   name: string;
@@ -489,13 +489,6 @@ export interface WorkUpdate {
   detail: string | null;
 }
 
-export interface Fact {
-  text: string;
-  source: string;
-  at: number;
-  by: string | null;
-}
-
 export interface Emoji {
   image: unknown;
   added_by: string;
@@ -960,22 +953,11 @@ export interface StartDraftArgs {
   key: string;
 }
 
-/** The arguments of `learn`. */
-export interface LearnArgs {
-  text: string;
-  source: string;
-}
-
-/** The arguments of `correct`. */
-export interface CorrectArgs {
-  fact: string;
-  text: string;
-  source?: string;
-}
-
-/** The arguments of `forget`. */
-export interface ForgetArgs {
-  fact: string;
+/** The arguments of `import-previous`. */
+export interface ImportPreviousArgs {
+  receipt: string;
+  key: string;
+  markdown: string;
 }
 
 /** The arguments of `add-emoji`. */
@@ -1486,52 +1468,28 @@ export function messages(ws: tilo.Workspace, path: string): Messages {
 /** Chat drafts — `chat.drafts`. */
 export interface Drafts extends tilo.Resource {
   drafts: Record<string, string>;
+  readonly imported: string[];
   startDraft(args: {
     key: string;
   }): Promise<void>;
   /** Runs `start-draft` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   startDraftMany(items: StartDraftArgs[]): Promise<tilo.ActionAnswer[]>;
+  importPrevious(args: {
+    receipt: string;
+    key: string;
+    markdown: string;
+  }): Promise<void>;
+  /** Runs `import-previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importPreviousMany(items: ImportPreviousArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `Drafts` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const DRAFTS_ACTIONS = ["startDraft", "startDraftMany"] as const;
+export const DRAFTS_ACTIONS = ["startDraft", "startDraftMany", "importPrevious", "importPreviousMany"] as const;
 
 /** The `chat.drafts` kind at `path`. */
 export function drafts(ws: tilo.Workspace, path: string): Drafts {
   return resourceProxy(ws, path, SURFACE, DRAFTS_ACTIONS) as unknown as Drafts;
-}
-
-/** What your agents learned — `chat.learned`. */
-export interface Learned extends tilo.Resource {
-  readonly facts: Array<tilo.Entry<Fact>>;
-  learn(args: {
-    text: string;
-    source: string;
-  }): Promise<void>;
-  /** Runs `learn` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  learnMany(items: LearnArgs[]): Promise<tilo.ActionAnswer[]>;
-  correct(args: {
-    fact: string;
-    text: string;
-    source?: string;
-  }): Promise<void>;
-  /** Runs `correct` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  correctMany(items: CorrectArgs[]): Promise<tilo.ActionAnswer[]>;
-  forget(args: {
-    fact: string;
-  }): Promise<void>;
-  /** Runs `forget` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
-  forgetMany(items: ForgetArgs[]): Promise<tilo.ActionAnswer[]>;
-}
-
-/** The actions `Learned` reaches before it is read: `ws` calls them without a
-  `load()` first. */
-export const LEARNED_ACTIONS = ["learn", "learnMany", "correct", "correctMany", "forget", "forgetMany"] as const;
-
-/** The `chat.learned` kind at `path`. */
-export function learned(ws: tilo.Workspace, path: string): Learned {
-  return resourceProxy(ws, path, SURFACE, LEARNED_ACTIONS) as unknown as Learned;
 }
 
 /** Workspace emoji — `tilo.workspace.emoji`. */

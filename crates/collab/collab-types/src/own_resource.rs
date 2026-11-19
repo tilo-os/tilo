@@ -13,6 +13,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Why a live write to an archived member document is refused.
+pub const ARCHIVE_READ_ONLY: &str = "earlier per-member workspace documents can only be read";
+
 /// Domain separation for the id derivation.
 const DOMAIN: &str = "tilo own record v1";
 
@@ -103,9 +106,66 @@ impl OwnResource {
 /// (`[resources] own`, a tilolang package's `resources: .own`): a built-in
 /// app's or package's as the build carries them, a package installed since as
 /// its surface marks them ([`crate::app_surface::own_resource_types`]).
+/// Historical member records retain their original access even after the app
+/// switches to a workspace record of the same kind.
 #[must_use]
 pub fn own_kinds(app: &str) -> Vec<String> {
     let mut kinds: Vec<String> = app_fleet::own_kinds(app).map(str::to_owned).collect();
+    let legacy: &[&str] = match app {
+        "so.tilo.lang.mail" => &["tl.so.tilo.lang.mail"],
+        "so.tilo.lang.views" => &["tl.so.tilo.lang.views"],
+        "so.tilo.shell" => &["tl.so.tilo.shell"],
+        tilo_app_id::apps::MAIL | "dev.tilo.mail" => {
+            &["mail.mailbox", "mail.trusted-senders", "mail.copies"]
+        }
+        tilo_app_id::apps::CHAT | "dev.tilo.chat" => &["chat.drafts", "chat.learned"],
+        tilo_app_id::apps::CLOCKS | "dev.tilo.clocks" => &["clocks.on-devices"],
+        tilo_app_id::apps::DISK_USAGE | "dev.tilo.disk-usage" => &["disk-usage.recent-folders"],
+        tilo_app_id::apps::FIREWALL | "dev.tilo.firewall" => &["firewall.applied"],
+        tilo_app_id::apps::MAPS | "dev.tilo.maps" => &["maps.offline-areas"],
+        tilo_app_id::apps::MESSAGES | "dev.tilo.messages" => &["messages.drafts"],
+        tilo_app_id::apps::TERMINAL | "dev.tilo.terminal" => {
+            &["terminal.history", "terminal.recent-environments"]
+        }
+        tilo_app_id::apps::VIDEO_PLAYER | "dev.tilo.video-player" => &["video-player.recent"],
+        tilo_app_id::apps::SETTINGS | "dev.tilo.settings" => &["settings.root"],
+        tilo_app_id::apps::CANVAS | "dev.tilo.canvas" => &["canvas.recent-artworks"],
+        tilo_app_id::apps::FILE_EXPLORER | "dev.tilo.file-explorer" => &["files.recent"],
+        tilo_app_id::apps::EBOOK | "dev.tilo.ebook" => &["ebook.files"],
+        tilo_app_id::apps::PDF_VIEWER | "dev.tilo.pdf-viewer" => &["pdf.signature-profile"],
+        tilo_app_id::apps::OSK | "dev.tilo.osk" => &["osk.learned"],
+        tilo_app_id::apps::BROWSER | "dev.tilo.browser" => &[
+            "browser.address-book",
+            "browser.browsing-history",
+            "browser.page-record",
+            "browser.personal-bookmarks",
+        ],
+        tilo_app_id::apps::TUBE | "dev.tilo.tube" => &["tube.watch-history"],
+        _ => &[],
+    };
+    for &kind in legacy {
+        if !kinds.iter().any(|known| known == kind) {
+            kinds.push(kind.to_owned());
+        }
+    }
+    if matches!(
+        app,
+        tilo_app_id::apps::CHAT
+            | "dev.tilo.chat"
+            | tilo_app_id::apps::CONTACTS
+            | "dev.tilo.contacts"
+            | tilo_app_id::apps::FEEDS
+            | "dev.tilo.feeds"
+            | tilo_app_id::apps::MAIL
+            | "dev.tilo.mail"
+            | tilo_app_id::apps::NOTES
+            | "dev.tilo.notes"
+            | tilo_app_id::apps::TASKS
+            | "dev.tilo.tasks"
+    ) && !kinds.iter().any(|kind| kind == "tilo.chain-unsent")
+    {
+        kinds.push("tilo.chain-unsent".into());
+    }
     for kind in crate::app_surface::own_resource_types(app) {
         if !kinds.contains(&kind) {
             kinds.push(kind);
@@ -179,7 +239,7 @@ mod tests {
         assert_eq!(
             OwnResource::recognise("so.tilo.shell", &package.document_id(), [3; 32]),
             Some(package),
-            "a built-in tilolang package declaring `resources: .own` keeps its record kind as each member's own"
+            "the earlier Shell identity stays recognizable after the declaration moves to the profile"
         );
     }
 }

@@ -25,5 +25,5 @@ __all__ = [
 
 class Window(Resource):
     """Assistant window — `assistant.window`."""
-    __surface__ = "so.tilo.assistant@fa7c8ab9dd5af608"
+    __surface__ = "so.tilo.assistant@e18330603fcec75a"
 

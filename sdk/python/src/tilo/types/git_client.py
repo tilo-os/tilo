@@ -109,7 +109,7 @@ StoreRepositoryArgs = TypedDict("StoreRepositoryArgs", {
 
 class Repo(Resource):
     """Repository — `git_client.repo`."""
-    __surface__ = "so.tilo.git-client@0368dff8fb39f175"
+    __surface__ = "so.tilo.git-client@f92e36d055226b7e"
     repository: str
     @property
     def shared(self) -> Any:

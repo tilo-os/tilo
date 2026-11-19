@@ -95,11 +95,16 @@ fn holds_account(state: &MailState, address: &str) -> bool {
 pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
     window.live = Some(cx.live().clone());
     window.attach_framework(cx.dispatcher());
+    let trust = cx.resource_opener::<crate::trusted_senders::TrustedSenders>(ui::apps::MAIL);
+    let saved_copies = cx.resource_opener::<crate::copies::MailCopies>(ui::apps::MAIL);
+    let mailbox = cx.resource_opener::<Mail>(ui::apps::MAIL);
     if cx.mode().is_live() {
         window.wake_from_workers(cx.waker());
         window.follow_preferences(cx.settings::<crate::resource::MailPreferences>());
-        if let Some(trusted) = cx.person::<crate::trusted_senders::TrustedSenders>() {
-            window.follow_trusted_senders(trusted);
+        {
+            let mut state = window.shared.borrow_mut();
+            state.sender_trust = Some(trust.clone());
+            state.sync_trusted_senders();
         }
         window.state().contact_directory =
             cx.shared_person::<tilo_contact_directory::ContactDirectory>();
@@ -109,9 +114,8 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
         if let Some(accounts) = cx.shared_person::<PersonAccounts>() {
             window.follow_person_accounts(accounts);
         }
-        if let Some(copies) = cx.person::<crate::copies::MailCopies>() {
-            window.share_copies(copies);
-        }
+        window.copies_opener = Some(saved_copies.clone());
+        window.open_peer_copies();
     }
     // Every change the document records that a mail server does not hold
     // yet — whoever made it — goes to the server from a live window on a
@@ -165,8 +169,48 @@ pub(crate) fn window(cx: &ViewCx<Mail>, mut window: MailApp) -> Element {
     let shared = window.room();
     {
         let (answer, status) = (Rc::clone(&shared), Rc::clone(&shared));
-        cx.effects(move |effect: MailEffect, cx| answer_effect(&answer, effect, cx))
-            .status(move || status.borrow().effect_statuses());
+        let import = cx.mode().is_live();
+        let workspace_mailbox = cx
+            .document_id()
+            .is_some_and(ui::resource::DocumentId::is_package_primary);
+        let import_chain = cx.chain::<MessageStates>();
+        cx.effects(move |effect: MailEffect, cx| {
+            if matches!(effect, MailEffect::ImportSenderTrust) {
+                if !import {
+                    return Err("sender trust is imported in a live workspace".into());
+                }
+                crate::trusted_senders::import_legacy(&trust)?;
+                return Ok(Effected::done());
+            }
+            if matches!(effect, MailEffect::ImportSavedCopies) {
+                if !import {
+                    return Err("saved mail is imported in a live workspace".into());
+                }
+                let result = crate::copies::import_legacy(&saved_copies)?;
+                return Ok(Effected::value(result));
+            }
+            if matches!(effect, MailEffect::ImportMailbox) {
+                if !import || !workspace_mailbox {
+                    return Err("a mailbox is imported from its workspace mailbox window".into());
+                }
+                return Ok(Effected::value(crate::mailbox_migration::import(
+                    &mailbox, cx,
+                )?));
+            }
+            if matches!(effect, MailEffect::ImportMessageState) {
+                if !import || !workspace_mailbox {
+                    return Err("messages are imported from the workspace mailbox".into());
+                }
+                let chain = import_chain
+                    .as_ref()
+                    .ok_or("the workspace messages are still arriving")?;
+                return Ok(Effected::value(crate::mailbox_migration::import_messages(
+                    &mailbox, chain, cx,
+                )?));
+            }
+            answer_effect(&answer, effect, cx)
+        })
+        .status(move || status.borrow().effect_statuses());
     }
     {
         let staged = Rc::clone(&shared);
@@ -421,7 +465,10 @@ impl Mailroom {
         if mail.knows(id) && mail.message(id).is_none() {
             return None;
         }
-        self.shared.borrow().mailbox.get(id.parse().ok()?).cloned()
+        let shared = self.shared.borrow();
+        let id = id.parse().ok()?;
+        shared.may_read_message(id).then_some(())?;
+        shared.mailbox.get(id).cloned()
     }
 
     pub(crate) fn search_synced(
@@ -442,7 +489,8 @@ impl Mailroom {
                 .values()
                 .filter(|message| {
                     let id = message.id.to_string();
-                    !mail.knows(&id) || mail.message(&id).is_some()
+                    shared.may_read_message(message.id)
+                        && (!mail.knows(&id) || mail.message(&id).is_some())
                 })
                 .chain(held.iter()),
         )
@@ -496,7 +544,18 @@ impl Mailroom {
     }
 
     fn search_entries(&self) -> Vec<SearchEntry> {
-        let mut entries = crate::search::message_entries(&self.shared_mailbox());
+        let shared = self.shared.borrow();
+        let mut entries: Vec<_> = shared
+            .mailbox
+            .messages
+            .values()
+            .filter(|message| {
+                message.folder != crate::model::Folder::Trash
+                    && !shared.workspace_messages.contains(&message.id)
+            })
+            .map(crate::search::message_entry)
+            .collect();
+        drop(shared);
         entries.extend(self.contact_recipient_search_entries());
         entries
     }
@@ -528,6 +587,7 @@ impl Mailroom {
         !self.pending_send.is_empty()
     }
 
+    #[cfg(test)]
     pub(crate) fn shared_mailbox(&self) -> std::cell::Ref<'_, crate::model::Mailbox> {
         std::cell::Ref::map(self.shared.borrow(), |state| &state.mailbox)
     }

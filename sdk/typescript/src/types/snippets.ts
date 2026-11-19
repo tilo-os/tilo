@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.snippets@fa85cf3460aa8b5b";
+export const SURFACE = "so.tilo.snippets@d0e7416d8c0a049e";
 
 /** One of "text", "shell", "rust", "sql", "git", "python", "javascript", "json", "yaml", "markdown", "html", "css", "toml", "dockerfile". */
 export type Language = "text" | "shell" | "rust" | "sql" | "git" | "python" | "javascript" | "json" | "yaml" | "markdown" | "html" | "css" | "toml" | "dockerfile";

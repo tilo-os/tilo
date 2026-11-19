@@ -540,6 +540,7 @@ impl Task {
                 ref cluster_id,
                 ref document_id,
                 ref envelope,
+                ref readers,
                 ..
             } => {
                 let route = DocumentRoute {
@@ -559,6 +560,22 @@ impl Task {
                 // The channel carries the record's content keys, and which devices read it is
                 // its workspace's governance, not any one write: take part in it for every
                 // write that arrives, so a record whose writes are all sealed asks for them.
+                if let Some(readers) = readers {
+                    let Ok(scope) = route.key_scope_for(Some(readers)) else {
+                        return;
+                    };
+                    if let Some(keys) = self.engine.keys().get()
+                        && let Some(group) = keys.reader_group(workspace_id, readers)
+                    {
+                        keys.access(group);
+                        if envelope.encryption.is_some_and(|metadata| {
+                            metadata.key_group(workspace_id) == scope.group()
+                        }) && let Some(group) = keys.register_scope(scope)
+                        {
+                            keys.access(group);
+                        }
+                    }
+                }
                 self.open_channel(&route);
                 let surface = (envelope.kind == collab_types::OpKind::Change)
                     .then_some(envelope.surface)

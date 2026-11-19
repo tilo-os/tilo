@@ -431,7 +431,23 @@ impl GovernedWorkspace {
                 let Some(readers) = &known else {
                     return Ok(false);
                 };
-                let Some(Ok(keys)) = self.reader_keys(readers).await else {
+                let keys = match metadata.scheme {
+                    collab_types::EncryptionScheme::DocumentContentKey { group, .. } => {
+                        let Some(device) = &self.device else {
+                            return Ok(false);
+                        };
+                        let workspace = collab_types::WorkspaceId::parse(self.workspace())
+                            .ok_or("invalid resource workspace")?;
+                        let named =
+                            (readers != collab_types::EVERY_MEMBER).then_some(readers.as_str());
+                        let scope = neighbour_wire::KeyScope::document(workspace, app, doc, named)
+                            .filter(|scope| scope.group() == group)
+                            .ok_or("the encryption group belongs to another document")?;
+                        device.group_keys(&scope.to_string(), readers, false).await
+                    }
+                    _ => self.reader_keys(readers).await,
+                };
+                let Some(Ok(keys)) = keys else {
                     return Ok(false);
                 };
                 let ciphertext =
@@ -501,8 +517,27 @@ impl GovernedWorkspace {
         let now = tilo_clock::wall();
         let mut requests = Vec::with_capacity(written.len());
         for write in written {
-            let readers = write.readers.clone();
-            let keys = match self.reader_keys(&readers).await {
+            let named = (collab_types::is_store_document(&write.doc)
+                && write.readers != collab_types::EVERY_MEMBER)
+                .then_some(write.readers);
+            let isolated = self.peer().requires_document_keys(app, &write.doc, now)?;
+            let group = if isolated {
+                let workspace = collab_types::WorkspaceId::parse(self.workspace())
+                    .ok_or("invalid workspace id")?;
+                neighbour_wire::KeyScope::document(workspace, app, &write.doc, named.as_deref())
+                    .ok_or("the document has an invalid reader set")?
+                    .to_string()
+            } else {
+                self.workspace().to_owned()
+            };
+            let readers = named.as_deref().unwrap_or(collab_types::EVERY_MEMBER);
+            let keys = match self
+                .device
+                .as_ref()
+                .ok_or("this device holds no group keys")?
+                .group_keys(&group, readers, isolated)
+                .await
+            {
                 Some(Ok(keys)) => keys,
                 Some(Err(error)) => return Err(error),
                 None => {
@@ -540,6 +575,7 @@ impl GovernedWorkspace {
             };
             let mut envelope = self.peer().draft_write(
                 (app, &write.doc),
+                named.as_deref(),
                 &frame,
                 Some(&mut seal),
                 device.device(),
@@ -549,9 +585,6 @@ impl GovernedWorkspace {
             collab_types::sign_op(&mut envelope, &*device.signer)
                 .map_err(|error| error.to_string())?;
             let own = self.peer().own_write(app, &write.doc, &device.device());
-            let named = (collab_types::is_store_document(&write.doc)
-                && readers != collab_types::EVERY_MEMBER)
-                .then_some(readers);
             requests.push(OwnerCommitRequest {
                 workspace: self.workspace().to_owned(),
                 operation: CommitOperation::Document {

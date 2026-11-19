@@ -661,7 +661,7 @@ fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
 fn menu(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     let tools = tools.clone();
     cx.switch(&tools.recents.clone(), move |_, recents| {
-        let recents = recents.on(&tools.device);
+        let recents = recents.in_workspace(&tools.recent_workspace);
         let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let items = [
             ("new", "canvas-menu-new"),

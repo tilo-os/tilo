@@ -56,8 +56,6 @@ impl ResourceApp for TlApp {
             id: &meta.app,
             title: &meta.title,
             icon: meta.icon.as_deref().map(crate::icon_name),
-            // A package declaring `documents: .own` keeps each member's documents in their own.
-            own_resources: meta.own_resources,
         })
     }
 

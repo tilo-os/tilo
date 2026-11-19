@@ -7,8 +7,9 @@ use super::{
     custom_timer_duration_seconds, remaining_fraction, repeat_summary, timezone_label,
     timezone_results,
 };
+use crate::ClocksShell;
 use crate::model::{Clocks, WeekdayKey, bounded_label};
-use crate::{ClocksOnDevices, ClocksShell};
+use crate::schedule::ClockDeviceSettings;
 use std::collections::BTreeSet;
 use ui::prelude::TestApp;
 use ui::theme::Theme;
@@ -327,9 +328,11 @@ fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>) {
     app.settle();
     app.settle();
     assert!(
-        app.person::<ClocksOnDevices>()
+        app.settings::<ClockDeviceSettings>()
+            .get()
+            .clocks_on_this_device
+            .remove(ui::framework::testing::TEST_WORKSPACE)
             .unwrap()
-            .with(|kept| kept.on("test-device"))
             .floating_timers
             .is_empty(),
         "close stops floating"
@@ -382,9 +385,11 @@ fn shell_floating_clock_ringing(app: &mut TestApp<ClocksShell>, added: std::time
         "the same notice, not a second one"
     );
     assert_eq!(
-        app.person::<ClocksOnDevices>()
+        app.settings::<ClockDeviceSettings>()
+            .get()
+            .clocks_on_this_device
+            .remove(ui::framework::testing::TEST_WORKSPACE)
             .unwrap()
-            .with(|kept| kept.on("test-device"))
             .delivery
             .timers_rung
             .len(),

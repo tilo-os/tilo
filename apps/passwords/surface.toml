@@ -7,6 +7,38 @@ kind = "passwords.vault"
 label = "Password vault"
 version = 1
 shows = ["hide", "show-access"]
+fields = [
+  { path = "sealed", type = { collection = "text" }, readonly = true, stored = "collection" },
+  { path = "imported", type = { collection = "text" }, readonly = true, stored = "collection" },
+  { path = "removed", type = { set = "text" }, readonly = true },
+]
+
+[[resources.verbs]]
+id = "keep-sealed"
+kind = "undoable"
+writes = ["record", "sealed.*"]
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "ciphertext", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "import-sealed"
+kind = "undoable"
+writes = ["record", "imported.*"]
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+  { name = "ciphertext", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remove-sealed"
+destructive = true
+kind = "undoable"
+writes = ["record", "sealed.*", "imported.*", "removed"]
+params = [
+  { name = "id", type = "text", required = true, schema = { type = "string" } },
+]
 
 [[resources.verbs]]
 id = "deny-access"
@@ -54,6 +86,10 @@ kind = "read"
 params = [
   { name = "item", type = "text", required = true, schema = { type = "string" } },
 ]
+
+[[resources.verbs]]
+id = "open-workspace-vault"
+kind = "read"
 
 [[resources.verbs]]
 id = "filter"

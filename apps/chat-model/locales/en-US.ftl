@@ -63,3 +63,5 @@ chat-workspace-mark-read = Mark as read
 chat-workspace-keep-summary = Keep a summary
 chat-workspace-submit-feedback = Submit feedback
 chat-workspace-triage = Triage feedback
+
+chat-drafts-import-previous = Restore an earlier channel draft

@@ -24,7 +24,7 @@ d-hzbwof46 = Fetched
     .doc = When the account's mail was last taken in from its server, as the clock the person read it at: 1970 when it never was.
 
 d-jxc5rufs = Signature
-    .doc = What the account's messages end with: the person's own, per account, as every mail client signs a message.
+    .doc = What the account's messages end with.
 
 d-ehmoyzk2 = Mailboxes
 
@@ -85,7 +85,7 @@ d-3vusnp7i = Boxes
 d-ueyfpzep = Messages
 
 d-gy7z7du3 = Labels
-    .doc = The labels people gave it (Gmail's and Fastmail's): the person's own, never the server's.
+    .doc = The labels members assigned to this conversation in the workspace.
 
 d-bdoh33hs = Snoozed until
     .doc = Snoozed until this moment: out of the inbox until then, and back once it has come, with no window open.
@@ -114,7 +114,7 @@ d-xnczt27x-filter-trash = Trash
 d-xnczt27x-filter-unread = Unread
 
 d-5ynnrlxh = Label
-    .doc = A label the person gave their conversations: their own, never the server's, as Gmail's and Fastmail's are.
+    .doc = A workspace label for conversations.
     .noun = { $count ->
         [one] label
        *[other] labels
@@ -202,7 +202,7 @@ d-lidkonvr-filter-drafts = Drafts
 d-lidkonvr-filter-sent = Sent
 
 d-su4h67i5 = Mail
-    .doc = The person's mail: the accounts the workspace's settings hold, what they are writing, and the labels they gave their conversations.
+    .doc = The workspace mailbox holds its accounts, drafts, and conversation labels.
     .noun = { $count ->
         [one] mail
        *[other] mails
@@ -214,13 +214,23 @@ d-gkuo27e6 = Drafts
 
 d-z3zcztpz = Labels
 
+d-bag7bf25 = Recovered mail
+    .doc = Conversations retained from an earlier mailbox, outside the IMAP account collections.
+
+d-fezdozrd = Recovered conversations
+
+d-swilesl6 = Recovered signatures
+
+d-5upxgb6g = Recovered drafts
+    .doc = Previously imported drafts, including ones subsequently deleted.
+
 d-4ow5ydy5 = Hold
-    .doc = How many seconds a sent message waits before it goes, so it can be taken back: the person's setting, ten by default, and no wait at all when it is zero.
+    .doc = How many seconds members have to undo a send.
 
 d-su4h67i5-filter-hold = Hold
 
 d-ejo2352x = Signature
-    .doc = Sets what the account signs its messages with, or clears it: the person's own, per account.
+    .doc = Sets or clears the workspace account's signature.
 
 d-ejo2352x-signature = Signature
 
@@ -235,6 +245,17 @@ d-arnkrvgw = Check now
 
 d-eon6gbrn = New message
     .doc = Starts a message from the account.
+
+d-y6hvqjbf = Recover previous mail
+    .doc = Copies data from the earlier private mailbox into this workspace.
+
+d-y6hvqjbf-drafts = Drafts
+
+d-y6hvqjbf-labels = Labels
+
+d-y6hvqjbf-conversations = Conversations
+
+d-y6hvqjbf-signatures = Signatures
 
 d-ygbvdl5l = New message
     .doc = Starts a message from the first account.
@@ -307,7 +328,7 @@ d-ck5k6uop-name = Name
 d-ck5k6uop-on = On
 
 d-vydc2hnq = Rename label
-    .doc = Renames one of the person's labels, all the conversations that carry it with it.
+    .doc = Renames one of the workspace's labels, all the conversations that carry it with it.
     .w-a-label-needs-a-name = A label needs a name
     .w-you-have-a-label = You have a label { $name }
 
@@ -316,7 +337,7 @@ d-vydc2hnq-l = L
 d-vydc2hnq-name = Name
 
 d-phsy7vhs = Delete label
-    .doc = Deletes one of the person's labels, and takes it off every conversation that carries it.
+    .doc = Deletes one of the workspace's labels, and takes it off every conversation that carries it.
 
 d-phsy7vhs-l = L
 
@@ -355,7 +376,7 @@ d-trjwm3gb = Mark as unread
 d-trjwm3gb-unread = Unread
 
 d-7zk6ua6p = Send from
-    .doc = Sends the message from another of the person's accounts.
+    .doc = Sends the message from another workspace account.
     .w-this-message-went-already = This message went already
 
 d-7zk6ua6p-a = A
@@ -379,6 +400,7 @@ d-twebu5cb = Undo send
 d-a4rv5wm6 = Answer
     .doc = Answers the conversation with what was typed: the message goes to whoever wrote its newest, as a reply to it, quoted.
     .w-say-something-first = Say something first
+    .w-the-account-for-this-conversation-is = The account for this conversation is unavailable
 
 d-a4rv5wm6-body = Body
 
@@ -445,9 +467,12 @@ d-7rcrynvm = Mail
 
 d-4fjgzcq6 = Unified
     .w-all-accounts = All accounts
+    .w-recovered-mail = Recovered mail
     .w-all-inboxes = All inboxes
     .w-all-mail = All mail
     .w-labels = Labels
+
+d-3k7hkyhl = Recovered mail
 
 d-m5y6nl2m = All inboxes
     .w-add-a-mail-account-in-settings = Add a mail account in Settings

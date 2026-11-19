@@ -52,7 +52,7 @@ CloseFileArgs = TypedDict("CloseFileArgs", {
 
 class Workspace(Resource):
     """Typst workspace — `typst-editor.workspace`."""
-    __surface__ = "so.tilo.typst-editor@cc1a1e5d75eba881"
+    __surface__ = "so.tilo.typst-editor@f7f82fa8063cb876"
     files: list[Entry[TypstFile]]
 
     def new_file(self,

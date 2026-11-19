@@ -22,10 +22,47 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.passwords@924dd15c855e952e";
+export const SURFACE = "so.tilo.passwords@01e451d82b8d4b50";
+
+/** The arguments of `keep-sealed`. */
+export interface KeepSealedArgs {
+  id: string;
+  ciphertext: string;
+}
+
+/** The arguments of `import-sealed`. */
+export interface ImportSealedArgs {
+  id: string;
+  ciphertext: string;
+}
+
+/** The arguments of `remove-sealed`. */
+export interface RemoveSealedArgs {
+  id: string;
+}
 
 /** Password vault — `passwords.vault`. */
 export interface Vault extends tilo.Resource {
+  readonly sealed: Array<tilo.Entry<string>>;
+  readonly imported: Array<tilo.Entry<string>>;
+  readonly removed: string[];
+  keepSealed(args: {
+    id: string;
+    ciphertext: string;
+  }): Promise<void>;
+  /** Runs `keep-sealed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keepSealedMany(items: KeepSealedArgs[]): Promise<tilo.ActionAnswer[]>;
+  importSealed(args: {
+    id: string;
+    ciphertext: string;
+  }): Promise<void>;
+  /** Runs `import-sealed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  importSealedMany(items: ImportSealedArgs[]): Promise<tilo.ActionAnswer[]>;
+  removeSealed(args: {
+    id: string;
+  }): Promise<void>;
+  /** Runs `remove-sealed` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  removeSealedMany(items: RemoveSealedArgs[]): Promise<tilo.ActionAnswer[]>;
   denyAccess(args: {
     proposal: string;
   }): Promise<void>;
@@ -44,6 +81,7 @@ export interface Vault extends tilo.Resource {
   reveal(args: {
     item: string;
   }): Promise<void>;
+  openWorkspaceVault(): Promise<void>;
   filter(args: {
     filter: string;
   }): Promise<void>;
@@ -51,7 +89,7 @@ export interface Vault extends tilo.Resource {
 
 /** The actions `Vault` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const VAULT_ACTIONS = ["denyAccess", "add", "listLogins", "cancel", "copy", "copyIdentity", "copyOrigins", "reveal", "filter"] as const;
+export const VAULT_ACTIONS = ["keepSealed", "keepSealedMany", "importSealed", "importSealedMany", "removeSealed", "removeSealedMany", "denyAccess", "add", "listLogins", "cancel", "copy", "copyIdentity", "copyOrigins", "reveal", "openWorkspaceVault", "filter"] as const;
 
 /** The `passwords.vault` kind at `path`. */
 export function vault(ws: tilo.Workspace, path: string): Vault {

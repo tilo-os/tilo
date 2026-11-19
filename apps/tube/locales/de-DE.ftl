@@ -256,3 +256,4 @@ tube-effect-set-segment-handling = Umgang mit Abschnitten festlegen
 
 ## What the app is called in a window and in the launcher
 tube-app-title = Tube
+tube-effect-import-previous-watch-history = Früheren Wiedergabeverlauf importieren

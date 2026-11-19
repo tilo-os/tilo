@@ -13,7 +13,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::framework::{Actions, Dispatcher, Effected, Live, PersonResource, Publishes, ViewCx};
+use ui::framework::{Actions, Dispatcher, Effected, Live, Publishes, ResourceOpener, ViewCx};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -54,7 +54,7 @@ pub(crate) struct Tube {
     model: TubeModel,
     dispatcher: Option<Dispatcher<Library>>,
     actions: Option<Actions<Library>>,
-    history: Option<PersonResource<WatchHistory>>,
+    history: Option<ResourceOpener<WatchHistory>>,
     preferences: Option<ui::framework::Setting<crate::model::Settings>>,
     local_history: Option<ui::tilo_resource::Replica<WatchHistory>>,
     bus: ActionBus,
@@ -378,17 +378,30 @@ impl Tube {
                     "Downloads are unavailable for {video}: no storage capability"
                 ));
             }
+            TubeEffect::ImportPreviousWatchHistory => {
+                let history = self
+                    .history
+                    .as_ref()
+                    .ok_or("watch history is imported in a live workspace")?;
+                crate::history::import_previous(history)?;
+                self.follow_history();
+            }
             TubeEffect::MarkWatched { video } => {
                 let at_ms = ui::time::unix_now_ms();
-                self.edit_history(&WatchHistory::RECORD.with((video, at_ms)));
+                if !self.edit_history(&WatchHistory::RECORD.with((video, at_ms))) {
+                    return Err("the watch history could not be changed".into());
+                }
             }
             TubeEffect::ForgetWatched { video } => {
-                self.edit_history(&WatchHistory::FORGET.with(video));
+                if !self.edit_history(&WatchHistory::FORGET.with(video)) {
+                    return Err("the watch history could not be changed".into());
+                }
             }
             TubeEffect::ClearHistory => {
-                if self.edit_history(&WatchHistory::CLEAR.invoke()) {
-                    self.model.push_notice(t("tube-notice-history-cleared"));
+                if !self.edit_history(&WatchHistory::CLEAR.invoke()) {
+                    return Err("the watch history could not be changed".into());
                 }
+                self.model.push_notice(t("tube-notice-history-cleared"));
             }
             TubeEffect::PairDevice { invite } => {
                 #[cfg(feature = "grayjay-sync")]
@@ -448,11 +461,17 @@ impl Tube {
     }
 
     fn edit_history(&mut self, edit: &Invoke<WatchHistory>) -> bool {
-        let edited = if let Some(record) = &self.history {
-            record
-                .invoke(edit)
-                .map(|()| record.with(WatchHistory::videos))
-                .map_err(|error| error.to_string())
+        let edited = if let Some(opener) = &self.history {
+            opener
+                .open(crate::history::DOCUMENT)
+                .filter(|record| record.may_read())
+                .ok_or_else(|| "the workspace watch history is unavailable".to_owned())
+                .and_then(|record| {
+                    record
+                        .invoke(edit)
+                        .map(|()| record.get().videos())
+                        .map_err(|error| error.to_string())
+                })
         } else {
             let shown = &self.model.history;
             let positions = &self.model.history_positions;
@@ -501,11 +520,17 @@ impl Tube {
     }
 
     fn follow_history(&mut self) -> bool {
-        let Some(history) = &self.history else {
+        let Some(opener) = &self.history else {
             return false;
         };
-        let stored = history.with(WatchHistory::videos);
-        let positions = history.with(WatchHistory::positions);
+        let (stored, positions) = opener
+            .open(crate::history::DOCUMENT)
+            .filter(|record| record.may_read())
+            .map(|record| {
+                let history = record.get();
+                (history.videos(), history.positions())
+            })
+            .unwrap_or_default();
         if stored == self.model.history && positions == self.model.history_positions {
             return false;
         }
@@ -516,7 +541,11 @@ impl Tube {
 
     fn history_positions(&self) -> std::collections::BTreeMap<String, u64> {
         match (&self.history, &self.local_history) {
-            (Some(record), _) => record.with(WatchHistory::positions),
+            (Some(opener), _) => opener
+                .open(crate::history::DOCUMENT)
+                .filter(|record| record.may_read())
+                .map(|record| record.get().positions())
+                .unwrap_or_default(),
             (None, Some(replica)) => replica
                 .state()
                 .map(|state| state.positions())
@@ -678,7 +707,7 @@ impl Tube {
         &mut self,
         dispatcher: Dispatcher<Library>,
         actions: Actions<Library>,
-        history: Option<PersonResource<WatchHistory>>,
+        history: Option<ResourceOpener<WatchHistory>>,
     ) {
         self.dispatcher = Some(dispatcher);
         self.actions = Some(actions);
@@ -1023,8 +1052,7 @@ pub(crate) fn window(cx: &ViewCx<Library>, mut window: TubeApp) -> Element {
         let history = cx
             .mode()
             .is_live()
-            .then(|| cx.person::<WatchHistory>())
-            .flatten();
+            .then(|| cx.resource_opener::<WatchHistory>(ui::apps::TUBE));
         tube.follow_preferences(cx.settings::<crate::model::Settings>());
         #[cfg(feature = "grayjay-sync")]
         if cx.mode().is_live() {

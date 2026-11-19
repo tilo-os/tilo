@@ -196,20 +196,3 @@ fields = [
   { name = "city", type = "text" },
   { name = "timezone", type = "text" },
 ]
-
-[[resources]]
-kind = "clocks.on-devices"
-label = "Clocks on each device"
-version = 1
-fields = [
-  { path = "devices", type = { map = "any" } },
-]
-
-[[resources.verbs]]
-id = "keep"
-kind = "undoable"
-params = [
-  { name = "device", type = "text", required = true, schema = { type = "string" } },
-  { name = "kept", required = true, schema = {} },
-]
-

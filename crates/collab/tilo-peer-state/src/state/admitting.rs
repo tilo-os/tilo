@@ -17,7 +17,7 @@ impl StatePeer {
     /// No wire message can select this path. Unlike a retained checkpoint, an
     /// SDK snapshot is an authored mutation of an already-owned exact record.
     /// A write that is the whole record, sealed, is the one exception: it
-    /// names the record on its own, so a device that keeps a record's channel
+    /// names the document on its own, so a device
     /// founds it with it, as a replica that holds none of the route founds it
     /// from one it is sent.
     pub fn admit_local_app_document(
@@ -27,15 +27,15 @@ impl StatePeer {
         envelope: collab_types::SignedOp,
         now: SystemTime,
     ) -> Result<ReceiveOutcome, String> {
-        self.admit_local(app, record, envelope, now)
+        self.admit_local((app, record), None, envelope, now)
             .map(|report| report.summary)
             .map_err(Into::into)
     }
 
     pub(super) fn admit_local(
         &mut self,
-        app: &str,
-        record: &str,
+        (app, record): (&str, &str),
+        readers: Option<&str>,
         envelope: collab_types::SignedOp,
         now: SystemTime,
     ) -> Result<AdmissionReport, crate::NotAdmitted> {
@@ -75,7 +75,7 @@ impl StatePeer {
                 document_id: record.into(),
                 envelope: Box::new(envelope),
                 own: self.core.own_write(app, record, &source),
-                readers: None,
+                readers: readers.map(str::to_owned),
             },
             now,
             true,
@@ -119,7 +119,23 @@ impl StatePeer {
         {
             return Err("transport author or document workspace mismatch".into());
         }
+        if !retained_replay
+            && (own.is_some()
+                || self
+                    .core
+                    .own_write(&app_id, &document_id, &source)
+                    .is_some())
+        {
+            return Err(collab_types::own_resource::ARCHIVE_READ_ONLY.into());
+        }
         self.core.learn_own(&app_id, &document_id, own.as_ref());
+        self.check_document_key_scope(
+            (&app_id, &document_id),
+            readers.as_deref(),
+            envelope.encryption,
+            now,
+            retained_replay,
+        )?;
         // A piece of a compaction that spans several ops changes nothing on its
         // own: it is gathered, and the compaction is admitted once it is whole.
         let envelope = if collab_types::is_compaction_piece(&envelope)
@@ -438,7 +454,7 @@ impl StatePeer {
             collab_types::WholeDocumentPayload::Encrypted { .. } => {
                 // A sealed change needs the record it changes; a write that
                 // is the whole record — a compaction, or a checkpoint such as
-                // the one a host keeps at the head of a sealed channel —
+                // the latest sealed version the workspace keeps —
                 // founds the route for a replica that holds none of it, as a
                 // device catching up from a store that holds only ciphertext
                 // does.

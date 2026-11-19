@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.model-providers@bce9a952d0491cca";
+export const SURFACE = "so.tilo.model-providers@87aa287e492c7c4a";
 
 /** Model providers — `model-providers.root`. */
 export interface Root extends tilo.Resource {

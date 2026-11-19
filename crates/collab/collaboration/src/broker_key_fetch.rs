@@ -59,7 +59,12 @@ pub(super) fn update_route_keys(
 /// Let the content `spec`'s record references be sealed under the secret
 /// of the members `keys` belong to, while they hold one.
 pub(super) fn hold_content_secret(spec: &crate::RouteSpec, keys: &crate::route_keys::RouteKeys) {
-    crate::document_content::ContentLink::of(spec).hold_secret(keys.content_secret());
+    let link = crate::document_content::ContentLink::of(spec);
+    link.hold_secret(keys.content_secret());
+    let document = spec.document.as_deref().unwrap_or_default();
+    if collab_types::validator::requires_independent_document_keys(&spec.app_id, document) {
+        link.hold_document_keys(spec, keys.document_keys());
+    }
 }
 
 /// One route's question to the identity service, taken off the route so it

@@ -15,6 +15,8 @@ use fs_protocol::files::{FileNodeKind, TreeChunk};
 use fs_protocol::tree::{self, TreeChunks, TreeEntry};
 use tilo_content::ContentStore;
 
+use super::tree_put::sealed::FileSealing;
+
 /// The most of one file read for its words: a larger one is still found by its name.
 const MOST_READ_BYTES: u64 = 1024 * 1024;
 
@@ -103,6 +105,7 @@ impl FilesIndex {
         bytes: &[u8],
         revision: [u8; 32],
         content: Option<&ContentStore>,
+        sealing: Option<&FileSealing>,
     ) -> usize {
         self.revisions.insert(chunk, revision);
         self.stale.remove(&chunk);
@@ -130,7 +133,8 @@ impl FilesIndex {
             if old.get(id) == Some(entry) && self.words.contains_key(id) {
                 continue;
             }
-            self.words.insert(id.clone(), words_of(entry, content));
+            self.words
+                .insert(id.clone(), words_of(entry, content, sealing));
             read = read.saturating_add(1);
         }
         for id in old.keys() {
@@ -157,15 +161,22 @@ impl FilesIndex {
 }
 
 /// The words of the file node `entry`: the bytes `content` keeps under its hash.
-fn words_of(entry: &TreeEntry, content: Option<&ContentStore>) -> Option<Arc<str>> {
+fn words_of(
+    entry: &TreeEntry,
+    content: Option<&ContentStore>,
+    sealing: Option<&FileSealing>,
+) -> Option<Arc<str>> {
     let store = content?;
     let hash = entry.hash.as_deref()?;
     if entry.size > MOST_READ_BYTES {
         return None;
     }
-    let file = fs_content::whole(store.read(hash)?, MOST_READ_BYTES, |chunk| {
-        store.read(&hex::encode(chunk))
-    })?;
+    let file = fs_content::whole_with(
+        store.read(hash)?,
+        MOST_READ_BYTES,
+        |chunk| store.read(&hex::encode(chunk)),
+        |group, ciphertext| sealing?.open(group, ciphertext),
+    )?;
     String::from_utf8(file).ok().map(Arc::from)
 }
 
@@ -213,19 +224,19 @@ mod tests {
             Some(0),
             "the tree's own document is read first"
         );
-        assert_eq!(index.read(0, &index_of(&[1]), rev(0), None), 0);
+        assert_eq!(index.read(0, &index_of(&[1]), rev(0), None, None), 0);
         assert_eq!(index.next(), Some(1), "the chunk it lists is read next");
-        assert_eq!(index.read(1, &chunk_of("a.txt"), rev(1), None), 1);
+        assert_eq!(index.read(1, &chunk_of("a.txt"), rev(1), None, None), 1);
         assert!(index.settled());
         assert_eq!(
-            index.read(1, &chunk_of("a.txt"), rev(2), None),
+            index.read(1, &chunk_of("a.txt"), rev(2), None, None),
             0,
             "an unchanged chunk reads no file again"
         );
         assert_eq!(index.files()[0].path, "a.txt");
 
         // A node that changed is read again, and the file it was is no longer kept.
-        assert_eq!(index.read(1, &chunk_of("b.txt"), rev(3), None), 1);
+        assert_eq!(index.read(1, &chunk_of("b.txt"), rev(3), None, None), 1);
         let files = index.files();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "b.txt");

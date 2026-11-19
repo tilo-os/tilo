@@ -87,16 +87,16 @@ pub(super) struct AdmittedCommit {
     told: tokio::sync::oneshot::Sender<()>,
 }
 
-/// Why `delta` is not `peer`'s to commit ([`commit_refusal`]), or, a write of a member's own
-/// record, not theirs: a host this workspace is attached to carries its members' own records as
-/// they wrote them, and anyone else writes only their own.
+/// Why `delta` is not `peer`'s to commit ([`commit_refusal`]), including a
+/// write to an archived member document.
 async fn own_commit_refusal(
     ws: &SharedWorkspace,
     peer: &AuthenticatedPeer,
     author: [u8; 32],
     delta: &Envelope,
 ) -> Option<Refusal> {
-    if let Some(refusal) = commit_refusal(ws, author, delta).await {
+    let signed_person = (author == peer.device_public_key).then_some(peer.user_public_key);
+    if let Some(refusal) = commit_refusal(ws, author, delta, signed_person).await {
         return Some(refusal);
     }
     let Envelope::Delta { delta: bytes, .. } = delta else {
@@ -306,6 +306,7 @@ async fn commit_refusal(
     ws: &SharedWorkspace,
     author: [u8; 32],
     delta: &Envelope,
+    signed_person: Option<[u8; 32]>,
 ) -> Option<Refusal> {
     let Envelope::Delta { delta: bytes, .. } = delta else {
         return None;
@@ -317,15 +318,18 @@ async fn commit_refusal(
         author,
         &named,
         |device_access, payloads| {
-            crate::surfaces::refusal(payloads, bytes, device_access).is_some()
+            crate::surfaces::refusal(payloads, bytes, device_access, signed_person).is_some()
                 || crate::surfaces::role_refusal(bytes, device_access, author).is_some()
         },
     ))
     .await;
     let device_access = decision.device_access;
-    if let Some(refusal) =
-        crate::surfaces::refusal(&*decision.payloads, bytes, device_access.as_deref())
-    {
+    if let Some(refusal) = crate::surfaces::refusal(
+        &*decision.payloads,
+        bytes,
+        device_access.as_deref(),
+        signed_person,
+    ) {
         let refusal = super::state::behind_governance(decision.governance_behind, refusal);
         tracing::warn!(%refusal, device = %hex::encode(author), "refused a document change");
         file_refusal_of(ws, delta, &refusal.to_string()).await;

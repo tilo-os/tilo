@@ -51,7 +51,7 @@ ClearArgs = TypedDict("ClearArgs", {
 
 class Results(Resource):
     """Internet speed test — `speed-test.results`."""
-    __surface__ = "so.tilo.speed-test@303db65a9e1defad"
+    __surface__ = "so.tilo.speed-test@2a7cffc1a6df2345"
     @property
     def results(self) -> list[Entry[Measurement]]:
         """Read only."""

@@ -351,6 +351,7 @@ fn answer(
         }
         MessagesEffect::SearchMessages { .. }
         | MessagesEffect::ExportContent { .. }
+        | MessagesEffect::ImportPreviousDraft
         | MessagesEffect::OpenConversation { .. } => {
             return Err("the resource answers this before the broker".to_owned());
         }
@@ -520,6 +521,7 @@ pub(super) fn build(cx: &ViewCx<Messages>, services: &Services) -> Element {
     let projected_setup = setup.clone();
     let scheduled_setup = setup.clone();
     let projected_groups = groups.clone();
+    let projected_drafts = held_drafts.clone();
     let link = Rc::new(std::cell::RefCell::new(None));
     let bar = crate::window_bar::Bar {
         sources: sources.clone(),
@@ -540,9 +542,13 @@ pub(super) fn build(cx: &ViewCx<Messages>, services: &Services) -> Element {
                     changed_history.revision(),
                     projected_setup.key(),
                     projected_groups.key(),
+                    projected_drafts
+                        .as_ref()
+                        .filter(|record| record.may_read())
+                        .map(crate::drafts::DraftRecord::revision),
                 )
             },
-            move |(_, selected, change, _, _)| {
+            move |(_, selected, change, _, _, _)| {
                 if discard_invalid_route(
                     &watched_sources,
                     &watched_selection,
@@ -603,11 +609,10 @@ fn sending_and_drafts(
     live: bool,
     direct: bool,
     services: &Services,
-) -> (
-    crate::sending::Sending,
-    Option<PersonResource<crate::drafts::MessageDrafts>>,
-) {
-    let drafts = cx.person::<crate::drafts::MessageDrafts>();
+) -> (crate::sending::Sending, Option<crate::drafts::DraftRecord>) {
+    let drafts = live
+        .then(|| cx.shared_resource(ui::apps::MESSAGES, crate::drafts::DOCUMENT))
+        .flatten();
     let sending = crate::sending::Sending::new(
         live.then(|| {
             services
@@ -661,7 +666,7 @@ fn navigation(
     selected: &Selection,
     setup: &crate::setup::SetupView,
     groups: &crate::groups::GroupsView,
-    drafts: Option<&PersonResource<crate::drafts::MessageDrafts>>,
+    drafts: Option<&crate::drafts::DraftRecord>,
 ) -> NavShell {
     let entries = groups.entries(sources, actions);
     // Nobody to message only when the resource holds no conversation either: a Messages with
@@ -785,9 +790,20 @@ fn register_effects(
     let jobs = cx.jobs();
     let status_history = history.clone();
     let content = cx.content();
+    let legacy_drafts = cx.resource_opener::<crate::drafts::MessageDrafts>(ui::apps::MESSAGES);
     cx.effects(move |effect: MessagesEffect, cx| {
         // What the resource holds is read here, never through the broker.
         match &effect {
+            MessagesEffect::ImportPreviousDraft => {
+                let selection = state.get();
+                let choice = choices(&effect_sources, &selection.person)
+                    .into_iter()
+                    .find(|choice| choice.value() == selection.choice)
+                    .ok_or_else(|| CATALOG.t("messages-not-selected"))?;
+                crate::drafts::import_previous(&legacy_drafts, crate::drafts::key(&choice))?;
+                effect_sending.open_draft(&choice);
+                return Ok(Effected::done());
+            }
             MessagesEffect::SearchMessages { query } => {
                 return cx.live().get().search(query).map(Effected::value);
             }
@@ -929,11 +945,13 @@ fn overview(
     sources: &Sources,
     actions: &Actions<Messages>,
     selected: &Selection,
-    drafts: Option<&PersonResource<crate::drafts::MessageDrafts>>,
+    drafts: Option<&crate::drafts::DraftRecord>,
 ) -> Element {
     // The words left in a conversation are shown where the conversation is listed, beside
     // the person they were written for: a draft you cannot find is a draft you have lost.
-    let kept = drafts.map(PersonResource::get);
+    let kept = drafts
+        .filter(|record| record.may_read())
+        .map(crate::drafts::DraftRecord::get);
     let entries: Vec<_> = held(&sources.record())
         .into_iter()
         .map(Entry::Held)

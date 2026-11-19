@@ -66,7 +66,6 @@ ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default
 # The document editor and its text stack: what an app edits rich text and notes with.
 tilo-rich-edit = { version = "0.1.0", path = "../tilo-rich-edit" }
 # Whose each app's records are, as the fleet's manifests declare (`[resources] own`).
-app-fleet = { version = "0.1.0", path = "../../packaging/app-fleet" }
 # The workspace's tree record, which a window that lists its folder's changes in History
 # opens for them.
 fs-protocol = { version = "0.1.0", path = "../../system/fs-protocol" }

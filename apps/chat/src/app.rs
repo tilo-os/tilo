@@ -541,7 +541,7 @@ pub struct ChatApp {
     flap_animating: bool,
     /// The person's own drafts resource, so the sidebar can say where the
     /// unsent words are.
-    pub(crate) drafts_resource: Option<ui::framework::PersonResource<crate::drafts::ChatDrafts>>,
+    pub(crate) drafts_resource: Option<crate::drafts::DraftRecord>,
 
     /// Latest decoded camera picture per person, shown in their call tile
     /// (this person's own among them, in the host tile). Only ever holds a
@@ -1149,13 +1149,9 @@ impl ChatApp {
         self
     }
 
-    /// Keep the composers' drafts in the person's own `record`: theirs
-    /// alone, on each of their devices, never in the workspace.
+    /// Keep the channel composers' drafts in the workspace.
     #[must_use]
-    pub(crate) fn with_drafts(
-        mut self,
-        record: Option<ui::framework::PersonResource<crate::drafts::ChatDrafts>>,
-    ) -> Self {
+    pub(crate) fn with_drafts(mut self, record: Option<crate::drafts::DraftRecord>) -> Self {
         if let Some(record) = record {
             self.composer_main.attach_drafts(record.clone());
             self.composer_thread.attach_drafts(record.clone());

@@ -231,21 +231,16 @@ impl ResourceService {
         true
     }
 
-    /// The app whose document this is, and the document's id in the workspace — the person's own
-    /// document of it for an app that keeps each member's apart, else the workspace's document of the
-    /// app (empty) — for a service that keeps one app's document ([`Self::of_app`]). `None` too for
-    /// an app that keeps each member's document apart while the person here has no identity a
-    /// workspace knows them by: they have no document of their own in any workspace.
+    /// The shared document of an app assigned to this service. Profile
+    /// documents are opened by the person's certified app instance.
     #[must_use]
     pub fn kept_document(&self) -> Option<(String, String)> {
         let app = &self.kept_in_workspace.as_ref()?.app;
         let package = self.host.package(app)?;
-        let id = if package.meta.own_resources {
-            crate::own_document(&package.meta, &self.person)?
-        } else {
-            String::new()
-        };
-        Some((app.clone(), id))
+        if package.meta.uses_personal_profile() {
+            return None;
+        }
+        Some((app.clone(), String::new()))
     }
 
     /// Whether this service publishes the documents and actions of `app`: every package's, but
@@ -256,6 +251,14 @@ impl ResourceService {
         self.kept_in_workspace
             .as_ref()
             .is_none_or(|kept| kept.app == app)
+            && !self.profile_only(app)
+    }
+
+    fn profile_only(&self, app: &str) -> bool {
+        self.host
+            .package(app)
+            .is_some_and(|package| package.meta.uses_personal_profile())
+            && !(self.session_document && app == "so.tilo.shell")
     }
 
     /// Keep the large parts of the document of `app`'s actions in `store`: the content store the
@@ -694,6 +697,9 @@ impl ResourceService {
     ) -> Result<Started, ApiError> {
         let _in_documents = self.in_documents();
         let address = ActionAddress::new(resource, action);
+        if crate::publish::app_of(resource).is_some_and(|app| self.profile_only(app)) {
+            return Err(ApiError::Unknown(address));
+        }
         // Planned on the document as it is: what the workspace took in since the last pass
         // included.
         self.took_in();
@@ -1096,6 +1102,9 @@ impl Service for ResourceService {
             .publications
             .trees()
             .values()
+            .filter(|tree| {
+                crate::publish::app_of(tree.id.as_str()).is_none_or(|app| !self.profile_only(app))
+            })
             .map(|tree| {
                 let mut tree = (**tree).clone();
                 kept_by_its_app(&mut tree);
@@ -1118,6 +1127,10 @@ impl Service for ResourceService {
     }
 
     fn read(&self, resource: &str) -> Option<Json> {
+        let app = crate::publish::app_of(resource)?;
+        if self.profile_only(app) {
+            return None;
+        }
         reading_of(&self.host, resource)
     }
 
@@ -1246,7 +1259,9 @@ impl Service for ResourceService {
             else {
                 continue;
             };
-            apps.entry(app).or_insert(tree.kind.as_str());
+            if !self.profile_only(app) {
+                apps.entry(app).or_insert(tree.kind.as_str());
+            }
         }
         apps.into_iter()
             .map(|(app, kind)| tilo_service::HistoryDocument {

@@ -530,6 +530,9 @@ fn files_link(
         Arc::new(move || {
             woken.wake("the files daemon reaches a peer");
         }),
+        Some(launcher::services::socket_for(
+            launcher::services::IDENTITY_SERVICE,
+        )),
     )
 }
 

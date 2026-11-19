@@ -143,9 +143,12 @@ tilo_test_env::scenario! {
             "shared bookmarks and file operations stay unchanged"
         );
         assert_eq!(
-            app.person::<crate::recent::RecentResource>()
-                .unwrap()
-                .with(|recent| recent.on("test-device"))
+            app.settings::<crate::resource::DeviceRecentFiles>()
+                .get()
+                .by_workspace
+                .get(ui::framework::testing::TEST_WORKSPACE)
+                .cloned()
+                .unwrap_or_default()
                 .items()
                 .len(),
             1
@@ -187,9 +190,12 @@ tilo_test_env::scenario! {
             );
         }
         assert_eq!(
-            app.person::<crate::recent::RecentResource>()
-                .unwrap()
-                .with(|recent| recent.on("test-device"))
+            app.settings::<crate::resource::DeviceRecentFiles>()
+                .get()
+                .by_workspace
+                .get(ui::framework::testing::TEST_WORKSPACE)
+                .cloned()
+                .unwrap_or_default()
                 .items()
                 .len(),
             1

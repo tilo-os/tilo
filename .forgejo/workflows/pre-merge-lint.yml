@@ -22,10 +22,12 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: runner-quality
+    runs-on: runner
     timeout-minutes: 30
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
+      # Wide Clippy compiles native application dependencies. Use the same
+      # pinned toolchain and system libraries that back the fast quality image.
+      image: registry.tilo.so/tilo/tilo-builder@sha256:5a72b2a985be655cb2cd95ca9b3c7af30faaf8bd589258790ce8594b01a7eacc
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -59,6 +61,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The fast image has Clippy in the toolchain, without a Cargo shim.
+          export PATH="$(dirname "$(rustup which cargo-clippy)"):$PATH"
           base='${{ steps.merge.outputs.main }}'
           if [ -z "$base" ]; then
             base=$(git rev-parse HEAD^)

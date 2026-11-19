@@ -9,3 +9,4 @@ tube-watch-history-clear = Clear watch history
 tube-library = Tube
 tube-library-reply-to-comment = Reply to a comment
 tube-library-retract = Retract reply
+tube-watch-history-import-previous = Import earlier viewing history

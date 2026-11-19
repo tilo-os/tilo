@@ -1,8 +1,11 @@
 //! The app on the shared configuration: `firewall-model` keeps the resources and
 //! their verbs, and firewalld on each device is their projection.
 
-use ui::framework::{PersonResource, ResourceApp, SeedCx, ViewCx};
+use std::collections::BTreeMap;
+
+use ui::framework::{ResourceApp, SeedCx, Setting, ViewCx};
 use ui::prelude::Effect;
+use ui::storage::{Scope, SettingsSchema};
 use ui::tilo_resource::{self, Invoke};
 use ui::widget::Element;
 
@@ -27,7 +30,47 @@ pub enum FirewallEffect {
     ReadBlocked,
 }
 
-pub(crate) type AppliedOnDevice = (PersonResource<AppliedConfig>, String);
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct AppliedOnDevice {
+    #[serde(default)]
+    by_workspace: BTreeMap<String, String>,
+}
+
+impl SettingsSchema for AppliedOnDevice {
+    const SCOPE: Scope = Scope::DeviceLocal;
+}
+
+impl AppliedOnDevice {
+    pub(crate) fn open(cx: &ViewCx<Firewall>, workspace: &str) -> Setting<Self> {
+        let settings = cx.settings::<Self>();
+        if !settings.get().by_workspace.contains_key(workspace)
+            && let Some(device) = cx.device()
+        {
+            let opener = cx.resource_opener::<AppliedConfig>(ui::apps::FIREWALL);
+            match opener.legacy_member_state() {
+                Ok(Some(previous)) => {
+                    if let Some(config) = previous.on(device)
+                        && let Err(error) = settings.update(|state| {
+                            state
+                                .by_workspace
+                                .entry(workspace.to_owned())
+                                .or_insert_with(|| config.to_owned());
+                        })
+                    {
+                        tracing::warn!(%error, "could not restore the firewall apply receipt");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read the firewall apply receipt"),
+            }
+        }
+        settings
+    }
+
+    pub(crate) fn in_workspace(&self, workspace: &str) -> Option<&str> {
+        self.by_workspace.get(workspace).map(String::as_str)
+    }
+}
 
 /// The stored configuration still to apply on a device that last applied `applied`, keyed
 /// by its canonical form: nothing while there is none, while it is invalid, or once the
@@ -90,9 +133,15 @@ pub(crate) fn applied_status(applied: &Applied) -> Notice {
     }
 }
 
-pub(crate) fn remember_applied((record, device): &AppliedOnDevice, config: &FirewallConfig) {
-    let applied = AppliedConfig::APPLIED.with((device.clone(), config.to_json()));
-    if let Err(error) = record.invoke(&applied) {
+pub(crate) fn remember_applied(
+    (settings, workspace): &(Setting<AppliedOnDevice>, String),
+    config: &FirewallConfig,
+) {
+    if let Err(error) = settings.update(|state| {
+        state
+            .by_workspace
+            .insert(workspace.clone(), config.to_json());
+    }) {
         tracing::warn!(%error, "could not remember the applied firewall configuration");
     }
 }
@@ -365,10 +414,11 @@ mod tests {
             "{retry:?}"
         );
 
-        let remembered = app.person::<AppliedConfig>().unwrap();
+        let remembered = app.settings::<AppliedOnDevice>();
+        let workspace = ui::framework::testing::TEST_WORKSPACE;
         let stored = app.state().config().to_json();
         let applied = app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
-            remembered.with(|applied| applied.on("test-device") == Some(stored.as_str()))
+            remembered.get().in_workspace(workspace) == Some(stored.as_str())
         });
         assert!(applied, "the device remembers the configuration it applied");
 
@@ -376,7 +426,7 @@ mod tests {
         assert!(!app.state().enabled);
         let stopped = app.state().config().to_json();
         let reapplied = app.harness().wait_until(tilo_test_env::hang_bound(), |_| {
-            remembered.with(|applied| applied.on("test-device") == Some(stopped.as_str()))
+            remembered.get().in_workspace(workspace) == Some(stopped.as_str())
         });
         assert!(reapplied, "the edit reached this device's firewall");
     }

@@ -453,6 +453,18 @@ impl AppBrokerState {
                 "certified document operation does not match its joined route".into(),
             ));
         }
+        if self.personal_route(route).is_none()
+            && collab_types::OwnResource::recognise(
+                &route.app_id,
+                &route.document_id,
+                admitted.verified.user_public_key,
+            )
+            .is_some()
+        {
+            return Err(BrokerError::failed(
+                collab_types::own_resource::ARCHIVE_READ_ONLY.into(),
+            ));
+        }
         let payload = collab_types::validate_document_payload_route(
             &route.app_id,
             &route.cluster_id,

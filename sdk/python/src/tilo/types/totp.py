@@ -55,7 +55,7 @@ DeleteArgs = TypedDict("DeleteArgs", {
 
 class Vault(Resource):
     """Authenticator — `totp.vault`."""
-    __surface__ = "so.tilo.totp@1beb8a5e2e56189e"
+    __surface__ = "so.tilo.totp@a6efc38b1fa5acc5"
     accounts: list[Entry[StoredAccount]]
 
     def move_up(self, *, account: str) -> None:

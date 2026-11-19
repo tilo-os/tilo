@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.pdf-viewer@f996e72bd0927ac8";
+export const SURFACE = "so.tilo.pdf-viewer@de7f897cc4391b52";
 
 export interface AdoptedAnnotation {
   id: string;
@@ -516,6 +516,7 @@ export function pdfDocument(ws: tilo.Workspace, path: string): Document {
 export interface SignatureProfile extends tilo.Resource {
   signer: string;
   strokes: Stroke[];
+  readonly restored_previous: boolean;
   setSigner(args: {
     name: string;
   }): Promise<void>;

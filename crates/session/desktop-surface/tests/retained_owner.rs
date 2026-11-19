@@ -102,7 +102,6 @@ impl TileSource for Source {
             icon: IconDescriptor::Glyph("R"),
             resource_type: ui::resource::ResourceType::new("retained-owner"),
             workspace_resource: false,
-            member_resource: false,
             opens_before_resource: false,
             required: vec![],
             optional: vec![],

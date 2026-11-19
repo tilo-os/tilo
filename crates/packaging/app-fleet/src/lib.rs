@@ -142,11 +142,14 @@ mod tests {
             metadata("dev.tilo.sheets").map(|app| app.id),
             Some("so.tilo.sheets")
         );
-        assert_eq!(scope("so.tilo.mail", "mail.mailbox"), Scope::Member);
-        assert_eq!(scope("dev.tilo.settings", "settings.root"), Scope::Member);
+        assert_eq!(scope("so.tilo.mail", "mail.mailbox"), Scope::Workspace);
+        assert_eq!(
+            scope("dev.tilo.settings", "settings.root"),
+            Scope::Workspace
+        );
         assert_eq!(scope("so.tilo.mail", "tilo.rich-text"), Scope::Workspace);
         assert_eq!(scope("so.tilo.sheets", "sheets.workbook"), Scope::Workspace);
-        assert!(windows_are_own("so.tilo.mail") && windows_are_own("dev.tilo.settings"));
+        assert!(!windows_are_own("so.tilo.mail") && !windows_are_own("dev.tilo.settings"));
         assert!(!windows_are_own("so.tilo.chat"));
         assert!(windows_hold_documents("so.tilo.sheets"));
         assert!(windows_hold_documents("dev.tilo.terminal"));

@@ -1,15 +1,17 @@
-//! When alarms and timers ring on this device. What rings is the person's
-//! [`Clocks`], the same on every device; whether this device has rung it is not,
-//! so each keeps its own delivery log in the [`ClocksOnDevices`] resource beside
-//! the clocks and writes only its own entry. Wall time is passed in, so suspend,
-//! clock corrections and tests are deterministic.
+//! When alarms and timers ring on this device. The workspace keeps the clocks.
+//! The device records which alerts it delivered and which controls it floated.
+//! Wall time is passed in so suspend, clock corrections and tests are deterministic.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Duration;
 
 use jiff::civil::Date;
+use serde::{Deserialize, Serialize};
+use ui::framework::Setting;
 use ui::prelude::*;
+use ui::storage::{Scope, SettingsSchema};
 
 use crate::model::{Alarm, Clocks, instant};
 pub use clocks_model::schedule::{ArmedAlarm, ClocksOnDevices, Delivery, OnThisDevice, Snooze};
@@ -19,42 +21,90 @@ pub(crate) fn schedule_of(alarm: &Alarm) -> (u8, u8, u8, i64) {
     (alarm.hour, alarm.minute, alarm.repeat, alarm.enabled_at_ms)
 }
 
-/// This device's entry in the [`ClocksOnDevices`] resource, or memory where there
-/// is no resource (a capture, a past version).
+/// Device settings keyed by workspace so different workspaces keep their
+/// own delivery receipts and floating controls.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ClockDeviceSettings {
+    #[serde(default)]
+    pub(crate) clocks_on_this_device: BTreeMap<String, OnThisDevice>,
+}
+
+impl SettingsSchema for ClockDeviceSettings {
+    const SCOPE: Scope = Scope::DeviceLocal;
+}
+
 #[derive(Clone)]
 pub(crate) struct DeviceChoices {
-    record: Option<(PersonResource<ClocksOnDevices>, String)>,
+    settings: Option<(Setting<ClockDeviceSettings>, String)>,
     held: Rc<RefCell<OnThisDevice>>,
 }
 
 impl DeviceChoices {
-    pub(crate) fn new(record: Option<(PersonResource<ClocksOnDevices>, String)>) -> Self {
-        Self {
-            record,
+    pub(crate) fn new(cx: &ViewCx<Clocks>) -> Self {
+        let settings = cx
+            .mode()
+            .is_live()
+            .then(|| {
+                cx.workspace()
+                    .map(|workspace| (cx.settings::<ClockDeviceSettings>(), workspace))
+            })
+            .flatten();
+        let choices = Self {
+            settings,
             held: Rc::default(),
+        };
+        if let Some((settings, workspace)) = &choices.settings
+            && !settings.get().clocks_on_this_device.contains_key(workspace)
+            && let Some(device) = cx.device()
+        {
+            let opener = cx.resource_opener::<ClocksOnDevices>(ui::apps::CLOCKS);
+            match opener.legacy_member_state() {
+                Ok(Some(legacy)) => {
+                    let kept = legacy.on(device);
+                    *choices.held.borrow_mut() = kept.clone();
+                    if let Err(error) = settings.update(|all| {
+                        all.clocks_on_this_device
+                            .entry(workspace.clone())
+                            .or_insert(kept);
+                    }) {
+                        tracing::warn!(%error, "clocks: earlier device choices could not be saved");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "clocks: earlier device choices could not be read")
+                }
+            }
         }
+        choices
     }
 
     pub(crate) fn get(&self) -> OnThisDevice {
-        match &self.record {
-            Some((record, device)) => record.with(|kept| kept.on(device)),
-            None => self.held.borrow().clone(),
-        }
+        self.settings
+            .as_ref()
+            .and_then(|(settings, workspace)| {
+                settings
+                    .state()
+                    .with(|all| all.clocks_on_this_device.get(workspace).cloned())
+            })
+            .unwrap_or_else(|| self.held.borrow().clone())
     }
 
     pub(crate) fn update(&self, change: impl FnOnce(&mut OnThisDevice)) -> Result<(), String> {
-        let mut kept = self.get();
+        let before = self.get();
+        let mut kept = before.clone();
         change(&mut kept);
-        let Some((record, device)) = &self.record else {
+        if kept == before {
+            return Ok(());
+        }
+        let Some((settings, workspace)) = &self.settings else {
             *self.held.borrow_mut() = kept;
             return Ok(());
         };
-        if record.with(|all| all.devices.get(device) == Some(&kept)) {
-            return Ok(());
-        }
-        let kept = serde_json::to_value(&kept).map_err(|error| error.to_string())?;
-        record
-            .invoke(&ClocksOnDevices::KEEP.with((device.clone(), kept)))
+        settings
+            .update(|all| {
+                all.clocks_on_this_device.insert(workspace.clone(), kept);
+            })
             .map_err(|error| error.to_string())
     }
 }

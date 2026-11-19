@@ -30,6 +30,7 @@ __all__ = [
     "ImportArgs",
     "ForgetArgs",
     "ClearArgs",
+    "ImportPreviousArgs",
 ]
 
 class Reply(TypedDict):
@@ -74,9 +75,14 @@ ClearArgs = TypedDict("ClearArgs", {
 })
 """The arguments of `clear`."""
 
+ImportPreviousArgs = TypedDict("ImportPreviousArgs", {
+    "previous": "list[Any]",
+})
+"""The arguments of `import-previous`."""
+
 class Library(Resource):
     """Tube — `tube.library`."""
-    __surface__ = "so.tilo.tube@ba370587a8fe0bb0"
+    __surface__ = "so.tilo.tube@c5af9d86c0ae3a24"
     likes: list[str]
     queue: list[str]
     subscriptions: list[str]
@@ -174,9 +180,17 @@ class Library(Resource):
 
 class WatchHistory(Resource):
     """Watch history — `tube.watch-history`."""
-    __surface__ = "so.tilo.tube@ba370587a8fe0bb0"
+    __surface__ = "so.tilo.tube@c5af9d86c0ae3a24"
     watched: dict[str, int]
     positions: dict[str, int]
+    @property
+    def forgotten(self) -> dict[str, bool]:
+        """Read only."""
+        return self.fields["forgotten"]
+    @property
+    def cleared(self) -> bool:
+        """Read only."""
+        return self.fields["cleared"]
 
     def record(self,
         *,
@@ -227,8 +241,16 @@ class WatchHistory(Resource):
         """Runs `clear` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("clear", items)
 
+    def import_previous(self, *, previous: list[Any]) -> None:
+        """Runs the app's action."""
+        return self.action("import-previous", previous=previous)
+
+    def import_previous_many(self, items: list[ImportPreviousArgs]) -> list[dict[str, Any]]:
+        """Runs `import-previous` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-previous", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"record", "record_many", "progress", "progress_many", "import_", "import_many", "forget", "forget_many", "clear", "clear_many"})
+    __actions__ = frozenset({"record", "record_many", "progress", "progress_many", "import_", "import_many", "forget", "forget_many", "clear", "clear_many", "import_previous", "import_previous_many"})
 
 

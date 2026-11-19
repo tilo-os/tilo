@@ -96,15 +96,17 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Artwork>) -> Element {
+        let workspace: std::rc::Rc<str> = cx.workspace().unwrap_or_default().into();
         let recents = cx
-            .person::<document::ArtworkRecents>()
-            .zip(cx.device().map(str::to_owned));
+            .mode()
+            .is_live()
+            .then(|| document::DeviceArtworkRecents::open(cx, &workspace));
         let tools = tools::Tools {
             recents: recents.as_ref().map_or_else(
-                || LocalState::new(std::rc::Rc::default()),
-                |(record, _)| record.state(),
+                || LocalState::new(Default::default()),
+                ui::framework::Setting::state,
             ),
-            device: cx.device().unwrap_or_default().into(),
+            recent_workspace: workspace,
             shows: cx.window_shows(),
             ..tools::Tools::default()
         };

@@ -27,6 +27,8 @@ __all__ = [
     "DraftState",
     "Folder",
     "LocalFolder",
+    "PreviousDraft",
+    "PreviousFolder",
     "RetiredCopy",
     "ServerUpdate",
     "Delivery",
@@ -53,6 +55,7 @@ __all__ = [
     "PurgeArgs",
     "IngestArgs",
     "ServerAppliedArgs",
+    "ImportPreviousMessageArgs",
     "PublishBrowserIdentityArgs",
     "SaveAccountArgs",
     "RemoveAccountArgs",
@@ -69,7 +72,9 @@ __all__ = [
     "ForgetEndpointArgs",
     "TrustArgs",
     "DistrustArgs",
+    "ImportLegacyArgs",
     "KeepCopiesArgs",
+    "ImportCopiesArgs",
     "ForgetCopiesArgs",
 ]
 
@@ -119,6 +124,16 @@ class DraftState(TypedDict):
 Folder = Literal["inbox", "starred", "sent", "drafts", "archive", "trash", "junk"]
 
 class LocalFolder(TypedDict):
+    name: str
+
+class PreviousDraft(TypedDict):
+    id: str
+    message: DraftData
+    in_reply_to: str | None
+    notes: str
+
+class PreviousFolder(TypedDict):
+    id: str
     name: str
 
 class RetiredCopy(TypedDict):
@@ -267,6 +282,13 @@ ServerAppliedArgs = TypedDict("ServerAppliedArgs", {
 })
 """The arguments of `server-applied`."""
 
+ImportPreviousMessageArgs = TypedDict("ImportPreviousMessageArgs", {
+    "id": "str",
+    "state": "Any",
+    "body": NotRequired["Any | None"],
+})
+"""The arguments of `import-previous-message`."""
+
 PublishBrowserIdentityArgs = TypedDict("PublishBrowserIdentityArgs", {
     "root": "str",
     "origin": "str",
@@ -377,19 +399,30 @@ DistrustArgs = TypedDict("DistrustArgs", {
 })
 """The arguments of `distrust`."""
 
+ImportLegacyArgs = TypedDict("ImportLegacyArgs", {
+    "senders": "list[str]",
+})
+"""The arguments of `import-legacy`."""
+
 KeepCopiesArgs = TypedDict("KeepCopiesArgs", {
     "copies": "list[NewCopy]",
 })
 """The arguments of `keep-copies`."""
 
+ImportCopiesArgs = TypedDict("ImportCopiesArgs", {
+    "copies": "list[NewCopy]",
+})
+"""The arguments of `import-copies`."""
+
 ForgetCopiesArgs = TypedDict("ForgetCopiesArgs", {
     "messages": "list[str]",
+    "account": NotRequired["str | None"],
 })
 """The arguments of `forget-copies`."""
 
 class Mailbox(Resource):
     """Mail — `mail.mailbox`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@f1aaa59c488f24c7"
     folders: list[Entry[LocalFolder]]
     draft: DraftState
     drafts: list[Entry[DraftState]]
@@ -397,6 +430,18 @@ class Mailbox(Resource):
     def retired(self) -> list[Entry[RetiredCopy]]:
         """Read only."""
         return self.fields["retired"]
+    @property
+    def imported(self) -> list[str]:
+        """Read only."""
+        return self.fields["imported"]
+
+    def import_mailbox_entries(self,
+        *,
+        folders: list[PreviousFolder],
+        drafts: list[PreviousDraft],
+    ) -> None:
+        """Runs the app's action."""
+        return self.action("import-mailbox-entries", folders=folders, drafts=drafts)
 
     def server_applied(self, *, update: ServerUpdate) -> None:
         """Runs the app's action."""
@@ -582,12 +627,12 @@ class Mailbox(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"server_applied", "start_draft_body", "save_draft", "create_draft", "show_draft", "attach", "discard_draft", "send_message", "check_mail", "draft_message", "cancel_send", "search_messages", "export_content"})
+    __actions__ = frozenset({"import_mailbox_entries", "server_applied", "start_draft_body", "save_draft", "create_draft", "show_draft", "attach", "discard_draft", "send_message", "check_mail", "draft_message", "cancel_send", "search_messages", "export_content"})
 
 
 class Messages(Resource):
     """Messages — `mail.messages`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@f1aaa59c488f24c7"
     messages: list[Entry[MessageState]]
     @property
     def held(self) -> list[Entry[HeldMessage]]:
@@ -658,6 +703,24 @@ class Messages(Resource):
         """Runs `server-applied` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("server-applied", items)
 
+    def import_previous_message(self,
+        *,
+        id: str,
+        state: Any,
+        body: Any | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["id"] = id
+        args["state"] = state
+        if body is not None:
+            args["body"] = body
+        return self.action("import-previous-message", **args)
+
+    def import_previous_message_many(self, items: list[ImportPreviousMessageArgs]) -> list[dict[str, Any]]:
+        """Runs `import-previous-message` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-previous-message", items)
+
     def deliver_message(self,
         *,
         from_: str,
@@ -703,12 +766,12 @@ class Messages(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"mark_read", "mark_read_many", "archive", "archive_many", "trash", "trash_many", "move_messages", "move_messages_many", "purge", "purge_many", "ingest", "ingest_many", "server_applied", "server_applied_many", "deliver_message"})
+    __actions__ = frozenset({"mark_read", "mark_read_many", "archive", "archive_many", "trash", "trash_many", "move_messages", "move_messages_many", "purge", "purge_many", "ingest", "ingest_many", "server_applied", "server_applied_many", "import_previous_message", "import_previous_message_many", "deliver_message"})
 
 
 class Accounts(Resource):
     """Accounts — `tilo.accounts`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@f1aaa59c488f24c7"
     accounts: list[Entry[PersonAccount]]
     active: dict[str, str]
 
@@ -764,7 +827,7 @@ class Accounts(Resource):
 
 class Identities(Resource):
     """Contact identities — `tilo.contacts.identities`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@f1aaa59c488f24c7"
     people: list[Entry[Person]]
 
     def project_contact(self,
@@ -904,8 +967,12 @@ class Identities(Resource):
 
 class TrustedSenders(Resource):
     """Trusted senders — `mail.trusted-senders`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    __surface__ = "so.tilo.mail@f1aaa59c488f24c7"
     senders: list[str]
+    @property
+    def distrusted(self) -> list[str]:
+        """Read only."""
+        return self.fields["distrusted"]
 
     def trust(self, *, sender: str) -> None:
         """Runs the app's action."""
@@ -923,18 +990,30 @@ class TrustedSenders(Resource):
         """Runs `distrust` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("distrust", items)
 
+    def import_legacy(self, *, senders: list[str]) -> None:
+        """Runs the app's action."""
+        return self.action("import-legacy", senders=senders)
+
+    def import_legacy_many(self, items: list[ImportLegacyArgs]) -> list[dict[str, Any]]:
+        """Runs `import-legacy` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-legacy", items)
+
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"trust", "trust_many", "distrust", "distrust_many"})
+    __actions__ = frozenset({"trust", "trust_many", "distrust", "distrust_many", "import_legacy", "import_legacy_many"})
 
 
 class Copies(Resource):
-    """Mail on your devices — `mail.copies`."""
-    __surface__ = "so.tilo.mail@698aad87deeb11e6"
+    """Workspace mail — `mail.copies`."""
+    __surface__ = "so.tilo.mail@f1aaa59c488f24c7"
     @property
     def copies(self) -> list[Entry[KeptCopy]]:
         """Read only."""
         return self.fields["copies"]
+    @property
+    def removed(self) -> list[str]:
+        """Read only."""
+        return self.fields["removed"]
 
     def keep_copies(self, *, copies: list[NewCopy]) -> None:
         """Runs the app's action."""
@@ -944,9 +1023,25 @@ class Copies(Resource):
         """Runs `keep-copies` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
         return self.many("keep-copies", items)
 
-    def forget_copies(self, *, messages: list[str]) -> None:
+    def import_copies(self, *, copies: list[NewCopy]) -> None:
         """Runs the app's action."""
-        return self.action("forget-copies", messages=messages)
+        return self.action("import-copies", copies=copies)
+
+    def import_copies_many(self, items: list[ImportCopiesArgs]) -> list[dict[str, Any]]:
+        """Runs `import-copies` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
+        return self.many("import-copies", items)
+
+    def forget_copies(self,
+        *,
+        messages: list[str],
+        account: str | None = None,
+    ) -> None:
+        """Runs the app's action."""
+        args: dict[str, Any] = {}
+        args["messages"] = messages
+        if account is not None:
+            args["account"] = account
+        return self.action("forget-copies", **args)
 
     def forget_copies_many(self, items: list[ForgetCopiesArgs]) -> list[dict[str, Any]]:
         """Runs `forget-copies` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back."""
@@ -954,6 +1049,6 @@ class Copies(Resource):
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"keep_copies", "keep_copies_many", "forget_copies", "forget_copies_many"})
+    __actions__ = frozenset({"keep_copies", "keep_copies_many", "import_copies", "import_copies_many", "forget_copies", "forget_copies_many"})
 
 

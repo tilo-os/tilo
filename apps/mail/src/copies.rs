@@ -1,8 +1,7 @@
-//! The mail the person's devices hold for one another.
+//! Server messages kept by the workspace.
 //!
 //! A message a device fetched is kept, as the server sent it, as content of the copies resource
-//! ([`MailCopies`]): the person's own document in the workspace, which syncs to their devices and
-//! no other member's. A device that lacks a message the resource names takes it from there,
+//! ([`MailCopies`]). Members with access can take a message the resource names,
 //! newest first, without asking any server; the server stays the authority over its messages,
 //! and one it reports removed is dropped from the resource.
 
@@ -11,28 +10,37 @@ use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 use tilo_content::{ContentState, ContentStore};
-use ui::framework::PersonResource;
-use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal};
+use ui::framework::WorkspaceResource;
+use ui::tilo_resource::{self, Collection, Id, JsonSchema, Model, Refusal, Set};
 
 use crate::model::{Folder, Message, MessageId, ServerPlace};
 
-/// The largest message kept for the person's other devices; a larger one
-/// they fetch from its server.
+/// The largest message retained in workspace storage.
 pub(crate) const MAX_COPY_BYTES: usize = 16 * 1024 * 1024;
 
-/// How many messages one window asks the person's other devices for at a
-/// time; it asks for more as they arrive.
+/// The number of content requests one window keeps in flight.
 const MAX_ASKED: usize = 32;
 
 const MAX_ACCOUNT_CHARS: usize = 320;
+pub(crate) use ui::tilo_actions::policy::roles::WORKSPACE_MAIL_COPIES_DOCUMENT as DOCUMENT;
 
-/// The mail the person's devices fetched, each message kept as its server
-/// sent it, for their other devices to take.
+/// Mail fetched from servers and retained for workspace members.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct MailCopies {
-    /// Each message under its id in the mailbox
+    /// Each message under its account and id in the mailbox
     #[model(readonly)]
     pub copies: Collection<KeptCopy>,
+    /// Server deletions that a previous copy must not undo.
+    #[model(readonly)]
+    pub removed: Set<String>,
+}
+
+fn copy_key(account: &str, id: &str) -> Id {
+    Id::from_raw(format!("{account}/{id}"))
+}
+
+fn message_id(key: &Id) -> Option<MessageId> {
+    key.as_str().rsplit('/').next()?.parse().ok()
 }
 
 /// One message a device fetched, and where its server holds it.
@@ -98,8 +106,7 @@ impl KeptCopy {
     }
 }
 
-/// A message to keep for the person's other devices: the parameters of
-/// [`MailCopies::keep_copies`].
+/// A message to retain in workspace storage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NewCopy {
     /// Its id in the mailbox
@@ -123,14 +130,50 @@ pub struct NewCopy {
 impl MailCopies {
     /// Keep fetched mail
     ///
-    /// Resources messages a device fetched from their servers, each kept as
-    /// its server sent it, for the person's other devices to take. Each
-    /// account keeps its newest messages, as many as a device keeps.
-    #[action(external)]
+    /// Retains the newest messages each account fetched for the workspace.
+    #[action(external, writes = copies, writes = removed)]
     pub fn keep_copies(
         &mut self,
         #[param("The messages, each with where its server holds it")] copies: Vec<NewCopy>,
     ) -> Result<(), Refusal> {
+        self.keep(copies, false)
+    }
+
+    /// Import fetched mail
+    ///
+    /// Keep copies from an older mailbox where the workspace has none.
+    #[action(external, writes = copies)]
+    pub fn import_copies(&mut self, copies: Vec<NewCopy>) -> Result<(), Refusal> {
+        self.keep(copies, true)
+    }
+
+    /// Forget fetched mail
+    ///
+    /// Drops messages their servers no longer hold.
+    #[action(external, writes = copies, writes = removed)]
+    pub fn forget_copies(
+        &mut self,
+        #[param("Ids of the messages")] messages: Vec<String>,
+        #[param("The account whose server removed them")] account: Option<String>,
+    ) {
+        let gone: HashSet<MessageId> = messages.iter().filter_map(|id| id.parse().ok()).collect();
+        if let Some(account) = &account {
+            for id in &gone {
+                self.removed
+                    .insert(copy_key(account, &id.to_string()).to_string());
+            }
+        }
+        self.copies.retain(|key, copy| {
+            account
+                .as_ref()
+                .is_some_and(|account| *account != copy.account)
+                || message_id(key).is_none_or(|id| !gone.contains(&id))
+        });
+    }
+}
+
+impl MailCopies {
+    fn keep(&mut self, copies: Vec<NewCopy>, importing: bool) -> Result<(), Refusal> {
         let mut accounts = BTreeSet::new();
         for copy in copies {
             if uuid::Uuid::parse_str(&copy.id).is_err() {
@@ -145,8 +188,16 @@ impl MailCopies {
                 uid_validity: copy.uid_validity,
             };
             kept.valid()?;
+            let key = copy_key(&kept.account, &copy.id);
+            if importing && (self.removed.contains(&key.to_string()) || self.copies.contains(&key))
+            {
+                continue;
+            }
+            if !importing {
+                self.removed.remove(&key.to_string());
+            }
             accounts.insert(kept.account.clone());
-            self.copies.push(Id::from_raw(copy.id), kept);
+            self.copies.push(key, kept);
         }
         for account in accounts {
             self.keep_newest(&account, crate::store::KEEP);
@@ -154,17 +205,13 @@ impl MailCopies {
         Ok(())
     }
 
-    /// Forget fetched mail
-    ///
-    /// Drops messages their servers no longer hold.
-    #[action(external)]
-    pub fn forget_copies(&mut self, #[param("Ids of the messages")] messages: Vec<String>) {
-        let gone: HashSet<String> = messages.into_iter().collect();
-        self.copies.retain(|id, _| !gone.contains(id.as_str()));
+    pub(crate) fn copy(&self, account: &str, id: MessageId) -> Option<&KeptCopy> {
+        let key = copy_key(account, &id.to_string());
+        if self.removed.contains(&key.to_string()) {
+            return None;
+        }
+        self.copies.get(&key)
     }
-}
-
-impl MailCopies {
     /// Keep only `account`'s newest `most` messages.
     fn keep_newest(&mut self, account: &str, most: usize) {
         let mut order: Vec<(Id, i64)> = self
@@ -182,16 +229,76 @@ impl MailCopies {
     }
 }
 
-/// The person's copies resource as one window uses it: what this device
-/// fetches is kept there, and what another of their devices kept is taken
-/// from there.
+/// Transfer copies from the current member's previous record through the
+/// workspace content store, which seals them for the workspace route.
+pub(crate) fn import_legacy(
+    opener: &ui::framework::ResourceOpener<MailCopies>,
+) -> Result<serde_json::Value, String> {
+    let workspace = opener.open(DOCUMENT).ok_or("workspace mail is arriving")?;
+    if !workspace.may_read() || !workspace.may("import-copies") {
+        return Err("the workspace must grant permission to import saved mail".into());
+    }
+    let Some((_, legacy, source)) = opener.legacy_member_content()? else {
+        return Ok(serde_json::json!({ "imported": 0, "waiting": 0 }));
+    };
+    let content = workspace
+        .record()
+        .content()
+        .ok_or("the workspace has no mail content store")?;
+    let current = workspace.get();
+    let mut copies = Vec::new();
+    let mut waiting = 0;
+    let mut unavailable = 0;
+    for (key, copy) in legacy.copies.iter() {
+        let Some(id) = message_id(key) else {
+            unavailable += 1;
+            continue;
+        };
+        let key = copy_key(&copy.account, &id.to_string());
+        if current.copies.contains(&key) || current.removed.contains(&key.to_string()) {
+            continue;
+        }
+        if waiting >= MAX_ASKED || copies.len() >= MAX_ASKED {
+            waiting += 1;
+            continue;
+        }
+        let Some(bytes) = source.read(&copy.content) else {
+            if source.state(&copy.content) == ContentState::Unavailable {
+                unavailable += 1;
+            } else {
+                waiting += 1;
+            }
+            continue;
+        };
+        if bytes.len() > MAX_COPY_BYTES || copy.message(id, &bytes).is_none() {
+            unavailable += 1;
+            continue;
+        }
+        copies.push(NewCopy {
+            id: id.to_string(),
+            account: copy.account.clone(),
+            content: content.put(&bytes).map_err(|error| error.to_string())?,
+            minutes: copy.minutes,
+            folder: copy.folder,
+            uid: copy.uid,
+            uid_validity: copy.uid_validity,
+        });
+    }
+    let imported = copies.len();
+    if imported != 0 {
+        workspace
+            .invoke(&MailCopies::IMPORT_COPIES.with(kept::ImportCopies { copies }))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(serde_json::json!({ "imported": imported, "waiting": waiting, "unavailable": unavailable }))
+}
+
+/// A window's connection to fetched copies in the workspace.
 pub(crate) struct Copies {
-    record: PersonResource<MailCopies>,
-    /// The resource's content: kept with the resource on the person's devices
-    /// and carried on its route.
+    record: WorkspaceResource<MailCopies>,
+    /// The content carried on the resource's route.
     content: ContentStore,
-    /// Messages asked of the person's other devices and not here yet, by
-    /// the reference their content is kept under.
+    /// Outstanding requests by content reference.
     asked: BTreeMap<String, (MessageId, KeptCopy)>,
     /// Messages taken, or that cannot arrive, in this window: not asked
     /// for again.
@@ -202,7 +309,7 @@ pub(crate) struct Copies {
 }
 
 impl Copies {
-    pub(crate) fn new(record: PersonResource<MailCopies>, content: ContentStore) -> Self {
+    pub(crate) fn new(record: WorkspaceResource<MailCopies>, content: ContentStore) -> Self {
         Self {
             record,
             content,
@@ -212,8 +319,12 @@ impl Copies {
         }
     }
 
-    /// Keep what `account`'s server just sent, as it sent it
-    /// (`originals`, by id), for the person's other devices. Mail without
+    pub(crate) fn record(&self) -> &WorkspaceResource<MailCopies> {
+        &self.record
+    }
+
+    /// Keep what `account`'s server just sent (`originals`, by id).
+    /// Mail without
     /// a `Message-ID`, which another device could not file under the same
     /// id, and messages larger than [`MAX_COPY_BYTES`] are not kept.
     pub(crate) fn keep(
@@ -222,6 +333,9 @@ impl Copies {
         messages: &[Message],
         originals: &[(MessageId, Vec<u8>)],
     ) {
+        if !self.record.may_read() || !self.record.may("keep-copies") {
+            return;
+        }
         let fetched: HashMap<MessageId, &Message> = messages
             .iter()
             .map(|message| (message.id, message))
@@ -242,7 +356,7 @@ impl Copies {
                 continue;
             }
             // A server's message at one UID of one numbering never changes.
-            let known = held.copies.get(&Id::from_raw(id.to_string()));
+            let known = held.copy(account, *id);
             if known.is_some_and(|known| {
                 known.folder == at.folder
                     && known.uid == at.uid
@@ -253,7 +367,7 @@ impl Copies {
             let content = match self.content.put(original) {
                 Ok(reference) => reference,
                 Err(error) => {
-                    tracing::warn!(%error, "mail: a message could not be kept for the person's devices");
+                    tracing::warn!(%error, "mail: a message could not be kept in the workspace");
                     continue;
                 }
             };
@@ -272,27 +386,25 @@ impl Copies {
                 .record
                 .invoke(&MailCopies::KEEP_COPIES.with(kept::KeepCopies { copies }))
         {
-            tracing::warn!(%error, "mail: fetched mail could not be kept for the person's devices");
+            tracing::warn!(%error, "mail: fetched mail could not be kept in the workspace");
         }
         self.release();
     }
 
     /// Drop `gone`, which their server no longer holds.
-    pub(crate) fn forget(&self, gone: &[MessageId]) {
-        let held = self.record.get();
-        let messages: Vec<String> = gone
-            .iter()
-            .map(MessageId::to_string)
-            .filter(|id| held.copies.contains(&Id::from_raw(id.clone())))
-            .collect();
-        if messages.is_empty() {
+    pub(crate) fn forget(&self, account: &str, gone: &[MessageId]) {
+        if gone.is_empty() || !self.record.may_read() || !self.record.may("forget-copies") {
             return;
         }
-        if let Err(error) = self
-            .record
-            .invoke(&MailCopies::FORGET_COPIES.with(kept::ForgetCopies { messages }))
+        let messages = gone.iter().map(MessageId::to_string).collect();
+        if let Err(error) =
+            self.record
+                .invoke(&MailCopies::FORGET_COPIES.with(kept::ForgetCopies {
+                    messages,
+                    account: Some(account.to_owned()),
+                }))
         {
-            tracing::warn!(%error, "mail: removed mail could not be dropped for the person's devices");
+            tracing::warn!(%error, "mail: removed mail could not be dropped in the workspace");
         }
     }
 
@@ -302,6 +414,13 @@ impl Copies {
         self.looked != Some(self.now())
     }
 
+    pub(crate) fn discard_pending(&mut self) {
+        self.asked.clear();
+        self.settled.clear();
+        self.looked = None;
+        self.release();
+    }
+
     fn now(&self) -> (u64, u64) {
         (
             ui::collaboration::document_content::arrivals(),
@@ -309,20 +428,22 @@ impl Copies {
         )
     }
 
-    /// The messages of `accounts` the person's other devices kept that are
-    /// here now, and not `held` (the mailbox has it, or it was deleted for
-    /// good). What is not here yet is asked for, newest first, a few at a
-    /// time; it is taken once it arrives.
-    pub(crate) fn take(
-        &mut self,
-        accounts: &[String],
-        held: impl Fn(MessageId) -> bool,
-    ) -> Vec<Message> {
-        self.looked = Some(self.now());
+    /// Read workspace messages that are not already held by the mailbox.
+    /// Request missing content in batches, newest first.
+    pub(crate) fn take(&mut self, held: impl Fn(MessageId) -> bool) -> Vec<Message> {
+        if !self.record.may_read() {
+            self.discard_pending();
+            return Vec::new();
+        }
+        let now = self.now();
+        if self.looked.is_some_and(|(_, revision)| revision != now.1) {
+            self.settled.clear();
+        }
+        self.looked = Some(now);
         let mut taken = Vec::new();
+        let record = self.record.get();
         for (reference, (id, copy)) in std::mem::take(&mut self.asked) {
-            if held(id) {
-                self.settled.insert(id);
+            if held(id) || record.copy(&copy.account, id) != Some(&copy) {
                 continue;
             }
             match self.read(&reference, id, &copy) {
@@ -334,14 +455,13 @@ impl Copies {
             }
         }
         if self.asked.len() < MAX_ASKED {
-            let record = self.record.get();
             let asked: HashSet<MessageId> = self.asked.values().map(|(id, _)| *id).collect();
             let mut missing: Vec<(MessageId, &KeptCopy)> = record
                 .copies
                 .iter()
                 .filter_map(|(key, copy)| {
-                    let id = uuid::Uuid::parse_str(key.as_str()).ok()?;
-                    (accounts.contains(&copy.account)
+                    let id = message_id(key)?;
+                    (!record.removed.contains(&key.to_string())
                         && !self.settled.contains(&id)
                         && !asked.contains(&id)
                         && !held(id))
@@ -366,8 +486,7 @@ impl Copies {
         taken
     }
 
-    /// Read `copy` from the resource's content, asking the person's other
-    /// devices for it when it is not here.
+    /// Read the copy, requesting its content from the workspace if needed.
     fn read(&mut self, reference: &str, id: MessageId, copy: &KeptCopy) -> Read {
         if let Some(bytes) = self.content.read(reference) {
             self.settled.insert(id);
@@ -390,8 +509,7 @@ impl Copies {
         self.content.has(address)
     }
 
-    /// Let go of the bytes read or kept here: the person's devices keep
-    /// them with the resource, and the mailbox keeps what it took.
+    /// Discard local bytes after the host has accepted them or the mailbox has read them.
     fn release(&self) {
         let live: BTreeSet<String> = self.asked.keys().cloned().collect();
         if let Err(error) = self.content.collect_unreferenced(&live) {
@@ -406,7 +524,7 @@ enum Read {
     Here(Option<Box<Message>>),
     /// No device that could hand it over keeps it.
     Gone,
-    /// Asked of the person's other devices.
+    /// Requested from the workspace.
     Asked,
 }
 
@@ -486,7 +604,7 @@ mod tests {
                 .unwrap();
             let state = replica.state().unwrap();
             assert_eq!(state.copies.len(), 2);
-            let recorded = state.copies.get(&Id::from_raw(first.to_string())).unwrap();
+            let recorded = state.copy("me@x.example", first).unwrap();
             assert_eq!(recorded.content, tilo_content::hash_bytes(b"one"));
             assert_eq!(
                 (recorded.folder, recorded.uid, recorded.uid_validity),
@@ -496,11 +614,39 @@ mod tests {
             replica
                 .apply(MailCopies::FORGET_COPIES.with(kept::ForgetCopies {
                     messages: vec![first.to_string()],
+                    account: Some("me@x.example".into()),
                 }))
                 .unwrap();
             let state = replica.state().unwrap();
             assert_eq!(state.copies.len(), 1);
-            assert!(state.copies.contains(&Id::from_raw(second.to_string())));
+            assert!(state.copy("me@x.example", second).is_some());
+        }
+
+        phase importing_never_restores_a_deleted_copy_or_replaces_the_workspace_copy;
+        {
+            let mut replica = Replica::<MailCopies>::new().as_author("u_ada");
+            let id = uuid::Uuid::from_u128(1);
+            let a = "first@x.example";
+            let b = "next@x.example";
+            replica
+                .apply(MailCopies::KEEP_COPIES.with(kept::KeepCopies {
+                    copies: vec![copy(id, a, 10, b"one"), copy(id, b, 10, b"two")],
+                }))
+                .unwrap();
+            replica
+                .apply(MailCopies::FORGET_COPIES.with(kept::ForgetCopies {
+                    messages: vec![id.to_string()],
+                    account: Some(a.into()),
+                }))
+                .unwrap();
+            replica
+                .apply(MailCopies::IMPORT_COPIES.with(kept::ImportCopies {
+                    copies: vec![copy(id, a, 11, b"old"), copy(id, b, 11, b"old")],
+                }))
+                .unwrap();
+            let state = replica.state().unwrap();
+            assert!(state.copy(a, id).is_none());
+            assert_eq!(state.copy(b, id).unwrap().content, tilo_content::hash_bytes(b"two"));
         }
 
         phase a_copy_names_its_message_its_content_and_a_folder_its_server_has;

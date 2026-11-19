@@ -92,6 +92,12 @@ pub struct BrowserShell;
 impl ResourceApp for BrowserShell {
     type Resource = Browser;
     const ID: &'static str = tilo_webview::BROWSER_APP_ID;
+    const PERSON_RESOURCES: &'static [ui::framework::PersonKind] = &[
+        ui::framework::PersonKind::profile::<crate::autofill::AddressBook>(),
+        ui::framework::PersonKind::profile::<crate::history::BrowsingHistory>(),
+        ui::framework::PersonKind::profile::<crate::page_resource::PageResource>(),
+        ui::framework::PersonKind::profile::<crate::personal_bookmarks::PersonalBookmarks>(),
+    ];
     const TITLE: &'static str = "Browser";
     const TITLE_KEY: &'static str = "browser-app-title";
     const ICON: Option<&'static str> = Some("browser");
@@ -358,21 +364,25 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
         window.attach_side_panel_widths(cx.storage().settings());
     }
     if !cx.is_private()
-        && let Some(bookmarks) = cx.person::<crate::personal_bookmarks::PersonalBookmarks>()
+        && let Some(bookmarks) =
+            open_profile::<crate::personal_bookmarks::PersonalBookmarks>(cx, |state| {
+                crate::personal_bookmarks::PersonalBookmarks::RESTORE_PREVIOUS.with(state)
+            })
     {
         window.attach_personal_bookmarks(bookmarks);
     }
     if !cx.is_private()
-        && let Some(history) = cx.person::<crate::history::BrowsingHistory>()
+        && let Some(history) = open_profile::<crate::history::BrowsingHistory>(cx, |state| {
+            crate::history::BrowsingHistory::RESTORE_PREVIOUS.with(state)
+        })
     {
         window.attach_history(history);
     }
-    // What operated this tab's page is a resource of Browser's in the
-    // workspace, each action a change of it by whoever acted: History, a
-    // recording and the person's other devices read it there. A private
-    // window keeps none.
+    // Page recordings belong to the profile. A private window keeps none.
     if !cx.is_private()
-        && let Some(record) = cx.person::<crate::page_resource::PageResource>()
+        && let Some(record) = open_profile::<crate::page_resource::PageResource>(cx, |state| {
+            crate::page_resource::PageResource::RESTORE_PREVIOUS.with(state)
+        })
     {
         window
             .page_mut()
@@ -383,7 +393,11 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
             .page_mut()
             .attach_continuity(person, cx.storage().files(), cx.waker());
     }
-    if ownership && let Some(book) = cx.person::<crate::autofill::AddressBook>() {
+    if ownership
+        && let Some(book) = open_profile::<crate::autofill::AddressBook>(cx, |state| {
+            crate::autofill::AddressBook::RESTORE_PREVIOUS.with(state)
+        })
+    {
         window.attach_address_book(book);
     }
     // The engine publishes frames and navigation from its own threads; each wakes the
@@ -393,6 +407,32 @@ fn attach(cx: &ViewCx<Browser>, window: &mut BrowserWindow) {
     window
         .engine_handle()
         .set_waker(Box::new(move || waker.wake()));
+}
+
+fn open_profile<P>(
+    cx: &ViewCx<Browser>,
+    restore: impl FnOnce(serde_json::Value) -> Invoke<P>,
+) -> Option<ui::framework::PersonResource<P>>
+where
+    P: ui::tilo_resource::Resource,
+    P::State: ui::tilo_resource::Model + Default + PartialEq,
+{
+    let profile = cx.profile_resource::<P>()?;
+    if *profile.get() == P::State::default() {
+        let opener = cx.resource_opener::<P>(BrowserShell::ID);
+        let result = opener.legacy_member_state().and_then(|previous| {
+            if let Some(previous) = previous.filter(|previous| **previous != P::State::default()) {
+                profile
+                    .invoke(&restore(ui::tilo_resource::Model::to_json(&*previous)))
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            tracing::warn!(kind = P::KIND, %error, "could not restore the previous browser profile");
+        }
+    }
+    Some(profile)
 }
 
 #[cfg(test)]

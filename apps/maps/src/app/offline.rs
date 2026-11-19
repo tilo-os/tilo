@@ -1,10 +1,54 @@
-//! The offline areas a person saved: their tile sets and names, and what the resource keeps
-//! for this device.
+//! The names and footprints for map tiles downloaded to this device.
 
-use ui::tilo_resource::Invoke;
+use std::collections::BTreeMap;
+
+use ui::framework::{Setting, ViewCx};
+use ui::storage::{Scope, SettingsSchema};
 
 use super::{GeoBounds, MapsApp, TileId, bounds_contains, failure, format_bytes};
-use crate::offline_areas::OfflineAreas;
+use crate::model::DownloadedRegion;
+use crate::offline_areas::{OfflineAreas, recorded};
+use crate::workspace::Workspace;
+
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DownloadedAreas {
+    #[serde(default)]
+    by_workspace: BTreeMap<String, Vec<DownloadedRegion>>,
+}
+
+impl SettingsSchema for DownloadedAreas {
+    const SCOPE: Scope = Scope::DeviceLocal;
+}
+
+impl DownloadedAreas {
+    pub(crate) fn open(cx: &ViewCx<Workspace>, workspace: &str) -> Setting<Self> {
+        let settings = cx.settings::<Self>();
+        if !settings.get().by_workspace.contains_key(workspace)
+            && let Some(device) = cx.device()
+        {
+            let opener = cx.resource_opener::<OfflineAreas>(ui::apps::MAPS);
+            match opener.legacy_member_state() {
+                Ok(Some(previous)) => {
+                    if let Err(error) = settings.update(|state| {
+                        state
+                            .by_workspace
+                            .entry(workspace.to_owned())
+                            .or_insert_with(|| previous.on(device));
+                    }) {
+                        tracing::warn!(%error, "could not restore offline map areas");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read earlier offline map areas"),
+            }
+        }
+        settings
+    }
+
+    pub(crate) fn in_workspace(&self, workspace: &str) -> &[DownloadedRegion] {
+        self.by_workspace.get(workspace).map_or(&[], Vec::as_slice)
+    }
+}
 
 impl MapsApp {
     /// The tile ids a region covers; set arithmetic on them keeps imagery another area still needs.
@@ -50,11 +94,7 @@ impl MapsApp {
             z1,
             tiles,
         };
-        let areas = crate::offline_areas::recorded(&self.model.regions, region.clone());
-        self.edit_offline_areas(
-            |device| OfflineAreas::REMEMBER.with((device, region)),
-            areas,
-        );
+        self.edit_offline_areas(|areas| *areas = recorded(areas, region.clone()));
     }
 
     pub(super) fn delete_region(&mut self, id: &str) -> Result<(), String> {
@@ -72,15 +112,7 @@ impl MapsApp {
             .collect();
         let freed = self.tiles.delete_tiles(&doomed);
         self.offline_panel.set_cache_bytes(self.tiles.cache_bytes());
-        let areas = self
-            .model
-            .regions
-            .iter()
-            .filter(|r| r.id != id)
-            .cloned()
-            .collect();
-        let area = id.to_owned();
-        self.edit_offline_areas(|device| OfflineAreas::FORGET.with((device, area)), areas);
+        self.edit_offline_areas(|areas| areas.retain(|area| area.id != id));
         self.model.status = failure::t_args(
             "maps-offline-removed",
             &[
@@ -94,31 +126,34 @@ impl MapsApp {
     pub(super) fn clear_offline_areas(&mut self) {
         let freed = self.tiles.clear_cache();
         self.offline_panel.set_cache_bytes(0);
-        self.edit_offline_areas(|device| OfflineAreas::CLEAR.with(device), Vec::new());
+        self.edit_offline_areas(Vec::clear);
         self.model.status = failure::t_args(
             "maps-offline-cleared",
             &[("size", format_bytes(freed).into())],
         );
     }
 
-    pub(super) fn edit_offline_areas(
-        &mut self,
-        edit: impl FnOnce(String) -> Invoke<OfflineAreas>,
-        areas: Vec<crate::model::DownloadedRegion>,
-    ) {
-        if let Some((record, device)) = &self.offline_areas
-            && let Err(error) = record.invoke(&edit(device.clone()))
-        {
-            tracing::warn!("maps: the offline areas could not be stored: {error}");
+    fn edit_offline_areas(&mut self, edit: impl Fn(&mut Vec<DownloadedRegion>)) {
+        if let Some((settings, workspace)) = &self.offline_areas {
+            match settings.update(|state| {
+                edit(state.by_workspace.entry(workspace.clone()).or_default());
+            }) {
+                Ok(()) => {
+                    self.follow_offline_areas();
+                    return;
+                }
+                Err(error) => tracing::warn!(%error, "could not store offline map areas"),
+            }
         }
-        self.model.regions = areas;
+        edit(&mut self.model.regions);
     }
 
     pub(super) fn follow_offline_areas(&mut self) {
-        if let Some((record, device)) = &self.offline_areas {
-            let stored = record.with(|areas| areas.on(device));
-            if stored != self.model.regions {
-                self.model.regions = stored;
+        if let Some((settings, workspace)) = &self.offline_areas {
+            let stored = settings.get();
+            let areas = stored.in_workspace(workspace);
+            if areas != self.model.regions {
+                self.model.regions = areas.to_vec();
             }
         }
     }

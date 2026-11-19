@@ -661,11 +661,12 @@ impl Session {
             std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
         let key_link = crate::workspace_keys::KeyLink::new();
         changes.waking(options.wake.handle());
-        let resource_index = engine.as_ref().map(|_| {
+        let resource_index = engine.as_ref().map(|engine| {
+            crate::resource_index::install_read_policy(engine, &options.content);
             crate::resource_index::start(
                 &document_reads,
                 std::sync::Arc::clone(&options.content),
-                crate::platform::records::Changes::clone(&changes),
+                changes.clone(),
             )
         });
         let resource_changes = resource_index.clone().map(|index| {
@@ -716,6 +717,9 @@ impl Session {
             Some(peer_documents.clone()),
             workspace_service,
         );
+        if let Some(personal) = sync.as_ref().and_then(|sync| sync.personal()) {
+            conversations.use_personal_store(personal.sync().clone());
+        }
         // The records the session itself writes are the workspaces' own, and its writes reach this
         // device's apps as a member's do. Search finds the records the workspaces hold, and
         // brings one here, through them.

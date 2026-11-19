@@ -1184,10 +1184,48 @@ fn attach_files(cx: &ViewCx<FileExplorer>, files: &mut FilesState) {
     files.attach_framework(
         cx.dispatcher(),
         cx.settings::<FilesPreferences>(),
-        cx.person::<crate::recent::RecentResource>(),
+        cx.mode().is_live().then(|| DeviceRecentFiles::open(cx)),
         cx.device().map(str::to_owned),
         ops,
     );
+}
+
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DeviceRecentFiles {
+    #[serde(default)]
+    pub(crate) by_workspace: std::collections::BTreeMap<String, crate::recent::RecentFiles>,
+}
+
+impl ui::storage::SettingsSchema for DeviceRecentFiles {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
+
+impl DeviceRecentFiles {
+    fn open(cx: &ViewCx<FileExplorer>) -> (ui::framework::Setting<Self>, String) {
+        let workspace = cx.workspace().unwrap_or_default();
+        let settings = cx.settings::<Self>();
+        if !settings.get().by_workspace.contains_key(&workspace)
+            && let Some(device) = cx.device()
+        {
+            let opener =
+                cx.resource_opener::<crate::recent::RecentResource>(ui::apps::FILE_EXPLORER);
+            match opener.legacy_member_state() {
+                Ok(Some(previous)) => {
+                    if let Err(error) = settings.update(|state| {
+                        state
+                            .by_workspace
+                            .entry(workspace.clone())
+                            .or_insert_with(|| previous.on(device));
+                    }) {
+                        tracing::warn!(%error, "could not restore recent files");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read earlier recent files"),
+            }
+        }
+        (settings, workspace)
+    }
 }
 
 fn carry_out_queued(

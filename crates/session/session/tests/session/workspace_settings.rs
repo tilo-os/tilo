@@ -212,6 +212,126 @@ fn workspace_settings_sets_each_members_role() {
     }
 }
 
+#[test]
+fn workspace_settings_assigns_a_custom_role_and_uses_it_for_document_access() {
+    use tilo_action_policy::{ActionKind, Answer, Context};
+
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &["ada", "bo"]);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+
+    app.effect(&WorkspaceSettingsEffect::SaveCustomRole {
+        role: String::new(),
+        name: "Reviewers".into(),
+    })
+    .unwrap();
+    settle(&mut session, &mut app);
+    let role = session.handle().read(|tree| {
+        let workspace = tree.active_workspace().unwrap();
+        workspace
+            .policy
+            .custom_roles
+            .iter()
+            .find_map(|(id, name)| (name == "Reviewers").then(|| id.clone()))
+            .expect("the People action created a role")
+    });
+    for effect in [
+        WorkspaceSettingsEffect::SetCustomRole {
+            member: "ada".into(),
+            role: role.clone(),
+            assigned: true,
+        },
+        WorkspaceSettingsEffect::SetDocumentAccess {
+            who: "everyone".into(),
+            app: String::new(),
+            document: String::new(),
+            access: "no-access".into(),
+        },
+        WorkspaceSettingsEffect::SetDocumentAccess {
+            who: format!("role:{role}"),
+            app: String::new(),
+            document: "so.tilo.notes".into(),
+            access: "view".into(),
+        },
+        WorkspaceSettingsEffect::SetDocumentAccess {
+            who: format!("role:{role}"),
+            app: "so.tilo.notes".into(),
+            document: "review".into(),
+            access: "edit".into(),
+        },
+    ] {
+        app.effect(&effect).unwrap();
+        settle(&mut session, &mut app);
+    }
+
+    session.handle().read(|tree| {
+        let workspace = tree.active_workspace().unwrap();
+        let id = workspace.id().to_string();
+        let document = collab_types::document_node(&id, "so.tilo.notes", "review");
+        let action = tilo_action_policy::TreePath::workspace(&id)
+            .app("so.tilo.notes")
+            .kind("notes.note")
+            .resource("review")
+            .action("field-edit");
+        let context = Context::at_time(tilo_clock::wall());
+        for node in [document, action] {
+            for (person, expected) in [("ada", Answer::Allow), ("bo", Answer::Deny)] {
+                assert_eq!(
+                    workspace
+                        .policy
+                        .party(person)
+                        .decide(&node, ActionKind::Undoable, &context)
+                        .answer,
+                    expected,
+                    "{person} at {node}",
+                );
+            }
+        }
+        let other_note = collab_types::document_node(&id, "so.tilo.notes", "other");
+        let file = collab_types::document_node(&id, "so.tilo.files", "other");
+        let reviewer = workspace.policy.party("ada");
+        assert_eq!(
+            reviewer
+                .decide(&other_note, ActionKind::Read, &context)
+                .answer,
+            Answer::Allow
+        );
+        assert_eq!(
+            reviewer
+                .decide(&other_note, ActionKind::Undoable, &context)
+                .answer,
+            Answer::Deny
+        );
+        assert_eq!(
+            reviewer.decide(&file, ActionKind::Read, &context).answer,
+            Answer::Deny
+        );
+        let targets = collab_types::document_access_scopes(
+            &workspace.policy,
+            &[("so.tilo.notes".into(), "review".into())],
+            [],
+        );
+        let rules = collab_types::document_access_rules(&workspace.policy, &targets);
+        let rule_at = |app: &str, doc: &str| {
+            rules
+                .iter()
+                .find(|rule| rule.app == app && rule.document == doc)
+                .unwrap()
+        };
+        assert_eq!(rule_at("", "").access, "no-access");
+        assert_eq!(rule_at("", "so.tilo.notes").access, "view");
+        assert_eq!(
+            rule_at("so.tilo.notes", "review").recipient,
+            format!("role:{role}")
+        );
+        assert_eq!(rule_at("so.tilo.notes", "review").access, "edit");
+    });
+}
+
 /// The People tab says what the owner's role is instead of offering it: who owns the workspace is a
 /// fact of it, so their row has no role control and no one chooses a new owner here.
 #[test]

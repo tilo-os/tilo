@@ -17,6 +17,9 @@ impl Mailroom {
             .parse::<MessageId>()
             .map_err(|_| AttachmentUnavailable::UnknownMessage)?;
         let shared = self.shared.borrow();
+        if !shared.may_read_message(message_id) {
+            return Err(AttachmentUnavailable::NotLoaded);
+        }
         let attachment = shared
             .mailbox
             .get(message_id)

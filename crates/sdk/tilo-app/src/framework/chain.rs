@@ -89,6 +89,7 @@ use routing::{route, route_at};
 mod shares;
 mod tree;
 mod waiting;
+pub(crate) use waiting::QueuedWrites;
 
 use super::made::Made;
 use dispatching::detached_dispatch;
@@ -397,6 +398,7 @@ pub(crate) struct WorkspaceResources {
     pub(crate) permissions: Option<LivePermissions>,
     pub(crate) app_id: &'static str,
     pub(crate) app_title: &'static str,
+    pub(crate) device_queue: Option<ui_core::storage::Settings<waiting::QueuedWrites>>,
 }
 
 /// The parts a window holds, oldest first, by their numbers.
@@ -488,8 +490,8 @@ pub(crate) struct ChainState {
     /// ([`Chain::undo_last`]), and the steps it took back, for Redo.
     written: RefCell<Vec<Written>>,
     undone: RefCell<Vec<Written>>,
-    /// What [`ChainCore::waiting_resource`] writes into this chain, as a part
-    /// holding only that reads ([`ChainState::unwritten`]), at its heads.
+    /// What the waiting actions would write into this chain, projected
+    /// as one part ([`ChainState::unwritten`]).
     unwritten: RefCell<Unwritten>,
     /// Whether the actions that waited are being applied now.
     draining: Cell<bool>,
@@ -540,6 +542,7 @@ pub(crate) struct ChainCore {
     /// applies them in order once the part is here, across a closed window
     /// and a restart.
     waiting_resource: DocumentCheckout,
+    workspace_key: String,
     /// Whether [`Self::waiting_resource`] was looked for on this device.
     unsent_looked: Cell<bool>,
 }
@@ -550,7 +553,8 @@ pub(crate) type Later = Box<dyn FnOnce(Result<u64, ActionError>)>;
 
 /// What the actions waiting for their part write, read as a part, at the
 /// heads of the record that keeps them.
-type Unwritten = (Vec<ChangeHash>, Option<Rc<dyn Any>>);
+type QueueRevision = (Vec<ChangeHash>, Option<ui_core::storage::SettingsRevision>);
+type Unwritten = (QueueRevision, Option<Rc<dyn Any>>);
 
 /// The kind of the record of a person's actions waiting for their part.
 const UNSENT_KIND: &str = tilo_actions::surface::CHAIN_UNSENT_KIND;
@@ -1087,6 +1091,7 @@ impl ChainCore {
             part_search: RefCell::default(),
             looked: Cell::new(None),
             followed_at: Cell::new(None),
+            workspace_key: workspace.store.app_and_home().1,
             earlier_at: Cell::new(None),
             read_at: Cell::new(None),
             waiting_resource: unsent_checkout(&workspace.me),
@@ -1570,6 +1575,25 @@ impl ChainCore {
     /// The actions waiting for a part of this chain, oldest first: each
     /// entry's id, its action's JSON and who invoked it.
     fn unsent(&self) -> Vec<(String, serde_json::Value, ActionInvoker)> {
+        let mut queued = self.legacy_unsent();
+        if let Some(settings) = &self.workspace.device_queue {
+            if let Some(entries) = settings
+                .get()
+                .workspaces
+                .get_mut(&self.workspace_key)
+                .and_then(|chains| chains.remove(self.chain.as_str()))
+            {
+                queued.extend(
+                    entries
+                        .into_iter()
+                        .map(|entry| (entry.id, entry.action, entry.invoker)),
+                );
+            }
+        }
+        queued
+    }
+
+    fn legacy_unsent(&self) -> Vec<(String, serde_json::Value, ActionInvoker)> {
         if !self.open_unsent(false) {
             return Vec::new();
         }
@@ -1602,6 +1626,29 @@ impl ChainCore {
 
     /// Take the entry `id` out of the record of waiting actions.
     fn forget_unsent(&self, id: &str) {
+        if let Some(settings) = self
+            .workspace
+            .device_queue
+            .as_ref()
+            .filter(|_| id.starts_with("local:"))
+        {
+            if let Err(error) = settings.update(|queue| {
+                if let Some(chains) = queue.workspaces.get_mut(&self.workspace_key) {
+                    if let Some(entries) = chains.get_mut(self.chain.as_str()) {
+                        entries.retain(|entry| entry.id != id);
+                        if entries.is_empty() {
+                            chains.remove(self.chain.as_str());
+                        }
+                    }
+                    if chains.is_empty() {
+                        queue.workspaces.remove(&self.workspace_key);
+                    }
+                }
+            }) {
+                tracing::error!(kind = self.part.kind, %error, "could not finish a queued workspace write");
+            }
+            return;
+        }
         let chain = self.chain.as_str().to_owned();
         let forgotten = self.edit_unsent(move |doc| {
             let Some((Value::Object(ObjType::List), list)) = doc.get(ROOT, chain.as_str())? else {
@@ -1826,11 +1873,9 @@ impl ChainState {
         self.unwritten.borrow().1.clone()
     }
 
-    /// Read the list of waiting actions again when it changed (here, in
-    /// another window, on another of the person's devices). Whether it did.
+    /// Follow edits to the queue from other windows on this device.
     fn follow_unsent(&self) -> bool {
-        // Not here (nothing waits), or read by whatever runs now: as it was.
-        let Some(heads) = self
+        let heads = self
             .core
             .open_unsent(false)
             .then(|| {
@@ -1840,14 +1885,20 @@ impl ChainState {
                 )
             })
             .flatten()
-        else {
-            return false;
-        };
-        if self.unwritten.borrow().0 == heads {
+            .unwrap_or_default();
+        let revision = (
+            heads,
+            self.core
+                .workspace
+                .device_queue
+                .as_ref()
+                .map(ui_core::storage::Settings::revision),
+        );
+        if self.unwritten.borrow().0 == revision {
             return false;
         }
         let unwritten = self.read_unwritten(&self.unsent());
-        *self.unwritten.borrow_mut() = (heads, unwritten);
+        *self.unwritten.borrow_mut() = (revision, unwritten);
         true
     }
 
@@ -2752,6 +2803,7 @@ impl<P: Chained> Chain<P> {
             permissions: None,
             app_id,
             app_title: app_id,
+            device_queue: None,
         };
         let chain = match record {
             Some(record) => P::chain_beside(record),

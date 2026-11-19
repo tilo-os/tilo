@@ -113,6 +113,9 @@ pub struct ContentLink {
     /// The content secret of the members who read the record, while its
     /// route holds their keys.
     secret: Mutex<Option<tilo_seal::SymmetricKey>>,
+    /// Keys held only for routes that require their own group. The key history opens stored
+    /// field values written before a membership change.
+    document_keys: Mutex<Option<key_group::ContentKeys>>,
     /// The record's own content link ([`Self::of`]), for a window's content link: the
     /// secret is the record's, whichever window stores.
     record: OnceLock<Arc<ContentLink>>,
@@ -251,6 +254,80 @@ impl ContentLink {
     /// it.
     pub fn hold_secret(&self, secret: Option<tilo_seal::SymmetricKey>) {
         *self.secret.lock_recover() = secret;
+    }
+
+    #[cfg(any(feature = "broker-transport", test))]
+    pub(crate) fn hold_document_keys(
+        &self,
+        spec: &crate::RouteSpec,
+        keys: Option<key_group::ContentKeys>,
+    ) {
+        let document = spec.document.as_deref().unwrap_or_default();
+        let workspace = collab_types::WorkspaceId::from_u128(spec.cluster_id.as_u128());
+        let expected = workspace.document_key_group(&spec.app_id, document);
+        *self.document_keys.lock_recover() = keys.filter(|keys| keys.workspace() == expected);
+    }
+
+    /// Seal a sensitive field before putting it in a locally persisted document.
+    ///
+    /// # Errors
+    /// The document's own keys are unavailable or encryption fails.
+    pub fn seal_private_field(&self, field: &str, bytes: &[u8]) -> Result<String, String> {
+        self.with_document_keys(|keys| {
+            let artifact = collab_types::document_artifact_id(
+                "tilo.private-field",
+                &keys.workspace().to_string(),
+                field,
+            );
+            let envelope = keys
+                .seal_content(artifact, collab_types::ContentRetention::Delta, bytes)
+                .map_err(|error| error.to_string())?;
+            postcard::to_allocvec(&envelope)
+                .map(hex::encode)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// Open a sensitive field sealed for this document and field address.
+    ///
+    /// # Errors
+    /// The relevant epoch key is unavailable or the field does not authenticate.
+    pub fn open_private_field(
+        &self,
+        field: &str,
+        encoded: &str,
+    ) -> Result<zeroize::Zeroizing<Vec<u8>>, String> {
+        self.with_document_keys(|keys| {
+            let artifact = collab_types::document_artifact_id(
+                "tilo.private-field",
+                &keys.workspace().to_string(),
+                field,
+            );
+            let bytes = hex::decode(encoded).map_err(|error| error.to_string())?;
+            let (metadata, sealed): (collab_types::EncryptionMetadata, Vec<u8>) =
+                postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
+            if !matches!(metadata.scheme, collab_types::EncryptionScheme::DocumentContentKey { group, .. } if group == keys.workspace())
+            {
+                return Err("field was sealed for another document".into());
+            }
+            keys.open_content(artifact, &metadata, &sealed)
+                .map_err(|error| error.to_string())
+        })
+    }
+
+    /// The current document key epoch, while this endpoint can open private fields.
+    #[must_use]
+    pub fn private_field_epoch(&self) -> Option<u64> {
+        self.with_document_keys(|keys| Ok(keys.epoch())).ok()
+    }
+
+    fn with_document_keys<T>(
+        &self,
+        use_keys: impl FnOnce(&key_group::ContentKeys) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let link = self.record.get().map_or(self, Arc::as_ref);
+        let held = link.document_keys.lock_recover();
+        use_keys(held.as_ref().ok_or("the document keys are unavailable")?)
     }
 
     fn content_secret(&self) -> Option<tilo_seal::SymmetricKey> {

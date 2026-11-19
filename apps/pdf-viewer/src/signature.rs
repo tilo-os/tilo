@@ -1,6 +1,5 @@
 //! The signature a person signs with: the name they sign as and the strokes they drew,
-//! composed once and reused on every document. It is the person's own document, never part
-//! of the document.
+//! composed once in their profile and reused across documents.
 
 use ui::tilo_resource::{self, Model, ModelError, Refusal, resource};
 
@@ -13,6 +12,8 @@ pub struct SignatureProfile {
     /// The drawn signature, polylines in normalised `[0,1]²` pad space;
     /// empty until the person draws. Replaced whole when redrawn.
     pub strokes: Vec<Stroke>,
+    #[model(readonly, default = false)]
+    pub(crate) restored_previous: bool,
 }
 
 /// One polyline of a drawn signature: its points as `x, y` pairs in one flat list, so
@@ -99,15 +100,31 @@ impl SignatureProfile {
     /// Sign as
     ///
     /// Signs as `name` from now on.
-    #[action]
+    #[action(writes = signer, writes = restored_previous)]
     pub fn set_signer(&mut self, #[param("The name to sign as")] name: String) {
         name.trim().clone_into(&mut self.signer);
+        self.restored_previous = true;
+    }
+
+    /// Restore the former workspace signature to the profile.
+    #[action(by_app, housekeeping, writes = signer, writes = strokes, writes = restored_previous)]
+    pub fn restore_previous(&mut self, profile: serde_json::Value) -> Result<(), Refusal> {
+        if self.restored_previous || !self.signer.is_empty() || !self.strokes.is_empty() {
+            return Ok(());
+        }
+        let previous =
+            Self::from_json(&profile).map_err(|error| Refusal::new(error.to_string()))?;
+        previous.valid()?;
+        self.signer = previous.signer;
+        self.strokes = previous.strokes;
+        self.restored_previous = true;
+        Ok(())
     }
 
     /// Draw signature
     ///
     /// Replaces the drawn signature; no strokes clears it.
-    #[action]
+    #[action(writes = strokes, writes = restored_previous)]
     pub fn set_strokes(
         &mut self,
         #[param("Polylines in the unit square, each a list of x, y points")] strokes: Vec<
@@ -118,6 +135,7 @@ impl SignatureProfile {
             .iter()
             .map(|points| Stroke::through(points))
             .collect();
+        self.restored_previous = true;
     }
 }
 

@@ -63,3 +63,5 @@ chat-workspace-mark-read = Als gelesen markieren
 chat-workspace-keep-summary = Zusammenfassung festhalten
 chat-workspace-submit-feedback = Feedback senden
 chat-workspace-triage = Feedback sichten
+
+chat-drafts-import-previous = Früheren Kanalentwurf wiederherstellen

@@ -163,14 +163,13 @@ fn peers() -> Peers {
         app.state().engine = Some(crate::app::EngineHandle { tx, rx });
         app.follow_person_accounts(accounts.clone());
     }
-    // What the device fetches it keeps for the person's other devices: the
-    // person's copies resource, its content carried beside it (a test window's
-    // resource keeps none of its own).
+    // The device keeps fetched mail for the workspace. The test host
+    // carries the content through a shared backend.
     let copies = device
-        .person::<crate::copies::MailCopies>()
-        .expect("the device keeps copies");
+        .shared_resource::<crate::copies::MailCopies>(ui::apps::MAIL, crate::copies::DOCUMENT)
+        .expect("the workspace keeps copies");
     let carried = tilo_content::ContentStore::new(Route(tilo_content::MemoryBackend::default()));
-    mail(&mut device).copies = Some(crate::copies::Copies::new(copies.clone(), carried.clone()));
+    mail(&mut device).share_copies(copies.clone(), carried.clone());
 
     // The page: the same accounts resource, no secret and no server.
     let mut page = Window::on_device("page").unwrap();
@@ -180,7 +179,7 @@ fn peers() -> Peers {
         app.ownership = None;
         app.state().checks.asks = true;
         app.follow_person_accounts(accounts);
-        app.copies = Some(crate::copies::Copies::new(copies, carried));
+        app.share_copies(copies, carried);
     }
     page.settle();
 

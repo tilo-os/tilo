@@ -555,14 +555,17 @@ fields = [
 kind = "pdf.signature-profile"
 label = "Signature"
 version = 2
+person = true
 fields = [
   { path = "signer", type = "text" },
   { path = "strokes", type = { list = { named = "Stroke" } } },
+  { path = "restored_previous", type = "bool", readonly = true },
 ]
 
 [[resources.verbs]]
 id = "set-signer"
 kind = "undoable"
+writes = ["record", "signer", "restored_previous"]
 params = [
   { name = "name", type = "text", required = true, schema = { type = "string" } },
 ]
@@ -570,6 +573,7 @@ params = [
 [[resources.verbs]]
 id = "set-strokes"
 kind = "undoable"
+writes = ["record", "strokes", "restored_previous"]
 params = [
   { name = "strokes", type = { list = { list = "any" } }, required = true, schema = { type = "array", items = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } } },
 ]

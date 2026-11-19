@@ -467,6 +467,53 @@ impl ArtworkRecents {
     }
 }
 
+/// Recent file paths this device can reopen, grouped by workspace.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct DeviceArtworkRecents {
+    #[serde(default)]
+    pub(crate) by_workspace: BTreeMap<String, RecentArtworks>,
+}
+
+impl ui::storage::SettingsSchema for DeviceArtworkRecents {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
+
+impl DeviceArtworkRecents {
+    pub(crate) fn open(
+        cx: &ui::framework::ViewCx<crate::model::Artwork>,
+        workspace: &str,
+    ) -> ui::framework::Setting<Self> {
+        let settings = cx.settings::<Self>();
+        if !settings.get().by_workspace.contains_key(workspace)
+            && let Some(device) = cx.device()
+        {
+            let opener = cx.resource_opener::<ArtworkRecents>(ui::apps::CANVAS);
+            match opener.legacy_member_state() {
+                Ok(Some(previous)) => {
+                    if let Err(error) = settings.update(|state| {
+                        state
+                            .by_workspace
+                            .entry(workspace.to_owned())
+                            .or_insert_with(|| previous.on(device));
+                    }) {
+                        tracing::warn!(%error, "could not restore recent artworks");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read earlier recent artworks"),
+            }
+        }
+        settings
+    }
+
+    pub(crate) fn in_workspace(&self, workspace: &str) -> RecentArtworks {
+        self.by_workspace
+            .get(workspace)
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 impl RecentArtworks {
     /// `recent` first, in place of an earlier visit to its path.
     pub fn remember(&mut self, recent: Recent) {

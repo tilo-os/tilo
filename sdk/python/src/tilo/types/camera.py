@@ -60,7 +60,7 @@ RecordScanArgs = TypedDict("RecordScanArgs", {
 
 class Camera(Resource):
     """Camera — `camera`."""
-    __surface__ = "so.tilo.camera@9165e90dd077b0bc"
+    __surface__ = "so.tilo.camera@4fefa4db144ed22b"
     @property
     def scans(self) -> list[ScanEntry]:
         """Read only."""

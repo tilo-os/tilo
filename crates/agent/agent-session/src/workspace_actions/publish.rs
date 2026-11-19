@@ -494,7 +494,7 @@ impl Worker {
                 .shared
                 .link
                 .get()
-                .and_then(|link| link.host_keys(route, false))
+                .and_then(|link| link.serving_keys(route, false))
         {
             let keys = keys?;
             let writer = match by {
@@ -887,7 +887,7 @@ impl Worker {
         // beside it: its keys first (made when the app has no index yet in
         // this workspace), then everything that arrived under them.
         if let Some(link) = &link
-            && let Some(keys) = link.host_keys(&index_route, true)
+            && let Some(keys) = link.serving_keys(&index_route, true)
         {
             workspace
                 .peer

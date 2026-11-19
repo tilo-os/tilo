@@ -255,6 +255,10 @@ pub enum Command {
 )]
 pub struct MailState {
     pub mailbox: Mailbox,
+    /// Copies obtained through workspace authority and held for this window only.
+    pub(crate) workspace_messages: std::collections::HashSet<MessageId>,
+    pub(crate) workspace_copies:
+        Option<ui::framework::WorkspaceResource<crate::copies::MailCopies>>,
     pub accounts: AccountStore,
     pub now_min: i64,
     pub folder: Folder,
@@ -278,7 +282,10 @@ pub struct MailState {
     pub first_fetch: Option<ui::arriving::ArrivalClock>,
     pub passed_over: HashMap<(String, Folder), crate::sync::Window>,
     pub remote_senders: std::collections::BTreeSet<String>,
+    pub(crate) sender_trust:
+        Option<ui::framework::ResourceOpener<crate::trusted_senders::TrustedSenders>>,
     pub remote_messages: std::collections::HashSet<MessageId>,
+    blocked_remote_messages: std::collections::HashSet<MessageId>,
     pub plain_text: std::collections::HashSet<MessageId>,
     pub(crate) kept: crate::store::Store,
     pub reader_requests: Vec<ReaderChoice>,
@@ -313,6 +320,31 @@ pub struct MailState {
 }
 
 impl MailState {
+    pub(crate) fn may_read_message(&self, id: MessageId) -> bool {
+        !self.workspace_messages.contains(&id)
+            || self
+                .workspace_copies
+                .as_ref()
+                .is_some_and(|record| record.may_read())
+    }
+
+    pub(crate) fn purge_workspace_messages(&mut self, ids: &std::collections::HashSet<MessageId>) {
+        if ids.is_empty() {
+            return;
+        }
+        for id in ids {
+            self.mailbox.purge(*id);
+            self.workspace_messages.remove(id);
+            self.remote_messages.remove(id);
+            self.blocked_remote_messages.remove(id);
+            self.plain_text.remove(id);
+        }
+        self.selected = self.selected.filter(|id| !ids.contains(id));
+        self.inspection = self.inspection.filter(|id| !ids.contains(id));
+        self.bulk_selection.retain(|id| !ids.contains(id));
+        self.dirty = true;
+    }
+
     pub fn shared(state: MailState) -> Shared {
         Rc::new(RefCell::new(state))
     }
@@ -339,38 +371,86 @@ impl MailState {
     }
 
     pub fn remote_allowed(&self, message: &crate::model::Message) -> bool {
-        self.remote_messages.contains(&message.id)
-            || self
-                .remote_senders
-                .contains(&message.from.email.to_ascii_lowercase())
+        !self.blocked_remote_messages.contains(&message.id)
+            && (self.remote_messages.contains(&message.id)
+                || self.sender_trusted(&message.from.email))
     }
 
-    pub fn load_remote(&mut self, id: MessageId) {
-        self.remote_messages.insert(id);
-        self.dirty = true;
+    pub(crate) fn sender_trusted(&self, address: &str) -> bool {
+        self.sender_trust.as_ref().is_none_or(|opener| {
+            opener
+                .open(crate::trusted_senders::DOCUMENT)
+                .is_some_and(|record| record.may_read())
+        }) && self.remote_senders.contains(&address.to_ascii_lowercase())
     }
 
-    pub fn always_load_remote(&mut self, id: MessageId) {
-        if let Some(sender) = self
-            .mailbox
-            .get(id)
-            .map(|message| message.from.email.to_ascii_lowercase())
-        {
-            self.remote_senders.insert(sender);
+    pub(crate) fn sync_trusted_senders(&mut self) {
+        let Some(opener) = &self.sender_trust else {
+            return;
+        };
+        let current = opener
+            .open(crate::trusted_senders::DOCUMENT)
+            .filter(|record| record.may_read())
+            .and_then(|record| record.try_get())
+            .map_or_else(Default::default, |state| state.addresses());
+        if current != self.remote_senders {
+            self.remote_senders = current;
             self.dirty = true;
         }
     }
 
-    pub fn stop_remote(&mut self, id: MessageId) {
-        if let Some(sender) = self
+    pub fn load_remote(&mut self, id: MessageId) {
+        self.blocked_remote_messages.remove(&id);
+        self.remote_messages.insert(id);
+        self.dirty = true;
+    }
+
+    pub fn always_load_remote(&mut self, id: MessageId) -> Result<(), String> {
+        self.change_sender_trust(id, true)?;
+        self.blocked_remote_messages.remove(&id);
+        Ok(())
+    }
+
+    pub fn stop_remote(&mut self, id: MessageId) -> Result<(), String> {
+        self.blocked_remote_messages.insert(id);
+        self.remote_messages.remove(&id);
+        self.dirty = true;
+        if self
+            .mailbox
+            .get(id)
+            .is_some_and(|message| self.sender_trusted(&message.from.email))
+        {
+            self.change_sender_trust(id, false)?;
+        }
+        Ok(())
+    }
+
+    fn change_sender_trust(&mut self, id: MessageId, trust: bool) -> Result<(), String> {
+        use crate::trusted_senders::{DOCUMENT, TrustedSenders};
+        let sender = self
             .mailbox
             .get(id)
             .map(|message| message.from.email.to_ascii_lowercase())
-        {
+            .ok_or("the message is no longer loaded")?;
+        if let Some(opener) = &self.sender_trust {
+            let record = opener
+                .open(DOCUMENT)
+                .filter(|record| record.may_read())
+                .ok_or("the workspace sender list is unavailable")?;
+            let change = if trust {
+                TrustedSenders::TRUST.with(sender)
+            } else {
+                TrustedSenders::DISTRUST.with(sender)
+            };
+            record.invoke(&change).map_err(|error| error.to_string())?;
+            self.sync_trusted_senders();
+        } else if trust {
+            self.remote_senders.insert(sender);
+        } else {
             self.remote_senders.remove(&sender);
         }
-        self.remote_messages.remove(&id);
         self.dirty = true;
+        Ok(())
     }
 
     pub fn inline_parts(
@@ -450,7 +530,11 @@ impl MailState {
             selecting_all: false,
             more_older: false,
             remote_senders: std::collections::BTreeSet::new(),
+            workspace_messages: std::collections::HashSet::new(),
+            workspace_copies: None,
+            sender_trust: None,
             remote_messages: std::collections::HashSet::new(),
+            blocked_remote_messages: std::collections::HashSet::new(),
             plain_text: std::collections::HashSet::new(),
             kept: crate::store::Store::default(),
             reader_requests: Vec::new(),

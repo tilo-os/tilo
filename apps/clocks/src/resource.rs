@@ -9,7 +9,7 @@ use ui::tilo_resource::Id;
 
 use crate::app::{ClocksApp, Controls, Shown, Store, duration, repeat_summary, wall_now};
 use crate::model::Clocks;
-use crate::schedule::{ClocksOnDevices, DeviceChoices};
+use crate::schedule::DeviceChoices;
 
 pub use clocks_model::ClocksEffect;
 use clocks_model::StopwatchRow;
@@ -93,10 +93,7 @@ impl ResourceApp for ClocksShell {
         };
         let app = ClocksApp::new(
             controls,
-            DeviceChoices::new(
-                cx.person::<ClocksOnDevices>()
-                    .zip(cx.device().map(str::to_owned)),
-            ),
+            DeviceChoices::new(cx),
             cx.live().clone(),
             cx.mode().is_live(),
             (cx.document_id().cloned(), cx.opener()),

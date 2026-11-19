@@ -18,6 +18,51 @@ A person has as many workspaces as they like, and every one of them is on
 every one of their devices. None of them is special. A new workspace starts
 empty.
 
+## Document access
+
+Workspace members hold a base role and can hold additional workspace-defined roles.
+The most specific applicable rule decides. At the same document, a person's override
+takes precedence over their custom roles, and those roles can extend access beyond
+the default. Administrators can assign roles in **People** and edit document rules in
+**Privacy & Security**.
+
+A restricted document uses its own MLS content key group. The group follows the
+devices that can read that document. Delivery checks the same read permission before
+replaying or forwarding document writes. When a device loses access, the group must
+remove it before the updated membership can be used for new writes.
+
+An authorized reader can still open older versions that were sealed with workspace
+keys. A role change cannot take back copies a device already received or keys it
+already held.
+
+## Where app data lives
+
+App data shared in a workspace resolves to the same records for every member.
+Roles and document grants decide access to those records. Mail uses a workspace
+mailbox and Passwords uses a workspace vault. Mail accounts still use credentials
+from the account owner's profile. Native Mail and Passwords provide actions to
+recover the current member's earlier data into these shared resources. In
+TiloLang Mail, **Recover previous mail** copies the current member's locally
+held conversations, messages, labels and drafts into the shared mailbox in
+batches. Conversation settings follow their messages into **Recovered mail**.
+Drafts with known unsent jobs become editable drafts. A matching workspace
+account with an empty signature can receive its archived signature. Recovery
+writes only to the workspace mailbox.
+
+Workspaces refuse new writes to archived per-member app documents. An app
+with a workspace primary opens that same document for each member. The
+archives retain their original read rules so members can recover earlier data.
+Packages can use shared workspace documents or declare
+personal profile storage for private data. TiloLang packages built with
+`resources: .own` open in the certified profile. Recovery uses the locally
+held copy for that person and workspace and marks unconfirmed outside effects
+as unknown. The original archive remains available to its original reader.
+
+Signature profiles, saved TiloLang views, and facts from private agent turns
+live in the person's store outside workspaces. Views retain their workspace
+context so they can refer to its resources. Device-only data such as pending
+local writes and granted file paths stays on that device.
+
 ## Members and devices
 
 **A member is a person's identity**: a certified human root
@@ -496,18 +541,13 @@ second document of who belongs.
   reads the whole history locally. It grows with membership changes, never
   with content.
 
-**One group per workspace.** Every document of a workspace seals under the
-workspace's one MLS group and its content keys. A payload still names its
-document, so content stays bound to the document and artifact it was written for.
-A membership or device change costs one commit, however many records the
-workspace holds.
-
-**Read permission is not a key boundary.** Every device that holds the
-workspace's keys can decrypt every document in it. A grant that denies Read on a
-document, an app or a pattern hides the resource in the UI and keeps a device
-from asking for it through the action API, but it is not a security boundary:
-data that must stay away from some members belongs in another workspace, or in
-a person's personal resources.
+**Workspace and document keys.** Shared documents can seal under the workspace
+MLS group. A restricted document seals under its own group. Passwords vault
+entries and Mail's workspace records use document keys from their first write.
+The host checks the same read grant for document delivery and key admission.
+Members with current read access can receive the document's earlier epoch keys.
+Revocation stops new delivery and key admission for that member and rotates the
+document group for subsequent writes.
 
 **One genesis, made by the founder.** The workspace's governance names the
 device that created it (`founder`). That device makes the group's genesis;
@@ -901,10 +941,10 @@ app writes none of them:
   agent hands the document it mounts the newest part of each of its chains and
   every part the chain then asks for, from what the workspace holds, and
   keeps each current with the changes after it.
-- **Beside a person's own document.** An app that keeps one document per member
-  (Mail) keeps the parts beside that person's document
-  (`Chained::chain_beside`), never beside the workspace's, so a mailbox's
-  parts are as private as the mailbox.
+- **Beside the mailbox.** Mail keeps folders, drafts and queues in the workspace mailbox.
+  Its message-state chain uses independently sealed parts, with access determined by
+  workspace grants. Earlier member mailboxes and their parts keep their original access
+  during import.
 - **Places over everything the chain holds.** What the app derives from all
   of it — a book's groups, its favorites, its likely duplicates — the chain
   publishes as its own children (`Chained::places`), and what search finds
@@ -938,7 +978,7 @@ there before it moves into parts:
 | Notes | (now) tags; pages in parts of at most 200 pages or 512 KiB of text | parts | one part's cost: the same bytes at 10× the pages |
 | Files (folder) | (before) every file and folder node of the workspace | files | 28 MB at 19,513 files; whole document per change |
 | Files (folder) | (now) the tree's own document, listing chunks of up to 1,024 nodes each | chunks | one chunk's cost: about 1 ms and 755 bytes sent per file written at 20,000 files |
-| Mail | every message's state, held bodies, drafts, outboxes; the person's copies | messages | grows with the mailbox |
+| Mail | message state, held bodies, drafts, outboxes and saved copies | messages | grows with the mailbox |
 | Feeds | (before) every article with its full text | articles | grows until its feed is removed |
 | Feeds | (now) folders and subscriptions; articles in parts of at most 300 articles or 1 MiB of their text | parts | one part's cost, the same bytes at 10× the articles |
 | Messages | every conversation with every message | messages | grows without bound |
