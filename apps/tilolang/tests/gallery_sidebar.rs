@@ -1,7 +1,8 @@
 //! Choosing a place in the gallery's sidebar in its real window: input through
 //! `App::surface_input`, frames through `App::surface_frame`, as the native window drives them.
 //! One press on a place shows its page, whether frames ran between the move, the press and the
-//! release or not, and when the press lands before the page of the place chosen just before.
+//! release or not, and when the press lands before the page of the place chosen just before. A
+//! phone-wide window pushes the page it shows over the places, with Back to them.
 
 use tilolang_app::app::TlApp;
 use ui::app::{App, AppSurface};
@@ -24,12 +25,18 @@ const PLACES: [&str; 10] = [
 
 struct Window;
 
+thread_local! {
+    /// The window's size: a laptop screen's by default, a phone's where a test says so.
+    static SIZE: std::cell::Cell<ui::winit::dpi::PhysicalSize<u32>> =
+        const { std::cell::Cell::new(ui::winit::dpi::PhysicalSize::new(1280, 800)) };
+}
+
 impl AppSurface for Window {
     fn scale_factor(&self) -> f64 {
         1.0
     }
     fn inner_size(&self) -> ui::winit::dpi::PhysicalSize<u32> {
-        ui::winit::dpi::PhysicalSize::new(1280, 800)
+        SIZE.with(std::cell::Cell::get)
     }
     fn request_redraw(&self) {}
     fn set_cursor(&self, _: ui::winit::window::CursorIcon) {}
@@ -83,6 +90,27 @@ fn mouse(app: &mut App, state: ElementState) {
     app.surface_input(&Window, event, false);
 }
 
+/// Where `name` stands as `role` in the window, when it shows one.
+fn named(app: &App, role: ui::a11y::Role, name: &str) -> Option<(f64, f64)> {
+    let bounds = app
+        .semantic_tree()
+        .iter()
+        .find(|node| node.role == role && node.name.as_deref() == Some(name))
+        .and_then(|node| node.bounds)?;
+    Some((
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    ))
+}
+
+/// One press at `(x, y)`, and the frames after it.
+fn press(app: &mut App, (x, y): (f64, f64)) {
+    app.surface_input(&Window, ui::synthetic_input::cursor_moved(x, y), false);
+    mouse(app, ElementState::Pressed);
+    mouse(app, ElementState::Released);
+    rest(app);
+}
+
 #[test]
 fn one_press_on_a_place_shows_its_page() {
     crate::support::installed("gallery");
@@ -123,6 +151,31 @@ fn one_press_on_a_place_shows_its_page() {
                 shown(app).as_deref(),
                 Some(then),
                 "{then} pressed while {first} came"
+            );
+        }
+    })
+    .expect("the gallery's window opens");
+}
+
+#[test]
+fn a_phone_pushes_the_chosen_page_over_the_places() {
+    crate::support::installed("gallery");
+    SIZE.with(|size| size.set(ui::winit::dpi::PhysicalSize::new(390, 844)));
+    drive_live_window::<TlApp, _>(|app| {
+        rest(app);
+        for place in PLACES {
+            press(app, row(app, place));
+            assert_eq!(
+                shown(app).as_deref(),
+                Some(place),
+                "one press shows {place}"
+            );
+            let back = named(app, ui::a11y::Role::Button, "Back")
+                .unwrap_or_else(|| panic!("{place} stands over the places, with Back"));
+            press(app, back);
+            assert!(
+                named(app, ui::a11y::Role::Button, "Hide sidebar").is_some(),
+                "Back from {place} shows the places again"
             );
         }
     })
