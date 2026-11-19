@@ -940,14 +940,17 @@ mod tests {
         phase chat_and_what_names_other_people_stay_behind_and_the_rest_comes_along;
         {
             let emoji = collab_types::workspace_document_id("tilo.workspace.emoji");
-            let agents = collab_types::workspace_document_id("chat.agent");
+            let agents = collab_types::workspace_document_id("tilo.workspace.agent");
             assert!(stays(CHAT, "messages"), "every conversation");
             assert!(stays(
                 CHAT,
                 &collab_types::workspace_document_id("chat.workspace")
             ));
             assert!(!stays(CHAT, &emoji), "the workspace's own emoji");
-            assert!(!stays(CHAT, &agents), "the workspace's agents");
+            assert!(
+                !stays("so.tilo.assistant", &agents),
+                "the workspace's agents"
+            );
             assert!(
                 stays(TERMINAL, "env-1"),
                 "the runtime branches its environments"

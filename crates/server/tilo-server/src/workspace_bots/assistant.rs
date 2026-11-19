@@ -117,7 +117,7 @@ pub async fn assistant_of(
 ) -> Result<Option<Agent>, String> {
     let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let Some(bytes) = workspaces
-        .resource_document(workspace, CHAT, &record)
+        .resource_document(workspace, tilo_workspace_agent::OWNER, &record)
         .await
         .map_err(|error| error.to_string())?
     else {

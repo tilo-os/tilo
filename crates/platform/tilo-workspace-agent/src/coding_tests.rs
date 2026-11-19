@@ -2,7 +2,7 @@
 
 use super::coding::{CodingHarness, CodingProcess, MACHINE, MAX_PRODUCED, NewCoding, Produced};
 use super::sub_tests::{ADA, MAIN, THEN, WORKSPACE, id, kept, start_as, sub_of, team, with_main};
-use super::{Coding, NewSubAgent, OWNER, ProducedAt, Stands, WorkspaceAgents, workspace_agents};
+use super::{Coding, NewSubAgent, ProducedAt, Stands, WorkspaceAgents, workspace_agents};
 use tilo_action_policy::{ActionKind, Answer, TreePath};
 use tilo_resource::{Invoke, Model as _, NonBlank, Replica};
 
@@ -564,7 +564,7 @@ fn a_sub_agent_says_machine_exactly_where_it_has_a_coding_part() {
 fn a_coding_agents_turn_reads_nothing_chat_keeps() {
     let state = with_coder().state().unwrap();
     let coder_agent = state.get(&id("coder")).expect("the coding agent");
-    let chat = TreePath::workspace(WORKSPACE).app(OWNER);
+    let chat = TreePath::workspace(WORKSPACE).app(tilo_app_id::apps::CHAT);
     assert!(
         coder_agent.turn_rules(WORKSPACE).iter().any(|rule| {
             rule.answer == Answer::Deny

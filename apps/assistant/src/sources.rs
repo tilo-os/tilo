@@ -1,6 +1,6 @@
 //! What the window shows, read from the resources the system keeps: the workspace's agents
-//! (Chat's `chat.agent`), and, as their keepers publish them, the assistant's sub-agents, its
-//! tasks, its scheduled work and events, and what it learned. The window keeps none of it.
+//! (`tilo.workspace.agent`), and, as their keepers publish them, the assistant's sub-agents,
+//! its tasks, its scheduled work and events, and what it learned. The window keeps none of it.
 //!
 //! A read the workspace does not answer is [`Read::NotHere`], which the window says in one
 //! sentence; it never stands for "none".
@@ -68,13 +68,6 @@ pub(crate) fn assistant(agents: &WorkspaceAgents, me: &MemberId, day: &str) -> O
 }
 
 /// How a sub-agent stands.
-#[cfg_attr(
-    not(feature = "samples"),
-    allow(
-        dead_code,
-        reason = "nothing publishes these in a workspace yet: only a capture makes one"
-    )
-)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Progress {
     Working,
@@ -87,13 +80,6 @@ pub(crate) enum Progress {
 }
 
 /// A sub-agent the main agent started.
-#[cfg_attr(
-    not(feature = "samples"),
-    allow(
-        dead_code,
-        reason = "nothing publishes these in a workspace yet: only a capture makes one"
-    )
-)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SubAgent {
     pub(crate) id: String,
@@ -229,9 +215,45 @@ impl Reads {
         Read::Here(assistant(&agents.get(), me, &day))
     }
 
-    /// The sub-agents the main agent started. Nothing publishes them in a workspace yet.
+    /// The sub-agents the main agent started, read from the workspace's agents document.
     pub(crate) fn sub_agents(&self) -> Read<Vec<SubAgent>> {
-        self.staged(|staged| staged.sub_agents.clone())
+        if let Some(staged) = &self.staged {
+            return Read::Here(staged.sub_agents.clone());
+        }
+        let (Some(agents), Some(me)) = (self.agents(), &self.me) else {
+            return Read::NotHere;
+        };
+        let state = agents.get();
+        let day = ui::clock::today().to_string();
+        let Some(main) = assistant(&state, me, &day) else {
+            return Read::Here(Vec::new());
+        };
+        let listed = state
+            .agents
+            .iter()
+            .filter_map(|agent| {
+                let sub = agent.sub.as_ref()?;
+                if sub.started_by != main.id {
+                    return None;
+                }
+                let progress = match sub.stands {
+                    workspace_agent::Stands::Working => Progress::Working,
+                    workspace_agent::Stands::NeedsPerson => Progress::NeedsYou,
+                    workspace_agent::Stands::Done
+                    | workspace_agent::Stands::Failed
+                    | workspace_agent::Stands::Stopped => Progress::Done {
+                        when: sub.line.clone(),
+                    },
+                };
+                Some(SubAgent {
+                    id: agent.id.0.clone(),
+                    job: sub.job.clone(),
+                    role: sub.role.clone(),
+                    progress,
+                })
+            })
+            .collect();
+        Read::Here(listed)
     }
 
     /// The assistant's tasks. Tasks publishes no read of one agent's issues yet.

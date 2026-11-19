@@ -166,7 +166,7 @@ fn tool_answers(request: &ModelRequest) -> Vec<(String, bool)> {
 async fn roster(workspaces: &Workspaces, workspace: &str) -> WorkspaceAgents {
     let document = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     let bytes = workspaces
-        .resource_document(workspace, CHAT, &document)
+        .resource_document(workspace, ui::tilo_workspace_agent::OWNER, &document)
         .await
         .unwrap()
         .unwrap();
@@ -174,9 +174,7 @@ async fn roster(workspaces: &Workspaces, workspace: &str) -> WorkspaceAgents {
 }
 
 /// Apply `invoke` on the workspace's list of its agents as `agent` acting for `person`, or
-/// with no agent as `person` themselves, where the Chat of a person's device applies it. A
-/// hosted turn's own tools do not reach this list: the server's action service serves an app's
-/// own document and the parts of its chains, not the document every app of the workspace opens.
+/// with no agent as `person` themselves.
 async fn on_roster(
     workspaces: &Workspaces,
     workspace: &str,
@@ -189,7 +187,7 @@ async fn on_roster(
             workspace,
             workspaces.governor(),
             &tilo_agent_session::AppCatalogue::native(),
-            CHAT,
+            ui::tilo_workspace_agent::OWNER,
             &document,
             |doc| {
                 let replica = Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc));
@@ -197,7 +195,7 @@ async fn on_roster(
                     Some(agent) => replica.as_agent_for(agent, person),
                     None => replica.as_author(person),
                 }
-                .in_app(CHAT, "Chat");
+                .in_app(ui::tilo_workspace_agent::OWNER, "Assistant");
                 replica.set_now_ms(tilo_clock::unix_now_ms_i64());
                 let applied = replica
                     .apply(invoke)

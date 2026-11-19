@@ -26,12 +26,12 @@ fn agents_held(device: &Device) -> Vec<String> {
         .collect()
 }
 
-/// The id and name of each agent the workspace's copy of Chat's agents record holds on `device` .
+/// The id and name of each agent the workspace's copy of the agents record holds on `device`.
 fn held_agents(device: &Device) -> Vec<(String, String)> {
-    let record = collab_types::workspace_document_id("chat.agent");
+    let record = collab_types::workspace_document_id("tilo.workspace.agent");
     let answer = device.ask(&json!({
         "op": "resource_read",
-        "app": "so.tilo.chat",
+        "app": "so.tilo.assistant",
         "records": [record],
         "wait_ms": 0,
     }));

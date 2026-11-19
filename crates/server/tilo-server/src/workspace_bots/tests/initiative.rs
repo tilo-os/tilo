@@ -725,11 +725,16 @@ async fn keeps_an_assistant(
         std::mem::take(made.doc_mut()).save()
     };
     workspaces
-        .author_workspace_document(workspace, cert, (CHAT, document.as_str()), |doc| {
-            tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
-                .map(drop)
-                .map_err(|error| error.to_string())
-        })
+        .author_workspace_document(
+            workspace,
+            cert,
+            (tilo_workspace_agent::OWNER, document.as_str()),
+            |doc| {
+                tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            },
+        )
         .await
         .unwrap();
 }

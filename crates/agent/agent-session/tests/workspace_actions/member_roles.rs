@@ -1193,7 +1193,7 @@ async fn agents_asked() -> Asked {
     let state = crate::support::scratch_dir();
     let server = start(&root, &device, state.path()).await;
     let mut page = Browser::open(&server, &page_device, &device).await;
-    let chat = page.create(CHAT);
+    let assistant_doc = page.create(ui::tilo_workspace_agent::OWNER);
     page.peer.barrier().unwrap().recv().unwrap().unwrap();
     let membership = Membership::of(
         &server,
@@ -1213,9 +1213,10 @@ async fn agents_asked() -> Asked {
         membership,
         workspace: page.workspace,
         provider: format!(
-            "{}:{CHAT}:{}",
+            "{}:{}:{}",
             tilo_actions::remote::RESOURCE_PROVIDER,
-            chat.document
+            ui::tilo_workspace_agent::OWNER,
+            assistant_doc.document
         ),
         owner: person(&page_device),
         member: person(&guest_device),

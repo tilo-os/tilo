@@ -110,8 +110,10 @@ const LEFT_BEGUN: &str = "I was interrupted while I worked on this: the server r
                           had started. I did not start over, so that nothing is done twice. Ask \
                           again and I begin anew.";
 
-/// The app that keeps the conversations and the workspace's list of its agents.
+/// The app that keeps the conversations.
 const CHAT: &str = "so.tilo.chat";
+/// The app that keeps the workspace's list of its agents.
+const AGENTS_OWNER: &str = tilo_workspace_agent::OWNER;
 /// The app that keeps the issues.
 const TASKS: &str = "so.tilo.tasks";
 /// The longest the server goes without looking at every workspace, whatever is written in
@@ -768,7 +770,7 @@ impl HostAgents {
             }
             match woke(&mut writes, whole_at).await {
                 Woke::Write(write) => {
-                    if write.app == CHAT || write.app == TASKS {
+                    if write.app == CHAT || write.app == TASKS || write.app == AGENTS_OWNER {
                         due.insert(write.workspace);
                     }
                 }
@@ -786,7 +788,7 @@ impl HostAgents {
             }
             // A burst of writes (a person typing, an agent's own steps) is read as one look.
             while let Ok(write) = writes.try_recv() {
-                if write.app == CHAT || write.app == TASKS {
+                if write.app == CHAT || write.app == TASKS || write.app == AGENTS_OWNER {
                     due.insert(write.workspace);
                 }
             }
@@ -1226,7 +1228,7 @@ impl HostAgents {
     async fn agents(&self, workspace: &str) -> Result<BTreeMap<String, Agent>, String> {
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let Some(agents) = self
-            .read::<WorkspaceAgents>(workspace, CHAT, &record)
+            .read::<WorkspaceAgents>(workspace, AGENTS_OWNER, &record)
             .await?
         else {
             return Ok(BTreeMap::new());
@@ -1772,13 +1774,13 @@ pub(crate) async fn count_spend(
             workspace,
             workspaces.governor(),
             &tilo_agent_session::AppCatalogue::native(),
-            CHAT,
+            AGENTS_OWNER,
             &record,
             |doc| {
                 let mut counting =
                     tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
                         .as_author(&keeper)
-                        .in_app(CHAT, "Chat");
+                        .in_app(AGENTS_OWNER, "Assistant");
                 let applied = counting
                     .apply(WorkspaceAgents::RECORD_AGENT_SPEND.with(
                         tilo_workspace_agent::workspace_agents::RecordAgentSpend {
@@ -2232,39 +2234,44 @@ async fn list_agent(
     let name = tilo_resource::NonBlank::parse(name.trim()).ok_or("the agent has no name")?;
     let (agent, person) = (agent.to_owned(), person.to_owned());
     workspaces
-        .author_workspace_document(workspace, workspaces.governor(), (CHAT, &document), |doc| {
-            // A workspace whose people made no agent yet has no list of them: it starts here.
-            let agents = if doc.get_heads().is_empty() {
-                tilo_resource::Replica::<WorkspaceAgents>::new()
-            } else {
-                tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-            };
-            // Named as Chat's change: every receiver decides it against Chat's surface.
-            let mut listing = agents.as_author(&person).in_app(CHAT, "Chat");
-            let listed = listing.state().map_err(|error| error.to_string())?;
-            let applied = if listed
-                .agents
-                .find(&tilo_resource::Id::from_raw(agent.clone()))
-                .is_some()
-            {
-                Ok(())
-            } else {
-                listing
-                    .apply(WorkspaceAgents::CREATE_AGENT.with(
-                        tilo_workspace_agent::workspace_agents::CreateAgent {
-                            mcp_client: Some(name.as_str().to_owned()),
-                            name,
-                            keeper: None,
-                            id: Some(agent),
-                            model: None,
-                        },
-                    ))
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-            };
-            std::mem::swap(doc, listing.doc_mut());
-            applied
-        })
+        .author_workspace_document(
+            workspace,
+            workspaces.governor(),
+            (AGENTS_OWNER, &document),
+            |doc| {
+                // A workspace whose people made no agent yet has no list of them: it starts here.
+                let agents = if doc.get_heads().is_empty() {
+                    tilo_resource::Replica::<WorkspaceAgents>::new()
+                } else {
+                    tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
+                };
+                // Named as Assistant's change: every receiver decides it against Assistant's surface.
+                let mut listing = agents.as_author(&person).in_app(AGENTS_OWNER, "Assistant");
+                let listed = listing.state().map_err(|error| error.to_string())?;
+                let applied = if listed
+                    .agents
+                    .find(&tilo_resource::Id::from_raw(agent.clone()))
+                    .is_some()
+                {
+                    Ok(())
+                } else {
+                    listing
+                        .apply(WorkspaceAgents::CREATE_AGENT.with(
+                            tilo_workspace_agent::workspace_agents::CreateAgent {
+                                mcp_client: Some(name.as_str().to_owned()),
+                                name,
+                                keeper: None,
+                                id: Some(agent),
+                                model: None,
+                            },
+                        ))
+                        .map(drop)
+                        .map_err(|error| error.to_string())
+                };
+                std::mem::swap(doc, listing.doc_mut());
+                applied
+            },
+        )
         .await
         .map_err(|error| error.to_string())
 }

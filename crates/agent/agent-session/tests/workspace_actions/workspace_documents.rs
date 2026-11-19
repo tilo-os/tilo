@@ -14,6 +14,8 @@ use tilo_actions::remote::Caller;
 use ui::permissions::Role;
 
 const CHAT: &str = "so.tilo.chat";
+/// The app that keeps the workspace's agents.
+const AGENTS_OWNER: &str = ui::tilo_workspace_agent::OWNER;
 /// The kind of the workspace's agents, which is also what a caller addresses them by.
 const AGENTS: &str = ui::tilo_workspace_agent::KIND;
 /// The kind of the workspace's emoji, which Chat keeps beside them.
@@ -72,9 +74,9 @@ async fn found_by_its_person(browser: &mut Browser, provider: &str, name: &str) 
     }
 }
 
-/// Chat's own document held where no window is open offers what Chat keeps for the workspace
-/// once it is told that the workspace holds none of it: the agents and the emoji, each with
-/// its read and its actions.
+/// Chat's own document and Assistant's own document held where no window is open offer what
+/// each keeps for the workspace once told that the workspace holds none of it: emoji under
+/// Chat, agents under Assistant, each with its read and its actions.
 #[test]
 fn chats_document_offers_what_chat_keeps_for_the_workspace_once_told() {
     let mut chat = crate::common::open_in(
@@ -85,8 +87,17 @@ fn chats_document_offers_what_chat_keeps_for_the_workspace_once_told() {
         Seed::New,
     )
     .unwrap();
-    let surveyed = |chat: &Replica| -> Vec<String> {
-        chat.survey()
+    let mut assistant = crate::common::open_in(
+        WORKSPACE,
+        AGENTS_OWNER,
+        &MemberId::person("ada"),
+        ReplicaActor::Owner,
+        Seed::New,
+    )
+    .unwrap();
+    let surveyed = |replica: &Replica, prefix: &str| -> Vec<String> {
+        replica
+            .survey()
             .iter()
             .map(|offered| {
                 format!(
@@ -95,36 +106,39 @@ fn chats_document_offers_what_chat_keeps_for_the_workspace_once_told() {
                     offered.address.action
                 )
             })
-            .filter(|offered| offered.starts_with(AGENTS) || offered.starts_with(EMOJI))
+            .filter(|offered| offered.starts_with(prefix))
             .collect()
     };
     assert_eq!(
-        surveyed(&chat),
+        surveyed(&chat, EMOJI),
         Vec::<String>::new(),
-        "nothing of them opens before the document is told"
+        "nothing of emoji opens before the document is told"
     );
-    for kind in [AGENTS, EMOJI] {
-        chat.workspace_answered(
-            ui::resource::DocumentId::parse(&collab_types::workspace_document_id(kind)).unwrap(),
-            ui::resource::WorkspaceAnswer::HoldsNone,
+    assert_eq!(
+        surveyed(&assistant, AGENTS),
+        Vec::<String>::new(),
+        "nothing of agents opens before the document is told"
+    );
+    chat.workspace_answered(
+        ui::resource::DocumentId::parse(&collab_types::workspace_document_id(EMOJI)).unwrap(),
+        ui::resource::WorkspaceAnswer::HoldsNone,
+    );
+    assistant.workspace_answered(
+        ui::resource::DocumentId::parse(&collab_types::workspace_document_id(AGENTS)).unwrap(),
+        ui::resource::WorkspaceAnswer::HoldsNone,
+    );
+    let chat_offered = surveyed(&chat, EMOJI);
+    for expected in [format!("{EMOJI}#add-emoji"), format!("{EMOJI}#read")] {
+        assert!(
+            chat_offered.contains(&expected),
+            "{expected} in {chat_offered:?}"
         );
     }
-    let offered = surveyed(&chat);
-    let published: Vec<String> = chat
-        .resources()
-        .iter()
-        .flat_map(|own| own.children.iter())
-        .map(|child| format!("{} ({})", child.id.as_str(), child.actions.len()))
-        .collect();
-    for expected in [
-        format!("{AGENTS}#create-agent"),
-        format!("{AGENTS}#read"),
-        format!("{EMOJI}#add-emoji"),
-        format!("{EMOJI}#read"),
-    ] {
+    let agents_offered = surveyed(&assistant, AGENTS);
+    for expected in [format!("{AGENTS}#create-agent"), format!("{AGENTS}#read")] {
         assert!(
-            offered.contains(&expected),
-            "{expected} in {offered:?}, of what it publishes: {published:?}"
+            agents_offered.contains(&expected),
+            "{expected} in {agents_offered:?}"
         );
     }
 }
@@ -141,11 +155,11 @@ async fn a_workspaces_agents_are_found_and_made_through_its_server_with_no_page_
     let state = crate::support::scratch_dir();
     let hosted = start(&root, &server, state.path()).await;
     let mut browser = Browser::open(&hosted, &own_device, &server).await;
-    // Chat's own document of the workspace, made and closed again: from here on no window of
-    // Chat is open on any device, and nobody ever made an agent.
-    let chat = browser.create(CHAT);
+    // Assistant's own document of the workspace, made and closed again: from here on no window
+    // of Assistant is open on any device, and nobody ever made an agent.
+    let assistant_doc = browser.create(AGENTS_OWNER);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let provider = record_provider(&chat);
+    let provider = record_provider(&assistant_doc);
 
     let membership = Membership::of(
         &hosted,

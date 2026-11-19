@@ -40,11 +40,10 @@ impl ResourceApp for ChatApp {
     }
 }
 
-/// The kind of the workspace's agents, which Chat keeps beside the emoji.
+/// The kind of the workspace's agents, which Assistant keeps.
 const AGENTS: &str = tilo_app::tilo_workspace_agent::KIND;
 
-/// The app that keeps the workspace's emoji and its agents and opens them with its window, as
-/// Chat does.
+/// The app that keeps the workspace's emoji and opens it with its window, as Chat does.
 struct KeepingApp;
 
 impl ResourceApp for KeepingApp {
@@ -58,6 +57,22 @@ impl ResourceApp for KeepingApp {
 
     fn resources(resources: &mut Resources<'_>) {
         resources.shared_workspace::<WorkspaceEmoji>();
+    }
+}
+
+/// The app that keeps the workspace's agents and opens them with its window, as Assistant does.
+struct KeepingAgentsApp;
+
+impl ResourceApp for KeepingAgentsApp {
+    type Resource = Note;
+    const ID: &'static str = tilo_app::tilo_workspace_agent::OWNER;
+    const TITLE: &'static str = "Assistant";
+
+    fn view(_cx: &mut ViewCx<Note>) -> Element {
+        Box::new(Column::new())
+    }
+
+    fn resources(resources: &mut Resources<'_>) {
         resources.shared_workspace::<tilo_app::tilo_workspace_agent::WorkspaceAgents>();
     }
 }
@@ -306,31 +321,32 @@ fn the_keepers_window_offers_the_workspaces_emoji_to_callers_from_outside() {
     assert_eq!(offered(&mut notes, emoji::KIND), Vec::<String>::new());
 }
 
-/// So are the workspace's agents, which the same app keeps: an owner makes one and reads it
+/// So are the workspace's agents, which Assistant keeps: an owner makes one and reads it
 /// back, and a viewer reads them and is neither offered nor let make one.
 #[test]
 fn the_keepers_window_offers_the_workspaces_agents_to_callers_from_outside() {
-    let mut chat = TestApp::<KeepingApp>::in_workspace(WORKSPACE).unwrap();
-    let actions = offered(&mut chat, AGENTS);
+    let mut assistant = TestApp::<KeepingAgentsApp>::in_workspace(WORKSPACE).unwrap();
+    let actions = offered(&mut assistant, AGENTS);
     for expected in ["create-agent", "read"] {
         assert!(
             actions.iter().any(|action| action == expected),
             "{expected} in {actions:?}"
         );
     }
-    chat.call_on(
-        AGENTS,
-        "create-agent",
-        serde_json::json!({ "name": "Scout" }),
-    )
-    .unwrap();
-    let read = chat
+    assistant
+        .call_on(
+            AGENTS,
+            "create-agent",
+            serde_json::json!({ "name": "Scout" }),
+        )
+        .unwrap();
+    let read = assistant
         .call_on(AGENTS, "read", serde_json::json!({}))
         .unwrap()
         .expect("a read answers what is held");
     assert!(read.to_string().contains("Scout"), "{read}");
 
-    let mut viewer = TestApp::<KeepingApp>::with_role(tilo_app::Role::Viewer).unwrap();
+    let mut viewer = TestApp::<KeepingAgentsApp>::with_role(tilo_app::Role::Viewer).unwrap();
     assert_eq!(
         offered(&mut viewer, AGENTS),
         ["read"],
@@ -349,8 +365,10 @@ fn the_keepers_window_offers_the_workspaces_agents_to_callers_from_outside() {
 
 /// The keeping app's view of one of its documents where no window is open, as a workspace's
 /// server holds it for whoever reaches the workspace from outside.
-fn attached(app: &TestApp<KeepingApp>) -> Result<tilo_app::framework::AttachedView, String> {
-    let definition = tilo_app::framework::definition::<KeepingApp>();
+fn attached<A: ResourceApp<Resource = Note>>(
+    app: &TestApp<A>,
+) -> Result<tilo_app::framework::AttachedView, String> {
+    let definition = tilo_app::framework::definition::<A>();
     tilo_app::framework::AttachedView::open(
         definition,
         tilo_app::framework::testing::TEST_WORKSPACE,
@@ -374,9 +392,9 @@ fn offered_by(view: &tilo_app::framework::AttachedView, resource: &str) -> Vec<S
         .collect()
 }
 
-/// Everything Chat keeps for a workspace, by id: its emoji and its agents.
+/// Everything Chat keeps for a workspace, by id: its emoji.
 fn kept_by_chat() -> Vec<tilo_app::resource::DocumentId> {
-    [emoji::KIND, AGENTS]
+    [emoji::KIND]
         .into_iter()
         .filter_map(|kind| {
             tilo_app::resource::DocumentId::parse(&tilo_app::resource::workspace::document_id(kind))
@@ -396,32 +414,45 @@ fn a_view_with_no_window_holds_the_workspaces_emoji_once_told_what_the_workspace
 
     let app = TestApp::<KeepingApp>::new().unwrap();
     let mut first = attached(&app).unwrap();
-    for kept in [emoji::KIND, AGENTS] {
-        assert_eq!(
-            offered_by(&first, kept),
-            Vec::<String>::new(),
-            "nothing opens before the view is told"
-        );
-    }
+    assert_eq!(
+        offered_by(&first, emoji::KIND),
+        Vec::<String>::new(),
+        "nothing opens before the view is told"
+    );
     for kept in kept_by_chat() {
         first.workspace_answered(kept, WorkspaceAnswer::HoldsNone);
     }
-    for (kept, expected) in [
-        (emoji::KIND, "add-emoji"),
-        (emoji::KIND, "read"),
-        (AGENTS, "create-agent"),
-        (AGENTS, "read"),
-    ] {
-        let offered = offered_by(&first, kept);
+    for expected in ["add-emoji", "read"] {
+        let offered = offered_by(&first, emoji::KIND);
         assert!(
             offered.iter().any(|action| action == expected),
-            "{expected} of {kept} in {offered:?}"
+            "{expected} of {} in {offered:?}",
+            emoji::KIND
         );
     }
     assert!(
         first.take_resources_beside_changes().unwrap().is_empty(),
         "what was only founded is nobody's change"
     );
+
+    let agents_app = TestApp::<KeepingAgentsApp>::new().unwrap();
+    let mut agents_view = attached(&agents_app).unwrap();
+    assert_eq!(
+        offered_by(&agents_view, AGENTS),
+        Vec::<String>::new(),
+        "nothing opens before the view is told"
+    );
+    let agents_doc =
+        tilo_app::resource::DocumentId::parse(&tilo_app::resource::workspace::document_id(AGENTS))
+            .unwrap();
+    agents_view.workspace_answered(agents_doc, WorkspaceAnswer::HoldsNone);
+    for expected in ["create-agent", "read"] {
+        let offered = offered_by(&agents_view, AGENTS);
+        assert!(
+            offered.iter().any(|action| action == expected),
+            "{expected} of {AGENTS} in {offered:?}"
+        );
+    }
 
     let add = tilo_actions::ActionAddress::new(emoji::KIND, "add-emoji");
     let party = add_party();

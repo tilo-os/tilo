@@ -25,7 +25,7 @@ aarch64 = "aarch64"
 optional = ["open-uri", "clipboard", "files.open", "files.save", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture", "gpu"]
 
 [resources]
-kinds = ["chat.agent", "chat.direct", "chat.direct-messages", "chat.drafts", "chat.learned", "chat.messages", "chat.workspace", "tilo.moderation", "tilo.rich-text", "tilo.workspace.emoji", "tilo.chain-unsent"]
+kinds = ["chat.direct", "chat.direct-messages", "chat.drafts", "chat.learned", "chat.messages", "chat.workspace", "tilo.moderation", "tilo.rich-text", "tilo.workspace.emoji", "tilo.chain-unsent"]
 # Each member keeps one of each as their own; nobody else in the workspace receives it.
 own = ["chat.drafts", "chat.learned", "tilo.chain-unsent"]
 

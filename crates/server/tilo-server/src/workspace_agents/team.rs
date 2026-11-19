@@ -232,7 +232,7 @@ impl TurnTeam {
         let document = collab_types::workspace_document_id(KIND);
         let bytes = self
             .workspaces
-            .resource_document(&self.workspace, CHAT, &document)
+            .resource_document(&self.workspace, tilo_workspace_agent::OWNER, &document)
             .await
             .map_err(|error| error.to_string())?
             .ok_or("the workspace keeps no agents")?;
@@ -250,13 +250,13 @@ impl TurnTeam {
                 &self.workspace,
                 self.workspaces.governor(),
                 &tilo_agent_session::AppCatalogue::native(),
-                CHAT,
+                tilo_workspace_agent::OWNER,
                 &document,
                 |doc| {
                     let mut list =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
                             .as_agent_for(&by, &keeper)
-                            .in_app(CHAT, "Chat");
+                            .in_app(tilo_workspace_agent::OWNER, "Assistant");
                     // A replica stamps what it writes with a fixed day of its own unless told the time.
                     list.set_now_ms(tilo_clock::unix_now_ms_i64());
                     let applied = list

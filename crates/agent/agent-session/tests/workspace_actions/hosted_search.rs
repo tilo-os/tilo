@@ -500,7 +500,7 @@ pub(super) async fn narrow_agent(
     }
     let agents = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     let held = workspaces
-        .resource_document(workspace, CHAT, &agents)
+        .resource_document(workspace, ui::tilo_workspace_agent::OWNER, &agents)
         .await
         .unwrap()
         .unwrap();
@@ -517,7 +517,7 @@ pub(super) async fn narrow_agent(
         )
         .unwrap();
     let route = DocumentRoute {
-        app_id: CHAT.into(),
+        app_id: ui::tilo_workspace_agent::OWNER.into(),
         cluster_id: workspace.into(),
         document: agents.clone(),
     };
@@ -528,7 +528,7 @@ pub(super) async fn narrow_agent(
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces
-            .resource_document(workspace, CHAT, &agents)
+            .resource_document(workspace, ui::tilo_workspace_agent::OWNER, &agents)
             .await
             .unwrap()
             .unwrap();

@@ -107,40 +107,42 @@ const OWN_TEAM: [&str; 4] = [
 ];
 
 /// The rules that keep a sub-agent from reading upward in `workspace`, and from writing
-/// there: no read of anything Chat keeps, and no action of Chat's but its [`OWN_WRITES`],
-/// its [`OWN_GROWTH`] and what steers its own team. The refusal is more specific than the
-/// workspace-wide allow every agent's turn starts from, so it holds whatever else the turn
-/// carries.
+/// there: no read of anything Chat or the workspace's agent roster keeps, and no action of
+/// Chat's but its [`OWN_WRITES`] and [`OWN_GROWTH`], and no action on the agent roster but
+/// what steers its own team. The refusal is more specific than the workspace-wide allow every
+/// agent's turn starts from, so it holds whatever else the turn carries.
 #[must_use]
 pub fn one_way(workspace: &str) -> Vec<Rule> {
-    let chat = TreePath::workspace(workspace).app(OWNER);
-    let mut rules = vec![
-        // It reads nothing Chat keeps, and nothing of Chat's reaches outside for it.
-        Rule::new(
-            chat.clone(),
+    let chat = TreePath::workspace(workspace).app(tilo_app_id::apps::CHAT);
+    let agents = TreePath::workspace(workspace).app(OWNER);
+    let mut rules = Vec::new();
+    for app in [&chat, &agents] {
+        // It reads nothing Chat or the agent roster keeps, and nothing there reaches outside.
+        rules.push(Rule::new(
+            app.clone(),
             KindSet::READ.union(KindSet::OUTSIDE),
             Answer::Deny,
-        ),
-        // No action of Chat's is its to call, one added later included: the kept ones are
+        ));
+        // No action of theirs is its to call, one added later included: the kept ones are
         // named below. What a kept action changes is saved field by field, under no action,
         // so those writes stay with what every agent's turn starts from.
-        Rule::new(
-            chat.clone().rest().any(Level::Action),
+        rules.push(Rule::new(
+            app.clone().rest().any(Level::Action),
             KindSet::ALL,
             Answer::Deny,
-        ),
-    ];
-    for (kind, items, kept) in [
-        (MESSAGES, "messages", &OWN_WRITES[..]),
-        (MESSAGES, "messages", &[OWN_GROWTH][..]),
-        (crate::KIND, "agents", &OWN_TEAM[..]),
+        ));
+    }
+    for (app, kind, items, kept) in [
+        (&chat, MESSAGES, "messages", &OWN_WRITES[..]),
+        (&chat, MESSAGES, "messages", &[OWN_GROWTH][..]),
+        (&agents, crate::KIND, "agents", &OWN_TEAM[..]),
     ] {
         // An action on one item of a collection is decided under the collection's own kind,
         // which is the kind and the collection's field: both are named.
         for held in [kind.to_owned(), format!("{kind}.{items}")] {
             rules.extend(kept.iter().map(|action| {
                 Rule::new(
-                    chat.clone().kind(held.clone()).rest().action(*action),
+                    app.clone().kind(held.clone()).rest().action(*action),
                     KindSet::UNDOABLE,
                     Answer::Allow,
                 )
@@ -151,12 +153,15 @@ pub fn one_way(workspace: &str) -> Vec<Rule> {
 }
 
 /// Make `rules`, what a sub-agent's item bounds it to, keep the one-way rule in `workspace`:
-/// a rule written for Chat alone would be more specific than [`one_way`] and so could allow
-/// under it, so only what such a rule refuses stands; then the rule itself is added. What the
-/// bound narrows anywhere else stands as it is.
+/// a rule written for Chat or the agent roster alone would be more specific than [`one_way`]
+/// and so could allow under it, so only what such a rule refuses stands; then the rule itself
+/// is added. What the bound narrows anywhere else stands as it is.
 pub(crate) fn keep_one_way(rules: &mut Vec<Rule>, workspace: &str) {
-    let chat = TreePath::workspace(workspace).app(OWNER);
-    rules.retain(|rule| rule.answer == Answer::Deny || !chat.covers(&rule.node));
+    let chat = TreePath::workspace(workspace).app(tilo_app_id::apps::CHAT);
+    let agents = TreePath::workspace(workspace).app(OWNER);
+    rules.retain(|rule| {
+        rule.answer == Answer::Deny || (!chat.covers(&rule.node) && !agents.covers(&rule.node))
+    });
     rules.extend(one_way(workspace));
 }
 

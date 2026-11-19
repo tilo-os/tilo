@@ -638,7 +638,7 @@ impl HostAgents {
     ) -> Result<Team, String> {
         let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let roster = self
-            .read::<WorkspaceAgents>(workspace, CHAT, &document)
+            .read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &document)
             .await?;
         Ok(Team::of(roster, worked))
     }
@@ -772,13 +772,13 @@ impl HostAgents {
                 workspace,
                 self.workspaces.governor(),
                 &tilo_agent_session::AppCatalogue::native(),
-                CHAT,
+                tilo_workspace_agent::OWNER,
                 &document,
                 |doc| {
                     let mut starting =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
                             .as_agent_for(&by, &person)
-                            .in_app(CHAT, "Chat");
+                            .in_app(tilo_workspace_agent::OWNER, "Assistant");
                     // A replica stamps what it writes with a fixed day of its own unless told the time.
                     starting.set_now_ms(tilo_clock::unix_now_ms_i64());
                     let applied = starting
@@ -803,7 +803,7 @@ impl HostAgents {
     /// Whether `workspace`'s list of its agents holds the agent `id`.
     async fn holds(&self, workspace: &str, id: &str) -> bool {
         let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        self.read::<WorkspaceAgents>(workspace, CHAT, &document)
+        self.read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &document)
             .await
             .ok()
             .flatten()
@@ -822,7 +822,7 @@ impl HostAgents {
     ) -> Result<Option<OnTurn>, String> {
         let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let Some(roster) = self
-            .read::<WorkspaceAgents>(workspace, CHAT, &document)
+            .read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &document)
             .await?
         else {
             return Ok(None);
@@ -892,13 +892,13 @@ impl HostAgents {
                 workspace,
                 self.workspaces.governor(),
                 &tilo_agent_session::AppCatalogue::native(),
-                CHAT,
+                tilo_workspace_agent::OWNER,
                 &document,
                 |doc| {
                     let mut saying =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
                             .as_agent_for(&id, &keeper)
-                            .in_app(CHAT, "Chat");
+                            .in_app(tilo_workspace_agent::OWNER, "Assistant");
                     // A replica stamps what it writes with a fixed day of its own unless told the time.
                     saying.set_now_ms(tilo_clock::unix_now_ms_i64());
                     let applied = saying

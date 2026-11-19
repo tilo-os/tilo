@@ -52,7 +52,7 @@ async fn agents_document(hosted: &Hosted) -> Option<automerge::AutoCommit> {
     let bytes = hosted
         .server
         .workspaces()?
-        .resource_document(WORKSPACE, CHAT, &document)
+        .resource_document(WORKSPACE, ui::tilo_workspace_agent::OWNER, &document)
         .await
         .ok()
         .flatten()?;
@@ -118,14 +118,14 @@ async fn a_computers_agent_is_listed_once_where_it_acts() {
     // Its person bounds it in this workspace: no changes in Notes. The list carries the bound,
     // and the agent's next call there is refused by it.
     let route = DocumentRoute {
-        app_id: CHAT.into(),
+        app_id: ui::tilo_workspace_agent::OWNER.into(),
         cluster_id: WORKSPACE.into(),
         document: collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND),
     };
     let doc = agents_document(&hosted).await.unwrap();
     let mut agents_list = ui::tilo_resource::Replica::<WorkspaceAgents>::from_doc(doc)
         .as_author(&hex::encode(root.verifying_key().to_bytes()))
-        .in_app(CHAT, "Chat");
+        .in_app(ui::tilo_workspace_agent::OWNER, "Assistant");
     let heads = agents_list.doc_mut().get_heads();
     let notes = tilo_action_policy::agent_answers::AnswerScope::app(NOTES).node(WORKSPACE);
     agents_list

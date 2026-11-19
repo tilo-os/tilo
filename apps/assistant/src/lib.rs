@@ -1,11 +1,12 @@
 //! Assistant: one window onto a person's assistant.
 //!
-//! The assistant is not this app's. It is the agent the person keeps in the workspace (an
-//! item of Chat's `chat.agent`), its thread is the Chat conversation between the two, its
-//! work is issues in Tasks and its progress work is Shortcuts the host runs. The window
-//! shows those resources and changes them only through the actions their keepers publish: the
-//! main chat and the sub-agents on the left, the conversation in the middle, drawn by Chat
-//! itself, tasks and scheduled work beside it, and a supervision of what it runs on.
+//! The assistant is not a private app record. It is the agent the person keeps in the
+//! workspace (an item of the workspace's `tilo.workspace.agent` resource), its thread is the
+//! Chat conversation between the two, its work is issues in Tasks and its progress work is
+//! Shortcuts the host runs. The window shows those resources and changes them only through
+//! the actions their keepers publish: the main chat and the sub-agents on the left, the
+//! conversation in the middle, drawn by Chat itself, tasks and scheduled work beside it, and
+//! a supervision of what it runs on.
 
 pub use ui::apps::ASSISTANT as APP_ID;
 pub const APP_TITLE: &str = "Assistant";
@@ -277,6 +278,13 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
     const TITLE_KEY: &'static str = "assistant-app-title";
+
+    fn resources(resources: &mut ui::framework::Resources<'_>) {
+        // The workspace's agents are owned by Assistant: every app of the
+        // workspace opens them, and their changes are decided against
+        // Assistant's surface.
+        resources.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>();
+    }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)

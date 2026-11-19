@@ -126,7 +126,7 @@ pub(super) async fn make_agent(
         .unwrap();
     }
     let route = DocumentRoute {
-        app_id: CHAT.into(),
+        app_id: ui::tilo_workspace_agent::OWNER.into(),
         cluster_id: workspace.into(),
         document: record.clone(),
     };
@@ -136,7 +136,7 @@ pub(super) async fn make_agent(
         .unwrap();
     let deadline = tilo_test_env::hang_deadline();
     while workspaces
-        .resource_document(workspace, CHAT, &record)
+        .resource_document(workspace, ui::tilo_workspace_agent::OWNER, &record)
         .await
         .ok()
         .flatten()
@@ -355,7 +355,7 @@ async fn an_agent_on_the_host_works_with_its_keepers_own_model() {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces
-            .resource_document(&workspace, CHAT, &agents_record)
+            .resource_document(&workspace, ui::tilo_workspace_agent::OWNER, &agents_record)
             .await
             .unwrap()
             .unwrap();
@@ -611,7 +611,11 @@ async fn an_agent_on_the_host_works_on_the_issue_a_person_gives_it() {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces
-            .resource_document(&workspace, CHAT, &agents_document)
+            .resource_document(
+                &workspace,
+                ui::tilo_workspace_agent::OWNER,
+                &agents_document,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -1275,7 +1279,7 @@ async fn an_agent_on_the_server_keeps_the_summary_of_a_long_conversation() {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let bytes = workspaces
-            .resource_document(&workspace, CHAT, &agents_record)
+            .resource_document(&workspace, ui::tilo_workspace_agent::OWNER, &agents_record)
             .await
             .unwrap()
             .unwrap();

@@ -37,8 +37,6 @@ mod questions;
 pub(crate) use caused::turn_ended;
 pub use questions::Feeder;
 
-/// The app that keeps the workspace's record of its agents.
-const CHAT: &str = "so.tilo.chat";
 /// The longest the teller sleeps when nothing is due: what it would miss is
 /// only a log it was not told had moved.
 const IDLE: Duration = Duration::from_secs(60);
@@ -344,7 +342,7 @@ fn keeper_of(agent: &Agent) -> Option<[u8; 32]> {
 async fn agents_of(workspaces: &Workspaces, workspace: &str) -> Option<Vec<Agent>> {
     let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     let bytes = workspaces
-        .resource_document(workspace, CHAT, &record)
+        .resource_document(workspace, tilo_workspace_agent::OWNER, &record)
         .await
         .ok()??;
     let mut doc = automerge::AutoCommit::load(&bytes).ok()?;

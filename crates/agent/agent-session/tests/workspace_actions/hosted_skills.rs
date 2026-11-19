@@ -830,12 +830,16 @@ async fn a_handed_skill_stands_in_nothing_the_workspace_shares_and_reaches_no_ot
     let list = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     let messages = chat::parts::part(0);
     let mut shared = Vec::new();
-    for (which, document) in [
-        ("the workspace's list of its agents", list.as_str()),
-        ("the workspace's messages", messages.as_str()),
+    for (which, app, document) in [
+        (
+            "the workspace's list of its agents",
+            ui::tilo_workspace_agent::OWNER,
+            list.as_str(),
+        ),
+        ("the workspace's messages", CHAT, messages.as_str()),
     ] {
         let saved = workspaces
-            .resource_document(&workspace, CHAT, document)
+            .resource_document(&workspace, app, document)
             .await
             .unwrap()
             .unwrap();
@@ -844,16 +848,19 @@ async fn a_handed_skill_stands_in_nothing_the_workspace_shares_and_reaches_no_ot
     let deadline = tilo_test_env::hang_deadline();
     loop {
         his_page.pump();
-        let on_his_device = |document: &str| {
+        let on_his_device = |app: &str, document: &str| {
             let route = DocumentRoute {
-                app_id: CHAT.into(),
+                app_id: app.into(),
                 cluster_id: workspace.as_str().into(),
                 document: document.into(),
             };
             let changes = his_page.documents.get(&route);
             held(changes.into_iter().flatten().map(|(_, saved)| saved))
         };
-        let (his_list, his_messages) = (on_his_device(&list), on_his_device(messages.as_str()));
+        let (his_list, his_messages) = (
+            on_his_device(ui::tilo_workspace_agent::OWNER, &list),
+            on_his_device(CHAT, messages.as_str()),
+        );
         if his_list.contains("check-brightway") && his_messages.contains(&done) {
             shared.push(("the list of agents on his device", his_list));
             shared.push(("the messages on his device", his_messages));
@@ -1097,12 +1104,16 @@ async fn shared_with_him(
     let list = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     let messages = chat::parts::part(0);
     let mut shared = Vec::new();
-    for (which, document) in [
-        ("the workspace's list of its agents", list.as_str()),
-        ("the workspace's messages", messages.as_str()),
+    for (which, app, document) in [
+        (
+            "the workspace's list of its agents",
+            ui::tilo_workspace_agent::OWNER,
+            list.as_str(),
+        ),
+        ("the workspace's messages", CHAT, messages.as_str()),
     ] {
         let saved = workspaces
-            .resource_document(workspace, CHAT, document)
+            .resource_document(workspace, app, document)
             .await
             .unwrap()
             .unwrap();
@@ -1111,16 +1122,19 @@ async fn shared_with_him(
     let deadline = tilo_test_env::hang_deadline();
     loop {
         his_page.pump();
-        let on_his_device = |document: &str| {
+        let on_his_device = |app: &str, document: &str| {
             let route = DocumentRoute {
-                app_id: CHAT.into(),
+                app_id: app.into(),
                 cluster_id: workspace.into(),
                 document: document.into(),
             };
             let changes = his_page.documents.get(&route);
             held(changes.into_iter().flatten().map(|(_, saved)| saved))
         };
-        let (his_list, his_messages) = (on_his_device(&list), on_his_device(messages.as_str()));
+        let (his_list, his_messages) = (
+            on_his_device(ui::tilo_workspace_agent::OWNER, &list),
+            on_his_device(CHAT, messages.as_str()),
+        );
         if his_list.contains(in_list) && his_messages.contains(in_messages) {
             shared.push(("the list of agents on his device", his_list));
             shared.push(("the messages on his device", his_messages));

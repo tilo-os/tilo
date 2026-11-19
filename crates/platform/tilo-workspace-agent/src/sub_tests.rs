@@ -741,14 +741,20 @@ const REFUSED_OF_AGENTS: [&str; 9] = [
 /// refused, but its answer, a question to its person and its words while it works, and what
 /// steers its own team. Whoever serves its turn takes those in its own conversation alone.
 fn writes_only_its_own(agent: &str, rules: &[Rule]) {
-    let chat = TreePath::workspace(WORKSPACE).app(OWNER);
+    let chat = TreePath::workspace(WORKSPACE).app(tilo_app_id::apps::CHAT);
+    let agents_app = TreePath::workspace(WORKSPACE).app(OWNER);
     let thread = chat.clone().kind("chat.messages");
-    let roster = chat.clone().kind(super::KIND);
+    let roster = agents_app.clone().kind(super::KIND);
     let elsewhere = chat.clone().kind("chat.workspace");
     assert_eq!(
         decided(agent, rules, &chat, ActionKind::Outside),
         Answer::Deny,
         "nothing of Chat's reaches outside for {agent}"
+    );
+    assert_eq!(
+        decided(agent, rules, &agents_app, ActionKind::Outside),
+        Answer::Deny,
+        "nothing of the agent roster reaches outside for {agent}"
     );
     for node in [&thread, &roster, &elsewhere] {
         assert_eq!(
@@ -824,15 +830,15 @@ fn writes_only_its_own(agent: &str, rules: &[Rule]) {
 /// workspace's agents: it keeps what steers its own team, which the list itself guards, and is
 /// refused the others.
 fn keeps_only_its_team(agent: &str, rules: &[Rule]) {
-    let chat = TreePath::workspace(WORKSPACE).app(OWNER);
-    let roster = chat.clone().kind(super::KIND);
-    let one_agent = chat.kind(format!("{}.agents", super::KIND));
+    let agents_app = TreePath::workspace(WORKSPACE).app(OWNER);
+    let roster = agents_app.clone().kind(super::KIND);
+    let one_agent = agents_app.kind(format!("{}.agents", super::KIND));
     let of_agents = |action: &str| {
         [
             roster.clone().resource("agents").action(action),
             one_agent
                 .clone()
-                .resource("chat.agent/agents/a1")
+                .resource(format!("{}/agents/a1", super::KIND))
                 .action(action),
         ]
     };
@@ -859,9 +865,10 @@ fn keeps_only_its_team(agent: &str, rules: &[Rule]) {
 #[test]
 fn a_sub_agents_turn_reads_nothing_chat_keeps_whatever_its_bound_says() {
     let mut record = team();
-    let chat = TreePath::workspace(WORKSPACE).app(OWNER);
+    let chat = TreePath::workspace(WORKSPACE).app(tilo_app_id::apps::CHAT);
+    let agents_app = TreePath::workspace(WORKSPACE).app(OWNER);
     let thread = chat.clone().kind("chat.messages");
-    let roster = chat.clone().kind(super::KIND);
+    let roster = agents_app.kind(super::KIND);
     let notes = TreePath::workspace(WORKSPACE).app("so.tilo.notes");
 
     let state = record.state().unwrap();

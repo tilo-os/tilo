@@ -3509,7 +3509,7 @@
               "string",
               "null"
             ],
-            "description": "For an app: its surface (`surface.toml`), what types are generated from."
+            "description": "For an app: its surface in the form it is kept by\n(`collab_types::surface::canonical`), what types are generated from."
           },
           "surface_version": {
             "type": [
@@ -5049,6 +5049,526 @@
           "url",
           "status",
           "duration_ms"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.create-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "keeper": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mcp_client": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.set-agent-spend-limit.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "limit_micros": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.record-agent-spend.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "day": {
+            "type": "string"
+          },
+          "cost_micros": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent",
+          "day",
+          "cost_micros"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.set-agent-on-host.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "on_host": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agent",
+          "on_host"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.rename-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "name"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.set-agent-model.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.set-agent-instruction.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "instruction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.set-agent-bound.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "bound": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "answer": {
+                  "type": "string"
+                },
+                "kinds": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "node": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "node",
+                "kinds",
+                "answer"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "agent",
+          "bound"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.retire-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.start-sub-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "job": {
+            "type": "string"
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instruction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "coding": {
+            "additionalProperties": false,
+            "properties": {
+              "base": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "branch": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "harness": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "repository": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "repository"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "job"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.note-sub-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "text": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent",
+          "text"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.stop-sub-agent.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.sub-agent-stands.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "stands": {
+            "oneOf": [
+              {
+                "const": "working",
+                "type": "string"
+              },
+              {
+                "const": "needs_person",
+                "type": "string"
+              },
+              {
+                "const": "done",
+                "type": "string"
+              },
+              {
+                "const": "failed",
+                "type": "string"
+              },
+              {
+                "const": "stopped",
+                "type": "string"
+              }
+            ]
+          },
+          "line": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent",
+          "stands"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.sub-agent-produced.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "additionalProperties": false,
+            "properties": {
+              "app": {
+                "type": "string"
+              },
+              "document": {
+                "type": "string"
+              },
+              "resource": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "resource"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent",
+          "kind",
+          "label"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.sub-agent-coding.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "process": {
+            "additionalProperties": false,
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "ended": {
+                "type": "string"
+              },
+              "ended_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "exit": {
+                "maximum": 2147483647,
+                "minimum": -2147483648,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "started_ms": {
+                "type": "integer"
+              },
+              "stopped_by": {
+                "type": "string"
+              },
+              "words": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "started_ms"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "session": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "spent_micros": {
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "harness": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "description": ""
+      },
+      "tilo.workspace.agent.set-sub-agent-limits.Arguments": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "depth": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "at_once": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "agent"
         ],
         "description": ""
       },
@@ -12068,526 +12588,6 @@
         },
         "required": [
           "name"
-        ],
-        "description": ""
-      },
-      "chat.agent.create-agent.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "keeper": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "mcp_client": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "description": ""
-      },
-      "chat.agent.set-agent-spend-limit.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "limit_micros": {
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "agent"
-        ],
-        "description": ""
-      },
-      "chat.agent.record-agent-spend.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "day": {
-            "type": "string"
-          },
-          "cost_micros": {
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "agent",
-          "day",
-          "cost_micros"
-        ],
-        "description": ""
-      },
-      "chat.agent.set-agent-on-host.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "on_host": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "agent",
-          "on_host"
-        ],
-        "description": ""
-      },
-      "chat.agent.rename-agent.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "name": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "agent",
-          "name"
-        ],
-        "description": ""
-      },
-      "chat.agent.set-agent-model.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "agent"
-        ],
-        "description": ""
-      },
-      "chat.agent.set-agent-instruction.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "instruction": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "agent"
-        ],
-        "description": ""
-      },
-      "chat.agent.set-agent-bound.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "bound": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "answer": {
-                  "type": "string"
-                },
-                "kinds": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "node": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "node",
-                "kinds",
-                "answer"
-              ],
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "agent",
-          "bound"
-        ],
-        "description": ""
-      },
-      "chat.agent.retire-agent.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "agent"
-        ],
-        "description": ""
-      },
-      "chat.agent.start-sub-agent.Arguments": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string"
-          },
-          "job": {
-            "type": "string"
-          },
-          "role": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "instruction": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "kind": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "model": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "task": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "coding": {
-            "additionalProperties": false,
-            "properties": {
-              "base": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "branch": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "harness": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "repository": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "repository"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "job"
-        ],
-        "description": ""
-      },
-      "chat.agent.note-sub-agent.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "text": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          }
-        },
-        "required": [
-          "agent",
-          "text"
-        ],
-        "description": ""
-      },
-      "chat.agent.stop-sub-agent.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "agent"
-        ],
-        "description": ""
-      },
-      "chat.agent.sub-agent-stands.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "stands": {
-            "oneOf": [
-              {
-                "const": "working",
-                "type": "string"
-              },
-              {
-                "const": "needs_person",
-                "type": "string"
-              },
-              {
-                "const": "done",
-                "type": "string"
-              },
-              {
-                "const": "failed",
-                "type": "string"
-              },
-              {
-                "const": "stopped",
-                "type": "string"
-              }
-            ]
-          },
-          "line": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "agent",
-          "stands"
-        ],
-        "description": ""
-      },
-      "chat.agent.sub-agent-produced.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "label": {
-            "minLength": 1,
-            "pattern": "\\S",
-            "type": "string"
-          },
-          "url": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "at": {
-            "additionalProperties": false,
-            "properties": {
-              "app": {
-                "type": "string"
-              },
-              "document": {
-                "type": "string"
-              },
-              "resource": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "app",
-              "resource"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "agent",
-          "kind",
-          "label"
-        ],
-        "description": ""
-      },
-      "chat.agent.sub-agent-coding.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "process": {
-            "additionalProperties": false,
-            "properties": {
-              "command": {
-                "type": "string"
-              },
-              "ended": {
-                "type": "string"
-              },
-              "ended_ms": {
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "exit": {
-                "maximum": 2147483647,
-                "minimum": -2147483648,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "started_ms": {
-                "type": "integer"
-              },
-              "stopped_by": {
-                "type": "string"
-              },
-              "words": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "started_ms"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          },
-          "session": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "spent_micros": {
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "harness": {
-            "additionalProperties": false,
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "name"
-            ],
-            "type": [
-              "object",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "agent"
-        ],
-        "description": ""
-      },
-      "chat.agent.set-sub-agent-limits.Arguments": {
-        "type": "object",
-        "properties": {
-          "agent": {
-            "type": "string"
-          },
-          "depth": {
-            "maximum": 255,
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "at_once": {
-            "maximum": 4294967295,
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "agent"
         ],
         "description": ""
       },
@@ -32221,6 +32221,102 @@
       "arguments": "#/components/schemas/api-tester.workspace.record-sent.Arguments"
     },
     {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "create-agent",
+      "arguments": "#/components/schemas/tilo.workspace.agent.create-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "set-agent-spend-limit",
+      "arguments": "#/components/schemas/tilo.workspace.agent.set-agent-spend-limit.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "record-agent-spend",
+      "arguments": "#/components/schemas/tilo.workspace.agent.record-agent-spend.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "set-agent-on-host",
+      "arguments": "#/components/schemas/tilo.workspace.agent.set-agent-on-host.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "rename-agent",
+      "arguments": "#/components/schemas/tilo.workspace.agent.rename-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "set-agent-model",
+      "arguments": "#/components/schemas/tilo.workspace.agent.set-agent-model.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "set-agent-instruction",
+      "arguments": "#/components/schemas/tilo.workspace.agent.set-agent-instruction.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "set-agent-bound",
+      "arguments": "#/components/schemas/tilo.workspace.agent.set-agent-bound.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "retire-agent",
+      "arguments": "#/components/schemas/tilo.workspace.agent.retire-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "start-sub-agent",
+      "arguments": "#/components/schemas/tilo.workspace.agent.start-sub-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "note-sub-agent",
+      "arguments": "#/components/schemas/tilo.workspace.agent.note-sub-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "stop-sub-agent",
+      "arguments": "#/components/schemas/tilo.workspace.agent.stop-sub-agent.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "sub-agent-stands",
+      "arguments": "#/components/schemas/tilo.workspace.agent.sub-agent-stands.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "sub-agent-produced",
+      "arguments": "#/components/schemas/tilo.workspace.agent.sub-agent-produced.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "sub-agent-coding",
+      "arguments": "#/components/schemas/tilo.workspace.agent.sub-agent-coding.Arguments"
+    },
+    {
+      "app": "so.tilo.assistant",
+      "resource": "tilo.workspace.agent",
+      "action": "set-sub-agent-limits",
+      "arguments": "#/components/schemas/tilo.workspace.agent.set-sub-agent-limits.Arguments"
+    },
+    {
       "app": "so.tilo.backups",
       "resource": "backups.workspace",
       "action": "verify",
@@ -33119,102 +33215,6 @@
       "resource": "tilo.workspace.emoji",
       "action": "remove-any-emoji",
       "arguments": "#/components/schemas/tilo.workspace.emoji.remove-any-emoji.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "create-agent",
-      "arguments": "#/components/schemas/chat.agent.create-agent.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "set-agent-spend-limit",
-      "arguments": "#/components/schemas/chat.agent.set-agent-spend-limit.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "record-agent-spend",
-      "arguments": "#/components/schemas/chat.agent.record-agent-spend.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "set-agent-on-host",
-      "arguments": "#/components/schemas/chat.agent.set-agent-on-host.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "rename-agent",
-      "arguments": "#/components/schemas/chat.agent.rename-agent.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "set-agent-model",
-      "arguments": "#/components/schemas/chat.agent.set-agent-model.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "set-agent-instruction",
-      "arguments": "#/components/schemas/chat.agent.set-agent-instruction.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "set-agent-bound",
-      "arguments": "#/components/schemas/chat.agent.set-agent-bound.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "retire-agent",
-      "arguments": "#/components/schemas/chat.agent.retire-agent.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "start-sub-agent",
-      "arguments": "#/components/schemas/chat.agent.start-sub-agent.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "note-sub-agent",
-      "arguments": "#/components/schemas/chat.agent.note-sub-agent.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "stop-sub-agent",
-      "arguments": "#/components/schemas/chat.agent.stop-sub-agent.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "sub-agent-stands",
-      "arguments": "#/components/schemas/chat.agent.sub-agent-stands.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "sub-agent-produced",
-      "arguments": "#/components/schemas/chat.agent.sub-agent-produced.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "sub-agent-coding",
-      "arguments": "#/components/schemas/chat.agent.sub-agent-coding.Arguments"
-    },
-    {
-      "app": "so.tilo.chat",
-      "resource": "chat.agent",
-      "action": "set-sub-agent-limits",
-      "arguments": "#/components/schemas/chat.agent.set-sub-agent-limits.Arguments"
     },
     {
       "app": "so.tilo.chip-design",

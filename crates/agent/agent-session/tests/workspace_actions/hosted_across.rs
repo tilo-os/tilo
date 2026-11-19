@@ -316,7 +316,7 @@ async fn an_agent_the_workspaces_list_does_not_hold_is_held_to_its_persons_acces
     let agents = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     let bytes = served
         .workspaces
-        .resource_document(&workspace, CHAT, &agents)
+        .resource_document(&workspace, ui::tilo_workspace_agent::OWNER, &agents)
         .await
         .unwrap()
         .unwrap();

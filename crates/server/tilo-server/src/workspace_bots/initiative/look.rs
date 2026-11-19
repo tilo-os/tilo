@@ -23,8 +23,6 @@ use crate::workspaces::Workspaces;
 
 /// The app that keeps the workspace's tasks.
 const TASKS: &str = "so.tilo.tasks";
-/// The app that keeps the workspace's list of its agents.
-const CHAT: &str = "so.tilo.chat";
 /// How far ahead a task counts as due: a day.
 const DUE_WITHIN_MS: i64 = 24 * 60 * 60 * 1000;
 /// The most documents and the most tasks a look names; the rest it counts.
@@ -158,7 +156,7 @@ pub(super) async fn gather(
     // assistant and its helpers, written after every turn, and never news.
     let roster = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
     for (app, document) in routes {
-        if app == CHAT && document == roster {
+        if app == tilo_workspace_agent::OWNER && document == roster {
             continue;
         }
         let Ok(Some(bytes)) = workspaces

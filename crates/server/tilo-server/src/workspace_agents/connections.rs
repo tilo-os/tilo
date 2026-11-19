@@ -259,7 +259,7 @@ impl Answers {
         let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let kept = self
             .workspaces
-            .read_resource::<WorkspaceAgents>(&ask.workspace, (CHAT, &list))
+            .read_resource::<WorkspaceAgents>(&ask.workspace, (tilo_workspace_agent::OWNER, &list))
             .await
             .ok()??;
         kept.agents

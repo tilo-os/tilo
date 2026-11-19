@@ -30,8 +30,8 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     // which the workspace settings sheet, the apps and their devices all
     // read (`tilo-workspace-agent`).
     WorkspaceDocument {
-        app: "so.tilo.chat",
-        kind: "chat.agent",
+        app: "so.tilo.assistant",
+        kind: "tilo.workspace.agent",
     },
     // Each person's place in the workspace's tilolang apps: their windows' and
     // lenses' state and what they have seen, kept once for every package of the
@@ -76,12 +76,13 @@ mod tests {
         assert!(
             workspace_document("so.tilo.chat", &workspace_document_id("chat.workspace")).is_none()
         );
-        let agents = workspace_document_id("chat.agent");
+        let agents = workspace_document_id("tilo.workspace.agent");
         assert_eq!(
-            workspace_document("so.tilo.chat", &agents).map(|document| document.kind),
-            Some("chat.agent"),
-            "Chat keeps the workspace's agents for every app of the workspace"
+            workspace_document("so.tilo.assistant", &agents).map(|document| document.kind),
+            Some("tilo.workspace.agent"),
+            "Assistant keeps the workspace's agents for every app of the workspace"
         );
+        assert!(workspace_document("so.tilo.chat", &agents).is_none());
         assert!(workspace_document("so.tilo.notes", &agents).is_none());
         assert!(workspace_document("so.tilo.chat", "tab:0000000000000000").is_none());
         let personal = workspace_document_id("tilolang.personal");

@@ -104,11 +104,9 @@ impl ResourceApp for ChatShell {
         // What the person's agents learned about them: theirs alone here, as their drafts are,
         // and Chat's to keep because it serves every agent they keep in the workspace.
         resources.person::<ui::tilo_workspace_agent::learned::Learned>();
-        // The workspace's emoji and its agents are Chat's: every app of the
-        // workspace opens them, and their changes are decided against Chat's
-        // surface.
+        // The workspace's emoji is Chat's: every app of the workspace opens it,
+        // and its changes are decided against Chat's surface.
         resources.shared_workspace::<ui::tilo_workspace_emoji::WorkspaceEmoji>();
-        resources.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>();
     }
 
     fn view(cx: &mut ViewCx<Chat>) -> Element {

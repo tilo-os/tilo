@@ -397,7 +397,7 @@ impl super::HostAgents {
             return;
         };
         let Ok(Some(known)) = self
-            .read::<WorkspaceAgents>(workspace, CHAT, &agents_document())
+            .read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &agents_document())
             .await
         else {
             return;
@@ -738,7 +738,7 @@ impl super::HostAgents {
     /// it; one on its message, through Chat, is its person's.
     async fn stop(&self, work: &Work, workspace: &str, turn: &Turn) {
         let on_item = self
-            .read::<WorkspaceAgents>(workspace, CHAT, &agents_document())
+            .read::<WorkspaceAgents>(workspace, tilo_workspace_agent::OWNER, &agents_document())
             .await
             .ok()
             .flatten()
@@ -940,13 +940,13 @@ impl super::HostAgents {
                 workspace,
                 self.workspaces.governor(),
                 &tilo_agent_session::AppCatalogue::native(),
-                CHAT,
+                tilo_workspace_agent::OWNER,
                 &agents_document(),
                 |doc| {
                     let mut saying =
                         tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
                             .as_agent_for(&id, &keeper)
-                            .in_app(CHAT, "Chat");
+                            .in_app(tilo_workspace_agent::OWNER, "Assistant");
                     // A replica stamps what it writes with a fixed day of its own unless told the time.
                     saying.set_now_ms(tilo_clock::unix_now_ms_i64());
                     let applied = saying

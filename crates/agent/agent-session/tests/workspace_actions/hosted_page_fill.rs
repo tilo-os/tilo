@@ -590,7 +590,7 @@ async fn narrow(hosted: &Hosted, bound: Vec<Bound>) {
     let agents = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
     let held = hosted
         .workspaces
-        .resource_document(&hosted.workspace, CHAT, &agents)
+        .resource_document(&hosted.workspace, ui::tilo_workspace_agent::OWNER, &agents)
         .await
         .unwrap()
         .unwrap();
@@ -607,7 +607,7 @@ async fn narrow(hosted: &Hosted, bound: Vec<Bound>) {
         )
         .unwrap();
     let route = DocumentRoute {
-        app_id: CHAT.into(),
+        app_id: ui::tilo_workspace_agent::OWNER.into(),
         cluster_id: hosted.workspace.clone(),
         document: agents.clone(),
     };
@@ -621,7 +621,7 @@ async fn narrow(hosted: &Hosted, bound: Vec<Bound>) {
     loop {
         let bytes = hosted
             .workspaces
-            .resource_document(&hosted.workspace, CHAT, &agents)
+            .resource_document(&hosted.workspace, ui::tilo_workspace_agent::OWNER, &agents)
             .await
             .unwrap()
             .unwrap();
