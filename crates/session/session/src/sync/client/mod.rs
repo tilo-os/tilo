@@ -1360,8 +1360,9 @@ pub struct Entry {
 impl Client {
     /// Take part in the peer network: bind this device's endpoint, start the peer actor,
     /// and from then on hear the workspaces the session joins. `beside` is what else this session
-    /// serves on that endpoint (its protocols are fixed once it binds), and `documents` is where
-    /// what admission takes in from another device goes.
+    /// serves on that endpoint (its protocols are fixed once it binds), `documents` is where
+    /// what admission takes in from another device goes, and `service` is where this device's own
+    /// workspace service is installed once it opens.
     ///
     /// # Errors
     /// The endpoint could not be bound.
@@ -1372,6 +1373,7 @@ impl Client {
         questions: Option<tilo_service::Questions>,
         mut beside: tilo_network_actor::own_service::Protocols,
         documents: Option<PeerDocuments>,
+        service: tilo_workspace_service::service::ServiceSlot,
     ) -> std::io::Result<Self> {
         let (identity, wake) = (entry.identity, entry.wake);
         let (commands, host_commands) = tokio::sync::mpsc::unbounded_channel();
@@ -1431,7 +1433,7 @@ impl Client {
                         ready,
                     },
                     wake,
-                    Serving::new(binding, network_link, serving, beside, documents),
+                    Serving::new(binding, network_link, serving, beside, documents, service),
                 );
             })?;
         let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;

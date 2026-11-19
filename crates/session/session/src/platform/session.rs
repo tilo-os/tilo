@@ -706,8 +706,7 @@ impl Session {
             .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
             .ok()
         });
-        // What this device holds is read once the channel service that opens its sealed records
-        // runs: read before it, every sealed record reads as nothing.
+        // What this device holds is read only once the channel service is up: before, nothing reads.
         if let Some(index) = &resource_index {
             index.sweep();
         }
@@ -720,7 +719,7 @@ impl Session {
             resource_changes.clone(),
             engine.as_ref().map(|engine| engine.arrivals()),
         );
-        let sync = start_collaboration(
+        let (sync, documents) = start_collaboration(
             &options,
             continuity.clone(),
             engine.clone(),
@@ -1221,6 +1220,7 @@ impl Session {
             crate::services::app_wire::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
+                documents,
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: crate::app_wire::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),

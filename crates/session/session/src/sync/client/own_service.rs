@@ -174,8 +174,11 @@ impl KeySink for DeviceKeySink {
 /// a networked session opens, on the same store, on an endpoint under the device's key that only
 /// this process reaches; so a desktop with no network keeps its layout through a restart, and
 /// once a session's network comes up it carries what was founded here, with nothing to move.
-pub(crate) fn found_alone(engine: &Arc<Engine>) {
-    serve_alone(engine, None, |founder| founder);
+pub(crate) fn found_alone(
+    engine: &Arc<Engine>,
+    service: tilo_workspace_service::service::ServiceSlot,
+) {
+    serve_alone(engine, service, None, |founder| founder);
 }
 
 /// [`found_alone`] with the workspaces' keys kept by `groups`, where the session opens no key
@@ -183,6 +186,7 @@ pub(crate) fn found_alone(engine: &Arc<Engine>) {
 /// handed the founder before it serves, for a caller that founds elsewhere.
 pub(crate) fn serve_alone(
     engine: &Arc<Engine>,
+    service: tilo_workspace_service::service::ServiceSlot,
     groups: Option<DeviceKeyGroups>,
     wrap: impl FnOnce(Arc<dyn crate::engine::Founder>) -> Arc<dyn crate::engine::Founder>,
 ) {
@@ -190,7 +194,7 @@ pub(crate) fn serve_alone(
         return;
     }
     let identity = engine.identity().clone();
-    let (own, _unrouted) = OwnService::deferred();
+    let (own, _unrouted) = OwnService::deferred_in(service);
     let mut groups = groups;
     let opening = async {
         let secret = identity

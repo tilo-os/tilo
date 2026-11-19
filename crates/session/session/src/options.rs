@@ -255,16 +255,31 @@ pub(crate) fn start_collaboration(
         &std::sync::Arc<crate::device_mcp::DeviceAgents>,
     ),
     documents: Option<sync::PeerDocuments>,
-) -> Option<Rc<sync::Client>> {
+) -> (
+    Option<Rc<sync::Client>>,
+    crate::broker_services::BrokerService<
+        std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>,
+    >,
+) {
+    // Where this device's own workspace service is installed, and what the broker reads its
+    // workspaces' resources from.
+    let (service, reads) = crate::broker_services::workspace_service();
     let founding = engine.clone();
-    let sync = collaborating(options, continuity, engine, beside, documents);
+    let sync = collaborating(
+        options,
+        continuity,
+        engine,
+        beside,
+        documents,
+        service.clone(),
+    );
     // The workspaces this device makes are founded whether or not its peer network came up: one
     // that did opened this device's workspace service on its endpoint, and one that did not leaves
     // it to open here.
     if let Some(engine) = &founding {
-        sync::found_alone(engine);
+        sync::found_alone(engine, service);
     }
-    sync
+    (sync, reads)
 }
 
 /// [`start_collaboration`]'s peer network: the one `options` hands, or this device's own.
@@ -277,6 +292,7 @@ fn collaborating(
         &std::sync::Arc<crate::device_mcp::DeviceAgents>,
     ),
     documents: Option<sync::PeerDocuments>,
+    service: tilo_workspace_service::service::ServiceSlot,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -356,6 +372,7 @@ fn collaborating(
         options.questions.clone(),
         beside,
         documents,
+        service,
     ) {
         Ok(sync) => {
             if let Some(personal) = personal {

@@ -50,7 +50,6 @@ mod founding_fixture;
 pub mod host_actions;
 pub mod records;
 #[cfg(target_os = "linux")]
-mod resource_reads;
 pub mod search;
 #[cfg(target_os = "linux")]
 mod search_agent;

@@ -240,6 +240,7 @@ impl Devices {
                 Some(questions.clone()),
                 vec![personal_protocol(&shell_personal)],
                 None,
+                tilo_workspace_service::service::ServiceSlot::default(),
             )
             .expect("this device's endpoint binds"),
         );
@@ -264,6 +265,7 @@ impl Devices {
                 None,
                 vec![personal_protocol(&phone_personal)],
                 None,
+                tilo_workspace_service::service::ServiceSlot::default(),
             )
             .expect("the phone's endpoint binds"),
         );
