@@ -75,6 +75,8 @@ code-editor-line-start = Zeilenanfang
 
 code-editor-effect-show-file = Datei öffnen
 code-editor-effect-reveal = Ort anzeigen
+code-editor-effect-show-symbol = Symbol anzeigen
+code-editor-effect-show-result = Suchergebnis anzeigen
 code-editor-effect-open-file = Datei öffnen
 code-editor-effect-open-folder = Projektordner öffnen
 code-editor-effect-new-buffer = Neue Datei

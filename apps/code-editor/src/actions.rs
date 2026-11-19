@@ -73,11 +73,38 @@ pub fn result_resource_id(result: &SearchResultRef) -> String {
 }
 
 pub fn open_symbol_address(symbol: &SymbolRef) -> ActionAddress {
-    crate::effects::CodeEditorEffect::REVEAL.on(symbol_resource_id(symbol))
+    crate::effects::CodeEditorEffect::SHOW_SYMBOL.on(symbol_resource_id(symbol))
+}
+
+/// The location `symbol` declares, as showing it takes: its file, line and
+/// column.
+pub fn reveal_of_symbol(symbol: &SymbolRef) -> crate::effects::CodeEditorEffect {
+    crate::effects::CodeEditorEffect::Reveal {
+        file: Some(symbol.file_id.clone()),
+        path: None,
+        line: symbol.line,
+        column: symbol.col,
+        results: false,
+    }
 }
 
 pub fn reveal_result_address(result: &SearchResultRef) -> ActionAddress {
-    crate::effects::CodeEditorEffect::REVEAL.on(result_resource_id(result))
+    crate::effects::CodeEditorEffect::SHOW_RESULT.on(result_resource_id(result))
+}
+
+/// The location `result` names, as showing it takes: its file (where the
+/// tree holds one), its path on disk and the line.
+pub fn reveal_of_result(result: &SearchResultRef) -> crate::effects::CodeEditorEffect {
+    crate::effects::CodeEditorEffect::Reveal {
+        file: result.file_id.clone(),
+        path: result
+            .disk_path
+            .as_deref()
+            .and_then(|path| ui::tilo_resource::AbsolutePath::new(path).ok()),
+        line: result.line,
+        column: result.col,
+        results: true,
+    }
 }
 
 #[allow(

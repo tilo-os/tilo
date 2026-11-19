@@ -12,12 +12,30 @@ const CARET: &str = ui::tilo_actions::ContextRequirement::Caret.tag();
 pub enum CodeEditorEffect {
     /// Open file.
     ///
-    /// Offered on the file it opens: its id is the file row's, never typed.
-    #[effect(row, screen)]
+    /// Offered on the file it opens: its id is the file's, never typed.
+    #[effect(row, screen, item = files)]
     #[effect(icon = "file-code")]
     ShowFile {
-        #[param("The file resource's id")]
+        #[param("The file's id")]
         file: String,
+    },
+    /// Show symbol.
+    ///
+    /// Shows the declaration a symbol row names.
+    #[effect(job, kind = "read", on = crate::rows::SymbolRow)]
+    #[effect(icon = "locate-fixed")]
+    ShowSymbol {
+        #[param("The symbol row's id")]
+        symbol: String,
+    },
+    /// Show search result.
+    ///
+    /// Shows the hit a search-result row names.
+    #[effect(job, kind = "read", on = crate::rows::ResultRow)]
+    #[effect(icon = "locate-fixed")]
+    ShowResult {
+        #[param("The search-result row's id")]
+        result: String,
     },
     /// Show location.
     #[effect(job, kind = "read")]
@@ -60,15 +78,13 @@ pub enum CodeEditorEffect {
     #[effect(icon = "file-plus")]
     NewBuffer,
     /// Save file.
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", item = files)]
     #[effect(job, cancellable, destructive)]
     #[effect(keywords = "write file, save changes")]
     #[effect(icon = "hard-drive")]
     Save {
-        #[param("The file resource's id; omit for the active file")]
+        #[param("The file's id; omit for the active file")]
         file: Option<String>,
-        #[param("Absolute path to write it to; omit to save in place")]
-        path: Option<ui::tilo_resource::AbsolutePath>,
     },
     /// Save as.
     #[effect(kind = "outside")]
@@ -170,10 +186,10 @@ pub enum CodeEditorEffect {
     #[effect(icon = "wand-sparkles")]
     ToggleFormatOnSave,
     /// Read file text.
-    #[effect(row, kind = "read", returns, idempotent)]
+    #[effect(row, kind = "read", returns, idempotent, item = files)]
     #[effect(icon = "file-text")]
     ReadText {
-        #[param("The file resource's id")]
+        #[param("The file's id")]
         file: String,
         #[param("Zero-based position in Unicode scalar values")]
         start_chars: usize,
@@ -187,18 +203,16 @@ impl CodeEditorEffect {
         Some(match self {
             Self::ReadText { .. }
             | Self::ShowFile { .. }
+            | Self::ShowSymbol { .. }
+            | Self::ShowResult { .. }
             | Self::Reveal { .. }
             | Self::OpenFile { path: Some(_) }
             | Self::OpenFolder { path: Some(_) }
-            | Self::Save { file: Some(_), .. }
-            | Self::Save { path: Some(_), .. }
+            | Self::Save { file: Some(_) }
             | Self::GoToLine { value: Some(_) }
             | Self::ToggleLanguageServers
             | Self::ToggleFormatOnSave => return None,
-            Self::Save {
-                file: None,
-                path: None,
-            } => Command::Save,
+            Self::Save { file: None } => Command::Save,
             Self::OpenFile { path: None } => Command::OpenFile,
             Self::OpenFolder { path: None } => Command::OpenFolder,
             Self::NewBuffer => Command::NewFile,
@@ -231,10 +245,7 @@ impl Command {
             Self::NewFile => CodeEditorEffect::NewBuffer,
             Self::OpenFolder => CodeEditorEffect::OpenFolder { path: None },
             Self::OpenFile => CodeEditorEffect::OpenFile { path: None },
-            Self::Save => CodeEditorEffect::Save {
-                file: None,
-                path: None,
-            },
+            Self::Save => CodeEditorEffect::Save { file: None },
             Self::SaveAs => CodeEditorEffect::SaveAs,
             Self::SaveAll => CodeEditorEffect::SaveAll,
             Self::FormatFile => CodeEditorEffect::FormatFile,
