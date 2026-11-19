@@ -11,11 +11,12 @@
 //! section's type is a [`SectionKind`], a handful of functions built once
 //! per type; nothing else is compiled per section.
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use tilo_actions::{Action, ActionError, ActionInvoker, EncodedAction};
-use tilo_resource::{Doc, Fields, Reader, Resource};
+use tilo_resource::{Doc, Fields, ModelError, Reader, Resource};
 use ui_core::history_source::{ThreadWords, steps};
 use ui_core::storage::{
     ChangeOrigin, InvokingAction, Settings, SettingsDocument, SettingsRevision, SettingsSchema,
@@ -45,9 +46,83 @@ enum SectionOut {
     Value(serde_json::Value),
 }
 
-/// What a section's record does with the section's type: one function per
-/// section type ([`SectionOp`]), over the section's settings
-/// ([`Self::settings`]).
+/// What a section asks of its type: the type's state in a document, as its
+/// JSON, and its action. Each is the type's own function, reached through
+/// this one interface so that [`section_ops`] is compiled once rather than
+/// once per section type.
+trait SectionType {
+    /// The type's genesis in a fresh document.
+    fn initialize(&self, doc: &mut Doc) -> Result<(), ModelError>;
+    /// The section as stored, written at `doc`'s root.
+    fn write(&self, doc: &mut Doc) -> Result<(), ModelError>;
+    /// The section in `doc`'s root, as the type's state.
+    fn read(&self, doc: &Doc) -> Result<Box<dyn Any>, ModelError>;
+    /// The section as stored, as its model's JSON.
+    fn stored_json(&self) -> serde_json::Value;
+    /// The section as stored, published as `label` under `id`.
+    fn publish(&self, id: &str, label: &str) -> tilo_actions::ResourceSpec;
+    /// `state`, a [`Self::read`] state, stored as `origin`'s change.
+    fn store(&self, state: &dyn Any, origin: &ChangeOrigin) -> Result<(), String>;
+    /// The type's action from its encoded payload.
+    fn decode(&self, payload: &[u8]) -> Result<Box<dyn Action>, String>;
+}
+
+impl<T> SectionType for Settings<T>
+where
+    T: Resource<State = T> + SettingsSchema + Fields,
+{
+    fn initialize(&self, doc: &mut Doc) -> Result<(), ModelError> {
+        T::initialize(doc)
+    }
+
+    fn write(&self, doc: &mut Doc) -> Result<(), ModelError> {
+        stored_section(self).write_fields(doc, &tilo_resource::__private::ROOT)
+    }
+
+    fn read(&self, doc: &Doc) -> Result<Box<dyn Any>, ModelError> {
+        let state: T = T::read_fields(doc, &tilo_resource::__private::ROOT)?;
+        Ok(Box::new(state))
+    }
+
+    fn stored_json(&self) -> serde_json::Value {
+        state_json(&stored_section(self))
+    }
+
+    fn publish(&self, id: &str, label: &str) -> tilo_actions::ResourceSpec {
+        tilo_resource::publish::<T>(id, label, &stored_section(self))
+    }
+
+    fn store(&self, state: &dyn Any, origin: &ChangeOrigin) -> Result<(), String> {
+        let state = state
+            .downcast_ref::<T>()
+            .ok_or_else(|| format!("{} holds another type's state", T::KIND))?;
+        self.set_by(state, Some(origin))
+            .map_err(|error| error.to_string())
+    }
+
+    fn decode(&self, payload: &[u8]) -> Result<Box<dyn Action>, String> {
+        let action: T::Action =
+            tilo_actions::decode_json(payload).map_err(|error| error.to_string())?;
+        super::resources::not_by_app::<T>(&action)?;
+        Ok(Box::new(action))
+    }
+}
+
+/// The section as stored, as its type's state; one copy per type, for every
+/// use [`SectionType`] makes of it.
+#[inline(never)]
+fn stored_section<T: SettingsSchema>(settings: &Settings<T>) -> T {
+    settings.get()
+}
+
+/// `state` as its model's JSON; one copy per type.
+#[inline(never)]
+fn state_json<T: tilo_resource::Model>(state: &T) -> serde_json::Value {
+    state.to_json()
+}
+
+/// What a section does with its type ([`SectionType`]), over the section's
+/// settings.
 pub(crate) struct SectionKind {
     pub(crate) kind: &'static str,
     pub(crate) label: &'static str,
@@ -57,7 +132,7 @@ pub(crate) struct SectionKind {
     /// The app whose settings the section is, and the document they live in.
     app_id: String,
     document: SettingsDocument,
-    ops: fn(&Self, SectionOp<'_>) -> Result<SectionOut, ActionError>,
+    of_type: Box<dyn SectionType>,
 }
 
 impl SectionKind {
@@ -72,7 +147,7 @@ impl SectionKind {
             section: T::SCOPE.section(),
             app_id: settings.app_id().to_owned(),
             document: settings.document().clone(),
-            ops: section_ops::<T>,
+            of_type: Box::new(settings.clone()),
         })
     }
 
@@ -98,18 +173,18 @@ impl SectionKind {
         let origin = ChangeOrigin::action(format!("{}/{id}", self.kind))
             .by(actor(by))
             .invoked_by(invoked_by.cloned());
-        (self.ops)(self, SectionOp::Apply(action, &origin)).map(drop)
+        section_ops(self, SectionOp::Apply(action, &origin)).map(drop)
     }
 
     fn publish(&self, id: &str) -> Result<tilo_actions::ResourceSpec, ActionError> {
-        match (self.ops)(self, SectionOp::Publish(id, self.label))? {
+        match section_ops(self, SectionOp::Publish(id, self.label))? {
             SectionOut::Published(resource) => Ok(*resource),
             _ => Err(ActionError::Refused("the section published nothing".into())),
         }
     }
 
     fn decode(&self, action: &EncodedAction) -> Result<Box<dyn Action>, ActionError> {
-        match (self.ops)(self, SectionOp::Decode(action))? {
+        match section_ops(self, SectionOp::Decode(action))? {
             SectionOut::Decoded(action) => Ok(action),
             _ => Err(ActionError::Refused("the section decoded nothing".into())),
         }
@@ -117,7 +192,7 @@ impl SectionKind {
 
     /// The section as stored now, as its model writes it.
     fn stored(&self) -> Result<serde_json::Value, ActionError> {
-        match (self.ops)(self, SectionOp::Stored)? {
+        match section_ops(self, SectionOp::Stored)? {
             SectionOut::Value(value) => Ok(value),
             _ => Err(ActionError::Refused("the section read nothing".into())),
         }
@@ -182,45 +257,42 @@ fn actor(by: &tilo_actions::Actor) -> String {
     serde_json::to_string(by).unwrap_or_default()
 }
 
-/// Everything a section's record asks of the section type `T`.
-fn section_ops<T>(kind: &SectionKind, op: SectionOp<'_>) -> Result<SectionOut, ActionError>
-where
-    T: Resource<State = T> + SettingsSchema + Fields,
-{
+/// Everything a section asks of its type, as [`SectionType`] answers it: one
+/// function for every section type.
+fn section_ops(kind: &SectionKind, op: SectionOp<'_>) -> Result<SectionOut, ActionError> {
     let refused = |error: &dyn std::fmt::Display| ActionError::Refused(error.to_string());
     Ok(match op {
         SectionOp::Apply(action, origin) => {
             // A resource's actions apply to a record at a document's root:
             // the section's value is laid out as one for the action to run
             // on, and what it made is stored as the section's change.
-            let root = &tilo_resource::__private::ROOT;
-            let settings = kind.settings::<T>();
             let mut record = Doc::new();
-            T::initialize(&mut record).map_err(|error| refused(&error))?;
-            settings
-                .get()
-                .write_fields(&mut record, root)
+            kind.of_type
+                .initialize(&mut record)
+                .map_err(|error| refused(&error))?;
+            kind.of_type
+                .write(&mut record)
                 .map_err(|error| refused(&error))?;
             record.commit();
             action.apply(&mut record)?;
-            let value = T::read_fields(&record, root).map_err(|error| refused(&error))?;
-            settings
-                .set_by(&value, Some(origin))
+            let value = kind
+                .of_type
+                .read(&record)
                 .map_err(|error| refused(&error))?;
+            kind.of_type
+                .store(&*value, origin)
+                .map_err(ActionError::Refused)?;
             SectionOut::Done
         }
-        SectionOp::Publish(id, label) => SectionOut::Published(Box::new(
-            tilo_resource::publish::<T>(id, label, &kind.settings::<T>().get()),
-        )),
-        SectionOp::Decode(action) => {
-            let decoded = tilo_actions::decode_json::<T::Action>(&action.payload)
-                .map_err(|error| refused(&error))?;
-            super::resources::not_by_app::<T>(&decoded).map_err(|error| refused(&error))?;
-            SectionOut::Decoded(Box::new(decoded))
+        SectionOp::Publish(id, label) => {
+            SectionOut::Published(Box::new(kind.of_type.publish(id, label)))
         }
-        SectionOp::Stored => {
-            SectionOut::Value(tilo_resource::Model::to_json(&kind.settings::<T>().get()))
-        }
+        SectionOp::Decode(action) => SectionOut::Decoded(
+            kind.of_type
+                .decode(&action.payload)
+                .map_err(ActionError::Refused)?,
+        ),
+        SectionOp::Stored => SectionOut::Value(kind.of_type.stored_json()),
     })
 }
 
