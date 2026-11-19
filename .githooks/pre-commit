@@ -210,7 +210,9 @@ if [ -n "$prim_files" ]; then
     note "primitives baseline has unstaged edits: stage it and commit again"
     fail=1
   else
-    mapfile -t prim_array <<< "$prim_files"
+    # The list ends with a newline and a here-string adds one: trim it, or the
+    # empty name between them reaches the tool as the repository root.
+    mapfile -t prim_array <<< "${prim_files%$'\n'}"
     if ! python3 "$root/tools/policy/check_primitives.py" --lower "${prim_array[@]}"; then
       note "primitives baseline could not be lowered: run python3 tools/policy/check_primitives.py --lower <files>"
       fail=1
