@@ -57,7 +57,7 @@ impl Mount {
         // When the workspace admitted each of its people, and what it calls each, numbers the
         // namesakes among them: the roster's own rows, which this page's people lists read too.
         let tree = desktop.handle.read(Clone::clone);
-        let (joined, names) = tree
+        let (joined, called) = tree
             .workspaces
             .iter()
             .find(|held| held.id().to_string() == desktop.workspace)
@@ -65,7 +65,7 @@ impl Mount {
         let numbered = desktop
             .here
             .borrow_mut()
-            .set_workspace_people(&joined, &names);
+            .set_workspace_people(&joined, &called);
         let renamed = *desktop.shared.names.borrow() != self.presence.named;
         let members = desktop.shared.members.borrow().clone();
         let admitted = members != self.presence.members;

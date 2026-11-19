@@ -937,7 +937,7 @@ fn post_as_chat(part: &mut AutoCommit, chat: &chat::Chat, text: &str) {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_mention_posted_in_a_chat_part_the_page_follows_is_told() {
-    ui::app_surface::register_built_in(CHAT, CHAT_SURFACE);
+    ui::app_surface::register_package(CHAT, CHAT_SURFACE);
     let chat = chat::demo::demo();
     let route = chat::parts::part(0).as_str().to_owned();
     let mut part = AutoCommit::new();
