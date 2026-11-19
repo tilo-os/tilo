@@ -494,11 +494,18 @@ fn player_resources_and_transport_guards_are_published_honestly() {
             .map(ui::framework::LiveRow::into_resource)
             .collect();
         let kinds: Vec<&str> = rows.iter().map(|row| row.kind.as_str()).collect();
-        assert_eq!(kinds, ["media.video", "media.queue", "media.history"]);
+        assert_eq!(
+            kinds,
+            [
+                "video-player.video",
+                "video-player.queue",
+                "video-player.history"
+            ]
+        );
         let media = &rows[0];
         assert_eq!(media.label, "Demo clip");
         let tracks = &media.children[0];
-        assert_eq!(tracks.kind, "media.tracks");
+        assert_eq!(tracks.kind, "video-player.tracks");
         assert_eq!(
             tracks
                 .children
@@ -1200,7 +1207,7 @@ fn the_current_row_says_whether_the_video_plays_or_is_paused() {
         crate::actions::live_rows(&app.player_rows(), 32)
             .into_iter()
             .map(ui::framework::LiveRow::into_resource)
-            .find(|row| row.kind == "media.queue")
+            .find(|row| row.kind == "video-player.queue")
             .and_then(|queue| {
                 queue
                     .children

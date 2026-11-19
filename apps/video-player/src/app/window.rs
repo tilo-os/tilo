@@ -91,7 +91,7 @@ pub(crate) fn window(cx: &ViewCx<PlayerResource>, mut window: PlayerApp) -> Elem
             state.stage_capture(launched.as_deref(), scenario);
         });
     }
-    let (rows, row) = (Rc::clone(&state), state);
+    let (rows, row, statuses) = (Rc::clone(&state), Rc::clone(&state), state);
     cx.publishing(
         Publishes::new()
             .live_rows(move || {
@@ -100,7 +100,10 @@ pub(crate) fn window(cx: &ViewCx<PlayerResource>, mut window: PlayerApp) -> Elem
                     actions::CONTEXTUAL_CHILD_LIMIT,
                 )
             })
-            .live_row(move |id| actions::live_row(&row.borrow().player_rows(), id)),
+            .live_row(move |id| actions::live_row(&row.borrow().player_rows(), id))
+            // A row's own effect says when it does not apply: no subtitles are
+            // on to turn off, nothing recent to clear.
+            .row_status(move |id| statuses.borrow().row_status(id)),
         Box::new(window),
     )
 }

@@ -11,6 +11,57 @@ pub fn reference(id: &'static str) -> tilo_resource::ActionRef<VideoEffect, ()> 
     tilo_resource::ActionRef::new(id, &[], VideoEffect::kind())
 }
 
+/// The open video, as a row: its tracks and chapters hang beneath it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "video-player.video", label = "Video")]
+pub struct OpenVideo;
+
+/// Every audio and subtitle track of the open video, as one row under it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "video-player.tracks", label = "Tracks", effects = VideoEffect)]
+pub struct Tracks;
+
+/// The chapters of the open video, as one row under it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "video-player.chapters", label = "Chapters")]
+pub struct Chapters;
+
+/// This device's session queue, as a row.
+#[derive(tilo_resource::Row)]
+#[row(kind = "video-player.queue", label = "Queue")]
+pub struct LocalQueue;
+
+/// The videos this device played, as a row. Clearing them is the row's own
+/// effect; showing the library is the player's view, not theirs.
+#[derive(tilo_resource::Row)]
+#[row(kind = "video-player.history", label = "Recent videos", effects = VideoEffect)]
+pub struct LocalHistory;
+
+/// One track of the open video's audio.
+#[derive(tilo_resource::Row)]
+#[row(kind = "video-player.audio-track", label = "Audio track", effects = VideoEffect)]
+pub struct AudioTrack;
+
+/// One subtitle track of the open video.
+#[derive(tilo_resource::Row)]
+#[row(kind = "video-player.subtitle-track", label = "Subtitle track", effects = VideoEffect)]
+pub struct SubtitleTrack;
+
+/// One chapter of the open video.
+#[derive(tilo_resource::Row)]
+#[row(kind = "video-player.chapter", label = "Chapter", effects = VideoEffect)]
+pub struct Chapter;
+
+/// One video queued on this device.
+#[derive(tilo_resource::Row)]
+#[row(kind = "video-player.queue-item", label = "Queued video", effects = VideoEffect)]
+pub struct QueueItem;
+
+/// One video this device played.
+#[derive(tilo_resource::Row)]
+#[row(kind = "video-player.history-item", label = "Recent video", effects = VideoEffect)]
+pub struct HistoryItem;
+
 /// The published tree stays responsive however many streams, chapters or library rows
 /// there are; a caller still reaches an omitted row by its stable id.
 pub const CONTEXTUAL_CHILD_LIMIT: usize = 32;
@@ -34,20 +85,20 @@ pub enum VideoEffect {
         path: Option<String>,
     },
     /// Play this video.
-    #[effect(row, job, kind = "read")]
+    #[effect(row, job, kind = "read", on = QueueItem, on = HistoryItem)]
     PlayQueued {
-        #[param("The queue or recent video's item id")]
+        #[param("The queue or recent video's row")]
         item: String,
     },
     /// Remove from queue.
-    #[effect(row, kind = "read")]
+    #[effect(row, kind = "read", on = QueueItem)]
     #[effect(label = "video-remove-from-queue")]
     RemoveQueued {
-        #[param("The queued video's item id")]
+        #[param("The queued video's row")]
         item: String,
     },
     /// Clear recent videos.
-    #[effect(destructive, kind = "read")]
+    #[effect(destructive, kind = "read", on = LocalHistory)]
     #[effect(label = "video-clear-recent")]
     ClearRecent,
     #[effect(view)]
@@ -99,19 +150,19 @@ pub enum VideoEffect {
         #[param("Playback speed from 0.25 to 4")]
         rate: f64,
     },
-    #[effect(view, row)]
+    #[effect(view, row, on = AudioTrack)]
     SelectAudioTrack {
         #[param("The audio track row's id")]
         track: String,
     },
-    #[effect(view, row)]
+    #[effect(view, row, on = SubtitleTrack)]
     SelectSubtitles {
         #[param("The subtitle track row's id")]
         track: String,
     },
-    #[effect(view)]
+    #[effect(view, on = Tracks)]
     SubtitlesOff,
-    #[effect(view, row)]
+    #[effect(view, row, on = Chapter)]
     JumpToChapter {
         #[param("The chapter row's id")]
         chapter: String,
@@ -243,28 +294,23 @@ pub fn recent_item_resource_id(item_id: &str) -> String {
 pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
     let mut published = Vec::new();
     if let Some(title) = rows.title {
-        let mut media = LiveRow::new("video-player.media.current", "media.video", title);
+        let mut media = LiveRow::typed::<OpenVideo>("video-player.media.current", title);
         if rows.source_id.is_some() {
-            let mut tracks = LiveRow::new(
-                "video-player.tracks.current",
-                "media.tracks",
+            let tracks = LiveRow::typed::<Tracks>(
+                TRACKS_ID,
                 format!(
                     "{} audio tracks and {} subtitle tracks",
                     rows.audio_tracks.len(),
                     rows.subtitle_tracks.len()
                 ),
             );
-            if rows.subtitle_tracks.iter().any(|track| track.selected) {
-                tracks = tracks.effect(&VideoEffect::SubtitlesOff);
-            }
             let tracks = audio_rows(rows)
                 .take(limit)
                 .chain(subtitle_rows(rows).take(limit))
                 .fold(tracks, LiveRow::row);
             let chapters = chapter_rows(rows).take(limit).fold(
-                LiveRow::new(
+                LiveRow::typed::<Chapters>(
                     "video-player.chapters.current",
-                    "media.chapters",
                     format!("{} chapters available", rows.chapters.len()),
                 ),
                 LiveRow::row,
@@ -276,9 +322,8 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
     // Showing the queue or the recents is the player's own view, not these rows': a view
     // here would be a private disclosure that keeps removing a queued video and clearing
     // the recents from agents.
-    let queue = LiveRow::new(
-        "video-player.queue.local",
-        "media.queue",
+    let queue = LiveRow::typed::<LocalQueue>(
+        QUEUE_ID,
         format!(
             "{} session queue item{}",
             rows.queue.len(),
@@ -286,17 +331,20 @@ pub(crate) fn live_rows(rows: &PlayerRows<'_>, limit: usize) -> Vec<LiveRow> {
         ),
     );
     published.push(queue_rows(rows).take(limit).fold(queue, LiveRow::row));
-    let mut recent = LiveRow::new(
-        "video-player.history.local",
-        "media.history",
+    let recent = LiveRow::typed::<LocalHistory>(
+        HISTORY_ID,
         format!("{} recent videos on this device", rows.recent.len()),
     );
-    if !rows.recent.is_empty() {
-        recent = recent.effect(&VideoEffect::ClearRecent);
-    }
     published.push(recent_rows(rows).take(limit).fold(recent, LiveRow::row));
     published
 }
+
+/// The row of the open video's tracks.
+pub(crate) const TRACKS_ID: &str = "video-player.tracks.current";
+/// The row of this device's queue.
+pub(crate) const QUEUE_ID: &str = "video-player.queue.local";
+/// The row of this device's recently played videos.
+pub(crate) const HISTORY_ID: &str = "video-player.history.local";
 
 /// The live row `id`: a collection, or a row the bounded tree leaves out.
 pub(crate) fn live_row(rows: &PlayerRows<'_>, id: &str) -> Option<LiveRow> {
@@ -322,9 +370,10 @@ fn audio_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> + '
         .iter()
         .filter(move |_| !source_id.is_empty())
         .map(move |track| {
-            let id = audio_resource_id(source_id, &track.stream_id);
-            LiveRow::new(id.clone(), "media.audio-track", track_label(track))
-                .effect(&VideoEffect::SelectAudioTrack { track: id })
+            LiveRow::typed::<AudioTrack>(
+                audio_resource_id(source_id, &track.stream_id),
+                track_label(track),
+            )
         })
 }
 
@@ -334,9 +383,10 @@ fn subtitle_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> 
         .iter()
         .filter(move |_| !source_id.is_empty())
         .map(move |track| {
-            let id = subtitle_resource_id(source_id, &track.stream_id);
-            LiveRow::new(id.clone(), "media.subtitle-track", track_label(track))
-                .effect(&VideoEffect::SelectSubtitles { track: id })
+            LiveRow::typed::<SubtitleTrack>(
+                subtitle_resource_id(source_id, &track.stream_id),
+                track_label(track),
+            )
         })
 }
 
@@ -346,13 +396,10 @@ fn chapter_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> +
         .iter()
         .filter(move |_| !source_id.is_empty())
         .map(move |chapter| {
-            let id = chapter_resource_id(source_id, &chapter.id);
-            LiveRow::new(
-                id.clone(),
-                "media.chapter",
+            LiveRow::typed::<Chapter>(
+                chapter_resource_id(source_id, &chapter.id),
                 format!("{} starts at {:.1} seconds", chapter.label, chapter.seconds),
             )
-            .effect(&VideoEffect::JumpToChapter { chapter: id })
         })
 }
 
@@ -363,29 +410,15 @@ fn queue_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> + '
             (true, false) => " is paused",
             (false, _) => "",
         };
-        LiveRow::new(
+        LiveRow::typed::<QueueItem>(
             queue_item_resource_id(&item.id),
-            "media.queue-item",
             format!("{}{suffix}", item.title),
         )
-        .effect(&VideoEffect::PlayQueued {
-            item: item.id.clone(),
-        })
-        .effect(&VideoEffect::RemoveQueued {
-            item: item.id.clone(),
-        })
     })
 }
 
 fn recent_rows<'a>(rows: &'a PlayerRows<'_>) -> impl Iterator<Item = LiveRow> + 'a {
     rows.recent.iter().map(|item| {
-        LiveRow::new(
-            recent_item_resource_id(&item.id),
-            "media.history-item",
-            item.title.clone(),
-        )
-        .effect(&VideoEffect::PlayQueued {
-            item: item.id.clone(),
-        })
+        LiveRow::typed::<HistoryItem>(recent_item_resource_id(&item.id), item.title.clone())
     })
 }

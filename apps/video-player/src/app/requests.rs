@@ -112,29 +112,20 @@ impl PlayerState {
     }
 
     pub(super) fn request_library_play(&self, item_id: &str) {
-        let resource = if self.queue.iter().any(|item| item.id == item_id) {
+        let row = if self.queue.iter().any(|item| item.id == item_id) {
             crate::actions::queue_item_resource_id(item_id)
         } else {
             crate::actions::recent_item_resource_id(item_id)
         };
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.effect_on(
-                &resource,
-                &VideoEffect::PlayQueued {
-                    item: item_id.to_owned(),
-                },
-            );
+            dispatcher.effect_on(&row, &VideoEffect::PlayQueued { item: row.clone() });
         }
     }
 
     pub(super) fn request_library_remove(&self, item_id: &str) {
+        let row = crate::actions::queue_item_resource_id(item_id);
         if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.effect_on(
-                &crate::actions::queue_item_resource_id(item_id),
-                &VideoEffect::RemoveQueued {
-                    item: item_id.to_owned(),
-                },
-            );
+            dispatcher.effect_on(&row, &VideoEffect::RemoveQueued { item: row.clone() });
         }
     }
 

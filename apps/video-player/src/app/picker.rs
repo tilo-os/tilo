@@ -118,7 +118,8 @@ impl PlayerState {
                 Ok(Effected::Pending)
             }
             VideoEffect::PlayQueued { item } => {
-                self.open_local_entry(&item)?;
+                let entry = self.local_entry_id(&item)?;
+                self.open_local_entry(&entry)?;
                 self.await_open_frame(cx.reply());
                 Ok(Effected::Pending)
             }
