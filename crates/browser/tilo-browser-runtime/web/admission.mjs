@@ -41,6 +41,7 @@
  */
 import {parsePairSecret} from './pairing.mjs';
 import {deviceRemoved} from './session-refusal.mjs';
+import {isInvitedServer} from './site-host.mjs';
 
 export const NO_ACCESS = 'You don’t have access to this workspace. Ask the person who shared the link to invite you.';
 /** A link to a workspace no entry lets a stranger into, in a browser where
@@ -93,8 +94,13 @@ async function viaInvitation({origin, invitation, offered = null, id = null, sec
  * home workspace's host, and the site itself where it has no home. */
 async function viaSealedLink({scope, secrets, home, runtime, deps, onProgress}) {
   const opened = await openedAt({site: scope.site, secret: `${scope.handle}${secrets.invite}`, deps});
-  const origin = opened.host ?? home?.host?.origin ?? scope.site;
-  return viaInvitation({origin, invitation: opened.invitation, secrets, runtime, deps, onProgress});
+  // A server the shelf names by its iroh endpoint alone answers no HTTP, and a browser that never
+  // saw it knows no way to it: the invitation names where it is and what it offers, as a long
+  // link's does.
+  const invited = opened.host && isInvitedServer(opened.host)
+    ? await deps.invitedServer?.(opened.invitation, scope.site) : null;
+  const origin = invited?.origin ?? opened.host ?? home?.host?.origin ?? scope.site;
+  return viaInvitation({origin, invitation: opened.invitation, offered: invited?.offer ?? null, secrets, runtime, deps, onProgress});
 }
 
 /** `{peer}` once `peer` is ready to use; `onProgress` hears the workspace

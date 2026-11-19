@@ -1911,16 +1911,64 @@ impl ExtensionController {
     /// does.
     pub fn resources(&self) -> Vec<LiveRow> {
         use crate::effects::BrowserEffect as E;
-        use ui::tilo_resource::Effect as _;
         self.infos
             .iter()
             .zip(&self.installed)
             .map(|(info, extension)| {
                 let id = extension.id.clone();
                 let granted = granted_line(&extension.access.granted);
-                let mut resource = LiveRow::typed::<crate::row_types::Extension>(
+                let mut bindings = ui::tilo_resource::RowBindings::new()
+                    .offer(E::SHOW_EXTENSIONS)
+                    .bind(E::REMOVE_EXTENSION, [("id", id.clone().into())]);
+                if granted.is_some() {
+                    bindings =
+                        bindings.bind(E::REVOKE_EXTENSION_ACCESS, [("id", id.clone().into())]);
+                }
+                if info.manifest_version == 3 {
+                    bindings = bindings.bind(
+                        if extension.enabled {
+                            E::TURN_OFF_EXTENSION
+                        } else {
+                            E::TURN_ON_EXTENSION
+                        },
+                        [("id", id.clone().into())],
+                    );
+                }
+                if extension.enabled && extension.action.is_some() {
+                    bindings = bindings.bind(E::USE_EXTENSION, [("id", id.clone().into())]);
+                }
+                if extension.enabled && extension.options.is_some() {
+                    bindings =
+                        bindings.bind(E::OPEN_EXTENSION_SETTINGS, [("id", id.clone().into())]);
+                }
+                if extension.enabled && extension.keyword.is_some() {
+                    bindings = bindings.bind(E::SEND_TO_EXTENSION, [("id", id.clone().into())]);
+                }
+                if extension.enabled && extension.side_panel() {
+                    let shown = self.side_panel_shown() == Some(id.as_str());
+                    bindings = bindings.bind(
+                        if shown {
+                            E::CLOSE_EXTENSION_SIDE_PANEL
+                        } else {
+                            E::OPEN_EXTENSION_SIDE_PANEL
+                        },
+                        [("id", id.clone().into())],
+                    );
+                }
+                if extension.enabled && extension.action.is_some() {
+                    bindings = bindings.bind(
+                        if extension.pinned {
+                            E::UNPIN_EXTENSION
+                        } else {
+                            E::PIN_EXTENSION
+                        },
+                        [("id", id.into())],
+                    );
+                }
+                LiveRow::typed_with::<crate::row_types::Extension>(
                     extensions::resource_id(&info.id),
                     info.name.clone(),
+                    &bindings,
                 )
                 .presentation(ResourcePresentation {
                     detail: Some(self.status(info, extension)),
@@ -1930,43 +1978,6 @@ impl ExtensionController {
                         .cloned(),
                     ..ResourcePresentation::default()
                 })
-                .effect(&E::ShowExtensions);
-                if granted.is_some() {
-                    resource = resource.effect(&E::RevokeExtensionAccess { id: id.clone() });
-                }
-                if info.manifest_version == 3 {
-                    resource = resource.operation(if extension.enabled {
-                        E::TurnOffExtension { id: id.clone() }.bound()
-                    } else {
-                        E::TurnOnExtension { id: id.clone() }.bound()
-                    });
-                }
-                if extension.enabled && extension.action.is_some() {
-                    resource = resource.effect(&E::UseExtension { id: id.clone() });
-                }
-                if extension.enabled && extension.options.is_some() {
-                    resource = resource.effect(&E::OpenExtensionSettings { id: id.clone() });
-                }
-                if extension.enabled && extension.keyword.is_some() {
-                    resource = resource.operation(
-                        E::SendToExtension {
-                            id: id.clone(),
-                            text: String::new(),
-                        }
-                        .bound_asking(&["text"]),
-                    );
-                }
-                if let Some(action) = self.side_panel_action(extension) {
-                    resource = resource.operation(action);
-                }
-                if extension.enabled && extension.action.is_some() {
-                    resource = resource.operation(if extension.pinned {
-                        E::UnpinExtension { id: id.clone() }.bound()
-                    } else {
-                        E::PinExtension { id: id.clone() }.bound()
-                    });
-                }
-                resource.effect(&E::RemoveExtension { id })
             })
             .collect()
     }

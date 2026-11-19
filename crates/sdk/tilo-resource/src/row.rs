@@ -81,6 +81,16 @@ impl RowBindings {
         self
     }
 
+    /// Offer beside what the row already offers, `other`'s: two effects a
+    /// row's own state knows separately are one row's bindings.
+    #[must_use]
+    pub fn extended(mut self, other: &Self) -> Self {
+        for (effect, arguments) in &other.arguments {
+            self.arguments.insert(effect, arguments.clone());
+        }
+        self
+    }
+
     /// The arguments the row gives the effect `effect`, when it offers it.
     #[must_use]
     pub fn arguments(&self, effect: &str) -> Option<&serde_json::Map<String, serde_json::Value>> {
@@ -225,6 +235,31 @@ impl LiveRow {
 
     /// Offer a view or effect operation on the row.
     ///
+    /// Offer every effect of the vocabulary `E` the resource itself offers
+    /// ([`Effect::specs`](crate::Effect::specs)), as it publishes them: what a
+    /// window's own row offers (navigate, show settings), beside the effects
+    /// its row types declare.
+    #[must_use]
+    pub fn vocabulary<E: crate::Effect>(mut self) -> Self {
+        for spec in E::specs() {
+            self = self.operation(spec);
+        }
+        self
+    }
+
+    /// Offer `operations` the row's type declares but only the row can shape,
+    /// each still the type's effect: a page's forms, one `answer-form` per
+    /// form, named after the form and asking its own questions. Everything a
+    /// type declares for its rows as they are goes through the declaration
+    /// (`#[derive(Row)]`'s `effects = E`), never through here.
+    #[must_use]
+    pub fn specialized(mut self, operations: impl IntoIterator<Item = ActionSpec>) -> Self {
+        for operation in operations {
+            self = self.operation(operation);
+        }
+        self
+    }
+
     /// # Panics
     /// In a debug build, when `operation` is a document mutation; a release
     /// build drops it.

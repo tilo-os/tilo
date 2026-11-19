@@ -213,7 +213,7 @@ impl Rule {
             let _ = write!(out, ";BYMONTHDAY={}", days.join(","));
         }
         if let Some(until) = self.until {
-            let _ = write!(out, ";UNTIL={}", until.strftime("%Y%m%d"));
+            let _ = write!(out, ";UNTIL={}", tilo_formats::compact_date_text(until));
         }
         if let Some(count) = self.count {
             let _ = write!(out, ";COUNT={count}");
@@ -235,7 +235,7 @@ impl Rule {
             let dates: Vec<String> = self
                 .exdates
                 .iter()
-                .map(|date| date.strftime("%Y%m%d").to_string())
+                .map(|date| tilo_formats::compact_date_text(*date))
                 .collect();
             let _ = write!(out, ";EXDATE={}", dates.join(","));
         }
@@ -844,8 +844,8 @@ fn parse_cal_date(value: &str) -> Option<Date> {
         .get(..8)
         .filter(|head| head.bytes().all(|byte| byte.is_ascii_digit()));
     match compact {
-        Some(head) => Date::strptime("%Y%m%d", head).ok(),
-        None => Date::strptime("%Y-%m-%d", value).ok(),
+        Some(head) => tilo_formats::compact_date_from_text(head),
+        None => tilo_formats::date_from_text(value),
     }
 }
 

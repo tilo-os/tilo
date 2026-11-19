@@ -427,11 +427,9 @@ pub(crate) struct Shared {
     pub workspace: String,
     /// The workspace's agents, as Chat's agents resource names each: an agent is a member of
     /// the workspace like a person is, so a page names it to its windows whether or not a
-    /// device of its works here now. `None` until the workspace delivers the document: the
-    /// page asks again each frame (`Mount::place_agents`).
-    pub agents: Option<
-        tilo_app::framework::WorkspaceResource<tilo_app::tilo_workspace_agent::WorkspaceAgents>,
-    >,
+    /// device of its works here now. `None` until the code that reads them is in and the
+    /// workspace delivered them: the page asks again each frame (`Mount::place_agents`).
+    pub agents: Option<Rc<dyn crate::workspace_resources::Agents>>,
     /// The owners the workspace's documents open through, by the app that keeps each.
     pub owners: Option<ResourceOwners>,
 }
@@ -608,6 +606,26 @@ impl Shared {
         apps
     }
 
+    /// Code the page fetched is in: the windows waiting for it are built again.
+    pub(crate) fn code_arrived(&self) {
+        self.arrived.set(true);
+        self.wake();
+    }
+
+    /// The stores the page keeps of the workspace, opened as `author`.
+    pub(crate) fn page_stores(
+        &self,
+        author: &str,
+    ) -> Option<crate::workspace_resources::PageStores> {
+        Some(crate::workspace_resources::PageStores {
+            owners: self.owners.clone()?,
+            stores: Rc::clone(&self.stores),
+            workspace: self.workspace.clone(),
+            author: author.to_owned(),
+            replicated: self.resource_actions.peer.is_some(),
+        })
+    }
+
     /// Whether an application finished loading since the last call.
     pub fn take_arrived(&self) -> bool {
         self.arrived.replace(false)
@@ -664,8 +682,7 @@ impl Shared {
         if !loaded {
             self.failed.borrow_mut().insert(id.to_owned());
         }
-        self.arrived.set(true);
-        self.wake();
+        self.code_arrived();
         notify();
     }
 
@@ -1092,6 +1109,11 @@ impl Tiles {
         (instance, embedded): (TabId, bool),
         restore: RestoreInput,
     ) -> Result<AppComponent, Unbuilt> {
+        // What the window opens beside its own resource: until its code is in, the window shows
+        // its app arriving, and is built again once it is.
+        let resources = crate::workspace_resources::WORKSPACE_RESOURCES
+            .get()
+            .ok_or(Unbuilt::Arriving)?;
         let inputs = ProcessContextInputs {
             records: store,
             views: Rc::clone(&self.inputs.views),
@@ -1127,14 +1149,9 @@ impl Tiles {
             )?;
             context.provide_open_file(file);
         }
-        context.provide_workspace_resources(crate::workspace_resources::in_page(
-            &self.inputs.owners,
-            &self.shared.stores,
-            &self.inputs.workspace,
-            self.inputs.author.clone(),
-            self.shared.resource_actions.peer.is_some(),
-        ));
-        crate::person_resources::provide(&mut context, &self.inputs.store)?;
+        if let Some(page) = self.shared.page_stores(&self.inputs.author) {
+            (resources.beside)(&mut context, &page, &self.inputs.store)?;
+        }
         crate::host_services::provide_provider_admin(
             &mut context,
             self.inputs.provider_admin.clone(),
@@ -1966,16 +1983,6 @@ fn shared_with_its_host(inputs: &Inputs, notify: &Arc<dyn Fn() + Send + Sync>) -
         shared.role = SharedRole::unknown();
     }
     shared.linked = linked_accounts(&shared, notify);
-    if inputs.peer.is_some() {
-        shared.agents = crate::page_agents::PAGE_AGENTS.get().and_then(|agents| {
-            agents.make(
-                &inputs.owners,
-                &shared.stores,
-                &inputs.workspace,
-                inputs.author.clone(),
-            )
-        });
-    }
     shared
 }
 

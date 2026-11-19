@@ -29,6 +29,11 @@ pub enum Translation {
 pub fn engine(translation: Translation) -> Engine {
     let mut config = Config::default();
     config.consume_fuel(true);
+    // Relaxed SIMD's operations are defined only to within a tolerance, so a guest's answer
+    // could differ between engines and machines. A guest here is a theme's painter or a
+    // document's plugin, whose answer is cached and compared, so the engine every host shares
+    // offers the deterministic features only.
+    config.wasm_relaxed_simd(false);
     config.compilation_mode(match translation {
         Translation::Lazy => CompilationMode::LazyTranslation,
         Translation::Eager => CompilationMode::Eager,

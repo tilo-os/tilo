@@ -42,65 +42,23 @@ pub(super) async fn over_storage(
 /// A commit the host cannot admit is refused to the author without closing
 /// the session. A resent commit the host already admitted is answered with
 /// its original order from the workspace's commit log and neither
-/// persisted nor fanned out again.
+/// persisted nor fanned out again. A session's reader admits commits
+/// itself and answers them as they become durable
+/// ([`admit_commit`]).
 pub(super) async fn handle_commit(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[WorkspaceId],
     env: Envelope,
 ) -> Result<Option<Envelope>, PeerError> {
-    let admission = admit_commit(peer, session, subscribed, env).await?;
-    match admission {
-        CommitAdmission::Answered(reply) => Ok(reply),
-        CommitAdmission::Admitted(admitted) => admitted.finish(session).await.map(Some),
-    }
-}
-
-/// Handle `commits`, a run of `Commit`s the author sent back to back: admit
-/// every one before waiting for the first, so the workspace's owner finds
-/// them queued together and makes them durable under shared barriers
-/// (`crate::persistence::Group`), then answer each in the order sent. A
-/// copy of a commit in the same run must wait for the first to be recorded,
-/// so a run never holds two with the same operation id
-/// ([`commit_run_key`]).
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the admitted commits move into the answering loop one by one; the lint does not see the move"
-)]
-pub(super) async fn handle_commit_run(
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    subscribed: &[WorkspaceId],
-    commits: Vec<Envelope>,
-) -> Result<Vec<Option<Envelope>>, PeerError> {
-    let mut admitted = Vec::with_capacity(commits.len());
-    for env in commits {
-        admitted.push(admit_commit(peer, session, subscribed, env).await?);
-    }
-    let mut replies = Vec::with_capacity(admitted.len());
-    for admission in admitted {
-        replies.push(match admission {
-            CommitAdmission::Answered(reply) => reply,
-            CommitAdmission::Admitted(admitted) => Some(admitted.finish(session).await?),
-        });
-    }
-    Ok(replies)
-}
-
-/// What keys a commit within a run: its author and operation id.
-pub(super) const fn commit_run_key(env: &Envelope) -> Option<([u8; 32], [u8; 16])> {
-    match env {
-        Envelope::Commit {
-            author_device_public_key,
-            op,
-            ..
-        } => Some((*author_device_public_key, *op)),
-        _ => None,
-    }
+    admit_commit(peer, session, subscribed, env)
+        .await?
+        .answer(session)
+        .await
 }
 
 /// A `Commit` after its admission.
-enum CommitAdmission {
+pub(super) enum CommitAdmission {
     /// Answered without persisting: refused, or resent and found in the
     /// log.
     Answered(Option<Envelope>),
@@ -109,7 +67,7 @@ enum CommitAdmission {
 }
 
 /// A commit queued with its workspace's owner, not yet durable.
-struct AdmittedCommit {
+pub(super) struct AdmittedCommit {
     ws: SharedWorkspace,
     workspace_id: WorkspaceId,
     op: [u8; 16],
@@ -148,8 +106,11 @@ async fn own_commit_refusal(
 }
 
 /// Check, claim and queue `env`, a `Commit`, without waiting for it to be
-/// durable.
-async fn admit_commit(
+/// durable: its answer ([`CommitAdmission::answer`]) waits for that. A
+/// connection admits the commits it is sent one after another, in the order
+/// sent, so a workspace's owner keeps them in that order, and answers each
+/// once it is durable while it goes on with what came after it.
+pub(super) async fn admit_commit(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     subscribed: &[WorkspaceId],
@@ -251,6 +212,20 @@ async fn admit_commit(
         claim,
         committing,
     })))
+}
+
+impl CommitAdmission {
+    /// What the commit's author is told: its order once it is durable,
+    /// or the answer it was given at admission.
+    pub(super) async fn answer(
+        self,
+        session: &SessionCtx<'_>,
+    ) -> Result<Option<Envelope>, PeerError> {
+        match self {
+            Self::Answered(reply) => Ok(reply),
+            Self::Admitted(admitted) => admitted.finish(session).await.map(Some),
+        }
+    }
 }
 
 impl AdmittedCommit {

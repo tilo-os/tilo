@@ -70,10 +70,12 @@ fn pointer_step(text: &str) -> Option<PointerStep> {
 pub enum BrowserEffect {
     /// Read browser migration progress
     #[effect(row, returns, kind = "read")]
+    #[effect(on = crate::row_types::Continuity)]
     ReadContinuity,
     /// Open account
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Service)]
     OpenServiceSession {
         #[param("Selected account")]
         session_id: String,
@@ -84,6 +86,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, job, returns, destructive)]
     #[effect(label = "browser-service-forget")]
+    #[effect(on = crate::row_types::Service)]
     ForgetServiceSession {
         #[param("Selected account")]
         session_id: String,
@@ -91,31 +94,37 @@ pub enum BrowserEffect {
     /// Retry account deletion and ownership revocation without resolving credentials
     #[effect(kind = "outside")]
     #[effect(row, job, returns, destructive)]
+    #[effect(on = crate::row_types::Service)]
     RetryForgetServiceSession {
         #[param("Selected account")]
         session_id: String,
     },
     /// List accounts through fresh private ownership
     #[effect(row, job, returns, kind = "read")]
+    #[effect(on = crate::row_types::ServiceSessions)]
     ListServiceSessions,
     /// Read account connection
     #[effect(row, returns, kind = "read")]
+    #[effect(on = crate::row_types::ServiceStatus)]
     ReadServiceSession,
     /// Retry bringing your browsing into Tilo
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Continuity)]
     RetryContinuity,
     /// Go back
     ///
     /// Answers with the address once the previous page loaded.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, idempotent)]
+    #[effect(on = crate::row_types::Page)]
     Back,
     /// Go forward
     ///
     /// Answers with the address once the next page loaded.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, idempotent)]
+    #[effect(on = crate::row_types::Page)]
     Forward,
     /// Reload
     ///
@@ -123,6 +132,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, idempotent)]
     #[effect(label = "browser-reload")]
+    #[effect(on = crate::row_types::Page)]
     Reload,
     /// Stop loading
     ///
@@ -133,12 +143,14 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, idempotent)]
     #[effect(label = "browser-stop")]
+    #[effect(on = crate::row_types::Page)]
     Stop,
     /// Open address
     ///
     /// Answers with the address once the page loaded.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, idempotent)]
+    #[effect(on = crate::row_types::Page)]
     Navigate {
         #[param("Absolute URL or search terms")]
         url: String,
@@ -151,6 +163,7 @@ pub enum BrowserEffect {
     /// window's refs.
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Page)]
     OpenTab {
         #[param("Absolute URL or search terms")]
         url: String,
@@ -162,6 +175,10 @@ pub enum BrowserEffect {
     /// Opens a page of the history or a bookmark in this window.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, idempotent)]
+    #[effect(on = crate::row_types::Visit)]
+    #[effect(on = crate::row_types::Bookmark)]
+    #[effect(on = crate::row_types::PersonalBookmark)]
+    #[effect(on = crate::row_types::PersonalBookmarkPlacement)]
     Open {
         #[param("The page's address")]
         url: String,
@@ -171,20 +188,28 @@ pub enum BrowserEffect {
     ShowPage,
     /// Show history
     #[effect(view, row)]
+    #[effect(on = crate::row_types::Library)]
     ShowHistory,
     /// Show bookmarks
     #[effect(view, row)]
+    #[effect(on = crate::row_types::Bookmarks)]
+    #[effect(on = crate::row_types::Library)]
     ShowBookmarks,
     /// Show downloads
     #[effect(view, row)]
+    #[effect(on = crate::row_types::Library)]
     ShowDownloads,
     /// Show extensions
     #[effect(view, row)]
+    #[effect(on = crate::row_types::Extensions)]
+    #[effect(on = crate::row_types::Extension)]
+    #[effect(on = crate::row_types::Library)]
     ShowExtensions,
     /// Turn extension on
     #[effect(kind = "outside")]
     #[effect(row, returns)]
     #[effect(label = "browser-extension-turn-on")]
+    #[effect(on = crate::row_types::Extension)]
     TurnOnExtension {
         #[param("The extension's id")]
         id: String,
@@ -195,6 +220,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, returns)]
     #[effect(label = "browser-extension-turn-off")]
+    #[effect(on = crate::row_types::Extension)]
     TurnOffExtension {
         #[param("The extension's id")]
         id: String,
@@ -202,6 +228,7 @@ pub enum BrowserEffect {
     /// Pin extension to the toolbar
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Extension)]
     PinExtension {
         #[param("The extension's id")]
         id: String,
@@ -209,6 +236,7 @@ pub enum BrowserEffect {
     /// Unpin extension from the toolbar
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Extension)]
     UnpinExtension {
         #[param("The extension's id")]
         id: String,
@@ -219,6 +247,7 @@ pub enum BrowserEffect {
     /// it act on this page.
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Extension)]
     UseExtension {
         #[param("The extension's id")]
         id: String,
@@ -229,6 +258,7 @@ pub enum BrowserEffect {
     /// on the words, often by opening a page in this window.
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Extension)]
     SendToExtension {
         #[param("The extension's id")]
         id: String,
@@ -242,10 +272,12 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, returns)]
     #[effect(label = "browser-extension-confirm")]
+    #[effect(on = crate::row_types::Extensions)]
     AddExtension,
     /// Open extension settings
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Extension)]
     OpenExtensionSettings {
         #[param("The extension's id")]
         id: String,
@@ -256,6 +288,7 @@ pub enum BrowserEffect {
     /// for the page.
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Extension)]
     OpenExtensionSidePanel {
         #[param("The extension's id")]
         id: String,
@@ -264,6 +297,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, returns)]
     #[effect(label = "browser-extension-side-panel-close")]
+    #[effect(on = crate::row_types::Extension)]
     CloseExtensionSidePanel {
         #[param("The extension's id")]
         id: String,
@@ -274,6 +308,7 @@ pub enum BrowserEffect {
     /// needed when you added it stays.
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Extension)]
     RevokeExtensionAccess {
         #[param("The extension's id")]
         id: String,
@@ -283,6 +318,7 @@ pub enum BrowserEffect {
     /// Removes it from this device with everything it stored.
     #[effect(kind = "outside")]
     #[effect(row, returns, destructive)]
+    #[effect(on = crate::row_types::Extension)]
     RemoveExtension {
         #[param("The extension's id")]
         id: String,
@@ -296,6 +332,7 @@ pub enum BrowserEffect {
     ShowSettings,
     /// Filter library
     #[effect(view, row)]
+    #[effect(on = crate::row_types::Library)]
     SetLibraryFilter {
         #[param("Words to match in the current library section")]
         query: String,
@@ -303,6 +340,7 @@ pub enum BrowserEffect {
     /// Clear library filter
     #[effect(view, row)]
     #[effect(label = "browser-library-clear-filter")]
+    #[effect(on = crate::row_types::Library)]
     ClearLibraryFilter,
     /// Edit a saved address
     #[effect(view)]
@@ -323,6 +361,7 @@ pub enum BrowserEffect {
     /// Removes this one page from your browsing history. Bookmarks are kept.
     #[effect(kind = "outside")]
     #[effect(row, returns, destructive)]
+    #[effect(on = crate::row_types::Visit)]
     ForgetVisit {
         #[param("The page's address")]
         url: String,
@@ -333,6 +372,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, returns, destructive)]
     #[effect(label = "browser-settings-clear-history")]
+    #[effect(on = crate::row_types::History)]
     ClearHistory,
     /// Clear site data
     ///
@@ -340,6 +380,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, returns, destructive)]
     #[effect(label = "browser-site-clear-data")]
+    #[effect(on = crate::row_types::Settings)]
     RequestSiteDataClear,
     /// Read this site's remembered forms
     ///
@@ -353,6 +394,7 @@ pub enum BrowserEffect {
         untrusted,
         keywords = "remembered form, site memory"
     )]
+    #[effect(on = crate::row_types::Page)]
     ReadRememberedForms,
     /// Read all remembered forms
     ///
@@ -366,11 +408,13 @@ pub enum BrowserEffect {
         untrusted,
         keywords = "remembered form, site memory"
     )]
+    #[effect(on = crate::row_types::Settings)]
     ReadAllRememberedForms,
     /// Pause history in this window
     #[effect(kind = "outside")]
     #[effect(row, returns)]
     #[effect(label = "browser-menu-pause-history")]
+    #[effect(on = crate::row_types::Session)]
     TogglePause,
     /// Open Picture in Picture
     ///
@@ -378,6 +422,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, job, returns)]
     #[effect(label = "browser-menu-picture-in-picture")]
+    #[effect(on = crate::row_types::Page)]
     PictureInPicture,
     /// Reader view
     ///
@@ -386,6 +431,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, job, returns)]
     #[effect(label = "browser-menu-reader-view")]
+    #[effect(on = crate::row_types::Page)]
     ReaderView,
     /// Review page
     ///
@@ -400,6 +446,7 @@ pub enum BrowserEffect {
         idempotent,
         keywords = "review form, check answers, who filled"
     )]
+    #[effect(on = crate::row_types::Page)]
     ReviewPage,
     /// Show field on the page
     ///
@@ -407,6 +454,7 @@ pub enum BrowserEffect {
     /// the page's review does.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, untrusted)]
+    #[effect(on = crate::row_types::Page)]
     ShowPageField {
         #[param("Element ref of the field, such as d1e5")]
         element: String,
@@ -418,12 +466,14 @@ pub enum BrowserEffect {
     /// Download address
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Downloads)]
     StartDownload {
         #[param("Absolute HTTP or HTTPS URL")]
         url: String,
     },
     /// Show download
     #[effect(view, row)]
+    #[effect(on = crate::row_types::Download)]
     ShowDownload {
         #[param("The download's id")]
         id: String,
@@ -431,6 +481,7 @@ pub enum BrowserEffect {
     /// Cancel download
     #[effect(kind = "outside")]
     #[effect(row, returns, destructive)]
+    #[effect(on = crate::row_types::Download)]
     CancelDownload {
         #[param("The download's id")]
         id: String,
@@ -438,6 +489,7 @@ pub enum BrowserEffect {
     /// Retry download
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Download)]
     RetryDownload {
         #[param("The download's id")]
         id: String,
@@ -445,6 +497,7 @@ pub enum BrowserEffect {
     /// Open downloaded file
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Download)]
     OpenDownload {
         #[param("The download's id")]
         id: String,
@@ -453,6 +506,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, returns)]
     #[effect(label = "browser-download-reveal")]
+    #[effect(on = crate::row_types::Download)]
     RevealDownload {
         #[param("The download's id")]
         id: String,
@@ -463,6 +517,7 @@ pub enum BrowserEffect {
     /// not UTF-8 text answers only its type and size.
     #[effect(kind = "outside")]
     #[effect(row, returns, idempotent, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Download)]
     ReadDownload {
         #[param("The download's id")]
         id: String,
@@ -472,6 +527,7 @@ pub enum BrowserEffect {
     /// Saves the file the page offered, answering where it went.
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::Download)]
     SaveDownload {
         #[param("The download's id")]
         id: String,
@@ -481,6 +537,7 @@ pub enum BrowserEffect {
     /// Refuses the file the page offered, which is not saved.
     #[effect(kind = "outside")]
     #[effect(row, returns, destructive)]
+    #[effect(on = crate::row_types::Download)]
     DiscardDownload {
         #[param("The download's id")]
         id: String,
@@ -514,6 +571,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, returns)]
     #[effect(label = "browser-menu-zoom-in")]
+    #[effect(on = crate::row_types::Page)]
     ZoomIn,
     /// Zoom out
     ///
@@ -521,6 +579,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, returns)]
     #[effect(label = "browser-menu-zoom-out")]
+    #[effect(on = crate::row_types::Page)]
     ZoomOut,
     /// Show actual size
     ///
@@ -528,6 +587,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, returns, idempotent)]
     #[effect(label = "browser-menu-actual-size")]
+    #[effect(on = crate::row_types::Page)]
     ResetZoom,
     /// Read page content
     ///
@@ -545,6 +605,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     ReadPage {
         #[param(
             "Line of the outline to start at, from 1: the line a read that stopped short named, or the line of a find-page-text match (default 1, the top)"
@@ -573,6 +634,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     CapturePage {
         #[param(
             "Element ref from the page outline, such as d1e5: the picture is that element's box"
@@ -599,6 +661,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     ReadPageChanges {
         #[param(
             "Frame id from the outline, such as 3: the action then runs in that frame's own document, with its own outline and refs. The outline's own [frame=1] is read as the id it carries"
@@ -620,6 +683,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     ReadPageElementAt {
         #[param("Viewport x in CSS pixels from the page's left edge")]
         x: f64,
@@ -656,6 +720,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     WaitPageSettled {
         #[param(
             "How long the page must stay unchanged, milliseconds (default 500); not used when text or gone is given"
@@ -690,6 +755,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     ReadPageConsole {
         #[param(
             "Only entries after this sequence number: the `next` of the previous answer (default 0)"
@@ -710,6 +776,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     ReadPageNetwork {
         #[param(
             "Only entries after this sequence number: the `next` of the previous answer (default 0)"
@@ -733,6 +800,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     ReadPageRecord {
         #[param(
             "Only actions after this place in the record: the `next` of the previous answer (default 0)"
@@ -756,6 +824,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     ReadPageFields {
         #[param(
             "Frame id from the outline, such as 3: the fields are then read from that frame's own document"
@@ -780,6 +849,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     ReadPageForms {
         #[param(
             "Frame id from the outline, such as 3: the forms are then read from that frame's own document"
@@ -807,6 +877,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     ReadPageTable {
         #[param(
             "Ref of the table, as an earlier read-page-table answered it, or of anything inside the table, such as d1e7. Without it every table of the page is read"
@@ -844,6 +915,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     FindPageElement {
         #[param("Role the outline prints, such as textbox, combobox, checkbox, button or link")]
         role: Option<String>,
@@ -881,6 +953,7 @@ pub enum BrowserEffect {
         audience = "agents",
         untrusted
     )]
+    #[effect(on = crate::row_types::Page)]
     FindPageText {
         #[param("Words to find, as the page writes them: 1 to 200 characters")]
         text: String,
@@ -896,6 +969,7 @@ pub enum BrowserEffect {
     /// Click page element
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     ClickPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -911,6 +985,7 @@ pub enum BrowserEffect {
     /// pointer is over now and what changed in the outline.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     HoverPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: Option<String>,
@@ -925,6 +1000,7 @@ pub enum BrowserEffect {
     /// does, so reordering lists and dropped targets receive the drag.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     DragPage {
         #[param("Element ref to pick up, such as d1e5")]
         from: Option<String>,
@@ -947,6 +1023,7 @@ pub enum BrowserEffect {
     /// releases it at the last, as drawing a signature on a canvas does.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     PointerPath {
         #[param("Element ref to draw on, such as d1e5")]
         element: Option<String>,
@@ -960,6 +1037,7 @@ pub enum BrowserEffect {
     /// A password or card field is refused: those take the secret fill.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     FillPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -976,6 +1054,7 @@ pub enum BrowserEffect {
     /// logs and history.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     FillPageSecret {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -997,6 +1076,7 @@ pub enum BrowserEffect {
     /// site asks your person.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     FillPageItem {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -1008,6 +1088,7 @@ pub enum BrowserEffect {
     /// Choose page options
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     SelectPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -1028,6 +1109,7 @@ pub enum BrowserEffect {
     /// can be finished without a native picker.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     FillPageFiles {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -1044,6 +1126,7 @@ pub enum BrowserEffect {
     /// `PageUp`, `Home`, `End`, `ArrowDown` and `ArrowUp`, or `Space` for a screenful.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     PressPage {
         #[param("Key or chord such as Enter, Tab, Escape, ArrowDown or Control+a")]
         key: String,
@@ -1061,6 +1144,7 @@ pub enum BrowserEffect {
     /// it.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     SubmitPage {
         #[param("Element ref from the page outline, such as d1e5")]
         element: String,
@@ -1083,6 +1167,7 @@ pub enum BrowserEffect {
     /// than the page's own is refused unless `cross_origin` allows it.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     FillPageForm {
         #[param("The form's id from read-page-forms, such as form1, or its signature")]
         form: String,
@@ -1112,6 +1197,7 @@ pub enum BrowserEffect {
     /// refuses it as changed, and nothing is placed.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, untrusted)]
+    #[effect(on = crate::row_types::Page)]
     AnswerForm {
         #[param(flatten)]
         run: crate::page_forms::FormAnswers,
@@ -1125,6 +1211,7 @@ pub enum BrowserEffect {
     /// changed.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, untrusted)]
+    #[effect(on = crate::row_types::Page)]
     SendForm {
         #[param("The form's signature, as read-page-forms gives it")]
         form: String,
@@ -1139,6 +1226,7 @@ pub enum BrowserEffect {
     /// waits on its question until it is answered.
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::PageDialog)]
     AcceptPageDialog {
         #[param("The question's id")]
         dialog: u32,
@@ -1151,6 +1239,7 @@ pub enum BrowserEffect {
     /// and a page asking to be left stays.
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::PageDialog)]
     DismissPageDialog {
         #[param("The question's id")]
         dialog: u32,
@@ -1164,6 +1253,7 @@ pub enum BrowserEffect {
     /// history.
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::PageSignIn)]
     AnswerPageSignIn {
         #[param("The sign-in's id")]
         sign_in: u32,
@@ -1181,6 +1271,7 @@ pub enum BrowserEffect {
     /// the page shows the server's own answer.
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::PageSignIn)]
     CancelPageSignIn {
         #[param("The sign-in's id")]
         sign_in: u32,
@@ -1193,6 +1284,7 @@ pub enum BrowserEffect {
     /// privacy boundary, so it is asked first like the person's prompt is.
     #[effect(kind = "outside")]
     #[effect(row, privileged, returns)]
+    #[effect(on = crate::row_types::Page)]
     AnswerPermission {
         #[param("The request's id from the page's outline")]
         request: u32,
@@ -1213,6 +1305,7 @@ pub enum BrowserEffect {
     /// changed on the page.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, untrusted)]
+    #[effect(on = crate::row_types::Page)]
     PointerPage {
         #[param(
             "Steps in order, one per item, such as kind=move element=d1e4 x=10 y=10: a step naming an element is placed inside its box, every other step is a viewport position in CSS pixels"
@@ -1236,6 +1329,7 @@ pub enum BrowserEffect {
     /// `End` or `PageDown` for.
     #[effect(kind = "outside")]
     #[effect(row, job, cancellable, returns, audience = "agents", untrusted)]
+    #[effect(on = crate::row_types::Page)]
     ScrollPage {
         #[param(
             "Element ref whose box the wheel turns over, such as d1e5; the viewport's centre by default"
@@ -1256,6 +1350,7 @@ pub enum BrowserEffect {
     #[effect(kind = "outside")]
     #[effect(row, returns, idempotent)]
     #[effect(label = "browser-bookmark-page")]
+    #[effect(on = crate::row_types::Page)]
     BookmarkPersonalPage {
         #[param("Current page URL")]
         url: String,
@@ -1265,6 +1360,7 @@ pub enum BrowserEffect {
     /// Import personal bookmarks
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::PersonalBookmarksList)]
     ImportPersonalBookmarks {
         #[param(secret, "Authenticated reviewed personal bookmark bundle")]
         bundle: String,
@@ -1272,6 +1368,7 @@ pub enum BrowserEffect {
     /// Remove personal bookmark
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::PersonalBookmark)]
     RemovePersonalBookmark {
         #[param("Personal bookmark URL")]
         url: String,
@@ -1279,6 +1376,9 @@ pub enum BrowserEffect {
     /// Remove personal bookmark item
     #[effect(kind = "outside")]
     #[effect(row, returns)]
+    #[effect(on = crate::row_types::PersonalBookmarkPlacement)]
+    #[effect(on = crate::row_types::PersonalBookmarkFolder)]
+    #[effect(on = crate::row_types::PersonalBookmarkSeparator)]
     RemovePersonalImportedNode {
         #[param("Reviewed source snapshot")]
         source: String,
@@ -1287,6 +1387,8 @@ pub enum BrowserEffect {
     },
     /// Show personal bookmark folder
     #[effect(view, row)]
+    #[effect(on = crate::row_types::PersonalBookmarkFolder)]
+    #[effect(on = crate::row_types::PersonalBookmarkNavigation)]
     ShowPersonalBookmarkFolder {
         #[param("Reviewed source snapshot; empty for overview")]
         source: String,

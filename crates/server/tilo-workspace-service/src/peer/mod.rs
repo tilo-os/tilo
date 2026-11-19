@@ -74,7 +74,7 @@ use access::{
 use actions::{RemoteActionRoute, handle_host_action, handle_remote_action};
 use admin::handle_workspaces;
 use agent_session::handle_agent_session;
-use commit::{commit_run_key, handle_commit, handle_commit_run, over_storage};
+use commit::{admit_commit, handle_commit, over_storage};
 use compaction::handle_compaction;
 use dispatch::handle_envelope;
 #[cfg(test)]

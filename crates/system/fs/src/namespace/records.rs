@@ -23,19 +23,33 @@ impl Namespace {
         Self::from_records(author, unbundle(data)?)
     }
 
-    /// A namespace holding the tree's records `records`, each the number of its chunk (0 for
-    /// the tree's own record) and its document saved whole: what a device that holds the
-    /// tree's records starts from.
+    /// A namespace holding the tree's documents, each the number of its chunk (0 for the
+    /// tree's own) and the document saved whole: what a device that holds the tree's documents
+    /// starts from.
     ///
     /// # Errors
-    /// A record is no document.
+    /// One of them does not load.
     pub fn from_records(
         author: impl Into<String>,
-        records: impl IntoIterator<Item = (TreeChunk, Vec<u8>)>,
+        documents: impl IntoIterator<Item = (TreeChunk, Vec<u8>)>,
     ) -> Result<Self, automerge::AutomergeError> {
+        Self::from_documents_read(author, documents).map(|(namespace, _)| namespace)
+    }
+
+    /// [`Self::from_records`], with the heads each document stood at as read: opening may
+    /// change the documents (naming what it wrote), and what keeps them on disk keeps those
+    /// changes too ([`crate::kept_documents`]).
+    ///
+    /// # Errors
+    /// One of them does not load.
+    pub fn from_documents_read(
+        author: impl Into<String>,
+        documents: impl IntoIterator<Item = (TreeChunk, Vec<u8>)>,
+    ) -> Result<(Self, BTreeMap<TreeChunk, Vec<automerge::ChangeHash>>), automerge::AutomergeError>
+    {
         let mut index = None;
         let mut chunks = Vec::new();
-        for (chunk, bytes) in records {
+        for (chunk, bytes) in documents {
             let doc = AutoCommit::load(&bytes)?;
             if chunk == 0 {
                 index = Some(doc);
@@ -48,6 +62,10 @@ impl Namespace {
             docs.adopt_chunk(chunk, doc)?;
         }
         docs.locate_all();
+        let read: BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> = docs
+            .each_mut()
+            .map(|(chunk, doc)| (chunk, doc.get_heads()))
+            .collect();
         let author = author.into();
         // Resume the id counter past ids we authored before, so a restart can't reuse a node id.
         let prefix = format!("{author}/");
@@ -66,7 +84,7 @@ impl Namespace {
         for (_, doc) in ns.doc.each_mut() {
             doc.commit_named();
         }
-        Ok(ns)
+        Ok((ns, read))
     }
 
     /// Every record of the tree, kept as one: what [`Self::from_bytes`] reads back.
@@ -81,7 +99,7 @@ impl Namespace {
     }
 
     /// Record `chunk` of the tree (0 for the tree's own) saved whole, if this namespace holds it.
-    pub fn save_record(&mut self, chunk: TreeChunk) -> Option<Vec<u8>> {
+    pub fn save_document(&mut self, chunk: TreeChunk) -> Option<Vec<u8>> {
         self.note_change();
         Some(self.doc.doc_mut(chunk)?.save())
     }
@@ -263,7 +281,7 @@ impl Namespace {
     }
 
     /// Each record's heads: the tree's own (0) and every chunk's.
-    pub fn record_heads(&mut self) -> BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> {
+    pub fn document_heads(&mut self) -> BTreeMap<TreeChunk, Vec<automerge::ChangeHash>> {
         self.note_change();
         self.doc.heads()
     }
@@ -345,7 +363,7 @@ impl Namespace {
     /// more, or this namespace holds nothing of the record. A record that changed more than
     /// one write carries goes out over several, each building on the last. Reading changes
     /// walks the record's document, so a caller asks only for a record it can send now.
-    pub fn record_write(
+    pub fn document_write(
         &mut self,
         chunk: TreeChunk,
         held: &[automerge::ChangeHash],

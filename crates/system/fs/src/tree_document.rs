@@ -453,10 +453,10 @@ impl TreePublisher {
             if chunk == 0 && !namespace.holds_tree() {
                 return Ok(());
             }
-            let Some(bytes) = namespace.save_record(chunk) else {
+            let Some(bytes) = namespace.save_document(chunk) else {
                 return Ok(());
             };
-            (bytes, namespace.record_heads())
+            (bytes, namespace.document_heads())
         };
         self.send(chunk, DocumentMutation::Snapshot(bytes)).await?;
         if let Some(record) = self.records.get_mut(&chunk) {

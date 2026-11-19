@@ -65,7 +65,7 @@ pub struct AgentAsk {
 impl AgentAsk {
     /// The sheet asking it: each choice a button of its own where nothing is
     /// typed, else a field to type in under the choices, and Send. Not now
-    /// leaves it unanswered.
+    /// leaves it waiting, unanswered; Decline tells the agent no.
     fn dialog(&self, handle: &str, asked: &AgentQuestion) -> Dialog {
         let body = if self.typed {
             Body::Entry {
@@ -88,7 +88,8 @@ impl AgentAsk {
             facts: vec![(word("agent-ask-workspace"), asked.workspace.clone())],
             body,
             confirm_label: word("agent-ask-send"),
-            cancel_label: word("agent-ask-not-now"),
+            cancel_label: word("agent-ask-decline"),
+            defer_label: Some(word("agent-ask-not-now")),
             // Nothing is picked until the person picks it.
             selected: usize::MAX,
             ..Dialog::default()

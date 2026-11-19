@@ -3125,6 +3125,23 @@ impl Widget for NotesApp {
         change
     }
 
+    /// The shell carries its own parts' changes; the page tree and the note
+    /// panel hang in the columns it sized, so they carry theirs from here, in
+    /// the nodes they were laid out in.
+    fn remount_children(&mut self, remount: &mut ui::widget::Remount<'_>) -> bool {
+        let mut carried = self.shell.remount_children(remount);
+        if self.main_node.is_some() {
+            carried &= self.main.remount_children(remount);
+        }
+        if self.sidebar_node.is_some() {
+            carried &= self.sidebar.remount_children(remount);
+        }
+        if self.outline_node.is_some() {
+            carried &= self.outline.remount_children(remount);
+        }
+        carried
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

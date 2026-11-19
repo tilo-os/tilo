@@ -258,7 +258,12 @@ pub struct Remote {
     /// Over the peer network: the dial helper closes the connection itself
     /// once its stdin ends, so the device's session ends at once.
     peer: bool,
+    /// Dials the same SSH route again, for a renewal whose connection was
+    /// lost mid-build; `None` over the peer network.
+    redial: Option<Redial>,
 }
+
+type Redial = Box<dyn FnMut() -> Result<Remote, CliError> + Send>;
 
 impl Remote {
     pub(crate) fn keep_awake_while<T>(
@@ -267,9 +272,34 @@ impl Remote {
     ) -> Result<(T, Result<(), CliError>), CliError> {
         keepawake::during(
             std::time::Duration::from_secs(60),
-            || self.renew_sleep_lease(std::time::Duration::from_secs(10)),
+            || self.renew_or_redial(std::time::Duration::from_secs(10)),
             build,
         )
+    }
+
+    /// A build outlasts many renewals, and one slow round trip over a busy
+    /// link ends the connection that renewal went over (its handshake times
+    /// out and its transport is reaped). The device is usually still there,
+    /// so the lease is taken again over a new connection instead of the
+    /// finished build being thrown away.
+    fn renew_or_redial(&mut self, timeout: std::time::Duration) -> Result<(), CliError> {
+        let lapsed = match self.renew_sleep_lease(timeout) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+            return Err(lapsed);
+        }
+        let Some(mut redial) = self.redial.take() else {
+            return Err(lapsed);
+        };
+        match redial() {
+            Ok(fresh) => {
+                *self = fresh;
+                self.renew_sleep_lease(timeout)
+            }
+            Err(_) => Err(lapsed),
+        }
     }
 
     fn renew_sleep_lease(&mut self, timeout: std::time::Duration) -> Result<(), CliError> {
@@ -342,12 +372,18 @@ impl Remote {
         client.enable_binary_uploads();
         let handshake = client.hello(env!("CARGO_PKG_VERSION"));
         match handshake {
-            Ok(hello) => Ok(Self {
-                child,
-                client: Some(client),
-                hello,
-                peer: false,
-            }),
+            Ok(hello) => {
+                let (vm, line, endpoint) = (vm.to_owned(), line.clone(), endpoint.clone());
+                let redial: Redial =
+                    Box::new(move || Self::connect_line(&vm, &line, &endpoint, debug.clone()));
+                Ok(Self {
+                    child,
+                    client: Some(client),
+                    hello,
+                    peer: false,
+                    redial: Some(redial),
+                })
+            }
             Err(ClientError::Io(_) | ClientError::Closed) => {
                 let _ = child.kill();
                 let status = child.wait().ok().and_then(|s| s.code());
@@ -458,6 +494,7 @@ impl Remote {
                     client: Some(client),
                     hello,
                     peer: true,
+                    redial: None,
                 },
                 session,
             )),

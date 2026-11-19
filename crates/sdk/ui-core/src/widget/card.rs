@@ -7,7 +7,7 @@ use taffy::style_helpers::{auto, fr, length, max_content, min_content, minmax, p
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{BlendMode, Fill};
+use vello::peniko::{BlendMode, Color, Fill};
 
 use super::composition_parts::{Parts, retained_parts};
 use crate::paint::PaintCtx;
@@ -65,6 +65,41 @@ impl CardMetrics {
     }
 }
 
+/// A card's fill: the raised surface, lifted under a pointer over a card a press opens and
+/// further while it is pressed.
+pub(crate) fn surface_fill(theme: &Theme, interaction: Interaction, pressable: bool) -> Color {
+    let raised = theme.tokens.colors.surfaces.raised;
+    if pressable && !interaction.disabled && interaction.pressed {
+        theme.tokens.colors.lift_on(raised, 1.0)
+    } else if pressable && !interaction.disabled && interaction.hovered {
+        theme.tokens.colors.lift_on(raised, 0.5)
+    } else {
+        raised
+    }
+}
+
+/// A card's surface on a page, as [`paint_surface`] lays it: its fill, and its rest edge or, for
+/// the selected card, the accent edge in its place.
+pub(crate) fn surface_ground(
+    theme: &Theme,
+    interaction: Interaction,
+    pressable: bool,
+    selected: bool,
+) -> crate::composition::Ground {
+    let fill = surface_fill(theme, interaction, pressable);
+    let edge = if selected {
+        theme.tokens.colors.intent.accent
+    } else {
+        crate::surface::edge_on(fill)
+    };
+    crate::composition::Ground {
+        fill: Some(crate::composition::rgba8(fill)),
+        edge: Some(crate::composition::rgba8(edge)),
+        radius: CardMetrics::new(theme).radius,
+        inset: [0.0; 2],
+    }
+}
+
 pub(crate) fn paint_surface(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -78,14 +113,7 @@ pub(crate) fn paint_surface(
     }
     let theme = ctx.theme;
     let m = CardMetrics::new(theme);
-    let raised = theme.tokens.colors.surfaces.raised;
-    let fill = if pressable && !interaction.disabled && interaction.pressed {
-        theme.tokens.colors.lift_on(raised, 1.0)
-    } else if pressable && !interaction.disabled && interaction.hovered {
-        theme.tokens.colors.lift_on(raised, 0.5)
-    } else {
-        raised
-    };
+    let fill = surface_fill(theme, interaction, pressable);
     crate::surface::selectable_card(
         ctx.scene,
         ctx.transform,
@@ -492,7 +520,13 @@ impl Widget for Card {
     fn html(&self, cx: &mut crate::composition::HtmlCx<'_>) {
         cx.element("article");
         // Its surface, as the canvas lays it under the card's parts.
-        cx.ground(card_ground(cx.theme()));
+        let ground = surface_ground(
+            cx.theme(),
+            self.activation.state,
+            self.activation.is_bound(),
+            self.selected,
+        );
+        cx.ground(ground);
         cx.children();
     }
 
@@ -1189,16 +1223,3 @@ mod component;
 mod grid_component;
 pub use component::CardProps;
 pub use grid_component::{CardGridCardProps, CardGridProps, DescribedCardGrid};
-
-/// A card's raised surface with its hairline edge, as a page fills the element of a card, or of a
-/// row that stands as one.
-pub(crate) fn card_ground(theme: &Theme) -> crate::composition::Ground {
-    use crate::composition::rgba8;
-    let raised = theme.tokens.colors.surfaces.raised;
-    crate::composition::Ground {
-        fill: Some(rgba8(raised)),
-        edge: Some(rgba8(crate::surface::edge_on(raised))),
-        radius: CardMetrics::new(theme).radius,
-        inset: [0.0; 2],
-    }
-}

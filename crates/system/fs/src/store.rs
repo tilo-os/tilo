@@ -157,6 +157,9 @@ const CACHE_SETTLE_AT: usize = 64 * 1024;
 /// A blob's bytes: inline in the index database, or a whole blob's file with its outboard.
 enum Either {
     Inline(Vec<u8>),
+    /// A complete whole blob of `size` bytes asked for no bytes of it: only its length answers,
+    /// so neither its file nor its outboard is read.
+    Length(u64),
     Whole {
         size: u64,
         file: File,
@@ -164,10 +167,23 @@ enum Either {
     },
 }
 
-/// Collects the verified leaves of a BAO stream.
-#[derive(Default)]
+/// Copies the bytes `start..end` out of the verified leaves of a BAO stream as each arrives, so a
+/// range read holds the range once rather than its leaves and then their copy.
 struct Collector {
-    leaves: Vec<(u64, Bytes)>,
+    start: u64,
+    end: u64,
+    out: Vec<u8>,
+}
+
+impl Collector {
+    fn new(start: u64, end: u64) -> Self {
+        let len = usize::try_from(end.saturating_sub(start)).unwrap_or(0);
+        Self {
+            start,
+            end,
+            out: Vec::with_capacity(len),
+        }
+    }
 }
 
 impl bao_tree::io::mixed::Sender for Collector {
@@ -175,7 +191,7 @@ impl bao_tree::io::mixed::Sender for Collector {
 
     async fn send(&mut self, item: EncodedItem) -> Result<(), Self::Error> {
         if let EncodedItem::Leaf(leaf) = item {
-            self.leaves.push((leaf.offset, leaf.data));
+            content::copy_part(&mut self.out, &leaf.data, leaf.offset, self.start, self.end);
         }
         Ok(())
     }
@@ -435,9 +451,11 @@ impl ContentStore {
         }
         let key = *hash.as_bytes();
         let files = Arc::clone(&self.files);
+        // The area counts what it reads of a whole blob's file itself; an inline blob is counted
+        // here, once.
         let whole = tokio::task::spawn_blocking(move || {
             if let Some(bytes) = files.get_inline(&key) {
-                return Some(Bytes::from(bytes));
+                return Some((Bytes::from(bytes), true));
             }
             if files.is_blob(&key) {
                 let entry = files.entry(&key)?;
@@ -445,15 +463,17 @@ impl ContentStore {
                     .complete()
                     .then(|| files.read_at(&key, 0, entry.size).ok())
                     .flatten()
-                    .map(Bytes::from);
+                    .map(|bytes| (Bytes::from(bytes), false));
             }
             None
         })
         .await
         .ok()
         .flatten();
-        if let Some(bytes) = whole {
-            self.note_read(bytes.len());
+        if let Some((bytes, inline)) = whole {
+            if inline {
+                self.note_read(bytes.len());
+            }
             self.cache_insert(hash, bytes.clone());
             return Some(bytes);
         }
@@ -575,6 +595,7 @@ impl ContentStore {
         }
         let key = *hash.as_bytes();
         let files = Arc::clone(&self.files);
+        let wanted = range.clone();
         let read = tokio::task::spawn_blocking(move || {
             if let Some(bytes) = files.get_inline(&key) {
                 return Some(Either::Inline(bytes));
@@ -583,6 +604,9 @@ impl ContentStore {
                 let entry = files.entry(&key)?;
                 if !entry.complete() {
                     return None;
+                }
+                if wanted.start.min(entry.size) >= wanted.end.min(entry.size) {
+                    return Some(Either::Length(entry.size));
                 }
                 let outboard = files.outboard(&key)?;
                 let file = files.file(&key).ok()?.as_ref().try_clone().ok()?;
@@ -604,6 +628,7 @@ impl ContentStore {
                 self.note_read(out.len());
                 Some((out, bytes.len() as u64))
             }
+            Some(Either::Length(size)) => Some((Vec::new(), size)),
             Some(Either::Whole {
                 size,
                 file,
@@ -623,13 +648,11 @@ impl ContentStore {
                         tree,
                         data: outboard,
                     };
-                    let mut collected = Collector::default();
+                    let mut collected = Collector::new(start, end);
                     traverse_ranges_validated(file, outboard, &ranges, &mut collected)
                         .await
                         .ok()?;
-                    for (offset, data) in collected.leaves {
-                        content::copy_part(&mut out, &data, offset, start, end);
-                    }
+                    out = collected.out;
                     if out.len() as u64 != end.saturating_sub(start) {
                         return None;
                     }

@@ -421,37 +421,89 @@ pub(crate) enum Named<'a> {
     Flat(&'a Bookmark),
     Placement(&'a ImportedTree, &'a ImportedNode),
 }
-impl Named<'_> {
-    /// The row `id` names, of the type the entry is.
-    pub(crate) fn row(&self, id: &str) -> ui::framework::LiveRow {
-        match self {
-            Self::Flat(entry) => {
-                ui::framework::LiveRow::typed::<crate::row_types::PersonalBookmark>(
-                    id,
-                    &entry.title,
-                )
-            }
-            Self::Placement(_, node) => node_row(node, id.to_owned()),
-        }
-    }
+/// The row `id` names: `entry`, one of the person's own bookmarks.
+pub(crate) fn flat_row(
+    entry: &crate::continuity_library::Bookmark,
+    id: String,
+) -> ui::framework::LiveRow {
+    ui::framework::LiveRow::typed_with::<crate::row_types::PersonalBookmark>(
+        id,
+        &entry.title,
+        &opened(&entry.url).extended(&forgotten(&entry.url)),
+    )
 }
-/// The row `id` names: `node`, an entry of an imported tree, of the type its
-/// kind is.
-pub(crate) fn node_row(node: &ImportedNode, id: String) -> ui::framework::LiveRow {
-    match node.kind {
+/// The row `id` names: `node`, an entry of the tree `tree` brought, of the
+/// type its kind is, offering what this window can do with it.
+pub(crate) fn node_row(
+    tree: &ImportedTree,
+    node: &ImportedNode,
+    id: String,
+) -> ui::framework::LiveRow {
+    let removed = removed_from(tree, node);
+    match &node.kind {
         NodeKind::Folder => {
-            ui::framework::LiveRow::typed::<crate::row_types::PersonalBookmarkFolder>(
+            ui::framework::LiveRow::typed_with::<crate::row_types::PersonalBookmarkFolder>(
                 id,
                 &node.title,
+                &showing(&tree.source, Some(node.id.clone()), 0).extended(&removed),
             )
         }
-        NodeKind::Bookmark { .. } => ui::framework::LiveRow::typed::<
+        NodeKind::Bookmark { url } => ui::framework::LiveRow::typed_with::<
             crate::row_types::PersonalBookmarkPlacement,
-        >(id, &node.title),
-        NodeKind::Separator => ui::framework::LiveRow::typed::<
+        >(id, &node.title, &opened(url).extended(&removed)),
+        NodeKind::Separator => ui::framework::LiveRow::typed_with::<
             crate::row_types::PersonalBookmarkSeparator,
-        >(id, &node.title),
+        >(id, &node.title, &removed),
     }
+}
+/// Opening the page `url` names.
+pub(crate) fn opened(url: &str) -> ui::tilo_resource::RowBindings {
+    ui::tilo_resource::RowBindings::new()
+        .bind(crate::effects::BrowserEffect::OPEN, [("url", url.into())])
+}
+/// Forgetting the page `url` names.
+pub(crate) fn forgotten(url: &str) -> ui::tilo_resource::RowBindings {
+    ui::tilo_resource::RowBindings::new().bind(
+        crate::effects::BrowserEffect::REMOVE_PERSONAL_BOOKMARK,
+        [("url", url.into())],
+    )
+}
+/// Removing the entry `node` of the tree `tree` brought.
+pub(crate) fn removed_from(
+    tree: &ImportedTree,
+    node: &ImportedNode,
+) -> ui::tilo_resource::RowBindings {
+    ui::tilo_resource::RowBindings::new().bind(
+        crate::effects::BrowserEffect::REMOVE_PERSONAL_IMPORTED_NODE,
+        [
+            (
+                "source",
+                serde_json::Value::String(blake3::Hash::from(tree.source).to_hex().to_string()),
+            ),
+            ("id", node.id.clone().into()),
+        ],
+    )
+}
+/// Showing the folder `id` of the tree from `source` brought, from `offset`.
+pub(crate) fn showing(
+    source: &[u8; 32],
+    id: Option<String>,
+    offset: u32,
+) -> ui::tilo_resource::RowBindings {
+    ui::tilo_resource::RowBindings::new().bind(
+        crate::effects::BrowserEffect::SHOW_PERSONAL_BOOKMARK_FOLDER,
+        [
+            (
+                "source",
+                serde_json::Value::String(blake3::Hash::from(*source).to_hex().to_string()),
+            ),
+            (
+                "id",
+                id.map_or(serde_json::Value::Null, serde_json::Value::String),
+            ),
+            ("offset", serde_json::Value::from(offset)),
+        ],
+    )
 }
 /// What `id` names, when it names anything of the person's.
 pub(crate) fn named<'a>(state: &'a PersonalBookmarkState, id: &str) -> Option<Named<'a>> {
@@ -470,38 +522,10 @@ pub(crate) fn named<'a>(state: &'a PersonalBookmarkState, id: &str) -> Option<Na
     None
 }
 pub(crate) fn node_resource(tree: &ImportedTree, node: &ImportedNode) -> ui::framework::LiveRow {
-    let mut resource = node_row(node, node_id(&tree.source, &node.id));
-    resource = resource.effect(&crate::effects::BrowserEffect::RemovePersonalImportedNode {
-        source: blake3::Hash::from(tree.source).to_hex().to_string(),
-        id: node.id.clone(),
-    });
-    match &node.kind {
-        NodeKind::Folder => {
-            resource =
-                resource.effect(&crate::effects::BrowserEffect::ShowPersonalBookmarkFolder {
-                    source: blake3::Hash::from(tree.source).to_hex().to_string(),
-                    id: Some(node.id.clone()),
-                    offset: 0,
-                });
-        }
-        NodeKind::Bookmark { url } => {
-            resource = resource.effect(&crate::effects::BrowserEffect::Open { url: url.clone() });
-        }
-        NodeKind::Separator => {}
-    }
-    resource
+    node_row(tree, node, node_id(&tree.source, &node.id))
 }
 pub(crate) fn flat_resource(entry: &crate::continuity_library::Bookmark) -> ui::framework::LiveRow {
-    ui::framework::LiveRow::typed::<crate::row_types::PersonalBookmark>(
-        flat_id(&entry.url),
-        &entry.title,
-    )
-    .effect(&crate::effects::BrowserEffect::Open {
-        url: entry.url.clone(),
-    })
-    .effect(&crate::effects::BrowserEffect::RemovePersonalBookmark {
-        url: entry.url.clone(),
-    })
+    flat_row(entry, flat_id(&entry.url))
 }
 pub(crate) fn search(state: &PersonalBookmarkState) -> Vec<ui::tilo_resource::SearchEntry> {
     let mut entries = Vec::new();

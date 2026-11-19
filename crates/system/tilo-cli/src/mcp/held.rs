@@ -124,6 +124,13 @@ pub(crate) fn connect(place: &Place) -> Option<UnixStream> {
     tilo_files::native::socket::connect(&place.socket).ok()
 }
 
+/// Whether this login's holder listens: its socket is there while it serves, and removed as it
+/// ends. Unlike [`connect`], this waits on nothing, so a command reads it of a holder that is
+/// busy with a step over a workspace's folder.
+pub(crate) fn listening(place: &Place) -> bool {
+    place.socket.exists()
+}
+
 /// Start the device's holder, the peer, unless one listens already: what
 /// `tilo login` and `tilo mount` leave running.
 ///
@@ -412,10 +419,25 @@ impl Program {
     }
 }
 
+/// Whether a live process holds this device's holder lock. The kernel drops the lock with its
+/// process, so a holder that ended never reads as one that is there, and one inside a step that
+/// walks a whole folder tree does. A command reads this instead of asking, so a peer that answers
+/// slowly is never mistaken for one that is not there.
+pub(crate) fn holder_alive(place: &Place) -> bool {
+    use advisory_lock::{FileLock, LockMode, TryLockError};
+    match FileLock::try_open(&place.lock, LockMode::Exclusive) {
+        // Free: taken here for the look, and let go at once.
+        Ok(_free) => false,
+        Err(TryLockError::WouldBlock) => true,
+        // A lock that cannot even be opened is no holder to wait for: starting one says more.
+        Err(TryLockError::Error(_)) => false,
+    }
+}
+
 /// Ask the holder listening at `place` to let a holder claiming `claim` hold the device: whether
 /// it steps down, as it does when the claim takes over from its own ([`Claim::takes_over`]);
 /// `None` when none answered.
-fn ask_to_step_down(place: &Place, claim: Claim) -> Option<bool> {
+pub(crate) fn ask_to_step_down(place: &Place, claim: Claim) -> Option<bool> {
     use std::io::{BufRead as _, Write as _};
     let mut stream = connect(place)?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
@@ -1337,6 +1359,24 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "the lock of a process that ended wedges the next holder"
+        );
+    }
+
+    /// A holder that is there is seen from its lock alone, without asking it anything: that is
+    /// the fact a command starts, waits or hands over on, and a busy holder still gives it.
+    #[test]
+    fn a_holders_liveness_is_seen_from_its_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let place = Place::at(dir.path(), dir.path(), &[5; 32]);
+        assert!(!holder_alive(&place), "nothing holds the device");
+        let held = take_lock(&place, Duration::ZERO, agents(Program::running()))
+            .unwrap()
+            .expect("the lock is free");
+        assert!(holder_alive(&place), "the holder's lock says it is there");
+        drop(held);
+        assert!(
+            !holder_alive(&place),
+            "a holder that ended is not waited for"
         );
     }
 

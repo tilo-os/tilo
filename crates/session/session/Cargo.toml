@@ -44,8 +44,10 @@ dev-session = []
 # Lets a release binary of a dev image open the test-control socket
 # `$TILO_TEST_CONTROL` names, which `tilo-vm` and the capture harnesses drive a
 # desktop through. A production image never builds it (tools/policy/
-# check_dev_overrides_contract.py).
-dev-overrides = []
+# check_dev_overrides_contract.py). Its `provision_test_identity` op mints the
+# throwaway identity, so the feature carries the identity crate's minting too: a
+# session built on its own (a component swap) mints as a dev image's does.
+dev-overrides = ["tilo-identity/throwaway-test-identity"]
 # Publishes a Rust app's (Tube's, Chat's) resources and views in a development session, so a
 # shell draws them live: Tube's sample catalogue and Chat's demo conversation, with the views a
 # `#[view]` declares, never the live worker. A shot of a Rust app's view on the canvas builds

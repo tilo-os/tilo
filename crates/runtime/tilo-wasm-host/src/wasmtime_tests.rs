@@ -10,8 +10,9 @@ use crate::{DEADLINE_EXCEEDED, Failure, ImportPolicy, Limits, reusable};
 
 fn limits() -> Limits {
     Limits {
-        // Enough fuel to loop for far longer than the deadline: the clock is what stops it.
-        fuel_per_call: u64::MAX,
+        // Enough fuel to loop well past the deadline, so the clock is what stops the call, and
+        // little enough that a ticker which never ran fails this test instead of hanging it.
+        fuel_per_call: 20_000_000_000,
         deadline: Some(Duration::from_millis(100)),
         max_memory_bytes: 1 << 16,
         max_memories: 1,

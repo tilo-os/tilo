@@ -110,20 +110,23 @@ impl BrowserWidget {
     }
 
     pub(super) fn continuity_resource(&self) -> Option<ui::framework::LiveRow> {
+        use crate::continuity_handoff::Status;
+        use crate::effects::BrowserEffect as E;
         if let Some(controller) = &self.continuity {
-            use crate::continuity_handoff::Status;
             if controller.status() == Status::Absent {
                 return None;
             }
-            let mut resource = ui::framework::LiveRow::typed::<crate::row_types::Continuity>(
+            let mut bindings = ui::tilo_resource::RowBindings::new().offer(E::READ_CONTINUITY);
+            if controller.status() == Status::Failed {
+                bindings = bindings.offer(E::RETRY_CONTINUITY);
+            }
+            return Some(ui::framework::LiveRow::typed_with::<
+                crate::row_types::Continuity,
+            >(
                 "browser.continuity",
                 crate::CATALOG.t("browser-resource-continuity"),
-            )
-            .effect(&crate::effects::BrowserEffect::ReadContinuity);
-            if controller.status() == Status::Failed {
-                resource = resource.effect(&crate::effects::BrowserEffect::RetryContinuity);
-            }
-            return Some(resource);
+                &bindings,
+            ));
         }
         None
     }

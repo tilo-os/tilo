@@ -49,16 +49,19 @@ fn a_key_on_a_shell_of_six_builds_what_each_window_binds_once() {
     let syncs = total(|cost| cost.syncs);
     let mut cpu: Vec<u64> = costs.iter().map(|cost| cost.cpu_us).collect();
     cpu.sort_unstable();
+    let rebuilds = total(|cost| cost.rebuilds);
     // Said on every run: what a key costs the thread that runs it is the
     // number a person feels.
     println!(
         "typing into the note, six apps open: cpu per key p50 {:.2} ms, max {:.2} ms, \
-         {:.2} window syncs, {:.2} action passes and {:.2} declaration builds per key",
+         {:.2} window syncs, {:.2} action passes, {:.2} declaration builds and \
+         {:.2} layout rebuilds per key",
         cpu[cpu.len() / 2] as f64 / 1000.0,
         cpu.last().copied().unwrap_or(0) as f64 / 1000.0,
         syncs as f64 / costs.len() as f64,
         passes as f64 / costs.len() as f64,
         declarations as f64 / costs.len() as f64,
+        rebuilds as f64 / costs.len() as f64,
     );
     // Each pass builds them once, and the note's publication of what the
     // key changed once more; a window of the other five would add its own.
@@ -75,6 +78,36 @@ fn a_key_on_a_shell_of_six_builds_what_each_window_binds_once() {
         syncs <= costs.len(),
         "{syncs} window syncs over {} keys: only the window typed into syncs",
         costs.len()
+    );
+    // The note's sidebar shows the new note it lists changing, and the
+    // shell changes that in place: no frame of a key rebuilds its tree.
+    assert_eq!(
+        rebuilds,
+        0,
+        "{rebuilds} layout tree rebuilds over {} keys",
+        costs.len()
+    );
+}
+
+#[test]
+fn a_key_in_an_untitled_note_rebuilds_no_shell_layout_tree() {
+    let mut shell = Demo::open();
+    shell.rest();
+    shell.focus_the_note();
+    shell.rest();
+    // The key that names the note settles what opening it left owed; a key
+    // after it changes only the note's row in the sidebar, and the shell
+    // changes that in place.
+    shell.type_key("l");
+    shell.idle();
+    let before = shell.note_heads();
+    let rebuilt = shell.harness.rebuilt_frames();
+    shell.type_key("l");
+    assert_ne!(shell.note_heads(), before, "the key went into the note");
+    assert_eq!(
+        shell.harness.rebuilt_frames(),
+        rebuilt,
+        "the key's note changed in the sidebar, and the shell laid that out in place"
     );
 }
 

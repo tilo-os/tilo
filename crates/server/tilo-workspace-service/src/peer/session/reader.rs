@@ -1,14 +1,15 @@
 //! The session's reader: the state machine that takes inbound frames off the
 //! wire, handles state frames one (checkpoint prefix) at a time, answers
 //! heartbeats that arrive beside a state frame still in progress, and hands
-//! every reply to the writer.
+//! every reply to the writer. A commit holds the reader only while it is
+//! admitted: its answer waits for its save beside the frames sent after it.
 
 use crate::peer::{
     AccessAudit, Arc, Envelope, EnvelopeV2, PeerError, RETENTION_PREFIX_BYTE_CAP,
     RETENTION_PREFIX_FRAME_CAP, ReplayWrite, SessionCtx, SessionReader, StateDelivery, Subscribed,
-    Subscription, answered_as_replay, audit_subscriber_access, buffered_retention_prefix,
-    commit_run_key, eligible_checkpoint_prefix, handle_commit_run, handle_delta_prefix,
-    handle_envelope, mpsc, resume_document, subscribe, trace_native_publication,
+    Subscription, admit_commit, answered_as_replay, audit_subscriber_access,
+    buffered_retention_prefix, eligible_checkpoint_prefix, handle_delta_prefix, handle_envelope,
+    mpsc, resume_document, subscribe, trace_native_publication,
 };
 use std::collections::VecDeque;
 
@@ -24,9 +25,9 @@ const READ_AHEAD: usize = 32;
 /// behind it, a call's heartbeat among them, waited as long.
 const SLOW_STATE_FRAME: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Most commits one run queues before the first is answered
-/// ([`SessionReaderLoop::handle_commit_run`]).
-const COMMIT_RUN: usize = READ_AHEAD;
+/// Most commits of one connection admitted and not yet answered: past it,
+/// the reader waits for the oldest to be answered before it admits another.
+const PENDING_COMMITS: usize = 64;
 
 /// Most subscriptions to different workspaces one run admits and captures
 /// side by side ([`SessionReaderLoop::handle_subscribe_run`]).
@@ -132,16 +133,71 @@ fn trace_buffered_prefix(backlog: &VecDeque<(EnvelopeV2, Budget)>) {
     }
 }
 
-/// The inbound side of the wire: the framed reader, and the frames read
-/// ahead of a state frame still in progress.
-struct Inbound<'s, R> {
+/// A commit's answer, once its save is durable.
+type CommitAnswer<'c> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Option<Envelope>, PeerError>> + Send + 'c>,
+>;
+
+/// The commits this connection admitted and has not answered yet. Their
+/// saves run beside what the reader handles after them: a read sent behind a
+/// bulk write is not held for the write's save. They are answered in the
+/// order sent.
+struct Commits<'c> {
+    /// Admitted, waiting for their saves, oldest first.
+    saving: n0_future::FuturesOrdered<CommitAnswer<'c>>,
+    /// Answered, waiting until the writer's queue takes them, oldest first.
+    answered: VecDeque<Envelope>,
+}
+
+impl Commits<'_> {
+    fn len(&self) -> usize {
+        self.saving.len().saturating_add(self.answered.len())
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Take the oldest commit's answer once it is ready, or hand the oldest
+    /// answer to the writer. Cancel-safe; pending forever with no commit.
+    async fn settle(&mut self, replies: &mpsc::Sender<ReplayWrite>) -> Result<(), PeerError> {
+        use n0_future::StreamExt as _;
+        tokio::select! {
+            biased;
+            permit = replies.reserve(), if !self.answered.is_empty() => {
+                let permit = permit.map_err(|_| PeerError::Protocol("reply writer closed".into()))?;
+                permit.send(ReplayWrite {
+                    ticket: None,
+                    answer: Vec::new(),
+                    reply: self.answered.pop_front(),
+                    replaying: false,
+                });
+                Ok(())
+            }
+            settled = self.saving.next(), if !self.saving.is_empty() => {
+                if let Some(reply) = settled.transpose()?.flatten() {
+                    self.answered.push_back(reply);
+                }
+                Ok(())
+            }
+            else => std::future::pending().await,
+        }
+    }
+}
+
+/// The inbound side of the wire: the framed reader, the frames read ahead
+/// of a state frame still in progress, and the commits still being saved.
+struct Inbound<'s, 'c, R> {
     reader: &'s mut SessionReader<R>,
     backlog: VecDeque<(EnvelopeV2, Budget)>,
     /// The peer has not finished its half of the stream.
     open: bool,
+    /// Where state replies and replays go to the writer.
+    replies: &'s mpsc::Sender<ReplayWrite>,
+    commits: Commits<'c>,
 }
 
-impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
+impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, '_, R> {
     /// Keep a frame that may not overtake, charged to the delivery budget.
     fn defer(&mut self, frame: EnvelopeV2) -> Result<(), PeerError> {
         let bytes = inbound_bytes(&frame);
@@ -173,9 +229,51 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
         Ok((prefix, prefix_budgets))
     }
 
+    /// Keep `frame`, read ahead of the state frame in progress: a
+    /// heartbeat is answered at once, a state frame waits in the backlog.
+    fn read_ahead(
+        &mut self,
+        frame: Option<EnvelopeV2>,
+        cx: SessionLoop<'_, '_>,
+    ) -> Result<(), PeerError> {
+        match frame {
+            None => self.open = false,
+            Some(EnvelopeV2::State(Envelope::Ping)) => cx.heartbeats.owe(),
+            Some(frame @ EnvelopeV2::State(_)) => self.defer(frame)?,
+            // `SessionReader::read_next` turns these into `State` values
+            // before returning.
+            Some(
+                EnvelopeV2::UnsignedDelta { .. }
+                | EnvelopeV2::PresenceBatch { .. }
+                | EnvelopeV2::CodedDelta { .. },
+            ) => {
+                return Err(PeerError::Protocol(
+                    "a coded frame escaped its session reader".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// What the reader does beside an operation in progress: read a frame
+    /// ahead, or settle a commit ([`Commits::settle`]). Cancel-safe; pending
+    /// forever when there is neither to do.
+    async fn step(&mut self, cx: SessionLoop<'_, '_>) -> Result<(), PeerError> {
+        let reading = self.open && self.backlog.len() < READ_AHEAD;
+        let settling = !self.commits.is_empty();
+        tokio::select! {
+            biased;
+            frame = self.reader.read_next(), if reading => {
+                let frame = frame?;
+                self.read_ahead(frame, cx)
+            }
+            settled = self.commits.settle(self.replies), if settling => settled,
+            else => std::future::pending().await,
+        }
+    }
+
     /// Drive the held state `operation` to its reply, meanwhile reading
-    /// ahead: a heartbeat is answered at once, a state frame waits in the
-    /// backlog.
+    /// ahead and settling commits ([`Self::step`]).
     async fn overtake_while<F, T>(
         &mut self,
         mut operation: std::pin::Pin<Box<F>>,
@@ -188,34 +286,19 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
             tokio::select! {
                 biased;
                 result = &mut operation => break result,
-                frame = self.reader.read_next(), if self.open && self.backlog.len() < READ_AHEAD => {
-                    let Some(frame) = frame? else { self.open = false; continue; };
-                    match frame {
-                        EnvelopeV2::State(Envelope::Ping) => cx.heartbeats.owe(),
-                        EnvelopeV2::State(_) => self.defer(frame)?,
-                        // `SessionReader::read_next` turns these into `State`
-                        // values before returning.
-                        EnvelopeV2::UnsignedDelta { .. }
-                        | EnvelopeV2::PresenceBatch { .. }
-                        | EnvelopeV2::CodedDelta { .. } => {
-                            return Err(PeerError::Protocol(
-                                "a coded frame escaped its session reader".into(),
-                            ));
-                        }
-                    }
-                }
+                stepped = self.step(cx) => stepped?,
             }
         }
     }
 
-    /// Hand `batch` to the writer, reading ahead while the writer's queue
-    /// is full: a heartbeat is answered at once, a state frame waits.
+    /// Hand `batch` to the writer, reading ahead and settling commits while
+    /// the writer's queue is full ([`Self::step`]).
     async fn hand_off_reply(
         &mut self,
-        replies: &mpsc::Sender<ReplayWrite>,
         batch: ReplayWrite,
         cx: SessionLoop<'_, '_>,
     ) -> Result<(), PeerError> {
+        let replies = self.replies;
         let sending = replies.send(batch);
         tokio::pin!(sending);
         loop {
@@ -225,21 +308,8 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
                     result.map_err(|_| PeerError::Protocol("reply writer closed".into()))?;
                     break;
                 }
-                frame = self.reader.read_next(), if self.open && self.backlog.len() < READ_AHEAD => {
-                    let Some(frame) = frame? else { self.open = false; continue; };
-                    match frame {
-                        EnvelopeV2::State(Envelope::Ping) => cx.heartbeats.owe(),
-                        EnvelopeV2::State(_) => self.defer(frame)?,
-                        // `SessionReader::read_next` turns these into `State`
-                        // values before returning.
-                        EnvelopeV2::UnsignedDelta { .. }
-                        | EnvelopeV2::PresenceBatch { .. }
-                        | EnvelopeV2::CodedDelta { .. } => {
-                            return Err(PeerError::Protocol(
-                                "a coded frame escaped its session reader".into(),
-                            ));
-                        }
-                    }
+                stepped = self.step(cx) => {
+                    stepped?;
                     // Give the sole writer a turn even when the
                     // peer supplies an always-ready state flood.
                     tokio::task::yield_now().await;
@@ -248,13 +318,33 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
         }
         Ok(())
     }
+
+    /// Until every commit admitted so far is answered and its answer handed
+    /// to the writer, meanwhile reading ahead.
+    async fn commits_answered(&mut self, cx: SessionLoop<'_, '_>) -> Result<(), PeerError> {
+        while !self.commits.is_empty() {
+            self.step(cx).await?;
+        }
+        Ok(())
+    }
+
+    /// Until another commit may be admitted ([`PENDING_COMMITS`]).
+    async fn until_another_commit_fits(
+        &mut self,
+        cx: SessionLoop<'_, '_>,
+    ) -> Result<(), PeerError> {
+        while self.commits.len() >= PENDING_COMMITS {
+            self.step(cx).await?;
+        }
+        Ok(())
+    }
 }
 
 /// The reader state machine. It borrows the session's reader, its
 /// subscriptions and its access audit for as long as it runs; what it owns
 /// (the read-ahead backlog) ends with it.
-pub(super) struct SessionReaderLoop<'s, R> {
-    inbound: Inbound<'s, R>,
+pub(super) struct SessionReaderLoop<'s, 'c, R> {
+    inbound: Inbound<'s, 'c, R>,
     subscribed: &'s mut Vec<WorkspaceId>,
     catching_up: bool,
     access_audit: &'s mut AccessAudit,
@@ -262,8 +352,6 @@ pub(super) struct SessionReaderLoop<'s, R> {
     /// The queues a lagging workspace waits on to drain before it resumes.
     outbound: &'s mpsc::Sender<Envelope>,
     state_outbound: &'s mpsc::Sender<StateDelivery>,
-    /// Where state replies and replays go to the writer.
-    replies: &'s mpsc::Sender<ReplayWrite>,
 }
 
 /// The session's own queues the reader feeds or watches.
@@ -287,7 +375,7 @@ impl<'s> ReaderQueues<'s> {
     }
 }
 
-impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
+impl<'s, 'c, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, 'c, R> {
     pub(super) fn new(
         reader: &'s mut SessionReader<R>,
         subscribed: &'s mut Vec<WorkspaceId>,
@@ -304,6 +392,11 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 reader,
                 backlog: VecDeque::new(),
                 open: true,
+                replies,
+                commits: Commits {
+                    saving: n0_future::FuturesOrdered::new(),
+                    answered: VecDeque::new(),
+                },
             },
             subscribed,
             catching_up: false,
@@ -311,18 +404,18 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
             authority,
             outbound,
             state_outbound,
-            replies,
         }
     }
 
     /// Read and handle frames until the peer's half of the stream ends and
-    /// every owner job it admitted is durable.
-    pub(super) async fn run(mut self, cx: SessionLoop<'_, '_>) -> Result<(), PeerError> {
+    /// every owner job it admitted is durable, and every commit answered.
+    pub(super) async fn run(mut self, cx: SessionLoop<'c, '_>) -> Result<(), PeerError> {
         loop {
             let (frame, inbound_budget) =
                 if let Some((frame, budget)) = self.inbound.backlog.pop_front() {
                     (frame, Some(budget))
                 } else if !self.inbound.open {
+                    self.inbound.commits_answered(cx).await?;
                     return durable_barrier(cx.session, self.subscribed).await;
                 } else if let Some(frame) = self.next_frame(cx).await? {
                     (frame, None)
@@ -373,6 +466,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         // receives NotAuthorised rather than a bare close.
         self.access_audit.cover(self.subscribed);
         let audit_due = self.access_audit.due();
+        let settling = !self.inbound.commits.is_empty();
         tokio::select! {
             biased;
             frame = self.inbound.reader.read_next() => {
@@ -383,15 +477,21 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                     Ok(None)
                 }
             },
+            settled = self.inbound.commits.settle(self.inbound.replies), if settling => {
+                settled?;
+                Ok(None)
+            }
             () = cx.session.lag.wake.notified() => { self.catching_up = true; Ok(None) }
             // A lagging workspace resumes once everything already queued
             // for this connection is written, so its replay starts
             // where the wire left off. A replay still being written
             // counts too: resuming under it would replace the session
-            // it is about to answer `Ready` for.
+            // it is about to answer `Ready` for. A commit still being saved
+            // counts too: its answer tells the replica it holds the change, so
+            // a resume never replays it to it.
             () = tokio::time::sleep(LAG_POLL), if self.catching_up => {
                 let replaying = cx.pending_replays.load(std::sync::atomic::Ordering::SeqCst) > 0;
-                if replaying || self.state_outbound.capacity() < self.state_outbound.max_capacity() || self.outbound.capacity() < self.outbound.max_capacity() {
+                if replaying || settling || self.state_outbound.capacity() < self.state_outbound.max_capacity() || self.outbound.capacity() < self.outbound.max_capacity() {
                     return Ok(None);
                 }
                 let resume = lag_resume(cx.session, self.subscribed);
@@ -414,11 +514,11 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         &mut self,
         env: Envelope,
         inbound_budget: Option<Budget>,
-        cx: SessionLoop<'_, '_>,
+        cx: SessionLoop<'c, '_>,
     ) -> Result<(), PeerError> {
         trace_native_publication("server_received", &env, None);
         if matches!(env, Envelope::Commit { .. }) {
-            return self.handle_commit_run(env, inbound_budget, cx).await;
+            return self.handle_commit(env, inbound_budget, cx).await;
         }
         if subscription_target(&env).is_some()
             && self
@@ -436,7 +536,9 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
             // A replay handed to the writer still checks its subscription
             // until its Ready; unsubscribing under it would end the whole
             // connection. The reply to an earlier subscribe (one the device
-            // sent, or a lagging workspace's resume) comes first, then this.
+            // sent, or a lagging workspace's resume) comes first, then this;
+            // so does the answer to every commit sent before it.
+            self.inbound.commits_answered(cx).await?;
             self.inbound
                 .overtake_while(Box::pin(cx.replays_written()), cx)
                 .await?;
@@ -475,7 +577,6 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         if replaying || reply.is_some() || ticket.is_some() {
             self.inbound
                 .hand_off_reply(
-                    self.replies,
                     ReplayWrite {
                         ticket,
                         answer,
@@ -582,7 +683,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                     reply,
                     replaying: true,
                 };
-                if let Err(error) = self.inbound.hand_off_reply(self.replies, batch, cx).await {
+                if let Err(error) = self.inbound.hand_off_reply(batch, cx).await {
                     break Err(error);
                 }
             }
@@ -606,55 +707,28 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         }
     }
 
-    /// Handle `env`, a `Commit`, with the commits read ahead behind it:
-    /// all are queued with their owners before the first is waited for, so
-    /// they become durable under shared barriers; their answers go to the
-    /// writer in the order sent.
-    async fn handle_commit_run(
+    /// Handle `env`, a `Commit`: admit it, in the order sent, and leave its
+    /// answer to settle once it is saved ([`Commits`]), while the reader goes
+    /// on with what was sent after it. Commits admitted back to back find
+    /// each other queued with their workspace's owner, which makes them
+    /// durable under shared barriers.
+    async fn handle_commit(
         &mut self,
         env: Envelope,
         inbound_budget: Option<Budget>,
-        cx: SessionLoop<'_, '_>,
+        cx: SessionLoop<'c, '_>,
     ) -> Result<(), PeerError> {
-        let mut keys = vec![commit_run_key(&env)];
-        let mut commits = vec![env];
-        let mut budgets = vec![inbound_budget];
-        while commits.len() < COMMIT_RUN {
-            let Some((EnvelopeV2::State(next @ Envelope::Commit { .. }), _)) =
-                self.inbound.backlog.front()
-            else {
-                break;
-            };
-            let key = commit_run_key(next);
-            if keys.contains(&key) {
-                break;
-            }
-            let Some((EnvelopeV2::State(next), budget)) = self.inbound.backlog.pop_front() else {
-                break;
-            };
-            trace_native_publication("server_received", &next, None);
-            keys.push(key);
-            commits.push(next);
-            budgets.push(Some(budget));
-        }
-        let subscribed = &*self.subscribed;
-        let operation = Box::pin(handle_commit_run(cx.peer, cx.session, subscribed, commits));
-        let replies = self.inbound.overtake_while(operation, cx).await?;
-        drop(budgets);
-        for reply in replies.into_iter().flatten() {
-            self.inbound
-                .hand_off_reply(
-                    self.replies,
-                    ReplayWrite {
-                        ticket: None,
-                        answer: Vec::new(),
-                        reply: Some(reply),
-                        replaying: false,
-                    },
-                    cx,
-                )
-                .await?;
-        }
+        self.inbound.until_another_commit_fits(cx).await?;
+        let admitting = Box::pin(admit_commit(cx.peer, cx.session, self.subscribed, env));
+        let admission = self.inbound.overtake_while(admitting, cx).await?;
+        let session = cx.session;
+        self.inbound.commits.saving.push_back(Box::pin(async move {
+            let answer = admission.answer(session).await;
+            // The frame counts against the delivery budget until it is
+            // answered.
+            drop(inbound_budget);
+            answer
+        }));
         Ok(())
     }
 }

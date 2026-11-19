@@ -77,7 +77,7 @@ import {appendFileSync, createReadStream, existsSync, mkdirSync, writeFileSync} 
 import {createInterface} from 'node:readline';
 import {join} from 'node:path';
 import {inflateSync} from 'node:zlib';
-import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {launch, sleep, stepLimit} from '../../../../tools/web/chrome.mjs';
 
 const [site, server, out, ...rest] = process.argv.slice(2);
 const option = name => {
@@ -114,12 +114,19 @@ await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, 
 
 const text = () => tab.evaluate(`(document.body?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 600)`)
   .catch(() => '');
+// What the person's page is being waited on for, set as each wait begins: a
+// helper that stops a person who outlasts their steps says it, and the page it
+// showed, instead of leaving the stop unexplained.
+let waiting = 'the wait to begin';
+let finishing = false;
 const finish = async (code, message) => {
+  if (finishing) return;
+  finishing = true;
   if (message) report.error = message;
   writeFileSync(join(out, 'console.log'), tab.log.join('\n'));
-  const shot = await tab.screenshot().catch(() => null);
-  if (shot) writeFileSync(join(out, 'page.png'), shot);
-  await browser.close().catch(() => {});
+  // What the person gave up on goes out before the browser stops: a helper
+  // waiting on them hears it, and a close that takes a while does not hold it
+  // back.
   if (message) {
     const said = tab.log.slice(-30);
     if (said.length) console.error(`--- the page said:\n${said.join('\n')}`);
@@ -127,15 +134,23 @@ const finish = async (code, message) => {
   }
   // With --answer the report was printed before the person stayed.
   if (!reported) console.log(JSON.stringify(report));
+  const shot = await tab.screenshot().catch(() => null);
+  if (shot) writeFileSync(join(out, 'page.png'), shot);
+  await browser.close().catch(() => {});
   process.exit(code);
 };
+process.on('SIGTERM', async () => {
+  const page = Promise.race([text(), sleep(stepLimit(1)).then(() => '(the page did not answer)')]);
+  await finish(1, `the helper stopped the person while they waited for ${waiting}: ${await page}`);
+});
 let reported = false;
-const until = async (expression, what, timeout = 180_000) => {
+const until = async (expression, what, timeout = stepLimit(36)) => {
+  waiting = what;
   const deadline = Date.now() + timeout;
   for (;;) {
     const value = await tab.evaluate(expression).catch(() => false);
     if (value) return value;
-    if (Date.now() > deadline) await finish(1, `${what} never happened: ${await text()}`);
+    if (Date.now() > deadline) await finish(1, `${what} never happened in ${timeout / 1000} s: ${await text()}`);
     await sleep(100);
   }
 };
@@ -589,7 +604,8 @@ if (keyName) {
   terminal.stderr.on('data', chunk => { said += chunk; });
   terminal.stdout.on('data', chunk => { printed += chunk; });
   const ended = new Promise(resolve => terminal.on('exit', resolve));
-  const deadline = Date.now() + 30_000;
+  waiting = 'tilo keys create to print the link';
+  const deadline = Date.now() + stepLimit(6);
   let link = null;
   while (!link) {
     link = said.match(/^\s*(https?:\/\/\S+)\s*$/m)?.[1] ?? null;
@@ -607,7 +623,8 @@ if (keyName) {
   // what it may do in Browser.
   await capture('sign-in');
   await tab.evaluate(`document.getElementById('sign-in-allow').click()`);
-  const code = await Promise.race([ended, sleep(120_000).then(() => 'timeout')]);
+  waiting = 'tilo keys create to get the key';
+  const code = await Promise.race([ended, sleep(stepLimit(24)).then(() => 'timeout')]);
   if (code !== 0) {
     terminal.kill();
     await finish(1, `tilo keys create did not get the key (${code}): ${said} | the page: ${await text()}`);

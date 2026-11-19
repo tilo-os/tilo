@@ -1462,6 +1462,29 @@ fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<Stri
         .find_map(|child| button_named(child, label))
 }
 
+/// Where the drawn row `label` of a list or a tree stands under `node`, when the row names no
+/// control of its own to press: a sidebar's place, which a press at where it stands chooses.
+fn drawn_row_named(node: &ui::headless::InspectionNode, label: &str) -> Option<ui::kurbo::Rect> {
+    let row = node.semantics.as_ref().is_some_and(|access| {
+        matches!(
+            access.role,
+            ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
+        ) && !access.state.disabled
+            && access.name.as_deref() == Some(label)
+    });
+    if row && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
+        return Some(ui::kurbo::Rect::new(
+            node.rect[0],
+            node.rect[1],
+            node.rect[0] + node.rect[2],
+            node.rect[1] + node.rect[3],
+        ));
+    }
+    node.children
+        .iter()
+        .find_map(|child| drawn_row_named(child, label))
+}
+
 /// How a press by its words reaches a window: the control of that name, the box a widget publishes
 /// of its own, or where a menu row of that name stands — a row is painted by the menu that shows
 /// it, so only a press at where it stands reaches it.
@@ -1519,13 +1542,23 @@ fn painted_row_named(node: &ui::headless::InspectionNode, label: &str) -> Option
 
 /// The box of the row `label` among what `access`
 /// publishes, a menu's rows being its children's
-/// children.
+/// children: a menu row by its name, a table row by its name or the words of its first cell.
 fn row_named(access: &ui::a11y::AccessNode, label: &str) -> Option<ui::kurbo::Rect> {
     for child in &access.children {
         if child.role == ui::a11y::Role::MenuItem
             && !child.state.disabled
             && child.name.as_deref() == Some(label)
             && let Some(bounds) = child.bounds
+        {
+            return Some(bounds.to_rect());
+        }
+        if child.role == ui::a11y::Role::Row
+            && !child.state.disabled
+            && let Some(bounds) = child.bounds
+            && (child.name.as_deref() == Some(label)
+                || child.children.first().is_some_and(|cell| {
+                    cell.value.as_deref() == Some(label) || cell.name.as_deref() == Some(label)
+                }))
         {
             return Some(bounds.to_rect());
         }
@@ -2117,6 +2150,7 @@ impl AppCheck<'_> {
                                 checked_control_named(root, press)
                                     .map(|(id, target)| Pressing::Child(id, target))
                             })
+                            .or_else(|| drawn_row_named(root, press).map(Pressing::At))
                             .or_else(|| painted_row_named(root, press).map(Pressing::At))
                     };
                     let Some(pressing) = found else {
@@ -2909,5 +2943,72 @@ mod board_list {
                 "every list stands whole in a pane wide enough for it: {list:?} in {viewed:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod row_press {
+    use super::{drawn_row_named, row_named};
+    use ui::a11y::{AccessNode, Role};
+    use ui::headless::InspectionNode;
+    use ui::kurbo::Rect;
+
+    /// A table row is pressed by the words of its first cell, where it stands.
+    #[test]
+    fn a_table_row_is_found_by_its_first_cell() {
+        let at = Rect::new(0.0, 40.0, 300.0, 68.0);
+        let row = AccessNode::new(Role::Row)
+            .with_bounds(at)
+            .with_children(vec![
+                AccessNode::new(Role::Cell).with_value("release.toml"),
+                AccessNode::new(Role::Cell).with_value("New"),
+            ]);
+        let table = AccessNode::new(Role::Table).with_children(vec![row]);
+        assert_eq!(row_named(&table, "release.toml"), Some(at));
+        assert_eq!(
+            row_named(&table, "New"),
+            None,
+            "only the row's own first words name it"
+        );
+    }
+
+    fn drawn(
+        rect: [f64; 4],
+        semantics: AccessNode,
+        children: Vec<InspectionNode>,
+    ) -> InspectionNode {
+        InspectionNode {
+            path: String::new(),
+            widget: String::new(),
+            test_id: None,
+            focusable: false,
+            rect,
+            child_clip: None,
+            page_title: None,
+            layout: None,
+            paint_key: None,
+            semantics: Some(semantics),
+            children,
+        }
+    }
+
+    /// A sidebar's place names no control of its own: a press reaches it where it stands.
+    #[test]
+    fn a_place_of_a_sidebar_is_found_where_it_stands() {
+        let place = drawn(
+            [8.0, 300.0, 264.0, 30.0],
+            AccessNode::new(Role::TreeItem).with_name("Data"),
+            Vec::new(),
+        );
+        let tree = drawn(
+            [0.0, 0.0, 280.0, 800.0],
+            AccessNode::new(Role::Tree),
+            vec![place],
+        );
+        assert_eq!(
+            drawn_row_named(&tree, "Data"),
+            Some(Rect::new(8.0, 300.0, 272.0, 330.0))
+        );
+        assert_eq!(drawn_row_named(&tree, "Media"), None);
     }
 }

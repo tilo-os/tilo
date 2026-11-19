@@ -29,31 +29,31 @@ impl Selection {
         }
     }
     pub fn resource(&self) -> ui::framework::LiveRow {
-        let mut forget = crate::effects::BrowserEffect::ForgetServiceSession {
-            session_id: self.id.clone(),
-        }
-        .bound();
-        forget.type_mut().label = CATALOG.t("browser-service-forget");
-        let mut retry = crate::effects::BrowserEffect::RetryForgetServiceSession {
-            session_id: self.id.clone(),
-        }
-        .bound();
-        retry.type_mut().label = CATALOG.t("browser-service-forget-retry");
-        let mut open = crate::effects::BrowserEffect::OpenServiceSession {
-            session_id: self.id.clone(),
-        }
-        .bound();
-        open.type_mut().label = CATALOG.t_args(
-            "browser-service-open",
-            &[("name", ui::i18n::ArgValue::Text(self.label().to_owned()))],
-        );
-        ui::framework::LiveRow::typed::<crate::row_types::Service>(
+        use crate::effects::BrowserEffect as E;
+        let id = self.id.clone();
+        let bindings = ui::tilo_resource::RowBindings::new()
+            .bind(E::OPEN_SERVICE_SESSION, [("session_id", id.clone().into())])
+            .bind(
+                E::FORGET_SERVICE_SESSION,
+                [("session_id", id.clone().into())],
+            )
+            .bind(E::RETRY_FORGET_SERVICE_SESSION, [("session_id", id.into())]);
+        ui::framework::LiveRow::typed_with::<crate::row_types::Service>(
             format!("browser.service.{}", self.id),
             self.label(),
+            &bindings,
         )
-        .operation(open)
-        .operation(forget)
-        .operation(retry)
+        .labelled(
+            E::OPEN_SERVICE_SESSION,
+            CATALOG.t_args(
+                "browser-service-open",
+                &[("name", ui::i18n::ArgValue::Text(self.label().to_owned()))],
+            ),
+        )
+        .labelled(
+            E::RETRY_FORGET_SERVICE_SESSION,
+            CATALOG.t("browser-service-forget-retry"),
+        )
     }
 }
 

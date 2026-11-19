@@ -61,7 +61,8 @@ struct Read {
 /// A workspace's tree, read for the palette.
 pub(crate) struct WorkspaceFiles {
     source: Arc<TreeFiles>,
-    records: WorkspaceResources,
+    stores: crate::workspace_resources::PageStores,
+    records: std::cell::OnceCell<WorkspaceResources>,
     content: tilo_content::ContentStore,
     peer: u32,
     workspace: String,
@@ -74,14 +75,15 @@ impl WorkspaceFiles {
     /// say the files are of, never the id its records are kept by.
     pub(crate) fn new(
         named: &str,
-        records: WorkspaceResources,
+        stores: crate::workspace_resources::PageStores,
         content: tilo_content::ContentStore,
         peer: u32,
         workspace: String,
     ) -> Self {
         Self {
             source: Arc::new(TreeFiles::new(named)),
-            records,
+            stores,
+            records: std::cell::OnceCell::new(),
             content,
             peer,
             workspace,
@@ -107,7 +109,7 @@ impl WorkspaceFiles {
 
     /// The records the page keeps of the workspace, which the tree is one of.
     pub(crate) fn records(&self) -> &WorkspaceResources {
-        &self.records
+        self.records.get_or_init(|| self.stores.resources())
     }
 
     /// The content the workspace's files are kept in on this page.
@@ -148,7 +150,7 @@ impl WorkspaceFiles {
     /// The workspace's tree record, opened: on its way while the workspace's hosts have not
     /// sent it or said they hold none ([`ui::resource::ResourceOpenError::Arriving`]).
     pub(crate) fn tree_document(&self) -> Result<StoredResource, ui::resource::ResourceOpenError> {
-        self.records.open_resource_at(
+        self.records().open_resource_at(
             FILES_APP,
             &collab_types::person_document_id(TREE_KIND),
             TREE_KIND,
@@ -158,8 +160,12 @@ impl WorkspaceFiles {
 
     /// The tree's own record and the record of each chunk it lists, with each record's heads:
     /// every chunk is opened as the tree lists it, and a chunk still on its way here is asked
-    /// for again on a later frame.
-    fn opened(&self, read: &mut Read) -> Option<(StoredResource, Chunks, Heads)> {
+    /// for again on a later frame. `whole` asks for every chunk the tree lists, or none: what a
+    /// writer needs, since it places new nodes by what every chunk holds. A reader gets what
+    /// arrived, a chunk the workspace may never have got left out, rather than nothing at all:
+    /// a tree whose own document lists a chunk the workspace does not hold still shows every
+    /// file the chunks it holds name.
+    fn opened(&self, read: &mut Read, whole: bool) -> Option<(StoredResource, Chunks, Heads)> {
         if !self.can_read() {
             return None;
         }
@@ -171,15 +177,17 @@ impl WorkspaceFiles {
             let record = if let Some(record) = read.chunks.get(&chunk) {
                 Rc::clone(record)
             } else {
-                let opened = self
-                    .records
-                    .open_resource_at(
-                        FILES_APP,
-                        &chunk_document_id(chunk),
-                        TREE_KIND,
-                        &|_doc: &mut AutoCommit| Ok(()),
-                    )
-                    .ok()?;
+                let Ok(opened) = self.records().open_resource_at(
+                    FILES_APP,
+                    &chunk_document_id(chunk),
+                    TREE_KIND,
+                    &|_doc: &mut AutoCommit| Ok(()),
+                ) else {
+                    if whole {
+                        return None;
+                    }
+                    continue;
+                };
                 let record = Rc::new(opened);
                 read.chunks.insert(chunk, Rc::clone(&record));
                 record
@@ -204,7 +212,7 @@ impl WorkspaceFiles {
     /// holds nodes: for a caller that writes into it, as a drop does.
     pub(crate) fn tree_for_writing(&self) -> Option<(StoredResource, Chunks, Tree)> {
         let mut read = self.read.try_borrow_mut().ok()?;
-        let (index, chunks, _) = self.opened(&mut read)?;
+        let (index, chunks, _) = self.opened(&mut read, true)?;
         let tree = Self::tree_held(&index, &chunks)?;
         Some((index, chunks, tree))
     }
@@ -212,7 +220,7 @@ impl WorkspaceFiles {
     /// The workspace's tree as its records hold it now.
     pub(crate) fn tree_now(&self) -> Option<Tree> {
         let mut read = self.read.try_borrow_mut().ok()?;
-        let (index, chunks, _) = self.opened(&mut read)?;
+        let (index, chunks, _) = self.opened(&mut read, false)?;
         Self::tree_held(&index, &chunks)
     }
 
@@ -232,7 +240,7 @@ impl WorkspaceFiles {
             }
             return;
         }
-        let Some((index, chunks, heads)) = self.opened(&mut read) else {
+        let Some((index, chunks, heads)) = self.opened(&mut read, false) else {
             return;
         };
         if read.heads != heads {

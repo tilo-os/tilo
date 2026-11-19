@@ -364,7 +364,7 @@ tilo_test_env::scenario! {
                 .expect("the root is the shelf's");
             assert_eq!(
                 walks, 2,
-                "{items} rows: one walk for what views add, one for the edits they bind to rows"
+                "{items} rows: one walk for what views add, one for what they offer on the rows"
             );
         }
     }

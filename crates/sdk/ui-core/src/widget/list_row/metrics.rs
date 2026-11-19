@@ -51,7 +51,7 @@ impl RowMetrics {
             meta: theme.text(TextRole::Caption).numeric(),
             author: theme.text(TextRole::Caption),
             badge: theme.text(TextRole::Caption).strong(),
-            value_body: theme.text(TextRole::Body).numeric(),
+            value_body: theme.text(TextRole::Caption).numeric(),
             value_title: theme.text(TextRole::Title).numeric(),
             icon: f64::from(metrics.icon_control),
             mark: f64::from(metrics.icon_sm),

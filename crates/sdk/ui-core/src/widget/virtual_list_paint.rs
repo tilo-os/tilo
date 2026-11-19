@@ -105,7 +105,10 @@ impl VirtualRows {
         let open = self.open.clone();
         let line_height = self.row_line;
         let guide_color = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
-        let _kept = crate::draw_cull::keep_scope(scene, self.draw_keep(opacity, now));
+        let _kept = crate::draw_cull::keep_scope(
+            scene,
+            self.draw_keep(crate::scroll_copy::on_screen(frame_transform), opacity, now),
+        );
         let focused = self.focused_key.as_ref().filter(|_| self.is_focused);
         for (((row, (row_rect, growing)), selection), (dy, alpha)) in self
             .mounted

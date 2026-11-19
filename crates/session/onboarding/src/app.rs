@@ -17,13 +17,37 @@ use crate::state::OnboardingState;
 /// The app the shell mounts setup as.
 pub const APP_ID: &str = "so.tilo.onboarding";
 
-/// Setup's resource, where its actions are published. It holds
-/// nothing; the ceremony is the shell's.
+/// Setup's document: what the person acknowledged while setting this computer
+/// up. The ceremony itself is the shell's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Onboarding {}
+pub struct Onboarding {
+    /// The person acknowledged how their identity is protected here.
+    pub understood: bool,
+    /// What the backup step was told.
+    pub backup: BackupAcknowledgement,
+}
+
+/// What the backup step was told.
+#[derive(Model, Default, Debug, Clone, PartialEq)]
+pub struct BackupAcknowledgement {
+    /// The person chose to skip the backup.
+    pub skip_acknowledged: bool,
+}
 
 #[resource(kind = "onboarding.setup")]
-impl Onboarding {}
+impl Onboarding {
+    /// Acknowledge how this computer's identity is protected.
+    #[action]
+    pub fn set_understood(&mut self, checked: bool) {
+        self.understood = checked;
+    }
+
+    /// Acknowledge skipping the backup.
+    #[action]
+    pub fn set_backup_skip_acknowledged(&mut self, checked: bool) {
+        self.backup.skip_acknowledged = checked;
+    }
+}
 
 /// Setup as an app.
 pub struct OnboardingApp;

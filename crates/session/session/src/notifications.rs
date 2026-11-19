@@ -866,9 +866,19 @@ impl SessionNotifications {
     }
 
     /// The actions the person chose on a role's notices since this was last taken, by the notice's
-    /// tag.
-    pub(crate) fn take_actions_chosen(&self) -> Vec<(String, String)> {
-        std::mem::take(&mut *self.actions_chosen.borrow_mut())
+    /// tag: those whose tag starts with `tagged`, or every other one for `None`, so that each role
+    /// takes only the answers to its own notices.
+    pub(crate) fn take_actions_chosen(&self, tagged: Option<&str>) -> Vec<(String, String)> {
+        let mut chosen = self.actions_chosen.borrow_mut();
+        let (mine, others): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut *chosen)
+                .into_iter()
+                .partition(|(tag, _)| match tagged {
+                    Some(prefix) => tag.starts_with(prefix),
+                    None => !OWN_TAGS.iter().any(|prefix| tag.starts_with(prefix)),
+                });
+        *chosen = others;
+        mine
     }
 
     /// The notices that closed since this was last taken, each with why.
@@ -1406,21 +1416,34 @@ impl crate::Shared {
     }
 }
 
+/// The tag beginnings of the roles whose notices answer only to themselves
+/// ([`RoleNotices::tagged`]).
+const OWN_TAGS: &[&str] = &[crate::questions::LATER_TAG];
+
 /// The person's notifications as a role's own: what a role tells them, and where they chose to go.
-pub(crate) struct RoleNotices(Rc<RefCell<SessionNotifications>>);
+/// A role that tags its notices with its own beginning takes only the actions chosen on those.
+pub(crate) struct RoleNotices(Rc<RefCell<SessionNotifications>>, Option<&'static str>);
 
 impl RoleNotices {
     /// The notices `notifications` show.
     #[cfg(test)]
     pub(crate) fn over(notifications: Rc<RefCell<SessionNotifications>>) -> Self {
-        Self(notifications)
+        Self(notifications, None)
     }
 
     /// The notices `notifications` show, as a role tells them.
     pub(crate) fn of(
         notifications: &Rc<RefCell<SessionNotifications>>,
     ) -> Rc<dyn crate::platform::notice::Notices> {
-        Rc::new(Self(Rc::clone(notifications)))
+        Rc::new(Self(Rc::clone(notifications), None))
+    }
+
+    /// The notices `notifications` show, for the role whose notice tags all start with `tags`.
+    pub(crate) fn tagged(
+        notifications: &Rc<RefCell<SessionNotifications>>,
+        tags: &'static str,
+    ) -> Rc<dyn crate::platform::notice::Notices> {
+        Rc::new(Self(Rc::clone(notifications), Some(tags)))
     }
 }
 
@@ -1438,7 +1461,7 @@ impl Notices for RoleNotices {
     }
 
     fn take_chosen_actions(&self) -> Vec<(String, String)> {
-        self.0.borrow().take_actions_chosen()
+        self.0.borrow().take_actions_chosen(self.1)
     }
 
     fn take_closed(&self) -> Vec<(String, Closed)> {

@@ -174,6 +174,12 @@ pub enum PortalEffect {
         #[param("The request it answers")]
         handle: String,
     },
+    /// Leave the question for later: it stays open, unanswered, where the person finds it again
+    #[effect(own_device, kind = "read")]
+    Defer {
+        #[param("The request it answers")]
+        handle: String,
+    },
 }
 
 impl PortalEffect {
@@ -193,7 +199,8 @@ impl PortalEffect {
             | Self::Type { handle, .. }
             | Self::TypeSecret { handle, .. }
             | Self::Submit { handle }
-            | Self::Cancel { handle } => handle,
+            | Self::Cancel { handle }
+            | Self::Defer { handle } => handle,
         }
     }
 }
@@ -227,6 +234,10 @@ pub struct Dialog {
     pub body: Body,
     pub confirm_label: String,
     pub cancel_label: String,
+    /// Leaving the question for later, apart from declining it ("Not now"): the sheet's quiet
+    /// answer, which Escape gives, while declining (`cancel_label`) stands apart from it. `None`
+    /// where the question cannot wait: not answering it is declining it.
+    pub defer_label: Option<String>,
     /// A second way to allow, beside the confirm button ("Always allow"): it
     /// answers as choice 1, where confirming answers as choice 0.
     pub alternate_label: Option<String>,

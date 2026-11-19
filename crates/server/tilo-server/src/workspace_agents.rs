@@ -602,6 +602,38 @@ pub struct Turn {
     pub line: Option<Line>,
 }
 
+/// The turns of a server's agents, as the server stops: it begins none, and waits for those going.
+#[derive(Clone)]
+pub struct Draining(Arc<going::Turns>);
+
+impl Draining {
+    /// Begin no turn any more, and wait until the turns going ended, `within` at most: whether
+    /// they did. What their people write meanwhile stays in the workspace for the next start.
+    pub async fn finish(&self, within: Duration) -> bool {
+        self.0.close();
+        let began = Instant::now();
+        let mut said = false;
+        while !self.0.idle() {
+            if began.elapsed() >= within {
+                tracing::warn!(
+                    going = self.0.going(),
+                    "the server stops with agent turns still going: their replies say they were interrupted"
+                );
+                return false;
+            }
+            if !said {
+                tracing::info!(
+                    going = self.0.going(),
+                    "the server waits for its agents' turns to end before it stops"
+                );
+                said = true;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        true
+    }
+}
+
 /// What a workspace's records ask of the agents its host runs.
 #[derive(Default)]
 struct Asks {
@@ -707,6 +739,12 @@ impl HostAgents {
     pub fn with_events(mut self, events: Option<PersonEvents>) -> Self {
         self.events = events;
         self
+    }
+
+    /// What lets a stopping server end these agents' work cleanly ([`Draining::finish`]).
+    #[must_use]
+    pub fn draining(&self) -> Draining {
+        Draining(Arc::clone(&self.going))
     }
 
     /// Look at every governed workspace now, then again whenever a member writes to a record an
@@ -847,6 +885,8 @@ impl HostAgents {
                         going.stop();
                     }
                 }
+                // The next start ends it.
+                going::Entered::Closed => {}
                 going::Entered::Began(held) => {
                     let agents = self.clone();
                     let workspace = workspace.to_owned();
@@ -878,6 +918,8 @@ impl HostAgents {
                         current = false;
                     }
                 }
+                // The server is stopping: the next start answers it.
+                going::Entered::Closed => {}
                 going::Entered::Began(held) => {
                     let agents = self.clone();
                     let workspace = workspace.to_owned();
@@ -1233,7 +1275,7 @@ impl HostAgents {
                 }
                 ended
             }
-            going::Entered::Goes(_) => Ok(()),
+            going::Entered::Goes(_) | going::Entered::Closed => Ok(()),
         }
     }
 

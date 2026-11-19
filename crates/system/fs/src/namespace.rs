@@ -1592,7 +1592,7 @@ impl Namespace {
     /// The heads of every record of the tree, together: equal heads mean an equal tree.
     pub fn heads(&mut self) -> Vec<automerge::ChangeHash> {
         let mut heads: Vec<automerge::ChangeHash> =
-            self.record_heads().into_values().flatten().collect();
+            self.document_heads().into_values().flatten().collect();
         heads.sort_unstable();
         heads
     }

@@ -947,10 +947,9 @@ impl Calendar {
         let id: crate::model::Id = id.parse().ok()?;
         if self.event(id).is_some() {
             return Some(match occurrence {
-                Some(date) => crate::actions::occurrence_resource_id(
-                    id,
-                    jiff::civil::Date::strptime(crate::actions::DATE_FMT, date).ok()?,
-                ),
+                Some(date) => {
+                    crate::actions::occurrence_resource_id(id, tilo_formats::date_from_text(date)?)
+                }
                 None => crate::actions::event_resource_id(id),
             });
         }

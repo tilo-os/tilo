@@ -3157,6 +3157,10 @@ impl PublishingWindow for ImportApp {
     fn statuses(&self) -> Vec<EffectStatus> {
         import_actions::statuses(&self.import_projection())
     }
+
+    fn row_statuses(&self) -> Vec<(String, Vec<EffectStatus>)> {
+        import_actions::row_statuses(&self.import_projection())
+    }
 }
 
 pub(crate) fn import_window(cx: &ViewCx<Imager>, mut app: ImportApp) -> Element {

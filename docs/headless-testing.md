@@ -41,6 +41,8 @@ A session that runs as a real login — its environment already names the Tilo d
 
 A session started beside a live desktop must also leave the machine's own services alone: the VPN kill switch's root helper, `NetworkManager`, `BlueZ`, logind and UPower, and the system bus the desktop's daemons answer on. `TILO_MACHINE=hosted` is where that is declared, once, for the whole tree (`crates/platform/tilo-paths/src/machine.rs`): every service that acts on the machine reads it, so the session builds no client for those daemons and follows none of them. `dist/dev/nested-session.sh` sets it; a harness that starts its own session beside a live desktop sets it too, and every process the session starts inherits it.
 
+Its desktop services serve on the session bus it was started on, as a login's do, and its apps reach that bus too. `dist/dev/nested-session.sh` starts it on a private `dbus-daemon` (`dist/dev/session-bus.sh`), so the desktop's own session bus keeps its portal and notification names.
+
 A session that says nothing owns the machine it was started on, which is what a login is; only a session that must keep away from the machine has to say so. A headless session a script starts without it is treated as owning the machine, and would reach the host's daemons — which is why every example here sets it beside a live desktop.
 
 ## Layer 1: a session with no display

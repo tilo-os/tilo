@@ -910,6 +910,39 @@ fn resizing_a_strip_is_one_step_and_undone() {
     });
 }
 
+// The person changes a strip's width twice while their view cannot be written: each change is a
+// step of its own, so undo takes back the second and then the first.
+#[test]
+fn two_width_changes_before_the_view_is_written_are_two_steps() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    let strip = strip_of(&session, window).expect("it has a strip");
+    let was = strip_at(&session, strip)
+        .map(|strip| strip.width)
+        .expect("the strip is in the layout");
+    for permille in [333, 444] {
+        session
+            .layout()
+            .borrow_mut()
+            .ask_person(&layout::LayoutAction::Resize { strip, permille })
+            .expect("the width changes");
+    }
+    assert_eq!(
+        strip_at(&session, strip).map(|strip| strip.width),
+        Some(444),
+        "the layout shows the second change"
+    );
+
+    undone(&mut session, |session| {
+        strip_at(session, strip).map(|strip| strip.width) == Some(333)
+    });
+    undone(&mut session, |session| {
+        strip_at(session, strip).map(|strip| strip.width) == Some(was)
+    });
+}
+
 // A window is maximized through the published action, so the layout shows the one window it is,
 // and one undo brings the others back beside it.
 #[test]

@@ -2,7 +2,7 @@
 //! callers right now: unavailable while the engine is offline, labelled
 //! differently while recording, saying what it does on one row.
 
-use tilo_actions::{ActionSpec, Availability};
+use tilo_actions::{ActionKind, ActionSpec, Availability};
 use tilo_resource::ActionRef;
 
 /// What an effect, or one of the resource's own actions, looks like to
@@ -22,6 +22,10 @@ pub struct EffectStatus {
     /// The row or item resource the status is about, when it is about one
     /// ([`Self::on`]) rather than the resource its view publishes.
     item: Option<String>,
+    /// What the effect is on this entity alone: a page's reads take the
+    /// authority to operate a page that holds the person's sign-ins, and only
+    /// what any visitor has when it does not.
+    kind: Option<ActionKind>,
 }
 
 impl EffectStatus {
@@ -42,6 +46,7 @@ impl EffectStatus {
             description: None,
             phrase: None,
             item: None,
+            kind: None,
         }
     }
 
@@ -55,6 +60,20 @@ impl EffectStatus {
             description: Some(description.into()),
             phrase: None,
             item: None,
+            kind: None,
+        }
+    }
+
+    /// `effect` is `kind` on this entity, offered as declared otherwise.
+    pub fn of_kind<E, A>(effect: ActionRef<E, A>, kind: ActionKind) -> Self {
+        Self {
+            id: effect.id,
+            availability: None,
+            label: None,
+            description: None,
+            phrase: None,
+            item: None,
+            kind: Some(kind),
         }
     }
 
@@ -67,6 +86,7 @@ impl EffectStatus {
             description: None,
             phrase: None,
             item: None,
+            kind: None,
         }
     }
 
@@ -150,6 +170,9 @@ impl EffectStatus {
             spec.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
                 phrase: phrase.clone(),
             };
+        }
+        if let Some(kind) = self.kind {
+            spec.type_mut().contract.kind = kind;
         }
     }
 }

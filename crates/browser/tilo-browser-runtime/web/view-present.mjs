@@ -1020,9 +1020,10 @@ export const VIEW_CSS = `
 .tilo-view [data-widget=PasscodeKey]{box-sizing:border-box;background:var(--tilo-raised,rgba(127,127,127,.08));border-radius:var(--tilo-radius,8px);box-shadow:inset 0 0 0 1px var(--tilo-border,rgba(127,127,127,.25));display:flex;align-items:center;justify-content:center;}
 .tilo-view li{list-style:none;box-sizing:border-box;}
 .tilo-view li:has(>.tilo-words){display:flex;align-items:center;border-radius:var(--tilo-radius,8px);}
-.tilo-view li[aria-selected=true]:not([data-widget=NavRow]){background:var(--tilo-raised);}
+/* A list row lays its own lift under it, as painted; other items take the page's. */
+.tilo-view li[aria-selected=true]:not([data-widget=NavRow],[data-widget=ListRow]){background:var(--tilo-raised);}
 .tilo-view li[data-widget=NavRow][aria-selected=true]{background:transparent;}
-.tilo-view li:hover:not(:has(li:hover)){background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);}
+.tilo-view li:hover:not([data-widget=ListRow]):not(:has(li:hover)),.tilo-view li[data-widget=ListRow]:hover:not(:has(li:hover))>[data-widget=ListRowLift]{background:color-mix(in srgb,var(--tilo-raised) 70%,transparent);border-radius:var(--tilo-radius,8px);}
 .tilo-words{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:pre;}
 .tilo-view h1,.tilo-view h2,.tilo-view h3,.tilo-view h4,.tilo-view h5,.tilo-view h6,.tilo-view p,.tilo-view blockquote,.tilo-view pre{margin:0;}
 .tilo-view hr{border:0;border-top:1px solid var(--tilo-border,rgba(127,127,127,.25));margin:0;align-self:stretch;}

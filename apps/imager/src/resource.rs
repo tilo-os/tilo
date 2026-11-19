@@ -131,7 +131,14 @@ pub enum ImagerEffect {
     },
     /// Erase drive and write image. Offered on each drive it may write,
     #[effect(kind = "outside")]
-    #[effect(job, cancellable, row, destructive, phrase = "Self::drive_name")]
+    #[effect(
+        job,
+        cancellable,
+        row,
+        destructive,
+        on = TargetDriveRow,
+        phrase = "Self::drive_name"
+    )]
     Write {
         #[param("Device path of the reviewed target drive, e.g. /dev/sdb")]
         device: String,
@@ -187,7 +194,7 @@ pub enum ImagerEffect {
     #[effect(label = "imager-rescan-drives")]
     Rescan,
     /// Choose target drive.
-    #[effect(screen)]
+    #[effect(screen, on = TargetDriveRow)]
     ChooseDrive {
         #[param("Kernel name of a removable drive, e.g. sdb")]
         drive: String,
@@ -240,6 +247,12 @@ pub struct ImageWrite;
     effects = ImagerEffect
 )]
 pub struct InstallerDownload;
+
+/// One removable drive an image may be written to, as Imager publishes it:
+/// a row offering to choose it and to write to it.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "imager.target", label = "Drive", effects = ImagerEffect)]
+pub struct TargetDriveRow;
 
 pub struct ImagerShell;
 
@@ -794,7 +807,9 @@ mod tests {
         );
 
         let drive = find(&resources, "imager.target:demo-sandisk-ultra").expect("the USB stick");
-        assert_eq!(ids(drive), ["choose-drive", "write"]);
+        let mut offered: Vec<&str> = ids(drive);
+        offered.sort_unstable();
+        assert_eq!(offered, ["choose-drive", "write"]);
         let row_write = drive
             .actions
             .iter()

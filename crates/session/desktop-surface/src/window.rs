@@ -120,3 +120,31 @@ fn result(mut spec: ActionSpec) -> ActionSpec {
     };
     spec
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two reads of a window this desktop only shows are for whoever
+    /// cannot see it: never a person's palette, always an agent's listing,
+    /// and they read rather than act.
+    #[test]
+    fn a_foreign_window_is_read_for_agents_alone() {
+        for spec in [look("Report".to_owned()), read("Report".to_owned())] {
+            assert_eq!(
+                spec.audience(),
+                tilo_actions::Audience::Agents,
+                "{} is offered to whoever cannot see the window otherwise",
+                spec.id
+            );
+            assert!(!spec.reaches_people(), "{} never lists for people", spec.id);
+            assert!(spec.reaches_agents(), "{} stays a way to read it", spec.id);
+            assert_eq!(
+                spec.action_type().contract.kind,
+                tilo_actions::ActionKind::Read,
+                "{} reads and nothing else",
+                spec.id
+            );
+        }
+    }
+}

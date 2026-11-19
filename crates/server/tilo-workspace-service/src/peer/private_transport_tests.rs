@@ -1279,7 +1279,7 @@ async fn a_workspace_members_role_controls_document_replay_and_open() {
     let workspace = workspace_id.to_string();
     let app = "so.tilo.notes";
     let document = "review";
-    let digest = neighbour_wire::app_digest(app, document);
+    let digest = neighbour_wire::app_document_channel(app, document);
     let mut policy = WorkspacePolicy::new(&workspace, &owner);
     policy.members.insert(member.clone(), Role::Viewer);
     policy.grants.push(Grant::new(
@@ -1422,6 +1422,118 @@ async fn a_workspace_members_role_controls_document_replay_and_open() {
         }))
     ));
     session.abort();
+}
+
+/// A commit's save never holds the connection it came on: a request sent
+/// after it (entering another workspace, as a person's `tilo ls` does beside
+/// an agent's bulk import on the same device) is answered while the save
+/// waits on the disk, and the commits are still answered only once durable,
+/// in the order sent.
+#[tokio::test]
+async fn a_request_after_a_commit_is_answered_while_the_commit_is_saved() {
+    let (root, user) = UserIdentity::generate("owner", 1);
+    let (b, _) = certified_device(&root, user.public_key, "b");
+    let (busy, other) = (WorkspaceId::from_u128(75), WorkspaceId::from_u128(76));
+    let mut stores = Vec::new();
+    let mut entries = HashMap::new();
+    let tmp = tempfile::tempdir().unwrap();
+    for id in [busy, other] {
+        let mut runtime = crate::workspace::WorkspaceRuntime::open(
+            &tmp.path().join(id.to_string()),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        runtime.admit_device(b.device_public_key).unwrap();
+        stores.push(runtime.store.clone());
+        entries.insert(id, Arc::new(AsyncMutex::new(runtime)));
+    }
+    let registry = Arc::new(AsyncMutex::new(entries));
+    let (client, server) = tokio::io::duplex(65536);
+    let (read, write) = tokio::io::split(server);
+    let session = tokio::spawn(serve_peer_stream(
+        b.clone(),
+        read,
+        write,
+        peer_context(registry, user.public_key, &b.cert),
+        std::future::pending::<()>(),
+    ));
+    let (read, mut write) = tokio::io::split(client);
+    let mut reader = SessionReader::new(read);
+    let send =
+        |envelope: &Envelope| tilo_delivery_protocol::transport_v2::encode_state(envelope).unwrap();
+    write
+        .write_all(&send(&Envelope::Subscribe { workspace_id: busy }))
+        .await
+        .unwrap();
+    assert!(matches!(
+        reader.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::Ready { .. }))
+    ));
+    let commit = |op: u8| Envelope::Commit {
+        workspace_id: busy,
+        op: [op; 16],
+        author_device_public_key: b.device_public_key,
+        authored_at_ns: u64::from(op),
+        delta: crate::coedit::CoeditPayload::RetainedDelta {
+            channel: [3; 32],
+            body: vec![op; 64],
+        }
+        .encode()
+        .unwrap(),
+    };
+    // The disk under the busy workspace stalls on the first commit's save.
+    let (release, reached) = crate::store::test_barrier::install(stores[0].root(), "state-persist");
+    for op in [1, 2] {
+        write.write_all(&send(&commit(op))).await.unwrap();
+    }
+    tilo_test_env::within("the first commit's save", reached)
+        .await
+        .unwrap();
+    write
+        .write_all(&send(&Envelope::Subscribe {
+            workspace_id: other,
+        }))
+        .await
+        .unwrap();
+    let answer = tilo_test_env::within("the request's answer while the commit is saved", async {
+        reader.read_next().await.unwrap()
+    })
+    .await;
+    assert!(
+        matches!(
+            answer,
+            Some(EnvelopeV2::State(Envelope::Ready { workspace_id, .. })) if workspace_id == other
+        ),
+        "the request sent after a commit waited for the commit's save: {answer:?}"
+    );
+    assert!(
+        stores[0].load_retained().unwrap().is_empty(),
+        "the commit was saved before the request was answered, so this proves nothing"
+    );
+    drop(release);
+    let mut answered = Vec::new();
+    while answered.len() < 2 {
+        let frame = tilo_test_env::within("the commits' answers", reader.read_next())
+            .await
+            .unwrap();
+        match frame {
+            Some(EnvelopeV2::State(Envelope::Committed { op, .. })) => {
+                assert_eq!(
+                    stores[0].load_retained().unwrap().len(),
+                    2,
+                    "a commit was answered before it was durable"
+                );
+                answered.push(op[0]);
+            }
+            Some(EnvelopeV2::State(Envelope::Position { .. })) => {}
+            other => panic!("expected the commits' answers, got {other:?}"),
+        }
+    }
+    assert_eq!(answered, [1, 2], "commits are answered in the order sent");
+    session.abort();
+    let _ = session.await;
 }
 
 /// A device opening a record is sent the record's retained frames and its

@@ -71,6 +71,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -83,6 +84,12 @@ API_URL, SERVER_KEY, OUT, FORM_URL = sys.argv[1:5]
 
 RUN_TITLE = "Fill Jane Doe's visa application"
 REVIEWER_EMAIL = "rosa@example.com"
+# The reviewer's helper gives a reviewer 48 steps of the page drivers'
+# `TILO_STEP_SECONDS` and stops one who outlasts them (reviewer.py); three
+# steps more hear its answer, the person it stopped included, instead of
+# timing out ahead of its page.
+STEP_SECONDS = float(os.environ.get("TILO_STEP_SECONDS") or 5)
+REVIEWER_SECONDS = 51 * STEP_SECONDS
 APPROVER = os.environ.get("HOSTED_VISA_APPROVER", "")
 UNSCOPED_KEY = os.environ.get("HOSTED_VISA_UNSCOPED_KEY", "")
 PERSON_ROOT = os.environ.get("HOSTED_VISA_ROOT", "")
@@ -545,8 +552,16 @@ def post_invitee(link: str) -> dict:
         data=json.dumps({"link": link}).encode(),
         headers={"content-type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=900) as answer:
-        return json.load(answer)
+    try:
+        with urllib.request.urlopen(request, timeout=REVIEWER_SECONDS) as answer:
+            return json.load(answer)
+    except urllib.error.HTTPError as error:
+        said = json.load(error) if error.headers.get_content_type() == "application/json" else {}
+        raise SystemExit(said.get("error") or f"the reviewer did not get in ({error.code}): {error.reason}") from error
+    except TimeoutError as error:
+        raise SystemExit(
+            f"the reviewer did not get in: its helper did not answer in {REVIEWER_SECONDS:.0f} s"
+        ) from error
 
 
 async def open_phase(report: dict[str, object]) -> int:

@@ -43,7 +43,8 @@ esac
 # pulseaudio: only the private software endpoint tools/with-headless-audio.sh
 # starts; it replaces PipeWire's PulseAudio shim where that is installed.
 # bubblewrap, GNOME Text Editor, cryptsetup, swtpm and tpm2-tools are test
-# subjects that their suites refuse to skip. libsecret (secret-tool) and
+# subjects that their suites refuse to skip. openssl makes the key a local
+# stack (os/containers/tilo-sh/stack.sh) signs its tilo releases with. libsecret (secret-tool) and
 # gnome-keyring are the Secret Service a session keeps its MLS keys in: a
 # headless session runs one, unlocked, so its apps' channels open as a
 # person's do. python3-gobject gives tilo-secret-service's suite libsecret's
@@ -88,7 +89,7 @@ install_test_runtime_fedora() {
         google-noto-sans-devanagari-fonts google-noto-sans-bengali-fonts \
         google-noto-sans-thai-fonts \
         vulkan-loader mesa-vulkan-drivers \
-        bubblewrap gnome-text-editor \
+        bubblewrap openssl gnome-text-editor \
         cryptsetup swtpm swtpm-tools tpm2-tools \
         libsecret gnome-keyring python3-gobject \
         xorg-x11-server-Xwayland xcb-util-cursor-devel open-sans-fonts \

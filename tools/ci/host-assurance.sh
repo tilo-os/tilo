@@ -912,7 +912,7 @@ unattended_unlock() {
 unattended_unlock || { ./os/dev/vm.sh serial > "$out/unattended-serial.log" 2>&1 || true
                        die 'the disk asked for a secret on a machine sealed to it: the PIN-less keyslot did not unseal'; }
 refuse 'the boot unlocked through the TPM keyslot, not a typed secret' '
-journalctl -b --no-pager 2>/dev/null | grep -q "unsealed to /run/cryptsetup-keys.d/luks-" \
+journalctl -b --no-pager 2>/dev/null | grep -q "unsealed to /run/cryptsetup-keys.d/root.key" \
   || { echo "the initrd did not leave a TPM-unsealed key file this boot"; journalctl -b --no-pager | grep -i "tilo-rollback" | tail -20; exit 1; }
 '
 as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true

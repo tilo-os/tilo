@@ -2,7 +2,7 @@
 //! as a server or a file gives it), the ids its items are published under,
 //! and its calendar collections as values.
 
-use jiff::civil::{Date, DateTime, Time};
+use jiff::civil::{Date, DateTime};
 use serde::{Deserialize, Serialize};
 use tilo_resource::{self, JsonSchema, items::item_resource_id};
 
@@ -10,9 +10,6 @@ use crate::model::{
     Attendee, Calendar, Event, Id, InviteStatus, OccurrenceOverride, Palette, Priority, Recurrence,
     Task, key,
 };
-
-pub const DT_FMT: &str = "%Y-%m-%dT%H:%M";
-pub const DATE_FMT: &str = "%Y-%m-%d";
 
 pub fn event_resource_id(id: Id) -> String {
     item_resource_id::<Calendar>("events", &key(id))
@@ -40,7 +37,7 @@ pub fn occurrence_resource_id(event_id: Id, original_date: Date) -> String {
     format!(
         "{}/occurrences/{}",
         event_resource_id(event_id),
-        original_date.strftime(DATE_FMT)
+        tilo_formats::date_text(original_date)
     )
 }
 
@@ -147,8 +144,8 @@ impl EventData {
         Self {
             id: e.id.to_string(),
             title: e.title.clone(),
-            start: e.start.strftime(DT_FMT).to_string(),
-            end: e.end.strftime(DT_FMT).to_string(),
+            start: tilo_formats::minute_text(e.start),
+            end: tilo_formats::minute_text(e.end),
             end_later_fold: e.end_later_fold,
             all_day: e.all_day,
             location: e.location.clone(),
@@ -195,9 +192,10 @@ impl EventData {
     /// When it is: its start and end as its zone reads them, and that zone.
     fn moments(&self) -> Result<(DateTime, DateTime, String), String> {
         const MOMENT: &str = "a date and time such as 2026-11-20T09:00";
-        let start =
-            DateTime::strptime(DT_FMT, &self.start).map_err(|_| format!("start is {MOMENT}"))?;
-        let end = DateTime::strptime(DT_FMT, &self.end).map_err(|_| format!("end is {MOMENT}"))?;
+        let start = tilo_formats::minute_from_text(&self.start)
+            .ok_or_else(|| format!("start is {MOMENT}"))?;
+        let end =
+            tilo_formats::minute_from_text(&self.end).ok_or_else(|| format!("end is {MOMENT}"))?;
         let timezone = normalize_timezone(&self.timezone).ok_or_else(|| {
             "timezone is an IANA time zone such as Europe/Berlin, or `floating` for the same \
              time of day everywhere"
@@ -303,9 +301,9 @@ impl EventData {
             recurrence_exdates: self
                 .recurrence_exdates
                 .iter()
-                .map(|date| Date::strptime(DATE_FMT, date))
-                .collect::<Result<_, _>>()
-                .map_err(|_| format!("recurrence_exdates are each {DATE}"))?,
+                .map(|date| tilo_formats::date_from_text(date))
+                .collect::<Option<_>>()
+                .ok_or_else(|| format!("recurrence_exdates are each {DATE}"))?,
             occurrence_overrides: self
                 .occurrence_overrides
                 .iter()
@@ -341,7 +339,7 @@ fn parse_optional_date(value: &str) -> Option<Option<Date>> {
     if value.is_empty() {
         Some(None)
     } else {
-        Date::strptime(DATE_FMT, value).ok().map(Some)
+        tilo_formats::date_from_text(value).map(Some)
     }
 }
 
@@ -398,19 +396,16 @@ impl OccurrenceOverrideData {
     fn from_override(value: &OccurrenceOverride) -> Self {
         Self {
             original_date: value.original_date.to_string(),
-            original_time: value.original_time.map_or_else(String::new, |time| {
-                tilo_formats::machine!(
-                    "the override's stored time of day, as the resource keeps it",
-                    time.strftime("%H:%M:%S").to_string()
-                )
-            }),
+            original_time: value
+                .original_time
+                .map_or_else(String::new, tilo_formats::clock_text),
             cancelled: value.cancelled,
             start: value
                 .start
-                .map_or_else(String::new, |date| date.strftime(DT_FMT).to_string()),
+                .map_or_else(String::new, tilo_formats::minute_text),
             end: value
                 .end
-                .map_or_else(String::new, |date| date.strftime(DT_FMT).to_string()),
+                .map_or_else(String::new, tilo_formats::minute_text),
             end_later_fold: value.end_later_fold,
             title: value.title.clone().unwrap_or_default(),
             location: value.location.clone().unwrap_or_default(),
@@ -421,22 +416,22 @@ impl OccurrenceOverrideData {
         let start = if self.start.is_empty() {
             None
         } else {
-            Some(DateTime::strptime(DT_FMT, &self.start).ok()?)
+            Some(tilo_formats::minute_from_text(&self.start)?)
         };
         let end = if self.end.is_empty() {
             None
         } else {
-            Some(DateTime::strptime(DT_FMT, &self.end).ok()?)
+            Some(tilo_formats::minute_from_text(&self.end)?)
         };
         if !self.end_later_fold && start.zip(end).is_some_and(|(start, end)| start > end) {
             return None;
         }
         Some(OccurrenceOverride {
-            original_date: Date::strptime(DATE_FMT, &self.original_date).ok()?,
+            original_date: tilo_formats::date_from_text(&self.original_date)?,
             original_time: if self.original_time.is_empty() {
                 None
             } else {
-                Some(Time::strptime("%H:%M:%S", &self.original_time).ok()?)
+                Some(tilo_formats::clock_from_text(&self.original_time)?)
             },
             cancelled: self.cancelled,
             start,
@@ -480,10 +475,7 @@ impl TaskData {
             id: t.id.to_string(),
             title: t.title.clone(),
             done: t.done,
-            due: t
-                .due
-                .map(|d| d.strftime(DATE_FMT).to_string())
-                .unwrap_or_default(),
+            due: t.due.map(tilo_formats::date_text).unwrap_or_default(),
             priority: t.priority.rank(),
             project: t.project.map(|p| p.to_string()).unwrap_or_default(),
             parent: t.parent.map(|p| p.to_string()).unwrap_or_default(),
@@ -493,7 +485,7 @@ impl TaskData {
     pub fn to_task(&self) -> Option<Task> {
         let id = self.id.parse::<Id>().ok()?;
         if self.priority > Priority::None.rank()
-            || (!self.due.is_empty() && Date::strptime(DATE_FMT, &self.due).is_err())
+            || (!self.due.is_empty() && tilo_formats::date_from_text(&self.due).is_none())
             || (!self.project.is_empty() && self.project.parse::<Id>().is_err())
             || (!self.parent.is_empty() && self.parent.parse::<Id>().is_err())
         {
@@ -504,7 +496,7 @@ impl TaskData {
             title: self.title.clone(),
             done: self.done,
             due: (!self.due.is_empty())
-                .then(|| Date::strptime(DATE_FMT, &self.due).ok())
+                .then(|| tilo_formats::date_from_text(&self.due))
                 .flatten(),
             priority: Priority::from_rank(self.priority),
             project: parse_opt_id(&self.project),

@@ -37,6 +37,7 @@ pub mod home;
 pub mod host;
 pub mod hosted_vm;
 pub mod images;
+pub mod machine_programs;
 pub mod mcp_server;
 pub mod policy;
 pub mod records;

@@ -3,12 +3,13 @@
 # applies its actions with (docs/architecture/apps.md). `t test app-models`
 # builds the modules, and both packs write each app's into its payload as
 # `model.wasm`, so the module's own bytes count against the app's budget. A
-# module is 20 KB for Assistant to 500 KB for Calendar and Chat; the app
-# binaries themselves grew about 40 KB each since the budgets were measured
+# module is 20 KB for Assistant to 460 KB for Calendar; the app binaries
+# themselves grew about 40 KB each since the budgets were measured
 # (Calendar's named code 1,605,089 to 1,594,816 bytes at ce691a3c2e, measured
 # with tools/perf/tapp_symbol_sizes.py). Each amount is the app's overage at
-# run rb55fae3ed4 plus the ratchet's 1 % headroom, rounded up to 64 KiB. The
-# aarch64 run prints its own numbers.
+# run rb55fae3ed4 plus the ratchet's 1 % headroom, rounded up to 64 KiB. Chat's
+# module shrank from 509,894 bytes to 445,360 and the app now meets a lower
+# budget, so it is no longer raised here. The aarch64 run prints its own numbers.
 reason = "every app's package carries its model module now, the WebAssembly a device holding the workspace's keys applies its actions with, which adds 20 to 510 KB of the app's own model code to each tapp; the rest is the code the apps gained since the budgets were measured"
 run = "rb55fae3ed4"
 
@@ -32,17 +33,13 @@ x86_64 = 196608
 [apps."so.tilo.calculator"]
 x86_64 = 65536
 
-# model 499,371 bytes; 3,290,112 bytes in all, 2,686,976 budgeted.
+# model 459,633 bytes; 3,256,832 bytes in all, 2,686,976 budgeted.
 [apps."so.tilo.calendar"]
 x86_64 = 655360
 
 # model 51,336 bytes; 1,780,736 bytes in all, 1,703,936 budgeted.
 [apps."so.tilo.camera"]
 x86_64 = 131072
-
-# model 509,894 bytes; 5,205,504 bytes in all, 4,587,520 budgeted.
-[apps."so.tilo.chat"]
-x86_64 = 720896
 
 # model 101,405 bytes; 1,656,320 bytes in all, 1,572,864 budgeted.
 [apps."so.tilo.clocks"]

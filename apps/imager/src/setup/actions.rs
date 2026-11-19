@@ -1,11 +1,45 @@
 //! What guided setup offers the palette, agents and scripts: its effects, and the
 //! rows it publishes.
 
-use tilo_actions::{ActionParam, ActionSpec, ParamType, ResourcePresentation};
+use tilo_actions::ResourcePresentation;
 use ui::framework::{EffectStatus, LiveRow};
-use ui::tilo_resource::{self, ActionRef, Effect};
+use ui::tilo_resource::{self, ActionRef, Effect, RowBindings};
 
 pub const SETUP_ROW_ID: &str = "imager.setup";
+
+/// Guided setup, as it publishes itself: the review, with the internal
+/// installation, the Desktop journey and the hardware beneath it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "imager.setup", label = "Guided setup")]
+pub(crate) struct SetupRoot;
+
+/// The internal installation's downloads, review and install.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "imager.setup.internal",
+    label = "Internal installation",
+    effects = SetupEffect
+)]
+pub(crate) struct InternalSetup;
+
+/// This computer's hardware, as the support report reads it.
+#[derive(tilo_resource::Row)]
+#[row(kind = "imager.setup.hardware", label = "Hardware")]
+pub(crate) struct Hardware;
+
+/// One component's support on this computer.
+#[derive(tilo_resource::Row)]
+#[row(kind = "imager.setup.hardware.component", label = "Hardware component")]
+pub(crate) struct HardwareComponent;
+
+/// The guided session's Desktop preparation delivery.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "imager.setup.desktop-preparation",
+    label = "Desktop preparation",
+    effects = SetupEffect
+)]
+pub(crate) struct DesktopPreparation;
 
 /// Guided setup's effects. Each answers with the setup's path-free status
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
@@ -19,56 +53,56 @@ pub enum SetupEffect {
     ReadDesktopStatus,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-install-desktop")]
+    #[effect(label = "imager-setup-action-install-desktop", on = super::desktop_journey::DesktopJourney)]
     InstallDesktop,
     /// Retry unfinished guided session preparation after verified package installation.
     #[effect(kind = "outside")]
-    #[effect(returns)]
+    #[effect(returns, on = DesktopPreparation)]
     RetryDesktop,
     /// Cancel the current package download; no native transaction is cancelled.
     #[effect(kind = "outside")]
-    #[effect(returns)]
+    #[effect(returns, on = super::desktop_journey::DesktopJourney)]
     CancelDesktopDownload,
     /// Recheck Desktop availability without installing anything.
-    #[effect(returns, kind = "read")]
+    #[effect(returns, kind = "read", on = super::desktop_journey::DesktopJourney)]
     RecheckDesktop,
     #[effect(returns, kind = "read")]
     #[effect(label = "imager-setup-action-next")]
     ContinueSetup,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-start-download")]
+    #[effect(label = "imager-setup-action-start-download", on = InternalSetup)]
     StartInternalDownload,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-pause-download")]
+    #[effect(label = "imager-setup-action-pause-download", on = InternalSetup)]
     PauseInternalDownload,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-resume-download")]
+    #[effect(label = "imager-setup-action-resume-download", on = InternalSetup)]
     ResumeInternalDownload,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-cancel-download")]
+    #[effect(label = "imager-setup-action-cancel-download", on = InternalSetup)]
     CancelInternalDownload,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-discard-download")]
+    #[effect(label = "imager-setup-action-discard-download", on = InternalSetup)]
     DiscardInternalDownload,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-release-download")]
+    #[effect(label = "imager-setup-action-release-download", on = InternalSetup)]
     ReleaseInternalDownload,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-set-target-size")]
+    #[effect(label = "imager-setup-action-internal-set-target-size", on = InternalSetup)]
     SetInternalTargetSize {
         #[param("Tilo size in GiB")]
         gib: i64,
     },
     /// Attach an explicitly granted private migration intent to the next installation.
     #[effect(kind = "outside")]
-    #[effect(returns, privileged)]
+    #[effect(returns, privileged, on = InternalSetup)]
     UseMigrationIntent {
         #[param(
             secret,
@@ -78,43 +112,43 @@ pub enum SetupEffect {
     },
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-install")]
+    #[effect(label = "imager-setup-action-internal-install", on = InternalSetup)]
     InstallInternal {
         #[param("Digest of the reviewed installation plan")]
         reviewed: String,
     },
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-restart")]
+    #[effect(label = "imager-setup-action-internal-restart", on = InternalSetup)]
     RestartInternal,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-restart-later")]
+    #[effect(label = "imager-setup-action-internal-restart-later", on = InternalSetup)]
     RestartInternalLater,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-retry")]
+    #[effect(label = "imager-setup-action-internal-retry", on = InternalSetup)]
     RetryInternal {
         #[param("Id of the unfinished installer operation")]
         operation_id: String,
     },
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-remove")]
+    #[effect(label = "imager-setup-action-internal-remove", on = InternalSetup)]
     RemoveInternal {
         #[param("Id of the unfinished installer operation")]
         operation_id: String,
     },
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-firmware-settings")]
+    #[effect(label = "imager-setup-action-internal-firmware-settings", on = InternalSetup)]
     InternalFirmwareSettings,
     #[effect(kind = "outside")]
     #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-disable-fast-startup")]
+    #[effect(label = "imager-setup-action-internal-disable-fast-startup", on = InternalSetup)]
     InternalDisableFastStartup,
     #[effect(returns, kind = "read")]
-    #[effect(label = "imager-setup-action-internal-recheck")]
+    #[effect(label = "imager-setup-action-internal-recheck", on = InternalSetup)]
     RecheckInternal,
 }
 
@@ -424,11 +458,11 @@ pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
         "setup_cannot_continue",
         "Complete the current setup choice before continuing".into(),
     );
-    for (id, _, open) in super::desktop_journey::commands(&state.desktop) {
+    for (command, _, open) in super::desktop_journey::commands(&state.desktop) {
         block(
             &mut blocked,
             open,
-            id,
+            command.id,
             "desktop_command_unavailable",
             super::strings::t("imager-setup-desktop-command-unavailable"),
         );
@@ -441,51 +475,104 @@ pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
 
 #[must_use]
 pub fn statuses(state: &SetupProjection) -> Vec<EffectStatus> {
-    let effect = |id| ActionRef::<SetupEffect, ()>::new(id, &[], SetupEffect::kind());
     blocked(state)
         .into_iter()
-        .map(|blocked| EffectStatus::unavailable(effect(blocked.id), blocked.code, blocked.reason))
+        .map(|blocked| {
+            EffectStatus::unavailable(effect_ref(blocked.id), blocked.code, blocked.reason)
+        })
         .chain(
             internal_commands(&state.internal)
                 .into_iter()
                 .map(|(id, label, ..)| {
-                    EffectStatus::labelled(effect(id), super::strings::t(label))
+                    EffectStatus::labelled(effect_ref(id), super::strings::t(label))
                 }),
         )
         .chain(
             super::desktop_journey::commands(&state.desktop)
                 .into_iter()
-                .map(|(id, label, _)| EffectStatus::labelled(effect(id), super::strings::t(label))),
+                .map(|(command, label, _)| {
+                    EffectStatus::labelled(command, super::strings::t(label))
+                }),
         )
         .collect()
 }
 
-fn guarded(spec: ActionSpec, available: bool, code: &str, reason: &str) -> ActionSpec {
-    if available {
-        spec
-    } else {
-        spec.unavailable(code, reason)
+fn effect_ref(id: &'static str) -> ActionRef<SetupEffect, ()> {
+    ActionRef::new(id, &[], SetupEffect::kind())
+}
+
+/// The internal installation's commands, each with what the reviewed
+/// projection knows bound: the reviewed plan's digest, the pending
+/// operation, and the defaults the two asked commands open with.
+fn internal_bindings(state: &InternalProjection) -> RowBindings {
+    let operation = state.pending_operation.clone().unwrap_or_default();
+    let mut bindings = RowBindings::new();
+    for (id, ..) in internal_commands(state) {
+        bindings = match id {
+            id if id == SetupEffect::INSTALL_INTERNAL.id => bindings.bind(
+                SetupEffect::INSTALL_INTERNAL,
+                [(
+                    "reviewed",
+                    serde_json::Value::from(state.reviewed.clone().unwrap_or_default()),
+                )],
+            ),
+            id if id == SetupEffect::RETRY_INTERNAL.id => bindings.bind(
+                SetupEffect::RETRY_INTERNAL,
+                [("operation_id", serde_json::Value::from(operation.clone()))],
+            ),
+            id if id == SetupEffect::REMOVE_INTERNAL.id => bindings.bind(
+                SetupEffect::REMOVE_INTERNAL,
+                [("operation_id", serde_json::Value::from(operation.clone()))],
+            ),
+            id => bindings.offer_id(id),
+        };
     }
+    bindings
 }
 
-fn bound(effect: &SetupEffect, label: impl Into<String>) -> ActionSpec {
-    let mut spec = effect.bound();
-    spec.type_mut().label = label.into();
-    spec
+/// What each internal command cannot do now, by the row's effects, with the
+/// reason its projection gives.
+/// Every internal command this projection cannot start now: its effect's id,
+/// the code a program reads and the reason a person reads.
+fn internal_refusals(state: &InternalProjection) -> Vec<(&'static str, &'static str, String)> {
+    internal_commands(state)
+        .into_iter()
+        .filter(|(_, _, open, ..)| !open)
+        .map(|(id, _, _, code, reason)| (id, code, super::strings::t(reason)))
+        .collect()
 }
 
-fn asking(effect: &SetupEffect, label: impl Into<String>, param: ActionParam) -> ActionSpec {
-    let mut spec = effect.bound_asking_params(vec![param]);
-    spec.type_mut().label = label.into();
-    spec
+/// What each internal command cannot do now, by the row's effects, with the
+/// reason its projection gives.
+pub fn internal_row_status(state: &InternalProjection) -> Vec<EffectStatus> {
+    internal_refusals(state)
+        .into_iter()
+        .map(|(id, code, reason)| EffectStatus::unavailable(effect_ref(id), code, reason))
+        .collect()
+}
+
+/// [`internal_refusals`] for a test that publishes a row without the
+/// framework's row status.
+#[cfg(test)]
+pub(super) fn internal_refusals_for_test(
+    state: &InternalProjection,
+) -> Vec<(&'static str, &'static str, String)> {
+    internal_refusals(state)
 }
 
 fn internal_row(state: &InternalProjection) -> LiveRow {
-    let operation = state.pending_operation.clone().unwrap_or_default();
-    let mut row = LiveRow::new(
+    let mut row = LiveRow::typed_with::<InternalSetup>(
         format!("{SETUP_ROW_ID}.internal"),
-        "imager.setup.internal",
         super::strings::t("imager-setup-resource-internal"),
+        &internal_bindings(state),
+    )
+    .prefilled(
+        SetupEffect::USE_MIGRATION_INTENT,
+        [("directory", serde_json::Value::from(""))],
+    )
+    .prefilled(
+        SetupEffect::SET_INTERNAL_TARGET_SIZE,
+        [("gib", serde_json::Value::from(-1))],
     )
     .presentation(ResourcePresentation {
         detail: Some(super::strings::t_args(
@@ -508,53 +595,8 @@ fn internal_row(state: &InternalProjection) -> LiveRow {
         badge: Some(super::strings::t("imager-setup-badge-internal")),
         preview: None,
     });
-    for (id, label, open, code, reason) in internal_commands(state) {
-        let label = super::strings::t(label);
-        let spec = match id {
-            id if id == SetupEffect::USE_MIGRATION_INTENT.id => asking(
-                &SetupEffect::UseMigrationIntent {
-                    directory: String::new(),
-                },
-                label,
-                ActionParam::required_owned(
-                    "directory",
-                    ParamType::Secret,
-                    super::strings::t("imager-setup-param-migration-intent"),
-                ),
-            ),
-            id if id == SetupEffect::SET_INTERNAL_TARGET_SIZE.id => asking(
-                &SetupEffect::SetInternalTargetSize { gib: -1 },
-                label,
-                ActionParam::required_owned(
-                    "gib",
-                    ParamType::Integer,
-                    super::strings::t("imager-setup-param-internal-target-gib"),
-                ),
-            ),
-            id if id == SetupEffect::INSTALL_INTERNAL.id => bound(
-                &SetupEffect::InstallInternal {
-                    reviewed: state.reviewed.clone().unwrap_or_default(),
-                },
-                label,
-            ),
-            id if id == SetupEffect::RETRY_INTERNAL.id => bound(
-                &SetupEffect::RetryInternal {
-                    operation_id: operation.clone(),
-                },
-                label,
-            ),
-            id if id == SetupEffect::REMOVE_INTERNAL.id => bound(
-                &SetupEffect::RemoveInternal {
-                    operation_id: operation.clone(),
-                },
-                label,
-            ),
-            id => match SetupEffect::decode(id, &serde_json::Map::new()) {
-                Ok(effect) => bound(&effect, label),
-                Err(_) => continue,
-            },
-        };
-        row = row.operation(guarded(spec, open, code, &super::strings::t(reason)));
+    for (id, label, ..) in internal_commands(state) {
+        row = row.labelled(effect_ref(id), super::strings::t(label));
     }
     row
 }
@@ -577,21 +619,16 @@ fn hardware_row(hardware: &HardwareProjection) -> LiveRow {
             ("unverified", hardware.unverified.into()),
         ],
     );
-    let mut row = LiveRow::new(
-        format!("{SETUP_ROW_ID}.hardware"),
-        "imager.setup.hardware",
-        model,
-    )
-    .presentation(ResourcePresentation {
-        detail: Some(summary),
-        badge: None,
-        preview: None,
-    });
+    let mut row = LiveRow::typed::<Hardware>(format!("{SETUP_ROW_ID}.hardware"), model)
+        .presentation(ResourcePresentation {
+            detail: Some(summary),
+            badge: None,
+            preview: None,
+        });
     for component in &hardware.components {
         row = row.row(
-            LiveRow::new(
+            LiveRow::typed::<HardwareComponent>(
                 format!("{SETUP_ROW_ID}.hardware.{}", component.kind),
-                "imager.setup.hardware.component",
                 super::strings::t(&format!("installer-hardware-component-{}", component.kind)),
             )
             .presentation(ResourcePresentation {
@@ -613,9 +650,8 @@ pub fn row(state: &SetupProjection) -> LiveRow {
         "desktop" => "Tilo Desktop",
         _ => "Full Tilo",
     };
-    let mut root = LiveRow::new(
+    let mut root = LiveRow::typed::<SetupRoot>(
         SETUP_ROW_ID,
-        "imager.setup",
         super::strings::t("imager-setup-resource-root"),
     )
     .presentation(ResourcePresentation {
@@ -631,21 +667,31 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     root
 }
 
-pub(super) fn desktop_preparation_row(retry: bool) -> LiveRow {
-    LiveRow::new(
-        "imager.setup.desktop-preparation",
+pub(super) fn desktop_preparation_row() -> LiveRow {
+    let bindings = RowBindings::new().offer(SetupEffect::RETRY_DESKTOP);
+    LiveRow::typed_with::<DesktopPreparation>(
         "imager.setup.desktop-preparation",
         super::strings::t("installer-desktop-resource"),
+        &bindings,
     )
-    .operation(guarded(
-        bound(
-            &SetupEffect::RetryDesktop,
-            super::strings::t("installer-desktop-retry"),
-        ),
-        retry,
-        "desktop_preparation_unavailable",
-        &super::strings::t("installer-desktop-unavailable"),
-    ))
+    .labelled(
+        SetupEffect::RETRY_DESKTOP,
+        super::strings::t("installer-desktop-retry"),
+    )
+}
+
+/// What the Desktop preparation's retry cannot do until a verified
+/// preparation waits, with the reason a person reads.
+pub(super) fn desktop_preparation_row_status(retry: bool) -> Vec<EffectStatus> {
+    if retry {
+        Vec::new()
+    } else {
+        vec![EffectStatus::unavailable(
+            SetupEffect::RETRY_DESKTOP,
+            "desktop_preparation_unavailable",
+            super::strings::t("installer-desktop-unavailable"),
+        )]
+    }
 }
 
 pub(super) fn desktop_preparation_status(retry: bool) -> EffectStatus {
@@ -717,7 +763,7 @@ mod tests {
     }
 
     use super::*;
-    use tilo_actions::OperationKind;
+    use tilo_actions::{ActionSpec, OperationKind, ParamType};
 
     fn projection(internal: InternalProjection) -> SetupProjection {
         SetupProjection {
@@ -729,14 +775,26 @@ mod tests {
         }
     }
 
+    /// The internal row's actions as the framework publishes them: the
+    /// projection's guarded commands, each refused with the reason it gives.
     fn internal_actions(state: &SetupProjection) -> Vec<ActionSpec> {
-        row(state)
+        let mut actions = row(state)
             .into_resource()
             .children
             .into_iter()
             .find(|child| child.kind == "imager.setup.internal")
             .expect("internal row")
-            .actions
+            .actions;
+        for (id, _, open, code, reason) in internal_commands(&state.internal) {
+            if open {
+                continue;
+            }
+            if let Some(at) = actions.iter().position(|action| action.id == id) {
+                let spec = actions.remove(at);
+                actions.insert(at, spec.unavailable(code, crate::setup::strings::t(reason)));
+            }
+        }
+        actions
     }
 
     fn code(action: &ActionSpec) -> Option<&str> {

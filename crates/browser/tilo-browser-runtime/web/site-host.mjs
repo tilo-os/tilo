@@ -118,6 +118,20 @@ export function siteServer(origin, store = storage()) {
   }
 }
 
+/** The origin the site names the server `info` at (`info` as the server answers who it is, or
+ * as an invitation names it), or `null` for a server the site does not name: one only an
+ * invitation named is not the site's, wherever this browser keeps it. A server is who its
+ * certificate says, not where it is dialled: the same server names itself by its endpoint in an
+ * invitation and is named by its web origin on its site. */
+export function siteNames(info) {
+  const device = JSON.stringify(info?.hostCert?.device_public_key ?? null);
+  if (device === 'null') return null;
+  for (const [origin, kept] of named.entries()) {
+    if (!isInvitedServer(origin) && JSON.stringify(kept.info?.hostCert?.device_public_key ?? null) === device) return origin;
+  }
+  return null;
+}
+
 /** Forget every host the site named (tests). */
 export function forgetSiteServers() {
   named.clear();

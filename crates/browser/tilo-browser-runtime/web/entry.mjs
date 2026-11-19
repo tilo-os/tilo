@@ -210,6 +210,29 @@ function sameScope(a, b) {
   return origin(a.host) === origin(b.host) && (a.workspace ?? null) === (b.workspace ?? null);
 }
 
+/** `route` with a workspace its link names no server for at the server the site names
+ * (`entry.home`): the link grammar reads a link without one as the page's own site, and a site
+ * that names its home workspace's server at another origin keeps no workspace itself. A link
+ * carrying an invitation, a ticket or a pairing is left as it reads: what it carries names its
+ * server. */
+export function atSiteServer(route, entry, secrets = {}) {
+  const scope = route?.target?.scope;
+  const home = originOf(entry?.home?.host?.origin);
+  const site = originOf(entry?.base);
+  if (scope?.kind !== 'workspace' || !home || !site || home === site || originOf(scope.host) !== site) return route;
+  if (secrets.invite || secrets.ticket || secrets.pair) return route;
+  return {...route, target: {...route.target, scope: {...scope, host: home}}};
+}
+
+/** `url`'s origin, or `null` for no URL. */
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
 /** The route the page was opened with. A bare entry opens the web host's
  * home workspace (its workspace is learned on admission), or else, on the
  * desktop, the person's own desktop. */
@@ -335,7 +358,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
       ? {mode: 'desktop', target: {scope: {kind: 'sealed', site: sealed.site, handle: sealed.handle}}}
       : chosenRoute({location: window.location, mode, home: entry.home, chosen: deps.chosenWorkspace?.() ?? null})
         ?? homeRoute({location: window.location, mode, home: entry.home})
-        ?? initialRoute({link: await linked, location: window.location, mode, home: entry.home});
+        ?? atSiteServer(initialRoute({link: await linked, location: window.location, mode, home: entry.home}), entry, secrets);
   } catch (error) {
     say(error?.message ?? String(error));
     throw error;

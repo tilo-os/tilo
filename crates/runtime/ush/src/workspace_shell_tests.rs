@@ -107,3 +107,30 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+#[test]
+fn a_server_on_its_own_machine_starts_programs_in_the_workspace_files() {
+    let state = tempfile::tempdir().unwrap();
+    let shells = WorkspaceShells::new(state.path(), None).on_machine(true);
+    let ended = shells
+        .run("w1", "s1", "sh -c 'echo made > here.txt; pwd'", true)
+        .unwrap();
+    assert_eq!(ended.exit, 0, "{}", String::from_utf8_lossy(&ended.output));
+    let files = shells.files("w1");
+    assert_eq!(
+        std::fs::read_to_string(files.join("here.txt")).unwrap(),
+        "made\n"
+    );
+    assert!(String::from_utf8_lossy(&ended.output).contains(&*files.to_string_lossy()));
+}
+
+#[test]
+fn a_server_without_programs_starts_none() {
+    let state = tempfile::tempdir().unwrap();
+    let shells = WorkspaceShells::new(state.path(), None);
+    let ended = shells
+        .run("w1", "s1", "sh -c 'echo no > no'", true)
+        .unwrap();
+    assert_ne!(ended.exit, 0);
+    assert!(!shells.files("w1").join("no").exists());
+}

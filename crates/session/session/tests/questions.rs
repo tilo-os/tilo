@@ -1230,3 +1230,83 @@ fn a_program_the_person_refuses_works_nowhere() {
     );
     assert!(shell_agents(&session).is_empty(), "no agent joined");
 }
+
+/// An agent asking its person in its own words, between `choices`, as request `handle`.
+fn agent_ask(questions: &Questions, handle: &str, choices: &[&str]) -> Asked {
+    let details = serde_json::to_value(tilo_sheets::portal::AgentQuestion {
+        agent: "Visa agent".into(),
+        workspace: "Home".into(),
+        ask: Some(tilo_sheets::portal::AgentAsk {
+            question: "Which consulate should I book?".into(),
+            choices: choices.iter().map(|choice| (*choice).to_owned()).collect(),
+            typed: false,
+        }),
+        ..tilo_sheets::portal::AgentQuestion::default()
+    })
+    .expect("an agent question");
+    questions.ask(Question {
+        handle: handle.to_owned(),
+        kind: "network.agent-question".to_owned(),
+        app_id: None,
+        label: "Visa agent".to_owned(),
+        details,
+    })
+}
+
+/// Whether the portal sheet is up, asking request `handle`.
+fn asking_now(session: &Session, handle: &str) -> bool {
+    session.portal().is_some_and(|portal| {
+        portal.presentation().is_open()
+            && portal
+                .dialog()
+                .is_some_and(|dialog| dialog.handle == handle)
+    })
+}
+
+#[test]
+fn not_now_leaves_an_agents_question_open_and_decline_declines_it() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, questions) = asking(Vec::new());
+    let _later = agent_ask(&questions, "agent-ask:later", &["Berlin", "Munich"]);
+    pump(&mut session, |session| {
+        asking_now(session, "agent-ask:later")
+    });
+    let shown = dialog(&session);
+    assert_eq!(shown.defer_label.as_deref(), Some("Not now"));
+    assert_eq!(shown.cancel_label, "Decline");
+
+    press(&mut session, PortalEffect::DEFER.id, json!({}));
+    pump(&mut session, |session| {
+        !session
+            .portal()
+            .expect("portal sheet")
+            .presentation()
+            .is_open()
+    });
+    for _ in 0..20 {
+        session.step(Duration::from_millis(2)).expect("step");
+    }
+    assert_eq!(
+        questions.pending().len(),
+        1,
+        "the question put off stays open"
+    );
+    assert!(
+        !asking_now(&session, "agent-ask:later"),
+        "a question put off is not asked again until the person chooses it"
+    );
+
+    // Another question comes up, and declining it declines it alone.
+    let declining = agent_ask(&questions, "agent-ask:no", &["Yes", "No"]);
+    pump(&mut session, |session| asking_now(session, "agent-ask:no"));
+    press(&mut session, PortalEffect::CANCEL.id, json!({}));
+    pump(&mut session, |_| questions.pending().len() == 1);
+    assert!(
+        declining
+            .now_or_never()
+            .expect("the question ended")
+            .is_none(),
+        "declined"
+    );
+    assert_eq!(questions.pending()[0].handle, "agent-ask:later");
+}

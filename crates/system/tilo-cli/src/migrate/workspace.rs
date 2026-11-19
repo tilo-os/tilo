@@ -179,13 +179,9 @@ impl Held {
         let stream = if let Some(stream) = held::connect(&place) {
             stream
         } else {
-            crate::service::start().map_err(|error| {
-                tracing::debug!(%error, "Tilo's background sync did not start");
-                anyhow!(
-                    "Tilo's background sync didn't start on this computer. Run `tilo status` to \
-                     see how it stands, then try again."
-                )
-            })?;
+            // A peer that is there is waited for, not replaced: it may be busy with a change, and
+            // a connection that failed once is not a reason to stop it.
+            crate::service::start()?;
             held::connect(&place).ok_or_else(|| {
                 anyhow!(
                     "Tilo's background sync isn't answering on this computer yet. Run `tilo \

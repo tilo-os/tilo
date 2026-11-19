@@ -15,8 +15,6 @@ use crate::model::{
 use crate::timezone::{Observance, OnsetDay, YearlyRule};
 use tilo_resource::Keyed;
 
-const DT_LOCAL: &str = "%Y%m%dT%H%M%S";
-const D_ONLY: &str = "%Y%m%d";
 type RecurrenceIdentity = (Date, Option<Time>);
 type ParsedEvent = (Event, Option<RecurrenceIdentity>, bool);
 
@@ -39,12 +37,12 @@ pub fn export(model: &Calendar) -> String {
             raw(
                 &mut out,
                 "DTSTART;VALUE=DATE",
-                &e.start.strftime(D_ONLY).to_string(),
+                &tilo_formats::compact_date_text(e.start.date()),
             );
             raw(
                 &mut out,
                 "DTEND;VALUE=DATE",
-                &e.all_day_end_exclusive().strftime(D_ONLY).to_string(),
+                &tilo_formats::compact_date_text(e.all_day_end_exclusive()),
             );
         } else if e.end_later_fold {
             emit_datetime(&mut out, "DTSTART", e.start, &e.timezone);
@@ -57,15 +55,23 @@ pub fn export(model: &Calendar) -> String {
             raw(
                 &mut out,
                 "DTSTART",
-                &format!("{}Z", e.start.strftime(DT_LOCAL)),
+                &format!("{}Z", tilo_formats::compact_moment_text(e.start)),
             );
-            raw(&mut out, "DTEND", &format!("{}Z", e.end.strftime(DT_LOCAL)));
+            raw(
+                &mut out,
+                "DTEND",
+                &format!("{}Z", tilo_formats::compact_moment_text(e.end)),
+            );
         } else if e.timezone != "floating" {
             emit_datetime(&mut out, "DTSTART", e.start, &e.timezone);
             emit_datetime(&mut out, "DTEND", e.end, &e.timezone);
         } else {
-            raw(&mut out, "DTSTART", &e.start.strftime(DT_LOCAL).to_string());
-            raw(&mut out, "DTEND", &e.end.strftime(DT_LOCAL).to_string());
+            raw(
+                &mut out,
+                "DTSTART",
+                &tilo_formats::compact_moment_text(e.start),
+            );
+            raw(&mut out, "DTEND", &tilo_formats::compact_moment_text(e.end));
         }
         if !e.location.is_empty() {
             line(&mut out, "LOCATION", &e.location);
@@ -89,7 +95,7 @@ pub fn export(model: &Calendar) -> String {
                 raw(
                     &mut out,
                     "EXDATE;VALUE=DATE",
-                    &date.strftime(D_ONLY).to_string(),
+                    &tilo_formats::compact_date_text(*date),
                 );
             } else {
                 emit_datetime(
@@ -131,7 +137,7 @@ pub fn export(model: &Calendar) -> String {
                 raw(
                     &mut out,
                     "RECURRENCE-ID;VALUE=DATE",
-                    &edit.original_date.strftime(D_ONLY).to_string(),
+                    &tilo_formats::compact_date_text(edit.original_date),
                 );
             }
             if edit.cancelled {
@@ -146,7 +152,7 @@ pub fn export(model: &Calendar) -> String {
                     raw(
                         &mut out,
                         "DTSTART;VALUE=DATE",
-                        &start.date().strftime(D_ONLY).to_string(),
+                        &tilo_formats::compact_date_text(start.date()),
                     );
                 } else {
                     emit_datetime(&mut out, "DTSTART", start, &e.timezone);
@@ -164,7 +170,7 @@ pub fn export(model: &Calendar) -> String {
                     raw(
                         &mut out,
                         "DTEND;VALUE=DATE",
-                        &exclusive.strftime(D_ONLY).to_string(),
+                        &tilo_formats::compact_date_text(exclusive),
                     );
                 } else if edit.end_later_fold {
                     if let Some(start) = edit_start
@@ -200,7 +206,7 @@ pub fn export(model: &Calendar) -> String {
             raw(
                 &mut out,
                 "DUE;VALUE=DATE",
-                &due.strftime(D_ONLY).to_string(),
+                &tilo_formats::compact_date_text(due),
             );
         }
         if t.done {
@@ -938,17 +944,17 @@ fn recurrence_rule(event: &Event) -> String {
 
 fn series_until_value(event: &Event, until: Date) -> String {
     if event.all_day {
-        return until.strftime(D_ONLY).to_string();
+        return tilo_formats::compact_date_text(until);
     }
     let last = until.to_datetime(event.start.time());
     if event.timezone == "floating" {
-        return last.strftime(DT_LOCAL).to_string();
+        return tilo_formats::compact_moment_text(last);
     }
     let instant = crate::timezone::wall_to_utc(&event.timezone, last)
         .map_or(last, |(instant, _)| {
             instant.to_zoned(jiff::tz::TimeZone::UTC).datetime()
         });
-    format!("{}Z", instant.strftime(DT_LOCAL))
+    format!("{}Z", tilo_formats::compact_moment_text(instant))
 }
 
 fn participant_line(out: &mut String, property: &str, attendee: &Attendee) {
@@ -1164,7 +1170,7 @@ fn observance_property(observance: &mut Observance, line: &ContentLine) {
         "RDATE" => observance
             .rdates
             .extend(value.split(',').filter_map(|part| {
-                DateTime::strptime(DT_LOCAL, part.trim().trim_end_matches('Z')).ok()
+                tilo_formats::compact_moment_from_text(part.trim().trim_end_matches('Z'))
             })),
         _ => {}
     }
@@ -1232,8 +1238,7 @@ fn yearly_rule(rule: &str) -> Option<YearlyRule> {
     };
     let until = rrule_value(rule, "UNTIL").and_then(|until| {
         let until = until.trim().trim_end_matches('Z');
-        DateTime::strptime(DT_LOCAL, until)
-            .ok()
+        tilo_formats::compact_moment_from_text(until)
             .or_else(|| parse_cal_date(until).map(|date| date.at(23, 59, 59, 0)))
     });
     Some(YearlyRule { month, day, until })
@@ -1519,15 +1524,19 @@ fn raw(out: &mut String, key: &str, val: &str) {
 
 fn emit_datetime(out: &mut String, property: &str, value: DateTime, timezone: &str) {
     if timezone == "UTC" {
-        raw(out, property, &format!("{}Z", value.strftime(DT_LOCAL)));
+        raw(
+            out,
+            property,
+            &format!("{}Z", tilo_formats::compact_moment_text(value)),
+        );
     } else if timezone == "floating" {
-        raw(out, property, &value.strftime(DT_LOCAL).to_string());
+        raw(out, property, &tilo_formats::compact_moment_text(value));
     } else {
         pim_lines::write_property(
             out,
             property,
             &[("TZID", timezone)],
-            &value.strftime(DT_LOCAL).to_string(),
+            &tilo_formats::compact_moment_text(value),
         );
     }
 }
@@ -1543,7 +1552,7 @@ fn parse_cal_datetime(line: &ContentLine) -> Option<(DateTime, bool)> {
         return Some((d.to_datetime(Time::MIN), true));
     }
     let clean = val.trim_end_matches('Z');
-    if let Ok(dt) = DateTime::strptime(DT_LOCAL, clean) {
+    if let Some(dt) = tilo_formats::compact_moment_from_text(clean) {
         return Some((dt, false));
     }
     if let Some(d) = parse_cal_date(val) {
@@ -1630,9 +1639,9 @@ fn recurrence_wall(value: &str, zone: &str) -> Option<DateTime> {
         return Some(date.to_datetime(Time::MIN));
     }
     let Some(utc) = value.strip_suffix('Z') else {
-        return DateTime::strptime(DT_LOCAL, value).ok();
+        return tilo_formats::compact_moment_from_text(value);
     };
-    let wall = DateTime::strptime(DT_LOCAL, utc).ok()?;
+    let wall = tilo_formats::compact_moment_from_text(utc)?;
     Some(match crate::timezone::named(zone) {
         Some(zone) => wall
             .to_zoned(TimeZone::UTC)
@@ -1656,7 +1665,7 @@ fn series_until(value: &str, start: DateTime, zone: &str) -> Option<Date> {
 }
 
 fn parse_cal_date(val: &str) -> Option<Date> {
-    Date::strptime(D_ONLY, val.trim()).ok()
+    tilo_formats::compact_date_from_text(val.trim())
 }
 
 fn parse_event_duration(value: &str) -> Option<(i64, SignedDuration)> {

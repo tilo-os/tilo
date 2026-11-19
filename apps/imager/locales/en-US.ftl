@@ -199,6 +199,7 @@ imager-services-already-there = That mail account is already set up in Mail
 imager-services-too-large = That source holds more than one review can list
 imager-services-failed = It didn't work: { $reason }
 imager-import-param-folder-mode = Copy it once now, or decide later
+imager-import-set-folder-mode-mode = Copy it once now, or decide later
 imager-import-error-picker-unavailable = A folder chooser is already open or unavailable
 imager-import-error-selection-empty = No folder selection is available to clear
 imager-import-error-review-unavailable = Choose a source and destination before preparing a review
@@ -250,6 +251,7 @@ imager-setup-badge-internal = Full Tilo
 imager-setup-detail-internal = { $readiness }
 imager-setup-action-internal-set-target-size = Set Tilo size
 imager-setup-param-internal-target-gib = Tilo size in GiB
+imager-setup-set-internal-target-size-gib = Tilo size in GiB
 imager-setup-action-internal-install = Install Tilo alongside the current system
 imager-setup-action-internal-restart = Restart into the Tilo installer
 imager-setup-action-internal-restart-later = Restart later
@@ -1518,6 +1520,7 @@ installer-accounts-dav-saved-intro = These account details are used when you ope
 imager-setup-action-use-migration-intent = Use reviewed migration
 
 imager-setup-param-migration-intent = Private directory containing the reviewed migration
+imager-setup-use-migration-intent-directory = Private directory containing the reviewed migration
 
 imager-setup-error-migration-intent-unavailable = A reviewed migration can be attached on the Full Tilo review before installation starts.
 

@@ -126,6 +126,12 @@ impl Parts {
         });
     }
 
+    pub(super) fn defer(&self) {
+        self.send(&PortalEffect::Defer {
+            handle: self.request(),
+        });
+    }
+
     pub(super) fn focus(&self, focus: Focus) {
         self.shown.update(|shown| shown.focus = focus);
     }
@@ -213,7 +219,17 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
         // On a phone it rises from the foot as tall as what it asks.
         .with_foot_sheet();
     let cancel = parts.clone();
-    sheet = sheet.secondary_action(dialog.cancel_label.clone(), move || cancel.cancel());
+    sheet = match &dialog.defer_label {
+        // A question that can wait is left for later by its quiet answer, Escape's too; declining
+        // it is a choice of its own beside that, never what a missed press or Escape gives.
+        Some(defer) => {
+            let later = parts.clone();
+            sheet
+                .secondary_action(defer.clone(), move || later.defer())
+                .tertiary_action(dialog.cancel_label.clone(), move || cancel.cancel())
+        }
+        None => sheet.secondary_action(dialog.cancel_label.clone(), move || cancel.cancel()),
+    };
     if let Some(label) = &dialog.alternate_label {
         let alternate = parts.clone();
         sheet = sheet.tertiary_action(label.clone(), move || alternate.answer(1));
@@ -316,7 +332,11 @@ fn caution_line(line: &str) -> Element {
 
 /// What the person chooses or types, under the detail.
 fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
-    let mut column = Column::new().with_gap(ui::tokens::Spacing::BASE.s1);
+    // On the detail's edge and as tall as its rows: the sheet's body holds the inset.
+    let mut column = Column::new()
+        .with_intrinsic_height()
+        .with_no_padding()
+        .with_gap(ui::tokens::Spacing::BASE.s1);
     match &dialog.body {
         Body::Review | Body::Secret(_) => {}
         Body::Choices(choices) => column = choices_rows(column, dialog, choices, focus, parts),
@@ -332,6 +352,12 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                         .checkbox_view(remember.on, move |_| press.remember()),
                 ));
             }
+            // The answers in one row on the words' own edge, wrapping when they do not fit: with
+            // none suggested, the one under the pointer or the keyboard takes the primary face.
+            let mut answers = Row::new()
+                .with_id("portal-answers")
+                .with_rhythm(Rhythm::Related)
+                .align_start();
             for (at, choice) in choices.iter().enumerate() {
                 let press = parts.clone();
                 let mut button = Button::new(&format!("portal-answer-{at}"), choice)
@@ -341,9 +367,13 @@ fn rows(dialog: &Dialog, focus: Focus, parts: &Parts) -> Element {
                         ButtonRole::Secondary
                     })
                     .on_own_device_effect(move || press.answer(at));
+                if *suggested >= choices.len() {
+                    button = button.primary_when_engaged();
+                }
                 button.set_focus(at == dialog.selected);
-                column = column.push(Box::new(button));
+                answers = answers.push(Box::new(button));
             }
+            column = column.push(Box::new(answers));
         }
         Body::Devices(devices) => {
             for (at, device) in devices.iter().enumerate() {

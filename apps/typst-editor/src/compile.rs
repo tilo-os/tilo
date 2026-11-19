@@ -413,6 +413,51 @@ mod tests {
     }
 
     #[test]
+    fn a_looping_plugin_stops_with_a_message_and_the_next_document_still_compiles() {
+        // A plugin that never returns spends the wasm layer's per-call budget instead of holding
+        // compile worker for good.
+        let module = wat::parse_str(
+            r#"(module
+                (memory (export "memory") 1)
+                (func (export "spin") (param i32) (result i32)
+                    (loop $forever (br $forever))
+                    (i32.const 0)))"#,
+        )
+        .expect("the plugin is written as WAT");
+        let bytes = module
+            .iter()
+            .map(u8::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let parts = WorldParts::new();
+        let started = std::time::Instant::now();
+        let out = compile_source(
+            &parts,
+            &format!("#let p = plugin(bytes(({bytes})))\n#p.spin(bytes(()))\n"),
+        );
+        assert!(!out.ok, "a plugin that never returns fails the compile");
+        assert!(
+            out.diagnostics
+                .iter()
+                .any(|d| d.message.contains("did not finish")),
+            "the error says the plugin ran out of budget: {:?}",
+            out.diagnostics
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(120),
+            "the compile stopped in bounded time"
+        );
+
+        // The same thread compiles the next document: nothing is left mid-call.
+        let after = compile_source(&parts, "= Hello\n\nA body paragraph.\n");
+        assert!(
+            after.ok,
+            "the worker is usable after a plugin failed: {:?}",
+            after.diagnostics
+        );
+    }
+
+    #[test]
     fn the_document_can_read_today_from_the_toolkit_clock() {
         // Case `datetime_today_compiles`:
         // A document asking for today's date (the bundled letter does) compiles

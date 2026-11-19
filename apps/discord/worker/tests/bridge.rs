@@ -1477,8 +1477,8 @@ async fn a_new_workspace_takes_on_its_servers_layout_and_history() {
     assert_eq!(hi.1.channel.as_str(), bridge.general);
     assert_eq!(
         hi.1.ts,
-        i64::try_from((WRITTEN_MS + 60_000) / 1000).unwrap(),
-        "shown when it was written in Discord"
+        i64::try_from(WRITTEN_MS + 60_000).unwrap(),
+        "shown when it was written in Discord, to the millisecond"
     );
     assert_eq!(
         hi.1.appearance.as_ref().map(|a| a.name.as_str()),

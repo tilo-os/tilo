@@ -417,11 +417,15 @@ priority = 100
 filter = 'package(imager) and (test(/^setup::import_view::tests::/) or test(/^setup::desktop_continuation::tests::/) or test(/^setup::migration_worker::tests::/) or test(/^setup::internal_cache::/) or test(/^setup::internal_download::/) or test(/^setup::internal_download_flow::/))'
 test-group = "imager-durable-disk"
 
-# Each tilo-agent-session integration test runs a server host, agents and
-# browser sessions that drive every web app natively against fixed deadlines;
-# the all-app coverage runs starve a concurrent session of the CPU it needs.
+# The all-app coverage runs open every web app the workspace can hold and
+# drive each record or window in turn; beside a session held to fixed
+# deadlines they take the CPUs those deadlines need. They keep the two-wide
+# group. Every other test of the binary runs one scenario over one app and
+# has the pool: at a CI shard's 18 test threads the whole run took 203-212 s
+# in three runs, against 1613 s while the cap covered every test of the
+# package.
 [[profile.default.overrides]]
-filter = 'package(tilo-agent-session) and kind(test)'
+filter = 'package(tilo-agent-session) and binary(it) and (test(app_coverage::) or test(empty_state_actions::every_apps_empty_state_action_is_a_button_in_the_tree) or test(workspace_actions::member_roles::carried_names::) or test(=replicas::only_the_creator_seeds_a_record))'
 test-group = "agent-sessions"
 
 # A thousand keystrokes, each a durable server commit (file and directory

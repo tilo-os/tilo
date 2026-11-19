@@ -42,7 +42,7 @@ import {deviceRemoved} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
-import {isInvitedServer, invitedOrigin, nameInvitedServer, siteServer} from './site-host.mjs';
+import {isInvitedServer, invitedOrigin, nameInvitedServer, siteNames, siteServer} from './site-host.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, entryWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
@@ -1260,8 +1260,11 @@ export async function startEntryPage({mode}) {
         return null;
       }
       if (!invited) return null;
-      const device = JSON.stringify(invited.info?.hostCert?.device_public_key ?? null);
-      if (JSON.stringify(siteServer(origin)?.info?.hostCert?.device_public_key ?? null) === device) return null;
+      // The server the site names (its home workspace's host), however the invitation names it:
+      // dialled at the site's origin for it, so every link this person hands out from then on
+      // names a host any browser reaches.
+      const named = siteNames(invited.info);
+      if (named) return named === new URL(origin).origin ? null : {origin: named, offer: invited.offer};
       const at = invitedOrigin(invited.endpoint);
       if (!at) return null;
       nameInvitedServer(at, invited.info);

@@ -308,9 +308,11 @@ fn operations_the_catalogue_reports_unavailable_are_refused() {
     ] {
         assert_eq!(app.perform_effect(&effect), Err(gone.clone()));
     }
+    // Showing an application is looking it up, so a gone one is refused as
+    // the catalogue refuses it everywhere else.
     assert_eq!(
         app.perform_effect(&E::Show { app: "gone".into() }),
-        Err("the application is no longer in the catalogue".to_owned())
+        Err(gone)
     );
 }
 

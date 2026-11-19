@@ -91,6 +91,12 @@ identifiers = ["run_a", "run_b", "run_c"]
 paths = ["os/dev/test-nearby-pairing.sh", "os/dev/nearby-unlock-phase.sh", "os/dev/nearby-wake-phase.sh"]
 
 [[allow]]
+reason = "The commands tilo-vm's guides give: `tilo-vm qemu boot --run` names QEMU's runtime directory, and `podman run` starts a container and a Containerfile's `RUN` a build step."
+words = ["run"]
+identifiers = ["run", "RUN"]
+paths = ["crates/dev/tilo-vm/guide/*"]
+
+[[allow]]
 reason = "A check's `run` key: the shell command t, or the policy suite, starts for it."
 words = ["run"]
 identifiers = ["run"]
@@ -405,6 +411,12 @@ paths = [
 ]
 
 [[allow]]
+reason = "ush's `Programs::run` and `WorkspaceShells::run`, the methods that start a program in a shell, which the server's own-machine programs implement and its tests call."
+words = ["run"]
+identifiers = ["run"]
+paths = ["crates/runtime/ush/src/machine_programs.rs", "crates/runtime/ush/src/workspace_shell_tests.rs"]
+
+[[allow]]
 reason = "An airplane: the airplane-mode icon and words about planes in the sky."
 words = ["plane"]
 paths = [
@@ -622,7 +634,7 @@ paths = ["crates/runtime/device-mcp/src/lib.rs"]
 [[allow]]
 reason = "The helper that drives a test phase's async body on a current-thread runtime."
 words = ["run"]
-paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs", "crates/runtime/tilo-mcp/src/mcp_agent_tests.rs"]
+paths = ["crates/runtime/tilo-mcp/src/mcp_put_tests.rs", "crates/runtime/tilo-mcp/src/mcp_agent_tests.rs", "crates/runtime/tilo-mcp/src/mcp_agent_tool_list_tests.rs"]
 
 [[allow]]
 reason = "tokio's mpsc constructor, the queue a test's stand-in page answers through."
@@ -1215,6 +1227,19 @@ identifiers = ["host_cert", "hostCert"]
 paths = ["crates/server/tilo-server-protocol/src/web.rs"]
 
 [[allow]]
+reason = "The page's names for a workspace's server that it reads as they are: the link grammar's `scope.host`, entry.json's `home.host`, an invitation shelf's `host`, the server certificate's `hostCert`, and the module `site-host.mjs`."
+words = ["host"]
+identifiers = ["host", "hostCert"]
+paths = [
+    "crates/browser/tilo-browser-runtime/web/admission.mjs",
+    "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
+    "crates/browser/tilo-browser-runtime/web/entry.mjs",
+    "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
+    "crates/browser/tilo-browser-runtime/web/site-host.mjs",
+    "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
+]
+
+[[allow]]
 reason = "A registry address's host, the network name a registry is reached at, which the glossary keeps as a network host name."
 words = ["host"]
 identifiers = ["host", "host_str"]
@@ -1439,3 +1464,15 @@ reason = "The app framework's own API names the page's Files window calls: `Work
 words = ["record", "host"]
 identifiers = ["record", "window_host_effects"]
 paths = ["apps/file-explorer/src/tree.rs"]
+
+[[allow]]
+reason = "The retained-change payload's own `channel` field, the stream of a record's changes a test write is retained in."
+words = ["channel"]
+identifiers = ["channel"]
+paths = ["crates/server/tilo-workspace-service/src/peer/private_transport_tests.rs"]
+
+[[allow]]
+reason = "The browser effect that reads what the tab did, which the window must offer and narrow: `record` is the public effect's own name (read-page-record)."
+words = ["record"]
+identifiers = ["ReadPageRecord", "READ_PAGE_RECORD"]
+paths = ["apps/browser/src/browser_widget.rs"]

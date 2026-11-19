@@ -85,6 +85,21 @@ impl Keep {
         self.moving
     }
 
+    /// This keep for the content that shows within `visible` (scene pixels) only: the
+    /// clip and the region shrink to it, so what a widget paints outside is not left to
+    /// the copy that keeps none of it. `None` when nothing of the region is left.
+    pub(crate) fn visible_within(mut self, visible: Rect) -> Option<Self> {
+        let clip = self.clip.intersect(visible);
+        let region = self.region.intersect(visible);
+        let non_empty = |rect: &Rect| rect.width() > 0.0 && rect.height() > 0.0;
+        if !non_empty(&clip) || !non_empty(&region) {
+            return None;
+        }
+        self.clip = clip;
+        self.region = region;
+        Some(self)
+    }
+
     /// The kept pixels of a scroller drawn inside `outer`'s content: both
     /// must keep them, and two scrolls at once keep nothing (the planner
     /// copies one viewport, not one inside another).

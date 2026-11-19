@@ -135,7 +135,7 @@ pub enum TubeEffect {
     ///
     /// Your own choice, which follows you to your other devices and never
     /// reaches members.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", on = crate::rows::Setting)]
     SetPreference {
         #[param(
             "The preference",
@@ -156,7 +156,7 @@ pub enum TubeEffect {
     /// Set preferred quality.
     ///
     /// Your own choice, which follows you to your other devices.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", on = crate::rows::Setting)]
     SetPreferredQuality {
         #[param("The quality", choices = ["1080p", "720p", "480p", "auto"])]
         quality: String,
@@ -166,7 +166,7 @@ pub enum TubeEffect {
     /// How playback treats one category of marked segments: skip it, show it
     /// with a skip button, or ignore it. Your own choice, which follows you to
     /// your other devices.
-    #[effect(kind = "read")]
+    #[effect(kind = "read", on = crate::rows::Setting)]
     SetSegmentHandling {
         #[param(
             "The SponsorBlock category",

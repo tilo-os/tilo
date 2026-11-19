@@ -38,8 +38,8 @@ const NO_HOST: &str = "this page is in no workspace";
 /// windows open them, what the workspace lets its person do, and whether it lets them administer
 /// it, as the workspace's host last answered.
 #[derive(Clone)]
-pub(crate) struct PageData {
-    pub records: WorkspaceResources,
+pub(crate) struct PageRecords {
+    pub stores: crate::workspace_resources::PageStores,
     pub permissions: SharedPermissions,
     pub administers: Arc<AtomicBool>,
     /// The shell the page shows, and its person.
@@ -47,7 +47,7 @@ pub(crate) struct PageData {
     pub person: UserId,
 }
 
-impl PageData {
+impl PageRecords {
     /// The records of `workspace` that `owners` keep beside the page's windows' (`shared`), opened
     /// as its person `author`, as `permissions` let them, over the shell `handle` shows.
     pub(crate) fn in_page(
@@ -61,13 +61,13 @@ impl PageData {
         author: String,
     ) -> Self {
         Self {
-            records: crate::workspace_resources::in_page(
-                owners,
-                &shared.stores,
-                workspace,
-                author.clone(),
-                true,
-            ),
+            stores: crate::workspace_resources::PageStores {
+                owners: owners.clone(),
+                stores: Rc::clone(&shared.stores),
+                workspace: workspace.to_owned(),
+                author: author.clone(),
+                replicated: true,
+            },
             permissions: permissions.clone(),
             administers: Arc::clone(&shared.administers),
             handle: handle.clone(),
@@ -76,7 +76,7 @@ impl PageData {
     }
 }
 
-impl AgentsSource for PageData {
+impl AgentsSource for PageRecords {
     /// The page shows one workspace: its records are the ones it keeps.
     fn open(
         &self,
@@ -84,7 +84,7 @@ impl AgentsSource for PageData {
         _person: &UserId,
     ) -> (WorkspaceResources, Option<LivePermissions>) {
         (
-            self.records.clone(),
+            self.stores.resources(),
             Some(LivePermissions::shared(self.permissions.clone())),
         )
     }
@@ -99,7 +99,7 @@ pub(crate) fn make(
     shared: crate::desktop::Shared,
     here: Here,
     peer: Option<u32>,
-    records: Option<PageData>,
+    records: Option<PageRecords>,
 ) -> Box<dyn PageSheet> {
     Box::new(PageWorkspaceSettings::new(shared, here, peer, records))
 }
@@ -141,7 +141,7 @@ impl PageWorkspaceSettings {
         shared: crate::desktop::Shared,
         here: Here,
         peer: Option<u32>,
-        records: Option<PageData>,
+        records: Option<PageRecords>,
     ) -> Self {
         let agents = records.map(|records| {
             let woken = Arc::clone(&shared.woken);

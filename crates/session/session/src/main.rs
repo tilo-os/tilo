@@ -5,8 +5,9 @@
 //! It listens on a fresh `wayland-N` socket, serves X11 clients one display per
 //! workspace (unless `--no-x11`), prints the socket and the MCP server it serves,
 //! and starts `command` with `WAYLAND_DISPLAY` set to it; with a command, the
-//! session lasts as long as it does. A nested session serves no bus unless a flag
-//! names one. SIGTERM, SIGINT and SIGHUP end the session as ending on its own does.
+//! session lasts as long as it does. A session serves its desktop services on the
+//! session bus its environment names, or on the one `--session-bus` names instead.
+//! SIGTERM, SIGINT and SIGHUP end the session as ending on its own does.
 
 #[cfg(target_os = "linux")]
 use tilo_session::desktop_services::{Bus, Buses};
@@ -463,8 +464,8 @@ fn bus(ours: &[String], flag: &str) -> Bus {
     }
 }
 
-/// What a session in a window of another desktop reaches of it: no bus of it unless a flag names
-/// one, and no displays exported to it.
+/// The buses `ours` names, and whether a session on `backend` exports its displays to the desktop
+/// around it.
 #[cfg(target_os = "linux")]
 fn reach(ours: &[String], backend: Backend) -> Reach {
     Reach::of(

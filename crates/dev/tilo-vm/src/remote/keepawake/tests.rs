@@ -53,6 +53,7 @@ for line in sys.stdin:
         client: Some(client),
         hello,
         peer: false,
+        redial: None,
     }
 }
 
@@ -181,6 +182,34 @@ tilo_test_env::scenario! {
                 .expect("owned child status")
                 .is_some()
         );
+    }
+
+    phase a_renewal_whose_connection_was_lost_takes_the_lease_over_a_new_one;
+    {
+        let (_directory, renewing) = renewal_marker();
+        let (_fresh_directory, fresh_renewing) = renewal_marker();
+        let mut remote = transport("stall", &renewing);
+        let marker = fresh_renewing.clone();
+        remote.redial = Some(Box::new(move || Ok(transport("held", &marker))));
+        remote
+            .renew_or_redial(Duration::from_millis(50))
+            .expect("the lease is taken over a new connection");
+        assert_eq!(
+            remote.hello.daemon_version, "2",
+            "the new connection's own hello, then its renewal"
+        );
+        assert!(fresh_renewing.exists());
+    }
+
+    phase a_lease_refused_over_a_live_connection_is_not_redialled;
+    {
+        let (_directory, renewing) = renewal_marker();
+        let mut remote = transport("unheld", &renewing);
+        remote.redial = Some(Box::new(|| panic!("a live connection is not dialled again")));
+        let error = remote
+            .renew_or_redial(tilo_test_env::hang_bound())
+            .expect_err("an unheld lease must fail");
+        assert!(error.to_string().contains("fixture inhibitor unavailable"));
     }
 
     phase renewal_preserves_protocol_version_validation;

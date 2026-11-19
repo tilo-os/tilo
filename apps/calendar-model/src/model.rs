@@ -273,7 +273,7 @@ pub struct OccurrenceOverride {
 
 impl OccurrenceOverride {
     pub fn key_of(date: Date) -> tilo_resource::Id {
-        tilo_resource::Id::from_raw(date.strftime("%Y-%m-%d").to_string())
+        tilo_resource::Id::from_raw(tilo_formats::date_text(date))
     }
 
     fn valid(&self) -> Result<(), Refusal> {

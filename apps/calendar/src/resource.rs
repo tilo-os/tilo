@@ -109,7 +109,14 @@ pub enum CalendarEffect {
     /// shown, its colour and how many events it holds. It is the calendar
     /// row's read: what discloses the row, so showing, hiding and
     /// recolouring it are offered to whoever may read it, an agent too.
-    #[effect(view, row, returns, idempotent, on = crate::rows::CalendarRow)]
+    #[effect(
+        view,
+        row,
+        returns,
+        idempotent,
+        on = crate::rows::CalendarRow,
+        tag = tilo_actions::DOCUMENT_READ_TAG
+    )]
     ReadCalendar {
         #[param("Calendar id")]
         id: String,

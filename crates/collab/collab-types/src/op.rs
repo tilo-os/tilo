@@ -955,7 +955,7 @@ mod tests {
             );
             assert_eq!(
                 hex::encode(sha2::Sha256::digest(&bytes)),
-                "15f9d40de991b2176a1982bb360b0431dba89f8a6caa45666878ac7586d32f41",
+                "207ec79f4e1a1309ca6523fd281533ee8b08bfaa50b41c1f530402abbc02cbbf",
                 "{}",
                 hex::encode(&bytes)
             );
