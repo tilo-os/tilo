@@ -44,7 +44,7 @@ function createBridge(worker,onDeath){
  * staging; `commit(writes,{transfer})` consumes a complete stage in the same
  * confirmed strict commit. Neither path is a network ACK or admission proof. */
 const warnFallback=error=>console.warn('Tilo storage: persistence worker unavailable, continuing with in-page IndexedDB transactions',error);
-export function createStorageAccess({createWorker=defaultCreateWorker,inline,events=globalThis,delay=ms=>new Promise(resolve=>setTimeout(resolve,ms)),lockRetries=20,lockRetryMs=50,onFallback=warnFallback}={}){
+export function createStorageAccess({createWorker=defaultCreateWorker,inline,events=globalThis,delay=ms=>new Promise(resolve=>setTimeout(resolve,ms)),lockRetries=40,lockRetryMs=100,onFallback=warnFallback}={}){
   const leases=new Map(),live=new Set(),queues=new WeakMap();
   let bridge=null,inlineOnly=false,inlineStorage=inline;
   const inlineAccess=()=>inlineStorage??=createInlineStorage();
@@ -93,14 +93,17 @@ export function createStorageAccess({createWorker=defaultCreateWorker,inline,eve
   async function openBackend(profile,device,namespace){
     const link=connectWorker();
     if(link){
-      try{const {epoch}=await link.request({type:'open',profile,device});return workerBackend(link,namespace,epoch);}
-      catch(error){
-        if(error?.name!==STORAGE_UNSUPPORTED&&error?.name!==STORAGE_WORKER_FAILED)throw error;
-        fallBack(error);
-        return inlineBackend(await acquireInlineRetrying(profile,device,undefined));
+      for(let attempt=0;;attempt++){
+        try{const {epoch}=await link.request({type:'open',profile,device});return workerBackend(link,namespace,epoch);}
+        catch(error){
+          if(LOCK_CONTENDED.test(String(error?.message))&&attempt<lockRetries){await delay(lockRetryMs);continue;}
+          if(error?.name!==STORAGE_UNSUPPORTED&&error?.name!==STORAGE_WORKER_FAILED)throw error;
+          fallBack(error);
+          return inlineBackend(await acquireInlineRetrying(profile,device,undefined));
+        }
       }
     }
-    return inlineBackend(await inlineAccess().acquireStorage(profile,device));
+    return inlineBackend(await acquireInlineRetrying(profile,device,undefined));
   }
   async function acquireStorage(profile,device){
     const namespace=JSON.stringify([profile,device]);
