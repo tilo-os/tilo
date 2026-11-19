@@ -54,8 +54,12 @@ impl super::DocumentBytes for Bytes {
     }
 }
 impl NativeDocumentReads for Service {
-    fn requires_workspace(&self, _: &str) -> bool {
+    /// The document is one this device holds, sealed under its workspace's keys.
+    fn seals_documents(&self, _: &str) -> bool {
         true
+    }
+    fn resource_read(&self, _: &str, _: &str, _: &str) -> super::ResourceRead {
+        super::ResourceRead::Sealed
     }
     fn authorize(&self, context: &NativeDocumentReadContext) -> Result<(), String> {
         context.revalidate()?;

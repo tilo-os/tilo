@@ -77,122 +77,6 @@ mod owner_commit_tests {
         }).await;
     }
 
-    struct RequiredNativeReadUnavailable;
-    impl NativeDocumentReads for RequiredNativeReadUnavailable {
-        fn requires_workspace(&self, _: &str) -> bool {
-            true
-        }
-        fn authorize(&self, _: &NativeDocumentReadContext) -> Result<(), String> {
-            Err("actual native owner unavailable".into())
-        }
-        fn capture(
-            &self,
-            _: &NativeDocumentReadContext,
-            _: Option<[u8; 32]>,
-            _: usize,
-        ) -> Result<NativeDocumentRead, String> {
-            Err("actual native capture unavailable".into())
-        }
-    }
-    #[tokio::test(flavor = "current_thread")]
-    async fn committed_read_mode_distinguishes_portable_durability_from_native_requirement() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let directory = canonical_tempdir();
-                let root = SigningKey::from_bytes(&[24; 32]);
-                let device = SigningKey::from_bytes(&[25; 32]);
-                let actor = person_id_for_root(root.verifying_key().to_bytes());
-                let mut workspace = crate::apps::test_support::Workspace::new(
-                    crate::apps::test_support::WorkspaceId::from_u128(5),
-                    "read mode",
-                );
-                workspace.set_owner(&actor);
-                let route = CrdtRoute::record(
-                    "so.tilo.word-processor",
-                    workspace.id().to_string(),
-                    "tab:0000000000000001",
-                );
-                let mut tree = WorkspaceTree::default();
-                tree.workspaces.push(workspace);
-                let membership = tree.shared();
-                for native in [false, true] {
-                    let admitted = admit_verified_join(
-                        &membership.read(),
-                        &route,
-                        VerifiedJoinIdentity {
-                            user_public_key: root.verifying_key().to_bytes(),
-                            device_public_key: device.verifying_key().to_bytes(),
-                            capped: false,
-                        },
-                    )
-                    .unwrap();
-                    let fanout = Arc::new(FanoutState::new());
-                    let config = crate::apps::NativePeerBrokerConfig {
-                        journal_root: directory.path().join(if native {
-                            "native"
-                        } else {
-                            "portable"
-                        }),
-                        certificate_authority: Arc::new(ExplicitAuthority),
-                    };
-                    let services = ProcessServices {
-                        committed_documents: native.then(|| {
-                            Arc::new(RequiredNativeReadUnavailable) as Arc<dyn NativeDocumentReads>
-                        }),
-                        ..Default::default()
-                    };
-                    let (state, bridge_rx) = AppBrokerState::new_configured(
-                        &fanout,
-                        Arc::new(Mutex::new(BrokerChannels::default())),
-                        PeerPublisher::disabled(),
-                        Some(membership.authority()),
-                        None,
-                        Some(&config),
-                        services,
-                    );
-                    assert!(
-                        state.durable_owner_required,
-                        "exercise actual configured durable worker mode"
-                    );
-                    let client = wire_channel(JoinedChannel {
-                        as_app: None,
-                        committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
-                        state,
-                        directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
-                        channel_id: route.channel_key(),
-                        peer_id: 1,
-                        connection_id: 1,
-                        verified_identity: admitted,
-                        resource_type: None,
-                        route_access: RouteAccess::Own,
-                        lease: None,
-                        _hold: None,
-                    });
-                    let response = client
-                        .committed_document(&runtime_collab::committed_document::Request::Open {
-                            known_revision: None,
-                        })
-                        .await;
-                    if native {
-                        assert!(
-                            response.is_err()
-                                || response.as_ref().is_ok_and(|reply| {
-                                    *reply == runtime_collab::committed_document::Reply::Unavailable
-                                }),
-                            "required native owner cannot become Legacy"
-                        );
-                    } else {
-                        assert_eq!(
-                            response.unwrap(),
-                            runtime_collab::committed_document::Reply::Legacy,
-                            "portable worker is already hydrated and must preserve storage behavior"
-                        );
-                    }
-                }
-            })
-            .await;
-    }
-
     /// A transport observer at the existing App boundary. The checked Writer
     /// owns and mutates its actual record; the observer records ordering only.
     struct WorkerTransport {
@@ -512,14 +396,8 @@ mod owner_commit_tests {
     struct AlteredReceipt {
         inner: crate::apps::test_owner::owner_commit::OwnerCommitHandle,
         fault: u8,
-        required_workspace: Option<String>,
     }
     impl tilo_peer_state::owner_commit::OwnerCommitService for AlteredReceipt {
-        fn requires_workspace(&self, workspace: &str) -> bool {
-            self.required_workspace
-                .as_deref()
-                .is_none_or(|required| required == workspace)
-        }
         fn health(&self) -> Result<(), String> {
             self.inner.health()
         }
@@ -549,13 +427,12 @@ mod owner_commit_tests {
         }
     }
     fn owner_fixture_with_receipt_fault(root: &std::path::Path, fault: u8) -> OwnerFixture {
-        owner_fixture_with_native_config(root, fault, false, true)
+        owner_fixture_with_native_config(root, fault, false)
     }
     fn owner_fixture_with_native_config(
         root: &std::path::Path,
         fault: u8,
         native: bool,
-        enrolled: bool,
     ) -> OwnerFixture {
         let mut owner =
             crate::apps::test_owner::SessionOwner::initialize(&root.join("owner")).unwrap();
@@ -590,13 +467,6 @@ mod owner_commit_tests {
                 Arc::new(AlteredReceipt {
                     inner: handle,
                     fault,
-                    required_workspace: native.then(|| {
-                        if enrolled {
-                            route.cluster_id.clone()
-                        } else {
-                            uuid::Uuid::new_v4().to_string()
-                        }
-                    }),
                 }),
             ),
             Some(membership.authority()),
@@ -1474,7 +1344,7 @@ mod owner_commit_tests {
             .run_until(async {
                 for fail in [false, true] {
                     let root = canonical_tempdir();
-                    let mut f = owner_fixture_with_native_config(root.path(), 0, true, true);
+                    let mut f = owner_fixture_with_native_config(root.path(), 0, true);
                     assert!(
                         !f.state.durable_owner_required,
                         "exercise actual native config=None"
@@ -1529,11 +1399,11 @@ mod owner_commit_tests {
     async fn native_offline_document_keeps_actual_owner_barrier() {
         for fail in [false, true] {
             let root = canonical_tempdir();
-            let mut f = owner_fixture_with_native_config(root.path(), 0, true, true);
+            let mut f = owner_fixture_with_native_config(root.path(), 0, true);
             let (handle, mut mailbox) =
                 crate::apps::test_owner::owner_commit::OwnerCommitMailbox::bounded(1);
             let publisher = PeerPublisher::with_optional_owner_commit(None, Arc::new(handle));
-            assert!(publisher.requires_owner_for(&f.route.cluster_id));
+            assert!(publisher.has_owner());
             let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
                 workspace: f.route.cluster_id.clone(),
                 operation: tilo_peer_state::owner_commit::CommitOperation::Document {
@@ -1573,32 +1443,11 @@ mod owner_commit_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn native_unenrolled_document_preserves_legacy_routing() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let root = canonical_tempdir();
-                let f = owner_fixture_with_native_config(root.path(), 0, true, false);
-                assert!(!f.state.publisher.requires_owner_for(&f.route.cluster_id));
-                let mut subscriber = f.state.subscribe_ops(&f.route.channel_key(), 73);
-                f.client()
-                    .send(&postcard::to_stdvec(&owner_snapshot(&f)).unwrap())
-                    .await
-                    .unwrap();
-                assert!(subscriber.try_recv().is_ok());
-                assert!(
-                    f.mailbox.is_empty(),
-                    "unenrolled legacy route must not acquire an unrelated native owner"
-                );
-            })
-            .await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn native_enrolled_effect_config_none_requires_actual_owner_receipt() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let root = canonical_tempdir();
-                let mut f = owner_fixture_with_native_config(root.path(), 0, true, true);
+                let mut f = owner_fixture_with_native_config(root.path(), 0, true);
                 let invocation = tilo_actions::InvocationId::new();
                 let (tx, _rx) = std::sync::mpsc::channel();
                 let pending = PendingInvocation {
@@ -1669,7 +1518,7 @@ mod owner_commit_tests {
         // The refusal above intentionally poisons that owner. A separate live
         // owner checks identical prepared bytes and successful durable retries.
         let root = canonical_tempdir();
-        let mut f = owner_fixture_with_native_config(root.path(), 0, true, true);
+        let mut f = owner_fixture_with_native_config(root.path(), 0, true);
         pending.cluster_id = f.route.cluster_id.clone();
         pending.owner = InvocationOwner::Certified {
             root: f.owner.peer().owner(),

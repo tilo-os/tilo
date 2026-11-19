@@ -177,8 +177,9 @@ impl ServiceSessions {
     ///
     /// # Errors
     ///
-    /// The identity is invalid or, for a certified service, not able to serve;
-    /// the state root cannot be created; or the workspaces cannot be opened.
+    /// The identity is invalid or, for a certified service, not able to serve
+    /// or to govern the workspaces it was asked to govern; the state root
+    /// cannot be created; or the workspaces cannot be opened.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the handler is a set of shared handles moved into the sessions it becomes part of; dropping it earlier releases no lock"
@@ -195,7 +196,7 @@ impl ServiceSessions {
         ) -> Option<Arc<dyn AppActionServer>>,
     ) -> Result<(Self, Option<Governed>), ServiceError> {
         validate_service_device_identity(&identity)?;
-        say_when_unsealed(governs, &identity.device_cert);
+        may_govern(governs, &identity.device_cert)?;
         std::fs::create_dir_all(&cfg.state_root)?;
         let workspaces: WorkspaceRegistry =
             Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
@@ -429,17 +430,18 @@ fn take_part(compactor: &crate::compaction::Compactor, workspaces: &crate::works
     tokio::spawn(async move { repairing.fold_away_unsent(&compactor).await });
 }
 
-/// Say loudly when a service that `governs` workspaces under `cert` takes part in no
-/// channels: its certificate may not own workspaces, so the workspaces it governs
-/// keep their records in the clear in the workspace document instead of sealed
-/// channels.
-fn say_when_unsealed(governs: bool, cert: &DeviceCert) {
+/// Whether a service asked to govern under `cert` may: governing a workspace is holding its
+/// keys, which its documents are sealed under, so a device enrolled without that capability
+/// serves its person's sessions but keeps no workspace.
+fn may_govern(governs: bool, cert: &DeviceCert) -> Result<(), ServiceError> {
     if governs && !cert.capabilities.holds_workspace_keys() {
-        tracing::error!(
-            device = %cert.device_label,
-            "this service's certificate cannot own workspaces, so the workspaces it governs are not sealed; re-enroll it with the own capability"
-        );
+        return Err(ServiceError::Identity(
+            "this service's certificate cannot own workspaces, so it cannot govern \
+             them: re-enroll it with the own capability"
+                .into(),
+        ));
     }
+    Ok(())
 }
 
 /// The handlers of a governing service's ALPNs, shared between the routers
@@ -1562,6 +1564,47 @@ mod tests {
             listed(&trust),
             vec![hex::encode(own_user), hex::encode([8; 32])],
             "a forgotten workspace's reader is trusted no more"
+        );
+    }
+
+    /// Governing a workspace is holding its keys, so a service whose
+    /// certificate may not own workspaces keeps none: asked to govern, it
+    /// refuses instead of serving workspaces it could not seal.
+    #[tokio::test]
+    async fn a_service_whose_cert_cannot_own_governs_no_workspace() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (key, cert) = crate::workspaces::fixtures::governor_with(
+            tilo_user_identity::DeviceCapabilities::administrator(),
+        );
+        let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
+            .bind()
+            .await
+            .expect("a loopback endpoint binds");
+        let opened = ServiceSessions::open(
+            ServiceConfig::new(
+                state.path().to_owned(),
+                tilo_server_protocol::WorkSetting::none(),
+            ),
+            ServiceIdentity {
+                user_public_key: cert.user_public_key,
+                device_signing_key: key,
+                device_cert: cert,
+                revocations: RevocationList::new(),
+            },
+            endpoint.clone(),
+            true,
+            None,
+            |_, server| server,
+        )
+        .await;
+        endpoint.close().await;
+        let Err(ServiceError::Identity(reason)) = opened else {
+            panic!("a service whose certificate cannot own workspaces governed them");
+        };
+        assert!(
+            reason.contains("own capability"),
+            "the refusal names what the device needs: {reason}"
         );
     }
 }

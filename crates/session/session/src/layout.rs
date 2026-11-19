@@ -37,8 +37,6 @@ use tilo_desktop_model::{
 use ui::permissions::MemberId;
 use ui::state::UndoLog;
 
-use tilo_broker_core::owner_service::OwnerService as _;
-
 use crate::engine::{Engine, SealKeys};
 use tilo_desktop_surface::DesktopHandle;
 
@@ -196,8 +194,6 @@ enum Going {
 
 /// What a record's write is sealed with, where this device can write it.
 enum Sealing {
-    /// Its workspace commits the documents of its records itself: the write goes in the clear.
-    Clear,
     /// Its members' sealed channels: the write is sealed with their keys.
     Sealed(key_group::ContentKeys),
 }
@@ -206,7 +202,6 @@ impl Sealing {
     /// The record channel's keys, where the write is sealed.
     fn keys(&self) -> Option<&key_group::ContentKeys> {
         match self {
-            Self::Clear => None,
             Self::Sealed(keys) => Some(keys),
         }
     }
@@ -1629,18 +1624,13 @@ impl Layouts {
         wrote
     }
 
-    /// What this device seals `key`'s writes with, and whether it writes at all now: a workspace
-    /// whose records are its members' sealed channels takes a sealed write, and one whose channel
-    /// keys this device holds none of — because they are not here yet, or because this device has
-    /// no secret store at all — takes none. Neither is a workspace's verdict, so no notice names a
-    /// workspace as having refused a write it never saw.
+    /// What this device seals `key`'s writes with, and whether it writes at all now: every
+    /// workspace's records are its members' sealed channels, so a write takes the channel's keys,
+    /// and one whose keys this device holds none of — because they are not here yet, or because
+    /// this device has no secret store at all — takes none. Neither is a workspace's verdict, so
+    /// no notice names a workspace as having refused a write it never saw.
     fn sealed(&self, engine: &Engine, key: &Key) -> Option<Sealing> {
         let (workspace_id, _) = key;
-        if engine.commits_documents(*workspace_id) {
-            // Its host takes part in no channels: its records are documents the owner commits,
-            // written in the clear.
-            return Some(Sealing::Clear);
-        }
         match engine.seal_keys(*workspace_id) {
             Ok(SealKeys::Here(keys)) => Some(Sealing::Sealed(keys)),
             // The record's channel keys are not here yet: it is written on the look after they

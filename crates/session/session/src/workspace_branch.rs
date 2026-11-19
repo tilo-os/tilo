@@ -172,8 +172,7 @@ fn events(engine: &Engine) -> Vec<tokio::sync::watch::Receiver<u64>> {
 
 /// Found `record` of `app` in the branch `workspace` as `changes` , a whole document: sealed under
 /// the keys of the record's channel in the branch, which its first sealed write asks for and this
-/// device, the branch's only member, makes, waiting for them until `until`; in the clear where the
-/// branch's records are documents this device commits.
+/// device, the branch's only member, makes, waiting for them until `until`.
 async fn found(
     engine: &Engine,
     workspace: WorkspaceId,
@@ -181,12 +180,7 @@ async fn found(
     changes: &[u8],
     until: Instant,
 ) -> Result<(), String> {
-    use tilo_workspace_service::apps::owner_commits::OwnerService as _;
-    let sealed = if engine.commits_documents(workspace) {
-        None
-    } else {
-        Some(seal_keys(engine, workspace, until).await?)
-    };
+    let sealed = Some(seal_keys(engine, workspace, until).await?);
     engine
         .write_resource(workspace, (app, record), changes, true, sealed.as_ref())
         .await

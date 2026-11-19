@@ -122,10 +122,6 @@ pub enum ResourceRead {
     /// record a sealed workspace does not hold yet, which is new and which the
     /// app creates on its own sealed channel. Answered [`Reply::Legacy`].
     Own,
-    /// Every record of a workspace this owner commits
-    /// ([`NativeDocumentReads::requires_workspace`]): read under the launcher's or
-    /// a host worker's ownership.
-    Committed,
     /// A record a sealed workspace this device holds already holds, read through
     /// the channel's keys. Its authority is the one the app's own sealed
     /// channel reads under: the channel's live admission and the workspace's read
@@ -144,8 +140,6 @@ pub enum ChainHeadAnswer {
     NewestPartOnItsWay,
 }
 pub trait NativeDocumentReads: Send + Sync {
-    /// Durable native installation obligation, independent of runtime health.
-    fn requires_workspace(&self, workspace: &str) -> bool;
     /// Whether `workspace` seals every record write under the record channel's
     /// keys: no write in it is taken unencrypted, from any app.
     fn seals_documents(&self, workspace: &str) -> bool {
@@ -166,12 +160,8 @@ pub trait NativeDocumentReads: Send + Sync {
     }
     /// Who answers an app's read of `app`'s `record` in `workspace`.
     fn resource_read(&self, workspace: &str, app: &str, record: &str) -> ResourceRead {
-        let _ = (app, record);
-        if self.requires_workspace(workspace) {
-            ResourceRead::Committed
-        } else {
-            ResourceRead::Own
-        }
+        let _ = (workspace, app, record);
+        ResourceRead::Own
     }
     /// Whether this device holds anything of `app`'s `record` in `workspace`: what its owner commits
     /// or holds, or sealed writes of it. A record it holds nothing of is new to this device: the
@@ -554,58 +544,19 @@ impl JoinedChannel {
         context.revalidate()?;
         Ok(context)
     }
+    /// The private window instance this route's launch shows: none. A committed document kept one
+    /// for a workspace whose documents its owner committed in the clear, and every workspace seals
+    /// its documents under their routes' keys now.
+    #[expect(
+        clippy::unused_self,
+        clippy::unnecessary_wraps,
+        reason = "the answer is read wherever a route may bind a private window; none does"
+    )]
     pub(super) fn native_private_window_instance(&self) -> Result<Option<u64>, String> {
-        let route = self.resource_route();
-        if !self
-            .state
-            .services
-            .committed_documents
-            .as_ref()
-            .is_some_and(|service| service.requires_workspace(&route.cluster_id))
-        {
-            return Ok(None);
-        }
-        let Some(local) = self
-            .lease
-            .as_ref()
-            .and_then(|lease| lease.local_media.as_ref())
-            .filter(|_| self.verified_identity.agent_id.is_none())
-            .filter(|local| local.continuation_instance.is_some())
-        else {
-            return Ok(None);
-        };
-        // Another app's workspace record, or another app's record this window
-        // reads, is no record of this window's own: it carries no private binding.
-        match launch_holds(local, &route, self.route_access == RouteAccess::ReadOnly) {
-            Some(true) => {}
-            Some(false) => return Ok(None),
-            None => return Err("native private launch ownership ended".into()),
-        }
-        let context = self.document_read_context()?;
-        self.state
-            .services
-            .committed_documents
-            .as_ref()
-            .ok_or("native document owner unavailable")?
-            .authorize(&context)?;
-        context.revalidate()?;
-        Ok(local
-            .continuation_instance
-            .filter(|instance| *instance != 0))
+        Ok(None)
     }
 
     pub(super) fn continuation_instance(&self) -> Result<u64, String> {
-        if self
-            .state
-            .services
-            .committed_documents
-            .as_ref()
-            .is_some_and(|service| service.requires_workspace(&self.route().cluster_id))
-        {
-            return self
-                .native_private_window_instance()?
-                .ok_or_else(|| "native launch has no private window-instance binding".into());
-        }
         self.route()
             .document_id
             .strip_prefix("continuation:")
@@ -698,9 +649,7 @@ impl JoinedChannel {
             Request::ConnectionSnapshot => Err("connection snapshot was not handled".into()),
             Request::Writes => Err("the channel's writes were not answered".into()),
             Request::Await { .. } => Err("a committed read wait is answered asynchronously".into()),
-            Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding {
-                instance: self.native_private_window_instance()?,
-            }),
+            Request::PrivateWindowBinding => Ok(Reply::PrivateWindowBinding { instance: None }),
             Request::Cancel { capture, token } => slot.acknowledge(*capture, *token),
             Request::Leave => {
                 slot.leave();

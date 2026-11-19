@@ -1253,9 +1253,8 @@ impl Engine {
     /// Write `changes` to `record` of `app` in `workspace` as this device's own write, and publish
     /// it to the workspace's other devices: the record's founding write when `founding` (the whole
     /// document, which the workspace must not hold yet), a change of it otherwise. Sealed under
-    /// `sealed` , the keys of the record's channel, where the workspace's records are its members'
-    /// sealed channels — a founding write as a checkpoint, so the record is sealed from the start —
-    /// and in the clear where they are documents this device commits.
+    /// `sealed` , the keys of the record's channel — a founding write as a checkpoint, so the
+    /// record is sealed from the start.
     /// Answers the write as this device's apps take a member's: their copies of the record follow
     /// it only once it is handed to them.
     /// # Errors
@@ -1994,18 +1993,6 @@ impl Engine {
 /// canonical copy of every workspace it holds, and what it commits leaves on the peer network's session
 /// with the workspace's host.
 impl tilo_broker_core::owner_service::OwnerService for Engine {
-    /// A held workspace whose host takes part in no channels: its records are documents the owner
-    /// commits, never sealed channels.
-    fn commits_documents(&self, workspace_id: WorkspaceId) -> bool {
-        self.holds(workspace_id)
-            && self
-                .owner
-                .with_current(workspace_id, |view| {
-                    Ok(!view.workspace_host().capabilities.holds_workspace_keys())
-                })
-                .unwrap_or(false)
-    }
-
     fn projects_workspace(&self, workspace_id: WorkspaceId) -> bool {
         self.holds(workspace_id)
     }

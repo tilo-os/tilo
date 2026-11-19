@@ -759,14 +759,6 @@ impl Joined {
 }
 
 impl OwnerCommitService for Joined {
-    /// Every workspace this profile joined, and the workspaces the desktop session
-    /// governs here, whose writes are refused.
-    fn requires_workspace(&self, workspace: &str) -> bool {
-        WorkspaceId::parse(workspace).is_some_and(|workspace| {
-            self.owner.contains_workspace(workspace) || self.refused.contains(&workspace)
-        })
-    }
-
     /// A workspace hosted here keeps its effect receipts in the profile's own
     /// workspace record.
     fn records_effects(&self, workspace: &str) -> bool {

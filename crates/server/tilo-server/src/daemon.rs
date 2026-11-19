@@ -602,26 +602,27 @@ impl Server {
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
         };
         // A certified host governs the workspaces it creates, unless its embedder
-        // serves workspace joining itself. It answers their governance as
-        // actions itself, beside whatever apps its embedder serves, and it
-        // runs the app transforms its embedder gives it a job runner for.
+        // serves workspace joining itself, and only when its device may own
+        // workspaces: governing one is holding its keys, so a device that may not
+        // keeps no workspace. It answers their governance as actions itself, beside
+        // whatever apps its embedder serves, and it runs the app transforms its
+        // embedder gives it a job runner for.
         let governs_workspaces = !matches!(cfg.trust_policy, TrustPolicy::AllowAny)
+            && identity.device_cert.capabilities.holds_workspace_keys()
             && !additional_protocols.iter().any(|(alpn, _)| {
                 alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
             });
-        // A server whose device may own workspaces takes part in every channel of
-        // the workspaces it governs, as one key holder beside their members; a
-        // server whose device may not keeps no channel keys at all.
-        let workspace_keys = (governs_workspaces
-            && identity.device_cert.capabilities.holds_workspace_keys())
-        .then(|| {
-            crate::workspace_keys::KeyService::open(
-                &cfg.state_root,
-                identity.device_signing_key.clone(),
-            )
-        })
-        .transpose()?
-        .map(Arc::new);
+        // A server that governs workspaces takes part in every channel of them, as
+        // one key holder beside their members.
+        let workspace_keys = governs_workspaces
+            .then(|| {
+                crate::workspace_keys::KeyService::open(
+                    &cfg.state_root,
+                    identity.device_signing_key.clone(),
+                )
+            })
+            .transpose()?
+            .map(Arc::new);
         // Where this host is dialled — what each workspace's governance names of
         // it, and what a link it hands out carries — is the relay, which the
         // endpoint knows only once it has connected to one. The workspaces opened

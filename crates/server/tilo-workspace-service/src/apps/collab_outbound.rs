@@ -93,11 +93,10 @@ impl PeerPublisher {
             warned_no_network: AtomicBool::new(false),
         })
     }
-    /// Consult the actual installed owner; wiring a network sink grants nothing.
-    pub fn requires_owner_for(&self, workspace: &str) -> bool {
-        self.owner_commit
-            .as_ref()
-            .is_some_and(|owner| owner.requires_workspace(workspace))
+    /// Whether a durable owner is installed here: every workspace's document writes
+    /// cross it.
+    pub fn has_owner(&self) -> bool {
+        self.owner_commit.is_some()
     }
     /// Whether `workspace`'s effect receipts are the installed owner's to
     /// commit ([`tilo_peer_state::owner_commit::OwnerCommitService::records_effects`]).

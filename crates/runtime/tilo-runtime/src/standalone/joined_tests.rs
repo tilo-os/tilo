@@ -1585,7 +1585,6 @@ async fn the_profile_workspace_is_placed_once_on_its_own_host_and_held() {
             .unwrap(),
         workspace.to_string()
     );
-    assert!(joined.requires_workspace(&workspace.to_string()));
     assert!(
         !joined.records_effects(&workspace.to_string()),
         "the profile keeps its own workspace's effect records"
@@ -1644,7 +1643,6 @@ async fn writes_to_a_workspace_the_desktop_session_governs_are_refused() {
         ),
     )
     .unwrap();
-    assert!(joined.requires_workspace(&workspace.to_string()));
     let refused = joined
         .commit(signed_write(
             workspace,

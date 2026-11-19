@@ -358,8 +358,7 @@ impl JoinedChannel {
         // and carries it to their other devices; no workspace's owner holds it, so nothing of one
         // commits it.
         let owner_required = state.personal_route(&route).is_none()
-            && (state.durable_owner_required
-                || state.publisher.requires_owner_for(&route.cluster_id));
+            && (state.durable_owner_required || state.publisher.has_owner());
         let _owner_order = if owner_required {
             Some(state.owner_commit_order.lock().await)
         } else {
@@ -1173,15 +1172,12 @@ impl JoinedChannel {
         let route = self.route();
         let identity = self.verified_identity.clone();
         Box::pin(async move {
-            let _owner_order = if state.durable_owner_required
-                || state.publisher.requires_owner_for(&route.cluster_id)
-            {
+            let _owner_order = if state.durable_owner_required || state.publisher.has_owner() {
                 Some(state.owner_commit_order.lock().await)
             } else {
                 None
             };
-            if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
-            {
+            if state.durable_owner_required || state.publisher.has_owner() {
                 state.revalidate_admission(&route, &identity)?;
             }
             let completion = InvocationCompletion { code, message };
@@ -1235,8 +1231,7 @@ impl JoinedChannel {
             state
                 .commit_effect_before_terminal(&staged, &update)
                 .await?;
-            if state.durable_owner_required || state.publisher.requires_owner_for(&route.cluster_id)
-            {
+            if state.durable_owner_required || state.publisher.has_owner() {
                 state.revalidate_admission(&route, &identity)?;
             }
             state
