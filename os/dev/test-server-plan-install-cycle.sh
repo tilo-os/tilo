@@ -454,15 +454,15 @@ mark_step 09-first-unlock ok
 # What the owner's device knows of the machine: its name, its device key and
 # the recovery key the install handed over with the enrolment.
 await_server_status() {
-  local below=${1:-} i output="" uptime
+  local before_opened=${1:-} i output="" opened
   for i in $(seq 1 "${TILO_SERVER_CYCLE_STATUS_SECONDS:-1800}"); do
     output="$(owner_cmd tilo server status "$server_name" 2>&1 || true)"
     printf '%s\n' "$output" > "$out/server-status-latest.txt"
-    uptime="$(sed -n 's/^  up: *\([0-9][0-9]*\)s$/\1/p' <<<"$output" | head -n 1)"
+    opened="$(sed -n 's/^  opened: *//p' <<<"$output" | head -n 1)"
     if printf '%s\n' "$output" | grep -q 'opened:' \
       && printf '%s\n' "$output" | grep -q 'by you, on one of your devices' \
-      && [ -n "$uptime" ] \
-      && { [ -z "$below" ] || [ "$uptime" -lt "$below" ]; }; then
+      && [ -n "$opened" ] \
+      && { [ -z "$before_opened" ] || [ "$opened" != "$before_opened" ]; }; then
       printf '%s\n' "$output" > "$evidence/${2:-09-status}.txt"
       return 0
     fi
@@ -476,8 +476,10 @@ mark_step 09-first-boot ok
 
 # --- Tilo becomes the default start, and a restart opens unattended ----------
 phase=default-start
-first_uptime="$(sed -n 's/^  up: *\([0-9][0-9]*\)s$/\1/p' "$evidence/09-status.txt" | head -n 1)"
-[ -n "$first_uptime" ] || die 'the first status named no uptime to tell the restart by'
+# The boot notes when it opened; the next boot's note names another moment,
+# whatever time each took to reach the point where it answers.
+first_opened="$(sed -n 's/^  opened: *//p' "$evidence/09-status.txt" | head -n 1)"
+[ -n "$first_opened" ] || die 'the first status named no unlocked boot to tell the restart by'
 owner_cmd tilo server set-default-start "$server_name" \
   > "$evidence/10-default-start.txt" 2>&1 \
   || { cat "$evidence/10-default-start.txt" >&2; die 'the machine did not take Tilo as its default start'; }
@@ -487,7 +489,7 @@ phase=restart
 second_question="$(await_owner_question network.device-unlock restart)"
 note "the owner releases the restarted boot's half: $second_question"
 answer_owner allow "$second_question"
-await_server_status "$first_uptime" 11-status || die 'the machine did not come up unlocked after the restart'
+await_server_status "$first_opened" 11-status || die 'the machine did not come up unlocked after the restart'
 mark_step 11-restart ok
 
 # --- the recovery key is on the person's devices -----------------------------
