@@ -1,6 +1,17 @@
+/// What a pinned app is, and the picture it shows on a dock.
+enum Kind {
+    /// Notes
+    notes (icon: .file_text)
+    /// Tasks
+    tasks (icon: .list_checks)
+    /// Mail
+    mail (icon: .mail)
+}
+
 /// One app on a dock: what it stands for and its name.
 type Pinned {
     title: Text
+    kind: Kind = .notes
 }
 
 /// The shell's page: each kind in a section of its own.
@@ -36,7 +47,7 @@ view shell_parts(g: Gallery) {
                     ui.TabItem(
                         pinned,
                         title: pinned.title,
-                        icon: .file_text,
+                        icon: pinned.kind.icon(),
                         modified: pinned.title == "Tasks",
                     ) {
                         ui.TabFace(workspace.me, name: "Ada Lovelace")
@@ -63,7 +74,7 @@ view shell_parts(g: Gallery) {
                 for pinned in g.chrome_apps {
                     ui.DragItem(pinned, title: pinned.title) {
                         on activate: set(last, pinned.title)
-                        ui.Button(pinned.title, icon: .folder, icon_only: true) {
+                        ui.Button(pinned.title, icon: pinned.kind.icon(), icon_only: true) {
                             on press: set(last, pinned.title)
                         }
                     }
@@ -74,7 +85,7 @@ view shell_parts(g: Gallery) {
                 for pinned in g.chrome_apps {
                     ui.DragItem(pinned, title: pinned.title) {
                         on activate: set(last, pinned.title)
-                        ui.ListRow(pinned.title)
+                        ui.ListRow(pinned.title, icon: pinned.kind.icon())
                     }
                 }
             }
@@ -85,7 +96,7 @@ view shell_parts(g: Gallery) {
         ) {
             for pinned in g.chrome_apps {
                 ui.DragSource(pinned.id(), title: pinned.title) {
-                    ui.ListRow(pinned.title, icon: .folder)
+                    ui.ListRow(pinned.title, icon: pinned.kind.icon())
                 }
             }
             ui.DropTarget {

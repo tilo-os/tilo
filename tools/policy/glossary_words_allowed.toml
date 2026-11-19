@@ -1279,3 +1279,15 @@ paths = [
     "crates/platform/imager-backend/src/linux.rs",
     "apps/imager/src/setup/staging/probe.rs",
 ]
+
+[[allow]]
+reason = "The strip's own names: a drawing it records of a window group (`record_group`), and the windows of one display's run of the strip (`in_run`)."
+words = ["record", "run"]
+identifiers = ["record_group", "in_run"]
+paths = ["crates/sdk/ui-core/src/widget/group_row*.rs"]
+
+[[allow]]
+reason = "The overview's `OverviewHost`, the desktop it is drawn for, which its functions take as `host`."
+words = ["host"]
+identifiers = ["host"]
+paths = ["crates/session/desktop/src/overview.rs"]

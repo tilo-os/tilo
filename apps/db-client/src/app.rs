@@ -823,7 +823,10 @@ impl Store {
     pub(crate) fn live_rows(&self) -> Vec<LiveRow> {
         let mut rows = Vec::new();
         if let Some(label) = self.live_job_label() {
-            rows.push(LiveRow::new("database.job", "database.job", label));
+            rows.push(LiveRow::typed::<crate::row_types::Job>(
+                "database.job",
+                label,
+            ));
         }
         rows.extend(self.search_index.rows());
         rows

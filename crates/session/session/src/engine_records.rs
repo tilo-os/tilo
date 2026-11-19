@@ -340,7 +340,7 @@ impl Inner {
         else {
             return;
         };
-        let Ok(records) = engine.records(workspace) else {
+        let Ok(records) = engine.documents(workspace) else {
             return;
         };
         let mut kept = false;

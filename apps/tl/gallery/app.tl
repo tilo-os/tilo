@@ -170,8 +170,8 @@ initial action fill(g: Gallery) {
     g.media_photos.insert(Photo(title: "Pines in fog", place: "Harz", picture: photo(), tall: true))
     g.media_source = "text(\"Hills at dawn\")"
     g.chrome_apps.insert(Pinned(title: "Notes"))
-    g.chrome_apps.insert(Pinned(title: "Tasks"))
-    g.chrome_apps.insert(Pinned(title: "Mail"))
+    g.chrome_apps.insert(Pinned(title: "Tasks", kind: .tasks))
+    g.chrome_apps.insert(Pinned(title: "Mail", kind: .mail))
 }
 
 /// What the chosen group is called, over its page.

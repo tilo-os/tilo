@@ -169,7 +169,7 @@ pub(super) fn notes_part_docs(
 ) -> Vec<(u64, automerge::AutoCommit)> {
     let chain = notes::note_list::chain();
     let mut parts: Vec<(u64, automerge::AutoCommit)> = engine
-        .records(workspace)
+        .documents(workspace)
         .unwrap_or_default()
         .into_iter()
         .filter(|(app, _)| app == ui::apps::NOTES)

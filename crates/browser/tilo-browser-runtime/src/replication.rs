@@ -332,7 +332,7 @@ pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     let mut records: BTreeSet<(String, String)> = joined
         .peer
         .engine()
-        .records(&joined.uuid)
+        .documents(&joined.uuid)
         .unwrap_or_default()
         .into_iter()
         .collect();

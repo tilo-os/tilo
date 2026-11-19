@@ -189,7 +189,7 @@ impl Handoff {
                         .into(),
                 );
             }
-            if plan.destination != "tilo-server" {
+            if plan.destination != install_profile_model::plan::SERVER {
                 return Err(
                     "only a Tilo Server installs from a staged plan without a person".into(),
                 );

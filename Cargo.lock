@@ -3970,6 +3970,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tilo-actions",
  "tilo-resource",
  "uuid",
  "workspace-hack",
@@ -22834,6 +22835,7 @@ dependencies = [
  "tilo-paths",
  "tilo-peer-state",
  "tilo-reference",
+ "tilo-resource-store",
  "tilo-secrets",
  "tilo-server",
  "tilo-server-client",

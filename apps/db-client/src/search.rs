@@ -81,8 +81,10 @@ fn index_database_and_schema(
     let focus = DbEffect::FocusDatabase {
         connection: connection.id,
     };
-    let database = LiveRow::typed::<crate::row_types::Database>(&database_id, &database_name)
-        .operation(focus.bound());
+    let bindings =
+        ui::tilo_resource::RowBindings::new().bind(DbEffect::FOCUS_DATABASE, focus.arguments());
+    let database =
+        LiveRow::typed_with::<crate::row_types::Database>(&database_id, &database_name, &bindings);
     index_resource(
         rows,
         resources,
@@ -97,8 +99,10 @@ fn index_database_and_schema(
             connection: connection.id,
             schema: schema.name.clone(),
         };
-        let schema_resource = LiveRow::typed::<crate::row_types::Schema>(&schema_id, &schema.name)
-            .operation(focus.bound());
+        let bindings =
+            ui::tilo_resource::RowBindings::new().bind(DbEffect::FOCUS_SCHEMA, focus.arguments());
+        let schema_resource =
+            LiveRow::typed_with::<crate::row_types::Schema>(&schema_id, &schema.name, &bindings);
         index_resource(
             rows,
             resources,
@@ -132,17 +136,16 @@ fn index_relation(
         connection,
         schema: schema.name.clone(),
         table: relation.name.clone(),
-    }
-    .bound();
+    };
+    let bindings = ui::tilo_resource::RowBindings::new().bind(DbEffect::BROWSE, browse.arguments());
     let resource = match relation.kind {
         crate::model::RelationKind::Table => {
-            LiveRow::typed::<crate::row_types::Table>(&relation_id, &relation.name)
+            LiveRow::typed_with::<crate::row_types::Table>(&relation_id, &relation.name, &bindings)
         }
         crate::model::RelationKind::View => {
-            LiveRow::typed::<crate::row_types::View>(&relation_id, &relation.name)
+            LiveRow::typed_with::<crate::row_types::View>(&relation_id, &relation.name, &bindings)
         }
-    }
-    .operation(browse.clone());
+    };
     index_resource(
         rows,
         resources,
@@ -164,8 +167,10 @@ fn index_relation(
                 ("table", text(&relation.name)),
             ],
         ));
-        let column_resource = LiveRow::typed::<crate::row_types::Column>(&column_id, &column.name)
-            .operation(browse.clone());
+        let bindings =
+            ui::tilo_resource::RowBindings::new().bind(DbEffect::BROWSE, browse.arguments());
+        let column_resource =
+            LiveRow::typed_with::<crate::row_types::Column>(&column_id, &column.name, &bindings);
         index_resource(
             rows,
             resources,
@@ -200,19 +205,25 @@ fn index_current_result(
             connection,
             generation,
         };
-        let mut result_resource =
-            LiveRow::typed::<crate::row_types::QueryResult>(&result_id, result.message())
-                .operation(show.bound())
-                .operation(read.bound().reads_document());
+        let mut bindings = ui::tilo_resource::RowBindings::new()
+            .bind(DbEffect::SHOW_RESULT, show.arguments())
+            .bind(DbEffect::READ_RESULT, read.arguments());
+        // Only a statement's result can be exported.
         if result.is_select {
-            result_resource = result_resource.operation(
+            bindings = bindings.bind(
+                DbEffect::EXPORT_CSV,
                 DbEffect::ExportCsv {
                     connection,
                     generation,
                 }
-                .bound(),
+                .arguments(),
             );
         }
+        let result_resource = LiveRow::typed_with::<crate::row_types::QueryResult>(
+            &result_id,
+            result.message(),
+            &bindings,
+        );
         index_resource(
             rows,
             resources,
@@ -231,13 +242,21 @@ fn index_transactions(
 ) {
     let transaction_id = catalog_resource_id("transaction", &[&connection.to_string()]);
     let begin = DbEffect::Begin { connection };
-    let transaction = LiveRow::typed::<crate::row_types::Transaction>(
+    let bindings = ui::tilo_resource::RowBindings::new()
+        .bind(DbEffect::BEGIN, begin.arguments())
+        .bind(
+            DbEffect::COMMIT,
+            DbEffect::Commit { connection }.arguments(),
+        )
+        .bind(
+            DbEffect::ROLLBACK,
+            DbEffect::Rollback { connection }.arguments(),
+        );
+    let transaction = LiveRow::typed_with::<crate::row_types::Transaction>(
         &transaction_id,
         t("db-search-transaction"),
-    )
-    .operation(begin.bound())
-    .operation(DbEffect::Commit { connection }.bound())
-    .operation(DbEffect::Rollback { connection }.bound());
+        &bindings,
+    );
     index_resource(
         rows,
         resources,
@@ -280,9 +299,11 @@ fn index_query_history(
             connection: connection.id,
             generation: entry.generation,
         };
-        let history_entry =
-            LiveRow::typed::<crate::row_types::QueryHistoryEntry>(&entry_id, &title)
-                .operation(rerun.bound());
+        let bindings =
+            ui::tilo_resource::RowBindings::new().bind(DbEffect::RERUN, rerun.arguments());
+        let history_entry = LiveRow::typed_with::<crate::row_types::QueryHistoryEntry>(
+            &entry_id, &title, &bindings,
+        );
         index_resource(
             rows,
             resources,

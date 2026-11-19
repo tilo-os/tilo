@@ -837,6 +837,15 @@ impl Index {
             .map(|(kind, _)| kind.clone())
     }
 
+    /// The kind of the resource `id`, wherever it is held.
+    #[must_use]
+    pub fn kind_anywhere(&self, id: &str) -> Option<String> {
+        self.kinds
+            .iter()
+            .find(|(_, tables)| tables.values().any(|table| table.rows.contains_key(id)))
+            .map(|(kind, _)| kind.clone())
+    }
+
     /// The resources `doc` holds, by kind and id.
     pub fn held(&self, doc: &str) -> impl Iterator<Item = (&str, &str)> {
         self.docs.get(doc).into_iter().flat_map(|held| {

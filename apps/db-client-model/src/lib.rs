@@ -9,6 +9,7 @@
 
 mod profile;
 mod resource;
+pub mod rows;
 mod saved;
 
 pub use profile::{ConnectionProfile, Engine};

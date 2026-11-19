@@ -532,3 +532,85 @@ fn a_list_without_marks_after_its_switches_keeps_them_on_the_edge() {
         "a chevron with no switch before it moves no switch: {alone:?} vs {beside_drill:?}"
     );
 }
+
+/// A player, a web page and a page rail in a section stand at their own shape and push what
+/// follows them down, rather than being zero tall in the section and painting over the next.
+#[test]
+fn a_player_a_page_and_a_rail_push_what_follows_down_in_a_section() {
+    use crate::component::Described;
+    use crate::widget::{
+        DeclaredRail, DeclaredVideo, PageSidebarProps, VideoPlayerProps, WebView, WebViewProps,
+    };
+    let theme = Theme::light();
+    let views: Vec<(&str, Element)> = vec![
+        (
+            "player",
+            Box::new(DeclaredVideo::from_props("v", VideoPlayerProps::default())),
+        ),
+        (
+            "web page",
+            Box::new(WebView::from_props("w", WebViewProps::default())),
+        ),
+        (
+            "rail",
+            Box::new(DeclaredRail::from_props(
+                "r",
+                PageSidebarProps {
+                    aspect: 1.414,
+                    count: 3,
+                    ..PageSidebarProps::default()
+                },
+            )),
+        ),
+    ];
+    for (what, view) in views {
+        let section = Section::new(vec![
+            Box::new(Text::new("Above")) as Element,
+            view,
+            Box::new(Text::new("Below")) as Element,
+        ]);
+        let column = crate::widget::arrange::Stack::stack()
+            .push(Box::new(section))
+            .push(Box::new(Text::new("Next section")));
+        let harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(crate::widget::Scrollable::new_vertical().with_child(Box::new(column))),
+            (640, 400),
+            theme.clone(),
+        );
+        let root = harness.inspection().root;
+        let section = section_rect(&root).expect("the section");
+        let shown = section_child(&root, 1).expect("the view");
+        assert!(
+            shown.width() > 0.0 && shown.height() >= shown.width() * 0.5,
+            "the {what} stands at its own shape: {shown:?}"
+        );
+        assert!(
+            shown.y1 <= section.y1 + 0.5,
+            "the {what} stands inside its section: {shown:?} in {section:?}"
+        );
+        let below = section_child(&root, 2).expect("the text below");
+        assert!(
+            below.y0 >= shown.y1,
+            "what follows the {what} starts under it: {below:?} after {shown:?}"
+        );
+    }
+}
+
+/// The first section under `node`, laid out.
+fn section_rect(node: &InspectionNode) -> Option<Rect> {
+    if node.widget == "Section" {
+        return Some(rect(node));
+    }
+    node.children.iter().find_map(section_rect)
+}
+
+/// Child `index` of the first section under `node`, laid out.
+fn section_child(node: &InspectionNode, index: usize) -> Option<Rect> {
+    if node.widget == "Section" {
+        return node.children.get(index).map(rect);
+    }
+    node.children
+        .iter()
+        .find_map(|child| section_child(child, index))
+}

@@ -248,6 +248,10 @@ d-uuewf2cr = Pinned
 
 d-ciwf3kva = Title
 
+d-5tfi5mod = Kind
+
+d-uuewf2cr-filter-kind = Kind
+
 d-shklew6c = Urgency
     .doc = How soon a report is due, as a case the report holds.
 
@@ -258,6 +262,15 @@ d-xv6amesr = Low
 d-jrcgjyzr = Medium
 
 d-fglwr2mx = High
+
+d-iidmszju = Kind
+    .doc = What a pinned app is, and the picture it shows on a dock.
+
+d-7o3hv26g = Notes
+
+d-7koxgqe5 = Tasks
+
+d-ptzwi3be = Mail
 
 d-haqpp6u6 = Fill
     .doc = What a new gallery starts with: one document of every group, so a person meets the components rather than an empty window.

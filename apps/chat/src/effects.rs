@@ -314,6 +314,39 @@ impl ChatApp {
         }
     }
 
+    /// What a row says its state does not allow: a call's own controls are
+    /// offered only inside the call they belong to, so outside it each says
+    /// why, and the palette and menus leave them out while an agent is told
+    /// to join first.
+    pub(crate) fn row_status(&self, id: &str) -> Vec<EffectStatus> {
+        let Some(conversation) = id.strip_suffix("/call") else {
+            return Vec::new();
+        };
+        let Some(("channels", channel)) =
+            tilo_resource::items::item_of_resource::<Chat>(conversation)
+        else {
+            return Vec::new();
+        };
+        if self.call.active && self.call.channel == channel.as_str() {
+            return Vec::new();
+        }
+        let reason = crate::i18n::t("chat-call-not-joined");
+        let reason = reason.as_str();
+        [
+            ChatEffect::LEAVE_CALL,
+            ChatEffect::MUTE,
+            ChatEffect::UNMUTE,
+            ChatEffect::DEAFEN,
+            ChatEffect::UNDEAFEN,
+            ChatEffect::CAMERA_ON,
+            ChatEffect::CAMERA_OFF,
+            ChatEffect::SHARE_SCREEN,
+            ChatEffect::STOP_SHARING_SCREEN,
+        ]
+        .map(|effect| EffectStatus::unavailable(effect, "not_in_call", reason).on(id))
+        .to_vec()
+    }
+
     /// The effects this window cannot run right now.
     pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
         let mut unavailable = Vec::new();
@@ -536,7 +569,6 @@ impl ChatApp {
             return None;
         }
         let channel = self.channels.iter().find(|item| item.id == id)?;
-        let channel_id = || id.to_owned();
         let row = LiveRow::new(
             item_row_id("channels", id),
             "chat.workspace.channels",
@@ -561,69 +593,36 @@ impl ChatApp {
                 .bound_asking(&["command"]),
             );
         }
-        // A call's own controls apply only inside it: outside, they are
-        // published unavailable with why, so the palette and menus leave
-        // them out and an agent is told to join first.
-        let in_call = self.call.active && self.call.channel == id;
-        let not_joined = crate::i18n::t("chat-call-not-joined");
-        let in_call_only = |effect: ChatEffect| {
-            let mut spec = effect.bound();
-            if !in_call {
-                spec.type_mut().contract.availability =
-                    ui::tilo_actions::Availability::Unavailable {
-                        code: "not_in_call".into(),
-                        reason: not_joined.clone(),
-                    };
-            }
-            spec
-        };
         Some(if channel.kind == ChannelKind::Voice {
-            row.row(
-                LiveRow::new(
-                    format!("{}/call", item_row_id("channels", id)),
-                    "chat.call",
-                    crate::i18n::t_args(
-                        "chat-call-title",
-                        &[("channel", channel.name.clone().into())],
-                    ),
-                )
-                // Opening the conversation is the channel's: a view here
-                // would be the call row's disclosure, a private one that
-                // keeps joining and every call control from an agent.
-                .effect(&ChatEffect::JoinCall {
-                    channel: channel_id(),
-                })
-                .operation(in_call_only(ChatEffect::LeaveCall {
-                    channel: channel_id(),
-                }))
-                .operation(in_call_only(ChatEffect::Mute {
-                    channel: channel_id(),
-                }))
-                .operation(in_call_only(ChatEffect::Unmute {
-                    channel: channel_id(),
-                }))
-                .operation(in_call_only(ChatEffect::Deafen {
-                    channel: channel_id(),
-                }))
-                .operation(in_call_only(ChatEffect::Undeafen {
-                    channel: channel_id(),
-                }))
-                .operation(in_call_only(ChatEffect::CameraOn {
-                    channel: channel_id(),
-                }))
-                .operation(in_call_only(ChatEffect::CameraOff {
-                    channel: channel_id(),
-                }))
-                .operation(in_call_only(ChatEffect::ShareScreen {
-                    channel: channel_id(),
-                }))
-                .operation(in_call_only(ChatEffect::StopSharingScreen {
-                    channel: channel_id(),
-                }))
-                .effect(&ChatEffect::CallStatus {
-                    channel: channel_id(),
-                }),
-            )
+            // Opening the conversation is the channel's: a view here would be
+            // the call row's disclosure, a private one that keeps joining and
+            // every call control from an agent. A control outside the call
+            // says so through the window's row status.
+            let channel_id = id.to_owned();
+            let mut bindings = ui::tilo_resource::RowBindings::new();
+            for effect in [
+                ChatEffect::JOIN_CALL,
+                ChatEffect::LEAVE_CALL,
+                ChatEffect::MUTE,
+                ChatEffect::UNMUTE,
+                ChatEffect::DEAFEN,
+                ChatEffect::UNDEAFEN,
+                ChatEffect::CAMERA_ON,
+                ChatEffect::CAMERA_OFF,
+                ChatEffect::SHARE_SCREEN,
+                ChatEffect::STOP_SHARING_SCREEN,
+                ChatEffect::CALL_STATUS,
+            ] {
+                bindings = bindings.bind(effect, [("channel", channel_id.clone().into())]);
+            }
+            row.row(LiveRow::typed_with::<chat_model::rows::Call>(
+                format!("{}/call", item_row_id("channels", id)),
+                crate::i18n::t_args(
+                    "chat-call-title",
+                    &[("channel", channel.name.clone().into())],
+                ),
+                &bindings,
+            ))
         } else {
             row.operation(crate::feedback::destination_read::spec(id))
         })

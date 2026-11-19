@@ -91,6 +91,10 @@ tokio = { workspace = true, features = ["sync", "macros"] }
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
+# A resource's content as the store hands it to be edited.
+automerge.workspace = true
+# Each workspace's resources, written and read through the store that places them.
+tilo-resource-store = { path = "../../collab/resource-store" }
 tracing.workspace = true
 
 [features]

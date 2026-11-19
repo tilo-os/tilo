@@ -54,6 +54,19 @@ dependencies = ["wasm-bindgen"]
 name = "wasm-bindgen"
 version = "0.1.0"
 """
+# A crate from outside the workspace, which the page crate reads and the native
+# crate does not: main changing it is a change only one of them builds.
+SERDE = """
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a"
+"""
+LOCKED_SERDE = LOCK.replace('dependencies = ["wasm-bindgen"]',
+                            'dependencies = ["wasm-bindgen", "serde"]') + SERDE
+PAGE_WITH_SERDE = (CRATE.format(name="fixture-web")
+                   + '\n[dependencies]\nwasm-bindgen = { path = "../fake-binding" }\nserde = "1"\n')
 LIB = """pub fn answer() -> u32 {{
     {answer}
 }}
@@ -127,8 +140,9 @@ class PrePushLintTests(unittest.TestCase):
         self.write("Cargo.toml", WORKSPACE)
         self.write("Cargo.lock", LOCK)
         self.write("clippy.toml", CLIPPY_TOML)
-        # Running the hook compiles its Python; the repository ignores that as well.
-        self.write(".gitignore", "__pycache__/\n.claude/\n")
+        # Running the hook compiles its Python and writes the page's Clippy
+        # configuration into the build directory; the repository ignores both.
+        self.write(".gitignore", "__pycache__/\n.claude/\ntarget/\n")
         self.write("native/Cargo.toml", CRATE.format(name="fixture-native"))
         self.write("native/src/lib.rs", LIB.format(answer=42))
         self.write("web/Cargo.toml", CRATE.format(name="fixture-web")
@@ -530,6 +544,54 @@ class PrePushLintTests(unittest.TestCase):
         ]))
         # Formatting reads only the pushed package, which is as it was.
         self.assertNotIn("fmt --check", self.log.read_text())
+
+    def test_a_rebase_onto_commits_that_do_not_reach_the_package_reuses_its_pass(self):
+        # Main takes an app and a dependency of another member, which the pushed
+        # package never reads: the push is the one that passed. Relinting it
+        # here takes minutes, and main gains a commit every minute or two.
+        self.write("Cargo.lock", LOCKED_SERDE)
+        self.write("web/Cargo.toml", PAGE_WITH_SERDE)
+        self.commit("chore: the page crate reads serde")
+        self.base = self.head()
+        self.write("native/src/lib.rs", LIB.format(answer=70))
+        self.commit("feat: answer 70")
+        first = self.push()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(self.calls(), [NATIVE_CLIPPY])
+        self.outlive_the_rebase_window()
+        main = self.rebase({
+            "Cargo.toml": WORKSPACE.replace(
+                'members = ["native", "web", "fake-binding"]',
+                'members = ["native", "web", "fake-binding", "extra"]'),
+            "Cargo.lock": LOCKED_SERDE.replace('name = "serde"\nversion = "1.0.0"',
+                                               'name = "serde"\nversion = "1.0.1"'),
+            "extra/Cargo.toml": CRATE.format(name="extra"),
+            "extra/src/lib.rs": "pub fn extra() {}\n",
+        })
+        retry = self.push(remote_oid=main)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(self.calls(), [], "nothing the native crate builds changed")
+        self.assertIn("passed before on the same inputs", retry.stderr)
+
+    def test_a_retry_after_a_dependency_the_package_uses_changed_lints_again(self):
+        # A resolved dependency of the pushed package moved: the code it
+        # compiles against is not the code the earlier pass built.
+        self.write("Cargo.lock", LOCKED_SERDE)
+        self.write("web/Cargo.toml", PAGE_WITH_SERDE)
+        self.commit("chore: the page crate reads serde")
+        self.base = self.head()
+        self.write("web/src/lib.rs", LIB.format(answer=72))
+        self.commit("feat: answer 72 in the page")
+        self.assertEqual(self.push(wide=True).returncode, 0)
+        self.outlive_the_rebase_window()
+        main = self.rebase({"Cargo.lock": LOCKED_SERDE.replace(
+            'name = "serde"\nversion = "1.0.0"', 'name = "serde"\nversion = "1.0.1"')})
+        retry = self.push(remote_oid=main, wide=True)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertEqual(sorted(self.calls()), sorted([
+            "clippy --locked --target wasm32-unknown-unknown -p fixture-web -- -D warnings",
+            NATIVE_CLIPPY.replace("native", "web"),
+        ]))
 
     def test_a_retry_after_a_file_the_build_includes_changed_lints_again(self):
         self.write("docs/answer.txt", "42\n")

@@ -40,6 +40,7 @@
 use crate::i18n::t;
 
 use ui::framework::LiveRow;
+use ui::tilo_resource::RowBindings;
 use ui::tilo_resource::{self, AbsolutePath, Effect};
 
 use crate::model::{ChangeArea, FileChange, RepoModel};
@@ -84,7 +85,7 @@ pub enum GitClientEffect {
     #[effect(view)]
     ShowBranches,
     /// Open diff
-    #[effect(view, row)]
+    #[effect(view, row, on = Change)]
     OpenChange {
         #[param("Where the change is: staged, unstaged or untracked")]
         area: String,
@@ -98,7 +99,13 @@ pub enum GitClientEffect {
     /// many lines were added and removed, and the diff itself. It is the
     /// changed file's read: what discloses its row, so staging, unstaging
     /// and discarding it are offered to whoever may read it, an agent too.
-    #[effect(view, row, returns)]
+    #[effect(
+        view,
+        row,
+        returns,
+        on = Change,
+        tag = ui::tilo_actions::DOCUMENT_READ_TAG
+    )]
     ReadChange {
         #[param("Where the change is: staged, unstaged or untracked")]
         area: String,
@@ -106,7 +113,7 @@ pub enum GitClientEffect {
         path: String,
     },
     /// Open commit
-    #[effect(view, row)]
+    #[effect(view, row, on = Commit)]
     OpenCommit {
         #[param("The commit's id")]
         id: String,
@@ -121,14 +128,14 @@ pub enum GitClientEffect {
     UnstageAll,
     /// Stage file
     #[effect(kind = "outside")]
-    #[effect(row, idempotent)]
+    #[effect(row, idempotent, on = Change)]
     StageFile {
         #[param("Path of the file in the repository")]
         path: String,
     },
     /// Unstage file
     #[effect(kind = "outside")]
-    #[effect(row, idempotent)]
+    #[effect(row, idempotent, on = Change)]
     UnstageFile {
         #[param("Path of the file in the repository")]
         path: String,
@@ -139,7 +146,7 @@ pub enum GitClientEffect {
     /// back to what the index holds. Anything staged for it stays staged,
     /// and edits that were never staged are gone.
     #[effect(kind = "outside")]
-    #[effect(row, destructive)]
+    #[effect(row, destructive, on = Change)]
     DiscardFile {
         #[param("Path of the file in the repository")]
         path: String,
@@ -173,7 +180,7 @@ pub enum GitClientEffect {
     },
     /// Check out branch
     #[effect(kind = "outside")]
-    #[effect(row, idempotent)]
+    #[effect(row, idempotent, on = Branch)]
     CheckoutBranch {
         #[param("Branch name")]
         name: String,
@@ -184,7 +191,7 @@ pub enum GitClientEffect {
     /// with nothing pointing at it. Its commits stay in the repository for a
     /// while, but nothing here names them again.
     #[effect(kind = "outside")]
-    #[effect(row, destructive)]
+    #[effect(row, destructive, on = Branch)]
     DeleteBranch {
         #[param("Branch name")]
         name: String,
@@ -197,28 +204,28 @@ pub enum GitClientEffect {
     },
     /// Apply stash
     #[effect(kind = "outside")]
-    #[effect(row)]
+    #[effect(row, on = Stash)]
     ApplyStash {
         #[param("The stash's index")]
         index: usize,
     },
     /// Fetch remote
     #[effect(kind = "outside")]
-    #[effect(row, job, idempotent)]
+    #[effect(row, job, idempotent, on = Remote)]
     Fetch {
         #[param("Remote name")]
         remote: String,
     },
     /// Pull from remote
     #[effect(kind = "outside")]
-    #[effect(row, job)]
+    #[effect(row, job, on = Remote)]
     Pull {
         #[param("Remote name")]
         remote: String,
     },
     /// Push to remote
     #[effect(kind = "outside")]
-    #[effect(row, job)]
+    #[effect(row, job, on = Remote)]
     Push {
         #[param("Remote name")]
         remote: String,
@@ -297,95 +304,204 @@ fn remote_resource_id(name: &str) -> String {
     format!("git_client.remote:{}", stable_component(name))
 }
 
+/// The types the repository's rows are items of, declared with the effects
+/// that act on them: a row says what it is, and offers what its own state
+/// allows — a staged file is unstaged, the branch checked out here is not
+/// checked out again — each bound to the entity it acts on.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "git_client.diff",
+    label = "Change",
+    effects = GitClientEffect
+)]
+pub(crate) struct Change;
+
+/// One commit of the repository.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "git_client.commit",
+    label = "Commit",
+    effects = GitClientEffect
+)]
+pub(crate) struct Commit;
+
+/// One file a commit changed.
+#[derive(tilo_resource::Row)]
+#[row(kind = "git_client.commit-file", label = "Changed file")]
+pub(crate) struct CommitFile;
+
+/// One branch of the repository.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "git_client.branch",
+    label = "Branch",
+    effects = GitClientEffect
+)]
+pub(crate) struct Branch;
+
+/// One tag of the repository.
+#[derive(tilo_resource::Row)]
+#[row(kind = "git_client.tag", label = "Tag")]
+pub(crate) struct Tag;
+
+/// One stash of the working tree.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "git_client.stash",
+    label = "Stash",
+    effects = GitClientEffect
+)]
+pub(crate) struct Stash;
+
+/// One remote the repository fetches from and pushes to.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "git_client.remote",
+    label = "Remote",
+    effects = GitClientEffect
+)]
+pub(crate) struct Remote;
+
+/// A group of repository rows the window shows together.
+#[derive(tilo_resource::Row)]
+#[row(kind = "git_client.collection", label = "Section")]
+pub(crate) struct Section;
+
+/// The linked working directories of the repository.
+#[derive(tilo_resource::Row)]
+#[row(kind = "git_client.worktrees", label = "Worktrees")]
+pub(crate) struct Worktrees;
+
+/// One linked working directory.
+#[derive(tilo_resource::Row)]
+#[row(kind = "git_client.worktree", label = "Worktree")]
+pub(crate) struct Worktree;
+
+/// A report the window shows instead of what it could not read.
+#[derive(tilo_resource::Row)]
+#[row(kind = "git_client.error", label = "Report")]
+pub(crate) struct Report;
+
+/// A transfer to or from a remote, running now.
+#[derive(tilo_resource::Row)]
+#[row(kind = "git_client.job", label = "Transfer")]
+pub(crate) struct Transfer;
+
+/// One changed file of the working tree, offering what its area allows: a
+/// staged file is unstaged, any other staged for the next commit.
 fn change_row(change: &FileChange) -> LiveRow {
     let area = change_area_name(change.area);
     let path = change.path.clone();
-    let row = LiveRow::new(
-        change_resource_id(change.area, &change.path),
-        "git_client.diff",
-        format!("{} — {area}", change.path),
-    )
-    .operation(
-        GitClientEffect::ReadChange {
-            area: area.into(),
-            path: path.clone(),
-        }
-        .bound()
-        .reads_document(),
-    )
-    .effect(&GitClientEffect::OpenChange {
+    let open = GitClientEffect::OpenChange {
         area: area.into(),
         path: path.clone(),
-    });
-    match change.area {
-        ChangeArea::Staged => row.effect(&GitClientEffect::UnstageFile { path }),
-        ChangeArea::Unstaged | ChangeArea::Untracked => row
-            .effect(&GitClientEffect::StageFile { path: path.clone() })
-            .effect(&GitClientEffect::DiscardFile { path }),
-    }
+    };
+    let read = GitClientEffect::ReadChange {
+        area: area.into(),
+        path: path.clone(),
+    };
+    let mut bindings = RowBindings::new()
+        .bind(GitClientEffect::READ_CHANGE, read.arguments())
+        .bind(GitClientEffect::OPEN_CHANGE, open.arguments());
+    bindings = match change.area {
+        ChangeArea::Staged => bindings.bind(
+            GitClientEffect::UNSTAGE_FILE,
+            GitClientEffect::UnstageFile { path }.arguments(),
+        ),
+        ChangeArea::Unstaged | ChangeArea::Untracked => bindings
+            .bind(
+                GitClientEffect::STAGE_FILE,
+                GitClientEffect::StageFile { path: path.clone() }.arguments(),
+            )
+            .bind(
+                GitClientEffect::DISCARD_FILE,
+                GitClientEffect::DiscardFile { path }.arguments(),
+            ),
+    };
+    LiveRow::typed_with::<Change>(
+        change_resource_id(change.area, &change.path),
+        format!("{} — {area}", change.path),
+        &bindings,
+    )
 }
 
 fn commit_file_resource_id(commit: &str, path: &str) -> String {
     format!("git_client.commit-file:{commit}:{}", stable_component(path))
 }
 
+fn commit_file_row(commit: &str, path: &str) -> LiveRow {
+    LiveRow::typed::<CommitFile>(commit_file_resource_id(commit, path), path)
+}
+
 fn commit_resource(commit: &crate::model::Commit) -> LiveRow {
-    commit.files.iter().take(16).fold(
-        LiveRow::new(
-            commit_resource_id(&commit.id),
-            "git_client.commit",
-            commit.summary.clone(),
-        )
-        .effect(&GitClientEffect::OpenCommit {
+    let bindings = RowBindings::new().bind(
+        GitClientEffect::OPEN_COMMIT,
+        GitClientEffect::OpenCommit {
             id: commit.id.clone(),
-        }),
-        |row, file| {
-            row.row(LiveRow::new(
-                commit_file_resource_id(&commit.id, &file.path),
-                "git_client.commit-file",
-                file.path.clone(),
-            ))
-        },
+        }
+        .arguments(),
+    );
+    commit.files.iter().take(16).fold(
+        LiveRow::typed_with::<Commit>(
+            commit_resource_id(&commit.id),
+            commit.summary.clone(),
+            &bindings,
+        ),
+        |row, file| row.row(commit_file_row(&commit.id, &file.path)),
     )
 }
 
 fn branch_resource(branch: &crate::model::Branch) -> LiveRow {
-    let mut row = LiveRow::new(
-        branch_resource_id(&branch.name),
-        "git_client.branch",
-        branch.name.clone(),
-    );
+    let mut bindings = RowBindings::new();
     if !branch.is_head {
-        row = row.effect(&GitClientEffect::CheckoutBranch {
-            name: branch.name.clone(),
-        });
+        bindings = bindings.bind(
+            GitClientEffect::CHECKOUT_BRANCH,
+            GitClientEffect::CheckoutBranch {
+                name: branch.name.clone(),
+            }
+            .arguments(),
+        );
     }
     if !branch.is_head && !branch.is_remote {
-        row = row.effect(&GitClientEffect::DeleteBranch {
-            name: branch.name.clone(),
-        });
+        bindings = bindings.bind(
+            GitClientEffect::DELETE_BRANCH,
+            GitClientEffect::DeleteBranch {
+                name: branch.name.clone(),
+            }
+            .arguments(),
+        );
     }
-    row
+    LiveRow::typed_with::<Branch>(
+        branch_resource_id(&branch.name),
+        branch.name.clone(),
+        &bindings,
+    )
 }
 
 fn tag_resource(tag: &crate::model::Tag) -> LiveRow {
-    LiveRow::new(
-        tag_resource_id(&tag.name),
-        "git_client.tag",
-        tag.name.clone(),
-    )
+    LiveRow::typed::<Tag>(tag_resource_id(&tag.name), tag.name.clone())
 }
 
 fn remote_resource(remote: &crate::model::Remote) -> LiveRow {
     let name = || remote.name.clone();
-    LiveRow::new(
+    let bindings = RowBindings::new()
+        .bind(
+            GitClientEffect::FETCH,
+            GitClientEffect::Fetch { remote: name() }.arguments(),
+        )
+        .bind(
+            GitClientEffect::PULL,
+            GitClientEffect::Pull { remote: name() }.arguments(),
+        )
+        .bind(
+            GitClientEffect::PUSH,
+            GitClientEffect::Push { remote: name() }.arguments(),
+        );
+    LiveRow::typed_with::<Remote>(
         remote_resource_id(&remote.name),
-        "git_client.remote",
         remote.name.clone(),
+        &bindings,
     )
-    .effect(&GitClientEffect::Fetch { remote: name() })
-    .effect(&GitClientEffect::Pull { remote: name() })
-    .effect(&GitClientEffect::Push { remote: name() })
 }
 
 /// The working tree's changed files as live rows: the bounded page beneath
@@ -399,7 +515,7 @@ pub(crate) fn working_tree_rows(model: &RepoModel) -> LiveRow {
         .take(MAX_CONTEXT_CHANGES)
         .map(change_row)
         .fold(
-            LiveRow::new("git_client.changes", "git_client.collection", "Changes"),
+            LiveRow::typed::<Section>("git_client.changes", "Changes"),
             LiveRow::row,
         )
 }
@@ -425,10 +541,11 @@ pub(crate) fn repository_rows(model: &RepoModel) -> Vec<LiveRow> {
         bound: usize,
         row: impl Fn(&T) -> LiveRow,
     ) -> LiveRow {
-        items.iter().take(bound).map(row).fold(
-            LiveRow::new(id, "git_client.collection", label),
-            LiveRow::row,
-        )
+        items
+            .iter()
+            .take(bound)
+            .map(row)
+            .fold(LiveRow::typed::<Section>(id, label), LiveRow::row)
     }
     vec![
         collection(
@@ -479,12 +596,15 @@ pub(crate) fn repo_label(model: &RepoModel) -> String {
 }
 
 fn stash_resource(stash: &crate::model::Stash) -> LiveRow {
-    LiveRow::new(
+    let bindings = RowBindings::new().bind(
+        GitClientEffect::APPLY_STASH,
+        GitClientEffect::ApplyStash { index: stash.index }.arguments(),
+    );
+    LiveRow::typed_with::<Stash>(
         format!("git_client.stash:{}", stash.index),
-        "git_client.stash",
         stash.message.clone(),
+        &bindings,
     )
-    .effect(&GitClientEffect::ApplyStash { index: stash.index })
 }
 
 /// Resolve one current repository item by id without building the whole
@@ -510,11 +630,7 @@ pub(crate) fn repository_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
             .iter()
             .find(|file| commit_file_resource_id(&commit.id, &file.path) == id)
         {
-            return Some(LiveRow::new(
-                id,
-                "git_client.commit-file",
-                file.path.clone(),
-            ));
+            return Some(commit_file_row(&commit.id, &file.path));
         }
     }
     if let Some(branch) = model
@@ -547,15 +663,11 @@ pub(crate) fn repository_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
 
 /// Linked working directories are live device resources, not shared paths.
 pub(crate) fn worktree_rows(model: &RepoModel) -> LiveRow {
-    let mut collection = LiveRow::new(
-        "git_client.worktrees",
-        "git_client.worktrees",
-        t("git-section-worktrees"),
-    );
+    let mut collection =
+        LiveRow::typed::<Worktrees>("git_client.worktrees", t("git-section-worktrees"));
     if let Some(error) = &model.worktree_error {
-        collection = collection.row(LiveRow::new(
+        collection = collection.row(LiveRow::typed::<Report>(
             "git_client.worktrees:error",
-            "git_client.error",
             crate::i18n::t_args(
                 "git-worktree-read-error",
                 &[("error", error.as_str().into())],
@@ -563,13 +675,16 @@ pub(crate) fn worktree_rows(model: &RepoModel) -> LiveRow {
         ));
     }
     for worktree in &model.worktrees {
-        collection = collection.row(LiveRow::new(
-            format!("git_client.worktree:{}", stable_component(&worktree.path)),
-            "git_client.worktree",
-            format!("{} — {}", worktree.head, worktree.path),
-        ));
+        collection = collection.row(worktree_row_of(worktree));
     }
     collection
+}
+
+fn worktree_row_of(worktree: &crate::model::Worktree) -> LiveRow {
+    LiveRow::typed::<Worktree>(
+        format!("git_client.worktree:{}", stable_component(&worktree.path)),
+        format!("{} — {}", worktree.head, worktree.path),
+    )
 }
 
 pub(crate) fn worktree_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
@@ -578,9 +693,8 @@ pub(crate) fn worktree_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
     }
     if id == "git_client.worktrees:error" {
         return model.worktree_error.as_ref().map(|error| {
-            LiveRow::new(
+            LiveRow::typed::<Report>(
                 id,
-                "git_client.error",
                 crate::i18n::t_args(
                     "git-worktree-read-error",
                     &[("error", error.as_str().into())],
@@ -591,11 +705,7 @@ pub(crate) fn worktree_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
     let worktree = model.worktrees.iter().find(|worktree| {
         id == format!("git_client.worktree:{}", stable_component(&worktree.path))
     })?;
-    Some(LiveRow::new(
-        id,
-        "git_client.worktree",
-        format!("{} — {}", worktree.head, worktree.path),
-    ))
+    Some(worktree_row_of(worktree))
 }
 
 #[cfg(test)]

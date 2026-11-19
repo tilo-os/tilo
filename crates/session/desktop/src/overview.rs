@@ -259,6 +259,33 @@ fn shown_person(holder: &str, ws: &Workspace, tree: &Layout) -> ShownPerson {
     }
 }
 
+/// Whether grant `id` is one that makes its holder an administrator of the workspace or the person
+/// it is kept for: a role they hold in it, which its people show, not a part of it shared out.
+fn is_role(id: &tilo_action_policy::GrantId) -> bool {
+    tilo_action_policy::roles::administrator_named(id).is_some()
+        || tilo_action_policy::roles::keeper_named(id).is_some()
+}
+
+/// The member `holder` as a share row shows them: a person or an agent by the name the workspace
+/// gives them, a person it has not named as a guest, an agent by its id.
+fn shown_member(holder: &tilo_action_policy::MemberId, ws: &Workspace) -> ShownPerson {
+    let name = ws
+        .members
+        .iter()
+        .find(|member| member.id == *holder)
+        .and_then(|member| ui::presence::shown_name(&member.name).map(str::to_owned))
+        .unwrap_or_else(|| ui::presence::unnamed_label(holder));
+    ShownPerson {
+        id: holder
+            .person_id()
+            .or_else(|| holder.agent_id())
+            .or_else(|| holder.bot_id())
+            .unwrap_or_default()
+            .to_owned(),
+        name,
+    }
+}
+
 /// Everyone who may be in `ws` at unix time `now` , and whether they are here now.
 pub fn workspace_people(
     ws: &Workspace,
@@ -326,20 +353,27 @@ pub fn workspace_shares(
     // file reached outside the sandbox's own.
     let node = ws.node();
     let cx = tilo_desktop_model::context_at(now);
+    let me = host.local_user();
     for grant in &ws.policy.grants {
         if grant.node == node
             || !grant.node.is_within(&node)
             || grant.answer != tilo_action_policy::Answer::Allow
             || !grant.is_live(&cx)
+            || is_role(&grant.id)
         {
             continue;
         }
-        let Some(holder) = grant.grantee.person_id() else {
+        // A person or an agent of the workspace's, by the name it goes by there; what an app or a
+        // whole role holds is not shared with anyone in particular.
+        let Some(holder) = grant.grantee.as_member() else {
             continue;
         };
+        if holder.person_id() == Some(me) {
+            continue;
+        }
         share(
             host.node_label(&grant.node),
-            shown_person(holder, ws, tree),
+            shown_member(holder, ws),
             grant
                 .kinds
                 .contains(tilo_action_policy::ActionKind::Undoable),
@@ -861,7 +895,64 @@ mod workspace_tests {
             );
         }
 
+        fn an_administrator_and_the_person_it_is_kept_for_are_roles_not_shares() {
+            let mut w = ws("Design");
+            let workspace = w.policy.workspace.clone();
+            let by = Grantee::person(ME);
+            for grant in [
+                tilo_action_policy::roles::administrator_grant(&workspace, "ada", by.clone()),
+                tilo_action_policy::roles::administrator_moderation_grant(
+                    &workspace,
+                    "ada",
+                    by.clone(),
+                ),
+                tilo_action_policy::roles::keeper_grant(&workspace, "ada", by),
+            ] {
+                w.grant(grant);
+            }
+            let tree = tree_with(vec![w]);
+            let card = &workspace_cards(&tree)[0];
+            assert!(
+                card.shares.is_empty(),
+                "making someone an administrator shares nothing out: {:?}",
+                card.shares
+            );
+        }
+
+        fn an_agent_holding_part_of_the_workspace_is_named_and_you_are_not_a_share() {
+            let mut w = ws("Design");
+            let node = w.node();
+            w.member_here(tilo_desktop_model::Member::named(
+                collab_types::MemberId::agent("agent-7"),
+                "Linear import",
+            ));
+            for (id, grantee) in [
+                ("for-the-import", Grantee::agent("agent-7")),
+                ("for-me", Grantee::person(ME)),
+            ] {
+                w.grant(tilo_action_policy::Grant::new(
+                    id,
+                    grantee,
+                    node.clone().app("so.tilo.notes"),
+                    tilo_action_policy::KindSet::ALL,
+                    tilo_action_policy::Answer::Allow,
+                    Grantee::person(ME),
+                ));
+            }
+            let tree = tree_with(vec![w]);
+            let card = &workspace_cards(&tree)[0];
+            assert_eq!(card.shares.len(), 1, "{:?}", card.shares);
+            let with: Vec<&str> = card.shares[0]
+                .with
+                .iter()
+                .map(|with| with.name.as_str())
+                .collect();
+            assert_eq!(with, ["Linear import"], "the agent goes by its name");
+        }
+
         a_workspace_only_you_own_reads_as_private();
+        an_administrator_and_the_person_it_is_kept_for_are_roles_not_shares();
+        an_agent_holding_part_of_the_workspace_is_named_and_you_are_not_a_share();
         a_member_makes_the_workspace_read_as_shared_with_them();
         a_file_grant_is_a_share_and_not_a_membership();
         a_share_shows_a_person_never_a_key();

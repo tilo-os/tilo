@@ -825,7 +825,8 @@ impl LauncherSurface {
         Ok(Effected::done())
     }
 
-    /// Publish the results on screen, each chosen through [`LauncherEffect::Choose`]: what
+    /// Publish the results on screen, each an item of
+    /// [`LauncherResult`](crate::resource::LauncherResult) whose effect is choosing it: what
     /// an agent reads to find the row to choose.
     fn publish_rows(&self) {
         if !self.open {
@@ -837,15 +838,18 @@ impl LauncherSurface {
             .visible_entries()
             .into_iter()
             .map(|entry| {
-                LiveRow::new(
+                let bindings = ui::tilo_resource::RowBindings::new().bind(
+                    LauncherEffect::CHOOSE,
+                    [
+                        ("row", Some(entry.id.clone()).into()),
+                        ("how", None::<String>.into()),
+                    ],
+                );
+                LiveRow::typed_with::<crate::resource::LauncherResult>(
                     format!("launcher.search/{}", entry.id),
-                    "launcher.result",
                     entry.label.clone(),
+                    &bindings,
                 )
-                .effect(&LauncherEffect::Choose {
-                    row: Some(entry.id.clone()),
-                    how: None,
-                })
             })
             .collect();
     }

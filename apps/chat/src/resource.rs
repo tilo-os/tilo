@@ -182,6 +182,7 @@ impl ResourceApp for ChatShell {
             .status(move || statuses.borrow().effect_statuses());
         let rows = Rc::clone(&chat);
         let row = Rc::clone(&chat);
+        let statuses = Rc::clone(&chat);
         // What the window lists that the resource keeps no row for: a direct conversation a send
         // opened, an agent's among them, named by what the workspace calls its agents. The
         // sidebar lists the same conversations, so search and the sidebar never name one
@@ -194,6 +195,8 @@ impl ResourceApp for ChatShell {
                 // resources the resource publishes.
                 .live_rows(move || rows.borrow().published_rows())
                 .live_row(move |id| row.borrow().published_row(id))
+                // A call's controls say they need the call it belongs to.
+                .row_status(move |id| statuses.borrow().row_status(id))
                 .search_entries(move || unrecorded.borrow().unrecorded_conversation_entries()),
             Box::new(window),
         );

@@ -494,6 +494,12 @@ pub(crate) fn readable_output(screen: &Screen) -> (String, bool) {
     (reversed.chars().rev().collect(), false)
 }
 
+/// A public web link the terminal printed: an item of the `terminal.link`
+/// type, whose address names the pane and the link.
+#[derive(ui::tilo_resource::Row)]
+#[row(kind = "terminal.link", label = "Link", effects = TerminalEffect)]
+pub(crate) struct Link;
+
 /// What a terminal does that changes no document: drive its process, move
 /// the session to another environment, manage environments, copy and scroll
 /// its output, open a link it printed. Every effect that reaches the
@@ -654,7 +660,7 @@ pub enum TerminalEffect {
     /// Open link
     ///
     /// Opens a public web link the process printed.
-    #[effect(destructive, own_device, kind = "read")]
+    #[effect(destructive, own_device, kind = "read", on = Link)]
     OpenLink {
         #[param("The link")]
         url: String,

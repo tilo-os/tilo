@@ -234,8 +234,11 @@ impl Described for WindowFrame {
             body,
         } = props;
         let tabbed = tabs.as_deref().is_some_and(holds_tabs);
+        // The bar's parts stand edge to edge: the name's own gutter is the one inset before it,
+        // so it starts on the content's edge rather than a gap past it.
         let own = Stack::row()
             .align(Align::Center)
+            .gap(Rhythm::None)
             .push_part(part(tabs.unwrap_or_else(empty), tabs_fit(tabbed)))
             .push_part(part(empty(), Fit::hug()))
             .push_part(part(empty(), after_fit(tabbed)));
@@ -500,6 +503,7 @@ impl WindowFrame {
         let gutter = Spacer::fixed(m.gutter as f32);
         let row = Stack::row()
             .align(Align::Center)
+            .gap(Rhythm::None)
             .push(Box::new(gutter))
             .push(Box::new(title))
             .push_part(part(empty(), Fit::fill(1.0)));

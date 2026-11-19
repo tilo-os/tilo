@@ -503,6 +503,10 @@ pub struct InstallerApp {
     /// The plan's unlock choice (`owner-device`, `tpm` or `passphrase`);
     /// empty when no plan decided it, which leaves the image's default.
     unlock: String,
+    /// The plan's static addressing; `None` when it decided DHCP or no plan
+    /// decided the network. It reaches the installer, which gives the machine
+    /// its address before it can enroll.
+    network_static: Option<(String, String, String)>,
     /// A complete plan stands in for the person's confirmation.
     install_plan: bool,
     device_label: String,
@@ -685,6 +689,7 @@ impl InstallerApp {
             timezone: ui::LocalState::new(DEFAULT_TIMEZONE.to_string()),
             purpose: install_profile_model::default_purpose(),
             unlock: String::new(),
+            network_static: None,
             install_plan: false,
             device_label: String::new(),
             prepared_setup: None,
@@ -733,7 +738,7 @@ impl InstallerApp {
         &mut self,
         plan: &install_profile_model::plan::Plan,
     ) -> Result<(), String> {
-        if plan.destination != SERVER_PURPOSE {
+        if plan.destination != install_profile_model::plan::SERVER {
             return Err("Only a Tilo Server installs from a plan with nobody at its screen".into());
         }
         if !plan.complete() {
@@ -783,6 +788,13 @@ impl InstallerApp {
         SERVER_PURPOSE.clone_into(&mut self.purpose);
         self.hostname = ui::LocalState::new(plan.name.clone());
         self.unlock.clone_from(&plan.unlock);
+        self.network_static = (plan.network.addressing == "static").then(|| {
+            (
+                plan.network.addresses.clone(),
+                plan.network.gateway.clone(),
+                plan.network.dns.clone(),
+            )
+        });
         self.install_plan = true;
         Ok(())
     }
@@ -1289,6 +1301,18 @@ impl InstallerApp {
             disk_serial: disk.map_or_else(String::new, |disk| disk.serial.clone()),
             unlock: self.unlock.clone(),
             install_plan: self.install_plan,
+            network_static: self
+                .network_static
+                .as_ref()
+                .map_or_else(String::new, |(addresses, _, _)| addresses.clone()),
+            network_gateway: self
+                .network_static
+                .as_ref()
+                .map_or_else(String::new, |(_, gateway, _)| gateway.clone()),
+            network_dns: self
+                .network_static
+                .as_ref()
+                .map_or_else(String::new, |(_, _, dns)| dns.clone()),
             alongside_root: root.map_or_else(String::new, |partition| partition.name.clone()),
             alongside_root_partuuid: root
                 .map_or_else(String::new, |partition| partition.part_uuid.clone()),

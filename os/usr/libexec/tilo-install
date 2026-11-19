@@ -42,11 +42,22 @@
 #                                     person's confirmation: the machine installs
 #                                     with nobody at its screen. Requires
 #                                     --purpose server and --internal-handoff;
-#                                     the staged single-use enrollment token is
-#                                     carried into the installed system, where
-#                                     its first boot spends it. The plan's disk
+#                                     the machine enrolls here, while this
+#                                     installer still holds the network and the
+#                                     open disk, and enrols the unlock another of
+#                                     the person's devices releases, so its first
+#                                     boot opens without a TPM and without
+#                                     anyone at its console. The plan's disk
 #                                     rule was checked when the installer was
 #                                     staged, and again before this runs.
+#     --network-static <addresses>    the plan's static addressing, as
+#                                     address/prefix entries, comma separated.
+#                                     Applied to this installer through
+#                                     NetworkManager and kept in the installed
+#                                     system, so a machine whose only address is
+#                                     a static public one can enroll and open its
+#                                     disk. --network-gateway (one per address
+#                                     family) and --network-dns go with it.
 #     --unlock <choice>               how the machine is planned to unlock after
 #                                     a boot: owner-device, tpm or passphrase
 #                                     (empty = the image's own default). A
@@ -140,6 +151,12 @@ LOCAL_IMG="localhost/bootc"
 # enrolment). Overridable so it can be driven directly in a test VM.
 DISK_ENCRYPT="${TILO_DISK_ENCRYPT:-/usr/libexec/tilo-disk-encrypt}"
 STAGING_HANDOFF=/usr/libexec/tilo-staging-handoff
+# The planned static network's keyfile writer, and the enrollment a planned
+# server spends its token on while this installer holds the network.
+PLAN_NETWORK="${TILO_PLAN_NETWORK:-/usr/libexec/tilo-plan-network}"
+ENROLL_BIN="${TILO_TILO_ENROLL:-/usr/libexec/tilo/tilo-enroll}"
+NMCLI="${TILO_NMCLI:-nmcli}"
+NM_KEYFILES=/etc/NetworkManager/system-connections
 # The store volume the storage daemon's native backend serves from.
 STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
 GUIDED_PARTITION="${TILO_GUIDED_PARTITION:-/usr/libexec/tilo-guided-partition}"
@@ -389,6 +406,9 @@ PASSWORD_IS_HASH=0   # --password-hash: stdin line 1 is already a SHA-512 crypt 
 FORCE_PASSPHRASE=0   # --startup-passphrase-only: never enrol the TPM2 PIN policy.
 UNLOCK_MODE=""       # --unlock: the plan's owner-device | tpm | passphrase, empty for the image's default.
 INSTALL_PLAN=0       # --install-plan: a complete server plan installs with no person at the screen.
+NETWORK_STATIC=""    # --network-static: the plan's address/prefix entries, comma separated.
+NETWORK_GATEWAY=""   # --network-gateway: its gateway, when the plan names one.
+NETWORK_DNS=""       # --network-dns: its DNS servers, comma separated.
 WANT_FIDO2=0         # --fido2 → also enroll a FIDO2 security key if present
 EXTENSIONS=""        # --extension ID → seed that extension's opt-in for first boot
 ALONGSIDE=0
@@ -451,6 +471,9 @@ while [ $# -gt 0 ]; do
     --startup-passphrase-only) FORCE_PASSPHRASE=1; shift ;;
     --unlock) UNLOCK_MODE="${2:-}"; shift 2 ;;
     --install-plan) INSTALL_PLAN=1; shift ;;
+    --network-static) NETWORK_STATIC="${2:-}"; shift 2 ;;
+    --network-gateway) NETWORK_GATEWAY="${2:-}"; shift 2 ;;
+    --network-dns) NETWORK_DNS="${2:-}"; shift 2 ;;
     --fido2) WANT_FIDO2=1; shift ;;
     --extension)
       case "${2:-}" in
@@ -527,6 +550,15 @@ if [ "$INSTALL_PLAN" -eq 1 ]; then
     || die "--install-plan installs a Tilo Server, not '$PURPOSE_VAL'"
   [ -n "$INTERNAL_HANDOFF" ] \
     || die "--install-plan requires --internal-handoff: the plan is staged with the installer it installs"
+fi
+
+# The plan's static network is the one address this machine may have. Only a
+# plan asks for it, and its gateway and DNS servers make no sense without it.
+if [ -n "$NETWORK_STATIC$NETWORK_GATEWAY$NETWORK_DNS" ]; then
+  [ "$INSTALL_PLAN" -eq 1 ] \
+    || die "--network-static goes with --install-plan: it is the plan's network"
+  [ -n "$NETWORK_STATIC" ] \
+    || die "--network-gateway and --network-dns need --network-static"
 fi
 
 [ -n "$DISK" ] || die "missing --disk <device>"
@@ -1724,6 +1756,11 @@ find_deploy_etc() {
   fi
 }
 
+# The installed system's /var, which holds its identity after enrollment.
+find_installed_var() {
+  find "$1/state/os" "$1/ostree/deploy" -mindepth 2 -maxdepth 2 -type d -name var 2>/dev/null
+}
+
 if [ "$ENCRYPT" -eq 1 ]; then
   MNT="$ENC_MNT"
   DEPLOY_ETC="$(find_deploy_etc "$MNT")"
@@ -2348,33 +2385,175 @@ if [ -f "$PREPARED_SETUP_RUN/other-device.json" ] && [ ! -L "$PREPARED_SETUP_RUN
   rm -rf "$other_ownership"
 fi
 
-# A plan's machine installs with nobody at its screen and enrolls on its first
-# start; the single-use token travels inside the encrypted root, owner-only,
-# and never into this live medium's logs or arguments.
+# A plan's machine installs with nobody at its screen, brings up the plan's own
+# network before it has to reach anyone, enrolls with the single-use token the
+# staging helper carried here, and enrols the unlock another of the person's
+# devices releases — all while this installer still holds the open disk. Its
+# first boot then has a keyslot that needs no TPM and no console; the
+# throwaway install key `finish` keeps is only the cleanup first boot spends.
+PLAN_NETWORK_NAME=""
+PLAN_ENROLLED_IDENTITY=""
+plan_network_interface() {
+  local candidate iface fallback=""
+  for candidate in /sys/class/net/*; do
+    iface="${candidate##*/}"
+    [ "$iface" = lo ] && continue
+    [ -e "$candidate/device" ] || continue
+    [ "$(cat "$candidate/type" 2>/dev/null || true)" = 1 ] || continue
+    [ -n "$fallback" ] || fallback="$iface"
+    if [ "$(cat "$candidate/carrier" 2>/dev/null || echo 0)" = 1 ]; then
+      printf '%s' "$iface"
+      return 0
+    fi
+  done
+  [ -n "$fallback" ] || return 1
+  printf '%s' "$fallback"
+}
+
+# The plan's static addressing, on this installer and in the installed system.
+# The sibling unlock's token then carries the same keyfile into early boot,
+# which is the only network a machine with no DHCP lease has before its disk
+# is open.
+apply_plan_network() {
+  [ -n "$NETWORK_STATIC" ] || return 0
+  local iface keyfile name=tilo-plan
+  command -v "$NMCLI" >/dev/null 2>&1 \
+    || die "the plan's static network needs NetworkManager, which this installer does not have"
+  [ -x "$PLAN_NETWORK" ] || die "the plan network helper $PLAN_NETWORK is missing"
+  iface="$(plan_network_interface)" \
+    || die "the plan's static network found no wired link to address"
+  keyfile="$NM_KEYFILES/$name.nmconnection"
+  install -d -m 0755 "$NM_KEYFILES" || die "could not create $NM_KEYFILES"
+  "$PLAN_NETWORK" "$keyfile" "$NETWORK_STATIC" "$NETWORK_GATEWAY" "$NETWORK_DNS" "$iface" \
+    || die "the plan's static network is not one this machine can be given"
+  install -d -m 0755 "$DEPLOY_ETC/NetworkManager/system-connections" \
+    || die "could not keep the plan's static network in the installed system"
+  # The installed system's wired link may carry another name than this live
+  # medium gave it, so its copy matches any wired link; early boot's token is
+  # bound to this link's MAC address instead (tilo-auth's for_early_boot).
+  "$PLAN_NETWORK" "$DEPLOY_ETC/NetworkManager/system-connections/$name.nmconnection" \
+    "$NETWORK_STATIC" "$NETWORK_GATEWAY" "$NETWORK_DNS" \
+    || die "could not keep the plan's static network in the installed system"
+  label_installed_tilo_path \
+    "$DEPLOY_ETC/NetworkManager/system-connections/$name.nmconnection" \
+    "/etc/NetworkManager/system-connections/$name.nmconnection"
+  "$NMCLI" connection reload \
+    || die "NetworkManager did not read the plan's static network"
+  # The link may still be settling after the install wrote the disk; a few
+  # tries are hardware time, not a wait for something else to happen.
+  local attempt activated=0
+  for attempt in 1 2 3 4 5; do
+    if "$NMCLI" connection up "$name" 2>&1; then
+      activated=1
+      break
+    fi
+    sleep 2
+  done
+  [ "$activated" -eq 1 ] \
+    || die "the plan's static address did not come up on $iface"
+  PLAN_NETWORK_NAME="$name"
+  log "  the plan's static address is up on $iface and kept for the installed system"
+}
+
+# The enrollment a planned machine spends its token on now rather than at first
+# boot: the sibling unlock can only be enrolled by an enrolled machine that
+# holds the person's device store, and the first boot must open its disk before
+# any service can start.
+enrol_planned_server() {
+  local var identity relay relative
+  mapfile -t PLAN_IDENTITY_TARGET_VARS < <(find_installed_var "$MNT")
+  [ "${#PLAN_IDENTITY_TARGET_VARS[@]}" -eq 1 ] \
+    || die "could not locate exactly one installed /var for the enrollment"
+  var="${PLAN_IDENTITY_TARGET_VARS[0]}"
+  identity="$var/lib/tilo"
+  install -d -m 0755 "$identity" || die "could not create the installed identity root"
+  [ -x "$ENROLL_BIN" ] || die "the enrollment program $ENROLL_BIN is missing"
+  relay=""
+  if [ -r "$DEPLOY_ETC/tilo/server.toml" ]; then
+    relay="$(sed -n 's/^[[:space:]]*relay[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+      "$DEPLOY_ETC/tilo/server.toml" | head -n 1)"
+  fi
+  step "Enrolling this machine with one of your devices"
+  local enrol=("$ENROLL_BIN" enroll --identity-root "$identity"
+    --token-file /etc/tilo/enrollment-token.txt
+    --home-peer-output "$DEPLOY_ETC/tilo/home-peer.toml"
+    --label "$HOSTNAME_VAL" --timeout 270)
+  [ -z "$relay" ] || enrol+=(--relay "$relay")
+  "${enrol[@]}" 2>&1 \
+    || die "this machine did not enroll; its disk would need the recovery key at every boot"
+  [ -s "$DEPLOY_ETC/tilo/home-peer.toml" ] \
+    || die "enrollment produced no home-peer configuration"
+  chmod 0600 "$DEPLOY_ETC/tilo/home-peer.toml"
+  # The enrollment wrote into the installed /var as root from this live
+  # medium; label every file with the policy path it will have there, so the
+  # server's own account and session can read it.
+  while IFS= read -r -d '' written; do
+    relative="${written#"$var"/}"
+    label_installed_tilo_path "$written" "/var/$relative"
+  done < <(find "$identity" -mindepth 1 -print0)
+  label_installed_tilo_path "$DEPLOY_ETC/tilo/home-peer.toml" /etc/tilo/home-peer.toml
+  # The installed system's first boot would have created these trees with
+  # tmpfiles' group, and the server's own account reads its device key through
+  # it (0640). A file written before that boot would stay root-only, so give
+  # the enrolled tree the group and the setgid flag it has there.
+  label_installed_tilo_path "$identity" /var/lib/tilo
+  getent group tilo-identity >/dev/null 2>&1 \
+    || die "the installed image declares no tilo-identity group"
+  find "$identity" -mindepth 1 -exec chown root:tilo-identity {} + \
+    || die "could not give the enrolled identity to the tilo-identity group"
+  find "$identity" -mindepth 1 -type d -exec chmod g+s {} + \
+    || die "could not make the enrolled identity's directories group-inheriting"
+  PLAN_ENROLLED_IDENTITY="$identity"
+  log "  the machine is enrolled; its identity is at $identity"
+}
+
+# The unlock another of the person's devices releases, enrolled while the
+# volume is open and its throwaway key authorises the keyslot.
+enrol_planned_sibling() {
+  local -a args=(--sibling --key-file "$ENC_KEYFILE")
+  case "$UNLOCK_MODE" in
+    owner-device) ;;
+    ''|tpm)
+      # A TPM plan on a machine without one has no unattended factor either.
+      [ ! -c /dev/tpmrm0 ] && [ ! -c /dev/tpm0 ] || return 0
+      ;;
+    *) return 0 ;;
+  esac
+  [ -n "$PLAN_ENROLLED_IDENTITY" ] || return 0
+  [ -n "$PLAN_NETWORK_NAME" ] && args+=(--network "$PLAN_NETWORK_NAME")
+  local relay=""
+  if [ -r "$DEPLOY_ETC/tilo/server.toml" ]; then
+    relay="$(sed -n 's/^[[:space:]]*relay[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+      "$DEPLOY_ETC/tilo/server.toml" | head -n 1)"
+  fi
+  [ -z "$relay" ] || args+=(--relay "$relay")
+  step "Enrolling the unlock one of your devices releases"
+  TILO_IDENTITY_ROOT="$PLAN_ENROLLED_IDENTITY" "$DISK_ENCRYPT" enrol "$ENC_LUKS" "${args[@]}" 2>&1 \
+    || die "the unlock your other devices release could not be enrolled; the machine's first boot would stop for its recovery key"
+  log "  the disk opens with the consent of your other devices"
+}
+
 if [ "$INSTALL_PLAN" -eq 1 ]; then
   [ -f /etc/tilo/enrollment-token.txt ] \
     || die "the staged plan carried no enrollment token"
   [ -n "$DEPLOY_ETC" ] && [ -d "$DEPLOY_ETC/tilo" ] \
     || die "the installed system's /etc was not found for the enrollment token"
-  install -m 0600 /etc/tilo/enrollment-token.txt \
-    "$DEPLOY_ETC/tilo/enrollment-token.txt" \
-    || die "could not carry the enrollment token into the installed system"
-  label_installed_tilo_path "$DEPLOY_ETC/tilo/enrollment-token.txt" \
-    /etc/tilo/enrollment-token.txt
+  apply_plan_network
+  enrol_planned_server
+  enrol_planned_sibling
   rm -f /etc/tilo/enrollment-token.txt
-  log "  the machine enrolls with the plan's token when it first starts"
 fi
 sync
 if [ "$ENCRYPT" -eq 1 ]; then
   # Drops the throwaway install key slot (only once another factor exists),
   # unmounts the tree and closes the mapping. A server planned for
   # owner-device unlock, or for tpm on a machine without one, hands its
-  # installed /var so the helper can keep the key there for the sibling
-  # enrolment at first boot; a desktop install has no first boot to spend it.
+  # installed /var so the helper can keep the key there for the first boot to
+  # spend on cleaning up after the sibling unlock enrolled above; a desktop
+  # install has no first boot to spend it.
   FINISH_ARGS=(--key-file "$ENC_KEYFILE" --mnt "$ENC_MNT")
   if [ "$SERVER_DESTINATION" -eq 1 ]; then
-    mapfile -t SIBLING_VARS < <(find "$ENC_MNT/state/os" "$ENC_MNT/ostree/deploy" \
-      -mindepth 2 -maxdepth 2 -type d -name var 2>/dev/null)
+    mapfile -t SIBLING_VARS < <(find_installed_var "$ENC_MNT")
     [ "${#SIBLING_VARS[@]}" -eq 1 ] \
       || die "could not locate the installed system's /var for the sibling unlock"
     FINISH_ARGS+=(--var "${SIBLING_VARS[0]}" --unlock "$UNLOCK_MODE")

@@ -1,0 +1,276 @@
+//! A workspace's resources, as this device writes and reads them: through the resource store,
+//! which alone decides the documents they are in ([`tilo_resource_store`]).
+//!
+//! A write goes to the store, which answers the change it made to each document; each is then
+//! this device's signed write of that document, under the app whose resource it is, sealed for
+//! the document's reader set, and published as any write of this device is
+//! ([`Engine::write_resource`]). A read asks the store, which answers only what this device's
+//! person may read.
+//!
+//! The store of a workspace is filled on its first use from the store documents this device's
+//! replica holds, and a document the replica took a peer's change to since is read again before
+//! the store answers from it.
+
+use std::collections::BTreeMap;
+
+use tilo_broker_core::owner_service::OwnerService as _;
+use tilo_desktop_model::WorkspaceId;
+use tilo_lock::MutexRecover as _;
+use tilo_peer_state::owner::{AppWrite, WriteRefusal};
+use tilo_resource_store::{Resource, Stamp, Store, Written};
+
+use super::{Engine, SealKeys};
+
+/// The store of one workspace, and the store documents it read from this device's replica.
+#[derive(Default)]
+pub(super) struct Resources {
+    store: Store,
+    /// Each store document read from the replica: the app it is written under, and the revision
+    /// it was read at.
+    read: BTreeMap<String, (String, Option<[u8; 32]>)>,
+    filled: bool,
+}
+
+/// Each change a write made, with its document whole where the replica holds none of it yet.
+type Publishing = Vec<(Written, Option<Vec<u8>>)>;
+
+/// The workspaces' stores.
+pub(super) type Stores = std::sync::Mutex<BTreeMap<WorkspaceId, Resources>>;
+
+/// Whether `name` names a document the store placed: `<readers>/<owner>#<n>` or
+/// `<readers>/<kind>/<id>~<n>`, where `<readers>` is `*` or a digest.
+fn is_store_document(name: &str) -> bool {
+    let Some((readers, rest)) = name.split_once('/') else {
+        return false;
+    };
+    let named = readers == "*"
+        || (readers.len() == 16 && readers.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let numbered = rest.rsplit_once(['#', '~']).is_some_and(|(_, number)| {
+        !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())
+    });
+    named && numbered
+}
+
+impl Engine {
+    /// This device's person, as reader sets name people.
+    fn reader(&self) -> String {
+        hex::encode(self.identity.device_cert.user_public_key)
+    }
+
+    /// Calls `f` with `workspace`'s store, brought up to what this device's replica holds.
+    fn with_resources<R>(&self, workspace: WorkspaceId, f: impl FnOnce(&mut Resources) -> R) -> R {
+        let id = workspace.to_string();
+        let mut stores = self.stores.lock_recover();
+        let resources = stores.entry(workspace).or_default();
+        if !resources.filled {
+            resources.filled = true;
+            for (app, doc) in self.documents(&id).unwrap_or_default() {
+                if is_store_document(&doc) {
+                    resources.read.insert(doc, (app, None));
+                }
+            }
+        }
+        // What the replica took since the store read it.
+        let documents: Vec<(String, String, Option<[u8; 32]>)> = resources
+            .read
+            .iter()
+            .map(|(doc, (app, revision))| (doc.clone(), app.clone(), *revision))
+            .collect();
+        for (doc, app, revision) in documents {
+            let now = self.document_revision(&id, &app, &doc).ok().flatten();
+            if now.is_none() || now == revision {
+                continue;
+            }
+            let read = self.read_resource(
+                &id,
+                (&app, &doc),
+                tilo_peer_state::owner::Holding::default(),
+                super::MAX_DOCUMENT_BYTES,
+            );
+            match read {
+                Ok(super::ResourceReading::Captured { bytes, .. }) => {
+                    if let Err(error) = resources.store.load(&doc, &bytes) {
+                        tracing::warn!(%error, %doc, "a store document is not read");
+                        continue;
+                    }
+                    resources.read.insert(doc, (app, now));
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, %doc, "a store document is not read"),
+            }
+        }
+        let answer = f(resources);
+        drop(stores);
+        answer
+    }
+
+    /// Reads `workspace`'s resources: `f` is given its store and the reader check this device's
+    /// person answers, which every query, count and read of it takes.
+    pub fn read_resources<R>(
+        &self,
+        workspace: WorkspaceId,
+        f: impl FnOnce(&Store, &dyn Fn(&str) -> bool) -> R,
+    ) -> R {
+        let reader = self.reader();
+        let may_read = move |readers: &str| {
+            readers == "*" || readers.split(',').any(|person| person == reader)
+        };
+        self.with_resources(workspace, |resources| f(&resources.store, &may_read))
+    }
+
+    /// Writes `resource` as the resource `id` of `kind`, of `app`, in `workspace`, as the action
+    /// `stamp` names, and publishes each document's change as this device's write.
+    ///
+    /// # Errors
+    /// The store refused the write, the keys of a document's reader set are not here, or the
+    /// workspace refused a document's write.
+    pub async fn put_resource(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        (kind, id): (&str, &str),
+        resource: Resource,
+        stamp: &Stamp,
+    ) -> Result<Vec<AppWrite>, WriteRefusal> {
+        let written =
+            self.write_store(workspace, app, |store| store.put(kind, id, resource, stamp))?;
+        self.publish_written(workspace, app, written).await
+    }
+
+    /// Removes the resource `id` of `kind`, of `app`, from `workspace`, as `stamp` names.
+    ///
+    /// # Errors
+    /// As [`Self::put_resource`].
+    pub async fn remove_resource(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        (kind, id): (&str, &str),
+        stamp: &Stamp,
+    ) -> Result<Vec<AppWrite>, WriteRefusal> {
+        let written = self.write_store(workspace, app, |store| {
+            store.remove(kind, id, stamp).map(|w| vec![w])
+        })?;
+        self.publish_written(workspace, app, written).await
+    }
+
+    /// Edits the content of the resource `id` of `kind`, of `app`, in `workspace`, as `stamp`
+    /// names: `edit` is given the root of its content.
+    ///
+    /// # Errors
+    /// As [`Self::put_resource`], and when `edit` fails.
+    pub async fn edit_resource_content<R>(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        (kind, id): (&str, &str),
+        stamp: &Stamp,
+        edit: impl FnOnce(
+            &mut automerge::transaction::Transaction<'_>,
+            &automerge::ObjId,
+        ) -> Result<R, automerge::AutomergeError>,
+    ) -> Result<(R, Vec<AppWrite>), WriteRefusal> {
+        let mut answer = None;
+        let written = self.write_store(workspace, app, |store| {
+            let (edited, written) = store.edit_content(kind, id, stamp, edit)?;
+            answer = Some(edited);
+            Ok(written.into_iter().collect())
+        })?;
+        let writes = self.publish_written(workspace, app, written).await?;
+        let answer =
+            answer.ok_or_else(|| WriteRefusal::Refused("the content was not edited".to_owned()))?;
+        Ok((answer, writes))
+    }
+
+    /// Writes to `workspace`'s store with `write`, and answers each document's change with the
+    /// document whole where the replica holds none of it yet.
+    fn write_store(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        write: impl FnOnce(&mut Store) -> Result<Vec<Written>, tilo_resource_store::StoreError>,
+    ) -> Result<Publishing, WriteRefusal> {
+        let id = workspace.to_string();
+        self.with_resources(workspace, |resources| {
+            let written = write(&mut resources.store)
+                .map_err(|error| WriteRefusal::Refused(error.to_string()))?;
+            Ok(written
+                .into_iter()
+                .map(|write| {
+                    resources
+                        .read
+                        .entry(write.doc.clone())
+                        .or_insert_with(|| (app.to_owned(), None));
+                    let founding = (!self.holds_resource(&id, app, &write.doc))
+                        .then(|| {
+                            resources
+                                .store
+                                .document(&write.doc)
+                                .map(automerge::Automerge::save)
+                        })
+                        .flatten();
+                    (write, founding)
+                })
+                .collect())
+        })
+    }
+
+    /// Publishes each change the store made as this device's write of its document, sealed for
+    /// the document's reader set.
+    async fn publish_written(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        written: Publishing,
+    ) -> Result<Vec<AppWrite>, WriteRefusal> {
+        let mut writes = Vec::with_capacity(written.len());
+        for (write, founding) in written {
+            let sealed = if self.commits_documents(workspace) {
+                None
+            } else if write.readers == "*" {
+                match self.seal_keys(workspace).map_err(WriteRefusal::Refused)? {
+                    SealKeys::Here(keys) => Some(keys),
+                    SealKeys::Waiting | SealKeys::NoSecretStore => {
+                        return Err(WriteRefusal::Refused(
+                            "this device holds no keys of the workspace yet".to_owned(),
+                        ));
+                    }
+                }
+            } else {
+                return Err(WriteRefusal::Refused(
+                    "a reader set other than the whole workspace has no keys here yet".to_owned(),
+                ));
+            };
+            let (bytes, founding) = match founding {
+                Some(whole) => (whole, true),
+                None => (write.change.raw_bytes().to_vec(), false),
+            };
+            writes.push(
+                self.write_resource(
+                    workspace,
+                    (app, &write.doc),
+                    &bytes,
+                    founding,
+                    sealed.as_ref(),
+                )
+                .await?,
+            );
+        }
+        Ok(writes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_store_document;
+
+    #[test]
+    fn a_store_document_is_told_from_an_apps_own_document_by_its_name() {
+        assert!(is_store_document("*/tasks.issue#0"));
+        assert!(is_store_document("0123456789abcdef/board-7#12"));
+        assert!(is_store_document("*/tasks.issue/i-1~0"));
+        assert!(!is_store_document("derived:default@tab:0"));
+        assert!(!is_store_document("notes/archive"));
+        assert!(!is_store_document("*/tasks.issue"));
+    }
+}

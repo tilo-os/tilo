@@ -12,7 +12,6 @@
 use crate::projection::ChatProjection as _;
 use tilo_actions::policy::MemberId;
 use ui::framework::{Effected, LiveRow};
-use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::{Id, Invoke};
 
 use crate::app::{ChatApp, Focus};
@@ -285,23 +284,20 @@ impl ChatApp {
             .iter()
             .filter_map(|channel| {
                 let public_key = self.direct_peer(channel)?;
-                Some(
-                    LiveRow::new(
-                        format!("chat.conversation:{public_key}"),
-                        "chat.conversation",
-                        &channel.name,
+                let bindings = ui::tilo_resource::RowBindings::new()
+                    .bind(
+                        ChatEffect::OPEN_DIRECT_CONVERSATION,
+                        [("public_key", public_key.clone().into())],
                     )
-                    .effect(&ChatEffect::OpenDirectConversation {
-                        public_key: public_key.clone(),
-                    })
-                    .operation(
-                        ChatEffect::SendDirectMessage {
-                            public_key,
-                            text: String::new(),
-                        }
-                        .bound_asking(&["text"]),
-                    ),
-                )
+                    .bind(
+                        ChatEffect::SEND_DIRECT_MESSAGE,
+                        [("public_key", public_key.clone().into())],
+                    );
+                Some(LiveRow::typed_with::<chat_model::rows::DirectConversation>(
+                    format!("chat.conversation:{public_key}"),
+                    &channel.name,
+                    &bindings,
+                ))
             })
             .collect()
     }
