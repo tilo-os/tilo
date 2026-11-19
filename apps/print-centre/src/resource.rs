@@ -20,10 +20,10 @@ pub enum PrintCentreEffect {
     #[effect(kind = "outside")]
     #[effect(job)]
     FindPrinters,
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::FoundPrinterRow)]
     #[effect(job)]
     AddPrinter {
-        #[param("The found printer's address")]
+        #[param("The found printer row's id, or its address")]
         printer: String,
     },
     #[effect(view)]
@@ -48,37 +48,37 @@ pub enum PrintCentreEffect {
         #[param("The printer's queue name")]
         printer: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::PrinterRow)]
     #[effect(job)]
     SetDefaultPrinter {
-        #[param("The printer's queue name")]
+        #[param("The printer row's id, or its queue name")]
         printer: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::PrinterRow)]
     #[effect(job)]
     #[effect(label = "print-centre-pause-printer")]
     PausePrinter {
-        #[param("The printer's queue name")]
+        #[param("The printer row's id, or its queue name")]
         printer: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::PrinterRow)]
     #[effect(job)]
     #[effect(label = "print-centre-resume-printer")]
     ResumePrinter {
-        #[param("The printer's queue name")]
+        #[param("The printer row's id, or its queue name")]
         printer: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::JobRow)]
     #[effect(job)]
     CancelDocument {
-        #[param("The print job's id")]
+        #[param("The print job row's id, or the job's id")]
         job: String,
     },
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::JobRow)]
     #[effect(job)]
     #[effect(label = "print-centre-print-again")]
     RetryDocument {
-        #[param("The print job's id")]
+        #[param("The print job row's id, or the job's id")]
         job: String,
     },
     #[effect(view, audience = "agents")]
@@ -109,9 +109,9 @@ pub enum PrintCentreEffect {
     SendToPrinter,
     #[effect(view)]
     ClosePrintSetup,
-    #[effect(view)]
+    #[effect(view, on = crate::rows::ScannerRow)]
     ScanWith {
-        #[param("The scanner's device name")]
+        #[param("The scanner row's id, or its device name")]
         scanner: String,
     },
     #[effect(kind = "outside")]

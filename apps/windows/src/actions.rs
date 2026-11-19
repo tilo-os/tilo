@@ -3,20 +3,19 @@
 //! repair, and snapshot operations are external service calls and therefore never document
 //! changes.
 use crate::model::{Catalogue, Route};
-use tilo_actions::{ActionSpec, Availability, ConfirmationPolicy};
-use ui::framework::LiveRow;
+use ui::framework::{EffectStatus, LiveRow};
 use ui::tilo_resource::{self, AbsolutePath, Effect};
 
 /// What Windows Apps asks the compatibility service and the managed appliance to do.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "windows.effect")]
 pub enum WindowsEffect {
-    #[effect(view, row, idempotent)]
+    #[effect(view, row, idempotent, on = crate::rows::CompatApp)]
     Show {
         #[param("The application id")]
         app: String,
     },
-    #[effect(view, row, returns, idempotent)]
+    #[effect(view, row, returns, idempotent, on = crate::rows::CompatApp)]
     ReadApp {
         #[param("The application id")]
         app: String,
@@ -31,81 +30,85 @@ pub enum WindowsEffect {
         #[param("Absolute path of the ISO; omit to choose one")]
         path: Option<AbsolutePath>,
     },
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::Appliance)]
     Recovery,
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::Appliance)]
     Start,
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::Appliance)]
     Restart,
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::Appliance)]
     Suspend,
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::Appliance)]
     Resume,
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::Appliance)]
     Shutdown,
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::Appliance)]
     TemporaryNetwork,
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::Appliance)]
     UpdateNetwork,
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::Appliance)]
     RevokeNetwork,
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::PendingInstall)]
     InstallPrivateCapsule,
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::PendingInstall)]
     InstallWindowsAppliance,
     /// Download and add Windows support (Proton), which programs opened with Proton need.
     #[effect(job, privileged, kind = "outside")]
     InstallWindowsSupport,
-    #[effect(kind = "outside")]
+    #[effect(kind = "outside", on = crate::rows::CompatApp)]
     #[effect(row, job)]
     Launch {
         #[param("The application's id")]
         app: String,
     },
-    #[effect(row, job, kind = "outside")]
+    #[effect(row, job, kind = "outside", on = crate::rows::CompatApp)]
     Stop {
         #[param("The application's id")]
         app: String,
     },
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::CompatApp)]
     LaunchVmFallback {
         #[param("The application's id")]
         app: String,
     },
-    #[effect(job, kind = "read")]
+    #[effect(job, kind = "read", on = crate::rows::CompatApp)]
     OpenFile {
         #[param("The application's id")]
         app: String,
         #[param("Absolute path of the file; omit to choose one")]
         path: Option<AbsolutePath>,
     },
-    #[effect(row, job, kind = "outside")]
+    #[effect(row, job, kind = "outside", on = crate::rows::CompatApp)]
     Publish {
         #[param("The application's id")]
         app: String,
     },
     /// Retry installation.
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::CompatApp)]
+    #[effect(on = crate::rows::PrivateData)]
     RetryInstall {
         #[param("The application's private capsule")]
         capsule: String,
     },
-    #[effect(row, job, privileged, kind = "outside")]
+    #[effect(row, job, privileged, kind = "outside", on = crate::rows::CompatApp)]
+    #[effect(on = crate::rows::PrivateData)]
     EscalateInstall {
         #[param("The application's private capsule")]
         capsule: String,
     },
-    #[effect(row, job, destructive, kind = "outside")]
+    #[effect(row, job, destructive, kind = "outside", on = crate::rows::CompatApp)]
     RemoveLauncher {
         #[param("The application's id")]
         app: String,
     },
-    #[effect(row, job, destructive, kind = "outside")]
+    #[effect(row, job, destructive, kind = "outside", on = crate::rows::CompatApp)]
+    #[effect(on = crate::rows::PrivateData)]
     Uninstall {
         #[param("The application's id")]
         app: String,
     },
-    #[effect(row, job, destructive, kind = "outside")]
+    #[effect(row, job, destructive, kind = "outside", phrase = "Self::data_name", on = crate::rows::CompatApp)]
+    #[effect(on = crate::rows::PrivateData)]
     DeleteData {
         #[param("The application's private capsule")]
         capsule: String,
@@ -131,232 +134,165 @@ impl WindowsEffect {
     }
 }
 
-/// `effect` as an item offers it now: available or not, as the service reports.
-fn offered(effect: &WindowsEffect, available: bool, reason: Option<&str>) -> ActionSpec {
-    let mut spec = effect.bound();
-    spec.type_mut().contract.availability = availability(available, reason);
-    spec
-}
-
-fn availability(available: bool, reason: Option<&str>) -> Availability {
-    if available {
-        Availability::Available
-    } else {
-        Availability::Unavailable {
-            code: "unavailable".into(),
-            reason: reason
-                .unwrap_or("This operation is not available right now")
-                .into(),
+/// The application whose data a destructive invocation loses, for its caller
+/// to type: the app row's or the private-data row's id names the app.
+impl WindowsEffect {
+    fn data_name(&self) -> String {
+        match self {
+            Self::DeleteData { capsule } => crate::rows::app_of_row(capsule).to_owned(),
+            _ => String::new(),
         }
     }
-}
-
-/// The appliance's lifecycle, available once it is `ready`.
-fn appliance_effects(ready: bool) -> Vec<ActionSpec> {
-    [
-        WindowsEffect::Recovery,
-        WindowsEffect::Start,
-        WindowsEffect::Restart,
-        WindowsEffect::Suspend,
-        WindowsEffect::Resume,
-        WindowsEffect::Shutdown,
-        WindowsEffect::TemporaryNetwork,
-        WindowsEffect::UpdateNetwork,
-        WindowsEffect::RevokeNetwork,
-    ]
-    .iter()
-    .map(|effect| {
-        offered(
-            effect,
-            ready,
-            Some("Set up the managed Windows appliance first"),
-        )
-    })
-    .collect()
 }
 
 /// What the service reports, as rows beneath the manager: the install awaiting a choice,
-/// the appliance and every catalogue application, each with the effects the service offers
-/// on it now.
+/// the appliance and every catalogue application.
 pub fn live_rows(catalogue: &Catalogue) -> Vec<LiveRow> {
     let mut rows = Vec::new();
     if let Some(confirmation) = &catalogue.vm_install_confirmation {
-        rows.push(pending_install_row(confirmation));
+        rows.push(LiveRow::typed::<crate::rows::PendingInstall>(
+            PENDING_INSTALL_ROW,
+            format!("Install {}", confirmation.display_name),
+        ));
     }
-    rows.push(appliance_row(catalogue));
+    rows.push(LiveRow::typed::<crate::rows::Appliance>(
+        APPLIANCE_ROW,
+        "Managed Windows appliance",
+    ));
     rows.extend(catalogue.apps.iter().map(app_row));
     rows
-}
-
-fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
-    let maintenance = maintenance_specs(app);
-    let launch = offered(
-        &WindowsEffect::Launch {
-            app: app.id.clone(),
-        },
-        app.launch_available,
-        app.launch_unavailable_reason.as_deref(),
-    );
-    let mut row = LiveRow::new(
-        crate::search::app_resource_id(&app.id),
-        "windows.compat-app",
-        &app.name,
-    )
-    .operation(
-        WindowsEffect::ReadApp {
-            app: app.id.clone(),
-        }
-        .bound()
-        .reads_document(),
-    )
-    .operation(
-        WindowsEffect::Show {
-            app: app.id.clone(),
-        }
-        .bound(),
-    )
-    .operation(launch)
-    .operation(offered(
-        &WindowsEffect::Stop {
-            app: app.id.clone(),
-        },
-        app.stop_available(),
-        Some("Only a running app in a private capsule can be ended here"),
-    ))
-    .operation(offered(
-        &WindowsEffect::LaunchVmFallback {
-            app: app.id.clone(),
-        },
-        app.vm_fallback_available,
-        app.vm_fallback_unavailable_reason.as_deref(),
-    ));
-    for spec in &maintenance {
-        row = row.operation(spec.clone());
-    }
-    if let Some(open_file) = open_file_spec(app) {
-        row = row.operation(open_file);
-    }
-    match prefix_row(app, &maintenance) {
-        Some(prefix) => row.row(prefix),
-        None => row,
-    }
-}
-
-fn maintenance_specs(app: &crate::model::WindowsApp) -> Vec<ActionSpec> {
-    const REASON: &str =
-        "The service did not offer this operation for the current installation state";
-    let mut delete = offered(
-        &WindowsEffect::DeleteData {
-            capsule: app.capsule.clone(),
-        },
-        app.can_delete_data,
-        Some(REASON),
-    );
-    delete.type_mut().contract.confirmation = ConfirmationPolicy::Phrase {
-        phrase: app.name.clone(),
-    };
-    vec![
-        offered(
-            &WindowsEffect::Publish {
-                app: app.id.clone(),
-            },
-            app.can_publish_vm_candidate,
-            Some(REASON),
-        ),
-        offered(
-            &WindowsEffect::RetryInstall {
-                capsule: app.capsule.clone(),
-            },
-            app.can_retry_install,
-            Some(REASON),
-        ),
-        offered(
-            &WindowsEffect::EscalateInstall {
-                capsule: app.capsule.clone(),
-            },
-            app.can_escalate_install_to_vm,
-            Some(REASON),
-        ),
-        offered(
-            &WindowsEffect::RemoveLauncher {
-                app: app.id.clone(),
-            },
-            app.can_remove_launcher,
-            Some(REASON),
-        ),
-        offered(
-            &WindowsEffect::Uninstall {
-                app: app.id.clone(),
-            },
-            app.can_vendor_uninstall,
-            Some(REASON),
-        ),
-        delete,
-    ]
-}
-
-fn open_file_spec(app: &crate::model::WindowsApp) -> Option<ActionSpec> {
-    // Omitting its availability made search and agents advertise a file bridge that the
-    // rendered control correctly refused.
-    if app.route != Route::Vm {
-        return None;
-    }
-    Some(offered(
-        &WindowsEffect::OpenFile {
-            app: app.id.clone(),
-            path: None,
-        },
-        app.launch_available && app.portal_file_open_available,
-        app.portal_file_open_unavailable_reason
-            .as_deref()
-            .or(app.launch_unavailable_reason.as_deref()),
-    ))
-}
-
-fn prefix_row(app: &crate::model::WindowsApp, maintenance: &[ActionSpec]) -> Option<LiveRow> {
-    if app.route == Route::Vm || app.capsule == "Pending private capsule" {
-        return None;
-    }
-    let mut prefix = LiveRow::new(
-        format!("windows.prefix:{}", app.id),
-        "windows.prefix",
-        format!("{} private data", app.capsule),
-    );
-    for spec in maintenance.iter().filter(|spec| {
-        matches!(
-            spec.id.as_str(),
-            "retry-install" | "escalate-install" | "uninstall" | "delete-data"
-        )
-    }) {
-        prefix = prefix.operation(spec.clone());
-    }
-    Some(prefix)
-}
-
-fn pending_install_row(confirmation: &crate::model::VmInstallConfirmation) -> LiveRow {
-    LiveRow::new(
-        PENDING_INSTALL_ROW,
-        "windows.pending-install",
-        format!("Install {}", confirmation.display_name),
-    )
-    .effect(&WindowsEffect::InstallPrivateCapsule)
-    .effect(&WindowsEffect::InstallWindowsAppliance)
 }
 
 pub const APPLIANCE_ROW: &str = "windows.appliance";
 
 pub const PENDING_INSTALL_ROW: &str = "windows.pending-install";
 
-fn appliance_row(catalogue: &Catalogue) -> LiveRow {
-    let mut appliance = LiveRow::new(
-        APPLIANCE_ROW,
-        "windows.appliance",
-        "Managed Windows appliance",
+/// One catalogue application's row, and beneath it the private data it keeps.
+fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
+    let row = LiveRow::typed::<crate::rows::CompatApp>(
+        crate::search::app_resource_id(&app.id),
+        &app.name,
     );
-    for spec in appliance_effects(catalogue.vm.ready) {
-        appliance = appliance.operation(spec);
+    if app.route == Route::Vm || app.capsule == "Pending private capsule" {
+        return row;
     }
-    appliance
+    row.row(LiveRow::typed::<crate::rows::PrivateData>(
+        format!("{}:{}", crate::rows::PRIVATE_DATA_PREFIX, app.id),
+        format!("{} private data", app.capsule),
+    ))
+}
+
+/// What the row `id` is like now, as the service reports it: an appliance
+/// that is not set up offers no lifecycle, and an application offers the
+/// operations of its installation state, with the service's reason why not.
+pub fn row_status(catalogue: &Catalogue, id: &str) -> Vec<EffectStatus> {
+    const CODE: &str = "unavailable";
+    const NOT_OFFERED: &str =
+        "The service did not offer this operation for the current installation state";
+    const CANNOT_LAUNCH: &str = "This application cannot launch right now";
+    if id == APPLIANCE_ROW {
+        if catalogue.vm.ready {
+            return Vec::new();
+        }
+        return [
+            WindowsEffect::RECOVERY,
+            WindowsEffect::START,
+            WindowsEffect::RESTART,
+            WindowsEffect::SUSPEND,
+            WindowsEffect::RESUME,
+            WindowsEffect::SHUTDOWN,
+            WindowsEffect::TEMPORARY_NETWORK,
+            WindowsEffect::UPDATE_NETWORK,
+            WindowsEffect::REVOKE_NETWORK,
+        ]
+        .into_iter()
+        .map(|effect| {
+            EffectStatus::unavailable(effect, CODE, "Set up the managed Windows appliance first")
+        })
+        .collect();
+    }
+    let Some(app) = catalogue.app(crate::rows::app_of_row(id)) else {
+        return Vec::new();
+    };
+    [
+        refusal(
+            WindowsEffect::LAUNCH,
+            app.launch_available,
+            app.launch_unavailable_reason.as_deref(),
+            CANNOT_LAUNCH,
+        ),
+        refusal(
+            WindowsEffect::OPEN_FILE,
+            app.launch_available && app.portal_file_open_available,
+            app.portal_file_open_unavailable_reason
+                .as_deref()
+                .or(app.launch_unavailable_reason.as_deref()),
+            CANNOT_LAUNCH,
+        ),
+        refusal(
+            WindowsEffect::STOP,
+            app.stop_available(),
+            None,
+            "Only a running app in a private capsule can be ended here",
+        ),
+        refusal(
+            WindowsEffect::LAUNCH_VM_FALLBACK,
+            app.vm_fallback_available,
+            app.vm_fallback_unavailable_reason.as_deref(),
+            NOT_OFFERED,
+        ),
+        refusal(
+            WindowsEffect::PUBLISH,
+            app.can_publish_vm_candidate,
+            None,
+            NOT_OFFERED,
+        ),
+        refusal(
+            WindowsEffect::RETRY_INSTALL,
+            app.can_retry_install,
+            None,
+            NOT_OFFERED,
+        ),
+        refusal(
+            WindowsEffect::ESCALATE_INSTALL,
+            app.can_escalate_install_to_vm,
+            None,
+            NOT_OFFERED,
+        ),
+        refusal(
+            WindowsEffect::REMOVE_LAUNCHER,
+            app.can_remove_launcher,
+            None,
+            NOT_OFFERED,
+        ),
+        refusal(
+            WindowsEffect::UNINSTALL,
+            app.can_vendor_uninstall,
+            None,
+            NOT_OFFERED,
+        ),
+        refusal(
+            WindowsEffect::DELETE_DATA,
+            app.can_delete_data,
+            None,
+            NOT_OFFERED,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// The row's refusal of `effect` when the service says it is not offered.
+fn refusal<A>(
+    effect: tilo_resource::ActionRef<WindowsEffect, A>,
+    available: bool,
+    reason: Option<&str>,
+    default: &str,
+) -> Option<EffectStatus> {
+    (!available).then(|| {
+        EffectStatus::unavailable(effect, "unavailable", reason.unwrap_or(default).to_owned())
+    })
 }
 
 #[cfg(test)]
@@ -489,11 +425,18 @@ mod tests {
                 .iter()
                 .find(|action| action.id == "open-file")
                 .expect("file operation is published for the guest application");
-            assert!(matches!(
-                open_file.contract.availability,
-                Availability::Unavailable { .. }
-            ));
             assert_eq!(open_file.contract.kind, ActionKind::Read);
+            // What the service reports makes operations unavailable, so search
+            // and agents see the same refusal the rendered control shows.
+            let catalogue = crate::provider::SampleProvider::new().catalogue();
+            assert!(
+                !row_status(&catalogue, "windows.app:visual-studio").is_empty(),
+                "the studio row refuses what the service does not offer"
+            );
+            assert!(
+                row_status(&catalogue, APPLIANCE_ROW).is_empty(),
+                "a ready appliance offers its lifecycle"
+            );
         }
     }
 }

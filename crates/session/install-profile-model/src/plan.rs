@@ -149,7 +149,9 @@ pub struct Network {
     pub addressing: String,
     /// `address/prefix` entries, comma separated, for static addressing.
     pub addresses: String,
-    /// The gateway; empty for none.
+    /// The default gateways, comma separated: one for each address family the
+    /// addresses have, so a dual-stack machine routes both families. Empty for
+    /// none.
     pub gateway: String,
     /// DNS servers, comma separated; empty for none.
     pub dns: String,
@@ -347,10 +349,27 @@ impl Network {
             !text.chars().any(char::is_control) && !text.chars().any(char::is_whitespace)
         };
         clean(&self.addresses)
-            && clean(&self.gateway)
+            && gateways(&self.gateway)
             && clean(&self.dns)
             && (self.addressing == "dhcp" || !self.addresses.is_empty())
     }
+}
+
+/// Whether `text` names default gateways a machine can use: an IP address
+/// each, at most one for each family, so a dual-stack machine names an IPv4
+/// and an IPv6 gateway at once.
+fn gateways(text: &str) -> bool {
+    let mut families: Vec<bool> = Vec::new();
+    for gateway in text.split(',').map(str::trim).filter(|one| !one.is_empty()) {
+        let Ok(address) = gateway.parse::<std::net::IpAddr>() else {
+            return false;
+        };
+        if families.contains(&address.is_ipv4()) {
+            return false;
+        }
+        families.push(address.is_ipv4());
+    }
+    true
 }
 
 impl DiskRule {
@@ -574,6 +593,28 @@ mod tests {
         let mut invalid = plan();
         invalid.open = vec!["purpose".to_owned()];
         assert!(!invalid.valid());
+    }
+
+    #[test]
+    fn a_dual_stack_plan_names_a_gateway_for_each_family() {
+        let mut stack = plan();
+        stack.network = Network {
+            addressing: "static".to_owned(),
+            addresses: "65.108.204.148/26,2a01:4f9:1a:a083::2/64".to_owned(),
+            gateway: "65.108.204.129,fe80::1".to_owned(),
+            dns: "185.12.64.1,185.12.64.2".to_owned(),
+        };
+        assert!(stack.valid(), "an IPv4 and an IPv6 gateway at once");
+        let text = serde_json::to_string(&stack).expect("a plan encodes");
+        assert_eq!(
+            serde_json::from_str::<Plan>(&text).expect("a plan decodes"),
+            stack
+        );
+
+        for gateway in ["65.108.204.129,65.108.204.130", "fe80::1,fe80::2", "gw"] {
+            stack.network.gateway = gateway.to_owned();
+            assert!(!stack.valid(), "two gateways of one family or none");
+        }
     }
 
     #[test]

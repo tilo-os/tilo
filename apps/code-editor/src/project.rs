@@ -117,6 +117,7 @@ fn minted(cx: &mut ActionCx) -> Id {
 #[resource(
     kind = "code_editor.project",
     search = Project::search_entries,
+    effects = crate::effects::CodeEditorEffect,
     children = Project::places,
     available = Project::available,
     load = Project::load_texts,

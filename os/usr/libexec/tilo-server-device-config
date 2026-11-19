@@ -14,7 +14,7 @@
 #   revision|<hex>
 #   hostname|<hostname>
 #   disk|<system|data|mirror>|<serial or WWN>|<0|1: confirmed erasing it>
-#   interface|<name>|<dhcp|static>|<address/prefix,...>|<gateway>|<dns,...>|<bond>|<vlan>
+#   interface|<name>|<dhcp|static>|<address/prefix,...>|<gateway,...>|<dns,...>|<bond>|<vlan>
 #
 # Every value is checked here again: nothing in the request is passed to a
 # shell, and a request naming anything else is refused as a whole rather than
@@ -106,6 +106,52 @@ valid_addresses() {
         esac
         [ -n "${address%%/*}" ] || return 1
     done
+}
+
+# Whether `text` names default gateways the interface `addresses` can use: an
+# IP address each, at most one for each family, and only a family the
+# addresses have.
+valid_gateways() {
+    if [ -z "$1" ]; then
+        return 0
+    fi
+    case "$1" in
+        *[!0-9A-Fa-f:.,]*) return 1 ;;
+    esac
+    printf '%s\n' "$1" | tr ',' '\n' | {
+        seen4=0
+        seen6=0
+        while IFS= read -r gateway; do
+            [ -n "$gateway" ] || return 1
+            case "$gateway" in
+                *:*)
+                    [ "$seen6" = 0 ] || return 1
+                    seen6=1
+                    printf '%s' "$2" | tr ',' '\n' | grep -q ':' || return 1
+                    ;;
+                *)
+                    [ "$seen4" = 0 ] || return 1
+                    seen4=1
+                    printf '%s' "$2" | tr ',' '\n' | grep -qv ':' || return 1
+                    ;;
+            esac
+        done
+    }
+}
+
+# The gateway of family `family` (`4` or `6`) among the comma-separated
+# `gateways`, if the interface names one.
+family_gateway() {
+    printf '%s\n' "$2" | tr ',' '\n' | {
+        while IFS= read -r gateway; do
+            [ -n "$gateway" ] || continue
+            case "$gateway" in
+                *:*) [ "$1" = 6 ] || continue ;;
+                *) [ "$1" = 4 ] || continue ;;
+            esac
+            printf '%s\n' "$gateway"
+        done
+    }
 }
 
 # Whether the drive `name` or a partition of it holds anything.
@@ -235,9 +281,8 @@ while IFS= read -r line || [ -n "$line" ]; do
                 *) refuse "an interface is addressed by dhcp or static" ;;
             esac
             valid_addresses "$addresses" || refuse "an address is written as <address>/<prefix>"
-            [ -z "$gateway" ] || case "$gateway" in
-                *[!0-9A-Fa-f:.]*) refuse "a gateway is an IP address" ;;
-            esac
+            valid_gateways "$gateway" "$addresses" ||
+                refuse "a gateway is one IP address for each family the interface is addressed in"
             [ -z "$dns" ] || case "$dns" in
                 *[!0-9A-Fa-f:.,]*) refuse "a DNS server is an IP address" ;;
             esac
@@ -384,7 +429,8 @@ if [ "$network_changed" = 1 ]; then
                             ;;
                     esac
                 done
-                [ -z "$gateway" ] || printf 'gateway=%s\n' "$gateway"
+                v4=${gateway:+$(family_gateway 4 "$gateway")}
+                [ -z "$v4" ] || printf 'gateway=%s\n' "$v4"
             else
                 printf 'method=auto\n'
             fi
@@ -402,6 +448,8 @@ if [ "$network_changed" = 1 ]; then
                                 ;;
                         esac
                     done
+                    v6=${gateway:+$(family_gateway 6 "$gateway")}
+                    [ -z "$v6" ] || printf 'gateway=%s\n' "$v6"
                     ;;
                 *)
                     if [ -n "$bond" ] || [ "$addressing" = static ]; then

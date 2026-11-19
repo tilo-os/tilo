@@ -345,6 +345,50 @@ fn a_machines_own_configuration_is_typed_actions_with_history() {
     );
 }
 
+/// A link addressed in both families keeps a default route for each at once:
+/// the IPv4 gateway and the IPv6 one in the interface's one setting.
+#[test]
+fn a_dual_stack_interface_keeps_a_gateway_for_each_family() {
+    let mut servers = enrolled();
+    servers
+        .apply(Servers::SET_INTERFACE.with((
+            device(),
+            "enp3s0".into(),
+            STATIC.into(),
+            "65.108.204.148/26,2a01:4f9:1a:a083::2/64".into(),
+            "65.108.204.129,fe80::1".into(),
+            "185.12.64.1,185.12.64.2".into(),
+            String::new(),
+        )))
+        .unwrap();
+    let server = servers.state().unwrap().active(&[7; 32]).cloned().unwrap();
+    let interface = server
+        .device
+        .network
+        .get(&Id::from_raw("enp3s0"))
+        .cloned()
+        .expect("the interface is set up");
+    assert_eq!(
+        interface.addresses,
+        "65.108.204.148/26,2a01:4f9:1a:a083::2/64"
+    );
+    assert_eq!(interface.gateway, "65.108.204.129,fe80::1");
+    // A second gateway of one family is refused whole.
+    assert!(
+        servers
+            .apply(Servers::SET_INTERFACE.with((
+                device(),
+                "enp3s0".into(),
+                STATIC.into(),
+                "65.108.204.148/26,2a01:4f9:1a:a083::2/64".into(),
+                "65.108.204.129,65.108.204.130".into(),
+                "185.12.64.1".into(),
+                String::new(),
+            )))
+            .is_err()
+    );
+}
+
 /// A drive another role would erase takes the drive's name to confirm, and
 /// what a machine needs stays: the disk it boots from, and an interface others
 /// are bonded to.

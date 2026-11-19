@@ -95,6 +95,24 @@ impl CodeApp {
                 self.open_node(node);
             }
             reveal @ CodeEditorEffect::Reveal { .. } => return self.answer_reveal(reveal, cx),
+            CodeEditorEffect::ShowSymbol { symbol } => {
+                let found = self
+                    .search_symbols
+                    .iter()
+                    .find(|known| actions::symbol_resource_id(known) == symbol)
+                    .ok_or_else(|| "Code no longer knows that symbol".to_string())?;
+                let reveal = actions::reveal_of_symbol(found);
+                return self.answer_reveal(reveal, cx);
+            }
+            CodeEditorEffect::ShowResult { result } => {
+                let found = self
+                    .projected_search_results
+                    .iter()
+                    .find(|known| actions::result_resource_id(known) == result)
+                    .ok_or_else(|| "Code no longer holds that search result".to_string())?;
+                let reveal = actions::reveal_of_result(found);
+                return self.answer_reveal(reveal, cx);
+            }
             CodeEditorEffect::OpenFile { path: Some(path) } => {
                 self.ensure_no_file_effect()?;
                 ui::window_toolbar::notify(None);
@@ -111,7 +129,7 @@ impl CodeApp {
                     return Ok(Effected::Pending);
                 }
             }
-            CodeEditorEffect::Save { file, path } => {
+            CodeEditorEffect::Save { file } => {
                 self.ensure_no_file_effect()?;
                 let node = match file {
                     Some(file) => self.file_node(&file)?,
@@ -121,18 +139,14 @@ impl CodeApp {
                         .map(|buffer| buffer.node)
                         .ok_or_else(|| "no file is open".to_string())?,
                 };
-                let has_destination = path.is_some()
-                    || self
-                        .session
-                        .buffer_of(node)
-                        .is_some_and(|buffer| buffer.path.is_some());
-                if !has_destination {
+                if self
+                    .session
+                    .buffer_of(node)
+                    .is_none_or(|buffer| buffer.path.is_none())
+                {
                     return self.choose_save_as(node, cx);
                 }
-                self.pending_save = Some((
-                    node,
-                    path.map(ui::tilo_resource::AbsolutePath::into_path_buf),
-                ));
+                self.pending_save = Some((node, None));
                 self.file_reply = Some(cx.reply());
                 return Ok(Effected::Pending);
             }
@@ -254,13 +268,7 @@ impl CodeApp {
                     }
                 }
             }
-            Command::Save => self.answer_effect(
-                CodeEditorEffect::Save {
-                    file: None,
-                    path: None,
-                },
-                cx,
-            ),
+            Command::Save => self.answer_effect(CodeEditorEffect::Save { file: None }, cx),
             Command::GoToLine => {
                 self.ask_for_line();
                 Ok(Effected::done())
@@ -327,23 +335,14 @@ impl CodeApp {
         if item.is_folder() {
             return None;
         }
-        let row = LiveRow::new(
+        // A file is a row of the project's file collection: what it is, and
+        // opening, saving and reading it, are its item's. The row adds the
+        // read of its committed text, which no effect declares.
+        let mut row = LiveRow::typed::<crate::rows::FileRow>(
             actions::file_resource_id(&item.resource_id),
-            crate::actions::FILE_KIND,
             item.name.clone(),
-        )
-        .effect(&CodeEditorEffect::ShowFile {
-            file: item.resource_id.clone(),
-        })
-        .operation(
-            CodeEditorEffect::ReadText {
-                file: item.resource_id.clone(),
-                start_chars: 0,
-                max_chars: 1024,
-            }
-            .bound_asking(&["start_chars", "max_chars"]),
-        )
-        .operation(crate::text_operations::snapshot_spec(
+        );
+        row = row.operation(crate::text_operations::snapshot_spec(
             item.resource_id.clone(),
         ));
         Some((item.resource_id.clone(), row))
@@ -466,36 +465,17 @@ impl CodeApp {
 }
 
 pub(super) fn symbol_row(symbol: &actions::SymbolRef) -> LiveRow {
-    LiveRow::new(
+    LiveRow::typed::<crate::rows::SymbolRow>(
         actions::symbol_resource_id(symbol),
-        "code_editor.symbol",
         symbol.name.clone(),
     )
-    .effect(&CodeEditorEffect::Reveal {
-        file: Some(symbol.file_id.clone()),
-        path: None,
-        line: symbol.line,
-        column: symbol.col,
-        results: false,
-    })
 }
 
 pub(super) fn result_row(result: &actions::SearchResultRef) -> LiveRow {
-    LiveRow::new(
+    LiveRow::typed::<crate::rows::ResultRow>(
         actions::result_resource_id(result),
-        "code_editor.search-result",
         result.preview.clone(),
     )
-    .effect(&CodeEditorEffect::Reveal {
-        file: result.file_id.clone(),
-        path: result
-            .disk_path
-            .as_deref()
-            .and_then(|path| ui::tilo_resource::AbsolutePath::new(path).ok()),
-        line: result.line,
-        column: result.col,
-        results: true,
-    })
 }
 
 #[cfg(test)]

@@ -49,6 +49,7 @@ mod outbox;
 mod quick_add;
 mod reminders;
 pub mod resource;
+mod rows;
 pub mod setup;
 mod shown;
 mod tasks;

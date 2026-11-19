@@ -5,53 +5,14 @@
 use ui::framework::{EffectAnswer, Effected, Publishes};
 use ui::prelude::*;
 use ui::tilo_actions::ResourcePresentation;
-use ui::tilo_resource::items::item_resource_id;
+use ui::tilo_resource::Id;
 
 use crate::app::{ClocksApp, Controls, Shown, Store, duration, repeat_summary, wall_now};
 use crate::model::Clocks;
 use crate::schedule::{ClocksOnDevices, DeviceChoices};
 
-#[derive(Clone, Debug, Effect)]
-#[effect(operation = "clocks.effects")]
-pub enum ClocksEffect {
-    /// Open this alarm on this device.
-    #[effect(screen)]
-    OpenAlarm {
-        #[param("The alarm's id")]
-        alarm: String,
-    },
-    /// Show a section of Clocks on this device.
-    #[effect(screen)]
-    Show {
-        #[param("world, alarms, timers or stopwatch")]
-        section: String,
-    },
-    /// Dismiss the due alarm or timer notice on this device.
-    #[effect(screen)]
-    DismissNotice,
-    /// Ring this device's alarm again after a few minutes.
-    #[effect(kind = "outside")]
-    SnoozeAlarm {
-        #[param("The alarm's id")]
-        alarm: String,
-        #[param("Minutes to wait before ringing again")]
-        minutes: u32,
-    },
-    /// Float a timer above other windows.
-    #[effect(screen)]
-    FloatTimer {
-        #[param("The timer's id")]
-        timer: String,
-        #[param("Float it")]
-        floating: bool,
-    },
-    /// Float the stopwatch above other windows.
-    #[effect(screen)]
-    FloatStopwatch {
-        #[param("Float it")]
-        floating: bool,
-    },
-}
+pub use clocks_model::ClocksEffect;
+use clocks_model::StopwatchRow;
 
 pub struct ClocksShell;
 
@@ -158,8 +119,19 @@ impl ResourceApp for ClocksShell {
                 store.stage(scenario);
             });
         }
+        let (rows, items, states) = (store.clone(), store.clone(), store);
         cx.publishing(
-            Publishes::new().live_rows(move || store.state.with(live_rows)),
+            Publishes::new()
+                // Each clock's item says how it stands right now, and the
+                // stopwatch, which is no item, is one row of its own.
+                .item_presentation(move |field, id| {
+                    items
+                        .state
+                        .with(|shown| item_presentation(shown, field, id))
+                })
+                .live_rows(move || vec![rows.state.with(stopwatch_row)])
+                // A clock floats or it does not: its row offers that change.
+                .row_status(move |id| states.state.with(|shown| row_status(shown, id))),
             Box::new(app),
         )
     }
@@ -291,7 +263,7 @@ impl Store {
                 self.update_device(|device| device.delivery = delivery);
                 self.notice.set(None);
             }
-            ClocksEffect::FloatTimer { timer, floating } => {
+            ClocksEffect::FloatTimer { timer } => {
                 if !self
                     .state
                     .with(|shown| shown.clocks.timers.contains(&Id::from_raw(timer.as_str())))
@@ -299,15 +271,25 @@ impl Store {
                     return Err(format!("there is no timer `{timer}`"));
                 }
                 self.update_device(|device| {
-                    if floating {
-                        device.floating_timers.insert(timer);
-                    } else {
-                        device.floating_timers.remove(&timer);
-                    }
+                    device.floating_timers.insert(timer);
                 });
             }
-            ClocksEffect::FloatStopwatch { floating } => {
-                self.update_device(|device| device.floating_stopwatch = floating);
+            ClocksEffect::UnfloatTimer { timer } => {
+                if !self
+                    .state
+                    .with(|shown| shown.clocks.timers.contains(&Id::from_raw(timer.as_str())))
+                {
+                    return Err(format!("there is no timer `{timer}`"));
+                }
+                self.update_device(|device| {
+                    device.floating_timers.remove(&timer);
+                });
+            }
+            ClocksEffect::FloatStopwatch => {
+                self.update_device(|device| device.floating_stopwatch = true);
+            }
+            ClocksEffect::UnfloatStopwatch => {
+                self.update_device(|device| device.floating_stopwatch = false);
             }
         }
         Ok(Effected::done())
@@ -318,96 +300,110 @@ fn millis(duration: std::time::Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-/// The state of each clock right now, on its item for the palette and agents.
-fn live_rows(shown: &Shown) -> Vec<LiveRow> {
+/// How the clock `id` of `field` stands right now, beside its item for the
+/// palette and agents: what its document does not hold.
+fn item_presentation(shown: &Shown, field: &str, id: &str) -> Option<ResourcePresentation> {
     let now = crate::app::wall_now();
     let clocks = &shown.clocks;
-    let mut rows: Vec<LiveRow> = clocks
-        .timers
-        .iter()
-        .map(|(id, timer)| {
-            timer_row(
-                id,
-                timer,
-                shown.device.floating_timers.contains(id.as_str()),
-                now,
-            )
-        })
-        .collect();
-    rows.extend(clocks.alarms.iter().map(|(id, alarm)| {
-        LiveRow::new(
-            item_resource_id::<Clocks>("alarms", id),
-            "clocks.alarm",
-            &alarm.label,
-        )
-        .presentation(ResourcePresentation {
-            detail: Some(format!(
-                "At {0}, repeating {1}.",
-                ui::clock::time_of_day(alarm.local_time()),
-                repeat_summary(&alarm.weekdays())
-            )),
-            badge: Some(if alarm.enabled { "On" } else { "Off" }.into()),
-            preview: None,
-        })
-        .effect(&ClocksEffect::OpenAlarm {
-            alarm: id.as_str().to_owned(),
-        })
-    }));
-    rows.extend(clocks.world_clocks.iter().map(|(id, clock)| {
-        LiveRow::new(
-            item_resource_id::<Clocks>("world_clocks", id),
-            "clocks.world-clock",
-            &clock.city,
-        )
-        .presentation(ResourcePresentation {
-            detail: Some(clock.timezone.0.clone()),
-            badge: None,
-            preview: None,
-        })
-    }));
-    let floating = shown.device.floating_stopwatch;
-    rows.push(
-        LiveRow::new("clocks.stopwatch", "clocks.stopwatch", "Stopwatch")
-            .presentation(ResourcePresentation {
-                detail: Some(duration(millis(clocks.stopwatch.elapsed(now)))),
-                badge: floating.then(|| "Floating".into()),
+    match field {
+        "timers" => {
+            let timer = clocks.timers.get(&Id::from_raw(id))?;
+            let status = if timer.is_running(now) {
+                "Running"
+            } else if timer.is_finished(now) {
+                "Done"
+            } else {
+                "Paused"
+            };
+            let remaining = duration(millis(timer.remaining(now)));
+            Some(ResourcePresentation {
+                detail: Some(format!("{status}, with {remaining} remaining.")),
+                badge: shown
+                    .device
+                    .floating_timers
+                    .contains(id)
+                    .then(|| "Floating".into()),
                 preview: None,
             })
-            .effect(&ClocksEffect::FloatStopwatch {
-                floating: !floating,
-            }),
-    );
-    rows
+        }
+        "alarms" => {
+            let alarm = clocks.alarms.get(&Id::from_raw(id))?;
+            Some(ResourcePresentation {
+                detail: Some(format!(
+                    "At {0}, repeating {1}.",
+                    ui::clock::time_of_day(alarm.local_time()),
+                    repeat_summary(&alarm.weekdays())
+                )),
+                badge: Some(if alarm.enabled { "On" } else { "Off" }.into()),
+                preview: None,
+            })
+        }
+        "world_clocks" => {
+            let clock = clocks.world_clocks.get(&Id::from_raw(id))?;
+            Some(ResourcePresentation {
+                detail: Some(clock.timezone.0.clone()),
+                badge: None,
+                preview: None,
+            })
+        }
+        _ => None,
+    }
 }
 
-fn timer_row(
-    id: &Id,
-    timer: &crate::model::Timer,
-    floating: bool,
-    now: jiff::Timestamp,
-) -> LiveRow {
-    let status = if timer.is_running(now) {
-        "Running"
-    } else if timer.is_finished(now) {
-        "Done"
-    } else {
-        "Paused"
-    };
-    let remaining = duration(millis(timer.remaining(now)));
-    LiveRow::new(
-        item_resource_id::<Clocks>("timers", id),
-        "clocks.timer",
-        &timer.label,
+/// The stopwatch, the one clock that is no document item: one row of the
+/// `clocks.stopwatch` type, which offers floating it.
+fn stopwatch_row(shown: &Shown) -> LiveRow {
+    LiveRow::typed::<StopwatchRow>("clocks.stopwatch", "Stopwatch").presentation(
+        ResourcePresentation {
+            detail: Some(duration(millis(
+                shown.clocks.stopwatch.elapsed(crate::app::wall_now()),
+            ))),
+            badge: shown.device.floating_stopwatch.then(|| "Floating".into()),
+            preview: None,
+        },
     )
-    .presentation(ResourcePresentation {
-        detail: Some(format!("{status}, with {remaining} remaining.")),
-        badge: floating.then(|| "Floating".into()),
-        preview: None,
-    })
-    .effect(&ClocksEffect::FloatTimer {
-        timer: id.as_str().to_owned(),
-        floating: !floating,
-    })
+}
+
+/// What a timer or the stopwatch is like now on this device: it floats or
+/// it does not, so its row offers only the change that applies.
+fn row_status(shown: &Shown, id: &str) -> Vec<ui::framework::EffectStatus> {
+    use ui::framework::EffectStatus;
+    const FLOATS: &str = "It already floats above other windows";
+    const SET: &str = "It is not floating above other windows";
+    if id == "clocks.stopwatch" {
+        return if shown.device.floating_stopwatch {
+            vec![EffectStatus::unavailable(
+                ClocksEffect::FLOAT_STOPWATCH,
+                "already-floating",
+                FLOATS,
+            )]
+        } else {
+            vec![EffectStatus::unavailable(
+                ClocksEffect::UNFLOAT_STOPWATCH,
+                "not-floating",
+                SET,
+            )]
+        };
+    }
+    let Some((field, timer)) = ui::tilo_resource::items::item_of_resource::<Clocks>(id) else {
+        return Vec::new();
+    };
+    if field != "timers" {
+        return Vec::new();
+    }
+    if shown.device.floating_timers.contains(timer.as_str()) {
+        vec![EffectStatus::unavailable(
+            ClocksEffect::FLOAT_TIMER,
+            "already-floating",
+            FLOATS,
+        )]
+    } else {
+        vec![EffectStatus::unavailable(
+            ClocksEffect::UNFLOAT_TIMER,
+            "not-floating",
+            SET,
+        )]
+    }
 }
 
 #[cfg(test)]

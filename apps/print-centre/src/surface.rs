@@ -480,66 +480,26 @@ fn save_scanned_page(path: &std::path::Path, bytes: &[u8]) -> Result<(), String>
     file.sync_all()
         .map_err(|error| format!("could not finish saving the scanned page: {error}"))
 }
-fn resource_key(value: &str) -> String {
-    hex::encode(value)
-}
 fn printer_row(queue: &os_actions::printing::PrinterQueue) -> LiveRow {
-    let printer = || queue.name.clone();
-    let mut row = LiveRow::new(
-        format!("print-centre.printer.{}", resource_key(&queue.name)),
-        "print-centre.printer",
+    LiveRow::typed::<crate::rows::PrinterRow>(
+        crate::rows::printer_row_id(&queue.name),
         display_name(&queue.name),
-    );
-    if !queue.default {
-        row = row.effect(&PrintCentreEffect::SetDefaultPrinter { printer: printer() });
-    }
-    row.effect(&if queue.accepting_jobs {
-        PrintCentreEffect::PausePrinter { printer: printer() }
-    } else {
-        PrintCentreEffect::ResumePrinter { printer: printer() }
-    })
+    )
 }
 fn job_row(job: &os_actions::printing::PrintJob) -> LiveRow {
-    use os_actions::printing::JobState;
-    let mut row = LiveRow::new(
-        format!("print-centre.job.{}", resource_key(&job.id)),
-        "print-centre.job",
-        job_title(job),
-    );
-    let job_id = || job.id.clone();
-    if matches!(
-        job.state,
-        Some(JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped)
-    ) {
-        row = row.effect(&PrintCentreEffect::CancelDocument { job: job_id() });
-    }
-    if matches!(
-        job.state,
-        Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
-    ) {
-        row = row.effect(&PrintCentreEffect::RetryDocument { job: job_id() });
-    }
-    row
+    LiveRow::typed::<crate::rows::JobRow>(crate::rows::job_row_id(&job.id), job_title(job))
 }
 fn scanner_row(scanner: &tilo_capture::scanner::Scanner) -> LiveRow {
-    LiveRow::new(
-        format!("print-centre.scanner.{}", resource_key(&scanner.device)),
-        "print-centre.scanner",
+    LiveRow::typed::<crate::rows::ScannerRow>(
+        crate::rows::scanner_row_id(&scanner.device),
         scanner.description.clone(),
     )
-    .effect(&PrintCentreEffect::ScanWith {
-        scanner: scanner.device.clone(),
-    })
 }
 fn discovered_row(printer: &os_actions::printing::DiscoveredPrinter) -> LiveRow {
-    LiveRow::new(
-        format!("print-centre.found.{}", resource_key(&printer.uri)),
-        "print-centre.found-printer",
+    LiveRow::typed::<crate::rows::FoundPrinterRow>(
+        crate::rows::found_printer_row_id(&printer.uri),
         printer.name.clone(),
     )
-    .effect(&PrintCentreEffect::AddPrinter {
-        printer: printer.uri.clone(),
-    })
 }
 fn friendly_queue_state(queue: &os_actions::printing::PrinterQueue) -> String {
     use os_actions::printing::QueueState;
@@ -1158,6 +1118,7 @@ impl PrintCentre {
     }
 
     fn known_printer(&self, printer: String) -> Result<String, String> {
+        let printer = crate::rows::row_entity("print-centre.printer", printer);
         self.snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.queues.as_ref().ok())
@@ -1167,6 +1128,7 @@ impl PrintCentre {
     }
 
     fn known_job(&self, job: String) -> Result<String, String> {
+        let job = crate::rows::row_entity("print-centre.job", job);
         self.snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.jobs.as_ref().ok())
@@ -1176,6 +1138,7 @@ impl PrintCentre {
     }
 
     fn known_scanner(&self, scanner: String) -> Result<String, String> {
+        let scanner = crate::rows::row_entity("print-centre.scanner", scanner);
         self.snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.scanners.as_ref().ok())
@@ -1188,10 +1151,79 @@ impl PrintCentre {
         &self,
         uri: &str,
     ) -> Result<os_actions::printing::DiscoveredPrinter, String> {
+        let uri = crate::rows::row_entity("print-centre.found", uri.to_owned());
+        let uri = uri.as_str();
         self.nearby()
             .and_then(Result::ok)
             .and_then(|found| found.into_iter().find(|printer| printer.uri == uri))
             .ok_or_else(|| "That printer is already added or wasn't found nearby".to_owned())
+    }
+
+    /// What the device `id` is like now, as its own row says: the preferred
+    /// printer offers no change of preference, a printer already taking
+    /// documents offers no resume, and a document cancels or prints again
+    /// only while its state allows it. The palette, agents and the API
+    /// refuse a press with the reason rather than queue work that cannot
+    /// finish.
+    pub(crate) fn row_status(&self, id: &str) -> Vec<EffectStatus> {
+        let mut statuses = Vec::new();
+        let Some(snapshot) = &self.snapshot else {
+            return statuses;
+        };
+        if let Ok(queues) = &snapshot.queues
+            && let Some(queue) = queues
+                .iter()
+                .find(|queue| crate::rows::printer_row_id(&queue.name) == id)
+        {
+            if queue.default {
+                statuses.push(EffectStatus::unavailable(
+                    PrintCentreEffect::SET_DEFAULT_PRINTER,
+                    "already-default",
+                    "This is already the preferred printer.",
+                ));
+            }
+            if queue.accepting_jobs {
+                statuses.push(EffectStatus::unavailable(
+                    PrintCentreEffect::RESUME_PRINTER,
+                    "already-accepting",
+                    "This printer is already taking documents.",
+                ));
+            } else {
+                statuses.push(EffectStatus::unavailable(
+                    PrintCentreEffect::PAUSE_PRINTER,
+                    "not-accepting",
+                    "This printer is paused.",
+                ));
+            }
+        }
+        if let Ok(jobs) = &snapshot.jobs
+            && let Some(job) = jobs
+                .iter()
+                .find(|job| crate::rows::job_row_id(&job.id) == id)
+        {
+            use os_actions::printing::JobState;
+            if !matches!(
+                job.state,
+                Some(JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped)
+            ) {
+                statuses.push(EffectStatus::unavailable(
+                    PrintCentreEffect::CANCEL_DOCUMENT,
+                    "not-queued",
+                    "This document is no longer waiting on the printer.",
+                ));
+            }
+            if !matches!(
+                job.state,
+                Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
+            ) {
+                statuses.push(EffectStatus::unavailable(
+                    PrintCentreEffect::RETRY_DOCUMENT,
+                    "not-stopped",
+                    "This document has not stopped; it prints again only once it has.",
+                ));
+            }
+        }
+        statuses
     }
 
     /// The printers the last search found that no queue prints to yet: only those can be
@@ -2341,8 +2373,13 @@ pub(crate) fn window(cx: &ViewCx<PrintDefaults>) -> Element {
         let centre = Rc::clone(&centre);
         cx.on_stage(move |scenario| centre.borrow_mut().stage_scenario(scenario));
     }
+    let statuses = Rc::clone(&centre);
     cx.publishing(
-        Publishes::new().live_rows(move || centre.borrow().device_rows()),
+        Publishes::new()
+            // Each device is a row of its own kind, offering the work its
+            // state allows.
+            .live_rows(move || centre.borrow().device_rows())
+            .row_status(move |id| statuses.borrow().row_status(id)),
         Box::new(window),
     )
 }
