@@ -1726,10 +1726,12 @@ impl<T> InvocationLog<T> {
         request: &InvokeRequest,
     ) -> Result<Reservation, ActionCallError> {
         let id = request.invocation;
-        if let Some(entry) = self.entries.get(&id) {
-            if entry.caller != *caller || !entry.request.same_invocation(request) {
+        if let Some(entry) = self.entries.get_mut(&id) {
+            if !caller.continues(&entry.caller) || !entry.request.same_invocation(request) {
                 return Err(ActionCallError::InvocationConflict);
             }
+            // Asked again on the connection that replaced its own: it is this one's from now on.
+            entry.caller.clone_from(caller);
             return if entry.handle.is_some() {
                 Ok(Reservation::Admitted)
             } else {
@@ -1789,12 +1791,13 @@ impl<T> InvocationLog<T> {
         }
     }
 
-    /// The handle for an invocation `caller` admitted.
+    /// The handle for an invocation `caller` admitted, or the caller it continues
+    /// ([`Caller::continues`]).
     #[must_use]
     pub fn get(&self, caller: &Caller, id: &InvocationId) -> Option<&T> {
         self.entries
             .get(id)
-            .filter(|entry| entry.caller == *caller)
+            .filter(|entry| caller.continues(&entry.caller))
             .and_then(|entry| entry.handle.as_ref())
     }
 
@@ -1802,7 +1805,7 @@ impl<T> InvocationLog<T> {
     pub fn get_mut(&mut self, caller: &Caller, id: &InvocationId) -> Option<&mut T> {
         self.entries
             .get_mut(id)
-            .filter(|entry| entry.caller == *caller)
+            .filter(|entry| caller.continues(&entry.caller))
             .and_then(|entry| entry.handle.as_mut())
     }
 }
@@ -2745,7 +2748,19 @@ mod tests {
             ));
             assert!(provider.observe(&first, &id).is_some());
             assert!(provider.observe(&second, &id).is_none());
+            // The connection that replaced the ended one is the same caller going on: it follows
+            // and asks again what it started there, and the invocation is carried out once. The
+            // one open beside it borrows nothing, even now.
+            assert!(reconnected.continues(&first));
+            assert!(!second.continues(&first));
+            assert!(provider.observe(&reconnected, &id).is_some());
+            assert!(matches!(
+                now(provider.invoke(&reconnected, archive(id))).unwrap().status,
+                ReceiptStatus::Completed { .. }
+            ));
             assert_eq!(provider.runs(), 1);
+            let someone_else = Caller::authenticated([3; 32], [4; 32]).in_new_execution();
+            assert!(!someone_else.continues(&first), "another device continues nothing");
         }
 
         phase serving_answers_each_request_as_the_person_the_device_belongs_to;

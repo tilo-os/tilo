@@ -218,6 +218,27 @@ impl Caller {
         self.execution.as_ref().is_some_and(ExecutionLease::is_live)
     }
 
+    /// Whether this caller may follow, ask again or cancel an invocation `owner` started: it is
+    /// `owner`, or `owner`'s connection ended and this is the same caller on a connection admitted
+    /// after that. A device or key whose connection dropped in the middle of a long import (one does,
+    /// now and then) keeps the invocations it started; a second live connection of the same device still
+    /// borrows none of the first's.
+    #[must_use]
+    pub fn continues(&self, owner: &Self) -> bool {
+        if self == owner {
+            return true;
+        }
+        let replaced = match (&self.execution, &owner.execution) {
+            (Some(own), Some(ended)) => own.replaced(ended),
+            _ => false,
+        };
+        replaced && {
+            let mut same = self.clone();
+            same.execution.clone_from(&owner.execution);
+            same == *owner
+        }
+    }
+
     /// A transport ends its own run; retained caller clones cannot reopen it.
     pub fn retire_execution(&self) {
         if let Some(lease) = &self.execution {
