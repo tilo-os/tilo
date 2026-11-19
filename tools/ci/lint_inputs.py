@@ -3,13 +3,16 @@
 
 The push lint keys each of its runs on the inputs it can read: the directories
 of the linted packages and of every path crate they reach in Cargo.lock (a
-crate's dev-dependencies count only for the linted crates themselves), the lock
-records of the external crates they reach, the files their sources pull in at
-compile time from outside those directories, the workspace's build and lint
-configuration, the command, and the Cargo and Rust variables of the
-environment. A run that passed is not repeated while its key is unchanged, so a
-push retried after a rebase onto unrelated commits relints only what those
-commits reach.
+crate's dev-dependencies count only for the linted crates themselves), the
+resolved versions and sources of the external crates they reach, not the whole
+lockfile, which changes whenever any package anywhere in the workspace gains a
+dependency - the settings of the workspace manifest that
+their builds read (not its member list, which changes whenever any app joins
+the workspace), the files their sources pull in at compile time from outside
+those directories, the toolchain and lint configuration, the command, and the
+Cargo and Rust variables of the environment. A run that passed is not repeated
+while its key is unchanged, so a push retried after a rebase onto unrelated
+commits relints only what those commits reach.
 
 The compile-time files are found in the sources: the paths named by
 `include!`, `include_str!`, `include_bytes!` and `#[path]`, and in build
@@ -32,10 +35,17 @@ from typing import Iterable
 
 from ci.workspace_graph import _lock_graph
 
-# Files that steer how every package builds or is linted.
-CONFIGURATION = ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain",
-                 "clippy.toml", ".clippy.toml", "rustfmt.toml", ".rustfmt.toml",
-                 ".cargo/config.toml", ".cargo/config")
+# Files that steer how every package builds or is linted, whatever package is
+# linted. The workspace manifest is not one of them: it changes whenever any app
+# joins the workspace, and a member a lint does not build changes nothing it
+# builds, so only the settings its packages read are keyed (build_settings). Nor
+# is the lockfile: each external crate's resolved version and source is (key).
+CONFIGURATION = ("rust-toolchain.toml", "rust-toolchain", "clippy.toml", ".clippy.toml",
+                 "rustfmt.toml", ".rustfmt.toml", ".cargo/config.toml", ".cargo/config")
+# The workspace manifest, whose build settings are keyed in pieces.
+WORKSPACE_MANIFEST = "Cargo.toml"
+# The manifest tables a dependency can be declared in.
+DEPENDENCY_TABLES = ("dependencies", "build-dependencies", "dev-dependencies")
 # This file, the hook that runs the lint, and the tools a run goes through: a
 # change to any of them can change what passing means. A run that passed is not
 # reused across a push that changed one, nor across one that changed a
@@ -281,6 +291,89 @@ class Workspace:
             self.packages[name] = Package(self.tree, self.root, self.directories[name])
         return self.packages[name]
 
+    def inherited(self, local: Iterable[str]) -> set[str] | None:
+        """The workspace dependencies these packages name through `workspace = true`."""
+        names: set[str] = set()
+        for name in local:
+            try:
+                document = tomllib.loads(
+                    (self.root / self.directories[name] / WORKSPACE_MANIFEST).read_text())
+            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+                return None
+            tables = [document.get(table, {}) for table in DEPENDENCY_TABLES]
+            for target in document.get("target", {}).values():
+                if isinstance(target, dict):
+                    tables += [target.get(table, {}) for table in DEPENDENCY_TABLES]
+            for table in tables:
+                if not isinstance(table, dict):
+                    continue
+                for key, spec in table.items():
+                    if isinstance(spec, dict) and spec.get("workspace") is True:
+                        names.add(key)
+        return names
+
+    @staticmethod
+    def patches(tables: dict, names: set[str]) -> dict:
+        """The patches of crates these packages build: a patch replaces what they compile."""
+        found = {}
+        for source, table in tables.items():
+            if not isinstance(table, dict):
+                continue
+            for name, spec in table.items():
+                patched = spec.get("package") if isinstance(spec, dict) else None
+                if name in names or patched in names:
+                    found[f"{source}\0{name}"] = spec
+        return found
+
+    @staticmethod
+    def profiles(tables: dict, names: set[str]) -> dict:
+        """The profile settings that apply to these packages and the crates they build."""
+        found = {}
+        for profile, settings in tables.items():
+            if not isinstance(settings, dict):
+                continue
+            packages = settings.get("package", {})
+            found[profile] = {
+                "settings": {key: value for key, value in settings.items() if key != "package"},
+                "packages": ({name: value for name, value in packages.items() if name in names}
+                             if isinstance(packages, dict) else {}),
+            }
+        return found
+
+    def build_settings(self, local: set[str], external: set[tuple]) -> bytes | None:
+        """The workspace manifest's decisions these packages' builds read, as one blob.
+
+        Cargo resolves every member against the workspace table: the resolver
+        mode, the fields members inherit, the shared dependencies they name, the
+        patches that replace a crate they build, and the profile settings that
+        apply to the packages and crates they compile. The member list is not
+        one of them: another app joining the workspace, or one leaving it, does
+        not change how an existing package compiles.
+        """
+        try:
+            document = tomllib.loads((self.root / WORKSPACE_MANIFEST).read_text())
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return None
+        workspace = document.get("workspace", {})
+        if not isinstance(workspace, dict):
+            return None
+        shared = workspace.get("dependencies", {})
+        if not isinstance(shared, dict):
+            return None
+        used = self.inherited(local)
+        if used is None:
+            return None
+        names = set(local) | {package_id[0] for package_id in external}
+        settings = {
+            "resolver": workspace.get("resolver"),
+            "package": workspace.get("package", {}),
+            "lints": workspace.get("lints", {}),
+            "dependencies": {name: value for name, value in shared.items() if name in used},
+            "patch": self.patches(document.get("patch", {}), names),
+            "profile": self.profiles(document.get("profile", {}), names),
+        }
+        return json.dumps(settings, sort_keys=True, default=repr).encode()
+
     def key(self, roots: Iterable[str], dependencies: bool, command: list[str]) -> str | None:
         """The key of linting `roots` with `command`, or None when an input has no known place."""
         local, external = self.reached(roots, dependencies)
@@ -291,6 +384,9 @@ class Workspace:
             package = self.package(name)
             paths.add(package.directory)
             paths |= package.reads
+        settings = self.build_settings(local, external)
+        if settings is None:
+            return None
         digest = hashlib.sha256()
         digest.update(json.dumps(command).encode())
         for variable in sorted(os.environ):
@@ -298,6 +394,7 @@ class Workspace:
                 digest.update(f"\0{variable}={os.environ[variable]}".encode())
         for code in LINT_CODE:
             digest.update(hashlib.sha256(code.read_bytes()).digest())
+        digest.update(b"\0" + settings)
         for path, oid in sorted(objects(self.root, paths).items()):
             digest.update(f"\0{path} {oid}".encode())
         for record in sorted(external, key=repr):
