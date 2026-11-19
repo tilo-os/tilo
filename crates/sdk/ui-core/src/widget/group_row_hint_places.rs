@@ -107,8 +107,10 @@ fn grab_stretch(group: &super::WindowGroup, x: f64) -> Rect {
     Rect::new(from, bar.y0, to, bar.y1)
 }
 
+/// A stretch of bar the hint may point at: the bar takes the window from it, and it is none of
+/// the window's controls or the bar's toolbar, which a press uses for something else.
 fn free(group: &super::WindowGroup, p: Point) -> bool {
-    group.bar_grab_hit(p) && !group.window_control_hit(p)
+    group.bar_grab_hit(p) && !group.window_control_hit(p) && !group.toolbar_hit(p)
 }
 
 /// How wide a stretch of bar must be to be where a window is taken: the
@@ -140,13 +142,19 @@ fn title_grab(group: &super::WindowGroup) -> Option<Rect> {
         }
         from = stretch.x1 + GRAB_STEP;
     }
+    // A bar its tabs and buttons fill: the title itself, on the part of it that lifts the
+    // window — its leading edge is the window's resize.
     let active = group.active_tab_id();
-    group
+    let title = group
         .tabs()
         .iter()
         .position(|tab| tab.id == active)
         .and_then(|i| group.tab_rects().get(i).copied())
-        .filter(|title| title.area() > 0.0)
+        .filter(|title| title.area() > 0.0)?;
+    let x0 = std::iter::successors(Some(title.x0), |x| Some(x + GRAB_STEP))
+        .take_while(|x| *x < title.x1)
+        .find(|x| free(group, Point::new(*x, y)))?;
+    Some(Rect::new(x0, title.y0, title.x1, title.y1))
 }
 
 fn nearest_edge(
@@ -228,6 +236,12 @@ mod tests {
             );
             row.groups[0].focused = true;
             let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            let anchor = beside_the_title(&row);
+            let title = row.groups[0].tab_rects()[0];
+            assert!(
+                anchor.x0 >= title.x0 && anchor.x1 <= title.x1,
+                "the title {title:?}, not the address field at {anchor:?}"
+            );
             anchor_takes_the_window(&row);
             let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
             for group in &mut row.groups {
