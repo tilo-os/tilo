@@ -115,8 +115,14 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 
 # Keep tool-install downloads and extracted crate sources out of the image.
 # CI restores its own Cargo downloads under /cargo-home; only these binaries ship.
+# Each is a pinned release: an unpinned install takes whatever was published
+# last, which may need a newer compiler than the pinned toolchain (cargo-machete
+# 0.10.1 uses an unstable `path_is_empty` and stopped this image building).
+ARG CARGO_DENY_VERSION=0.20.2
+ARG CARGO_MACHETE_VERSION=0.9.2
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    cargo install --locked cargo-deny cargo-machete \
+    cargo install --locked cargo-deny --version "${CARGO_DENY_VERSION}" \
+    && cargo install --locked cargo-machete --version "${CARGO_MACHETE_VERSION}" \
     && cargo deny --version && cargo machete --version
 
 # Android NDK and Rust targets for the Android lint (tools/ci/clippy-android.sh, docs/android.md).

@@ -979,3 +979,15 @@ paths = ["apps/tilolang/tests/hosted/marks.rs"]
 reason = "The marks suite's own word for an agent's task run, which this test names beside its neighbours' `run()` and `the_run_marks_...` cases."
 words = ["run"]
 paths = ["apps/tilolang/tests/hosted/marks.rs"]
+
+[[allow]]
+reason = "The nearby check's per-machine working directories, named run_a, run_b and run_c."
+words = ["run"]
+identifiers = ["run_a", "run_b", "run_c"]
+paths = ["os/dev/test-nearby-pairing.sh", "os/dev/nearby-unlock-phase.sh", "os/dev/nearby-wake-phase.sh"]
+
+[[allow]]
+reason = "A check's `run` key: the shell command t, or the policy suite, starts for it."
+words = ["run"]
+identifiers = ["run"]
+paths = ["t.toml", "tools/policy/steps.toml"]
