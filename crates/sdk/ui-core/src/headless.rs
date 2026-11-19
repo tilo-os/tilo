@@ -304,6 +304,7 @@ mod caller_palette;
 mod capture;
 mod composition;
 mod inspection;
+mod scene_paint;
 
 /// What `widget` shows, as the frame harness's inspection reads it: a skipped pass is checked against
 /// it ([`crate::component_inputs`]).
@@ -648,6 +649,9 @@ pub struct FrameHarness {
     /// later frame may re-solve in place; false until the first build and after every path that
     /// discards them.
     layout_built: bool,
+    /// Whether a frame paints its scene. A mount shown as its composition (a
+    /// browser page's HTML mount) never reads it, so its frames skip the paint.
+    scene_drawn: bool,
     /// Test override for the `TILO_UI_FULL_RELAYOUT` safety valve: `Some` wins over the environment.
     full_relayout_override: Option<bool>,
     /// What the most recent completed relayout did; see [`RelayoutStats`].
@@ -1595,6 +1599,7 @@ impl FrameHarness {
             pointer_redraw_diagnostics: false,
             pointer_redraw_sources: Vec::new(),
             layout_built: false,
+            scene_drawn: true,
             full_relayout_override: None,
             last_relayout: RelayoutStats::default(),
             placed_all: false,
@@ -2827,6 +2832,13 @@ impl FrameHarness {
         self.track_scene_parts = track;
     }
 
+    /// Whether a frame paints its scene into [`Self::scene`]. A page that
+    /// shows a frame as its composition instead sets this false: its frames
+    /// skip the paint and keep every booking the paint makes.
+    pub fn set_scene_drawn(&mut self, drawn: bool) {
+        self.scene_drawn = drawn;
+    }
+
     /// Which surface this tree is on the thread's motion clock: what moves for what it draws runs on
     /// its behalf ([`crate::motion::on_surface`]).
     pub const fn motion_surface(&self) -> crate::motion::MotionSurface {
@@ -3948,6 +3960,8 @@ impl FrameHarness {
         let draw_phase = tilo_resource::profiling::Phase::start("ui.draw");
         let _grid = crate::widget::layout::enter_device_scale(self.input_scale);
         let transform = self.capture_draw_transform();
+        // A frame shown as its composition paints nothing; its bookings do.
+        let paint = self.scene_drawn;
         let replay_now = crate::time::now();
         let only_moved = quiet
             && !stats.measured
@@ -3984,14 +3998,18 @@ impl FrameHarness {
             .lift_parts
             .then(|| crate::lift::Recording::begin(&self.scene));
         let backdrop_recording = crate::backdrop::BackdropRecording::begin();
-        crate::backdrop::layer_scene(&self.scene, 0);
+        if paint {
+            crate::backdrop::layer_scene(&self.scene, 0);
+        }
         let previous_viewport = self.presence.push_viewport(Rect::new(
             0.0,
             0.0,
             f64::from(self.viewport.0),
             f64::from(self.viewport.1),
         ));
-        if let Some(history) = &mut self.history {
+        if let Some(history) = &mut self.history
+            && paint
+        {
             history.draw_child(
                 &mut self.scene,
                 transform,
@@ -4007,53 +4025,61 @@ impl FrameHarness {
         {
             crate::widget::native_view_frame_start(self.root.as_mut());
             let _wake = self.enter_wake();
-            self.presence
-                .with_permissions(self.permissions.clone(), || {
-                    self.root.draw_child(
-                        &mut self.scene,
-                        transform,
-                        &mut self.text,
-                        &self.theme,
-                        &self.presence,
-                    )
-                });
+            if paint {
+                self.presence
+                    .with_permissions(self.permissions.clone(), || {
+                        self.root.draw_child(
+                            &mut self.scene,
+                            transform,
+                            &mut self.text,
+                            &self.theme,
+                            &self.presence,
+                        )
+                    });
+            }
         }
         if self
             .history
             .as_ref()
             .is_none_or(|history| history.live_visible())
         {
-            self.root.draw_overlay(
-                &mut self.scene,
-                transform,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
-            self.cards.draw(
-                self.root.as_mut(),
-                &mut self.scene,
-                transform,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
+            if paint {
+                self.root.draw_overlay(
+                    &mut self.scene,
+                    transform,
+                    &mut self.text,
+                    &self.theme,
+                    &self.presence,
+                );
+                self.cards.draw(
+                    self.root.as_mut(),
+                    &mut self.scene,
+                    transform,
+                    &mut self.text,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
             self.root.mark_drawn();
         }
         self.drawn_input = crate::input_generation::generation();
         self.drawn_outside = crate::outside_paint::on_screen();
         crate::outside_paint::forget_on_screen();
         if let Some(history) = &mut self.history {
-            history.draw_overlay(
-                &mut self.scene,
-                transform,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
+            if paint {
+                history.draw_overlay(
+                    &mut self.scene,
+                    transform,
+                    &mut self.text,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
             history.mark_drawn();
         }
-        self.draw_part_row(transform);
+        if paint {
+            self.draw_part_row(transform);
+        }
         if let Some(palette) = self
             .action_palette
             .as_deref_mut()
@@ -4072,52 +4098,25 @@ impl FrameHarness {
                 .unwrap_or(surface);
             let (origin, card) = palette.place_in(window, &self.theme);
             palette.layout_with_text(&self.theme, origin, card, &mut self.text);
-            palette.draw_child(
-                &mut self.scene,
-                transform,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
+            if paint {
+                palette.draw_child(
+                    &mut self.scene,
+                    transform,
+                    &mut self.text,
+                    &self.theme,
+                    &self.presence,
+                );
+            }
         }
         let interaction_now = crate::time::now();
         self.presence.prune_interactions(interaction_now);
         self.drawn_action_markers.clear();
-        if self.presence.has_visible_interactions(interaction_now)
-            && let Some((tree, bindings)) = self.retained_action_geometry()
-        {
-            let viewport = Rect::new(
-                0.0,
-                0.0,
-                f64::from(self.viewport.0),
-                f64::from(self.viewport.1),
-            );
-            let text_loci = crate::presence::capability::agent_text_loci(
-                self.root.as_ref(),
-                &self.theme,
-                &self.presence,
-                &self.presence.visible_interactions(interaction_now),
-            );
-            self.drawn_action_markers = crate::action_locus::draw_action_presence(
-                &mut crate::paint::PaintCtx::new(
-                    &mut self.scene,
-                    Affine::IDENTITY,
-                    &mut self.text,
-                    &self.theme,
-                ),
-                &mut self.presence,
-                &tree,
-                &bindings,
-                &text_loci,
-                viewport,
-                ("retained-primary", &|id| {
-                    crate::widget::find_resource(self.root.as_ref(), &self.state.doc, id)
-                        .map(|resource| resource.label)
-                }),
-                interaction_now,
-            );
+        if paint {
+            self.paint_action_markers(interaction_now);
         }
-        if let Some(notice) = &self.control_notice {
+        if let Some(notice) = &self.control_notice
+            && paint
+        {
             let viewport = Rect::new(
                 0.0,
                 0.0,
@@ -4132,21 +4131,23 @@ impl FrameHarness {
                 viewport,
             );
         }
-        self.draw_tooltip(transform);
-        let pointers = self.pointers_beside_caret_tags(transform);
-        crate::presence::draw_peer_cursors(
-            &mut self.scene,
-            transform,
-            Rect::new(
-                0.0,
-                0.0,
-                f64::from(self.viewport.0),
-                f64::from(self.viewport.1),
-            ),
-            &mut self.text,
-            &self.theme,
-            &pointers,
-        );
+        if paint {
+            self.draw_tooltip(transform);
+            let pointers = self.pointers_beside_caret_tags(transform);
+            crate::presence::draw_peer_cursors(
+                &mut self.scene,
+                transform,
+                Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(self.viewport.0),
+                    f64::from(self.viewport.1),
+                ),
+                &mut self.text,
+                &self.theme,
+                &pointers,
+            );
+        }
         self.presence.pop_viewport(previous_viewport);
         drop(replay_scope);
         let replayed = crate::retained_present::take_replayed();
@@ -4166,7 +4167,7 @@ impl FrameHarness {
             self.tooltips.schedule().2 || crate::motion::frames_wanted(crate::time::now());
 
         self.search_pending = self.advance_search();
-        self.draw_caller_palette();
+        self.draw_caller_palette(paint);
         self.lifted = lift_recording
             .map(crate::lift::Recording::finish)
             .unwrap_or_default();

@@ -1274,6 +1274,25 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_shown_as_its_composition_paints_no_scene() {
+        let mut frame = FrameHarness::new(
+            crate::State::new(),
+            Box::new(crate::widget::TextInput::local()),
+            (400, 80),
+        );
+        frame.set_scene_drawn(false);
+        frame.relayout();
+        assert!(
+            frame.scene().encoding().is_empty(),
+            "a frame shown as its composition paints nothing"
+        );
+        // The composition it shows instead is the frame's own.
+        let composition = frame.composition();
+        assert!(find(&composition.root, "TextInput").is_some());
+        assert!(composition.root.rect[2] > 0.0);
+    }
+
+    #[test]
     fn a_checkbox_is_a_label_around_its_box() {
         let state = crate::LocalState::new(false);
         let mut host = FrameHarness::new(

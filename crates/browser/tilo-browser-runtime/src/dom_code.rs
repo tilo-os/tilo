@@ -21,6 +21,9 @@ pub(crate) struct Frame<'a> {
     pub composition: String,
     pub background: ui::peniko::Color,
     pub layout_ms: f64,
+    /// The time the composition above took to build and serialize, after the
+    /// frame laid out.
+    pub encode_ms: f64,
     /// The theme, when the page does not hold its variables yet.
     pub theme: Option<&'a ui::Theme>,
 }
@@ -57,6 +60,7 @@ impl DomPresent for Presenter {
                 f32::from(background.a) / 255.0
             ),
             "layoutMs": frame.layout_ms,
+            "encodeMs": frame.encode_ms,
             "bytes": frame.composition.len(),
             "theme": theme,
         });
