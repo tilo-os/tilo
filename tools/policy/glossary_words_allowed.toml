@@ -1569,3 +1569,9 @@ reason = "YouTube's channels, which tube's model names as the product's API does
 words = ["channel"]
 identifiers = ["Channel", "channel_id"]
 paths = ["apps/tube/src/rows.rs", "apps/tube/src/actions.rs"]
+
+[[allow]]
+reason = "A test drives the workspace service through the fixture named `test_host` and the `host` field of the service every embedder reads; neither is prose."
+words = ["host"]
+identifiers = ["host", "test_host"]
+paths = ["crates/server/tilo-workspace-service/src/workspaces/device_rejoin_tests.rs"]
