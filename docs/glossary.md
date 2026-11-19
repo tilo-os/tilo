@@ -51,6 +51,10 @@ the graph may make it.
 - **Resource**: the unit of data. An app declares resource types; a chat message is a resource.
   Per-person data (drafts, recents, view state) is resources in the workspace that belong to a
   person.
+- **Hybrid logical clock**: the time a device stamps on what it writes where the order matters: its
+  wall clock, moved past every time it had seen, so what it writes reads after what it had already
+  read however far the devices' clocks are apart. The stamp is made where the action is written and
+  every device applies the same one.
 - **Target**: the resource an action is offered on: its first parameter.
 - **Personal resources**: resources that belong to no workspace: a person's devices and keys,
   logins, settings that apply everywhere, browsing history, signature.

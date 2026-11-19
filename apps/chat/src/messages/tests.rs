@@ -519,15 +519,15 @@ tilo_test_env::scenario! {
     // same whether a change arrives before or after another.
     {
         let chat = crate::demo::demo();
-        // A part holding one message written after every post that follows it: it reads last,
-        // whichever order the posts reached this replica.
+        // A part holding one message written before every post that follows it: it
+        // reads first, whichever order the posts reached this replica.
         let mut seeded = ChatMessages::default();
         seeded.messages.push(
             Id::from_raw("m_seeded"),
             crate::chat::Message::new(
                 Id::from_raw("c_general"),
                 MemberId::person("u_aria"),
-                4_000_000_000_000,
+                1_000,
                 "seeded".to_owned(),
             ),
         );
@@ -573,9 +573,9 @@ tilo_test_env::scenario! {
         let ours = timeline(&ada);
         assert_eq!(timeline(&bob), ours, "both devices read one order");
         assert_eq!(
-            ours.last().map(String::as_str),
+            ours.first().map(String::as_str),
             Some("m_seeded"),
-            "the message written last reads last: {ours:?}"
+            "the message written first reads first: {ours:?}"
         );
         let unique: std::collections::BTreeSet<&String> = ours.iter().collect();
         assert_eq!(unique.len(), ours.len(), "each message once: {ours:?}");
@@ -592,6 +592,16 @@ tilo_test_env::scenario! {
         say(&mut ada, "u_aria", "Ada three");
         take(&mut bob, &mut ada);
         assert_eq!(timeline(&ada), timeline(&bob), "and after a write over it");
+        let last = chat
+            .message_rows(&Messages::single(read_part(&ada)), "c_general")
+            .into_iter()
+            .next_back()
+            .map(|message| message.text);
+        assert_eq!(
+            last.as_deref(),
+            Some("Ada three"),
+            "the message written last reads last"
+        );
     }
 
     phase a_post_records_the_channel_it_went_to;
@@ -619,6 +629,76 @@ tilo_test_env::scenario! {
             .collect();
         assert!(places.iter().any(|place| place == "#general"), "{places:?}");
     }
+}
+
+/// Two devices whose clocks are ten minutes apart read one order: a reply
+/// written on the device whose clock is behind reads after the message it
+/// answers, because that device had seen it when it wrote.
+#[test]
+fn a_reply_written_on_a_clock_behind_reads_after_the_message_it_answers() {
+    let chat = crate::demo::demo();
+    let mut workspace = Workspace::default();
+    workspace.write_part(0, &ChatMessages::default()).unwrap();
+    let base = workspace.part_bytes(0).unwrap();
+    let replica = |actor: u8| {
+        let mut doc = ui::automerge::AutoCommit::load(&base).unwrap();
+        doc.set_actor(ui::automerge::ActorId::from(vec![actor; 16]));
+        doc
+    };
+    let mut ada = replica(1);
+    let mut bob = replica(2);
+    let behind = 1_800_000_000_000;
+    let ahead = behind + 10 * 60 * 1_000;
+    crate::demo::apply_part_doc_as(
+        &mut ada,
+        &chat,
+        |replica| replica.as_invoker("u_aria"),
+        Some(ahead),
+        crate::demo::post("c_general", "what Ada wrote", None),
+    )
+    .unwrap();
+    let written = read_part(&ada)
+        .messages
+        .iter()
+        .find(|(_, message)| message.text == "what Ada wrote")
+        .map(|(id, _)| id.clone())
+        .unwrap();
+    // Bob takes Ada's message, then answers it on a clock ten minutes behind hers.
+    let changes = ada.get_changes(&bob.get_heads());
+    tilo_automerge::ApplyIncoming::apply_incoming(&mut bob, changes).unwrap();
+    crate::demo::apply_part_doc_as(
+        &mut bob,
+        &chat,
+        |replica| replica.as_invoker("u_milo"),
+        Some(behind),
+        crate::demo::post("c_general", "Bob's answer", Some(written.as_str())),
+    )
+    .unwrap();
+    let changes = bob.get_changes(&ada.get_heads());
+    tilo_automerge::ApplyIncoming::apply_incoming(&mut ada, changes).unwrap();
+    let order = |doc: &ui::automerge::AutoCommit| -> Vec<String> {
+        Messages::single(read_part(doc))
+            .iter()
+            .map(|(_, message)| message.text.clone())
+            .collect()
+    };
+    for device in [&ada, &bob] {
+        assert_eq!(
+            order(device),
+            ["what Ada wrote", "Bob's answer"],
+            "the answer reads after the message it answers"
+        );
+    }
+    let answer = read_part(&bob)
+        .messages
+        .iter()
+        .find(|(_, message)| message.text == "Bob's answer")
+        .map(|(_, message)| message.ts)
+        .unwrap();
+    assert!(
+        answer > ahead,
+        "the answer carries a time after what it had seen"
+    );
 }
 
 /// A device back from away shows a conversation before the part its messages

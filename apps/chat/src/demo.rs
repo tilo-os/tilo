@@ -897,22 +897,29 @@ pub fn apply_part_doc_as(
     let mut action = invoke
         .build(now_ms.unwrap_or_else(ui::tilo_resource::origin_now_ms))
         .map_err(ApiError::InvalidArguments)?;
+    // The part the document holds is all it has seen of the conversation.
+    let held = std::rc::Rc::new(crate::messages::read_part(part));
     let mut replica = attribute(Replica::<ChatMessages>::from_doc(std::mem::take(part)))
         .in_app(<crate::ChatShell as ui::framework::ResourceApp>::ID, "Chat");
     let prepared = replica
         .invoker()
         .ok_or_else(|| ApiError::Failed("no one is named to act".to_owned()))
         .and_then(|invoker| {
-            ChatMessages::prepare(std::slice::from_mut(&mut action), chat, &[], &invoker)
-                .map_err(ApiError::Failed)
+            ChatMessages::prepare(
+                std::slice::from_mut(&mut action),
+                chat,
+                &[(0, held)],
+                &invoker,
+            )
+            .map_err(ApiError::Failed)
         });
     if let Err(error) = prepared {
         *part = std::mem::take(replica.doc_mut());
         return Err(error);
     }
-    if let Some(now_ms) = now_ms {
-        replica.set_now_ms(now_ms);
-    }
+    // The API stamps the action with the replica's clock: it is the time
+    // prepare decided, which may be later than the one it was asked at.
+    replica.set_now_ms(action.now_ms);
     let applied = replica.apply_action(&action).map(drop);
     std::mem::swap(part, replica.doc_mut());
     applied

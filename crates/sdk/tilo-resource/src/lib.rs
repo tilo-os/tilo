@@ -113,6 +113,7 @@ pub mod batch;
 pub mod child;
 pub mod children;
 mod chunk_map;
+mod clock;
 pub mod collection;
 #[cfg(test)]
 mod concurrent_text_tests;
@@ -181,6 +182,7 @@ pub use action::{
 pub use automerge::Patch;
 pub use child::{child_resource_id, publish_child};
 pub use children::{ChildList, ChildRef, Children, Trashed};
+pub use clock::HybridClock;
 pub use collection::{
     Collection, Id, Membership, Quarantined, stored_entry, stored_ids, stored_item,
 };
