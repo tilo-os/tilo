@@ -390,3 +390,4 @@ test-minutes-effect-wait = Wait out this minute
 test-minutes-effect-wait-minute = The minute to wait out
 test-jobs-effect-wipe = Wipe this job
 test-colours-effect-recolour = Recolour this calendar
+test-speeds-effect-set-mode = Set the speed

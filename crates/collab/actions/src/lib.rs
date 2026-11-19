@@ -173,6 +173,7 @@ pub mod noun;
 pub mod offload;
 pub mod outcome;
 pub mod params;
+pub mod prefill;
 pub mod protocol;
 pub mod published;
 pub mod registry;

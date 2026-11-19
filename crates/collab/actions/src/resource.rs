@@ -1225,7 +1225,7 @@ pub struct ActionType {
     /// The typed argument surface an external caller invokes against. Private
     /// because it must stay in step with `build` — the two are always set
     /// together by a constructor, never independently.
-    params: Vec<ActionParam>,
+    pub(crate) params: Vec<ActionParam>,
     /// Builds the encoded action from arguments bound against `params`. The
     /// palette's input mode uses the same closure, which is what makes the palette
     /// path and the external path provably one function.

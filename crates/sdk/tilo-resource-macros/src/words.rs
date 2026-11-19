@@ -189,7 +189,6 @@ impl Catalogue {
         }
         Ok((self.word(krate, key, text), text.to_owned()))
     }
-
 }
 
 impl Catalogue {

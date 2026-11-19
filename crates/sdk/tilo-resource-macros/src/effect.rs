@@ -478,12 +478,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                     <Self as #krate::Effect>::decode(#id, arguments)
                         .ok()
                         .and_then(|effect| <Self as #krate::Effect>::confirmation_phrase(&effect))
-                }) as fn(
-                    &#krate::__private::serde_json::Map<
-                        ::std::string::String,
-                        #krate::__private::serde_json::Value,
-                    >,
-                ) -> ::core::option::Option<::std::string::String>)
+                }) as #krate::effect::PhraseOf)
             }
         } else {
             quote!(::core::option::Option::None)
@@ -696,7 +691,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(::std::option::Option::None)
         };
         if let Some(phrase) = &options.phrase {
-            if !(options.row || !options.targets.is_empty()) || !options.destructive {
+            if !options.destructive || (options.targets.is_empty() && !options.row) {
                 return Err(syn::Error::new(
                     phrase.span(),
                     "a typed phrase names what one invocation loses: declare the effect \
@@ -763,12 +758,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                                 .map_err(|_| format!("`{id}` is not one this effect acts on"))?;
                             #krate::__private::serde_json::to_value(value)
                                 .map_err(|error| error.to_string())
-                        }) as fn(
-                            &str,
-                        ) -> ::core::result::Result<
-                            #krate::__private::serde_json::Value,
-                            ::std::string::String,
-                        >)
+                        }) as #krate::effect::RowIdOf)
                     }
                 },
             )

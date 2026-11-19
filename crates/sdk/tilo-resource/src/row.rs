@@ -28,7 +28,6 @@ use crate::Effect;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RowBindings {
     arguments: BTreeMap<&'static str, serde_json::Map<String, serde_json::Value>>,
-    defaults: BTreeMap<&'static str, serde_json::Map<String, serde_json::Value>>,
 }
 
 impl RowBindings {
@@ -68,35 +67,6 @@ impl RowBindings {
     #[must_use]
     pub fn arguments(&self, effect: &str) -> Option<&serde_json::Map<String, serde_json::Value>> {
         self.arguments.get(effect)
-    }
-
-    /// Offer `effect` on the row with `values` already in its parameters'
-    /// fields, each still asked: what the row's state knows the effect would
-    /// act with unless its caller says otherwise — a calendar's current
-    /// colour, which a person may change before confirming. Published as the
-    /// parameters' defaults, so a surface fills the field and an agent reads
-    /// it, and the invocation binds whatever is finally given.
-    #[must_use]
-    pub fn default_values<R, A, I, K>(mut self, effect: crate::ActionRef<R, A>, values: I) -> Self
-    where
-        I: IntoIterator<Item = (K, serde_json::Value)>,
-        K: Into<String>,
-    {
-        self.arguments.entry(effect.id).or_default();
-        self.defaults.insert(
-            effect.id,
-            values
-                .into_iter()
-                .map(|(name, value)| (name.into(), value))
-                .collect(),
-        );
-        self
-    }
-
-    /// The values the row prefills the effect `effect`'s parameters with.
-    #[must_use]
-    pub fn defaults(&self, effect: &str) -> Option<&serde_json::Map<String, serde_json::Value>> {
-        self.defaults.get(effect)
     }
 
     /// Whether the row offers no effect of its type's.
@@ -169,10 +139,9 @@ impl LiveRow {
         label: impl Into<String>,
     ) -> Self {
         let id = id.into();
-        let label = label.into();
         let mut row = Self {
             resource: std::rc::Rc::new(
-                ResourceSpec::new(id.clone(), R::KIND, label.clone()).with_type(R::words()),
+                ResourceSpec::new(id.clone(), R::KIND, label).with_type(R::words()),
             ),
         };
         let row_id = crate::Id::from_raw(id);
@@ -195,10 +164,9 @@ impl LiveRow {
         bindings: &RowBindings,
     ) -> Self {
         let id = id.into();
-        let label = label.into();
         let mut row = Self {
             resource: std::rc::Rc::new(
-                ResourceSpec::new(id.clone(), R::KIND, label.clone()).with_type(R::words()),
+                ResourceSpec::new(id.clone(), R::KIND, label).with_type(R::words()),
             ),
         };
         let row_id = crate::Id::from_raw(id);
@@ -283,6 +251,34 @@ impl LiveRow {
         let actions = &mut std::rc::Rc::make_mut(&mut self.resource).actions;
         if let Some(spec) = actions.iter_mut().find(|spec| spec.id == effect.id) {
             spec.type_mut().label = label;
+        }
+        self
+    }
+
+    /// Offer `effect` with `values` already in its parameters' fields, each
+    /// still asked: what the row's state knows the effect would act with
+    /// unless its caller says otherwise (a calendar's current colour, a
+    /// switch's next state). Published as the parameters' defaults, so a
+    /// surface fills the field and an agent reads it, and the invocation
+    /// binds whatever is finally given. The contract stays the declaration's.
+    #[must_use]
+    pub fn prefilled<R, A, I, K>(mut self, effect: crate::ActionRef<R, A>, values: I) -> Self
+    where
+        I: IntoIterator<Item = (K, serde_json::Value)>,
+        K: Into<String>,
+    {
+        let values: Vec<(String, serde_json::Value)> = values
+            .into_iter()
+            .map(|(name, value)| (name.into(), value))
+            .collect();
+        for spec in std::rc::Rc::make_mut(&mut self.resource)
+            .actions
+            .iter_mut()
+            .filter(|spec| spec.id == effect.id)
+        {
+            for (name, value) in &values {
+                spec.prefilled(name, value.clone());
+            }
         }
         self
     }

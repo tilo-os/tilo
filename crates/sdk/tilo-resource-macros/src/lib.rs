@@ -239,6 +239,20 @@ mod words;
 /// each bound to the row's id; `LiveRow::typed` publishes them, so a press on
 /// the row is one of the type's effects or `open`. Generates
 /// `impl tilo_resource::words::RowType`.
+///
+/// How a row's effects take their arguments: the first parameter is the row
+/// id, parsed as that field's type (`String`, `u64`, an identity), and a row
+/// whose id is not one is published unavailable with the reason.
+/// `LiveRow::labelled` names one effect for that row alone; `RowBindings`
+/// with `LiveRow::typed_with` offers only the effects the row's state says
+/// apply, binding further arguments by name (`operation`, `folder`) or the
+/// row id itself; `LiveRow::prefilled` leaves an argument asked and fills its
+/// field with the value the row knows (a calendar's current colour, a
+/// switch's next state). A destructive effect's `phrase` is published on
+/// every spec it produces, so a row-bound invocation still asks what it
+/// loses. `#[param(resource = "kind")]` makes a parameter a picker of an
+/// existing resource of that kind; a parameter's description named in the
+/// catalogue (`<label key>-<param>`) is read in the person's language.
 #[proc_macro_derive(Row, attributes(row))]
 pub fn derive_row(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);

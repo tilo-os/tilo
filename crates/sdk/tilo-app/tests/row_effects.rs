@@ -368,10 +368,9 @@ pub enum ColourEffect {
 
 #[test]
 fn a_row_prefills_a_parameter_with_what_its_state_knows() {
-    let bindings = tilo_resource::RowBindings::new()
-        .bind(ColourEffect::RECOLOUR, [("calendar", "c:1".into())])
-        .default_values(ColourEffect::RECOLOUR, [("colour", "amber".into())]);
-    let row = LiveRow::typed_with::<Colour>("c:1", "Work", &bindings).into_resource();
+    let row = LiveRow::typed::<Colour>("c:1", "Work")
+        .prefilled(ColourEffect::RECOLOUR, [("colour", "amber".into())])
+        .into_resource();
     let recolour = row
         .actions
         .iter()
@@ -407,6 +406,66 @@ fn a_row_prefills_a_parameter_with_what_its_state_knows() {
             colour: "red".into(),
         },
         "what the caller finally gives is what it acts with"
+    );
+}
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "test.speeds", label = "Speed", effects = SpeedEffect)]
+struct Speed;
+
+/// A typed payload an effect carries as one of its arguments, as the shell's
+/// own commands do: a declared, described enum, never an escape hatch.
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Mode {
+    Slow,
+    Fast,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "test.speeds.effect", catalogue = "tests/locales")]
+pub enum SpeedEffect {
+    /// Set the speed.
+    #[effect(on = Speed, kind = "read")]
+    SetMode {
+        #[param("The speed")]
+        speed: String,
+        #[param("The mode")]
+        mode: Mode,
+    },
+}
+
+#[test]
+fn an_effect_carries_a_typed_payload_as_one_of_its_arguments() {
+    let row = LiveRow::typed::<Speed>("s:1", "Fan").into_resource();
+    let set_mode = row
+        .actions
+        .iter()
+        .find(|action| action.id == "set-mode")
+        .expect("the row offers its mode");
+    assert_eq!(
+        set_mode
+            .params()
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect::<Vec<_>>(),
+        ["mode"]
+    );
+    let encoded = set_mode
+        .build_json(&serde_json::Map::from_iter([(
+            "mode".to_owned(),
+            "fast".into(),
+        )]))
+        .unwrap();
+    assert_eq!(
+        SpeedEffect::from_payload(&encoded.payload).unwrap(),
+        SpeedEffect::SetMode {
+            speed: "s:1".into(),
+            mode: Mode::Fast,
+        },
+        "a typed command travels as the argument its declaration describes"
     );
 }
 
