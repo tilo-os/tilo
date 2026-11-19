@@ -37,7 +37,16 @@ pub(crate) fn page(cx: &ViewCx<Tracker>, id: Id, nav: &Nav, window: &Window) -> 
                         .find(|(_, part)| part.issues.contains(&id))
                         .map(|(index, _)| *index)
                 }),
-                cx.chain_value(chain, move |_, parts| Labels::of(parts, &labelled)),
+                {
+                    // The issues kept across changes and followed part by part: a change
+                    // to one issue reads that issue, not every issue the tracker holds.
+                    let issues = std::cell::RefCell::new(crate::Issues::default());
+                    cx.chain_value(chain, move |_, parts| {
+                        let mut issues = issues.borrow_mut();
+                        issues.sync(parts);
+                        Labels::of(&issues, &labelled)
+                    })
+                },
             )
         }
         None => (LocalState::new(None), LocalState::new(Labels::default())),
@@ -429,16 +438,16 @@ pub(crate) struct Labels {
 }
 
 impl Labels {
-    fn of(parts: &[(u64, std::rc::Rc<IssueList>)], id: &Id) -> Self {
-        let issues = crate::Issues::of(parts);
+    fn of(issues: &crate::Issues, id: &Id) -> Self {
         let mine: Vec<String> = issues
             .get(id)
             .map(|issue| issue.labels.iter().cloned().collect())
             .unwrap_or_default();
         let mut others: Vec<String> = issues
-            .iter()
-            .flat_map(|(_, issue)| issue.labels.iter().cloned())
-            .filter(|label| !mine.contains(label))
+            .labels()
+            .map(|(label, _)| label)
+            .filter(|label| !mine.iter().any(|own| own == label))
+            .map(str::to_owned)
             .collect();
         others.sort();
         others.dedup();
