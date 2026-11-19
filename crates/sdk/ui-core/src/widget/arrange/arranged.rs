@@ -388,7 +388,11 @@ impl<L: Layout> Arranged<L> {
     /// its sizing. A change the frame's damage describes: the new child draws itself whole,
     /// and the host repaints where the boxes it moved were and are.
     pub fn replace(&mut self, index: usize, element: Element) -> Option<Element> {
-        let held = std::mem::replace(&mut self.parts.get_mut(index)?.element, element);
+        let part = self.parts.get_mut(index)?;
+        let held = std::mem::replace(&mut part.element, element);
+        // The new child has no layout until the parts are laid out again: nothing places it or
+        // hands it input through the node its predecessor stood in.
+        part.wrapper = None;
         self.parts_changed();
         Some(held)
     }
