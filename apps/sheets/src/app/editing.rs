@@ -1,14 +1,19 @@
 //! Editing: what typing, Enter, Tab and the formula bar do to the active cell.
 
 use super::{
-    Addr, Cell, EditOutcome, EditableLabel, Edits, Invoke, MenuItem, Point, SheetsApp, TabAction,
-    TabRename, TextInput, TextRole, Widget, Workbook, actions, parse_ref_target,
+    Addr, Cell, EditOutcome, EditableLabel, Edits, Invoke, MenuItem, Point, Rect, SheetsApp,
+    TabAction, TabRename, TextInput, TextRole, Widget, Workbook, actions, parse_ref_target,
     reference_box_char, verbs,
 };
 
 impl SheetsApp {
-    pub(super) fn begin_name_box_edit(&mut self) {
+    pub(super) fn begin_name_box_edit(&mut self, doc: &mut Edits<'_>) {
         self.close_overlays();
+        // The entry in flight is written into the cell it was typed in before the box opens:
+        // the box moves the selection on, and what was typed must not go with it.
+        let mut out = Vec::new();
+        self.grid.flush_edit(&mut out);
+        self.apply_cmds(doc, out);
         let (c, r) = self.grid.active();
         let reference = crate::model::addr_to_a1(c, r);
         let mut input = TextInput::local()
@@ -47,6 +52,28 @@ impl SheetsApp {
         } else {
             None
         }
+    }
+
+    /// The sheet tab `p` takes, by the target the pointer in use needs
+    /// ([`ChromeMetrics::target`]) rather than the pill's painted box.
+    pub(super) fn tab_at(&self, p: Point) -> Option<usize> {
+        self.tab_hit_rects
+            .iter()
+            .position(|rect| rect.contains(p))
+            .and_then(|at| self.tab_rects.get(at).map(|(_, idx)| *idx))
+    }
+
+    /// The field's leading edge the "fx" affordance takes with it: everything from the label
+    /// to one target's width into the field, where thinking starts. A press there begins a
+    /// formula, as one on the label does.
+    pub(super) fn fx_lead_rect(&self) -> Rect {
+        let field = self.formula_field_rect;
+        Rect::new(
+            self.fx_rect.x0,
+            field.y0,
+            (self.fx_rect.x1 + self.metrics.target).min(field.x1),
+            field.y1,
+        )
     }
 
     /// Commit a Name box entry: parse it as a single reference or a range and

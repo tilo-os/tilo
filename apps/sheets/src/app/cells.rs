@@ -48,6 +48,13 @@ impl SheetsApp {
         };
         self.sheet_charts = charts;
         self.sheet_comments = comments;
+        // A chart that is gone, on this sheet or by another's hand, keeps no card
+        // open: its actions would name a chart nobody can see.
+        if let Some(open) = &self.managed_chart
+            && !self.sheet_charts.iter().any(|chart| &chart.id == open)
+        {
+            self.managed_chart = None;
+        }
         self.relayout();
         let id = self.active_sheet_id();
         self.calc

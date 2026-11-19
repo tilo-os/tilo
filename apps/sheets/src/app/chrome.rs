@@ -45,6 +45,9 @@ pub(super) struct ChromeMetrics {
     pub s16: f64,
     pub control_h: f64,
     pub field_h: f64,
+    /// The square a control must offer the pointer in use (32 fine, 48 coarse), so the
+    /// chrome's bands and affordances grow with a finger rather than a mouse.
+    pub target: f64,
     pub grid: GridMetrics,
     pub cards: CardMetrics,
 }
@@ -83,6 +86,7 @@ impl ChromeMetrics {
             s16: f64::from(sp.s16),
             control_h: ControlSize::Small.height(theme),
             field_h: ControlSize::Regular.height(theme),
+            target: f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target()),
             grid: GridMetrics::resolve(tr, theme),
             cards: CardMetrics::default(),
         };
@@ -111,6 +115,7 @@ impl ChromeMetrics {
             s16: f64::from(sp.s16),
             control_h: ControlSize::Small.height(&theme),
             field_h: ControlSize::Regular.height(&theme),
+            target: f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target()),
             grid: GridMetrics::fallback(),
             cards: CardMetrics::default(),
         }
@@ -128,7 +133,7 @@ impl ChromeMetrics {
     }
 
     pub(super) fn formula_h(&self) -> f64 {
-        self.field_h + 2.0 * self.s1
+        (self.field_h + 2.0 * self.s1).max(self.target + 2.0 * self.s1)
     }
 
     /// Name box: wide enough for [`NAME_BOX_REFERENCE`] plus `s3` each side,
@@ -137,9 +142,10 @@ impl ChromeMetrics {
         (self.name_box_label_w + 2.0 * self.s3).max(self.s16 * 1.5)
     }
 
-    /// The "fx" affordance slot: the label plus `s2` each side.
+    /// The width the "fx" affordance keeps: the label plus `s2` each side, and never under
+    /// a coarse pointer's target, so a finger starting a formula stays on the affordance.
     pub(super) fn fx_slot_w(&self) -> f64 {
-        self.fx_w + 2.0 * self.s2
+        (self.fx_w + 2.0 * self.s2).max(self.target)
     }
 
     /// Sheet tabs: a small segmented control with `s2` above and below, so a
@@ -232,20 +238,47 @@ impl SheetsApp {
         );
 
         self.tab_rects.clear();
+        self.tab_hit_rects.clear();
         let mut tx = self.tabs_rect.x0 + m.s3;
         let ty = self.tabs_rect.y0 + m.s2;
-        let th = m.control_h;
+        // Where a tab is drawn and where a pointer takes it: the strip is only `s2` tall
+        // either side of the control, so the target reaches into that slack first, and a
+        // coarse pointer makes the band itself as tall as its finger.
+        let control_h = m.control_h;
+        let th = control_h.max(m.target);
+        let hit_y0 = ty - (th - control_h) / 2.0;
+        let hit_y1 = hit_y0 + th;
+        // The add button keeps its place at the strip's trailing edge, so a window too narrow
+        // for every tab still shows it: a tab the button would cover is cut down, and the tabs
+        // after it stand past the edge at that width, reached by widening the window.
+        let add_x = (self.tabs_rect.x1 - m.s3 - control_h).max(tx);
+        let mut cut = false;
         for (i, name) in self.sheet_names.iter().enumerate() {
             let coloured = self.sheet_colors.get(i).copied().flatten().is_some();
             let mut w = m.tab_w(name, coloured);
             if let Some(rename) = self.tab_rename.as_ref().filter(|rename| rename.idx == i) {
                 w = w.max(rename.text_w + 4.0 * m.s3);
             }
-            self.tab_rects.push((Rect::new(tx, ty, tx + w, ty + th), i));
+            if !cut {
+                let left = add_x - m.s2 - tx;
+                if left < w {
+                    w = left;
+                    cut = true;
+                }
+            }
+            self.tab_rects
+                .push((Rect::new(tx, ty, tx + w, ty + control_h), i));
+            self.tab_hit_rects
+                .push(Rect::new(tx, hit_y0, tx + w, hit_y1));
             tx += w;
         }
-        tx += m.s2;
-        self.add_tab_rect = Rect::new(tx, ty, tx + th, ty + th);
+        self.add_tab_rect = Rect::new(add_x, ty, add_x + control_h, ty + control_h);
+        self.add_tab_hit_rect = Rect::new(
+            add_x - (th - control_h) / 2.0,
+            hit_y0,
+            add_x + control_h + (th - control_h) / 2.0,
+            hit_y1,
+        );
         // An in-flight rename follows its tab through the reflow, so the
         // editor never detaches from the tab it renames.
         if let Some(idx) = self.tab_rename.as_ref().map(|rn| rn.idx) {

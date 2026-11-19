@@ -222,12 +222,39 @@ impl ChatApp {
         if let Some(bar) = &self.bar {
             bar.show_content_alone(alone);
         }
-        ui::window_toolbar::declare((!alone).then(|| self.window_toolbar()));
+        let toolbar = if alone {
+            // One way out of a view shown alone, and it is the window's: the same part a thread
+            // that fills a narrow window carries. It is declared as one lot rather than `None`,
+            // so its Back is the shell's own and the person who pressed it reaches Chat.
+            Some(WindowToolbar {
+                navigation: Some(ToolbarNavigation {
+                    back: true,
+                    forward: false,
+                }),
+                leading: vec![ToolbarAction::new(
+                    ui::widget::WINDOW_BACK,
+                    "arrow-left",
+                    crate::i18n::t("chat-view-back"),
+                )],
+                ..WindowToolbar::default()
+            })
+        } else {
+            Some(self.window_toolbar())
+        };
+        ui::window_toolbar::declare(toolbar);
     }
 
     /// Run what the person did in the window's bar as the window's own hits.
     pub(crate) fn apply_window_toolbar(&mut self, doc: &mut ui::widget::Edits<'_>) {
         for event in ui::window_toolbar::take_events() {
+            // A view shown alone fills the window, and its Back is the one way out: it returns
+            // to the conversation the message was read in, before the shell's own Back puts the
+            // window away from under it.
+            if matches!(event, ToolbarEvent::Back) && self.alone.is_some() {
+                self.hide_view_alone();
+                self.canonical_dirty = true;
+                continue;
+            }
             // A thread that fills the window: its Back returns to the
             // conversation, not to the shell's screen behind it.
             if matches!(event, ToolbarEvent::Back) && self.thread_is_page() {

@@ -7,9 +7,7 @@ use super::{
 
 impl SheetsApp {
     pub(super) fn switch_sheet(&mut self, doc: &mut Edits<'_>, idx: usize) {
-        let mut out = Vec::new();
-        self.grid.flush_edit(&mut out);
-        self.apply_cmds(doc, out);
+        self.leave_sheet(doc);
         self.active_sheet = idx.min(self.sheet_ids.len().saturating_sub(1));
         self.grid.select_only((0, 0));
         self.reload();
@@ -19,7 +17,26 @@ impl SheetsApp {
         );
     }
 
+    /// Take the view off the sheet in front of the person, on the way to another sheet or a
+    /// new one.
+    ///
+    /// What is typed becomes the cell's entry on the sheet it was typed on. Carried along to
+    /// the sheet opened next, the editor would write it into a cell there, at the address it
+    /// happened to hold on the old one, so a finished entry is filled in while its sheet is
+    /// still the one in view. A formula being pointed at is half-typed: it is abandoned whole,
+    /// as Escape abandons it.
+    pub(super) fn leave_sheet(&mut self, doc: &mut Edits<'_>) {
+        if self.grid.is_editing() && !self.grid.editing_formula() {
+            let mut out = Vec::new();
+            self.grid.flush_edit(&mut out);
+            self.apply_cmds(doc, out);
+            return;
+        }
+        self.grid.discard_edit();
+    }
+
     pub(super) fn add_sheet(&mut self, doc: &mut Edits<'_>) {
+        self.leave_sheet(doc);
         let n = self.sheet_ids.len();
         self.submit(
             doc,

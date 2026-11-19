@@ -540,6 +540,23 @@ impl Grid {
         self.metrics.gutter
     }
 
+    /// What a one-finger contact beginning at `p` means here: a tap selects a cell (and a
+    /// second tap opens it), and a drag scrolls the sheet, as a finger drags any scrollable
+    /// list — never a selection, which is what a press-drag with a mouse is for. The scroll
+    /// bars, and the corner under them, are the one place a drag moves something instead.
+    #[must_use]
+    pub fn touch_claim(&self, p: Point) -> ui::interaction::TouchClaim {
+        if !self.rect.contains(p) {
+            return ui::interaction::TouchClaim::Pointer;
+        }
+        for axis in [ScrollAxis::Horizontal, ScrollAxis::Vertical] {
+            if self.bar_shown(axis) && self.bar_gutter(axis).contains(p) {
+                return ui::interaction::TouchClaim::Drag;
+            }
+        }
+        ui::interaction::TouchClaim::Pointer
+    }
+
     /// Recompute the offset prefix sums when a size or the extent changes, so per-frame lookups
     /// stay O(1).
     fn rebuild_geom(&mut self) {
@@ -1378,6 +1395,16 @@ impl Grid {
         }
     }
 
+    /// Abandon an entry in flight: everything moved to the selection instead, and its cell is
+    /// left as it was.
+    pub fn discard_edit(&mut self) {
+        if self.edit.take().is_some() {
+            self.point_anchor = None;
+            self.stop_dragging(Dragging::PointReference);
+            self.dirty = true;
+        }
+    }
+
     fn commit_edit(&mut self, out: &mut Vec<GridCmd>) {
         if let Some(e) = self.edit.take() {
             out.push(GridCmd::SetCell {
@@ -1709,6 +1736,9 @@ impl Grid {
         out: &mut Vec<GridCmd>,
     ) -> bool {
         if let Some(addr) = self.cell_at(p) {
+            // A press on a cell ends the entry the way Enter does: what was typed is written
+            // into the cell it was typed in. It is pushed before the selection moves, so the
+            // app writes it to that cell and not to the one the press names.
             self.commit_edit(out);
             if ctrl {
                 // Commit the live range and start one at the clicked cell.
@@ -1814,8 +1844,10 @@ impl Grid {
     }
 
     pub fn double_click(&mut self, p: Point, out: &mut Vec<GridCmd>) -> bool {
-        let _ = out;
         if let Some(addr) = self.cell_at(p) {
+            // A double click on another cell ends the entry in the cell it was started in,
+            // rather than dropping it with the editor.
+            self.commit_edit(out);
             self.extra_ranges.clear();
             self.active = addr;
             self.anchor = addr;
@@ -2401,18 +2433,32 @@ impl Grid {
         let body = self.body_rect();
         // A column cut by the edge fades, so a cut number reads as running on.
         let ground = theme.tokens.colors.surfaces.content;
+        let past_last_column = self.scroll_x >= self.max_scroll_x() - 0.5;
+        let past_last_row = self.scroll_y >= self.max_scroll_y() - 0.5;
         let cut = [
+            (
+                "sheet-fade-leading",
+                ui::surface::ContentEdge::Leading,
+                cols.first()
+                    .is_some_and(|&c| self.cell_screen_rect(c, 0).x0 < body.x0 - 0.5),
+            ),
             (
                 "sheet-fade-trailing",
                 ui::surface::ContentEdge::Trailing,
-                cols.last()
-                    .is_some_and(|&c| self.cell_screen_rect(c, 0).x1 > body.x1 + 0.5),
+                // Scrolled past the last column, the edge cuts nothing: what shows there is
+                // the sheet's end, and fading it says more follows when none does.
+                !past_last_column
+                    && cols
+                        .last()
+                        .is_some_and(|&c| self.cell_screen_rect(c, 0).x1 > body.x1 + 0.5),
             ),
             (
                 "sheet-fade-bottom",
                 ui::surface::ContentEdge::Bottom,
-                rows.last()
-                    .is_some_and(|&r| self.cell_screen_rect(0, r).y1 > body.y1 + 0.5),
+                !past_last_row
+                    && rows
+                        .last()
+                        .is_some_and(|&r| self.cell_screen_rect(0, r).y1 > body.y1 + 0.5),
             ),
         ];
         for (key, edge, _) in cut.into_iter().filter(|(_, _, cut)| *cut) {
@@ -2712,9 +2758,18 @@ impl Grid {
     ) {
         let (cell, body) = place;
         let pad = self.metrics.cell_pad();
-        let cut = cell.x1 > body.x1;
+        // Only what the body leaves of the cell is drawn in: a cell scrolled under the row headers
+        // keeps its text behind them rather than drawing on top of the header strip.
+        let Some(shown_rect) = intersect(cell, body) else {
+            return;
+        };
+        let cut_right = cell.x1 > body.x1;
+        let cut_left = cell.x0 < body.x0;
         let left = cell.x0 + pad;
-        let right = if cut { body.x1 } else { cell.x1 - pad };
+        let right = if cut_right { body.x1 } else { cell.x1 - pad };
+        if right <= shown_rect.x0 + 1.0 {
+            return;
+        }
         // A right-aligned number is anchored to the cell, so only what the clip leaves shows.
         let room = if right_align {
             cell.width() - 2.0 * pad
@@ -2731,6 +2786,13 @@ impl Grid {
             cell.x1 - pad - f64::from(tw)
         } else {
             left
+        };
+        // Text starting left of the body is elided to start at the body's edge instead of hiding
+        // under the row headers; the leading fade of the edge marks the cut.
+        let tx = if cut_left && tx < body.x0 {
+            body.x0 + pad
+        } else {
+            tx
         };
         ctx.text(&shown, style, color, Point::new(tx, ty), None);
     }

@@ -27,7 +27,6 @@
 
 use std::rc::Rc;
 
-use ui::Widget;
 use ui::framework::page_part::{Asked, Placed, asking};
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
@@ -35,7 +34,7 @@ use ui::theme::Theme;
 use ui::tilo_actions::Actor;
 use ui::tilo_resource::{Acting, MemberId};
 use ui::tokens::TextRole;
-use ui::widget::{AppModel, Button, ButtonRole, Column, Element, ModelPath, Row, Text};
+use ui::widget::{AppModel, Button, ButtonRole, Column, Element, ModelPath, Row, Text, Widget};
 use ui::written_view::{self, Suggestion, ViewState, WrittenView};
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -54,11 +53,28 @@ pub(crate) fn code_author(author: &MemberId, acting: Option<&Acting>) -> Actor {
     }
 }
 
+/// Whether `event` is Escape, the key that goes back out of what stands over the conversation.
+fn alone_event_is_escape(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput {
+            event: winit::event::KeyEvent {
+                logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+                state: winit::event::ElementState::Pressed,
+                ..
+            },
+            ..
+        }
+    )
+}
+
 /// What the person answers to something the view asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Answer {
     Allow(u64),
     Dismiss(u64),
+    /// Ask again for the code that shows views, where fetching it failed.
+    Retry,
 }
 
 /// Where the view stands in the window.
@@ -72,6 +88,9 @@ enum Stands {
     Arriving,
     /// This program cannot show a view, or nobody is at this window to show it to.
     Unavailable,
+    /// The code that shows views could not be fetched here. Unlike [`Stands::Unavailable`],
+    /// asking for it again may still land it, so the window offers the way to ask again.
+    Unreachable,
     /// The message names its reader as the view's author. A view is trusted where its author
     /// is its reader, and nothing yet binds a message's author to the device that signed the
     /// message: such a view is not shown as its reader's own.
@@ -86,6 +105,13 @@ pub(crate) struct Alone {
     /// The version of the view and the generation of the code that shows views it was placed
     /// at: it is placed again when either moved.
     placed: Option<(u32, u64)>,
+    /// The generation of the code that shows views the view was last placed under. A view
+    /// whose code was on its way is placed again of its own accord (that is what asks for the
+    /// code again); one this program could not fetch waits for the person to ask, so a program
+    /// that will never show a view does not fetch again on every turn.
+    placed_at: Option<u64>,
+    /// The person asked for the code that shows views again, and it has not been placed since.
+    asking: bool,
     view: Option<Placed<Column>>,
     state: Option<Rc<dyn ViewState>>,
     /// The revision of `state` the window last drew.
@@ -111,6 +137,8 @@ impl Alone {
             message: message.to_owned(),
             stands: Stands::Waiting,
             placed: None,
+            placed_at: None,
+            asking: false,
             view: None,
             state: None,
             revision: 0,
@@ -160,6 +188,7 @@ impl Said {
             Stands::Gone => column = column.push(caption(&t("chat-view-gone"))),
             Stands::Arriving => column = column.push(caption(&t("chat-view-arriving"))),
             Stands::Unavailable => column = column.push(caption(&t("chat-view-unavailable"))),
+            Stands::Unreachable => column = column.push(caption(&t("chat-view-unreachable"))),
             Stands::Unbound => column = column.push(caption(&t("chat-view-unbound"))),
             Stands::Shown => {}
         }
@@ -223,6 +252,30 @@ impl Said {
             ));
             column = column.push(Box::new(card));
         }
+        // Once nothing waits, the view is only read, and a window that shows nothing else has no
+        // way out of it: the last thing said is the control that puts it away. A view whose code
+        // could not be fetched says so with the way to ask for it again beside that way out, so
+        // a fetch that failed on a flaky line is not the end of the view.
+        if self.suggestions.is_empty() && self.stands != Stands::Waiting {
+            let row = Row::new().with_gap(gap).push(match self.stands {
+                Stands::Unreachable => Box::new(
+                    Button::new("chat.view.retry", &t("chat-view-retry"))
+                        .on_view(asking(asked, Answer::Retry)),
+                ) as Box<dyn Widget>,
+                _ => Box::new(
+                    Button::new("chat.view.dismiss-all", &t("chat-view-dismiss"))
+                        .on_view(asking(asked, Answer::Dismiss(u64::MAX))),
+                ) as Box<dyn Widget>,
+            });
+            let row = match self.stands {
+                Stands::Unreachable => row.push(Box::new(
+                    Button::new("chat.view.dismiss-all", &t("chat-view-dismiss"))
+                        .on_view(asking(asked, Answer::Dismiss(u64::MAX))),
+                )),
+                _ => row,
+            };
+            column = column.push(Box::new(row));
+        }
         Box::new(column)
     }
 }
@@ -238,12 +291,22 @@ impl ChatApp {
         if held.view.is_none() {
             return Err("the message carries no view".into());
         }
+        // Asked for the message shown again, it stands on nothing the window said before: the view
+        // is placed again, and what the person was shown of it (what it asked, what it could not
+        // read) is said afresh rather than kept from a turn the view no longer has.
         if self
             .alone
             .as_ref()
             .is_none_or(|alone| alone.message != message)
         {
             self.alone = Some(Alone::of(message));
+        } else if let Some(alone) = self.alone.as_mut() {
+            alone.placed = None;
+            alone.placed_at = None;
+            alone.asking = false;
+            alone.view = None;
+            alone.state = None;
+            alone.stands = Stands::Waiting;
         }
         self.canonical_dirty = true;
         ui::widget::note_layout_moved();
@@ -262,22 +325,29 @@ impl ChatApp {
             .iter()
             .find(|item| item.id == alone.message);
         match message.and_then(|message| message.view.as_ref().map(|view| (message, view))) {
+            // A message whose words still wait for a view has arrived: the view is on its
+            // way, and saying it waits for the message would be untrue.
             None => {
-                alone.stands = if message.is_some() {
-                    Stands::Gone
-                } else {
-                    Stands::Waiting
+                alone.stands = match message {
+                    Some(_) if alone.stands == Stands::Waiting => Stands::Arriving,
+                    Some(_) => Stands::Gone,
+                    None => Stands::Waiting,
                 };
                 alone.view = None;
                 alone.state = None;
                 alone.placed = None;
             }
             Some((message, view)) => {
-                let wanted = (view.version, written_view::code_generation());
-                // A view whose code was on its way is placed again: that is what asks for the
-                // code again when its fetch failed.
-                if alone.placed != Some(wanted) || alone.stands == Stands::Arriving {
+                let generation = written_view::code_generation();
+                let wanted = (view.version, generation);
+                // A view whose code was on its way, or whose code the person asked for again, is
+                // placed again: that is what asks for the code again when a fetch failed.
+                let again = alone.stands == Stands::Arriving
+                    || (alone.asking && alone.placed_at != Some(generation));
+                alone.asking = false;
+                if alone.placed != Some(wanted) || again {
                     alone.placed = Some(wanted);
+                    alone.placed_at = Some(generation);
                     alone.view = None;
                     alone.state = None;
                     let author = code_author(&message.author, message.acting.as_ref());
@@ -307,7 +377,17 @@ impl ChatApp {
                                     Stands::Shown
                                 }
                                 written_view::Placed::Arriving => Stands::Arriving,
-                                written_view::Placed::Unavailable => Stands::Unavailable,
+                                written_view::Placed::Unavailable
+                                    if matches!(
+                                        alone.stands,
+                                        Stands::Unavailable | Stands::Shown
+                                    ) =>
+                                {
+                                    // No code at all was ever in: this program cannot show
+                                    // a view, and asking again would not change that.
+                                    Stands::Unavailable
+                                }
+                                written_view::Placed::Unavailable => Stands::Unreachable,
                             }
                         }
                     };
@@ -318,6 +398,10 @@ impl ChatApp {
         if let Some(view) = alone.view.as_mut() {
             moved |= view.widget_mut().update(doc, path);
         }
+        // The view and what is said under it are drawn here and nowhere else, so what they lay
+        // out must be laid out again: the column that holds them answers for none of its
+        // children, and an update nobody applies leaves both unplaced and undrawn.
+        moved |= alone.under.widget_mut().update(doc, path);
         let revision = alone.state.as_ref().map_or(0, |state| state.revision());
         if alone.revision != revision {
             alone.revision = revision;
@@ -345,8 +429,15 @@ impl ChatApp {
         };
         let pad = f64::from(theme.tokens.spacing.s3);
         let gap = theme.tokens.spacing.s2;
-        let left = window.x0 + pad;
-        let span = (left, (window.x1 - pad).max(left));
+        // The view is laid out at least as wide as a window opens, so the height measured here
+        // is the one it takes then: the window it is given is never narrower than it asks for.
+        // A window narrower than that (a page in a fleet's shell, a view shown beside
+        // something) is laid out at its own width instead: the window it is given is exactly
+        // what it has, and a view wider than it would have its end off the edge.
+        let least = f64::from(theme.tokens.metrics.window_min_width);
+        let bare = (window.x1 - pad).max(window.x0 + pad);
+        let width = window.width().max(least);
+        let span = (bare.max(window.x0 + pad + width) - width, bare);
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         let mut y = window.y0 + pad;
         if let Some(view) = alone.view.as_mut() {
@@ -371,7 +462,11 @@ impl ChatApp {
                     .with_intrinsic_height()
                     .push(said.widget(&alone.answers, gap)),
             );
+            ui::widget::note_layout_moved();
         }
+        // The answers stand as the view's turn last left them: one taken up (allowed or
+        // dismissed) is not offered again, and none asked for is left waiting for nobody.
+        alone.answers.borrow_mut().clear();
         y = alone.under.place(&mut ctx, span, y, window);
         let height = (y - window.y0 + pad).ceil();
         if (height - alone.height).abs() >= 1.0 {
@@ -404,18 +499,57 @@ impl ChatApp {
         if !*ctx.handled {
             alone.under.handle_event(event, ctx);
         }
+        // Escape is the way back to the conversation, as it is out of every other thing the
+        // window shows over it: a view's own field passes the key on once it has left its
+        // typing, and a person on a phone has no other way out but the way back itself.
+        if !*ctx.handled && alone_event_is_escape(event) {
+            self.hide_view_alone();
+            *ctx.handled = true;
+            return;
+        }
+        // What the person answers moves only what is said under the view, so it is
+        // taken up whether or not the view took the event first. With no view placed there is
+        // nothing that asked: an answer pressed at a view that went away is dropped, not kept
+        // for whichever view is placed next.
         let answers = std::mem::take(&mut *alone.answers.borrow_mut());
         if let Some(state) = alone.state.as_ref() {
             for answer in &answers {
                 match answer {
                     Answer::Allow(id) => state.allow(*id),
                     Answer::Dismiss(id) => state.dismiss(*id),
+                    Answer::Retry => {}
                 }
             }
+        }
+        // Asking again for the code is not something the view answers: it places the view
+        // again, which is what fetches the code a failed fetch left out.
+        if answers.iter().any(|answer| matches!(answer, Answer::Retry)) {
+            alone.asking = true;
+            alone.placed = None;
+            alone.stands = Stands::Arriving;
+            ui::widget::note_layout_moved();
+            self.canonical_dirty = true;
+        }
+        if answers
+            .iter()
+            .any(|answer| matches!(answer, Answer::Dismiss(id) if *id == u64::MAX))
+        {
+            self.hide_view_alone();
         }
         if *ctx.handled || !answers.is_empty() {
             self.canonical_dirty = true;
         }
+    }
+
+    /// Stop showing a view alone: the window is the conversation again, with every part of Chat
+    /// back in the bar and beside it. The message stays where it was read; this only ends what
+    /// the window was told to show.
+    pub(crate) fn hide_view_alone(&mut self) {
+        if self.alone.take().is_none() {
+            return;
+        }
+        self.canonical_dirty = true;
+        ui::widget::note_layout_moved();
     }
 
     /// The size what is shown alone asks for: the window's width, and the height of the view
@@ -834,11 +968,13 @@ mod tests {
 
     /// A view shown alone is all its window shows. A program that mounts Chat in a message's
     /// place for its view (a person's app, in the conversation it keeps itself) gets the view
-    /// and nothing of Chat's window around it: Chat declares no parts for the window's bar and
-    /// asks its shell for the one thing alone, so no sidebar stands beside the view. A
-    /// conversation shown again brings both back.
+    /// and nothing of Chat's window around it: Chat declares none of its own parts for the
+    /// window's bar and asks its shell for the one thing alone, so no sidebar stands beside the
+    /// view. What it keeps is the one way out: the bar's Back, the same part a thread that fills
+    /// a narrow window carries, since a view shown alone hides the conversation the person came
+    /// from. A conversation shown again brings the parts back.
     #[test]
-    fn a_view_shown_alone_has_nothing_of_chats_window_around_it() {
+    fn a_view_shown_alone_has_nothing_of_chats_window_around_it_but_the_way_back() {
         views_are_shown();
         let mut workspace = crate::testing::demo_doc();
         let message = posted(&mut workspace);
@@ -855,22 +991,36 @@ mod tests {
         app.answer_effect(ChatEffect::ShowView { message })
             .expect("the view is shown alone");
         Widget::sync(&mut app, &workspace.chat, &ROOT);
+        let declared =
+            ui::window_toolbar::declared().expect("a view shown alone keeps the way back");
         assert!(
-            ui::window_toolbar::declared().is_none(),
-            "nothing of Chat stands in the bar over a view shown alone"
+            declared.location.is_none() && declared.actions.is_empty(),
+            "nothing of the conversation stands in the bar over a view shown alone: {declared:?}"
+        );
+        assert_eq!(
+            declared
+                .leading
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![ui::widget::WINDOW_BACK],
+            "the bar's Back is the one part left"
+        );
+        assert!(
+            declared
+                .navigation
+                .is_some_and(|navigation| navigation.back),
+            "the shell's Back goes back here, not to the screen behind the window"
         );
         assert!(
             bar.shows_content_alone(),
             "the shell is asked for the view alone: no sidebar beside it"
         );
 
-        app.answer_effect(ChatEffect::OpenChannel {
-            channel: GENERAL.to_owned(),
-        })
-        .expect("the conversation is shown again");
+        app.hide_view_alone();
         Widget::sync(&mut app, &workspace.chat, &ROOT);
         assert!(
-            ui::window_toolbar::declared().is_some(),
+            ui::window_toolbar::declared().is_some_and(|declared| declared.location.is_some()),
             "the conversation's parts stand in the bar again"
         );
         assert!(!bar.shows_content_alone());

@@ -1355,7 +1355,7 @@ fn name_box_parses_and_navigates_references() {
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((0, 0));
-        app.begin_name_box_edit(); // seeds "A1", fully selected
+        app.begin_name_box_edit(&mut Edits::lend(&mut doc)); // seeds "A1", fully selected
         assert!(app.name_box_edit.is_some());
         assert!(feed(
             &mut app,
@@ -1381,7 +1381,7 @@ fn name_box_parses_and_navigates_references() {
 
     {
         let (mut app, mut doc) = seeded_app();
-        app.begin_name_box_edit();
+        app.begin_name_box_edit(&mut Edits::lend(&mut doc));
         assert!(feed(
             &mut app,
             &mut doc,
@@ -1402,7 +1402,7 @@ fn name_box_parses_and_navigates_references() {
     {
         let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1)); // E2
-        app.begin_name_box_edit();
+        app.begin_name_box_edit(&mut Edits::lend(&mut doc));
         assert!(feed(
             &mut app,
             &mut doc,
@@ -1420,9 +1420,9 @@ fn name_box_parses_and_navigates_references() {
     }
 
     {
-        let (mut app, _doc) = seeded_app();
+        let (mut app, mut doc) = seeded_app();
         app.grid.select_only((4, 1));
-        app.begin_name_box_edit();
+        app.begin_name_box_edit(&mut Edits::lend(&mut doc));
         if let Some(input) = &mut app.name_box_edit {
             input.set_text("");
         }
@@ -1799,8 +1799,8 @@ fn a_chart_card_changes_its_type_and_cells() {
     paint_frame(&mut app, &mut tr, &theme);
     assert_eq!(
         app.annotation_clicks.len(),
-        7,
-        "six commands and the management toggle"
+        8,
+        "six commands, the management toggle and the plot they made way for"
     );
     assert!(app.try_annotation_click(manage, &mut Edits::lend(&mut doc), &mut handled));
     paint_frame(&mut app, &mut tr, &theme);

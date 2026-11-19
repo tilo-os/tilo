@@ -434,9 +434,222 @@ pub fn valid_calendar_invitation(value: &str) -> bool {
     stack.is_empty() && calendars == 1 && method_request && events >= 1
 }
 
-/// How long a message stays in the outbox before any device may deliver it:
-/// the Undo window the sending device's Send starts.
-pub(crate) const SEND_UNDO_MS: i64 = 10_000;
+/// How long an interactively sent message stays in the outbox before any
+/// device may deliver it: the default 10-second Undo window when a person
+/// presses Send.
+pub const SEND_UNDO_MS: i64 = 10_000;
+
+/// Default hold duration for an interactive send pressed by a person (10s).
+pub const DEFAULT_INTERACTIVE_SEND_HOLD_MS: i64 = SEND_UNDO_MS;
+
+/// Default hold duration for an autonomous or agent-initiated send (60s),
+/// unifying the outbox path with autonomous external delivery holds.
+pub const DEFAULT_AUTONOMOUS_SEND_HOLD_MS: i64 = 60_000;
+
+/// Minimum configurable outbox send hold (0s: immediate delivery).
+pub const MIN_SEND_HOLD_MS: i64 = 0;
+
+/// Maximum configurable outbox send hold (60s). Autonomous sends may request
+/// up to this ceiling while staying bounded.
+pub const MAX_SEND_HOLD_MS: i64 = 60_000;
+
+/// Configurable pre-delivery outbox hold duration shared by interactive Mail
+/// sends (default 10s) and autonomous sends (default 60s, configurable up to
+/// [`MAX_SEND_HOLD_MS`]).
+///
+/// The resulting [`Outgoing::not_before`] timestamp travels in the outbox
+/// entry itself so every device that holds the sending account enforces the
+/// exact same hold window before provider handoff.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct SendHold {
+    duration_ms: i64,
+}
+
+impl Default for SendHold {
+    fn default() -> Self {
+        Self::interactive()
+    }
+}
+
+impl SendHold {
+    /// Default hold for a person pressing Send interactively (10s).
+    #[must_use]
+    pub const fn interactive() -> Self {
+        Self {
+            duration_ms: DEFAULT_INTERACTIVE_SEND_HOLD_MS,
+        }
+    }
+
+    /// Default hold for an autonomous or agent-initiated send (60s).
+    #[must_use]
+    pub const fn autonomous() -> Self {
+        Self {
+            duration_ms: DEFAULT_AUTONOMOUS_SEND_HOLD_MS,
+        }
+    }
+
+    /// Immediate delivery with no pre-delivery hold (0s).
+    #[must_use]
+    pub const fn immediate() -> Self {
+        Self {
+            duration_ms: MIN_SEND_HOLD_MS,
+        }
+    }
+
+    /// Build a bounded hold duration in milliseconds, clamped to
+    /// `0..=MAX_SEND_HOLD_MS` (up to 60s).
+    #[must_use]
+    pub const fn from_ms(ms: i64) -> Self {
+        let clamped = if ms < MIN_SEND_HOLD_MS {
+            MIN_SEND_HOLD_MS
+        } else if ms > MAX_SEND_HOLD_MS {
+            MAX_SEND_HOLD_MS
+        } else {
+            ms
+        };
+        Self {
+            duration_ms: clamped,
+        }
+    }
+
+    /// Build a bounded hold duration in whole seconds, clamped to `0..=60`.
+    #[must_use]
+    pub const fn from_secs(secs: u64) -> Self {
+        let max_secs = (MAX_SEND_HOLD_MS / 1_000) as u64;
+        let clamped = if secs > max_secs { max_secs } else { secs };
+        Self {
+            duration_ms: (clamped as i64) * 1_000,
+        }
+    }
+
+    /// Effective hold duration in milliseconds.
+    #[must_use]
+    pub const fn duration_ms(self) -> i64 {
+        self.duration_ms
+    }
+
+    /// Effective hold duration in whole seconds.
+    #[must_use]
+    pub const fn duration_secs(self) -> u64 {
+        (self.duration_ms / 1_000) as u64
+    }
+
+    /// Whether this hold allows immediate delivery with no undo window.
+    #[must_use]
+    pub const fn is_immediate(self) -> bool {
+        self.duration_ms == 0
+    }
+
+    /// Compute the [`Outgoing::not_before`] wall-clock timestamp (Unix ms)
+    /// for a message queued at `now_ms`.
+    #[must_use]
+    pub const fn not_before(self, now_ms: i64) -> i64 {
+        now_ms.saturating_add(self.duration_ms)
+    }
+}
+
+/// Where an outbox message sits in its delivery lifecycle when cancellation
+/// (Undo) is requested.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum DeliveryHandoffState {
+    /// Still held in the outbox (hold window open or waiting for a device
+    /// with the account) and not yet handed off to the mail provider.
+    HeldInOutbox,
+    /// Delivery was refused by the mail provider; the message was never
+    /// delivered and may still be cancelled.
+    RefusedByProvider { reason: String },
+    /// Handed off to the mail provider without a confirmed delivery receipt
+    /// yet (for example, after a connection drop mid-transfer); delivery is
+    /// unconfirmed and must be reconciled rather than assumed cancelled or
+    /// blindly resent.
+    UnconfirmedHandoff,
+    /// Confirmed handed off and accepted by the mail provider.
+    ConfirmedDelivered,
+}
+
+/// Structured outcome of attempting to cancel (Undo) an outbox send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum CancelSendOutcome {
+    /// Cancelled before provider handoff; the message was not delivered.
+    CancelledBeforeDelivery,
+    /// Too late to cancel: provider handoff was already confirmed.
+    AlreadyDelivered,
+    /// Handoff was in flight or interrupted before a provider receipt arrived;
+    /// reconcile against the provider or Sent folder instead of assuming
+    /// cancellation or blindly resending.
+    DeliveryUnconfirmed,
+    /// No matching outbox entry was found.
+    NotFound,
+}
+
+impl CancelSendOutcome {
+    /// Classify a cancel attempt from the message's known handoff state.
+    #[must_use]
+    pub fn from_handoff(handoff: Option<&DeliveryHandoffState>) -> Self {
+        match handoff {
+            None => Self::NotFound,
+            Some(DeliveryHandoffState::ConfirmedDelivered) => Self::AlreadyDelivered,
+            Some(DeliveryHandoffState::UnconfirmedHandoff) => Self::DeliveryUnconfirmed,
+            Some(
+                DeliveryHandoffState::HeldInOutbox | DeliveryHandoffState::RefusedByProvider { .. },
+            ) => Self::CancelledBeforeDelivery,
+        }
+    }
+
+    /// Classify a cancel attempt from the outbox entry's settled status
+    /// (`outbox.get(&key).map(|entry| entry.settled.as_ref())`), matching
+    /// [`crate::resource::Mail::cancel_send`]: a confirmed [`tilo_resource::Settled::Done`]
+    /// handoff is reported as [`Self::AlreadyDelivered`].
+    #[must_use]
+    pub fn from_settled(settled: Option<Option<&tilo_resource::Settled<()>>>) -> Self {
+        match settled {
+            None => Self::NotFound,
+            Some(Some(tilo_resource::Settled::Done(()))) => Self::AlreadyDelivered,
+            Some(None | Some(tilo_resource::Settled::Failed { .. })) => {
+                Self::CancelledBeforeDelivery
+            }
+        }
+    }
+
+    /// Whether the send was cancelled before delivery.
+    #[must_use]
+    pub const fn is_cancelled(self) -> bool {
+        matches!(self, Self::CancelledBeforeDelivery)
+    }
+
+    /// Whether cancellation was refused because the provider already accepted
+    /// the message.
+    #[must_use]
+    pub const fn is_already_delivered(self) -> bool {
+        matches!(self, Self::AlreadyDelivered)
+    }
+
+    /// Whether delivery status is unconfirmed and requires reconciliation.
+    #[must_use]
+    pub const fn is_unconfirmed(self) -> bool {
+        matches!(self, Self::DeliveryUnconfirmed)
+    }
+
+    /// Convert this cancellation result into a per-effect workspace-activity
+    /// Undo outcome so multi-step session Undo reports an honest breakdown
+    /// (for example, `"Email already delivered."` vs `"Email undone."` vs
+    /// `"Email unconfirmed."`).
+    #[must_use]
+    pub fn to_undo_effect(
+        self,
+        label: impl Into<String>,
+    ) -> tilo_actions::remote::workspace_activity::UndoEffect {
+        use tilo_actions::remote::workspace_activity::UndoEffect;
+        match self {
+            Self::CancelledBeforeDelivery => UndoEffect::undone_locally(label),
+            Self::AlreadyDelivered => UndoEffect::already_delivered(label, None),
+            Self::DeliveryUnconfirmed => UndoEffect::unconfirmed(label, None),
+            Self::NotFound => UndoEffect::not_reached(label, None),
+        }
+    }
+}
 
 /// A message waiting in the outbox: the account it is sent from (by its
 /// address; the device that delivers it holds the account), what it says,
@@ -449,11 +662,12 @@ pub struct Outgoing {
     #[serde(default)]
     pub in_reply_to: Option<String>,
     /// When this may leave, in milliseconds since the Unix epoch: when Send
-    /// was pressed, plus the person's undo delay, by the clock of the device
-    /// that pressed it. Every device that holds the account delivers only
-    /// after it, so a page's Undo reaches the message wherever the account
-    /// is. `None` for a message queued before devices kept it, which leaves
-    /// as soon as a device takes it.
+    /// was pressed, plus the effective [`SendHold`] delay (default 10s
+    /// interactive, up to 60s for autonomous sends), by the clock of the
+    /// device that queued it. Every device that holds the account delivers
+    /// only after it, so Undo reaches the message wherever the account is.
+    /// `None` for a message queued before devices kept it, which leaves as
+    /// soon as a device takes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_before: Option<i64>,
 }
@@ -472,10 +686,57 @@ impl Outgoing {
         }
     }
 
-    /// When a message queued at `now_ms` may leave: after the person's undo
-    /// delay, so Undo can reach it wherever it is pressed.
+    /// When a message queued at `now_ms` may leave under the default
+    /// interactive undo delay ([`SEND_UNDO_MS`]), so Undo can reach it
+    /// wherever it is pressed.
     pub(crate) fn undo_window_from(now_ms: i64) -> i64 {
-        now_ms.saturating_add(SEND_UNDO_MS)
+        Self::hold_window_from(now_ms, SendHold::interactive())
+    }
+
+    /// When a message queued at `now_ms` may leave under an explicit
+    /// configurable [`SendHold`] (for example, [`SendHold::interactive`] at
+    /// 10s or [`SendHold::autonomous`] at up to 60s).
+    #[must_use]
+    pub const fn hold_window_from(now_ms: i64, hold: SendHold) -> i64 {
+        hold.not_before(now_ms)
+    }
+
+    /// Apply a configurable [`SendHold`] starting at `now_ms` to this queued
+    /// message.
+    #[must_use]
+    pub fn with_hold(mut self, now_ms: i64, hold: SendHold) -> Self {
+        self.not_before = Some(Self::hold_window_from(now_ms, hold));
+        self
+    }
+
+    /// Milliseconds remaining in this message's hold window at `now_ms`, or
+    /// `0` once it may leave.
+    #[must_use]
+    pub const fn remaining_hold_ms(&self, now_ms: i64) -> i64 {
+        match self.not_before {
+            Some(not_before) => {
+                let remaining = not_before.saturating_sub(now_ms);
+                if remaining > 0 { remaining } else { 0 }
+            }
+            None => 0,
+        }
+    }
+
+    /// Classify a cancellation attempt for this message given its current
+    /// provider handoff state.
+    #[must_use]
+    pub fn cancel_outcome(&self, handoff: Option<&DeliveryHandoffState>) -> CancelSendOutcome {
+        CancelSendOutcome::from_handoff(handoff)
+    }
+
+    /// Classify a cancellation attempt for this message from its outbox
+    /// settled state.
+    #[must_use]
+    pub fn cancel_outcome_from_settled(
+        &self,
+        settled: Option<Option<&tilo_resource::Settled<()>>>,
+    ) -> CancelSendOutcome {
+        CancelSendOutcome::from_settled(settled)
     }
 
     /// Whether the message may leave at `now_ms` already.
@@ -984,3 +1245,126 @@ pub(crate) fn accounts_collection(accounts: &[(String, String, bool)]) -> LiveRo
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod send_hold_tests {
+    use super::*;
+    use tilo_actions::remote::workspace_activity::{
+        UndoEffect, UndoEffectState, UndoOutcomeKind, UndoSessionOutcome,
+    };
+
+    #[test]
+    fn send_hold_unifies_interactive_and_autonomous_windows_within_bounds() {
+        let now_ms = 1_700_000_000_000_i64;
+
+        // Default interactive hold stays at 10s (SEND_UNDO_MS).
+        let interactive = SendHold::default();
+        assert_eq!(interactive, SendHold::interactive());
+        assert_eq!(interactive.duration_ms(), SEND_UNDO_MS);
+        assert_eq!(interactive.duration_secs(), 10);
+        assert!(!interactive.is_immediate());
+        assert_eq!(
+            Outgoing::undo_window_from(now_ms),
+            Outgoing::hold_window_from(now_ms, interactive)
+        );
+
+        // Autonomous hold defaults to 60s.
+        let autonomous = SendHold::autonomous();
+        assert_eq!(autonomous.duration_ms(), DEFAULT_AUTONOMOUS_SEND_HOLD_MS);
+        assert_eq!(autonomous.duration_secs(), 60);
+        assert_eq!(
+            Outgoing::hold_window_from(now_ms, autonomous),
+            now_ms + 60_000
+        );
+
+        // Custom holds clamp cleanly into 0..=60s.
+        assert_eq!(SendHold::from_ms(-5_000), SendHold::immediate());
+        assert!(SendHold::immediate().is_immediate());
+        assert_eq!(SendHold::from_ms(30_000).duration_secs(), 30);
+        assert_eq!(SendHold::from_ms(120_000), SendHold::autonomous());
+        assert_eq!(SendHold::from_secs(45).duration_ms(), 45_000);
+        assert_eq!(SendHold::from_secs(900), SendHold::autonomous());
+
+        // Outgoing enforces the configured autonomous 60s hold.
+        let outgoing = Outgoing::new("sender@example.test", &Draft::default())
+            .with_hold(now_ms, SendHold::autonomous());
+        assert!(!outgoing.may_leave_by(now_ms + 10_000));
+        assert_eq!(outgoing.remaining_hold_ms(now_ms + 10_000), 50_000);
+        assert!(!outgoing.may_leave_by(now_ms + 59_999));
+        assert!(outgoing.may_leave_by(now_ms + 60_000));
+        assert_eq!(outgoing.remaining_hold_ms(now_ms + 60_000), 0);
+    }
+
+    #[test]
+    fn cancellation_after_confirmed_provider_handoff_reports_already_delivered() {
+        let outgoing = Outgoing::new("sender@example.test", &Draft::default());
+
+        // Still held in outbox or refused by provider -> cancelled before delivery.
+        assert_eq!(
+            outgoing.cancel_outcome(Some(&DeliveryHandoffState::HeldInOutbox)),
+            CancelSendOutcome::CancelledBeforeDelivery
+        );
+        assert_eq!(
+            outgoing.cancel_outcome(Some(&DeliveryHandoffState::RefusedByProvider {
+                reason: "550 rejected".into(),
+            })),
+            CancelSendOutcome::CancelledBeforeDelivery
+        );
+        assert_eq!(
+            outgoing.cancel_outcome_from_settled(Some(None)),
+            CancelSendOutcome::CancelledBeforeDelivery
+        );
+        let refused = tilo_resource::Settled::Failed {
+            reason: "550 rejected".into(),
+            partial: (),
+        };
+        assert_eq!(
+            outgoing.cancel_outcome_from_settled(Some(Some(&refused))),
+            CancelSendOutcome::CancelledBeforeDelivery
+        );
+
+        // Confirmed provider handoff -> clearly reported as already delivered.
+        let confirmed = outgoing.cancel_outcome(Some(&DeliveryHandoffState::ConfirmedDelivered));
+        assert_eq!(confirmed, CancelSendOutcome::AlreadyDelivered);
+        assert!(confirmed.is_already_delivered());
+        assert!(!confirmed.is_cancelled());
+
+        let done = tilo_resource::Settled::Done(());
+        assert_eq!(
+            outgoing.cancel_outcome_from_settled(Some(Some(&done))),
+            CancelSendOutcome::AlreadyDelivered
+        );
+
+        // Unconfirmed handoff (receipt lost mid-transfer) -> unconfirmed, never cancelled.
+        let unconfirmed = outgoing.cancel_outcome(Some(&DeliveryHandoffState::UnconfirmedHandoff));
+        assert_eq!(unconfirmed, CancelSendOutcome::DeliveryUnconfirmed);
+        assert!(unconfirmed.is_unconfirmed());
+
+        // Missing entry -> NotFound.
+        assert_eq!(outgoing.cancel_outcome(None), CancelSendOutcome::NotFound);
+        assert_eq!(
+            outgoing.cancel_outcome_from_settled(None),
+            CancelSendOutcome::NotFound
+        );
+
+        // Maps cleanly into per-effect UndoSessionOutcome.
+        let session_outcome = UndoSessionOutcome::new(vec![
+            UndoEffect::undone_locally("Sheet edit"),
+            confirmed.to_undo_effect("Email"),
+            unconfirmed.to_undo_effect("Calendar update"),
+        ]);
+        assert_eq!(session_outcome.kind(), UndoOutcomeKind::Partial);
+        assert_eq!(
+            session_outcome.effects[1].state,
+            UndoEffectState::AlreadyDelivered
+        );
+        assert_eq!(
+            session_outcome.effects[2].state,
+            UndoEffectState::Unconfirmed
+        );
+        assert_eq!(
+            session_outcome.summary(),
+            "Sheet edit undone. Email already delivered. Calendar update unconfirmed."
+        );
+    }
+}

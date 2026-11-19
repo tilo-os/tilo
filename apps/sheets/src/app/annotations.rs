@@ -75,6 +75,10 @@ pub(super) struct CardMetrics {
     pub chart_single_row_w: f64,
     pub comment_h: f64,
     pub chart_min_w: f64,
+    /// The width whose two action rows fit a chart's own actions as well as
+    /// its kinds: what a chart with its actions shown is never given less of,
+    /// so a dock capped in height never cuts the row off the card's foot.
+    pub chart_rows_single_w: f64,
     pub comment_min_w: f64,
 }
 
@@ -96,21 +100,33 @@ impl CardMetrics {
         let pad = face
             .body_rect(tr, theme, Rect::new(0.0, 0.0, width, chart_h))
             .x0;
-        let mut row = |labels: &[&str]| -> f64 {
-            let buttons: f64 = labels
-                .iter()
-                .map(|label| {
-                    ButtonFace::new(Rect::ZERO, label)
-                        .control_size(ControlSize::Small)
-                        .intrinsic_width(tr, theme)
-                })
-                .sum();
+        let label_w = |label: &str, tr: &mut TextRenderer| -> f64 {
+            ButtonFace::new(Rect::ZERO, label)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme)
+        };
+        let row = |labels: &[&str], tr: &mut TextRenderer| -> f64 {
+            let buttons: f64 = labels.iter().map(|label| label_w(label, tr)).sum();
             buttons + m.s1 * f64_of_usize(labels.len().saturating_sub(1)) + 2.0 * pad
         };
-        let chart_min_w = row(&["Open", "Rename", "Delete"]).max(row(&["Column", "Line", "Cells"]));
-        let chart_single_row_w = row(&["Column", "Line", "Cells", "Open", "Rename", "Delete"]);
-        let comment_min_w = row(&["Reply", "Edit", "Resolve", "Delete"])
-            .max(row(&["Reply", "Edit", "Reopen", "Delete"]));
+        let widest = |labels: &[&str], tr: &mut TextRenderer| -> f64 {
+            labels
+                .iter()
+                .map(|label| label_w(label, tr))
+                .fold(0.0, f64::max)
+        };
+        let chart_min_w =
+            row(&["Open", "Rename", "Delete"], tr).max(row(&["Column", "Line", "Cells"], tr));
+        // The chart kinds and the chart's own actions are drawn from the same edge. Only a
+        // card wide enough for the two of them side by side shows them in one row.
+        let row_pair = widest(&["Open", "Rename", "Delete"], tr)
+            + widest(&["Column", "Line", "Cells"], tr)
+            + m.s1
+            + 2.0 * pad;
+        let chart_rows_single_w = chart_min_w.max(row_pair);
+        let chart_single_row_w = row(&["Column", "Line", "Cells", "Open", "Rename", "Delete"], tr);
+        let comment_min_w = row(&["Reply", "Edit", "Resolve", "Delete"], tr)
+            .max(row(&["Reply", "Edit", "Reopen", "Delete"], tr));
         Self {
             width,
             chart_h,
@@ -118,6 +134,7 @@ impl CardMetrics {
             chart_single_row_w,
             comment_h,
             chart_min_w,
+            chart_rows_single_w,
             comment_min_w,
         }
     }
@@ -136,6 +153,87 @@ impl CardMetrics {
     }
 }
 
+/// What one dock gives its cards: the widths they are drawn at, the height they share, and the
+/// bar under them when they overflow.
+struct Rules<'a> {
+    app: &'a SheetsApp,
+    area: Rect,
+    cards: &'a [DockCard],
+    pad: f64,
+    gaps: f64,
+    /// The width each card at least needs for its actions.
+    narrow: Vec<f64>,
+    /// The width each card wants: what a chart whose actions are shown needs for one row.
+    full: Vec<f64>,
+}
+
+impl<'a> Rules<'a> {
+    fn new(app: &'a SheetsApp, area: Rect, cards: &'a [DockCard]) -> Self {
+        let cm = &app.metrics.cards;
+        let pad = app.metrics.s3;
+        let narrow: Vec<f64> = cards.iter().map(|card| cm.min_width(*card)).collect();
+        let full: Vec<f64> = narrow
+            .iter()
+            .zip(cards)
+            .map(|(min, card)| (*min).max(app.full_width(*card, cm)))
+            .collect();
+        Self {
+            app,
+            area,
+            cards,
+            pad,
+            gaps: pad * f64_of_usize(cards.len().saturating_sub(1)),
+            narrow,
+            full,
+        }
+    }
+
+    /// The width the cards are drawn at and the width they take together, sharing what is left
+    /// above their least widths. None is drawn wider than the dock it stands in: the cards left
+    /// over stand past its edge and are reached by scrolling, never the rows off their own.
+    fn widths(&self, mins: &[f64]) -> (Vec<f64>, f64) {
+        let cm = &self.app.metrics.cards;
+        let avail = (self.area.width() - 2.0 * self.pad).max(0.0);
+        let least = |min: f64| min.min(avail);
+        let spare = avail - self.gaps - mins.iter().map(|min| least(*min)).sum::<f64>();
+        let slack: f64 = mins
+            .iter()
+            .map(|min| (cm.width - least(*min)).max(0.0))
+            .sum();
+        let grow = if slack > 0.0 {
+            spare.max(0.0).min(slack) / slack
+        } else {
+            0.0
+        };
+        let widths: Vec<f64> = mins
+            .iter()
+            .map(|min| {
+                let min = least(*min);
+                min + (cm.width - min).max(0.0) * grow
+            })
+            .collect();
+        let content_w = widths.iter().sum::<f64>() + self.gaps + 2.0 * self.pad;
+        (widths, content_w)
+    }
+
+    fn card_height(&self, widths: &[f64]) -> f64 {
+        let cm = &self.app.metrics.cards;
+        self.cards
+            .iter()
+            .zip(widths)
+            .map(|(card, width)| cm.height(*card, *width))
+            .fold(0.0, f64::max)
+    }
+
+    fn bar(&self, content_w: f64) -> f64 {
+        if content_w > self.area.width() + 0.5 {
+            f64::from(self.app.chrome_theme.tokens.metrics.scrollbar_gutter)
+        } else {
+            0.0
+        }
+    }
+}
+
 impl SheetsApp {
     pub(super) fn annotation_hit(&self, p: Point) -> bool {
         self.annotation_clicks
@@ -143,52 +241,55 @@ impl SheetsApp {
             .any(|(rect, _)| rect.contains(p))
     }
 
+    /// The dock under the grid: the height it takes from `area`, the cards it puts in it and
+    /// the width its cards together ask for.
+    ///
+    /// The cards want their full width where the dock has it. Capped in height, they are cut
+    /// down across instead, and a chart with its actions shown then lays them in two rows: the
+    /// dock keeps the height those rows need rather than clipping them, and takes it from the
+    /// grid.
     pub(super) fn dock_layout(&self, area: Rect) -> (f64, Vec<(DockCard, Rect)>, f64) {
         let m = &self.metrics;
         let cm = &m.cards;
         let cards: Vec<DockCard> = (0..self.sheet_charts.len().min(MAX_CHART_CARDS))
             .map(DockCard::Chart)
             .collect();
-        let pad = m.s3;
-        let avail = (area.width() - 2.0 * pad).max(0.0);
-        let gaps = pad * f64_of_usize(cards.len().saturating_sub(1));
-        let mins: Vec<f64> = cards.iter().map(|card| cm.min_width(*card)).collect();
-        let room = avail - gaps - mins.iter().sum::<f64>();
-        let slack: f64 = mins.iter().map(|min| (cm.width - min).max(0.0)).sum();
-        let grow = if slack > 0.0 {
-            room.max(0.0).min(slack) / slack
-        } else {
-            0.0
-        };
-        let widths: Vec<f64> = mins
-            .iter()
-            .map(|min| min + (cm.width - min).max(0.0) * grow)
-            .collect();
-        let card_h = cards
-            .iter()
-            .zip(&widths)
-            .map(|(card, width)| cm.height(*card, *width))
-            .fold(0.0, f64::max);
-        let content_w = widths.iter().sum::<f64>() + gaps + 2.0 * pad;
-        let bar_width = if content_w > area.width() + 0.5 {
-            f64::from(self.chrome_theme.tokens.metrics.scrollbar_gutter)
-        } else {
-            0.0
-        };
-        let dock_h = card_h + 2.0 * pad + bar_width;
-        let min_grid = m.grid.col_header_h()
-            + f64_of_usize(MIN_GRID_ROWS) * m.grid.default_row_h()
-            + self.grid.scrollbar_thickness();
         if cards.is_empty() {
             return (0.0, Vec::new(), 0.0);
         }
-        let max_dock_h = area.height() - min_grid;
-        let min_dock_h = m.plot_h() + 2.0 * pad + bar_width;
-        if max_dock_h < min_dock_h {
+        let pad = m.s3;
+        let rules = Rules::new(self, area, &cards);
+        let min_grid = m.grid.col_header_h()
+            + f64_of_usize(MIN_GRID_ROWS) * m.grid.default_row_h()
+            + self.grid.scrollbar_thickness();
+        let grid_h = area.height() - min_grid;
+        let (mut widths, mut content_w) = rules.widths(&rules.full);
+        let mut bar = rules.bar(content_w);
+        // The dock's least is a card that fits what it is given. Where the cards' full width
+        // is more than the dock has, they are drawn at their action rows' width instead, and
+        // the least is the height those rows take: a floor of the plot alone cut them off the
+        // card's foot on a narrow window.
+        let mut min_dock_h = rules.card_height(&widths) + 2.0 * pad + bar;
+        if bar > 0.0 {
+            (widths, content_w) = rules.widths(&rules.narrow);
+            bar = rules.bar(content_w);
+            min_dock_h = rules.card_height(&widths) + 2.0 * pad + bar;
+        }
+        if grid_h < min_dock_h {
             return (0.0, Vec::new(), 0.0);
         }
-        let dock_h = dock_h.min(max_dock_h);
-        let card_h = (dock_h - 2.0 * pad - bar_width).min(card_h);
+        let mut dock_h = (rules.card_height(&widths) + 2.0 * pad + bar).min(grid_h);
+        // A card the dock's height cuts down no longer fits a chart's actions in one row. The
+        // dock then draws its cards narrower, at their two-row height, and keeps the height
+        // they need rather than clipping them off the card.
+        if dock_h - 2.0 * pad - bar < cm.chart_compact_h {
+            (widths, content_w) = rules.widths(&rules.narrow);
+            bar = rules.bar(content_w);
+            dock_h = (rules.card_height(&widths) + 2.0 * pad + bar)
+                .min(grid_h)
+                .max(min_dock_h);
+        }
+        let card_h = dock_h - 2.0 * pad - bar;
         let y0 = area.y1 - dock_h + pad;
         let mut x = area.x0 + pad;
         let placed = cards
@@ -201,6 +302,40 @@ impl SheetsApp {
             })
             .collect();
         (dock_h, placed, content_w)
+    }
+
+    /// The width a card wants: what a chart whose actions are shown needs for its kinds and its
+    /// own actions to stand side by side.
+    fn full_width(&self, card: DockCard, cm: &CardMetrics) -> f64 {
+        let managing = match card {
+            DockCard::Chart(i) => self
+                .sheet_charts
+                .get(i)
+                .is_some_and(|chart| self.managed_chart.as_ref() == Some(&chart.id)),
+        };
+        if managing {
+            cm.chart_rows_single_w
+        } else {
+            cm.min_width(card)
+        }
+    }
+
+    /// Whether a chart in a card `card` wide puts its actions in one row. Only a card that
+    /// was given its full width does: a dock capped in height hands its cards less, and the
+    /// two rows are what its actions are drawn from then.
+    fn chart_actions_in_one_row(&self, card: Rect) -> bool {
+        card.width() >= self.metrics.cards.chart_single_row_w
+    }
+
+    /// The height a chart card's actions take in a card `card` wide: one row, or the chart
+    /// kinds' above the chart's own.
+    fn chart_action_rows_h(&self, card: Rect) -> f64 {
+        let m = &self.metrics;
+        if self.chart_actions_in_one_row(card) {
+            m.control_h
+        } else {
+            m.control_h * 2.0 + m.s1
+        }
     }
 
     pub(super) fn route_dock_scroll(
@@ -233,6 +368,13 @@ impl SheetsApp {
         if matches!(event, WindowEvent::CursorMoved { .. }) {
             *ctx.handled = before;
             return false;
+        }
+        // A wheel over the dock is the dock's, whether the cards beside the
+        // pointer can move or only those it is not over: the grid under it
+        // must not scroll instead.
+        if wheel && over {
+            *ctx.handled = true;
+            return true;
         }
         took
     }
@@ -378,12 +520,8 @@ impl SheetsApp {
             Self::draw_plot(ctx, body, chart.kind, data);
             return;
         }
-        let single_row = card.width() >= self.metrics.cards.chart_single_row_w;
-        let rows = if single_row {
-            self.metrics.control_h
-        } else {
-            self.metrics.control_h * 2.0 + self.metrics.s1
-        };
+        let single_row = self.chart_actions_in_one_row(card);
+        let rows = self.chart_action_rows_h(card);
         let plot = Rect::new(
             body.x0,
             body.y0,
@@ -391,6 +529,11 @@ impl SheetsApp {
             (body.y1 - gap - rows).max(body.y0),
         );
         Self::draw_plot(ctx, plot, chart.kind, data);
+        // Kept here, along the card's own edge: the dock registers the card's
+        // whole box last, so without it a press between the actions would be
+        // the card's, opening a range where a finger meant to miss.
+        self.annotation_clicks
+            .push((plot, AnnotationClick::ManageChartPlot(chart.id.clone())));
         let mut actions = vec![
             (
                 ChartKind::Column.label(),
@@ -728,12 +871,16 @@ impl SheetsApp {
         }
         let m = &self.metrics;
         let gap = m.s2;
+        // The card is never wider than the sheet it floats on, whatever its
+        // actions ask for: the actions are laid out from the card's own edge.
         let w = m
             .cards
             .width
-            .min(body.width() - 2.0 * gap)
-            .max(m.cards.comment_min_w.min(body.width()));
-        let h = m.cards.comment_h;
+            .min(m.cards.comment_min_w)
+            .clamp(0.0, (body.width() - 2.0 * gap).max(1.0));
+        // The card stands on the sheet, never off it: a short sheet cuts it short rather than
+        // hanging its actions past the sheet's foot where no press reaches them.
+        let h = m.cards.comment_h.min(body.height() - 2.0 * gap).max(1.0);
         // Beside the cells where there is room, level with them; else under
         // them, else over them; else pinned inside the sheet.
         let level = cells
@@ -850,32 +997,8 @@ impl SheetsApp {
         let body = face.body_rect(ctx.text, theme, card);
         let colors = &theme.tokens.colors;
 
-        let range = if thread.start == thread.end {
-            crate::model::addr_to_a1(thread.start.0, thread.start.1)
-        } else {
-            format!(
-                "{}:{}",
-                crate::model::addr_to_a1(thread.start.0, thread.start.1),
-                crate::model::addr_to_a1(thread.end.0, thread.end.1)
-            )
-        };
         let caption = theme.text(TextRole::Caption).numeric();
-        ctx.text.draw_style(
-            ctx.scene,
-            &range,
-            colors.text_dim,
-            ctx.transform * Affine::translate((body.x0, body.y0)),
-            None,
-            &caption,
-        );
-        if thread.resolved {
-            let w = BadgeFace::intrinsic_width("Resolved", ctx.text, theme);
-            let h = BadgeFace::height(theme);
-            let badge = Rect::new(body.x1 - w, body.y0, body.x1, body.y0 + h);
-            BadgeFace::new(badge, "Resolved")
-                .style(ChipStyle::Tinted(Tone::Success))
-                .paint(ctx.scene, ctx.transform, ctx.text, theme);
-        }
+        self.draw_comment_heading(ctx, body, thread, &caption);
 
         let style = theme.text(TextRole::Body);
         let lines =
@@ -939,6 +1062,55 @@ impl SheetsApp {
         );
         self.annotation_clicks
             .push((card, AnnotationClick::Open(thread.start)));
+    }
+
+    /// The card's heading: the cells the comment is on, and the Resolved badge where it is.
+    fn draw_comment_heading(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        body: Rect,
+        thread: &CommentThread,
+        caption: &ui::text_render::TextStyle,
+    ) {
+        let theme = ctx.theme;
+        let colors = &theme.tokens.colors;
+        let range = if thread.start == thread.end {
+            crate::model::addr_to_a1(thread.start.0, thread.start.1)
+        } else {
+            format!(
+                "{}:{}",
+                crate::model::addr_to_a1(thread.start.0, thread.start.1),
+                crate::model::addr_to_a1(thread.end.0, thread.end.1)
+            )
+        };
+        // The range stays on the card's own line: a two-corner range on a narrow sheet elides
+        // rather than running under the card's edge, and keeps clear of the Resolved badge.
+        let badge_w = if thread.resolved {
+            BadgeFace::intrinsic_width("Resolved", ctx.text, theme) + self.metrics.s2
+        } else {
+            0.0
+        };
+        let range = ctx.text.elide_to_width_style(
+            &range,
+            ui::num::f32_of_f64((body.width() - badge_w).max(0.0)),
+            caption,
+        );
+        ctx.text.draw_style(
+            ctx.scene,
+            &range,
+            colors.text_dim,
+            ctx.transform * Affine::translate((body.x0, body.y0)),
+            None,
+            caption,
+        );
+        if thread.resolved {
+            let w = BadgeFace::intrinsic_width("Resolved", ctx.text, theme);
+            let h = BadgeFace::height(theme);
+            let badge = Rect::new(body.x1 - w, body.y0, body.x1, body.y0 + h);
+            BadgeFace::new(badge, "Resolved")
+                .style(ChipStyle::Tinted(Tone::Success))
+                .paint(ctx.scene, ctx.transform, ctx.text, theme);
+        }
     }
 }
 

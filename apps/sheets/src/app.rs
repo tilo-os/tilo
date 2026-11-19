@@ -24,7 +24,7 @@ use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
 use ui::tilo_resource::{Id, Invoke};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -247,8 +247,14 @@ struct FoundCell {
 
 #[derive(Clone)]
 enum AnnotationClick {
+    /// Go to the cells a card shows: the chart a card stands for, or the cell a
+    /// comment is on. The card that showed them goes with the press, since the
+    /// cells are in view now and nothing is left to ask of it.
     Open(Addr),
     ManageChart(String),
+    /// Keep the plot's place for the dock when the chart's own actions open,
+    /// so a press between them, which is the plot's, opens nothing.
+    ManageChartPlot(String),
     EditChart(String),
     SetChartKind(String, ChartKind),
     ChartCells(String),
@@ -322,7 +328,13 @@ pub struct SheetsApp {
     settings_sheet: Option<SettingsSheet>,
     metrics: ChromeMetrics,
     tab_rects: Vec<(Rect, usize)>,
+    /// Where a pointer takes each tab of `tab_rects`, by index: the tab's own box grown to the
+    /// target the pointer in use needs. Drawn and hit-tested separately, so a finger can take a
+    /// tab without the strip growing under a mouse.
+    tab_hit_rects: Vec<Rect>,
     add_tab_rect: Rect,
+    /// The add button's target, as `tab_hit_rects` is for the tabs.
+    add_tab_hit_rect: Rect,
     sheet_colors: Vec<Option<u32>>,
     tab_menu_target: Option<usize>,
     tab_menu: ContextMenu,
@@ -476,6 +488,21 @@ fn file_label(path: &std::path::Path) -> String {
 impl Widget for SheetsApp {
     fn html(&self, cx: &mut ui::composition::HtmlCx<'_>) {
         cx.picture();
+    }
+
+    /// A finger on the grid selects a cell where it lands and scrolls the sheet when it drags;
+    /// on an open entry (the cell, the name box, the formula bar) it drags with it, placing the
+    /// caret and then extending what is selected, as a mouse would. Everything else is ordinary
+    /// content.
+    fn touch_claim(&self, point: Point) -> ui::interaction::TouchClaim {
+        let editing = self.grid.is_editing()
+            && (self.grid_rect.contains(point)
+                || self.formula_rect.contains(point)
+                || self.name_box_rect.contains(point));
+        if editing {
+            return ui::interaction::TouchClaim::Drag;
+        }
+        self.grid.touch_claim(point)
     }
 
     ui::provides!(
@@ -1106,7 +1133,7 @@ impl Widget for SheetsApp {
                     return true;
                 }
                 "sheets.name-box" => {
-                    self.begin_name_box_edit();
+                    self.begin_name_box_edit(state);
                     return true;
                 }
                 "sheets.formula-bar" => {

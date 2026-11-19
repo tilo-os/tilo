@@ -57,9 +57,13 @@ pub(crate) fn max_card_width(theme: &ui::theme::Theme) -> f64 {
 const WORKING_SHARE_OF_WINDOW: f64 = 0.62;
 
 /// The height of a view to work in that is `width` wide, in a window
-/// `window` high: a window's proportions, within what the window leaves.
-pub(crate) fn working_height(theme: &ui::theme::Theme, width: f64, window: f64) -> f64 {
+/// `window` high, when the conversation it stands in reaches `down` the
+/// window: a window's proportions, within what both leave.
+pub(crate) fn working_height(theme: &ui::theme::Theme, width: f64, window: f64, down: f64) -> f64 {
     let least = f64::from(theme.tokens.metrics.view_min_height);
+    // The least only holds a window high enough for it: a short one is better
+    // spent on a view that fits than on a note about a view that does not.
+    let least = least.min(down.max(0.0));
     let most = (window * WORKING_SHARE_OF_WINDOW).max(least);
     (width / ASPECT).clamp(least, most)
 }
@@ -183,6 +187,16 @@ impl ChatApp {
             && ui::window_share::drawn()
     }
 
+    /// How far below the top of Chat's window the conversation reaches:
+    /// down to the message field, which a view to work in stands above. The
+    /// window's height is what the field and its note keep under the
+    /// conversation, wherever the window is mounted and whatever it opens on.
+    fn share_down(&self) -> f64 {
+        let chrome = &self.chrome;
+        (self.rect.height() - chrome.composer_max_h - chrome.composer_note_h - chrome.composer_pad)
+            .max(0.0)
+    }
+
     /// Whether this person may change what `m` shares: it is theirs, its
     /// sharer lets the others edit, or the workspace lets them anyway.
     fn may_edit_share(&self, m: &Message) -> bool {
@@ -239,7 +253,7 @@ impl ChatApp {
         let view = (!ended).then(|| {
             let inner = w - 2.0 * f64::from(sp.s1);
             let height = if grown {
-                working_height(theme, inner, self.rect.height())
+                working_height(theme, inner, self.rect.height(), self.share_down())
             } else {
                 inner / ASPECT
             };
@@ -571,8 +585,12 @@ impl ChatApp {
             label,
             detail: None,
         });
+        // The view's own proportions, never wider than a window's: the
+        // card's art covers only `width / ratio`, so a view grown past the
+        // window's shape would leave its status note on undrawn ground.
+        let ratio = (view.width() / view.height().max(1.0)).min(ASPECT);
         MediaCardFace::new(MediaArt::Kind(ui::icons::app_glyph(app, None)))
-            .aspect(MediaAspect::Ratio(view.width() / view.height().max(1.0)))
+            .aspect(MediaAspect::Ratio(ratio))
             .badges(badges.as_slice())
             .paint(paint, view);
         let shown = view.intersect(clip);

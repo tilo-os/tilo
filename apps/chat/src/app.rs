@@ -1265,7 +1265,7 @@ impl ChatApp {
     }
 
     pub(crate) fn main_composer_can_edit(&self) -> bool {
-        self.can_participate()
+        self.can_participate() && self.composes_here()
     }
 
     /// What the composer says it is for, in the conversation `channel`: a
@@ -1311,6 +1311,15 @@ impl ChatApp {
         self.channel(id).is_some()
             || crate::chat::Chat::direct_members(&ui::tilo_resource::Id::from_raw(id.to_owned()))
                 .is_some()
+    }
+
+    /// Whether a composer stands in the window now for the person to write in.
+    ///
+    /// A view shown alone takes the whole window, and the conversation's
+    /// composers are not drawn beside it: what is typed then belongs to the
+    /// view, so a draft Chat keeps does not take it.
+    pub(crate) fn composes_here(&self) -> bool {
+        self.alone.is_none()
     }
 
     /// Whether the open conversation is one a message can be written to: a channel the window

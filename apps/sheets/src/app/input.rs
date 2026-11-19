@@ -3,7 +3,7 @@
 use super::{
     Addr, AnnotationClick, CellFormat, CellMenuRow, ChartKind, ContextMenu, Edits, ElementState,
     Id, Invoke, Modifiers, MouseButton, MouseScrollDelta, PaletteRouteCtx, Point, Rect, Row,
-    SettingsPanel, SheetsApp, Widget, WindowEvent, Workbook, span, verbs,
+    SettingsPanel, SheetsApp, Vec2, Widget, WindowEvent, Workbook, span, verbs,
 };
 
 impl SheetsApp {
@@ -71,8 +71,22 @@ impl SheetsApp {
             AnnotationClick::ManageChart(id) => {
                 self.managed_chart = (self.managed_chart.as_ref() != Some(&id)).then_some(id);
             }
+            AnnotationClick::ManageChartPlot(id) => {
+                // The plot that made way for the actions opened over it opens
+                // nothing: only the header's control puts them away, so the
+                // press aimed past them is not taken for one on a chart nobody
+                // named.
+                if self.managed_chart.as_ref() == Some(&id) {
+                    return;
+                }
+                self.managed_chart = Some(id);
+            }
             AnnotationClick::Open(addr) => {
                 self.grid.select_only(addr);
+                // The card that stood for the cells now in view goes: a chart's
+                // own actions come down with the Open that showed them, so the
+                // dock is the dock again and nothing is left to dismiss.
+                self.managed_chart = None;
                 self.status = format!("Opened {}", crate::model::addr_to_a1(addr.0, addr.1));
             }
             AnnotationClick::EditChart(id) => {
@@ -85,19 +99,7 @@ impl SheetsApp {
                     self.status = "Editing chart".into();
                 }
             }
-            AnnotationClick::SetChartKind(id, kind) => {
-                let path = Workbook::paths()
-                    .sheets
-                    .item(&sheet)
-                    .charts
-                    .item(&Id::from_raw(id))
-                    .kind;
-                if let Ok(invoke) = Invoke::edit(&path.set(kind))
-                    && self.submit(state, invoke)
-                {
-                    self.status = format!("{} chart", kind.label());
-                }
-            }
+            AnnotationClick::SetChartKind(id, kind) => self.set_chart_kind(&sheet, id, kind, state),
             AnnotationClick::ChartCells(id) => {
                 let Some(chart) = self.sheet_charts.iter().find(|chart| chart.id == id) else {
                     self.status = "Chart no longer exists".into();
@@ -112,16 +114,7 @@ impl SheetsApp {
                     self.status = "Choosing the chart's cells".into();
                 }
             }
-            AnnotationClick::DeleteChart(id) => {
-                self.submit(
-                    state,
-                    Workbook::DELETE_CHART.with(verbs::DeleteChart {
-                        sheet,
-                        chart: Id::from_raw(id),
-                    }),
-                );
-                self.status = "Deleted chart".into();
-            }
+            AnnotationClick::DeleteChart(id) => self.delete_chart(sheet, id, state),
             AnnotationClick::Reply(id) => {
                 if self.ask_annotation(&format!("comment:{id}"), "reply", String::new()) {
                     self.status = "Replying to comment".into();
@@ -150,17 +143,67 @@ impl SheetsApp {
                 .into();
             }
             AnnotationClick::DeleteComment(id) => {
-                self.submit(
+                if self.submit(
                     state,
                     Workbook::DELETE_COMMENT.with(verbs::DeleteComment {
                         comment: Id::from_raw(id),
                     }),
-                );
-                self.status = "Deleted comment".into();
+                ) {
+                    self.status = "Deleted comment".into();
+                } else {
+                    self.status = "The comment was not deleted".into();
+                }
             }
         }
         self.reload();
         self.pending.redraw = true;
+    }
+
+    /// Change the kind of the chart `id` on the sheet `sheet`, and say which one it is now.
+    fn set_chart_kind(&mut self, sheet: &Id, id: String, kind: ChartKind, state: &mut Edits<'_>) {
+        let path = Workbook::paths()
+            .sheets
+            .item(sheet)
+            .charts
+            .item(&Id::from_raw(id))
+            .kind;
+        let changed = Invoke::edit(&path.set(kind)).is_ok_and(|invoke| self.submit(state, invoke));
+        // Said either way: the card's kinds show which one is on, and a change that did not land
+        // may not be mistaken for one that did.
+        self.status = if changed {
+            format!("{} chart", kind.label())
+        } else {
+            "The chart was not changed".into()
+        };
+    }
+
+    /// Delete the chart `id` on the sheet `sheet`, leaving what it charted selected.
+    fn delete_chart(&mut self, sheet: Id, id: String, state: &mut Edits<'_>) {
+        // The cells it charted, read before the chart is gone: the mutation this happens in has
+        // already applied the deletion on a replay, so a fresh undo step cannot rely on the
+        // formula engine still holding them.
+        let charted = self
+            .sheet_charts
+            .iter()
+            .find(|chart| chart.id == id)
+            .map(|chart| (chart.start, chart.end));
+        let removed = self.submit(
+            state,
+            Workbook::DELETE_CHART.with(verbs::DeleteChart {
+                sheet,
+                chart: Id::from_raw(id),
+            }),
+        );
+        if !removed {
+            self.status = "The chart was not deleted".into();
+            return;
+        }
+        // The card that stood for the chart was the only place its cells were written down: the
+        // selection takes their place, so what it charted is still there to chart again.
+        if let Some((start, end)) = charted {
+            self.grid.select_range_public(start, end);
+        }
+        self.status = "Deleted chart".into();
     }
 
     pub(super) fn ask_annotation(&mut self, place: &str, action: &str, prefill: String) -> bool {
@@ -360,7 +403,7 @@ impl SheetsApp {
                 && let winit::keyboard::Key::Character(c) = &ke.logical_key
             {
                 if c.as_str().eq_ignore_ascii_case("g") {
-                    self.begin_name_box_edit();
+                    self.begin_name_box_edit(state);
                     *handled = true;
                     return;
                 }
@@ -431,6 +474,14 @@ impl SheetsApp {
             MouseScrollDelta::PixelDelta(pos) => (-pos.x / scale_factor, -pos.y / scale_factor),
         };
         let sideways = dx.abs() > dy.abs();
+        if sideways
+            && self.dock_scroll.overflows_horizontally()
+            && self.dock_rect.contains(self.last_mouse)
+        {
+            self.dock_step(dx);
+            *handled = true;
+            return;
+        }
         let moved = self.grid.on_scroll(dx, dy);
         if sideways && !moved {
             return;
@@ -442,11 +493,7 @@ impl SheetsApp {
     pub(super) fn handle_right_press(&mut self, handled: &mut bool) {
         let p = self.last_mouse;
         if self.tabs_rect.contains(p)
-            && let Some(idx) = self
-                .tab_rects
-                .iter()
-                .find(|(r, _)| r.contains(p))
-                .map(|(_, i)| *i)
+            && let Some(idx) = self.tab_at(p)
         {
             self.open_tab_menu(idx);
             self.pending.redraw = true;
@@ -575,29 +622,7 @@ impl SheetsApp {
         }
 
         if self.tab_rename.is_some() {
-            let outcome = {
-                let Some(rename) = self.tab_rename.as_mut() else {
-                    return false;
-                };
-                rename.editor.apply_layout_external(rename.rect);
-                rename.editor.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor,
-                        modifiers: &modifiers,
-                        state: state.reborrow(),
-                        path: ctx.path,
-                        handled,
-                        focus_target: ctx.focus_target,
-                        node_id: ctx.node_id,
-                        taffy: ctx.taffy,
-                    },
-                );
-                rename.editor.take_outcome()
-            };
-            self.resolve_tab_rename_outcome(state, outcome);
-            self.pending.redraw = true;
-            *handled = true;
+            self.route_tab_rename(event, scale_factor, modifiers, state, handled, ctx);
             return true;
         }
 
@@ -660,6 +685,63 @@ impl SheetsApp {
         }
 
         false
+    }
+
+    /// Route `event` to an open tab rename, and open it no further than its own name.
+    fn route_tab_rename(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: Modifiers,
+        state: &mut Edits<'_>,
+        handled: &mut bool,
+        ctx: &mut PaletteRouteCtx<'_>,
+    ) {
+        // A press anywhere but on the tab's own name finishes the rename,
+        // as a press on a finished entry does in a cell. The editor keeps
+        // nothing it cannot reach: left open, it would hold the keyboard
+        // and take the line typed next into a name nobody is looking at.
+        // The row takes no press this frame; the next one lands where the
+        // person pointed.
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self
+                .tab_rename
+                .as_ref()
+                .is_none_or(|rename| !rename.rect.contains(self.last_mouse))
+        ) {
+            self.tab_rename = None;
+            self.pending.redraw = true;
+            *handled = true;
+            return;
+        }
+        let outcome = {
+            let Some(rename) = self.tab_rename.as_mut() else {
+                return;
+            };
+            rename.editor.apply_layout_external(rename.rect);
+            rename.editor.handle_event(
+                event,
+                &mut ui::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state: state.reborrow(),
+                    path: ctx.path,
+                    handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
+            );
+            rename.editor.take_outcome()
+        };
+        self.resolve_tab_rename_outcome(state, outcome);
+        self.pending.redraw = true;
+        *handled = true;
     }
 
     /// Ctrl+F and Ctrl+H open the window bar's search for find and replace,
@@ -852,17 +934,37 @@ impl SheetsApp {
         );
     }
 
+    /// The card under `p`: the dock's cards stand where it is scrolled to, so the rects held
+    /// for them are lifted by the dock's offset first.
+    fn docked_annotation_at(&self, p: Point) -> Option<Rect> {
+        let shift = Vec2::new(-self.dock_scroll.offset().x, 0.0);
+        self.dock_cards
+            .iter()
+            .map(|(_, rect)| *rect + shift)
+            .find(|rect| rect.contains(p))
+    }
+
     pub(super) fn try_annotation_click(
         &mut self,
         p: Point,
         state: &mut Edits<'_>,
         handled: &mut bool,
     ) -> bool {
+        // The rects in `annotation_clicks` are where the cards were last painted, so only
+        // those showing take the press; one scrolled past the dock's edge takes none. A press
+        // anywhere else on a card is the card's, for a finger that lands between its actions.
         let Some(action) = self
             .annotation_clicks
             .iter()
             .find(|(rect, _)| rect.contains(p))
             .map(|(_, action)| action.clone())
+            .or_else(|| {
+                let card = self.docked_annotation_at(p)?;
+                self.annotation_clicks
+                    .iter()
+                    .find(|(rect, _)| !card.intersect(*rect).is_zero_area())
+                    .map(|(_, action)| action.clone())
+            })
         else {
             return false;
         };
@@ -879,11 +981,15 @@ impl SheetsApp {
         handled: &mut bool,
     ) -> bool {
         if self.name_box_rect.contains(p) {
-            self.begin_name_box_edit();
+            self.begin_name_box_edit(state);
             *handled = true;
             return true;
         }
-        if self.fx_rect.contains(p) {
+        // The "fx" affordance takes the field's leading edge with it: the label is a couple of
+        // letter widths wide, and a finger that means to start a formula should not have to hit
+        // it to the pixel. Starting a formula is never what someone meant by pressing the start
+        // of the field, and the caret they can still place by pressing where the text is.
+        if self.fx_rect.contains(p) || self.fx_lead_rect().contains(p) {
             self.start_formula_entry();
             *handled = true;
             return true;
@@ -902,21 +1008,44 @@ impl SheetsApp {
             return true;
         }
         if self.tabs_rect.contains(p) {
-            if self.add_tab_rect.contains(p) {
+            if self.add_tab_hit_rect.contains(p) {
                 self.add_sheet(state);
                 *handled = true;
                 return true;
             }
-            for (rect, idx) in self.tab_rects.clone() {
-                if rect.contains(p) {
-                    self.switch_sheet(state, idx);
-                    *handled = true;
-                    return true;
-                }
+            if let Some(idx) = self.tab_at(p) {
+                self.switch_sheet(state, idx);
+                *handled = true;
+                return true;
             }
             return true;
         }
-        false
+        // A press on the dock's ground is the dock's: it dismisses a chart's actions, so a
+        // finger that cannot find a card's small More control still has a way out of them.
+        self.dock_rect.contains(p) && self.managed_chart.take().is_some()
+    }
+
+    /// The card a sideways drag over the dock turns to reaches its neighbour in one move, so a
+    /// chart past the dock's edge is a swipe away and not a slow crawl along its ends.
+    fn dock_step(&mut self, sideways: f64) {
+        let (forward_x, width) = (
+            self.dock_scroll.offset().x,
+            self.dock_scroll.content_rect().width(),
+        );
+        let Some((ahead, behind)) = self
+            .dock_cards
+            .iter()
+            .map(|(_, rect)| *rect)
+            .find(|rect| rect.x1 - forward_x > width + 0.5)
+            .map(|next| (next.x0 - forward_x, next.x1 - forward_x))
+        else {
+            return;
+        };
+        let to = if sideways > 0.0 { ahead } else { behind };
+        let shift = Vec2::new(to - self.dock_scroll.offset().x, 0.0);
+        if self.dock_scroll.scroll_by(shift) {
+            self.pending.redraw = true;
+        }
     }
 
     pub(super) fn try_grid_click(

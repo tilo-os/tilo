@@ -32,10 +32,14 @@ impl ChatApp {
             || !self.host_focused
             || self.secret_entry.focused;
         // Without an open conversation the main composer has nowhere to send, so
-        // it takes no keys.
-        let has_target = self.takes_messages();
+        // it takes no keys. While a view is shown alone, neither composer does:
+        // the window is the view's.
+        let has_target = self.takes_messages() && self.composes_here();
         let main = matches!(self.focus, Focus::Main) && !editing && has_target;
-        let thread = matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
+        let thread = matches!(self.focus, Focus::Thread)
+            && self.thread_open.is_some()
+            && !editing
+            && self.composes_here();
         self.composer_main.set_focus(main);
         self.composer_thread.set_focus(thread);
         self.edit_input
