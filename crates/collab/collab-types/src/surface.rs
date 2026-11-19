@@ -1,11 +1,14 @@
 //! An app's public surface as a receiver reads it: the `surface.toml` its
-//! package ships, fetched by content hash.
+//! package ships, kept as content by hash.
 //!
 //! A signed op names the surface its changes are decided against
-//! ([`crate::SignedOp::surface`]). A receiver reads the bytes from its
-//! content store by that hash (`tilo-content`: they reach a device from the
-//! registry or its peers as any content does), parses them once, and
-//! decides each change's claim against the resource the record is
+//! ([`crate::SignedOp::surface`]). A surface is kept and addressed in one
+//! form ([`canonical`]): its JSON with every object's keys in order, so a
+//! package's `surface.toml` and a built-in app's compiled form of the same
+//! surface have one address. A receiver reads those bytes from its content
+//! store by that hash (`tilo-content`: they reach a device from the registry
+//! or its peers as any content does), parses them once, and decides each
+//! change's claim against the resource it names
 //! ([`crate::receipt::ReceiptSurface`]). Until the bytes are here the op is
 //! held.
 
@@ -24,6 +27,44 @@ use crate::receipt::{ReceiptSurface, SurfaceSource, WrittenDocument};
 /// The item step for any item in a footprint.
 pub const ANY_ITEM: &str = "*";
 
+/// The bytes a surface is kept and addressed by: `value` as JSON, every
+/// object's keys in order, so the same surface has one address however it was
+/// written.
+#[must_use]
+pub fn canonical(value: &serde_json::Value) -> String {
+    tilo_failure::ignored!(
+        "a value read as JSON writes as JSON",
+        serde_json::to_string(&ordered(value)).unwrap_or_default()
+    )
+}
+
+/// [`canonical`] of `json`, when it is JSON.
+#[must_use]
+pub fn canonical_json(json: &str) -> Option<String> {
+    serde_json::from_str(json)
+        .ok()
+        .map(|value| canonical(&value))
+}
+
+/// `value` with every object's keys in order.
+fn ordered(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(fields) => {
+            let mut keys: Vec<&String> = fields.keys().collect();
+            keys.sort_unstable();
+            serde_json::Value::Object(
+                keys.into_iter()
+                    .map(|key| (key.clone(), ordered(&fields[key])))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(ordered).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 /// An app's surface file: every resource kind it publishes.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct SurfaceFile {
@@ -36,21 +77,31 @@ pub struct SurfaceFile {
 }
 
 impl SurfaceFile {
-    /// Parse a `surface.toml`.
+    /// Parse a `surface.toml`, and the bytes it is kept and addressed by
+    /// ([`canonical`]).
     ///
     /// # Errors
     /// Bytes that are not a surface file.
-    pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+    pub fn kept(bytes: &[u8]) -> Result<(Self, String), String> {
         let text = std::str::from_utf8(bytes).map_err(|error| error.to_string())?;
         // Through a JSON value: the surface types are then read by the
         // JSON deserializer the rest of the runtime already compiles, not by
         // a second, TOML-specific copy of their whole deserializer.
         let value: serde_json::Value = toml::from_str(text).map_err(|error| error.to_string())?;
-        serde_json::from_value(value).map_err(|error| error.to_string())
+        let file = serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+        Ok((file, canonical(&value)))
+    }
+
+    /// Parse a `surface.toml`.
+    ///
+    /// # Errors
+    /// Bytes that are not a surface file.
+    pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+        Self::kept(bytes).map(|(file, _)| file)
     }
 
     /// Read a surface in the JSON form `tilo_resource::committed_surface!`
-    /// generated from its `surface.toml` at build time.
+    /// wrote from its `surface.toml` at build time.
     ///
     /// # Errors
     /// JSON that is not a surface.
@@ -190,7 +241,7 @@ impl ContentSurfaces {
         if blake3::hash(&bytes).as_bytes() != hash {
             return None;
         }
-        let file = Arc::new(SurfaceFile::parse(&bytes).ok()?);
+        let file = Arc::new(SurfaceFile::from_json(std::str::from_utf8(&bytes).ok()?).ok()?);
         self.parsed.lock_recover().insert(*hash, Arc::clone(&file));
         Some(file)
     }
@@ -301,11 +352,12 @@ writes = ["document", "comments.*"]
 "#;
 
     fn surfaces() -> (ContentSurfaces, [u8; 32]) {
-        let hash = *blake3::hash(FILE.as_bytes()).as_bytes();
+        let (_, kept) = SurfaceFile::kept(FILE.as_bytes()).expect("the fixture is a surface");
+        let hash = *blake3::hash(kept.as_bytes()).as_bytes();
         let hex = hex::encode(hash);
         (
             ContentSurfaces::new(move |_, wanted| {
-                (wanted == hex).then(|| FILE.as_bytes().to_vec())
+                (wanted == hex).then(|| kept.as_bytes().to_vec())
             }),
             hash,
         )
@@ -408,10 +460,17 @@ writes = ["document", "comments.*"]
                 let Ok(bytes) = std::fs::read(&file) else {
                     continue;
                 };
-                let surface = SurfaceFile::parse(&bytes)
+                let (surface, kept) = SurfaceFile::kept(&bytes)
                     .unwrap_or_else(|error| panic!("{}: {error}", file.display()));
                 assert!(surface.resource(None).is_some(), "{}", file.display());
-                // The form `committed_surface!` generates for a built-in app reads as the file does.
+                assert_eq!(
+                    SurfaceFile::parse(&bytes).expect("it parses"),
+                    surface,
+                    "{}",
+                    file.display()
+                );
+                // The form `committed_surface!` writes for a built-in app reads as the
+                // file does, and is kept as the package's file of it is.
                 let generated = serde_json::to_string(
                     &toml::from_str::<serde_json::Value>(
                         std::str::from_utf8(&bytes).expect("a surface file is UTF-8"),
@@ -424,6 +483,12 @@ writes = ["document", "comments.*"]
                         .unwrap_or_else(|error| panic!("{}: {error}", file.display())),
                     surface,
                     "{}",
+                    file.display()
+                );
+                assert_eq!(
+                    canonical_json(&generated).as_deref(),
+                    Some(kept.as_str()),
+                    "{} is one address as a package's file and as a built-in's",
                     file.display()
                 );
                 parsed += 1;

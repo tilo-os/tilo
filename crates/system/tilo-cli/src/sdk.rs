@@ -94,6 +94,8 @@ pub enum Lang {
 pub struct App {
     pub id: String,
     pub title: String,
+    /// Its surface, in the form it is kept by
+    /// (`collab_types::surface::canonical`).
     pub surface: String,
 }
 
@@ -186,10 +188,13 @@ fn app_of(dir: &Path) -> Result<App> {
     };
     let manifest: Manifest = toml::from_str(&read(MANIFEST_FILE)?)
         .with_context(|| format!("{}", dir.join(MANIFEST_FILE).display()))?;
+    let file = read(SURFACE_FILE)?;
+    let (_, surface) = SurfaceFile::kept(file.as_bytes())
+        .map_err(|error| anyhow!("{}: {error}", dir.join(SURFACE_FILE).display()))?;
     Ok(App {
         id: manifest.package.id,
         title: manifest.package.name,
-        surface: read(SURFACE_FILE)?,
+        surface,
     })
 }
 
@@ -305,8 +310,8 @@ enum Ty {
 type Names = BTreeMap<String, String>;
 
 fn types_of(app: &App) -> Result<Types> {
-    let file = SurfaceFile::parse(app.surface.as_bytes())
-        .map_err(|error| anyhow!("{}: {error}", app.id))?;
+    let file =
+        SurfaceFile::from_json(&app.surface).map_err(|error| anyhow!("{}: {error}", app.id))?;
     let surfaces = &file.resources;
     let kinds = class_names(surfaces);
     let mut types = Types {

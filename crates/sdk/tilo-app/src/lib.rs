@@ -252,10 +252,10 @@ macro_rules! dev_reload_entry {
 /// The definition of the [`framework::ResourceApp`] `$app` for a process that
 /// starts the app itself (the shell's built-in apps, the web desktop, an
 /// agent's member process), naming the app crate's committed `surface.toml`
-/// as its surface, parsed from the form generated while the app built: such a
-/// process loads no package whose payload names one. An app's library defines
-/// its `definition()` with it; the app's own binary uses
-/// [`framework::definition`], so it does not carry the file.
+/// as its surface through the JSON form `tilo_resource::committed_surface!`
+/// wrote while the app built: such a process loads no package whose payload
+/// names one. An app's library defines its `definition()` with it; the app's
+/// own binary uses [`framework::definition`], so it does not carry the file.
 #[macro_export]
 macro_rules! built_in_definition {
     ($app:ty) => {{
@@ -268,12 +268,12 @@ macro_rules! built_in_definition {
 }
 
 /// Name the committed surface of an app a process starts itself, unless a
-/// package already named one. Called by [`built_in_definition!`] with the file
-/// and the parsed form generated from it while the app built.
+/// package already named one. Called by [`built_in_definition!`] with the
+/// JSON form generated from the file while the app built.
 #[doc(hidden)]
-pub fn register_built_in_surface(app_id: &str, surface: Option<(&'static [u8], &'static str)>) {
-    if let Some((bytes, generated)) = surface {
-        ui_core::app_surface::register_built_in(app_id, bytes, generated);
+pub fn register_built_in_surface(app_id: &str, surface: Option<&'static str>) {
+    if let Some(json) = surface {
+        ui_core::app_surface::register_built_in(app_id, json);
     }
 }
 

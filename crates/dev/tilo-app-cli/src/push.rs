@@ -200,7 +200,8 @@ fn newest_package(dist: &Path) -> Result<PathBuf> {
 
 /// The workspace's `install-app` for the package `package` built from the app in
 /// `app_dir`: the surface its changes name (the BLAKE3 of the app's
-/// `surface.toml`), the package's `tapp:` hash and the key that signed it.
+/// `surface.toml` in the form it is kept by), the package's `tapp:` hash and
+/// the key that signed it.
 pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
     let file =
         std::fs::File::open(package).with_context(|| format!("open {}", package.display()))?;
@@ -222,11 +223,16 @@ pub fn app_push(app_dir: &Path, package: &Path, dev: bool) -> Result<Push> {
             surface_file.display()
         )
     })?;
+    let (_, kept) = collab_types::surface::SurfaceFile::kept(&surface)
+        .map_err(|error| anyhow::anyhow!("{}: {error}", surface_file.display()))?;
     let manifest = &tapp.meta.manifest.package;
     let argument = object([
         ("app", json!(manifest.id)),
         ("version", json!(manifest.version)),
-        ("surface", json!(blake3::hash(&surface).to_hex().as_str())),
+        (
+            "surface",
+            json!(blake3::hash(kept.as_bytes()).to_hex().as_str()),
+        ),
         ("package", json!(hex::encode(tapp.meta.id.0))),
         (
             "publisher",

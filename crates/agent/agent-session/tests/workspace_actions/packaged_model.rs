@@ -307,7 +307,14 @@ async fn the_packaged_action(process: tilo_clock::testing::OwnProcess) {
             WorkspaceMembershipCommand::InstallApp(AppRelease {
                 app: TASKS.into(),
                 version: "1.0.0".into(),
-                surface: blake3::hash(TASKS_SURFACE).to_hex().to_string(),
+                surface: blake3::hash(
+                    collab_types::surface::SurfaceFile::kept(TASKS_SURFACE)
+                        .expect("the app's surface parses")
+                        .1
+                        .as_bytes(),
+                )
+                .to_hex()
+                .to_string(),
                 package: blake3::hash(&package).to_hex().to_string(),
                 publisher: hex::encode(server_device.cert.user_public_key),
                 file: Some(file),

@@ -626,12 +626,14 @@ type = "String"
     ) {
         return;
     }
-    let hash = *blake3::hash(SURFACE.as_bytes()).as_bytes();
+    let (_, kept) = collab_types::surface::SurfaceFile::kept(SURFACE.as_bytes())
+        .expect("the fixture is a surface");
+    let hash = *blake3::hash(kept.as_bytes()).as_bytes();
     let hex = hex::encode(hash);
     crate::common::install_process_surfaces(
         collab_types::Surfaces::from_source(std::sync::Arc::new(
             collab_types::surface::ContentSurfaces::new(move |_, wanted| {
-                (wanted == hex).then(|| SURFACE.as_bytes().to_vec())
+                (wanted == hex).then(|| kept.clone().into_bytes())
             }),
         )),
         move |_| Some(hash),
@@ -728,12 +730,14 @@ params = []
     ) {
         return;
     }
-    let hash = *blake3::hash(SURFACE.as_bytes()).as_bytes();
+    let (_, kept) = collab_types::surface::SurfaceFile::kept(SURFACE.as_bytes())
+        .expect("the fixture is a surface");
+    let hash = *blake3::hash(kept.as_bytes()).as_bytes();
     let hex = hex::encode(hash);
     crate::common::install_process_surfaces(
         collab_types::Surfaces::from_source(std::sync::Arc::new(
             collab_types::surface::ContentSurfaces::new(move |_, wanted| {
-                (wanted == hex).then(|| SURFACE.as_bytes().to_vec())
+                (wanted == hex).then(|| kept.clone().into_bytes())
             }),
         )),
         move |_| Some(hash),

@@ -222,9 +222,9 @@ pub struct CatalogueRow {
     /// discloses it, when the provider declared one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visibility: Option<RowVisibility>,
-    /// For an application, the surface (`surface.toml`) its signed package
-    /// publishes: what an agent generates its typed client from, without the
-    /// app having to open.
+    /// For an application, the surface its signed package publishes, in the
+    /// form it is kept by (`collab_types::surface::canonical`): what an agent
+    /// generates its typed client from, without the app having to open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<String>,
 }

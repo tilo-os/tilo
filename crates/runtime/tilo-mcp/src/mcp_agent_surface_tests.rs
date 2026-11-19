@@ -23,9 +23,13 @@ tilo_test_env::scenario! {
                     .surface_bytes(app.id)
                     .await
                     .unwrap_or_else(|| panic!("{} answers no surface", app.id));
+                let kept = collab_types::surface::canonical_json(
+                    app_fleet::surface(app.id).expect("the fleet compiles its surface in"),
+                )
+                .expect("the fleet's surface is one");
                 assert_eq!(
                     String::from_utf8_lossy(&surface),
-                    app_fleet::surface(app.id).expect("the fleet compiles its surface in"),
+                    kept,
                     "{}",
                     app.id
                 );

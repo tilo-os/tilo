@@ -1972,8 +1972,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
-    /// The surface `app_id` publishes: the one this process runs it with, or
-    /// the signed package the workspace has installed.
+    /// The surface `app_id` publishes, in the form it is kept by
+    /// ([`collab_types::surface::canonical`]): the one this process runs it
+    /// with, or the signed package the workspace has installed.
     async fn surface_bytes(&self, app_id: &str) -> Option<Vec<u8>> {
         if let Some(bytes) = collab_types::app_surface::bytes_of(app_id) {
             return Some(bytes.to_vec());
@@ -1982,7 +1983,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             && let Some(surface) = installed
                 .iter()
                 .find(|app| app.app_id == app_id)
-                .and_then(|app| app.surface.clone())
+                .and_then(|app| app.surface.as_deref())
+                .and_then(collab_types::surface::canonical_json)
         {
             return Some(surface.into_bytes());
         }
@@ -1990,8 +1992,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // when this computer has neither started it nor kept its package: the
         // fleet compiles each app's surface in, so every installed app's types
         // are readable on a fresh workspace.
-        if let Some(surface) = app_fleet::surface(app_id) {
-            return Some(surface.as_bytes().to_vec());
+        if let Some(surface) = app_fleet::surface(app_id)
+            && let Some(kept) = collab_types::surface::canonical_json(surface)
+        {
+            return Some(kept.into_bytes());
         }
         self.host.installed_surface(app_id).await.flatten()
     }

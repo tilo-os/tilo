@@ -18064,6 +18064,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "clap",
+ "collab-types",
  "fluent",
  "fluent-syntax",
  "getrandom 0.4.3",
