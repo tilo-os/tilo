@@ -380,9 +380,13 @@ struct Shared {
     /// Sideways wheel travel the apps of these windows left to the shell,
     /// by tab, taken on the next pass ([`DesktopHandle::sideways_wheel`]).
     sideways: Vec<(TabId, f64)>,
-    /// What wakes the host holding this shell for a change queued on its handle
+    /// What asks for this shell's next pass when a change waits for it
     /// ([`DesktopHandle::set_wake`]).
     wake: crate::wake::Waker,
+    /// What saves and shares a changed tree ([`DesktopHandle::set_publish`]), and the revision
+    /// it last had.
+    publish: Option<crate::wake::Publish>,
+    published: u64,
 }
 
 /// The host's side of a mounted [`DesktopSurface`]: read the tree, publish navigation, queue
@@ -502,10 +506,18 @@ impl DesktopHandle {
         })
     }
 
-    /// Have `wake` run whenever what this handle commands or changes is waiting for the shell's next
-    /// pass: the host holding the shell asks for that frame, however little of the shell shows.
-    pub fn set_wake(&self, wake: Rc<dyn Fn()>) {
+    /// Call `wake` whenever what this handle commands or changes, or an answer to work the shell
+    /// started, waits for the shell's next pass: `wake` asks for the frame that takes it up, however
+    /// little of the shell shows.
+    pub fn set_wake(&self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
         self.shared.borrow_mut().wake.set(wake);
+    }
+
+    /// Have `publish` save and share the tree as soon as a pass changed it: right after the
+    /// commands of a pass applied, before the windows they opened are built and drawn, and once
+    /// more at the end of the pass.
+    pub fn set_publish(&self, publish: Rc<dyn Fn(&DesktopHandle)>) {
+        self.shared.borrow_mut().publish = Some(publish);
     }
 
     /// The apps whose windows keep what they show to themselves: a password manager's, an app that
@@ -566,17 +578,16 @@ impl DesktopHandle {
         navigation::snapshot_with(&shared.tree, generation, applications, &shared.presentation)
     }
 
-    /// Ask the host for the shell's next pass: something the shell was told to
-    /// do waits for it — a command, a search opening, a card chosen on the
-    /// empty shell, which the host carries out on that pass. A host that drew
-    /// the press and then went quiet would otherwise carry it out whenever
-    /// something else woke it.
+    /// Ask for the shell's next pass: something the shell was told to do waits
+    /// for it — a command, a search opening, a card chosen on the empty shell,
+    /// carried out on that pass. A page that drew the press and then went quiet
+    /// would otherwise carry it out whenever something else woke it.
     pub fn wake(&self) {
         self.shared.borrow().wake.wake();
     }
 
     /// Admit `command` against the current tree and queue it for the next
-    /// update pass. The host schedules a frame after an accepted command.
+    /// update pass, which an accepted command asks for.
     ///
     /// # Errors
     /// As [`navigation::admit`], and refuses a pan, scroll or history move
@@ -2116,6 +2127,7 @@ impl Widget for DesktopSurface {
     }
 
     fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let _wake = self.shared.borrow().wake.enter();
         // Which apps stopped answering is the host's to report; a new report is a layout of its
         // own, so their cards are placed this frame.
         let unresponsive = self.shared.borrow().unresponsive_revision;
@@ -2182,6 +2194,7 @@ impl Widget for DesktopSurface {
         // appeared in.
         let artwork = self.sync_window_artwork();
         let drawn = self.sync_drawn();
+        self.publish();
         self.seen_search = self.shared.borrow().search_revision;
         changed
             || drawn
@@ -2400,6 +2413,7 @@ impl Widget for DesktopSurface {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let _wake = self.shared.borrow().wake.enter();
         // A window brought into view for the person waits while their hands are busy here.
         self.note_input(event);
         // Where the pointer is, read before anything answers the event: the strip asks it which

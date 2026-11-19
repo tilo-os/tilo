@@ -148,7 +148,7 @@ impl Desktop {
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .push((asked_node, *may));
-                        woken.store(true, std::sync::atomic::Ordering::Release);
+                        crate::desktop::wake(&woken);
                     }
                     let ask = answered
                         .lock()

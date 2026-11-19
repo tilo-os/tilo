@@ -10,7 +10,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_desktop::desktop_host::{BackgroundLayer, DesktopAsk};
@@ -69,7 +69,7 @@ struct Shell {
     frame: FrameHarness,
     handle: DesktopHandle,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
-    woken: Rc<Cell<u64>>,
+    woken: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Shell {
@@ -79,10 +79,12 @@ impl Shell {
         let (surface, handle) = DesktopSurface::new(empty_shell(), 7, Box::new(Apps));
         handle.set_viewport_width(1280.0);
         let asks: Rc<RefCell<Vec<DesktopAsk>>> = Rc::default();
-        let woken = Rc::new(Cell::new(0u64));
+        let woken = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         handle.set_wake({
-            let woken = Rc::clone(&woken);
-            Rc::new(move || woken.set(woken.get().wrapping_add(1)))
+            let woken = std::sync::Arc::clone(&woken);
+            std::sync::Arc::new(move || {
+                woken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
         });
         let layer = BackgroundLayer::new(
             Box::new(surface),
@@ -155,13 +157,13 @@ fn one_press_on_the_welcome_card_opens_one_window_on_the_pass_it_asks_for() {
         "one press asks for Notes once"
     );
     assert!(
-        shell.woken.get() > 0,
+        shell.woken.load(std::sync::atomic::Ordering::Relaxed) > 0,
         "the shell asked its host for the pass that opens it, rather than leaving the choice \
          waiting for whatever frame came next"
     );
 
     // The host carries the choice out as a host does, and the pass it asks for draws the window.
-    let woken_before = shell.woken.get();
+    let woken_before = shell.woken.load(std::sync::atomic::Ordering::Relaxed);
     shell
         .handle
         .dispatch(ChromeEffect::OpenApp {
@@ -172,7 +174,7 @@ fn one_press_on_the_welcome_card_opens_one_window_on_the_pass_it_asks_for() {
         })
         .expect("Notes opens on the shell");
     assert!(
-        shell.woken.get() > woken_before,
+        shell.woken.load(std::sync::atomic::Ordering::Relaxed) > woken_before,
         "a queued open asks for the pass that applies it"
     );
     shell.frame.relayout();

@@ -694,7 +694,7 @@ impl BrowserShell {
         let wake = Arc::clone(&sources.wake);
         let session = Arc::clone(&sources.session);
         let caller = sources.caller.clone();
-        handle.set_wake(page_wake(&wake, &shared));
+        handle.set_wake(page_wake(&shared));
         let (chrome, intents) = page_chrome(&handle, &offers, &wake, sources);
         let source = Rc::new(HostChrome::new(Rc::clone(&chrome)));
         let tree = handle.read(Clone::clone);
@@ -1459,7 +1459,7 @@ impl BrowserShell {
                     }
                     Ok(_) => {}
                 }
-                woken.store(true, std::sync::atomic::Ordering::Release);
+                crate::desktop::wake(&woken);
             }),
         );
         if let Err(error) = asked {
@@ -1870,15 +1870,9 @@ fn workspace_settings_sheet(
 /// agent. The shell is host work the next frame takes, which is also the frame that presents what
 /// that pass did, so the wake marks the work and asks for the frame: a shell left to itself would
 /// carry the choice out whenever an unrelated frame came, seconds or a minute later.
-fn page_wake(wake: &Arc<dyn Fn() + Send + Sync>, shared: &crate::desktop::Shared) -> Rc<dyn Fn()> {
-    let wake = Arc::clone(wake);
-    let shared = shared.clone();
-    Rc::new(move || {
-        shared
-            .woken
-            .store(true, std::sync::atomic::Ordering::Release);
-        wake();
-    })
+fn page_wake(shared: &crate::desktop::Shared) -> Arc<dyn Fn() + Send + Sync> {
+    let woken = Arc::clone(&shared.woken);
+    Arc::new(move || crate::desktop::wake(&woken))
 }
 
 /// The launchpad's words in the page: what Tilo is and that work is kept

@@ -135,6 +135,8 @@ impl Shared {
             bars: super::window_bars::Bars::default(),
             sideways: Vec::new(),
             wake: crate::wake::Waker::default(),
+            publish: None,
+            published: 1,
         }
     }
 }

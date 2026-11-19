@@ -406,7 +406,9 @@ pub fn desktop_with(
     // the handle asks for it, so a desktop that draws nothing of its own still
     // keeps its windows where the person put them.
     let asked = desktop.borrow().host.asking();
-    waking_handle.set_wake(Rc::new(move || asked.set(true)));
+    waking_handle.set_wake(std::sync::Arc::new(move || {
+        asked.store(true, std::sync::atomic::Ordering::Release);
+    }));
     (
         ShellDesktop {
             desktop: Rc::clone(&desktop),
@@ -913,7 +915,11 @@ impl ShellSurface for ShellDesktop {
             // that frame, as it does under the shell
             // ([`crate::shell::Aside`]), rather than whenever the next frame
             // comes for another reason. A desktop nobody asked draws nothing.
-            if desktop.host.asking().get() {
+            if desktop
+                .host
+                .asking()
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
                 desktop.host.relayout();
             }
         }

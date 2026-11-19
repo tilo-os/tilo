@@ -211,6 +211,6 @@ fn waking(
 ) -> std::sync::Arc<dyn Fn() + Send + Sync> {
     let woken = std::sync::Arc::clone(woken);
     std::sync::Arc::new(move || {
-        woken.store(true, std::sync::atomic::Ordering::Release);
+        crate::desktop::wake(&woken);
     })
 }

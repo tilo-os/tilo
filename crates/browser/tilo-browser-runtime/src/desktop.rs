@@ -270,6 +270,14 @@ impl LateFeedback {
     }
 }
 
+/// Mark the desktop's next pass as work and ask the page's loop for the frame that draws it: the one
+/// way a change that reaches the desktop from outside a frame (an answer, a reply, a wake) asks to
+/// be shown. A flag alone waited for whatever drew next, seconds or a minute later.
+pub(crate) fn wake(woken: &AtomicBool) {
+    woken.store(true, Ordering::Release);
+    crate::browser::wake_desktops();
+}
+
 impl Shared {
     /// Install the feedback startup the page registered after the desktop
     /// mounted; whether it did just now.
@@ -462,8 +470,7 @@ impl Shared {
     /// an agent's "Open card" asked Console for could stay unopened on a page with nothing else
     /// to draw.
     pub fn wake(&self) {
-        self.woken.store(true, Ordering::Release);
-        crate::browser::wake_desktops();
+        wake(&self.woken);
     }
 
     /// The workspace cannot answer this page now, for `cause`, or can again (`None`): the windows

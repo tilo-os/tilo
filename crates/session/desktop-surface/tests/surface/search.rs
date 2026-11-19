@@ -163,3 +163,141 @@ fn the_desktops_chord_opens_the_desktops_search_over_a_windows_own() {
         "a press over the shell's own search closes it"
     );
 }
+
+/// A source that answers on a worker once the test lets it: what a source reading a disk or a
+/// service is, whose answer comes after the pass that asked it.
+struct Held(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+impl tilo_desktop_search::Source for Held {
+    fn id(&self) -> &'static str {
+        "plan"
+    }
+
+    fn query(&self, needle: &str) -> Vec<tilo_desktop_search::Hit> {
+        let (answers, opened) = &*self.0;
+        drop(
+            opened
+                .wait_while(
+                    answers
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    |answers| !*answers,
+                )
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if !needle.contains("quarterly") {
+            return Vec::new();
+        }
+        vec![tilo_desktop_search::Hit {
+            row: None,
+            preview: None,
+            faces: Vec::new(),
+            outcome: None,
+            kind: ui::search::system::ResourceKind::Note,
+            provider: "plan".into(),
+            id: "quarterly-plan".into(),
+            title: "Quarterly plan".into(),
+            subtitle: None,
+            facts: Vec::new(),
+            score: ui::search::system::MAX_PROVIDER_SCORE,
+            icon: None,
+            target: tilo_desktop_search::Target::Window { tab: 0, app: None },
+        }]
+    }
+}
+
+/// What adds [`Held`] to the shell's search.
+struct HeldSearch(std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+
+impl tilo_desktop_surface::SearchHost for HeldSearch {
+    fn feed(&self, _: &str, _: &Scope) -> tilo_desktop_surface::SearchHostFeed {
+        tilo_desktop_surface::SearchHostFeed {
+            sources: vec![tilo_desktop_search::Held::new(Held(std::sync::Arc::clone(
+                &self.0,
+            )))],
+            ..Default::default()
+        }
+    }
+
+    fn performs(&self, _: &tilo_desktop_search::Target) -> bool {
+        false
+    }
+}
+
+/// A source that answers after the pass that asked it asks for the shell's next pass, with no
+/// pass drawing: a page that draws only when asked shows the row then, rather than whenever
+/// something else happens to draw.
+#[test]
+fn a_search_answer_after_the_pass_asks_for_the_next_pass() {
+    let held = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let mut minter = IdMinter::new(7);
+    let scratch = tab(&mut minter, "Scratch");
+    let tree = seed_tree(&mut minter, "Office", vec![scratch]);
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Catalogue));
+    handle.set_viewport_width(1200.0);
+    let wakes = std::sync::Arc::new((std::sync::Mutex::new(0_usize), std::sync::Condvar::new()));
+    handle.set_wake({
+        let wakes = std::sync::Arc::clone(&wakes);
+        std::sync::Arc::new(move || {
+            let (count, woken) = &*wakes;
+            *count
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+            woken.notify_all();
+        })
+    });
+    handle.set_search_host(Rc::new(HeldSearch(std::sync::Arc::clone(&held))));
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::MemberId::person("tester"),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver.relayout();
+    let mut chrome = chrome_at(&handle, (1200, 800));
+    handle.toggle_search();
+    driver.relayout();
+    chrome.relayout();
+    chrome.type_text("quarterly");
+    chrome.relayout();
+    driver.relayout();
+    chrome.relayout();
+    // The passes asked the source, which has not answered: the wakes so far are theirs.
+    let (count, woken) = &*wakes;
+    let before = *count
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    let (answers, opened) = &*held;
+    *answers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+    opened.notify_all();
+    let (after, _) = woken
+        .wait_timeout_while(
+            count
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            support::SEARCH_STEP,
+            |count| *count == before,
+        )
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert!(
+        *after > before,
+        "the source answered and nothing asked for the pass that shows it"
+    );
+    drop(after);
+    settle_search(&mut driver, &mut chrome, &handle);
+    assert!(
+        handle
+            .search_rows()
+            .1
+            .iter()
+            .any(|row| row.title == "Quarterly plan"),
+        "the pass the answer asked for shows its row: {:?}",
+        handle.search_rows()
+    );
+}

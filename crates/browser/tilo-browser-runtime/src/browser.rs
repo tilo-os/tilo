@@ -1429,17 +1429,13 @@ fn mount_search(
     // The workspace's host, over the session this page holds with it: what it finds in the
     // records this page never opened. Its answer arrives between the shell's passes, so it asks
     // for the shell's next pass, which lists it, as the shell's own wake does.
-    let shell = proxy()?;
     let woken = Arc::clone(woken);
     let host = config.peer.and_then(|peer| {
         let workspace = crate::peer::workspace_id(&config.workspace).ok()?;
         let search = tilo_actions::remote::ActionProvider::resource_search(
             &crate::peer_sync::actions_of(peer, workspace)?,
         )?;
-        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            woken.store(true, std::sync::atomic::Ordering::Release);
-            let _ = shell.send_event(id);
-        });
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || crate::desktop::wake(&woken));
         Some(crate::page_search::WorkspaceSearch {
             search,
             workspace: config.workspace.clone(),
@@ -1528,6 +1524,25 @@ fn present_desktop(
     )
     .map_err(error)?;
     let persistence = Rc::new(persistence);
+    // What a pass changed of the shell is saved and sent to the workspace as soon as the pass made
+    // it, before the windows it opened are built and drawn: another person's page shows a window
+    // opened here without waiting for the frame that builds it here.
+    handle.set_publish({
+        let persistence = Rc::downgrade(&persistence);
+        let peer = config.peer;
+        Rc::new(move |handle| {
+            if let Some(persistence) = persistence.upgrade()
+                && let Err(error) = persistence.save(handle)
+            {
+                web_sys::console::warn_1(&JsValue::from_str(&format!(
+                    "Browser runtime: desktop not saved: {error}"
+                )));
+            }
+            if let Some(peer) = peer {
+                crate::replicated::publish(peer);
+            }
+        })
+    });
     let here = tilo_desktop::here::Here::default();
     let people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>> = Rc::default();
     let activity = serve_history(

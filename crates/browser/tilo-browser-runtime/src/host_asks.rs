@@ -3,7 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use tilo_server_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
@@ -64,7 +64,7 @@ impl HostAsks {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push((id, reply));
-                woken.store(true, Ordering::Release);
+                crate::desktop::wake(&woken);
             }),
         );
         match asked {

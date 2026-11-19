@@ -604,14 +604,14 @@ impl Overlays {
     /// Ask for the next pass of whatever draws what the stack holds, set by the host that draws it:
     /// a surface the stack takes down is one the widget showing it has to take up a pass to close,
     /// and nothing else tells it the press went down.
-    pub fn wake_with(&self, wake: Rc<std::cell::Cell<bool>>) {
+    pub fn wake_with(&self, wake: std::sync::Arc<std::sync::atomic::AtomicBool>) {
         *self.0.borrow_mut().wake.borrow_mut() = Some(wake);
     }
 
     /// The stack changed under what draws it: let it take up a pass.
     fn woke(&self) {
         if let Some(wake) = self.0.borrow().wake.borrow().as_ref() {
-            wake.set(true);
+            wake.store(true, std::sync::atomic::Ordering::Release);
         }
     }
 
@@ -1015,7 +1015,7 @@ struct Stack {
     press_over: bool,
     /// What draws the surfaces the stack holds, asked for its next pass whenever the stack changes
     /// under it ([`Overlays::wake_with`]).
-    wake: std::cell::RefCell<Option<Rc<std::cell::Cell<bool>>>>,
+    wake: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     /// The shell's surface up.
     here: Overlay,
     revision: u64,
@@ -1242,15 +1242,15 @@ mod tests {
         phase a_change_in_the_stack_asks_what_draws_it_for_a_pass;
         {
             let overlays = overlays();
-            let asked = Rc::new(std::cell::Cell::new(false));
-            overlays.wake_with(Rc::clone(&asked));
-            assert!(!asked.replace(false), "nothing asked yet");
+            let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            overlays.wake_with(std::sync::Arc::clone(&asked));
+            assert!(!asked.swap(false, std::sync::atomic::Ordering::Relaxed), "nothing asked yet");
 
             overlays.open(Part::WorkspaceMenu, None);
-            assert!(asked.replace(false), "the menu came up");
+            assert!(asked.swap(false, std::sync::atomic::Ordering::Relaxed), "the menu came up");
             overlays.dismiss(Part::WorkspaceMenu);
             assert!(
-                asked.replace(false),
+                asked.swap(false, std::sync::atomic::Ordering::Relaxed),
                 "a press outside took it down: the widget has to close it"
             );
             // The widget closing it follows the stack, which hears that: what the widget shows next is
@@ -1260,15 +1260,15 @@ mod tests {
                 !overlays.awaiting_close(Part::WorkspaceMenu),
                 "the widget followed the stack"
             );
-            assert!(asked.replace(false), "the widget followed it");
+            assert!(asked.swap(false, std::sync::atomic::Ordering::Relaxed), "the widget followed it");
             assert!(
-                !asked.replace(false),
+                !asked.swap(false, std::sync::atomic::Ordering::Relaxed),
                 "and nothing is left to draw after that"
             );
             overlays.open(Part::QuickSettings, None);
-            assert!(asked.replace(false), "another surface came up");
+            assert!(asked.swap(false, std::sync::atomic::Ordering::Relaxed), "another surface came up");
             overlays.close(Part::QuickSettings);
-            assert!(asked.replace(false), "and went down");
+            assert!(asked.swap(false, std::sync::atomic::Ordering::Relaxed), "and went down");
         }
 
         phase a_dismissed_surface_stays_down_for_the_press_that_dismissed_it;
