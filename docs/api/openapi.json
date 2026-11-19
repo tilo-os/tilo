@@ -17108,12 +17108,6 @@
           "null"
         ]
       },
-      "files.folder.refresh.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "files.folder.hand-over.Arguments": {
         "type": "object",
         "properties": {
@@ -33303,12 +33297,6 @@
       "resource": "files.folder",
       "action": "revert",
       "arguments": "#/components/schemas/files.folder.revert.Arguments"
-    },
-    {
-      "app": "so.tilo.file-explorer",
-      "resource": "files.folder",
-      "action": "refresh",
-      "arguments": "#/components/schemas/files.folder.refresh.Arguments"
     },
     {
       "app": "so.tilo.file-explorer",

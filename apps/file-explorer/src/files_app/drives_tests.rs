@@ -238,11 +238,12 @@ fn drives_are_published() {
     assert_eq!(resources[0].id.as_str(), "files.drive:nvme0n1p3:1");
     assert_eq!(resources[0].kind, "files.drive");
     assert_eq!(resources[0].label, "Windows");
-    assert!(
-        resources
+    assert!(resources.iter().all(|resource| {
+        resource
+            .actions
             .iter()
-            .all(|resource| resource.actions.iter().any(|action| action.id == "open"))
-    );
+            .any(|action| action.id == "open-drive")
+    }));
     assert!(
         resources[1]
             .presentation

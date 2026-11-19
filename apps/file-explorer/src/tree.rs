@@ -24,8 +24,6 @@ use ui::framework::{
 };
 use ui::i18n::EmbeddedCatalog;
 use ui::icons::Icon;
-use ui::tilo_actions::ActionBinding;
-use ui::tilo_actions::remote::ApplicationLaunch;
 use ui::tilo_resource::Atom;
 use ui::widget::controls::ActionControls;
 use ui::widget::{
@@ -1126,22 +1124,7 @@ impl TreeBrowser {
     /// a capture to Photos: the app's own `open`, with the hash bound by the
     /// row that chose it.
     fn handoff(app: &str, label: &str) -> Option<ActionEmitter<String>> {
-        let spec =
-            ApplicationLaunch::content_spec(app, "open", label, &t("files-tree-open-detail"));
-        let row = ui::framework::LiveRow::typed::<ui::framework::Application>(
-            format!("{app}.app"),
-            label,
-        )
-        .operation(spec.clone());
-        let binding = ActionBinding::new(&row, &spec, |hash: String| {
-            let mut arguments = serde_json::Map::new();
-            arguments.insert("content_hash".into(), serde_json::Value::String(hash));
-            arguments
-        })
-        .ok();
-        // The spec is this app's own, built from the resource a line above:
-        // one it refuses is a change here, and the file stays unopened.
-        binding.map(ActionEmitter::new)
+        ui::framework::ContentHandoff::new(app, label, t("files-tree-open-detail")).emitter("open")
     }
 }
 

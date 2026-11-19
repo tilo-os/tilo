@@ -647,28 +647,33 @@ impl FilesState {
             .entries
             .iter()
             .map(|entry| {
-                let mut row = LiveRow::typed::<crate::row_types::CloudEntry>(
+                let mut bindings = ui::tilo_resource::RowBindings::new().bind(
+                    FilesEffect::SELECT_CLOUD,
+                    [("entry", serde_json::Value::String(entry.id.clone()))],
+                );
+                if entry.kind == ImportKind::Folder {
+                    bindings = bindings.bind(
+                        FilesEffect::BROWSE_CLOUD,
+                        [
+                            (
+                                "account",
+                                serde_json::Value::String(self.cloud.account.clone()),
+                            ),
+                            ("folder", serde_json::json!(Some(entry.id.clone()))),
+                        ],
+                    );
+                }
+                let row = LiveRow::typed_with::<crate::row_types::CloudEntry>(
                     format!("files.cloud-entry:{}", hex::encode(&entry.id)),
                     entry.name.clone(),
+                    &bindings,
                 )
-                .operation(crate::effects::row_action(
-                    &FilesEffect::SelectCloud {
-                        entry: entry.id.clone(),
-                    },
-                    "select",
-                    t("files-cloud-select"),
-                ));
+                .labelled(FilesEffect::SELECT_CLOUD, t("files-cloud-select"));
                 if entry.kind == ImportKind::Folder {
-                    row = row.operation(crate::effects::row_action(
-                        &FilesEffect::BrowseCloud {
-                            account: self.cloud.account.clone(),
-                            folder: Some(entry.id.clone()),
-                        },
-                        "open",
-                        t("files-menu-open"),
-                    ));
+                    row.labelled(FilesEffect::BROWSE_CLOUD, t("files-menu-open"))
+                } else {
+                    row
                 }
-                row
             })
             .collect()
     }

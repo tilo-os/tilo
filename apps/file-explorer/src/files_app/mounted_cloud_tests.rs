@@ -102,7 +102,11 @@ fn synced_native_rows_describe_sources_and_choose_independent_editable_copies() 
                 .find(|entry| entry.name == name)
                 .unwrap()
                 .clone();
-            let row = files.state().entry_resource(&entry).into_resource();
+            let row = files.state().entry_resource(&entry);
+            let mut row = row.into_resource();
+            ui::framework::apply_row_statuses(std::slice::from_mut(&mut row), &|id| {
+                files.state().row_status(id)
+            });
             let presentation = row.presentation.unwrap();
             assert!(presentation.detail.unwrap().contains(source));
             assert!(presentation.preview.unwrap().contains("independent"));

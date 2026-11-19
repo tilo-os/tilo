@@ -218,9 +218,14 @@ impl FilesState {
                 } else {
                     t("files-drive-external")
                 };
-                LiveRow::typed::<crate::row_types::Drive>(
+                let bindings = ui::tilo_resource::RowBindings::new().bind(
+                    crate::effects::FilesEffect::OPEN_DRIVE,
+                    [("drive", serde_json::Value::String(drive.id.clone()))],
+                );
+                LiveRow::typed_with::<crate::row_types::Drive>(
                     format!("files.drive:{}", drive.id),
                     place.label,
+                    &bindings,
                 )
                 .presentation(tilo_actions::ResourcePresentation {
                     detail: Some(format!(
@@ -230,13 +235,6 @@ impl FilesState {
                     badge: drive.open_at.is_some().then(|| t("files-drive-open")),
                     preview: None,
                 })
-                .operation(crate::effects::row_action(
-                    &crate::effects::FilesEffect::OpenDrive {
-                        drive: drive.id.clone(),
-                    },
-                    "open",
-                    t("files-drive-open-action"),
-                ))
             })
             .collect()
     }

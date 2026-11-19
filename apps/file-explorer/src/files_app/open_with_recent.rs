@@ -7,12 +7,9 @@ use crate::model::Entry;
 use crate::recent::{RecentResource, RecentUse};
 use runtime_portal::tools::DocumentApp;
 use std::path::{Path, PathBuf};
-use ui::tilo_actions::{ActionParam, ActionSpec, ParamType};
-use ui::tilo_resource::{AbsolutePath, Effect as _, Invoke};
+use ui::tilo_resource::{AbsolutePath, Invoke};
 use ui::widget::context_menu::MenuItem;
 
-pub(super) const OPEN_WITH_ACTION: &str = "open-with";
-const OPEN_ONCE_PREFIX: &str = "open-with-app:";
 pub(super) const SUBMENU_APPS: usize = 6;
 
 fn type_key(path: &Path) -> String {
@@ -157,59 +154,25 @@ impl FilesState {
         if candidates.is_empty() {
             return None;
         }
-        Some(OpenWithFacts {
-            candidates,
-            chooser: self.app_chooser_target.as_deref() == Some(entry.path.as_path()),
-        })
+        Some(OpenWithFacts { candidates })
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct OpenWithFacts {
     candidates: Vec<DocumentApp>,
-    chooser: bool,
 }
 
-pub(super) fn open_with_actions(facts: &OpenWithFacts, resource_id: &str) -> Vec<ActionSpec> {
-    let params = vec![
-        ActionParam::required_owned("app", ParamType::Text, t("files-open-with-app-param"))
-            .with_choices(facts.candidates.iter().map(|app| app.id.clone())),
-    ];
-    // This is an actual declared contract for the offered operation, not
-    // permission reconstructed later from caller-provided text. The same row
-    // is rebuilt from the live dispatcher on every publication.
-    let mut open_with = crate::effects::FilesEffect::OpenWith {
-        entry: resource_id.to_string(),
-        app: String::new(),
+impl OpenWithFacts {
+    /// The apps that open this file, as the session listed them.
+    pub(super) fn candidates(&self) -> &[DocumentApp] {
+        &self.candidates
     }
-    .bound_asking_params(params);
-    open_with.type_mut().id = OPEN_WITH_ACTION.into();
-    open_with.type_mut().label = t("files-menu-open-with");
-    let mut actions = vec![open_with];
-    if facts.chooser {
-        for app in &facts.candidates {
-            let name = if app.is_default {
-                t_args("files-open-with-default", &[arg("app", app.name.clone())])
-            } else {
-                app.name.clone()
-            };
-            let effect = crate::effects::FilesEffect::OpenWith {
-                entry: resource_id.to_string(),
-                app: app.id.clone(),
-            };
-            let mut row = crate::effects::row_action(
-                &effect,
-                format!("{OPEN_ONCE_PREFIX}{}", app.id),
-                t_args("files-open-with-app", &[arg("app", name)]),
-            );
-            row.type_mut().icon.clone_from(&app.icon);
-            if let Some(source) = app.source {
-                row.type_mut().description = Some(crate::applications::kind_label(source));
-            }
-            actions.push(row);
-        }
+
+    /// The app that opens this file when nobody chooses another.
+    pub(super) fn default_app(&self) -> Option<&DocumentApp> {
+        self.candidates.iter().find(|app| app.is_default)
     }
-    actions
 }
 
 impl FilesState {

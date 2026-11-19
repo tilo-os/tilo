@@ -348,11 +348,15 @@ mod open_with_tests {
             ));
             settle_opens(&w);
             assert_eq!(asks(), vec!["/docs/slides.pdf so.tilo.pdf-viewer"]);
-            let folder = crate::search_provider::entry_resource_id(Path::new("/docs/notes.txt"));
+            assert_eq!(
+                app.choice_label("org.gnome.Evince.desktop"),
+                Some("Evince (default)"),
+                "each choice reads as the app's name, the default handler named"
+            );
             assert!(
-                ui::tilo_actions::api::spec_of(&resources, &folder, "open-with:so.tilo.pdf-viewer")
+                ui::tilo_actions::api::spec_of(&resources, &entry_id, "open-with:so.tilo.pdf-viewer")
                     .is_none(),
-                "per-app rows are only published for the chooser's file"
+                "the apps that open a file are the one action's choices, not an action each"
             );
         }
 
@@ -369,47 +373,31 @@ mod open_with_tests {
                 Some(entry_id.as_str()),
                 "on the file"
             );
-            let doc = automerge::AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let resources = crate::files_app::published::tree(&w, &doc);
-            let rows: Vec<(String, Option<String>, Option<String>)> =
-                ui::tilo_actions::flatten(&resources)
-                    .into_iter()
-                    .filter(|row| {
-                        row.resource_id.0 == entry_id && row.action.id.starts_with("open-with-app:")
-                    })
-                    .map(|row| {
-                        (
-                            row.action.label.clone(),
-                            row.action.icon.clone(),
-                            row.action.description.clone(),
-                        )
-                    })
-                    .collect();
-            // Each row is the app's own name, wears its glyph, and says where the machine got it where
-            // its name alone does not.
+            let spec = ui::tilo_actions::api::spec_of(&resources, &entry_id, "open-with")
+                .expect("the file offers the one open-with, its apps as choices");
+            let app = spec
+                .params()
+                .iter()
+                .find(|param| param.name == "app")
+                .expect("an app parameter");
             assert_eq!(
-                rows,
-                vec![
-                    (
-                        "Open with Evince (default)".to_string(),
-                        Some("file".to_string()),
-                        Some("System".to_string()),
-                    ),
-                    (
-                        "Open with PDF Viewer".to_string(),
-                        Some("file".to_string()),
-                        Some("Open with…".to_string()),
-                    ),
-                ]
+                app.choices.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                vec!["org.gnome.Evince.desktop", "so.tilo.pdf-viewer"],
+                "every app that opens the file is a choice"
             );
-            let mut doc = doc;
-            let spec = ui::tilo_actions::api::spec_of(
-                &resources,
-                &entry_id,
-                "open-with-app:org.gnome.Evince.desktop",
-            )
-            .expect("the chooser's rows are real actions");
-            let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
+            assert_eq!(
+                app.schema
+                    .as_ref()
+                    .and_then(|schema| schema.get("default"))
+                    .and_then(serde_json::Value::as_str),
+                Some("org.gnome.Evince.desktop"),
+                "the default choice is the app that would open it anyway"
+            );
+            let mut args = serde_json::Map::new();
+            args.insert("app".into(), "org.gnome.Evince.desktop".into());
+            let encoded = spec.build_json(&args).unwrap();
             crate::files_app::published::start(
                 &mut w,
                 spec.kind,
@@ -2507,7 +2495,7 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.state().navigate(d.path().to_path_buf());
         let mut doc = automerge::AutoCommit::new();
-        let open = crate::effects::FilesEffect::OpenItem {
+        let open = crate::effects::FilesEffect::Open {
             item: crate::search_provider::entry_resource_id(&file),
         }
         .bound()
@@ -2995,7 +2983,7 @@ mod command_path_tests {
         let mut document = automerge::AutoCommit::new();
         let entry = crate::search_provider::entry_resource_id(&source);
         let resources = crate::files_app::published::tree(&widget, &document);
-        assert!(ui::tilo_actions::api::spec_of(&resources, &entry, "send-airdrop").is_none());
+        assert!(ui::tilo_actions::api::spec_of(&resources, &entry, "send-air-drop").is_none());
         widget
             .state()
             .nearby_send
@@ -3022,7 +3010,7 @@ mod command_path_tests {
                 result: Ok(NearbyTransferReply::AirDropAvailability { available: true }),
             });
         let resources = crate::files_app::published::tree(&widget, &document);
-        let action = ui::tilo_actions::api::spec_of(&resources, &entry, "send-airdrop")
+        let action = ui::tilo_actions::api::spec_of(&resources, &entry, "send-air-drop")
             .expect("lab host publishes file action");
         assert_eq!(
             action
@@ -3108,13 +3096,21 @@ mod command_path_tests {
         let accept = transfer_resource
             .actions
             .iter()
-            .find(|action| action.id.starts_with("accept-"))
+            .find(|action| action.id == "accept-nearby")
             .expect("accept action");
         assert_eq!(accept.contract.confirmation, ConfirmationPolicy::Confirm);
-        assert!(!accept.id.contains("42424242"));
-        let Some(encoded) = accept.encode_immediate() else {
-            panic!("accept is nullary over an app-owned opaque payload")
-        };
+        assert!(
+            !accept.id.contains("42424242"),
+            "the destination is an argument, not an id"
+        );
+        let mut accepted = serde_json::Map::new();
+        accepted.insert(
+            "destination".into(),
+            hex::encode(destination.as_bytes()).into(),
+        );
+        let encoded = accept
+            .build_json(&accepted)
+            .expect("the destination this window holds binds");
 
         snapshot.transfers.clear();
         widget
@@ -3809,10 +3805,11 @@ mod command_path_tests {
             label == "Availability…" && *command == Some(FileCommand::ShowAvailability)
         }));
 
-        let resource = {
-            let state = w.state();
-            state.entry_resource(&state.entries[0]).into_resource()
-        };
+        let entry = w.state().entries[0].clone();
+        let mut resource = w.state().entry_resource(&entry).into_resource();
+        ui::framework::apply_row_statuses(std::slice::from_mut(&mut resource), &|id| {
+            w.state().row_status(id)
+        });
         let presentation = resource.presentation.as_ref().expect("unavailable badge");
         assert_eq!(presentation.badge.as_deref(), Some("Unavailable"));
         assert!(presentation.is_valid());

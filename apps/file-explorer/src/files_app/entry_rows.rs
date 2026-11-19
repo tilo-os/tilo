@@ -5,12 +5,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use ui::collaboration::NearbyTransferTarget;
-use ui::framework::LiveRow;
+use ui::framework::{EffectStatus, LiveRow};
 use ui::tilo_actions::ResourcePresentation;
-use ui::tilo_resource::{AbsolutePath, Effect as _};
+use ui::tilo_resource::RowBindings;
 
-use super::open_with_recent::{OpenWithFacts, open_with_actions};
-use super::{FilesState, MAX_EAGER_ENTRY_RESOURCES, hex_prefix};
+use super::open_with_recent::OpenWithFacts;
+use super::{FilesState, MAX_EAGER_ENTRY_RESOURCES};
+use crate::effects::FilesEffect;
 use crate::i18n::{arg, t, t_args};
 use crate::model::Entry;
 
@@ -129,264 +130,92 @@ impl FilesState {
     }
 }
 
-fn app_row(row: LiveRow, resource_id: &str, removal: runtime_portal::tools::AppRemoval) -> LiveRow {
-    use crate::effects::{FilesEffect, row_action};
-    use runtime_portal::tools::AppRemoval;
-    let row = row.operation(row_action(
-        &FilesEffect::OpenItem {
-            item: resource_id.to_owned(),
-        },
-        "open",
-        t("files-menu-open"),
-    ));
-    let (id, label) = match removal {
-        AppRemoval::UninstallWithData | AppRemoval::Uninstall => {
-            ("uninstall", t("files-menu-uninstall"))
-        }
-        AppRemoval::RemoveFromApps => ("remove-from-apps", t("files-menu-remove-from-apps")),
-        AppRemoval::None => return row,
+/// `entry` as a row of this window: the type it is an item of, and the
+/// effects the window offers on it now, each bound to what it acts on. An
+/// app's row is a file's, with its way out of the person's apps in place of
+/// the file work.
+fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> LiveRow {
+    let resource_id = FilesState::entry_resource_id(entry);
+    let bindings = entry_bindings(context, facts, entry);
+    let label = entry.name.clone();
+    let row = if entry.document_id.is_some() {
+        LiveRow::typed_with::<crate::row_types::Document>(resource_id, label, &bindings)
+    } else {
+        LiveRow::typed_with::<crate::row_types::Entry>(resource_id, label, &bindings)
     };
-    row.operation(row_action(
-        &FilesEffect::UninstallApp {
-            app: resource_id.to_owned(),
-        },
-        id,
-        label,
-    ))
+    match entry_presentation(facts, entry) {
+        Some(presentation) => row.presentation(presentation),
+        None => row,
+    }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "an entry's complete canonical action contract stays together so lazy and eager resource resolution cannot diverge by dispatch route"
-)]
-fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> LiveRow {
-    use crate::effects::{FilesEffect, row_action};
+/// What the window offers on `entry` now, each effect with the values it acts
+/// on bound: an effect the entry cannot take is left out, not offered and
+/// refused later.
+fn entry_bindings(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> RowBindings {
     let resource_id = FilesState::entry_resource_id(entry);
-    let id = || resource_id.clone();
-    let document_id = entry.document_id.map(uuid::Uuid::from_bytes);
-    let mut resource = if document_id.is_some() {
-        LiveRow::typed::<crate::row_types::Document>(resource_id.clone(), entry.name.clone())
-    } else {
-        LiveRow::typed::<crate::row_types::Entry>(resource_id.clone(), entry.name.clone())
-    };
-    resource = resource.operation(
-        row_action(
-            &FilesEffect::ReadEntry { entry: id() },
-            "read",
-            t("files-action-read"),
-        )
-        .reads_document(),
-    );
-    if let Some(removal) = facts.app_removal {
-        return app_row(resource, &resource_id, removal);
+    let id = || serde_json::Value::String(resource_id.clone());
+    let mut bindings = RowBindings::new()
+        .bind(FilesEffect::READ, [("entry", id())])
+        .bind(FilesEffect::OPEN, [("item", id())]);
+    if facts.app_removal.is_some() {
+        return bindings.bind(FilesEffect::UNINSTALL, [("app", id())]);
     }
     if context.recent {
-        resource = resource
-            .operation(row_action(
-                &FilesEffect::RevealRecent { entry: id() },
-                crate::search_provider::REVEAL_ACTION,
-                t("files-recent-reveal"),
-            ))
-            .operation(row_action(
-                &FilesEffect::ForgetRecent { entry: id() },
-                "forget-recent",
-                t("files-recent-forget"),
-            ));
-    } else if let Some(document_id) = document_id {
-        resource = resource.operation(row_action(
-            &FilesEffect::Reveal {
-                record: document_id.to_string(),
-            },
-            crate::search_provider::REVEAL_ACTION,
-            t("files-action-reveal"),
-        ));
-    }
-    let mut open = row_action(
-        &FilesEffect::OpenItem { item: id() },
-        "open",
-        if facts.converted.is_some() {
-            t("files-mounted-open")
-        } else {
-            t("files-menu-open")
-        },
-    );
-    // A file whose bytes no device delivered says so where an agent and a
-    // screen reader look, before anyone opens it and waits for nothing.
-    let presentation = if let Some(description) = facts.converted.clone() {
-        open.type_mut().description = Some(description.clone());
-        Some(ResourcePresentation {
-            detail: Some(description.clone()),
-            badge: Some(t("files-mounted-readonly")),
-            preview: Some(format!(
-                "{} {}",
-                description,
-                t("files-mounted-independent")
-            )),
-        })
-    } else if entry
-        .availability
-        .as_ref()
-        .is_some_and(fs_protocol::AvailabilityProjectionV1::unavailable)
-    {
-        let detail = t("files-unavailable-offline");
-        open.type_mut().description = Some(detail.clone());
-        Some(ResourcePresentation {
-            detail: Some(detail),
-            badge: Some(t("files-unavailable")),
-            preview: None,
-        })
-    } else {
-        None
-    };
-    resource = resource.operation(open);
-    if let Some(presentation) = presentation {
-        resource = resource.presentation(presentation);
+        bindings = bindings
+            .bind(FilesEffect::REVEAL_RECENT, [("entry", id())])
+            .bind(FilesEffect::FORGET_RECENT, [("entry", id())]);
+    } else if let Some(document_id) = entry.document_id {
+        bindings = bindings.bind(
+            FilesEffect::REVEAL,
+            [(
+                "record",
+                serde_json::Value::String(uuid::Uuid::from_bytes(document_id).to_string()),
+            )],
+        );
     }
     if facts.converted.is_some() {
-        resource = resource.operation(row_action(
-            &FilesEffect::ImportConverted { entry: id() },
-            "import-converted",
-            t("files-mounted-copy"),
-        ));
+        bindings = bindings.bind(FilesEffect::IMPORT_CONVERTED, [("entry", id())]);
     }
-    if let Some(open_with) = &facts.open_with {
-        for action in open_with_actions(open_with, &resource_id) {
-            resource = resource.operation(action);
-        }
+    if facts.open_with.is_some() {
+        bindings = bindings.bind(FilesEffect::OPEN_WITH, [("entry", id())]);
     }
-    if !context.trash {
-        if let Ok(here) = AbsolutePath::new(entry.path.parent().unwrap_or(entry.path.as_path())) {
-            let mut copy_to = FilesEffect::CopyTo {
-                entry: id(),
-                folder: here.clone(),
-            }
-            .bound_asking(&["folder"]);
-            copy_to.type_mut().label = t("files-action-copy-to-folder");
-            resource = resource.operation(copy_to);
-            if importable_under(&entry.path, &context.import_mounts) {
-                let mut import = FilesEffect::ImportOnce {
-                    entry: id(),
-                    folder: here,
-                }
-                .bound_asking(&["folder"]);
-                import.type_mut().label = t("files-import-once");
-                resource = resource.operation(import);
-            }
+    if context.trash {
+        bindings = bindings
+            .bind(FilesEffect::RESTORE, [("entry", id())])
+            .bind(FilesEffect::PROPERTIES, [("entry", id())]);
+        if !in_native_trash(&entry.path, context.native_trash.as_deref()) {
+            bindings = bindings.bind(FilesEffect::DELETE_PERMANENTLY, [("entry", id())]);
         }
-        resource = resource.operation(row_action(
-            &FilesEffect::SendNearby { entry: id() },
-            "send-nearby",
-            t("files-menu-send-nearby"),
-        ));
-        if facts.airdrop_file {
-            let effect = FilesEffect::SendAirDrop {
-                entry: id(),
-                address: String::new(),
-                port: 0,
-            };
-            let mut params = effect.bound_asking(&["address", "port"]).params().to_vec();
-            for param in &mut params {
-                let key = if &*param.name == "address" {
-                    "files-airdrop-address"
-                } else {
-                    "files-airdrop-port"
-                };
-                param.description = t(key).into();
-                param.schema = Some(
-                    (if &*param.name == "port" {
-                        serde_json::json!({"minimum": 1, "maximum": 65535})
-                    } else {
-                        serde_json::json!({"minLength": 1, "maxLength": 64})
-                    })
-                    .into(),
-                );
-            }
-            let mut action = effect.bound_asking_params(params);
-            action.type_mut().description = Some(t("files-airdrop-action-detail"));
-            action.type_mut().id = "send-airdrop".into();
-            action.type_mut().label = t("files-action-send-airdrop");
-            resource = resource.operation(action);
-        }
-        for target in &context.nearby {
-            resource = resource.operation(row_action(
-                &FilesEffect::SendTo {
-                    entry: id(),
-                    target: target.handle,
-                },
-                format!("send-nearby-{}", hex_prefix(target.handle.as_bytes(), 6)),
-                t_args(
-                    "files-action-send-nearby-device",
-                    &[arg("device", target.label.clone())],
-                ),
-            ));
-        }
-    }
-    let mut entry_effects: Vec<(FilesEffect, &str, String)> = if context.trash {
-        vec![
-            (
-                FilesEffect::Restore { entry: id() },
-                "restore",
-                t("files-menu-restore"),
-            ),
-            (
-                FilesEffect::DeletePermanently { entry: id() },
-                "delete-permanently",
-                t("files-menu-delete-permanently"),
-            ),
-            (
-                FilesEffect::Properties { entry: id() },
-                "properties",
-                t("files-menu-properties"),
-            ),
-        ]
     } else {
-        vec![
-            (
-                FilesEffect::Copy { entry: id() },
-                "copy",
-                t("files-menu-copy"),
-            ),
-            (FilesEffect::Cut { entry: id() }, "cut", t("files-menu-cut")),
-            (
-                FilesEffect::Properties { entry: id() },
-                "properties",
-                t("files-menu-properties"),
-            ),
-            (
-                FilesEffect::History { entry: id() },
-                "history",
-                t("files-version-history"),
-            ),
-        ]
-    };
-    if in_native_trash(&entry.path, context.native_trash.as_deref()) {
-        entry_effects
-            .retain(|(effect, _, _)| !matches!(effect, FilesEffect::DeletePermanently { .. }));
-    }
-    for (effect, action, label) in entry_effects {
-        resource = resource.operation(row_action(&effect, action, label));
+        bindings = bindings
+            .bind(FilesEffect::COPY, [("entry", id())])
+            .bind(FilesEffect::CUT, [("entry", id())])
+            .bind(FilesEffect::PROPERTIES, [("entry", id())])
+            .bind(FilesEffect::HISTORY, [("entry", id())])
+            .bind(FilesEffect::COPY_TO, [("entry", id())])
+            .bind(FilesEffect::SEND_NEARBY, [("entry", id())]);
+        if importable_under(&entry.path, &context.import_mounts) {
+            bindings = bindings.bind(FilesEffect::IMPORT_ONCE, [("entry", id())]);
+        }
+        if facts.airdrop_file {
+            bindings = bindings.bind(FilesEffect::SEND_AIR_DROP, [("entry", id())]);
+        }
+        // Every device near this window is one offer, its target chosen from
+        // those online now.
+        if !context.nearby.is_empty() {
+            bindings = bindings.bind(FilesEffect::SEND_TO, [("entry", id())]);
+        }
     }
     if let Some(availability) = entry.availability.as_ref() {
-        resource = resource.operation(row_action(
-            &FilesEffect::Availability { entry: id() },
-            "availability",
-            t("files-availability-title-short"),
-        ));
+        bindings = bindings.bind(FilesEffect::AVAILABILITY, [("entry", id())]);
         if availability.policy == fs_protocol::AvailabilityPolicy::Automatic {
-            resource = resource.operation(row_action(
-                &FilesEffect::KeepOffline { entry: id() },
-                "keep-offline",
-                t("files-keep-offline"),
-            ));
+            bindings = bindings.bind(FilesEffect::KEEP_OFFLINE, [("entry", id())]);
         }
         if availability.policy == fs_protocol::AvailabilityPolicy::Pinned
             && !availability.policy_inherited
         {
-            resource = resource.operation(row_action(
-                &FilesEffect::AutomaticStorage { entry: id() },
-                "automatic-storage",
-                t("files-use-automatic-storage"),
-            ));
+            bindings = bindings.bind(FilesEffect::AUTOMATIC_STORAGE, [("entry", id())]);
         }
         let releasable = !entry.is_dir
             && availability.policy == fs_protocol::AvailabilityPolicy::Automatic
@@ -397,30 +226,154 @@ fn entry_row(context: &RowContext, facts: &EntryRowFacts, entry: &Entry) -> Live
                 fs_protocol::Residency::Partial { .. } | fs_protocol::Residency::Resident { .. }
             );
         if releasable {
-            resource = resource.operation(row_action(
-                &FilesEffect::FreeLocalSpace { entry: id() },
-                "free-local-space",
-                t("files-free-local-space"),
-            ));
+            bindings = bindings.bind(FilesEffect::FREE_LOCAL_SPACE, [("entry", id())]);
         }
         let retryable = !matches!(
             availability.residency,
             fs_protocol::Residency::Resident { .. }
         ) && availability.transfer.phase == fs_protocol::TransferPhase::Idle;
         if retryable {
-            resource = resource.operation(row_action(
-                &FilesEffect::RetryDownload { entry: id() },
-                "retry-download",
-                t("files-retry-download"),
-            ));
+            bindings = bindings.bind(FilesEffect::RETRY_DOWNLOAD, [("entry", id())]);
         }
     }
     if entry.document_id.is_some() {
-        resource = resource.operation(row_action(
-            &FilesEffect::Share { entry: id() },
-            "share",
-            t("files-share"),
-        ));
+        bindings = bindings.bind(FilesEffect::SHARE, [("entry", id())]);
     }
-    resource
+    bindings
+}
+
+/// What the row's hand-off says of itself, and the badge a file whose bytes no
+/// device delivered wears: a conversion that reads alone, or content that is
+/// not here.
+fn entry_presentation(facts: &EntryRowFacts, entry: &Entry) -> Option<ResourcePresentation> {
+    if let Some(description) = facts.converted.clone() {
+        return Some(ResourcePresentation {
+            detail: Some(description.clone()),
+            badge: Some(t("files-mounted-readonly")),
+            preview: Some(format!(
+                "{} {}",
+                description,
+                t("files-mounted-independent")
+            )),
+        });
+    }
+    entry
+        .availability
+        .as_ref()
+        .is_some_and(fs_protocol::AvailabilityProjectionV1::unavailable)
+        .then(|| ResourcePresentation {
+            detail: Some(t("files-unavailable-offline")),
+            badge: Some(t("files-unavailable")),
+            preview: None,
+        })
+}
+
+/// What each effect `entry` offers says on its row now: the words this entry
+/// is opened, read, kept or sent by, the apps that open it, the devices
+/// nearby, and what a conversion or an absent byte stream means here.
+pub(super) fn entry_row_status(
+    context: &RowContext,
+    facts: &EntryRowFacts,
+    entry: &Entry,
+) -> Vec<EffectStatus> {
+    let resource_id = FilesState::entry_resource_id(entry);
+    let id = resource_id.as_str();
+    let mut statuses =
+        vec![EffectStatus::labelled(FilesEffect::READ, t("files-action-read")).on(id)];
+    if let Some(description) = facts.converted.clone() {
+        statuses.push(
+            EffectStatus::labelled(FilesEffect::OPEN, t("files-mounted-open"))
+                .with_description(description)
+                .on(id),
+        );
+        statuses.push(
+            EffectStatus::labelled(FilesEffect::IMPORT_CONVERTED, t("files-mounted-copy")).on(id),
+        );
+    } else if entry
+        .availability
+        .as_ref()
+        .is_some_and(fs_protocol::AvailabilityProjectionV1::unavailable)
+    {
+        statuses.push(
+            EffectStatus::described(FilesEffect::OPEN, t("files-unavailable-offline")).on(id),
+        );
+    }
+    if facts.app_removal == Some(runtime_portal::tools::AppRemoval::RemoveFromApps) {
+        statuses.push(
+            EffectStatus::labelled(FilesEffect::UNINSTALL, t("files-menu-remove-from-apps")).on(id),
+        );
+    }
+    if let Some(open_with) = &facts.open_with {
+        let mut status = EffectStatus::labelled(FilesEffect::OPEN_WITH, t("files-menu-open-with"))
+            .with_labelled_param_choices(
+                "app",
+                open_with.candidates().iter().map(|app| {
+                    let label = if app.is_default {
+                        t_args("files-open-with-default", &[arg("app", app.name.clone())])
+                    } else {
+                        app.name.clone()
+                    };
+                    (app.id.clone(), label)
+                }),
+            )
+            .on(id);
+        if let Some(default) = open_with.default_app() {
+            status = status.with_param_schema("app", serde_json::json!({ "default": default.id }));
+        }
+        statuses.push(status);
+    }
+    if !context.trash {
+        statuses.push(
+            EffectStatus::labelled(FilesEffect::SEND_NEARBY, t("files-menu-send-nearby")).on(id),
+        );
+        if facts.airdrop_file {
+            statuses.push(
+                EffectStatus::labelled(FilesEffect::SEND_AIR_DROP, t("files-action-send-airdrop"))
+                    .with_param_description("address", t("files-airdrop-address"))
+                    .with_param_description("port", t("files-airdrop-port"))
+                    .with_param_schema(
+                        "address",
+                        serde_json::json!({"minLength": 1, "maxLength": 64}),
+                    )
+                    .with_param_schema("port", serde_json::json!({"minimum": 1, "maximum": 65535}))
+                    .on(id),
+            );
+        }
+        if !context.nearby.is_empty() {
+            statuses.push(
+                EffectStatus::labelled(FilesEffect::SEND_TO, t("files-menu-send-nearby"))
+                    .with_labelled_param_choices(
+                        "target",
+                        context.nearby.iter().map(|target| {
+                            (
+                                hex::encode(target.handle.as_bytes()),
+                                t_args(
+                                    "files-action-send-nearby-device",
+                                    &[arg("device", target.label.clone())],
+                                ),
+                            )
+                        }),
+                    )
+                    .on(id),
+            );
+        }
+    }
+    if entry.document_id.is_some() && !context.recent {
+        statuses.push(EffectStatus::labelled(FilesEffect::REVEAL, t("files-reveal")).on(id));
+    }
+    if entry.document_id.is_some() && !context.trash {
+        statuses.push(EffectStatus::labelled(FilesEffect::SHARE, t("files-share")).on(id));
+    }
+    statuses
+        .push(EffectStatus::labelled(FilesEffect::PROPERTIES, t("files-menu-properties")).on(id));
+    if entry.availability.is_some() {
+        statuses.push(
+            EffectStatus::labelled(
+                FilesEffect::AVAILABILITY,
+                t("files-availability-title-short"),
+            )
+            .on(id),
+        );
+    }
+    statuses
 }

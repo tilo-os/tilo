@@ -26,12 +26,6 @@ row-operation 1 apps/code-editor/src/app/surface.rs
 row-operation 5 apps/console/src/agent_card.rs
 row-operation 1 apps/console/src/agents.rs
 row-operation 2 apps/ebook/src/search_provider.rs
-row-operation 10 apps/file-explorer/src/files_app.rs
-row-operation 2 apps/file-explorer/src/files_app/cloud_browse.rs
-row-operation 1 apps/file-explorer/src/files_app/drives.rs
-row-operation 18 apps/file-explorer/src/files_app/entry_rows.rs
-row-operation 3 apps/file-explorer/src/search_provider.rs
-row-operation 1 apps/file-explorer/src/tree.rs
 row-operation 1 apps/imager/src/setup/destination/installer_app/surface.rs
 row-operation 1 apps/monitor/src/app.rs
 row-operation 1 apps/music/src/app/local_files.rs

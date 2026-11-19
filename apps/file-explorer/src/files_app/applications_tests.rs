@@ -151,11 +151,8 @@ tilo_test_env::scenario! {
                 .map(|action| action.id.clone())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(action_ids("Chess"), ["read", "open", "uninstall"]);
-        assert_eq!(
-            action_ids("Text Editor"),
-            ["read", "open", "remove-from-apps"]
-        );
+        assert_eq!(action_ids("Chess"), ["open", "read", "uninstall"]);
+        assert_eq!(action_ids("Text Editor"), ["open", "read", "uninstall"]);
     }
 }
 
