@@ -1345,6 +1345,10 @@ impl Device {
             // The tests of this process mount the trees this device's session serves, so the
             // session records this process as the Files endpoint the login's unit would be.
             .env("TILO_FILES_ENDPOINT_PID", std::process::id().to_string())
+            // This device hears the person's other devices on this machine's loopback: the
+            // sessions a test starts are beside each other there, and the network the runner
+            // gives them carries no multicast between them.
+            .env(tilo_endpoint_reachability::NETWORKS_ENV, "127.0.0.1")
             .env_remove("TILO_TEST_CONTROL")
             .env_remove("TILO_ADMIN_CONTROL")
             .env_remove("TILO_SHELL_JOIN_INVITATION_FILE")
