@@ -73,6 +73,7 @@ pub(in crate::standalone) struct ReplicaParts<'a> {
     pub(in crate::standalone) author: &'a Author,
     /// This device as the workspace knows it.
     pub(in crate::standalone) credentials: PeerCredentials,
+    pub(in crate::standalone) admission: Arc<tilo_fs::admission::FileAdmission>,
     /// The profile's collaboration socket, where the record's route is.
     pub(in crate::standalone) collab: PathBuf,
     /// The profile's identity service, which hands over the record's keys.
@@ -109,15 +110,21 @@ impl ReplicaFiles {
             content: Arc::clone(&parts.content),
             route: route.clone(),
         });
+        let workspace = collab_types::WorkspaceId::parse(parts.workspace).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "invalid Files workspace")
+        })?;
+        let keys = tilo_fs::hydration::FileKeys::new(workspace, parts.identity.clone());
         let files = Files::open(
             parts.state,
             parts.store,
             parts.endpoint,
             parts.author,
-            Some(source),
+            Some((source, keys)),
         )?;
         std::fs::create_dir_all(parts.folder)?;
-        let watch = files.sync_folder(parts.folder)?.watch(INTERVAL)?;
+        let watch = files
+            .sync_folder(parts.folder, Some(parts.admission))?
+            .watch(INTERVAL)?;
         let namespace = Arc::clone(&files.namespace.namespace);
         let runtime = tilo_rt::app().handle().clone();
         let _entered = runtime.enter();
@@ -175,12 +182,17 @@ pub(in crate::standalone) struct ReplicaHost {
 pub(in crate::standalone) struct Replicas {
     host: ReplicaHost,
     held: Mutex<BTreeMap<String, ReplicaFiles>>,
+    joined: std::sync::Weak<super::super::joined::Joined>,
 }
 
 impl Replicas {
-    pub(in crate::standalone) fn new(host: ReplicaHost) -> Self {
+    pub(in crate::standalone) fn new(
+        host: ReplicaHost,
+        joined: std::sync::Weak<super::super::joined::Joined>,
+    ) -> Self {
         Self {
             host,
+            joined,
             held: Mutex::default(),
         }
     }
@@ -214,6 +226,19 @@ impl Replicas {
             }
         };
         let credentials = (self.host.credentials)(workspace)?;
+        let id = collab_types::WorkspaceId::parse(workspace)
+            .ok_or_else(|| io::Error::other("invalid Files workspace"))?;
+        let joined = self.joined.clone();
+        let admission = tilo_fs::admission::FileAdmission::new(
+            &hex::encode(credentials.user_public_key()),
+            Box::new(move || {
+                joined
+                    .upgrade()?
+                    .workspace(id)
+                    .map(|workspace| workspace.policy)
+            }),
+        )
+        .ok_or_else(|| io::Error::other("invalid Files identity"))?;
         let state = self
             .host
             .profile
@@ -229,6 +254,7 @@ impl Replicas {
             endpoint: self.host.endpoint.clone(),
             author: &self.host.author,
             credentials,
+            admission: Arc::new(admission),
             collab: self.host.collab.clone(),
             identity: self.host.identity.clone(),
             content: Arc::clone(&self.host.content),

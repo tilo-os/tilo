@@ -8,7 +8,7 @@
 use std::path::{Component, Path};
 use std::sync::atomic::Ordering;
 
-use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, now_ms};
+use super::{Access, EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, now_ms};
 use crate::namespace::{LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -219,6 +219,7 @@ impl QuickFS {
         let Some((name, parents)) = components.split_last() else {
             return Err(EISDIR);
         };
+        let workspace = self.hydrator.native_workspace(rel);
         let existing = self.ino_at(&components);
         self.admit_as(
             None,
@@ -234,13 +235,17 @@ impl QuickFS {
             Some((ino, FileType::RegularFile)) => ino,
             Some((_, FileType::Directory)) => {
                 self.remove_subtree(parent, name)?;
-                return self.create_local_file(parent, name, source, mtime_ms, attrs, fence);
+                return self
+                    .create_local_file(parent, name, source, mtime_ms, attrs, fence, workspace);
             }
             Some(_) => return Err(libc::EINVAL),
-            None => return self.create_local_file(parent, name, source, mtime_ms, attrs, fence),
+            None => {
+                return self
+                    .create_local_file(parent, name, source, mtime_ms, attrs, fence, workspace);
+            }
         };
         self.set_posix(ino, attrs, false)?;
-        self.commit_version_at(ino, source, mtime_ms, fence)
+        self.commit_version_at(ino, source, mtime_ms, fence, workspace)
             .map_err(|e| to_errno(&e))
     }
 
@@ -254,17 +259,18 @@ impl QuickFS {
         mtime_ms: u64,
         attrs: PosixAttrs,
         fence: Option<VersionFence>,
+        workspace: Option<collab_types::WorkspaceId>,
     ) -> Result<(), i32> {
         if fence.is_some() {
             let ino = self.create_empty_file_stamped(parent, name, mtime_ms)?;
             self.publish();
             self.set_posix(ino, attrs, false)?;
             return self
-                .commit_version_at(ino, source, mtime_ms, fence)
+                .commit_version_at(ino, source, mtime_ms, fence, workspace)
                 .map_err(|e| to_errno(&e));
         }
         let (hash, byte_len) = self
-            .store_version_blocking(source, None)
+            .store_version_blocking(source, None, workspace)
             .map_err(|e| to_errno(&e))?
             .map_or((None, 0), |(hash, len)| (Some(hash), len));
         let ino = self.create_file_stamped(parent, name, mtime_ms, hash, byte_len)?;
@@ -321,8 +327,10 @@ impl QuickFS {
         let Some((ino, _)) = self.lookup_kind(parent, name) else {
             return Err(ENOENT);
         };
+        self.check_existing_name(parent, name)?;
         self.admit_as(None, Some(ino), fs_protocol::file_action::verbs::MOVE)?;
         let new_parent = self.ensure_dir_components(new_parents)?;
+        self.check_new_name(new_parent, new_name)?;
         self.rename_named(parent, name, new_parent, new_name)?;
         self.publish();
         Ok(())
@@ -333,6 +341,7 @@ impl QuickFS {
         let Some((ino, kind)) = self.lookup_kind(parent, name) else {
             return Ok(());
         };
+        self.check_existing_name(parent, name)?;
         if kind != FileType::Directory {
             return Err(ENOTDIR);
         }
@@ -355,6 +364,13 @@ impl QuickFS {
             Ok(()) | Err(ENOENT) => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Changes to the native mount's filtered view independent of file edits.
+    pub(crate) fn file_policy_revisions(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.enforcement
+            .as_ref()
+            .map(|(policy, _)| policy.subscribe_revision())
     }
 
     /// Every file and directory this mount may read, parents before children. Taken while no changeset
@@ -480,6 +496,9 @@ impl QuickFS {
     pub fn entry_at(&self, rel: &Path) -> Option<TreeEntry> {
         let components = path_components(rel).ok()?;
         let ino = self.ino_at(&components)?;
+        if !self.ino_in_view(ino) {
+            return None;
+        }
         let ns = self.ns();
         let (attr, hash) = ns.attr_and_hash(ino)?;
         let mtime_ms = attr
@@ -507,6 +526,7 @@ impl QuickFS {
     pub fn read_path(&self, rel: &Path) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
+        self.check_access(ino, Access::Read)?;
         let attr = self.ns().getattr(ino);
         if attr.is_some_and(|attr| attr.kind == FileType::Directory) {
             return Err(EISDIR);
@@ -521,6 +541,7 @@ impl QuickFS {
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
         // One namespace lock for the inode's kind and content.
         let view = self.inode_view(ino, false).ok_or(ENOENT)?;
+        self.check_view_access(&view, Access::Read)?;
         if view.attr.kind == FileType::Directory {
             return Err(EISDIR);
         }
@@ -533,7 +554,10 @@ impl QuickFS {
             return Ok(Vec::new());
         };
         self.hydrator
-            .block_on(self.hydrator.read(hash, offset, len))
+            .block_on(
+                self.hydrator
+                    .read_scoped(hash, offset, len, self.inode_workspace(ino)),
+            )
             .map_err(|_| EIO)
     }
 
@@ -543,6 +567,9 @@ impl QuickFS {
         use std::os::unix::ffi::OsStrExt as _;
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
+        if !self.ino_in_view(ino) {
+            return Err(ENOENT);
+        }
         if self.lookup_kind_of(ino) != Some(FileType::Directory) {
             return Err(ENOTDIR);
         }

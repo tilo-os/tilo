@@ -982,6 +982,21 @@ impl Store {
         true
     }
 
+    /// Forget the local document and its index rows after access is withdrawn.
+    /// A later authorized read can load the document again.
+    pub fn forget_document(&mut self, doc: &str) {
+        let kinds: BTreeSet<_> = self.index.held(doc).map(|(kind, _)| kind).collect();
+        self.changed.extend(
+            self.watches
+                .iter()
+                .filter_map(|(id, kind)| kinds.contains(kind.as_str()).then_some(*id)),
+        );
+        self.index.forget(doc);
+        self.docs.remove(doc);
+        self.refused.remove(doc);
+        self.waiting.remove(doc);
+    }
+
     /// Lets the document `doc` go from memory, answering it saved; its resources stay indexed,
     /// and it is read again from the source when needed.
     pub fn evict(&mut self, doc: &str) -> Option<Vec<u8>> {

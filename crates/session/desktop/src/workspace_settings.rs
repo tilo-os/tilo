@@ -282,56 +282,61 @@ fn given_by_label(who: &MemberId, ws: &Workspace, local_user: &str) -> String {
 
 /// A subject the grant composer can target, and the subject axis the Permissions list groups by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SubjectKind {
+pub enum RecipientKind {
     App,
     Member,
     Agent,
     Role,
 }
 
-impl SubjectKind {
+impl RecipientKind {
     pub fn section_label(self) -> String {
         t(match self {
-            SubjectKind::App => "workspace-settings-section-apps",
-            SubjectKind::Member => "workspace-settings-section-people",
-            SubjectKind::Agent => "workspace-settings-section-agents",
-            SubjectKind::Role => "workspace-settings-section-roles",
+            RecipientKind::App => "workspace-settings-section-apps",
+            RecipientKind::Member => "workspace-settings-section-people",
+            RecipientKind::Agent => "workspace-settings-section-agents",
+            RecipientKind::Role => "workspace-settings-section-roles",
         })
     }
 }
 
 /// A resolved subject: what kind of thing it is and how it is named.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GrantSubject {
-    pub kind: SubjectKind,
+pub struct GrantRecipient {
+    pub kind: RecipientKind,
     pub id: String,
 }
 
-impl GrantSubject {
+impl GrantRecipient {
     /// Who a sandbox capability for this subject is held by, and the app it names: an app's
     /// sandbox belongs to the person granting it.
     pub fn to_parts(&self, person: &str) -> Option<(Grantee, Option<String>)> {
         match self.kind {
-            SubjectKind::App => Some((Grantee::person(person), Some(self.id.clone()))),
-            SubjectKind::Member => {
+            RecipientKind::App => Some((Grantee::person(person), Some(self.id.clone()))),
+            RecipientKind::Member => {
                 Some((Grantee::Member(MemberId::parsed_person(&self.id)?), None))
             }
-            SubjectKind::Agent => Some((Grantee::agent(self.id.clone()), None)),
+            RecipientKind::Agent => Some((Grantee::agent(self.id.clone()), None)),
             // A role-wide grant is a policy decision, not a per-workspace click.
-            SubjectKind::Role => None,
+            RecipientKind::Role => None,
         }
     }
 
     pub fn display(&self, ws: &Workspace, local_user: &str, apps: &dyn AppDirectory) -> String {
         match self.kind {
-            SubjectKind::Member => MemberId::parsed_person(&self.id).map_or_else(
+            RecipientKind::Member => MemberId::parsed_person(&self.id).map_or_else(
                 || self.id.clone(),
                 |member| person_name(ws, local_user, &member),
             ),
-            SubjectKind::Agent => person_name(ws, local_user, &MemberId::agent(self.id.clone())),
-            SubjectKind::App => app_display_name(apps, &self.id),
+            RecipientKind::Agent => person_name(ws, local_user, &MemberId::agent(self.id.clone())),
+            RecipientKind::App => app_display_name(apps, &self.id),
             // A role is listed as the phrase its section reads.
-            SubjectKind::Role => self.id.clone(),
+            RecipientKind::Role => ws
+                .policy
+                .custom_roles
+                .get(&self.id)
+                .cloned()
+                .unwrap_or_else(|| self.id.clone()),
         }
     }
 }
@@ -400,7 +405,7 @@ const WORKSPACE_FILES_PATH: &str = "/var/workspace";
 
 /// The in-flight grant the Permissions tab's composer is composing. Holds indices rather than
 /// resolved values so a subject leaving the workspace can't leave a dangling reference —
-/// [`grant_subjects`] is re-derived every frame and the index taken modulo its length.
+/// [`grant_recipients`] is re-derived every frame and the index taken modulo its length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrantDraft {
     pub subject_index: usize,
@@ -439,12 +444,12 @@ impl GrantDraft {
 /// What the composer's choices are named by where a view asks for the grant: whom it is for
 /// (`member:…` , `agent:…` or `app:…` ) and the permission's key.
 #[must_use]
-pub fn grant_subject_key(entry: &GrantSubject) -> Option<String> {
+pub fn grant_recipient_key(entry: &GrantRecipient) -> Option<String> {
     let kind = match entry.kind {
-        SubjectKind::Member => "member",
-        SubjectKind::Agent => "agent",
-        SubjectKind::App => "app",
-        SubjectKind::Role => return None,
+        RecipientKind::Member => "member",
+        RecipientKind::Agent => "agent",
+        RecipientKind::App => "app",
+        RecipientKind::Role => return None,
     };
     Some(format!("{kind}:{}", entry.id))
 }
@@ -486,9 +491,9 @@ pub fn draft_for(
     until: Option<u64>,
     now_ms: u64,
 ) -> Option<GrantDraft> {
-    let subject_index = grant_subjects(ws)
+    let subject_index = grant_recipients(ws)
         .iter()
-        .position(|entry| grant_subject_key(entry).as_deref() == Some(subject))?;
+        .position(|entry| grant_recipient_key(entry).as_deref() == Some(subject))?;
     let choice_index = GRANT_CHOICES
         .iter()
         .position(|choice| choice.key == permission)?;
@@ -506,12 +511,12 @@ pub fn draft_for(
 /// The subjects the composer can target, in picker order: the workspace's people first, then
 /// admitted agents, then every app running in the workspace or already holding a capability —
 /// without running apps, a host could only grant to an app already granted something.
-pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
-    let mut out: Vec<GrantSubject> = ws
+pub fn grant_recipients(ws: &Workspace) -> Vec<GrantRecipient> {
+    let mut out: Vec<GrantRecipient> = ws
         .roster()
         .into_iter()
-        .map(|(user, _)| GrantSubject {
-            kind: SubjectKind::Member,
+        .map(|(user, _)| GrantRecipient {
+            kind: RecipientKind::Member,
             id: user,
         })
         .collect();
@@ -519,8 +524,8 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     out.extend(
         ws.agent_members_at(tilo_clock::unix_now())
             .into_iter()
-            .map(|(agent, _)| GrantSubject {
-                kind: SubjectKind::Agent,
+            .map(|(agent, _)| GrantRecipient {
+                kind: RecipientKind::Agent,
                 id: agent,
             }),
     );
@@ -542,8 +547,8 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     }
     apps.compact_sort();
     apps.dedup();
-    out.extend(apps.into_iter().map(|id| GrantSubject {
-        kind: SubjectKind::App,
+    out.extend(apps.into_iter().map(|id| GrantRecipient {
+        kind: RecipientKind::App,
         id,
     }));
     out
@@ -552,7 +557,7 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
 /// The capability `draft` names against `ws` , or `None` when the draft has no addressable subject
 /// (an empty workspace) or names a subject this panel cannot grant to.
 pub fn draft_capability(ws: &Workspace, person: &str, draft: &GrantDraft) -> Option<CapOverride> {
-    let subjects = grant_subjects(ws);
+    let subjects = grant_recipients(ws);
     if subjects.is_empty() {
         return None;
     }
@@ -574,6 +579,18 @@ pub fn draft_capability(ws: &Workspace, person: &str, draft: &GrantDraft) -> Opt
 /// What a panel mutation changed, for the caller that applies it to the desktop. Empty means there
 /// was nothing to change.
 pub use tilo_desktop_model::grants::PolicyEdit;
+
+/// Set one person's or role's access to a published document.
+pub fn set_document_access(
+    ws: &mut Workspace,
+    actor: &UserId,
+    (who, app, document): (&str, &str, &str),
+    access: &str,
+) -> Result<PolicyEdit, Refusal> {
+    let changes =
+        collab_types::document_access_changes(&ws.policy, actor, (who, app, document), access)?;
+    ws.govern_all_at(actor, changes, tilo_clock::unix_now())
+}
 
 /// Grant what `draft` names, as `actor`, through the workspace's governance:
 /// the same check every action API and the workspace's host make.
@@ -693,6 +710,7 @@ fn grantee_is_person(grantee: &Grantee, user: &UserId) -> bool {
         Grantee::Member(MemberId::Person(id)) => id == user,
         Grantee::Member(MemberId::Agent(_) | MemberId::Bot(_))
         | Grantee::Role(_)
+        | Grantee::CustomRole(_)
         | Grantee::App(_) => false,
     }
 }
@@ -834,7 +852,7 @@ impl Listed<'_> {
 }
 
 /// The section a sandbox capability is listed in: the app whose sandbox it is, else its grantee's.
-fn classify_capability(cap: &CapOverride) -> GrantSubject {
+fn classify_capability(cap: &CapOverride) -> GrantRecipient {
     match &cap.app {
         Some(app) => classify_grantee(&Grantee::app(app.as_str())),
         None => classify_grantee(&cap.grantee),
@@ -842,26 +860,30 @@ fn classify_capability(cap: &CapOverride) -> GrantSubject {
 }
 
 /// The section a grantee is listed in.
-fn classify_grantee(grantee: &Grantee) -> GrantSubject {
+fn classify_grantee(grantee: &Grantee) -> GrantRecipient {
     match grantee {
-        Grantee::Member(MemberId::Person(id)) => GrantSubject {
-            kind: SubjectKind::Member,
+        Grantee::Member(MemberId::Person(id)) => GrantRecipient {
+            kind: RecipientKind::Member,
             id: id.as_str().to_owned(),
         },
-        Grantee::Member(MemberId::Agent(id) | MemberId::Bot(id)) => GrantSubject {
-            kind: SubjectKind::Agent,
+        Grantee::Member(MemberId::Agent(id) | MemberId::Bot(id)) => GrantRecipient {
+            kind: RecipientKind::Agent,
             id: id.clone(),
         },
-        Grantee::App(app) => GrantSubject {
-            kind: SubjectKind::App,
+        Grantee::App(app) => GrantRecipient {
+            kind: RecipientKind::App,
             id: app.clone(),
         },
-        Grantee::Role(role) => GrantSubject {
-            kind: SubjectKind::Role,
+        Grantee::Role(role) => GrantRecipient {
+            kind: RecipientKind::Role,
             id: t_args(
                 "workspace-settings-subject-role",
                 &[("role", role_label(*role).into())],
             ),
+        },
+        Grantee::CustomRole(id) => GrantRecipient {
+            kind: RecipientKind::Role,
+            id: id.clone(),
         },
     }
 }
@@ -871,9 +893,9 @@ fn classify_grantee(grantee: &Grantee) -> GrantSubject {
 /// role presets (the People tab is roles) and an agent's admission (the
 /// Agents tab), or it would be revocable from neither tab. An end that has
 /// passed gives nothing, so it is not listed either.
-fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
+fn listed_capabilities(ws: &Workspace) -> Vec<(GrantRecipient, Listed<'_>)> {
     let live = Some(tilo_clock::unix_now().saturating_mul(1000));
-    let mut out: Vec<(GrantSubject, Listed<'_>)> = ws
+    let mut out: Vec<(GrantRecipient, Listed<'_>)> = ws
         .sandbox
         .iter()
         .filter(|cap| cap.effect == Effect::Grant && cap.lifetime.is_live_at(live))
@@ -889,7 +911,8 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, Listed<'_>)> {
                     grant.grantee.role_of().is_some() && grant.id.as_str().starts_with("role:");
                 let admission = grant.grantee.agent_id().is_some()
                     && grant.id.as_str().starts_with("agent-member:");
-                !preset && !admission
+                let document_access = grant.id.as_str().starts_with("document-access:");
+                !preset && !admission && !document_access
             })
             .map(|grant| (classify_grantee(&grant.grantee), Listed::Grant(grant))),
     );
@@ -943,7 +966,7 @@ pub fn listed_permissions(
                     ui::format::lifetime(grant.lifetime),
                     match &grant.granted_by {
                         Grantee::Member(who) => Some(given_by_label(who, ws, local_user)),
-                        Grantee::Role(_) | Grantee::App(_) => None,
+                        Grantee::Role(_) | Grantee::App(_) | Grantee::CustomRole(_) => None,
                     },
                 ),
             };
@@ -1345,10 +1368,10 @@ mod agents_tests {
 
         {
             let ws = ws_with_agent();
-            let subjects = grant_subjects(&ws);
+            let subjects = grant_recipients(&ws);
             let index = subjects
                 .iter()
-                .position(|subject| subject.kind == SubjectKind::Agent && subject.id == AGENT)
+                .position(|subject| subject.kind == RecipientKind::Agent && subject.id == AGENT)
                 .expect("agent is offered in the permission composer");
             let draft = GrantDraft {
                 subject_index: index,
@@ -1366,7 +1389,7 @@ mod agents_tests {
             assert_eq!(
                 listed
                     .iter()
-                    .filter(|row| row.section == SubjectKind::Agent.section_label())
+                    .filter(|row| row.section == RecipientKind::Agent.section_label())
                     .count(),
                 1,
                 "only the explicit app grant belongs in Privacy & Security",
@@ -1479,7 +1502,7 @@ mod permissions_tests {
             let rows = listed(&ws);
             assert_eq!(rows.len(), 2);
             for row in &rows {
-                assert_eq!(row.section, SubjectKind::App.section_label());
+                assert_eq!(row.section, RecipientKind::App.section_label());
                 assert_eq!(
                     row.holder, "Firefox",
                     "an app is named, never shown as its id"
@@ -1516,9 +1539,9 @@ mod permissions_tests {
             let rows = listed(&ws);
             let kinds: Vec<&str> = rows.iter().map(|r| r.section.as_str()).collect();
             for expected in [
-                SubjectKind::App.section_label(),
-                SubjectKind::Member.section_label(),
-                SubjectKind::Role.section_label(),
+                RecipientKind::App.section_label(),
+                RecipientKind::Member.section_label(),
+                RecipientKind::Role.section_label(),
             ] {
                 assert!(kinds.contains(&expected.as_str()), "{kinds:?}");
             }
@@ -1701,24 +1724,24 @@ mod permissions_tests {
     fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
         {
             let ws = ws_with_grants();
-            let subjects = grant_subjects(&ws);
+            let subjects = grant_recipients(&ws);
             assert_eq!(
                 subjects[0],
-                GrantSubject {
-                    kind: SubjectKind::Member,
+                GrantRecipient {
+                    kind: RecipientKind::Member,
                     id: OWNER.to_string()
                 },
                 "people come first"
             );
-            assert!(subjects.contains(&GrantSubject {
-                kind: SubjectKind::App,
+            assert!(subjects.contains(&GrantRecipient {
+                kind: RecipientKind::App,
                 id: "firefox".to_string()
             }));
         }
 
         {
             let mut ws = ws_with_grants();
-            let subjects = grant_subjects(&ws);
+            let subjects = grant_recipients(&ws);
             let firefox = subjects
                 .iter()
                 .position(|s| s.id == "firefox")
@@ -1752,7 +1775,7 @@ mod permissions_tests {
 
         {
             let mut ws = ws_with_grants();
-            let firefox = grant_subjects(&ws)
+            let firefox = grant_recipients(&ws)
                 .iter()
                 .position(|s| s.id == "firefox")
                 .unwrap();
@@ -1781,7 +1804,7 @@ mod permissions_tests {
             // `grant_capability` keeps the longer expiry for the same (subject, scope, effect,
             // verb).
             let mut ws = ws_with_grants();
-            let firefox = grant_subjects(&ws)
+            let firefox = grant_recipients(&ws)
                 .iter()
                 .position(|s| s.id == "firefox")
                 .unwrap();
@@ -1826,7 +1849,7 @@ mod permissions_tests {
 
         {
             let mut ws = ws_with_grants();
-            let firefox = grant_subjects(&ws)
+            let firefox = grant_recipients(&ws)
                 .iter()
                 .position(|s| s.id == "firefox")
                 .unwrap();
@@ -1845,7 +1868,7 @@ mod permissions_tests {
 
         {
             let ws = ws_with_grants();
-            let firefox = grant_subjects(&ws)
+            let firefox = grant_recipients(&ws)
                 .iter()
                 .position(|s| s.id == "firefox")
                 .unwrap();

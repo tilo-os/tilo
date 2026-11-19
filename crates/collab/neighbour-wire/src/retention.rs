@@ -123,7 +123,7 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             workspace, frame, ..
         } => {
             let mut route = b"mls-governance\0".to_vec();
-            reader_group_route(&mut route, workspace, frame.workspace);
+            reader_group_route(&mut route, workspace, frame.workspace)?;
             if matches!(frame.action, collab_types::MlsGovernanceAction::Genesis) {
                 route.extend_from_slice(&frame.digest().ok()?);
             } else if audience(msg).is_some() {
@@ -139,7 +139,7 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             workspace, request, ..
         } => {
             let mut route = b"mls-access\0".to_vec();
-            reader_group_route(&mut route, workspace, request.workspace);
+            reader_group_route(&mut route, workspace, request.workspace)?;
             route.extend_from_slice(request.device.as_bytes());
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
@@ -161,12 +161,26 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
 /// ([`collab_types::reader_group`]) rather than the workspace's own: each group's head and
 /// each device's request in it are kept apart from every other group's. The workspace's own
 /// group keeps the routes it always had.
-fn reader_group_route(route: &mut Vec<u8>, workspace: &str, group: collab_types::WorkspaceId) {
-    if collab_types::WorkspaceId::parse(workspace).is_some_and(|workspace| workspace != group) {
+fn reader_group_route(
+    route: &mut Vec<u8>,
+    wire: &str,
+    group: collab_types::WorkspaceId,
+) -> Option<()> {
+    let workspace = if wire.contains('/') {
+        let scope = crate::KeyScope::parse(wire)?;
+        if scope.group() != group {
+            return None;
+        }
+        Some(scope.workspace())
+    } else {
+        collab_types::WorkspaceId::parse(wire)
+    };
+    if workspace.is_some_and(|workspace| workspace != group) {
         route.extend_from_slice(b"group\0");
         route.extend_from_slice(group.as_uuid().as_bytes());
         route.push(0);
     }
+    Some(())
 }
 
 /// The retained channel of an app record. Isolation between workspaces is

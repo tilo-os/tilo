@@ -164,6 +164,7 @@ impl StatePeer {
         let attestation = collab_types::document_attestation_id(app, &self.core.workspace, record);
         let surface = self.signed_surface(app);
         let Some(seal) = seal else {
+            self.check_document_key_scope((app, record), None, now, false)?;
             // A device that starts a record is told now when the workspace does not let it
             // create one, or when the record is there already: a peer's copy of the same start
             // is held or merged as the nothing it is, but its own write would be answered as
@@ -228,6 +229,7 @@ impl StatePeer {
             })
             .unwrap_or_default();
         let (metadata, ciphertext) = seal(frame)?;
+        self.check_document_key_scope((app, record), Some(metadata), now, false)?;
         if metadata.retention() != Some(retention) {
             return Err("a sealed write is a delta or a checkpoint of the record".into());
         }

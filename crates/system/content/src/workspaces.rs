@@ -239,6 +239,10 @@ impl ContentBackend for RoomChecked {
         self.inner.has(hash)
     }
 
+    fn size(&self, hash: &str) -> Option<u64> {
+        self.inner.size(hash)
+    }
+
     fn state(&self, hash: &str) -> ContentState {
         self.inner.state(hash)
     }

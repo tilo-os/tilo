@@ -258,7 +258,7 @@ impl KeyGroup {
         payload: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
         match metadata.scheme {
-            EncryptionScheme::ContentKey { .. } => {
+            EncryptionScheme::ContentKey { .. } | EncryptionScheme::DocumentContentKey { .. } => {
                 self.keyring
                     .open(self.workspace, artifact, metadata, payload)
             }
