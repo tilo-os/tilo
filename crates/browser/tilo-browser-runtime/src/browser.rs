@@ -3457,7 +3457,7 @@ mod desktop_exports;
 mod desktop_frame;
 mod dom;
 mod prepare;
-pub(crate) use dom::draw_dom_frame;
+pub(crate) use dom::{draw_dom_frame, paint_composed};
 pub(crate) mod drops;
 mod fonts;
 mod frame_loop;

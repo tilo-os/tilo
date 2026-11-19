@@ -937,6 +937,20 @@ pub struct Composition {
 }
 
 impl Composition {
+    /// The widget or part at `path`, over the window or in it.
+    #[must_use]
+    pub fn find(&self, path: &str) -> Option<&Composed> {
+        fn find<'a>(node: &'a Composed, path: &str) -> Option<&'a Composed> {
+            if node.path == path {
+                return Some(node);
+            }
+            node.children.iter().find_map(|child| find(child, path))
+        }
+        std::iter::once(&self.root)
+            .chain(&self.layers)
+            .find_map(|root| find(root, path))
+    }
+
     /// Keep only each node's own fields
     /// ([`Composed::forget_semantics_children`]).
     pub(crate) fn forget_semantics_children(&mut self) {

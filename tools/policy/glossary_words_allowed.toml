@@ -337,6 +337,12 @@ words = ["collaborator"]
 paths = ["apps/music/*"]
 
 [[allow]]
+reason = "The browser's MessageChannel, which queues a task after the page's rendering update."
+words = ["channel"]
+identifiers = ["MessageChannel"]
+paths = ["tools/web/html-renderer/tilolang-perf.mjs"]
+
+[[allow]]
 reason = "A queue of messages between threads: std's mpsc and calloop's."
 words = ["channel"]
 identifiers = ["channel"]

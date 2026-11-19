@@ -1,0 +1,127 @@
+{
+  "startup": {
+    "firstFrameMs": 6534,
+    "transferredKiB": 22789
+  },
+  "interactions": {
+    "open Basics": {
+      "frames": 4,
+      "created": 4,
+      "kib": 132,
+      "maxMs": 241,
+      "longestTaskMs": 50
+    },
+    "hover Basics": {
+      "frames": 2,
+      "created": 4,
+      "kib": 132,
+      "maxMs": 95,
+      "longestTaskMs": 50
+    },
+    "open Controls": {
+      "frames": 4,
+      "created": 237,
+      "kib": 188,
+      "maxMs": 483,
+      "longestTaskMs": 408
+    },
+    "type": {
+      "frames": 2,
+      "created": 4,
+      "kib": 188,
+      "maxMs": 97,
+      "longestTaskMs": 50
+    },
+    "open Feedback": {
+      "frames": 6,
+      "created": 201,
+      "kib": 185,
+      "maxMs": 428,
+      "longestTaskMs": 284
+    },
+    "open Backlog": {
+      "frames": 4,
+      "created": 64,
+      "kib": 98,
+      "maxMs": 352,
+      "longestTaskMs": 284
+    },
+    "open Release board": {
+      "frames": 4,
+      "created": 72,
+      "kib": 92,
+      "maxMs": 177,
+      "longestTaskMs": 50
+    },
+    "open Data": {
+      "frames": 5,
+      "created": 226,
+      "kib": 162,
+      "maxMs": 354,
+      "longestTaskMs": 288
+    },
+    "hover Data": {
+      "frames": 2,
+      "created": 4,
+      "kib": 162,
+      "maxMs": 103,
+      "longestTaskMs": 50
+    },
+    "scroll Data": {
+      "frames": 55,
+      "created": 62,
+      "kib": 162,
+      "maxMs": 324,
+      "longestTaskMs": 50
+    },
+    "open Media": {
+      "frames": 5,
+      "created": 188,
+      "kib": 210,
+      "maxMs": 453,
+      "longestTaskMs": 366
+    },
+    "open Places": {
+      "frames": 5,
+      "created": 64,
+      "kib": 87,
+      "maxMs": 310,
+      "longestTaskMs": 176
+    },
+    "open Shell parts": {
+      "frames": 5,
+      "created": 186,
+      "kib": 148,
+      "maxMs": 300,
+      "longestTaskMs": 218
+    },
+    "open Charts and views": {
+      "frames": 5,
+      "created": 144,
+      "kib": 147,
+      "maxMs": 352,
+      "longestTaskMs": 238
+    },
+    "hover Charts and views": {
+      "frames": 2,
+      "created": 4,
+      "kib": 147,
+      "maxMs": 58,
+      "longestTaskMs": 50
+    },
+    "drag sidebar": {
+      "frames": 79,
+      "created": 4,
+      "kib": 147,
+      "maxMs": 326,
+      "longestTaskMs": 154
+    },
+    "resize window": {
+      "frames": 49,
+      "created": 4,
+      "kib": 147,
+      "maxMs": 10,
+      "longestTaskMs": 150
+    }
+  }
+}

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds a tilolang app for the web: the tilolang runtime's web bundle
-# (`tilo-app build --target web --bundle app apps/tilolang`) with the app's
+# (`tilo-app build --target web --bundle app --release apps/tilolang`) with the app's
 # payload beside it under tl/<app-id>/, which the page installs
 # (`installTilolangPackage`) before it mounts the app, and app.html and
 # tilolang.html to open it with. Runs where cargo builds (the builder, through
@@ -14,7 +14,7 @@ search=("$@")
 if [[ ${#search[@]} -eq 0 ]]; then search=(--search apps/tl); fi
 out=$CARGO_TARGET_DIR/htmlrenderer/tilolang
 cargo build --locked -p tilo-app-cli --bin tilo-app -p tilolang-cli --bin tilolang
-"$CARGO_TARGET_DIR/debug/tilo-app" build --target web --bundle app apps/tilolang
+"$CARGO_TARGET_DIR/debug/tilo-app" build --target web --bundle app --release apps/tilolang
 rm -rf "$out"
 mkdir -p "$out"
 cp -r "$CARGO_TARGET_DIR/tilo-app/web/tilolang-app/bundle/." "$out/"

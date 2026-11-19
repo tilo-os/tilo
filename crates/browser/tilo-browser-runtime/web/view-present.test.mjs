@@ -29,9 +29,17 @@ class Node {
   get nextSibling() { const siblings = this.parentNode?.children; return siblings?.[siblings.indexOf(this) + 1] ?? null; }
   get textContent() { return this.children.map(child => child.textContent).join(''); }
   set textContent(value) { this.replaceChildren(new Text(String(value))); }
-  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  // A data attribute shows in `dataset`, and the attributes an input reflects are its properties.
+  setAttribute(name, value) { this.attributes.set(name, String(value)); this.reflect(name, String(value)); }
   getAttribute(name) { return this.attributes.get(name) ?? null; }
-  removeAttribute(name) { this.attributes.delete(name); }
+  removeAttribute(name) { this.attributes.delete(name); this.reflect(name, undefined); }
+  reflect(name, value) {
+    if (name.startsWith('data-')) {
+      const key = name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      if (value === undefined) delete this.dataset[key]; else this.dataset[key] = value;
+    } else if (name === 'disabled') this.disabled = value !== undefined;
+    else if (['min', 'max', 'step'].includes(name)) this[name] = value ?? '';
+  }
   addEventListener(type, listener) { this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]); }
   dispatch(type, event = {}) { for (const listener of this.listeners.get(type) ?? []) listener({type, target: this, ...event}); }
   remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(c => c !== this); this.parentNode = null; }
@@ -142,10 +150,10 @@ test('a painted widget fetches its picture once the frame is handed over, and ag
   const layer = new Node('div');
   const asked = [];
   let presenting = false;
-  const presenter = createViewPresenter(layer, {picture: (path, scale) => {
+  const presenter = createViewPresenter(layer, {picture: (paths, scale) => {
     assert.equal(presenting, false, 'never while the runtime presents');
-    asked.push(path);
-    return [2, 2, new Uint8ClampedArray(16)];
+    asked.push(...paths);
+    return paths.map(() => [2, 2, new Uint8ClampedArray(16)]);
   }});
   const frame = version => widget('Icon[0]', [0, 0, 16, 16], {own: {kind: 'painted', version}});
   presenting = true; show(presenter, frame(1)); presenting = false;

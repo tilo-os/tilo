@@ -112,13 +112,20 @@ fn picture(scene: &vello::Scene, width: u32, height: u32) -> Option<Vec<u8>> {
     Some(rgba)
 }
 
-/// The picture of the widget at `path` of `m`, at `scale` device pixels per
-/// logical pixel: `[width, height, pixels]`, or null when no widget has the
-/// path or it paints nothing.
-fn paint(m: &mut crate::browser::Mount, path: &str, scale: f64) -> JsValue {
-    let Some((scene, rect)) = m.frame_mut().paint_composed(path, scale) else {
-        return JsValue::NULL;
-    };
+/// The pictures of the widgets at `paths` of `m`, at `scale` device pixels
+/// per logical pixel: for each, `[width, height, pixels]`, or null when the
+/// page's composition has no widget at the path or it paints nothing.
+fn paint(m: &mut crate::browser::Mount, paths: &[String], scale: f64) -> JsValue {
+    let out = js_sys::Array::new();
+    for painted in crate::browser::paint_composed(m, paths, scale) {
+        out.push(&painted.map_or(JsValue::NULL, |(scene, rect)| shown(&scene, rect, scale)));
+    }
+    out.into()
+}
+
+/// `scene`, painted over `rect`, as the page's `[width, height, pixels]` at
+/// `scale`, or null when it paints nothing.
+fn shown(scene: &vello::Scene, rect: [f64; 4], scale: f64) -> JsValue {
     if scene.encoding().is_empty() {
         return JsValue::NULL;
     }
@@ -129,7 +136,7 @@ fn paint(m: &mut crate::browser::Mount, path: &str, scale: f64) -> JsValue {
         reason = "clamped to 1..=4096 just above"
     )]
     let (width, height) = (size(rect[2]) as u32, size(rect[3]) as u32);
-    let Some(rgba) = picture(&scene, width, height) else {
+    let Some(rgba) = picture(scene, width, height) else {
         return JsValue::NULL;
     };
     let out = js_sys::Array::new();
@@ -145,7 +152,7 @@ fn paint(m: &mut crate::browser::Mount, path: &str, scale: f64) -> JsValue {
 #[derive(Clone, Copy)]
 pub struct DomCode {
     pub(crate) draw: fn(&mut crate::browser::Mount) -> Result<(), String>,
-    pub(crate) paint: fn(&mut crate::browser::Mount, &str, f64) -> JsValue,
+    pub(crate) paint: fn(&mut crate::browser::Mount, &[String], f64) -> JsValue,
 }
 
 /// The HTML presentation's code this build links.

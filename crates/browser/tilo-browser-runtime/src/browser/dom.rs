@@ -117,6 +117,9 @@ struct Shown {
     code: Option<Box<dyn crate::dom_code::DomPresent>>,
     /// The theme generation whose variables the page holds.
     theme_published: Option<u64>,
+    /// The composition last handed to the page: the pictures it then asks
+    /// for are painted from its nodes.
+    composed: Option<ui::composition::Composition>,
 }
 
 /// Show the next mount made as HTML rather than on a WebGPU canvas: each
@@ -146,6 +149,7 @@ pub(super) fn claim(id: u64) {
                     presenter,
                     code: None,
                     theme_published: None,
+                    composed: None,
                 },
             );
         });
@@ -182,19 +186,47 @@ pub fn dom_scrolled(id: u64, path: &str, offset: f64) -> Result<bool, JsValue> {
     })
 }
 
-/// The picture of the widget at `path` of mount `id`, which shows its own
-/// paint ([`ui::composition::Own::Painted`]), at `scale` device pixels per
-/// CSS pixel: `[width, height, straight RGBA]`, or null.
+/// The pictures of the widgets at `paths` of mount `id`, each of which shows
+/// its own paint ([`ui::composition::Own::Painted`]), at `scale` device
+/// pixels per CSS pixel: for each, `[width, height, straight RGBA]`, or null.
 ///
 /// # Errors
 ///
 /// Rejects a closed mount.
 #[wasm_bindgen]
-pub fn dom_picture(id: u64, path: &str, scale: f64) -> Result<JsValue, JsValue> {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "wasm-bindgen hands a list of strings over owned"
+)]
+pub fn dom_pictures(id: u64, paths: Vec<String>, scale: f64) -> Result<JsValue, JsValue> {
     with_mount(id, |m| {
         Ok(crate::dom_code::DOM_CODE
             .get()
-            .map_or(JsValue::NULL, |code| (code.paint)(m, path, scale)))
+            .map_or(JsValue::NULL, |code| (code.paint)(m, &paths, scale)))
+    })
+}
+
+/// The paint of each widget at `paths` of `m`, from the composition the page
+/// was last handed (`None` for a path it does not hold), at `scale`. Part of
+/// the presentation's code (`crate::dom_code`), reached only through it.
+pub(crate) fn paint_composed(
+    m: &mut Mount,
+    paths: &[String],
+    scale: f64,
+) -> Vec<Option<(vello::Scene, [f64; 4])>> {
+    MOUNTS.with_borrow(|mounts| {
+        let Some(composition) = mounts.get(&m.id).and_then(|shown| shown.composed.as_ref()) else {
+            return vec![None; paths.len()];
+        };
+        let found: Vec<_> = paths.iter().map(|path| composition.find(path)).collect();
+        let mut painted = m
+            .frame
+            .paint_composed(found.iter().copied().flatten(), scale)
+            .into_iter();
+        found
+            .iter()
+            .map(|node| node.and_then(|_| painted.next().flatten()))
+            .collect()
     })
 }
 
@@ -401,13 +433,6 @@ pub(crate) fn draw_dom_frame(m: &mut Mount) -> Result<(), String> {
 }
 
 impl Mount {
-    /// The mount's frame, for the presentation's code.
-    pub(crate) fn frame_mut(&mut self) -> &mut ui::headless::FrameHarness {
-        &mut self.frame
-    }
-}
-
-impl Mount {
     fn draw_dom_frame(&mut self) -> Result<(), String> {
         let want = self.note_dom_frame_wanted();
         let (replica, theme_changed) = (want.replica, want.theme_changed);
@@ -423,13 +448,14 @@ impl Mount {
         let background = self.frame.frame_render_input().background;
         let theme_generation = self.theme_seen;
         let encoded = web_time::Instant::now();
-        let composition =
-            serde_json::to_string(&self.frame.composition()).map_err(|error| error.to_string())?;
+        let composed = self.frame.composition();
+        let composition = serde_json::to_string(&composed).map_err(|error| error.to_string())?;
         let encode_ms = encoded.elapsed().as_secs_f64() * 1000.0;
         let presented = MOUNTS.with_borrow_mut(|mounts| {
             let shown = mounts.get_mut(&self.id)?;
             let publish_theme = shown.theme_published != Some(theme_generation);
             shown.theme_published = Some(theme_generation);
+            shown.composed = Some(composed);
             shown
                 .code
                 .get_or_insert_with(crate::dom_code::presenter)

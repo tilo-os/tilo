@@ -339,9 +339,9 @@ export async function mountDesktop(target,options={}) {
         if(id===undefined||closed)return;
         try{runtime.dom_scrolled(id,path,offset);}catch(error){report({domScroll:String(error)});}
       },
-      picture:(path,scale)=>{
+      picture:(paths,scale)=>{
         if(id===undefined||closed)return null;
-        try{return runtime.dom_picture(id,path,scale);}catch(error){report({domPicture:String(error)});return null;}
+        try{return runtime.dom_pictures(id,paths,scale);}catch(error){report({domPicture:String(error)});return null;}
       },
       semantic:(path,target,action,value,anchor,focus)=>{
         if(id===undefined||closed)return;

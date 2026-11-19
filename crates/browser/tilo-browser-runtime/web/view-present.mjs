@@ -85,12 +85,17 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
   let fetching = false;
   function fetchPictures() {
     fetching = false;
-    for (const [path, canvas] of wanted) {
-      wanted.delete(path);
-      const shown = picture?.(path, scale);
+    const paths = [...wanted.keys()];
+    const canvases = [...wanted.values()];
+    wanted.clear();
+    // All of a frame's pictures in one call: the runtime finds and paints
+    // them from the composition it last handed over.
+    const shown = picture?.(paths, scale) ?? [];
+    canvases.forEach((canvas, index) => {
       stats.pictures++;
-      if (shown) {
-        const [width, height, pixels] = shown;
+      const one = shown[index];
+      if (one) {
+        const [width, height, pixels] = one;
         canvas.width = width;
         canvas.height = height;
         canvas.getContext('2d').putImageData(new ImageData(pixels, width, height), 0, 0);
@@ -98,10 +103,12 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         canvas.width = 0;
         canvas.height = 0;
       }
-    }
+    });
   }
   const stats = {frames: 0, lastMs: 0, elements: 0, writes: 0, created: 0, pictures: 0};
   let scale = globalThis.devicePixelRatio || 1;
+  // The ground last set on the layer.
+  let background;
 
   layer.classList.add('tilo-view');
 
@@ -571,11 +578,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
   // widget performs (a toggle, a value, an activation of a named choice), so
   // there is one input path for the canvas and the page alike.
   function mark(element, action, target, value) {
-    element.dataset.tiloAct = action;
-    if (target === undefined || target === null) delete element.dataset.tiloTarget;
-    else element.dataset.tiloTarget = target;
-    if (value === undefined || value === null) delete element.dataset.tiloValue;
-    else element.dataset.tiloValue = value;
+    write(element, '@data-tilo-act', action);
+    write(element, '@data-tilo-target', target);
+    write(element, '@data-tilo-value', value);
   }
 
   // A run of a control's words, set as the widget sets them.
@@ -608,8 +613,8 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         write(input, '@type', control.style === 'radio' ? 'radio' : 'checkbox');
         write(input, '@role', control.style === 'switch' ? 'switch' : null);
         if (input.checked !== control.checked) input.checked = control.checked;
-        input.indeterminate = Boolean(control.mixed);
-        input.disabled = disabled;
+        if (input.indeterminate !== Boolean(control.mixed)) input.indeterminate = Boolean(control.mixed);
+        write(input, '@disabled', disabled);
         write(input, '@aria-label', control.label ? null : (node.semantics?.name ?? null));
         mark(input, 'toggle', target);
         const label = control.label && wordsFor(`${key}:label`, control.label, next);
@@ -622,11 +627,11 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         write(input, '@type', 'range');
         write(input, '@aria-label', node.semantics?.name ?? null);
         write(input, '@aria-valuetext', control.text ?? null);
-        input.min = String(control.min);
-        input.max = String(control.max);
-        input.step = control.step === undefined || control.step === null ? 'any' : String(control.step);
+        write(input, '@min', String(control.min));
+        write(input, '@max', String(control.max));
+        write(input, '@step', control.step === undefined || control.step === null ? 'any' : String(control.step));
         if (document.activeElement !== input && Number(input.value) !== control.value) input.value = String(control.value);
-        input.disabled = disabled;
+        write(input, '@disabled', disabled);
         // How far along its track it is, for the filled part the toolkit paints.
         const span = control.max - control.min;
         const along = span > 0 ? Math.min(100, Math.max(0, (control.value - control.min) / span * 100)) : 0;
@@ -652,11 +657,11 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         write(input, '@role', control.input === 'number' ? 'spinbutton' : null);
         write(input, '@placeholder', control.placeholder || null);
         write(input, '@aria-label', node.semantics?.name ?? null);
-        if (control.min !== undefined) input.min = String(control.min);
-        if (control.max !== undefined) input.max = String(control.max);
-        if (control.step !== undefined) input.step = String(control.step);
+        write(input, '@min', control.min === undefined ? null : String(control.min));
+        write(input, '@max', control.max === undefined ? null : String(control.max));
+        write(input, '@step', control.step === undefined ? null : String(control.step));
         if (document.activeElement !== input && input.value !== control.text) input.value = control.text;
-        input.disabled = disabled;
+        write(input, '@disabled', disabled);
         // A secret is never the page's field: its characters stay with the
         // widget, and the page shows the mask it was given.
         if (!control.secret) mark(input, 'value', target);
@@ -672,9 +677,9 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
             write(button, 'css', 'all:unset;box-sizing:border-box;position:relative;flex:none;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--tilo-text-dim,#6e6e73);font-size:13px;line-height:1;cursor:pointer;');
             // Its minus or plus is drawn as the toolkit's stroke, not a character.
             write(button, 'text', '');
-            button.disabled = disabled;
-            button.dataset.tiloStepBy = String(sign * (control.step ?? 1));
-            button.dataset.tiloText = control.text;
+            write(button, '@disabled', disabled);
+            write(button, '@data-tilo-step-by', String(sign * (control.step ?? 1)));
+            write(button, '@data-tilo-text', control.text);
             mark(button, 'step', target);
           }
           parts.push(minus, input, plus);
@@ -693,7 +698,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
         write(button, '@aria-haspopup', 'listbox');
         write(button, '@aria-expanded', String(Boolean(control.open)));
         write(button, 'css', 'display:flex;align-items:center;gap:6px;width:100%;height:100%;padding:0 10px;border-radius:var(--tilo-radius,8px);box-sizing:border-box;cursor:pointer;');
-        button.disabled = disabled;
+        write(button, '@disabled', disabled);
         mark(button, 'activate', target);
         const runs = [];
         if (control.icon) runs.push(glyph(`${key}:icon`, control.icon, next));
@@ -774,7 +779,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
       ? 'display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border-radius:6px;cursor:pointer;' + (option.selected ? 'background:color-mix(in srgb,var(--tilo-accent,#2f6fed) 14%,transparent);' : '')
       : 'display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;white-space:nowrap;cursor:pointer;' + (option.selected ? 'background:var(--tilo-raised,rgba(127,127,127,.16));' : ''))
       + (option.dot ? 'position:relative;' : '') + at);
-    item.disabled = Boolean(option.disabled);
+    write(item, '@disabled', Boolean(option.disabled));
     const shown = [];
     if (option.colour) {
       const dot = elementFor(`${path}:colour`, 'span', next);
@@ -860,7 +865,7 @@ export function createViewPresenter(layer, {onScroll, picture, semantic, onFrame
     const composition = JSON.parse(compositionText);
     scale = globalThis.devicePixelRatio || 1;
     if (meta.theme) for (const [name, value] of Object.entries(meta.theme)) layer.style.setProperty(name, value);
-    layer.style.background = meta.background;
+    if (background !== meta.background) layer.style.background = background = meta.background;
     const next = new Map();
     scrollers = new Map();
     const roots = [render(composition.root, null, next, 0)];

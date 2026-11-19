@@ -340,23 +340,50 @@ impl FrameHarness {
         composition
     }
 
-    /// The paint of the widget at `path` alone, at `scale` device pixels per
-    /// logical pixel, its box's top left at the origin: the picture a host
-    /// shows for a widget that declares nothing of its own
-    /// ([`crate::composition::Own::Painted`]). `None` when no laid-out widget has that path.
-    pub fn paint_composed(&mut self, path: &str, scale: f64) -> Option<(Scene, [f64; 4])> {
-        if path == super::part_row::WINDOW_PARTS {
-            return self.paint_part_row(scale);
-        }
-        let composed = self.composed_node(path)?;
+    /// The paint of each of `parts`, widgets or parts of the composition last read
+    /// ([`Self::composition`]), alone, at `scale` device pixels per logical pixel, its box's top
+    /// left at the origin: the pictures a page shows for widgets that declare nothing of their own
+    /// ([`crate::composition::Own::Painted`]). `None` for a part no laid-out widget has the path of.
+    ///
+    /// The page's presenter hands the nodes from the composition it holds, all of a frame's at
+    /// once: composing the window, and naming its widgets, again for each picture made a frame
+    /// with many pictures (a resize, a page of charts) do that work once a picture.
+    pub fn paint_composed<'c>(
+        &mut self,
+        parts: impl IntoIterator<Item = &'c Composed>,
+        scale: f64,
+    ) -> Vec<Option<(Scene, [f64; 4])>> {
+        let mut targets = None;
+        parts
+            .into_iter()
+            .map(|composed| {
+                let path = composed.path.as_str();
+                if path == super::part_row::WINDOW_PARTS {
+                    return self.paint_part_row(scale);
+                }
+                let widget_path = path.split_once('#').map_or(path, |(widget, _)| widget);
+                let node = *targets
+                    .get_or_insert_with(|| self.named_target_nodes())
+                    .get(widget_path)?;
+                self.paint_node(node, composed, scale)
+            })
+            .collect()
+    }
+
+    /// The paint of `composed`, the widget laid out at `node` or a part of it.
+    fn paint_node(
+        &mut self,
+        node: NodeId,
+        composed: &Composed,
+        scale: f64,
+    ) -> Option<(Scene, [f64; 4])> {
         let [x, y, width, height] = composed.rect;
-        let part = path
+        let part = composed
+            .path
             .contains('#')
             .then(|| Rect::new(x, y, x + width, y + height));
         // Words the page sets over the picture are left out of it.
         let words_on_top = composed.children.iter().any(shows_words);
-        let widget_path = path.split_once('#').map_or(path, |(widget, _)| widget);
-        let node = *self.named_target_nodes().get(widget_path)?;
         let text = &mut self.text;
         let theme = &self.theme;
         let presence = &self.presence;
@@ -386,22 +413,6 @@ impl FrameHarness {
             )
         }
         .ok()
-    }
-
-    /// The composed widget or part at `path`.
-    fn composed_node(&self, path: &str) -> Option<Composed> {
-        fn find(node: Composed, path: &str) -> Option<Composed> {
-            if node.path == path {
-                return Some(node);
-            }
-            node.children
-                .into_iter()
-                .find_map(|child| find(child, path))
-        }
-        let composition = self.composition();
-        std::iter::once(composition.root)
-            .chain(composition.layers)
-            .find_map(|root| find(root, path))
     }
 
     /// Scroll the widget at `path` to `offset` logical pixels, as a host whose own scroller the person
