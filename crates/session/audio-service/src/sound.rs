@@ -192,6 +192,32 @@ pub struct Profile {
     pub available: bool,
 }
 
+/// The `sound` resource, as a declared type: the outputs, the inputs and the
+/// card's controls.
+#[derive(tilo_resource::Row)]
+#[row(kind = "so.tilo.audio.sound", label = "Sound")]
+pub struct SoundReading;
+
+/// One sound output, as a declared type: playing through it is
+/// [`SoundAction::RouteOutput`]'s.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.audio.output",
+    label = "Sound output",
+    effects = SoundAction
+)]
+pub struct OutputRow;
+
+/// One sound input, as a declared type: recording from it is
+/// [`SoundAction::SelectInput`]'s.
+#[derive(tilo_resource::Row)]
+#[row(
+    kind = "so.tilo.audio.input",
+    label = "Sound input",
+    effects = SoundAction
+)]
+pub struct InputRow;
+
 /// The `sound` resource's actions; each changes this device only.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "so.tilo.audio.sound")]
@@ -238,6 +264,7 @@ pub enum SoundAction {
         row,
         idempotent,
         icon = "speaker",
+        on = OutputRow,
         keywords = "speakers, headphones"
     )]
     RouteOutput {
@@ -251,6 +278,7 @@ pub enum SoundAction {
         row,
         idempotent,
         icon = "mic",
+        on = InputRow,
         keywords = "microphone, input"
     )]
     SelectInput {
@@ -359,9 +387,8 @@ pub fn surface() -> tilo_resource::surface::Surface {
 /// The sound resource reading `sound`.
 #[must_use]
 pub fn resource(sound: &Sound) -> ResourceSpec {
-    let mut resource = offer::<SoundAction>(ResourceSpec::new(
+    let mut resource = offer::<SoundAction>(tilo_resource::typed_resource::<SoundReading>(
         SOUND,
-        "so.tilo.audio.sound",
         crate::i18n::name("so.tilo.audio.sound", "Sound"),
     ));
     if sound.output.is_none() {
@@ -408,20 +435,28 @@ pub fn resource(sound: &Sound) -> ResourceSpec {
         );
     }
     let outputs = sound.outputs.iter().map(|device| {
-        ResourceSpec::new(
+        let bindings = tilo_resource::RowBindings::new().bind(
+            SoundAction::ROUTE_OUTPUT,
+            [("node", u64::from(device.node).into())],
+        );
+        tilo_resource::LiveRow::typed_with::<OutputRow>(
             output_id(device.node),
-            "so.tilo.audio.output",
             device.label.clone(),
+            &bindings,
         )
-        .with_action(SoundAction::RouteOutput { node: device.node }.bound())
+        .into_resource()
     });
     let inputs = sound.inputs.iter().map(|device| {
-        ResourceSpec::new(
+        let bindings = tilo_resource::RowBindings::new().bind(
+            SoundAction::SELECT_INPUT,
+            [("node", u64::from(device.node).into())],
+        );
+        tilo_resource::LiveRow::typed_with::<InputRow>(
             format!("sound-input:{}", device.node),
-            "so.tilo.audio.input",
             device.label.clone(),
+            &bindings,
         )
-        .with_action(SoundAction::SelectInput { node: device.node }.bound())
+        .into_resource()
     });
     resource.with_children(outputs.chain(inputs))
 }
