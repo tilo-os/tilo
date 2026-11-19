@@ -2530,7 +2530,7 @@
         "name": "actions",
         "ty": "array",
         "required": true,
-        "description": "Artwork actions to apply in order as one step, each {\"action\": id, \"args\": {..}}",
+        "description": "Artwork actions to apply in order as one step, each {\"action\": id, \"args\": {..}}. A member names an item an earlier member of the same group makes by its place, {\"$made\": {\"member\": 0, \"item\": 0}}: the member counted from 0, then which of the ids it made, which the group fills in as it applies",
         "schema": {
           "type": "array",
           "items": {
@@ -3010,7 +3010,7 @@
     "action": "history",
     "resource_kind": "canvas.artwork",
     "label": "History",
-    "description": "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, run, author, time, undone, checkpoints.",
+    "description": "List the versions, oldest first: change id (what undo to, restore and diff take), action and its arguments, invocation, author, time, undone, what an undo took back or a redo brought back, checkpoints.",
     "operation": "View",
     "params": [
       {
@@ -3473,6 +3473,34 @@
             "null"
           ]
         }
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "outline",
+    "resource_kind": "canvas.artwork",
+    "label": "Read the view",
+    "description": "Read what the app's window shows as lines: every label, value and control in reading order, each control's action and where it stands. With picture, also the view as a picture. With an anchor, shows that item first.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "anchor",
+        "ty": "text",
+        "description": "An item of the app's to show first: the anchor of a search hit, or an item resource's id",
+        "nullable": true
+      },
+      {
+        "name": "picture",
+        "ty": "boolean",
+        "description": "Also answer the view as a picture of it (default: text only)",
+        "nullable": true
+      },
+      {
+        "name": "scale",
+        "ty": "number",
+        "description": "Pixels per point of the picture, 0.5 to 2 (default 1)",
+        "nullable": true
       }
     ]
   },
@@ -4389,7 +4417,7 @@
     "action": "undo",
     "resource_kind": "canvas.artwork",
     "label": "Undo",
-    "description": "Take back your last steps (an agent: its run's) as a new change; with run, that agent run's steps; with by, that author's steps outside a run; with to, all after a version.",
+    "description": "Take back your last steps (an agent: its invocation's) as a new change; with invocation, that invocation's steps; with by, that author's steps outside one; with to, all after a version.",
     "operation": "Document",
     "params": [
       {
@@ -4399,15 +4427,15 @@
         "nullable": true
       },
       {
-        "name": "run",
+        "name": "invocation",
         "ty": "text",
-        "description": "An agent run id from history",
+        "description": "A group id from history",
         "nullable": true
       },
       {
         "name": "by",
         "ty": "object",
-        "description": "The actor's `by` of a history entry, for steps outside a run",
+        "description": "The actor's `by` of a history entry, for steps outside an invocation",
         "nullable": true
       },
       {
@@ -4419,7 +4447,7 @@
       {
         "name": "step",
         "ty": "text",
-        "description": "A change id from history: undo only the step it is part of",
+        "description": "A change id from history: undo only the step it is part of, of your steps, or of those invocation or by names",
         "nullable": true
       }
     ]
@@ -5075,7 +5103,7 @@
         "name": "actions",
         "ty": "array",
         "required": true,
-        "description": "Recent artworks actions to apply in order as one step, each {\"action\": id, \"args\": {..}}",
+        "description": "Recent artworks actions to apply in order as one step, each {\"action\": id, \"args\": {..}}. A member names an item an earlier member of the same group makes by its place, {\"$made\": {\"member\": 0, \"item\": 0}}: the member counted from 0, then which of the ids it made, which the group fills in as it applies",
         "schema": {
           "type": "array",
           "items": {
