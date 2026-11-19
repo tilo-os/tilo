@@ -238,10 +238,11 @@ impl Frame {
             let Some(damage) = damage else {
                 return state.skipped.is_empty();
             };
+            // A skipped widget's reach already covers the pixel its edge's raster paints, as the
+            // damage it was kept clear of did.
             !state.skipped.iter().any(|skipped| {
                 damage.iter().any(|rect| {
-                    let repainted = rect.inflate(RASTER_REACH, RASTER_REACH);
-                    let common = repainted.intersect(*skipped);
+                    let common = rect.intersect(*skipped);
                     common.width() > 0.0 && common.height() > 0.0
                 })
             })
