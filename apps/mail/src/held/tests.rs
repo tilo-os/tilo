@@ -537,6 +537,48 @@ fn a_message_with_large_attachments_is_kept_with_its_parts_apart_and_opens_whole
 }
 
 #[test]
+fn an_attachment_and_an_export_larger_than_one_piece_of_content_open_whole() {
+    use tilo_mail_parts::fixture::{attachment_bytes, message_with_attachments};
+    // Past what one attachment opened (32 MiB) and what one export (64 MiB) used to be.
+    let size = 70 * 1024 * 1024;
+    let message = message_with_attachments("scan@example.net", "Scan", &[("scan.pdf", size)]);
+    let mut app = TestApp::<MailShell>::new().unwrap();
+    let id = deliver_apart(&mut app, &message)["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let handed = app
+        .effect_on(
+            &format!("mail.attachment:{id}:0"),
+            &crate::actions::MailEffect::Content {
+                message: id.clone(),
+                index: 0,
+            },
+        )
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(handed["size"].as_u64(), Some(size as u64), "{handed}");
+    let hash = ui::tilo_actions::content_hash(handed["content"].as_str().unwrap()).unwrap();
+    assert_eq!(app.content().size(hash), Some(size as u64));
+    let bytes = app.content().read(hash).unwrap();
+    assert!(
+        bytes == attachment_bytes("scan.pdf", size),
+        "{} bytes",
+        bytes.len()
+    );
+
+    let eml = app
+        .call("export-content", json!({ "format": "eml", "message": &id }))
+        .unwrap()
+        .unwrap();
+    assert_eq!(eml["bytes"].as_u64(), Some(message.len() as u64), "{eml}");
+    let eml = exported(&app, &eml);
+    assert!(eml == message, "{} of {} bytes", eml.len(), message.len());
+}
+
+#[test]
 fn a_message_whose_part_is_not_here_exports_once_it_is_never_without_it() {
     use tilo_mail_parts::fixture::message_with_attachments;
     let message =

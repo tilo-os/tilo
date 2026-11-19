@@ -364,5 +364,4 @@ mail-attachment-save-accept = Speichern
 mail-attachment-unknown-message = Diese Nachricht ist nicht mehr in diesem Postfach
 mail-attachment-not-loaded = Dieser Anhang ist nicht mehr in diesem Postfach
 mail-attachment-not-kept = { $file } wird auf diesem Gerät nicht mehr aufbewahrt
-mail-attachment-too-large-save = { $file } ist zu groß, um sie hier zu speichern; öffne sie stattdessen in Dateien
 mail-attachment-changed = Dieser Anhang hat sich seit dem Herunterladen geändert

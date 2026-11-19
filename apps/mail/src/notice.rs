@@ -142,7 +142,6 @@ pub(crate) enum AttachmentUnavailable {
     NotDownloaded,
     /// Kept on this device, but its bytes were freed since.
     NotKept(String),
-    TooLarge(String),
     /// The bytes no longer match what the message said they were.
     Changed,
 }
@@ -155,10 +154,6 @@ impl AttachmentUnavailable {
             Self::NotDownloaded => CATALOG.t("mail-attachment-not-downloaded"),
             Self::NotKept(file) => CATALOG.t_args(
                 "mail-attachment-not-kept",
-                &[("file", ArgValue::Text(file.clone()))],
-            ),
-            Self::TooLarge(file) => CATALOG.t_args(
-                "mail-attachment-too-large-save",
                 &[("file", ArgValue::Text(file.clone()))],
             ),
             Self::Changed => CATALOG.t("mail-attachment-changed"),

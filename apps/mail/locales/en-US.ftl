@@ -367,5 +367,4 @@ mail-attachment-save-accept = Save
 mail-attachment-unknown-message = That message is no longer in this mailbox
 mail-attachment-not-loaded = That attachment is no longer in this mailbox
 mail-attachment-not-kept = { $file } is no longer kept on this device
-mail-attachment-too-large-save = { $file } is too large to save here; open it in Files instead
 mail-attachment-changed = That attachment changed since it was downloaded

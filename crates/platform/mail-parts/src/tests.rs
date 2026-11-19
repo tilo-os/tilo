@@ -131,3 +131,45 @@ fn a_body_that_would_go_past_the_message_is_refused() {
     assert_eq!(join(b"abc", &[(2, b"x"), (1, b"y")]), None);
     assert_eq!(join(b"abc", &[(1, b"x"), (3, b"y")]).unwrap(), b"axbcy");
 }
+
+#[test]
+fn a_body_kept_apart_decodes_a_piece_at_a_time_to_its_file() {
+    let size = 700 * 1024 + 5;
+    let message = message_with_attachments("decode@example.net", "Scan", &[("scan.pdf", size)]);
+    let split = split(&message);
+    let part = &split.apart[0];
+    // Pieces of every awkward length: cut mid-line and mid-group.
+    for step in [1_000_003, 77, 4096, 3] {
+        let mut decoder = Decoder::of_part(&split.rest, part.at).unwrap();
+        let mut file = Vec::new();
+        for piece in part.body.chunks(step) {
+            file.extend(decoder.push(piece).unwrap());
+        }
+        file.extend(decoder.finish().unwrap());
+        assert!(
+            file == fixture::attachment_bytes("scan.pdf", size),
+            "{step}: {} of {size} bytes",
+            file.len()
+        );
+    }
+}
+
+#[test]
+fn quoted_printable_decodes_across_pieces() {
+    let body = "caf=C3=A9 and a long line that wraps=\r\n here\r\nnext =3D line\r\n";
+    let message = format!(
+        "From: a@example.net\r\nMessage-ID: <qp@example.net>\r\nMIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n{body}"
+    );
+    let at = message.find(body).unwrap() as u64;
+    let mut whole = Vec::new();
+    let mut decoder = Decoder::of_part(message.as_bytes(), at).unwrap();
+    for piece in body.as_bytes().chunks(5) {
+        whole.extend(decoder.push(piece).unwrap());
+    }
+    whole.extend(decoder.finish().unwrap());
+    assert_eq!(
+        String::from_utf8(whole).unwrap(),
+        "café and a long line that wraps here\r\nnext = line\r\n"
+    );
+}

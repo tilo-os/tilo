@@ -475,22 +475,21 @@ impl Mailroom {
             .get(index)
             .ok_or_else(|| format!("the message has no attachment {index}"))?;
         let media_type = attachment.mime.clone();
-        let (name, bytes) = self
-            .attachment_to_save(&found.id.to_string(), index)
-            .map_err(|cause| cause.message())?;
         let store = ui::tilo_resource::content::current()
             .ok_or("this window keeps no content to hand the attachment over in")?;
-        let hash = store
-            .put(&bytes)
-            .map_err(|error| format!("{name} could not be kept: {error}"))?;
-        let content =
-            tilo_actions::content_resource(&hash).ok_or("the attachment has no content address")?;
+        // Kept a part at a time: an attachment of any size is handed over
+        // as content, never whole in memory or in one piece of content.
+        let (name, kept) = self
+            .keep_attachment(&found.id.to_string(), index, &store)
+            .map_err(|cause| cause.message())?;
+        let content = tilo_actions::content_resource(&kept.hash)
+            .ok_or("the attachment has no content address")?;
         Ok(Effected::Done(tilo_actions::ActionOutput {
             value: Some(serde_json::json!({
                 "content": content,
                 "name": name,
                 "media_type": media_type,
-                "size": bytes.len(),
+                "size": kept.len,
             })),
             resources: vec![content],
         }))

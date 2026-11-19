@@ -60,7 +60,7 @@ use crate::list::MessageList;
 use crate::model::{
     AccountConfig, Addr, Attachment, ComposeFormat, Draft, Folder, Message, MessageId,
 };
-use crate::notice::{AttachmentUnavailable, engine_error_text, staged_notice};
+use crate::notice::{engine_error_text, staged_notice};
 use crate::reader::MessageReader;
 use crate::resource::{Mail, mailbox, read_mail};
 use crate::shortcuts_overlay::MailShortcutsOverlay;
@@ -73,8 +73,6 @@ use crate::util::format_absolute;
 const AUTO_REFRESH_MIN: i64 = 5;
 const SERVER_SEARCH_DEBOUNCE_MS: u64 = 500;
 const SERVER_SEARCH_MIN_CHARS: usize = 3;
-
-const MAX_ATTACHMENT_SAVE_BYTES: usize = crate::attachment_store::MAX_ATTACHMENT_BYTES;
 
 struct EventContext<'a> {
     scale_factor: f64,
@@ -4462,7 +4460,7 @@ impl Mailroom {
                 self.compose_from(&message, Intent::Forward).map(|()| done)
             }
             MailEffect::Save { message, index } => {
-                self.attachment_to_save(&message, index)
+                self.attachment_available(&message, index)
                     .map_err(|cause| cause.message())?;
                 Err("saving an attachment asks the host where to put it".into())
             }
@@ -4630,69 +4628,6 @@ impl Mailroom {
                 .active_config()
                 .email
                 .is_empty()
-    }
-
-    pub(crate) fn attachment_to_save(
-        &self,
-        message: &str,
-        index: usize,
-    ) -> Result<(String, Vec<u8>), AttachmentUnavailable> {
-        let message_id = message
-            .parse::<MessageId>()
-            .map_err(|_| AttachmentUnavailable::UnknownMessage)?;
-        let attachment = self
-            .shared
-            .borrow()
-            .mailbox
-            .get(message_id)
-            .and_then(|message| message.attachments.get(index))
-            .cloned()
-            .ok_or(AttachmentUnavailable::NotLoaded)?;
-        if !attachment.is_downloadable() {
-            return Err(AttachmentUnavailable::NotDownloaded);
-        }
-        let mut attachment = attachment;
-        if attachment.content.is_empty() && attachment.kept {
-            let account = self
-                .shared
-                .borrow()
-                .mailbox
-                .get(message_id)
-                .map(|message| message.account.clone())
-                .unwrap_or_default();
-            attachment.content = self
-                .store
-                .attachment(&account, message_id, index)
-                .ok_or_else(|| AttachmentUnavailable::NotKept(attachment.filename.clone()))?;
-        }
-        if attachment.content.is_empty() && attachment.apart {
-            // Kept apart from the message, in the mailbox's own content.
-            let held = {
-                let shared = self.shared.borrow();
-                let store = ui::tilo_resource::content::current();
-                shared.chain.as_ref().zip(store).and_then(|(chain, store)| {
-                    chain
-                        .parts()
-                        .iter()
-                        .rev()
-                        .find_map(|(_, part)| part.held_attachment(message, index, &store))
-                })
-            };
-            attachment.content =
-                held.ok_or_else(|| AttachmentUnavailable::NotKept(attachment.filename.clone()))?;
-        }
-        if attachment.content.len() > MAX_ATTACHMENT_SAVE_BYTES {
-            return Err(AttachmentUnavailable::TooLarge(attachment.filename));
-        }
-        let content_len = u64::try_from(attachment.content.len())
-            .map_err(|_| AttachmentUnavailable::TooLarge(attachment.filename.clone()))?;
-        if attachment.size != content_len {
-            return Err(AttachmentUnavailable::Changed);
-        }
-        Ok((
-            MailApp::attachment_save_name(&attachment.filename),
-            attachment.content.clone(),
-        ))
     }
 
     pub(crate) fn finish_attachment_save(
@@ -4868,7 +4803,10 @@ impl MailApp {
     }
 
     fn open_attachment(&self, message: MessageId, index: usize) {
-        if let Err(cause) = self.state().attachment_to_save(&message.to_string(), index) {
+        if let Err(cause) = self
+            .state()
+            .attachment_available(&message.to_string(), index)
+        {
             self.shared.borrow_mut().status = Some(Notice::warning(cause.message()));
             return;
         }
@@ -4886,7 +4824,10 @@ impl MailApp {
     }
 
     fn request_attachment_save(&self, message: MessageId, index: usize) {
-        if let Err(cause) = self.state().attachment_to_save(&message.to_string(), index) {
+        if let Err(cause) = self
+            .state()
+            .attachment_available(&message.to_string(), index)
+        {
             self.shared.borrow_mut().status = Some(Notice::warning(cause.message()));
             return;
         }
@@ -5489,6 +5430,7 @@ mod empty;
 #[cfg(test)]
 mod tests;
 
+mod attachment_bytes;
 mod undo;
 mod view;
 pub(crate) use view::window;

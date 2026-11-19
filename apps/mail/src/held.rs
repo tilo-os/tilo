@@ -96,6 +96,96 @@ impl HeldPart {
     }
 }
 
+/// One stretch of a message being read: bytes at hand, or a piece of a part
+/// kept apart, read from the content store when it is reached.
+enum Stretch {
+    Bytes(Vec<u8>),
+    Piece(Bytes),
+}
+
+/// A message, or one part of it, read a piece at a time: no more than one
+/// piece of it is in memory at once, however large it is. A part's body is
+/// decoded to the file it holds as it is read, when it is read with a
+/// decoder.
+pub(crate) struct HeldReader {
+    store: tilo_content::ContentStore,
+    stretches: std::collections::VecDeque<Stretch>,
+    decoder: Option<tilo_mail_parts::Decoder>,
+    ready: Vec<u8>,
+    at: usize,
+}
+
+impl HeldReader {
+    /// Over `stretches`, after asking `store` for every piece among them
+    /// that is not here: `None` while one is not, so all that is lacking is
+    /// asked for at once.
+    fn new(
+        store: &tilo_content::ContentStore,
+        stretches: std::collections::VecDeque<Stretch>,
+        decoder: Option<tilo_mail_parts::Decoder>,
+    ) -> Option<Self> {
+        let mut lacking = false;
+        for stretch in &stretches {
+            if let Stretch::Piece(piece) = stretch
+                && piece.reference().is_some_and(|kept| !store.has(&kept))
+            {
+                // Reading what is not here asks for it.
+                let _ = piece.read(store);
+                lacking = true;
+            }
+        }
+        (!lacking).then(|| Self {
+            store: store.clone(),
+            stretches,
+            decoder,
+            ready: Vec::new(),
+            at: 0,
+        })
+    }
+}
+
+impl std::io::Read for HeldReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let broken = |why: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, why);
+        while self.at >= self.ready.len() {
+            self.at = 0;
+            self.ready = match (self.stretches.pop_front(), &mut self.decoder) {
+                (Some(Stretch::Bytes(bytes)), None) => bytes,
+                (Some(Stretch::Bytes(bytes)), Some(decoder)) => decoder
+                    .push(&bytes)
+                    .ok_or_else(|| broken("the part is not in its encoding"))?,
+                (Some(Stretch::Piece(piece)), decoder) => {
+                    let bytes = piece.read(&self.store).ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "a piece of the message is no longer here",
+                        )
+                    })?;
+                    match decoder {
+                        Some(decoder) => decoder
+                            .push(&bytes)
+                            .ok_or_else(|| broken("the part is not in its encoding"))?,
+                        None => bytes,
+                    }
+                }
+                (None, Some(_)) => self
+                    .decoder
+                    .take()
+                    .and_then(tilo_mail_parts::Decoder::finish)
+                    .ok_or_else(|| broken("the part is not in its encoding"))?,
+                (None, None) => return Ok(0),
+            };
+        }
+        let ready = self.ready.get(self.at..).unwrap_or_default();
+        let n = ready.len().min(buf.len());
+        buf.get_mut(..n)
+            .unwrap_or_default()
+            .copy_from_slice(ready.get(..n).unwrap_or_default());
+        self.at = self.at.saturating_add(n);
+        Ok(n)
+    }
+}
+
 /// Every item, or `None` when one is missing. Unlike collecting into an
 /// `Option`, it goes on through the rest after one is missing, so each read
 /// of content that is not here asks for it.
@@ -134,28 +224,46 @@ impl HeldMessage {
         )
     }
 
-    /// The message as it was sent, its parts kept apart put back: `None`
-    /// while it or one of them is not in `store`, or for one delivered as
-    /// text.
-    fn sent(&self, store: &tilo_content::ContentStore) -> Option<Vec<u8>> {
+    /// The message as it was sent, its parts kept apart put back, read a
+    /// piece at a time: `None` while it or one of them is not in `store`,
+    /// or for one delivered as text.
+    fn sent(&self, store: &tilo_content::ContentStore) -> Option<HeldReader> {
         let rest = self.original.as_ref()?.read(store);
-        // Every part is read even when the rest or a part is missing, so all
-        // that is lacking is asked for at once.
-        let bodies = every(
-            self.parts
-                .iter()
-                .map(|part| Some((part.at, part.body(store)?))),
-        );
-        let rest = rest?;
-        if self.parts.is_empty() {
-            return Some(rest);
+        let mut stretches = std::collections::VecDeque::new();
+        let mut from = 0_usize;
+        for part in &self.parts {
+            let at = usize::try_from(part.at).ok()?;
+            if let Some(rest) = &rest {
+                stretches.push_back(Stretch::Bytes(rest.get(from..at)?.to_vec()));
+            }
+            stretches.extend(part.pieces.iter().cloned().map(Stretch::Piece));
+            from = at;
         }
-        let bodies = bodies?;
-        let bodies: Vec<(u64, &[u8])> = bodies
-            .iter()
-            .map(|(at, body)| (*at, body.as_slice()))
-            .collect();
-        tilo_mail_parts::join(&rest, &bodies)
+        let reader = HeldReader::new(store, stretches, None);
+        let rest = rest?;
+        let mut reader = reader?;
+        reader
+            .stretches
+            .push_back(Stretch::Bytes(rest.get(from..)?.to_vec()));
+        Some(reader)
+    }
+
+    /// The file attachment `index` holds, when it is a part kept apart, read
+    /// and decoded a piece at a time, and its size: `None` while what it is
+    /// read from is not all in `store`, or for an attachment kept in the
+    /// message.
+    fn attachment_body(
+        &self,
+        index: usize,
+        store: &tilo_content::ContentStore,
+    ) -> Option<(HeldReader, u64)> {
+        let rest = self.original.as_ref()?.read(store)?;
+        let parsed = mail_parser::MessageParser::default().parse(&rest)?;
+        let at = u64::from(parsed.attachments().nth(index)?.offset_body);
+        let part = self.parts.iter().find(|part| part.at == at)?;
+        let decoder = tilo_mail_parts::Decoder::of_part(&rest, at)?;
+        let stretches = part.pieces.iter().cloned().map(Stretch::Piece).collect();
+        Some((HeldReader::new(store, stretches, Some(decoder))?, part.size))
     }
 
     /// The message as it was sent, parsed as fetched mail is, in `folder`:
@@ -705,22 +813,17 @@ impl MessageStates {
         Ok(key)
     }
 
-    /// The content of attachment `index` of the held message `item`, its
-    /// parts kept apart put back: `None` while it is not all in `store`.
+    /// The file attachment `index` of the held message `item` holds, when
+    /// it is kept apart, read a piece at a time, and its size: `None` while
+    /// it is not all in `store`.
     pub(crate) fn held_attachment(
         &self,
         item: &str,
         index: usize,
         store: &tilo_content::ContentStore,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<(HeldReader, u64)> {
         let (_, held) = self.held_message(item)?;
-        let sent = held.sent(store)?;
-        let message = crate::transport::parse_eml(&sent, held.minutes, Folder::Inbox)?;
-        message
-            .attachments
-            .into_iter()
-            .nth(index)
-            .map(|attachment| attachment.content)
+        held.attachment_body(index, store)
     }
 
     /// The conversation of a held message about `subject` (its reply and
@@ -909,7 +1012,9 @@ impl MessageStates {
             return Err("there is no held mail to export".into());
         }
         let exported = chosen.len() + drafts.len();
-        let (bytes, media_type, extension) = match format.as_str() {
+        let in_memory =
+            |bytes: Vec<u8>| Box::new(std::io::Cursor::new(bytes)) as Box<dyn std::io::Read>;
+        let (mut bytes, media_type, extension) = match format.as_str() {
             "md" | "markdown" => {
                 let mut text = markdown(&chosen);
                 for draft in &drafts {
@@ -918,7 +1023,7 @@ impl MessageStates {
                     }
                     text.push_str(&draft_markdown(draft));
                 }
-                (text.into_bytes(), "text/markdown", "md")
+                (in_memory(text.into_bytes()), "text/markdown", "md")
             }
             "json" => {
                 let mut all: Vec<_> = chosen
@@ -938,7 +1043,7 @@ impl MessageStates {
                 }));
                 let text = serde_json::to_string_pretty(&all)
                     .map_err(|error| format!("the mail does not encode: {error}"))?;
-                (text.into_bytes(), "application/json", "json")
+                (in_memory(text.into_bytes()), "application/json", "json")
             }
             "eml" => match chosen.as_slice() {
                 [(_, held)] if drafts.is_empty() => (eml(held)?, "message/rfc822", "eml"),
@@ -952,18 +1057,20 @@ impl MessageStates {
         };
         let store = tilo_resource::content::current()
             .ok_or("this window keeps no content to export into")?;
-        let hash = store
-            .put(&bytes)
+        // Kept a part at a time: an export of any size, never whole in memory
+        // or in one piece of content.
+        let kept = store
+            .put_parts(&mut bytes)
             .map_err(|error| format!("the export could not be kept: {error}"))?;
-        let content =
-            tilo_actions::content_resource(&hash).ok_or("the export has no content address")?;
+        let content = tilo_actions::content_resource(&kept.hash)
+            .ok_or("the export has no content address")?;
         Ok(serde_json::json!({
             "content": content,
             "format": extension,
             "media_type": media_type,
             "messages": exported,
             "drafts": drafts.len(),
-            "bytes": bytes.len(),
+            "bytes": kept.len,
         }))
     }
 
@@ -1267,7 +1374,7 @@ fn markdown(messages: &[(&Id, &HeldMessage)]) -> String {
 }
 
 /// One message as an RFC 5322 file.
-fn eml(held: &HeldMessage) -> Result<Vec<u8>, String> {
+fn eml(held: &HeldMessage) -> Result<Box<dyn std::io::Read>, String> {
     fn addresses(list: &str) -> Vec<mail_builder::headers::address::Address<'static>> {
         crate::transport::parse_addr_list(list)
             .into_iter()
@@ -1282,6 +1389,7 @@ fn eml(held: &HeldMessage) -> Result<Vec<u8>, String> {
     {
         return held
             .sent(&store)
+            .map(|sent| Box::new(sent) as Box<dyn std::io::Read>)
             .ok_or_else(|| "the message's parts are not all here yet; try again".to_owned());
     }
     let sender = held.sender();
@@ -1307,6 +1415,7 @@ fn eml(held: &HeldMessage) -> Result<Vec<u8>, String> {
     }
     builder
         .write_to_vec()
+        .map(|bytes| Box::new(std::io::Cursor::new(bytes)) as Box<dyn std::io::Read>)
         .map_err(|error| format!("the message does not encode: {error}"))
 }
 

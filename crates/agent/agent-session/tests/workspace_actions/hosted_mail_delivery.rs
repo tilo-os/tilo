@@ -251,3 +251,155 @@ async fn a_message_of_40_mib_comes_into_a_hosted_workspace_whole_with_its_parts_
         "{exported}"
     );
 }
+
+/// The message `sent` delivered as `tilo migrate` delivers it: the message kept and each large
+/// part's pieces, uploaded. Its id in the mailbox.
+async fn deliver(client: &tilo_api::client::Client, workspace: &str, sent: &[u8]) -> String {
+    let split = tilo_mail_parts::split(sent);
+    let original = uploaded(client, workspace, &split.rest).await;
+    let mut parts = Vec::new();
+    for part in &split.apart {
+        let mut pieces = Vec::new();
+        for piece in part.pieces() {
+            pieces.push(uploaded(client, workspace, piece).await);
+        }
+        parts.push(json!({"at": part.at, "size": part.size, "pieces": pieces}));
+    }
+    let answer = client
+        .act_invoked(
+            workspace,
+            MESSAGES,
+            DELIVER,
+            &json!({
+                "from": "Grace Hopper <grace@example.net>",
+                "to": "Ada <ada@example.com>",
+                "subject": "Scans",
+                "body": "The scans are attached.",
+                "date": "2026-11-03T10:00:00Z",
+                "folder": "inbox",
+                "message_id": "<scans@example.test>",
+                "original": original,
+                "parts": parts,
+            }),
+            "migrate-thunderbird",
+            "Bring Thunderbird in",
+            "migrate-thunderbird-scans",
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{MESSAGES}#{DELIVER}: {error:#}"));
+    assert_eq!(answer["status"], "ok", "{answer}");
+    value(&answer)["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{answer}"))
+        .to_owned()
+}
+
+/// What a settled action answered.
+fn value(answer: &Value) -> Value {
+    answer["result"]
+        .get("value")
+        .cloned()
+        .unwrap_or_else(|| answer["result"].clone())
+}
+
+/// The bytes behind the `tilo.content:` reference `content`, downloaded through the API as
+/// `tilo` downloads a file.
+async fn download(client: &tilo_api::client::Client, workspace: &str, content: &Value) -> Vec<u8> {
+    let content = content
+        .as_str()
+        .unwrap_or_else(|| panic!("no content: {content}"));
+    let mut bytes = Vec::new();
+    client
+        .download(workspace, content, &mut bytes, &mut |_, _| {})
+        .await
+        .unwrap_or_else(|error| panic!("download {content}: {error:#}"));
+    bytes
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_attachment_and_an_export_larger_than_a_part_download_whole() {
+    use tilo_mail_parts::fixture::{attachment_bytes, message_with_attachments};
+    let (_on_server, client, workspace, _keys) = importer().await;
+    let size = 30 * 1024 * 1024;
+    let sent = message_with_attachments("scans@example.test", "Scans", &[("scans.pdf", size)]);
+    let id = deliver(&client, &workspace, &sent).await;
+
+    // Handed over as content larger than one part, it downloads as the file.
+    let handed = client
+        .act(
+            &workspace,
+            &format!("mail/mail.attachment:{id}:0"),
+            "content",
+            &json!({"message": id, "index": 0}),
+            "take the scans",
+        )
+        .await
+        .unwrap_or_else(|error| panic!("content: {error:#}"));
+    assert_eq!(handed["status"], "ok", "{handed}");
+    let handed = value(&handed);
+    assert_eq!(handed["name"], "scans.pdf", "{handed}");
+    assert_eq!(handed["size"].as_u64(), Some(size as u64), "{handed}");
+    let file = download(&client, &workspace, &handed["content"]).await;
+    assert!(
+        file == attachment_bytes("scans.pdf", size),
+        "{} of {size} bytes",
+        file.len()
+    );
+
+    // Exported, it downloads as the message that was sent, byte for byte.
+    let exported = client
+        .act(
+            &workspace,
+            "mail/mail.mailbox",
+            "export-content",
+            &json!({"format": "eml", "message": id}),
+            "export the scans",
+        )
+        .await
+        .unwrap();
+    assert_eq!(exported["status"], "ok", "{exported}");
+    let exported = value(&exported);
+    assert_eq!(exported["bytes"].as_u64(), Some(sent.len() as u64));
+    let eml = download(&client, &workspace, &exported["content"]).await;
+    assert!(eml == sent, "{} of {} bytes", eml.len(), sent.len());
+}
+
+/// How long downloading a file of `size` bytes put into `workspace` takes, after checking it
+/// comes back whole.
+async fn timed_download(
+    client: &tilo_api::client::Client,
+    workspace: &str,
+    dir: &std::path::Path,
+    size: usize,
+) -> std::time::Duration {
+    let bytes: Vec<u8> = (0..size)
+        .map(|n: usize| u8::try_from(n % 251).unwrap())
+        .collect();
+    let path = dir.join(format!("{size}.bin"));
+    std::fs::write(&path, &bytes).unwrap();
+    let answer = client
+        .upload_file(workspace, &path, &mut |_, _| {})
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let out = download(client, workspace, &answer["content"]).await;
+    let took = started.elapsed();
+    assert!(out == bytes, "{} of {} bytes", out.len(), bytes.len());
+    took
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_file_over_100_mib_downloads_in_time_flat_in_its_size() {
+    let (_on_server, client, workspace, keys) = importer().await;
+    let small = 8 * 1024 * 1024;
+    let large = 110 * 1024 * 1024;
+    let small_took = timed_download(&client, &workspace, keys.path(), small).await;
+    let large_took = timed_download(&client, &workspace, keys.path(), large).await;
+    // A byte of the large file costs about what a byte of the small one does: a piece of a
+    // download is read where it is, never by reading the file from its start.
+    let per_byte = |took: std::time::Duration, size: usize| took.as_secs_f64() / size as f64;
+    assert!(
+        per_byte(large_took, large) < 4.0 * per_byte(small_took, small),
+        "{large} bytes took {large_took:?}, {small} bytes {small_took:?}"
+    );
+}

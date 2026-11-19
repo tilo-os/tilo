@@ -166,6 +166,72 @@ pub fn join_some(
     Some((message, left))
 }
 
+/// A part's body decoded as it arrives, a piece at a time: what its file holds, without the
+/// whole body or the whole file in memory at once.
+#[derive(Debug)]
+pub struct Decoder {
+    encoding: mail_parser::Encoding,
+    /// What arrived and is not decoded yet: base64 short of a group of four, quoted-printable
+    /// short of its line's end.
+    carry: Vec<u8>,
+}
+
+impl Decoder {
+    /// The decoder of the part whose body goes back into `rest` at `at`, in the transfer
+    /// encoding that part names; `None` when no part's body is there.
+    #[must_use]
+    pub fn of_part(rest: &[u8], at: u64) -> Option<Self> {
+        let parsed = MessageParser::default().parse(rest)?;
+        let part = parsed
+            .parts
+            .iter()
+            .find(|part| u64::from(part.offset_body) == at)?;
+        Some(Self {
+            encoding: part.encoding,
+            carry: Vec::new(),
+        })
+    }
+
+    /// The bytes `piece`, the next of the body, decodes to so far. `None` for bytes that are
+    /// not in the part's encoding.
+    pub fn push(&mut self, piece: &[u8]) -> Option<Vec<u8>> {
+        use mail_parser::Encoding;
+        match self.encoding {
+            Encoding::None => Some(piece.to_vec()),
+            Encoding::Base64 => {
+                self.carry
+                    .extend(piece.iter().filter(|byte| !byte.is_ascii_whitespace()));
+                // A group of four characters decodes alone; a group cut by the piece's end
+                // waits for the rest of it, as does one after which padding may follow.
+                let whole = self.carry.len().saturating_sub(self.carry.len() % 4);
+                let ready: Vec<u8> = self.carry.drain(..whole).collect();
+                mail_parser::decoders::base64::base64_decode(&ready)
+            }
+            Encoding::QuotedPrintable => {
+                self.carry.extend_from_slice(piece);
+                let Some(line_end) = self.carry.iter().rposition(|byte| *byte == b'\n') else {
+                    return Some(Vec::new());
+                };
+                let ready: Vec<u8> = self.carry.drain(..=line_end).collect();
+                mail_parser::decoders::quoted_printable::quoted_printable_decode(&ready)
+            }
+        }
+    }
+
+    /// The rest of the body decoded, once its last piece came.
+    #[must_use]
+    pub fn finish(self) -> Option<Vec<u8>> {
+        use mail_parser::Encoding;
+        match self.encoding {
+            Encoding::None => Some(self.carry),
+            Encoding::Base64 => mail_parser::decoders::base64::base64_decode(&self.carry),
+            Encoding::QuotedPrintable => {
+                mail_parser::decoders::quoted_printable::quoted_printable_decode(&self.carry)
+            }
+        }
+    }
+}
+
 #[cfg(any(test, feature = "fixture"))]
 pub mod fixture;
 
