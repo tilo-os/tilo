@@ -955,11 +955,9 @@ impl InstanceDocument {
         kind: &str,
     ) -> Result<bool, DocumentError> {
         let scope = self.own_steps();
-        let t_last = std::time::Instant::now();
         let Some(step) = self.last_step(&scope) else {
             return Ok(false);
         };
-        eprintln!("DBG undo last_step {:?}", t_last.elapsed());
         // One step may have written several chunks, each with a change of its own: the undo
         // takes back the change of every one of them, so the step is back everywhere it was made.
         // Its parts are one action of its own, under one invocation, and go out as one commit.
@@ -1074,9 +1072,7 @@ impl InstanceDocument {
         if !taken {
             return false;
         }
-        let t = std::time::Instant::now();
         self.share_into(instance);
-        eprintln!("DBG finish_history took {:?}", t.elapsed());
         true
     }
 
