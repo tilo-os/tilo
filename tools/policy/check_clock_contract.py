@@ -89,6 +89,9 @@ TIMERS = {
         "crates/server/tilo-workspace-service/src/apps/collab_app_broker.rs"
     ): TIMER_REASON,
     Path(
+        "crates/server/tilo-workspace-service/src/apps/collab_app_broker/socket.rs"
+    ): TIMER_REASON,
+    Path(
         "crates/server/tilo-workspace-service/src/apps/collab_app_broker/action_provider.rs"
     ): TIMER_REASON,
     Path(
