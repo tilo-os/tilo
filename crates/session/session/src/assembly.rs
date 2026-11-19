@@ -411,6 +411,8 @@ pub(crate) struct Shared {
     /// Whose view this device follows — its own presence word — and which of their place it
     /// already brought forward.
     pub(crate) follow: RefCell<tilo_session_core::presence::Follow>,
+    /// The workspace whose apps were told whom this person follows, and that member.
+    pub(crate) apps_told_following: RefCell<Option<(String, tilo_actions::MemberId)>>,
     /// The monitors of the displays a fullscreen window owns, which the
     /// bars read.
     pub(crate) fullscreen: Rc<RefCell<Vec<String>>>,

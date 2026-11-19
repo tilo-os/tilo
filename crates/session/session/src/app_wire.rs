@@ -1567,9 +1567,9 @@ impl AppWire {
         self.broker.app_action_broker().map(std::sync::Arc::new)
     }
 
-    /// The route to one window's app, for the step of a move it is asked for:
-    /// what answers on the window's continuation channel.
-    pub(crate) fn handoff(
+    /// What the session tells the workspace's apps of its own session: whose view this person
+    /// follows, and the step of a move one window's app is asked for.
+    pub(crate) fn follow_dispatcher(
         &self,
     ) -> tilo_workspace_service::apps::collab_broker::SessionFollowDispatcher {
         self.broker.follow_dispatcher()

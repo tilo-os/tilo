@@ -200,29 +200,32 @@ impl Shared {
     /// Whom this device follows, as its own presence word says: the window of theirs shown here comes forward each
     /// time the place they work in changes, and their app where no window here shows their record. Doing something of
     /// their own takes their view back, and the workspace hears that they follow nobody.
-    pub(crate) fn follow_people(&self) {
+    ///
+    /// Returns what the workspace's apps are to hear of it where that changed: the workspace,
+    /// and whom this person follows there (`None`: nobody).
+    pub(crate) fn follow_people(&self) -> Option<(String, Option<tilo_actions::MemberId>)> {
         let Some(sync) = &self.sync else {
-            return;
+            return None;
         };
         let followed = sync.own().following;
         let mut follow = self.follow.borrow_mut();
         if followed.is_none() && follow.followed().is_none() {
-            return;
+            return None;
         }
         // Their own gesture or typing is them, not the person they followed: the view is theirs
         // again, and the workspace hears they follow nobody. The press that asked to follow is not
         // them working, so it does not end what it began.
         if self.underway.get().holds() {
             if sync.follow_asked() {
-                return;
+                return None;
             }
             follow.follow(None);
             drop(follow);
             self.say_following_nobody();
-            return;
+            return self.following_to_tell(None);
         }
         sync.forget_follow_asked();
-        follow.follow(followed);
+        follow.follow(followed.clone());
         let people = sync.people(
             &self.handle.read(Clone::clone),
             &self.notes,
@@ -238,6 +241,15 @@ impl Shared {
             .collect();
         let step = follow.step(&places);
         drop(follow);
+        let member = followed.as_deref().and_then(|id| {
+            people
+                .iter()
+                .find(|person| {
+                    person.id == id || person.devices.iter().any(|device| device.id == id)
+                })
+                .and_then(tilo_desktop::here::Person::member_id)
+        });
+        let told = self.following_to_tell(member);
         match step {
             Step::Rest => {}
             Step::Bring(Target::Window(tab)) => {
@@ -248,6 +260,33 @@ impl Shared {
             }
             Step::Gone => self.say_following_nobody(),
         }
+        told
+    }
+
+    /// What the workspace's apps are to hear of whom this person follows, where that differs
+    /// from what they were last told: the workspace, and the member (`None`: nobody). Following
+    /// ended, the workspace it was followed in hears it, wherever the person looks now.
+    fn following_to_tell(
+        &self,
+        member: Option<tilo_actions::MemberId>,
+    ) -> Option<(String, Option<tilo_actions::MemberId>)> {
+        let mut told = self.apps_told_following.borrow_mut();
+        let Some(member) = member else {
+            let (workspace, _) = told.take()?;
+            return Some((workspace, None));
+        };
+        let workspace = self.active_workspace_id();
+        if workspace.is_empty() {
+            return None;
+        }
+        if told
+            .as_ref()
+            .is_some_and(|(was, who)| *was == workspace && *who == member)
+        {
+            return None;
+        }
+        *told = Some((workspace.clone(), member.clone()));
+        Some((workspace, Some(member)))
     }
 
     /// Go to where `who` (a roster id) works, once: the window of theirs shown here, else a window
