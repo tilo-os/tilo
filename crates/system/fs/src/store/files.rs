@@ -55,7 +55,7 @@ impl ContentStore {
         })
         .await
         .with_context(|| format!("import {}", path.display()))??;
-        self.sync_unless_deferred().await?;
+        self.note_write_durability();
         Ok(hash)
     }
 
