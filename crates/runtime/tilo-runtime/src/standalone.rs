@@ -1476,12 +1476,16 @@ pub(in crate::standalone) fn open_member_service(
     endpoint: iroh::Endpoint,
 ) -> io::Result<Arc<ServiceWorkspaces>> {
     let store = profile.join(HOST_STORE);
-    let service_identity = tilo_rt::app()
-        .handle()
-        .block_on(
-            tilo_workspace_service::service::ServiceIdentity::beside_device(&store, cert, key),
-        )
-        .map_err(io::Error::other)?;
+    let service_identity = {
+        // A member opens on whichever thread its embedder calls it from,
+        // a runtime's own included.
+        let (store, cert, key) = (store.clone(), cert.clone(), key.clone());
+        service::block_on_owned(async move {
+            tilo_workspace_service::service::ServiceIdentity::beside_device(&store, &cert, &key)
+                .await
+        })
+        .map_err(io::Error::other)?
+    };
     let keys = tilo_workspace_service::apps::workspace_keys::KeyProvider::default();
     let inbox = Arc::new(GovernanceInbox::default());
     let config = tilo_workspace_service::service::ServiceConfig {
@@ -1498,17 +1502,19 @@ pub(in crate::standalone) fn open_member_service(
         keys.clone(),
         Arc::clone(&inbox),
     ));
-    let service = tilo_rt::app()
-        .handle()
-        .block_on(
+    let service = {
+        let endpoint = endpoint.clone();
+        service::block_on_owned(async move {
             tilo_workspace_service::service::WorkspaceService::open_joining(
                 config,
                 service_identity,
-                endpoint.clone(),
+                endpoint,
                 device_groups,
-            ),
-        )
-        .map_err(io::Error::other)?;
+            )
+            .await
+        })
+        .map_err(io::Error::other)?
+    };
     let service = Arc::new(service);
     let workspaces = ServiceWorkspaces::new(
         Arc::clone(&service),
