@@ -108,9 +108,9 @@ enum AssistantPlaces {
         // What the item says of where its agent works is read as one of three things and never as
         // two: it says the server does, it says its keeper's own devices do, or it says nothing,
         // which is no word for either.
-        let onServer = own[TiloSource.answeredByServer]
-        let workedOnServer = onServer?.bool == true
-        let workedOnOwnDevices = onServer?.bool == false
+        let serverFlag = own[TiloSource.answeredByServer]
+        let workedOnServer = serverFlag?.bool == true
+        let workedOnOwnDevices = serverFlag?.bool == false
         if workedOnServer {
             let detail = onServer == 0 ? W.placeAlways.said : W.counted(onServer, one: .placeAlwaysWithOne, many: .placeAlwaysWithMany)
             places.append(.init(name: server, detail: detail))
