@@ -18,6 +18,9 @@
 // What winit listens for on the canvas.
 const FORWARDED = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'pointerover', 'pointerout', 'contextmenu'];
 
+// The page's own inputs that are pressed, not typed into.
+const UNTYPED = new Set(['checkbox', 'radio', 'range', 'color', 'button', 'submit', 'reset']);
+
 export function createDomInput({layer, canvas, scrollerAt, native = () => false, view = globalThis}) {
   // Touches that began on a scroll container, by pointer id: their moves are
   // the browser's pan.
@@ -59,6 +62,14 @@ export function createDomInput({layer, canvas, scrollerAt, native = () => false,
   // chooser, a choice), is the browser's: what a press there does is the
   // element's, and it comes back as the widget's semantic action.
   const pageOwned = event => Boolean(event.target?.closest?.('[data-tilo-field],[data-tilo-act]'));
+  // Of those, the ones typed into: a field, a textarea, an entry. Their press is the browser's
+  // whole, focus and caret included, so the keys that follow reach them.
+  const typedInto = event => {
+    const element = event.target?.closest?.('[data-tilo-field],[data-tilo-act]');
+    if (!element) return false;
+    if (element.dataset?.tiloField || element.localName === 'textarea') return true;
+    return element.localName === 'input' && !UNTYPED.has(element.type);
+  };
 
   for (const type of FORWARDED) {
     on(layer, type, event => {
@@ -88,7 +99,9 @@ export function createDomInput({layer, canvas, scrollerAt, native = () => false,
   // own, as on the canvas (winit keeps the focus there): the press's default
   // would take the focus from the runtime's editor to the page.
   on(layer, 'mousedown', event => {
-    // A page control takes its own press, without the page's focus or
+    // A field takes the focus with its press, as a field does on any page.
+    if (typedInto(event)) return;
+    // Any other page control takes its own press, without the page's focus or
     // selection walking away from the runtime's editor.
     if (pageOwned(event) || !native()) event.preventDefault();
     if (native() && !pageOwned(event)) selecting = event.button === 0;

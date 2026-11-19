@@ -132,6 +132,23 @@ test('a press the runtime takes moves no focus and starts no selection', () => {
   assert.equal(own.fire('mousedown', {button: 0}).defaultPrevented, true);
 });
 
+test('a press on a field the page shows takes the focus to it; one on its other controls does not', () => {
+  const {layer, canvas} = setup();
+  const element = (localName, init = {}) => {
+    const own = {localName, dataset: {}, ...init};
+    own.closest = () => own;
+    return own;
+  };
+  const pressed = target => layer.fire('mousedown', {button: 0, target}).defaultPrevented;
+  assert.equal(pressed(element('textarea', {dataset: {tiloField: 'true'}})), false, 'a text field');
+  assert.equal(pressed(element('input', {type: 'text', dataset: {tiloAct: 'value'}})), false, 'an entry');
+  assert.equal(pressed(element('input', {type: 'checkbox', dataset: {tiloAct: 'toggle'}})), true, 'a box');
+  assert.equal(pressed(element('button', {dataset: {tiloAct: 'activate'}})), true, 'a button');
+  // Its pointer events stay the page's: the runtime never sees the press.
+  layer.fire('pointerdown', {pointerType: 'mouse', pointerId: 1, button: 0, target: element('textarea', {dataset: {tiloField: 'true'}})});
+  assert.equal(canvas.sent.length, 0);
+});
+
 test('a native selection is held from the press that starts it', () => {
   const layer = new Target(null), canvas = new Target(null);
   const page = new Target(null);
