@@ -37,6 +37,7 @@ impl ContentFetcher {
         }
     }
 
+    #[must_use]
     pub fn with_tree(mut self, live: PathBuf, mount: PathBuf) -> Self {
         if self.content.has_scoped_file_keys() {
             self.roots = Some([live, mount]);

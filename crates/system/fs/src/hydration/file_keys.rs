@@ -47,9 +47,11 @@ impl FileKeys {
                 Ok(reply) => reply,
                 Err(error) => {
                     *connected = None;
+                    drop(connected);
                     return Err(anyhow!("could not read the Files keys: {error}"));
                 }
             };
+            drop(connected);
             ensure!(
                 reply.access == KeyAccess::Ready,
                 "the Files content keys are not ready"

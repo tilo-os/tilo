@@ -1010,17 +1010,15 @@ impl QuickFS {
 
     /// A stage for `ino` over its committed content, reading none of it.
     fn new_stage(&self, ino: u64) -> Result<(WriteStage, Option<Hash>), i32> {
-        let (base, base_len, workspace) = {
+        let (base, base_len, path) = {
             let ns = self.ns();
             let base = ns.hash_for(ino);
             let len = ns
                 .getattr_including_unlinked(ino)
                 .map_or(0, |attr| attr.size);
-            let workspace = ns
-                .path_for(ino)
-                .and_then(|path| self.hydrator.scoped_workspace(&path));
-            (base, len, workspace)
+            (base, len, ns.path_for(ino))
         };
+        let workspace = path.and_then(|path| self.hydrator.scoped_workspace(&path));
         let stage = WriteStage::over(
             base,
             base_len,
