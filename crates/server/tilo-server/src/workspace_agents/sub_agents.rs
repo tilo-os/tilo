@@ -600,7 +600,7 @@ impl Team {
                     && self
                         .seen
                         .get(&turn.cause)
-                        .is_none_or(|seen| seen.ts.saturating_mul(1000) <= sub.since)
+                        .is_none_or(|seen| seen.ts <= sub.since)
             });
             if before_stop {
                 stopped.push(turn);

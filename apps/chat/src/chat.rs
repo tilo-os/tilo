@@ -35,7 +35,8 @@ pub struct Message {
     pub channel: Id,
     #[model(readonly)]
     pub author: MemberId,
-    /// When, in seconds since the epoch.
+    /// When it was written, in milliseconds since the epoch: the action's own
+    /// time. Messages are ordered by it, so it is read to the millisecond.
     #[model(readonly)]
     pub ts: i64,
     /// Its plain text: what search, agents and notifications read.
@@ -265,6 +266,7 @@ impl From<ShownAs> for tilo_actions::Appearance {
 /// An earlier text of a message.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision {
+    /// When this text was written, in milliseconds since the epoch.
     pub ts: i64,
     pub text: String,
 }

@@ -560,7 +560,7 @@ impl ChatApp {
                 let Some(m) = self.messages.get(index) else {
                     continue;
                 };
-                let day = clock.day(m.ts);
+                let day = clock.day(m.ts.div_euclid(1_000));
                 let divider = days.begins(day).then(|| clock.day_label(day));
                 rows.push(TimelineRow {
                     index,

@@ -23,7 +23,7 @@ use crate::tokens::{Rhythm, TextRole};
 use crate::widget::arrange::{
     Align, Fit, Length, MEASURE_REM, Page, Part, Row, Stack, TranscriptEdges,
 };
-use crate::widget::conversation::list::RUN_WINDOW_SECS;
+use crate::widget::conversation::list::GROUPING_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, SectionDivider};
 use crate::widget::{
     Attachments, Avatar, AvatarSize, ContextMenuArea, Decorator, Element, ListRow, ListRowProps,
@@ -1151,9 +1151,9 @@ fn attach(row: Element, swipe: Option<SwipeActionProps>, attached: Attachments) 
 }
 
 /// A message of a transcript: its item's row, under its author and the time when the item names
-/// them. A run of one author's messages, each within [`RUN_WINDOW_SECS`] of the one before it on
-/// the same day, shows the author's avatar and name once, over its first message; the others line
-/// up under it.
+/// them. One author's messages, each within [`GROUPING_WINDOW_SECS`] of the one before it on the
+/// same day, show the author's avatar and name once, over the first of them; the others line up
+/// under it.
 fn message_of(
     rows: &DescribedRows,
     key: &str,
@@ -1193,7 +1193,7 @@ fn message_of(
                 .is_some_and(|who| who.identity == author.identity)
                 && match (then, at) {
                     (Some(then), Some(at)) => {
-                        (0..=RUN_WINDOW_SECS).contains(&at.0.saturating_sub(then.0))
+                        (0..=GROUPING_WINDOW_SECS).contains(&at.0.saturating_sub(then.0))
                     }
                     _ => true,
                 }

@@ -300,6 +300,9 @@ fn rows_from_parts(
                 .cloned(),
         );
     }
+    // The parts by number are not the order they were written in: a message
+    // that reached a part late stands where it was written.
+    rows.sort_by(|a, b| (a.ts, &a.id).cmp(&(b.ts, &b.id)));
     with_filed_and_sending(rows, filed, messages, channel)
 }
 

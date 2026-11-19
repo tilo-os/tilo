@@ -34,7 +34,7 @@ const ASKED: &str = "Your person is asked about this in the conversation";
 /// so the action asks first.
 const REMOVE: &str = "ebook/1 book#remove-from-library";
 /// A day, in seconds.
-const A_DAY: i64 = 24 * 60 * 60;
+const A_DAY: i64 = 24 * 60 * 60 * 1_000;
 
 /// A message as Chat keeps it.
 type Held = chat::chat::Message;
@@ -568,7 +568,7 @@ async fn an_action_that_asks_first_waits_in_the_conversation_and_is_done_once_on
     );
     assert_eq!(
         one["askedAtMs"].as_i64(),
-        Some(held.ts * 1_000),
+        Some(held.ts),
         "since when it waits: {one}"
     );
     let answers = one["answers"].as_array().unwrap();
@@ -585,7 +585,7 @@ async fn an_action_that_asks_first_waits_in_the_conversation_and_is_done_once_on
     hosted.restart();
     hosted.agents.look(&hosted.workspace).await.unwrap();
     assert!(hosted.question(&id).await.waiting());
-    let later = (held.ts + A_DAY) * 1_000;
+    let later = held.ts + A_DAY;
     assert!(
         hosted
             .answers(Who::Herself, &id, chat::question::ALLOW, Some(later))
@@ -1126,12 +1126,7 @@ async fn an_answer_wakes_its_asker_once_a_day_later_and_after_a_restart() {
         .then(Reply::text("The signed one it is. I go on with the deck."));
     assert!(
         hosted
-            .answers(
-                Who::Herself,
-                &id,
-                "signed",
-                Some((asked_at + A_DAY) * 1_000)
-            )
+            .answers(Who::Herself, &id, "signed", Some(asked_at + A_DAY))
             .await
     );
     hosted.agents.look(&hosted.workspace).await.unwrap();

@@ -22,7 +22,7 @@ pub mod rows;
 
 pub use chat::{
     CHAT_CHANNEL, Category, ChannelPlace, Chat, Conversation, PeopleNames, Summary, VOICE_CHANNEL,
-    WorkspaceFiles, author, conversation_entry, member_marks, seconds, unnamed_label,
+    WorkspaceFiles, author, conversation_entry, member_marks, unnamed_label,
 };
 pub use drafts::ChatDrafts;
 pub use effects::ChatEffect;

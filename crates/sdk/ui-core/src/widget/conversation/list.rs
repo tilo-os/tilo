@@ -25,7 +25,9 @@ use super::band::SectionDividerFace;
 use super::day::{ConversationClock, ConversationDay, DayBreaks};
 use super::delivery::{DeliveryFace, DeliveryState};
 
-pub const RUN_WINDOW_SECS: i64 = 5 * 60;
+/// How close two messages by one author are to show as one group: the avatar, the name and the
+/// time stand over the first of them.
+pub const GROUPING_WINDOW_SECS: i64 = 5 * 60;
 
 /// The most of the column one bubble may take. A bubble that fills the column
 /// is no longer a bubble: you lose the side that says who is talking.
@@ -103,7 +105,7 @@ fn begins_group(previous: Option<&ConversationLine>, line: &ConversationLine) ->
             previous.author != line.author
                 || previous.role != line.role
                 || line.at_ms.saturating_sub(previous.at_ms).abs()
-                    > RUN_WINDOW_SECS.saturating_mul(1_000)
+                    > GROUPING_WINDOW_SECS.saturating_mul(1_000)
                 || (line.author.is_empty() && line.role == ConversationRole::Incoming)
         }
     }

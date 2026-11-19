@@ -177,7 +177,7 @@ pub struct Summary {
     pub text: String,
     /// The last message it takes in, by its id.
     pub through: Atom,
-    /// When that message was written, in seconds since the epoch.
+    /// When that message was written, in milliseconds since the epoch.
     pub through_ts: i64,
 }
 
@@ -252,7 +252,8 @@ pub struct FeedbackReport {
     /// Who filed it.
     #[model(readonly)]
     pub author: MemberId,
-    /// When, in seconds since the epoch.
+    /// When it was filed, in milliseconds since the epoch: it stands among the
+    /// channel's messages by it.
     #[model(readonly)]
     pub ts: i64,
     /// What happened to it since.
@@ -270,6 +271,7 @@ pub struct FeedbackReport {
 pub struct Triage {
     #[model(readonly)]
     pub author: MemberId,
+    /// When it was triaged, in milliseconds since the epoch.
     #[model(readonly)]
     pub ts: i64,
     #[model(readonly)]
@@ -286,11 +288,6 @@ pub fn author(cx: &ActionCx) -> Result<MemberId, Refusal> {
     cx.author()
         .cloned()
         .ok_or_else(|| Refusal::new("an action in chat is always someone's"))
-}
-
-/// The action's time, in seconds since the epoch.
-pub fn seconds(cx: &ActionCx) -> i64 {
-    cx.now_ms().div_euclid(1000)
 }
 
 impl Chat {
@@ -833,7 +830,7 @@ impl Chat {
         &mut self,
         cx: &mut ActionCx,
         #[param("The last message it takes in")] through: String,
-        #[param("When that message was written, in seconds since the epoch")] through_ts: i64,
+        #[param("When that message was written, in milliseconds since the epoch")] through_ts: i64,
         #[param("The summary")] text: String,
         #[param("The conversation it is the summary of")] conversation: Id,
     ) -> Result<(), Refusal> {
@@ -893,7 +890,7 @@ impl Chat {
             .validate()
             .map_err(|error| Refusal::new(error.to_string()))?;
         let me = author(cx)?;
-        let ts = seconds(cx);
+        let ts = cx.now_ms();
         let key = Id::from_raw(submission.id.clone());
         if let Some(known) = self.feedback.get(&key) {
             return if known.submission.as_ref() == Some(&submission) && known.author == me {
@@ -932,7 +929,7 @@ impl Chat {
         let update: crate::feedback::TriageUpdate = serde_json::from_value(update)
             .map_err(|_| Refusal::new("a triage update is required"))?;
         let me = author(cx)?;
-        let ts = seconds(cx);
+        let ts = cx.now_ms();
         let id = cx.id();
         self.feedback
             .get_mut(report)

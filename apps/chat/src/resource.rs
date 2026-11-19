@@ -378,12 +378,14 @@ fn long_thread_posts(me: &str) -> Vec<(Id, crate::chat::Message)> {
     let people = ["u_aria", "u_milo", "u_sora", "u_devon"];
     let count = 240_usize;
     // The newest of them ends where the demo conversation begins.
-    let newest = crate::demo::NOW.saturating_sub(100 * 60);
+    let newest = crate::demo::NOW
+        .saturating_sub(100 * 60)
+        .saturating_mul(1_000);
     (0..count)
         .map(|index| {
             let ago = i64::try_from(count.saturating_sub(index))
                 .unwrap_or_default()
-                .saturating_mul(900);
+                .saturating_mul(900_000);
             let author = if index % 5 == 4 {
                 me
             } else {
@@ -476,7 +478,7 @@ fn mention_post() -> (Id, crate::chat::Message) {
         ..crate::chat::Message::new(
             Id::from_raw("c_frontend"),
             ui::tilo_resource::MemberId::person("u_aria"),
-            crate::demo::NOW - 30,
+            crate::demo::NOW.saturating_mul(1_000) - 30_000,
             text.into(),
         )
     };
@@ -504,7 +506,7 @@ fn bridged_post() -> (Id, crate::chat::Message) {
         ..crate::chat::Message::new(
             Id::from_raw("c_crit"),
             ui::tilo_resource::MemberId::bot(DEMO_BRIDGE),
-            crate::demo::NOW - 60,
+            crate::demo::NOW.saturating_mul(1_000) - 60_000,
             "Joining from Discord: the warmer palette reads much better on my phone.".into(),
         )
     };
@@ -534,7 +536,7 @@ pub(crate) fn agent_summons() -> (Id, crate::chat::Message) {
         ..crate::chat::Message::new(
             Id::from_raw("c_crit"),
             ui::tilo_resource::MemberId::person(crate::model::ME),
-            crate::demo::NOW - 120,
+            crate::demo::NOW.saturating_mul(1_000) - 120_000,
             "@Tide add the revenue curve to Calculator and keep the current bounds.".into(),
         )
     };
@@ -572,7 +574,7 @@ pub(crate) fn went_on_messages() -> Vec<(Id, crate::chat::Message)> {
     let conversation = went_on_conversation();
     let me = ui::tilo_resource::MemberId::person(crate::model::ME);
     let first = Id::from_raw(WENT_ON_FIRST);
-    let asked = crate::demo::NOW - 120;
+    let asked = crate::demo::NOW.saturating_sub(120).saturating_mul(1_000);
     let left = crate::chat::Message {
         parent: Some(first.clone()),
         work: Some(crate::chat::Work {
@@ -580,14 +582,14 @@ pub(crate) fn went_on_messages() -> Vec<(Id, crate::chat::Message)> {
                 state: crate::model::AgentWorkState::ProviderFinished {
                     outcome: crate::agent_stream::AgentFinish::Complete,
                 },
-                since: asked + 10,
+                since: asked + 10_000,
             }),
             ..crate::chat::Work::default()
         }),
         ..crate::chat::Message::new(
             conversation.clone(),
             demo_agent(),
-            asked + 10,
+            asked + 10_000,
             String::new(),
         )
     };
@@ -607,7 +609,7 @@ pub(crate) fn went_on_messages() -> Vec<(Id, crate::chat::Message)> {
             crate::chat::Message::new(
                 conversation,
                 me,
-                asked + 60,
+                asked + 60_000,
                 "And say that I bring the numbers.".into(),
             ),
         ),
