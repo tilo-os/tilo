@@ -1351,7 +1351,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_that_sent_frames_of_a_record_holds_it() {
+    fn a_server_that_sent_frames_of_a_document_holds_it() {
         assert!(!super::holds_some(None));
         assert!(!super::holds_some(Some(DocumentAnswer::Sent { frames: 0 })));
         assert!(super::holds_some(Some(DocumentAnswer::Sent { frames: 2 })));
