@@ -959,15 +959,19 @@ impl tilo_session_actions::RemoteSession for Asking {
             .reports
             .events(|event| matches!(event, Event::Workspace { .. } | Event::Sync(_)));
         // The wake keeps the queue it listens on until a state's event reaches it, then lets
-        // both go: every other change of the session passes it by.
+        // both go: every other change of the session passes it by. A wait whose caller left
+        // lets both go at the next change too, so a session whose state stands still (one
+        // that lost its server) does not keep a listener for every watch that gave up on it.
         let held = Mutex::new(Some((woken, listening.queue())));
         self.reports.listen(
             &listening,
             Arc::new(move || {
                 let mut held = held.lock_recover();
-                if held
-                    .as_ref()
-                    .is_some_and(|(_, queue)| !queue.lock_recover().is_empty())
+                let Some((woken, queue)) = held.as_ref() else {
+                    return;
+                };
+                let moved = !queue.lock_recover().is_empty();
+                if (moved || woken.is_abandoned())
                     && let Some((woken, _queue)) = held.take()
                 {
                     woken.complete(());

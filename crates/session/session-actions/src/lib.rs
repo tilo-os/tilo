@@ -178,6 +178,13 @@ struct Asked<T> {
 }
 
 impl<T> Asked<T> {
+    /// Whether it is done waiting: past its deadline, or its caller stopped waiting for the
+    /// answer (a call that gave up on its own wait). One its caller left is let go at once, so
+    /// it is neither kept nor asked again on a later connection.
+    fn done_by(&self, now: Instant) -> bool {
+        self.until <= now || self.answer.is_abandoned()
+    }
+
     fn new(answer: Completer<T>, again: RemoteActionMessage) -> Self {
         Self {
             answer,
@@ -300,9 +307,12 @@ impl Waiting {
         for (_, asked) in self.watched.drain() {
             give.push(giving(asked, Err(error.clone())));
         }
+        for (_, asked) in self.surfaces.drain() {
+            give.push(giving(asked, Err(error.clone())));
+        }
     }
 
-    /// The requests past their deadline, answered as unanswered.
+    /// The requests past their deadline, answered as unanswered, and those whose callers left.
     fn expire(&mut self, now: Instant, give: &mut Vec<Give>) {
         let late = || ActionCallError::Unanswered;
         for asked in expired(&mut self.catalogues, now) {
@@ -336,6 +346,9 @@ impl Waiting {
             give.push(giving(asked, Err(late())));
         }
         for asked in expired(&mut self.watched, now) {
+            give.push(giving(asked, Err(late())));
+        }
+        for asked in expired(&mut self.surfaces, now) {
             give.push(giving(asked, Err(late())));
         }
     }
@@ -384,6 +397,7 @@ impl Waiting {
             && self.searches.is_empty()
             && self.changes.is_empty()
             && self.watched.is_empty()
+            && self.surfaces.is_empty()
     }
 
     /// What every request still waiting asks: what is asked again on the
@@ -550,14 +564,14 @@ fn in_time<T>(answered: tilo_actions::remote::Pending<T>) -> Option<T> {
     answered.wait_timeout(REPLY_DEADLINE).ok().flatten()
 }
 
-/// The requests of `all` past their deadline, taken out of it.
+/// The requests of `all` past their deadline or left by their callers, taken out of it.
 fn expired<K: std::hash::Hash + Eq + Clone, T>(
     all: &mut HashMap<K, Asked<T>>,
     now: Instant,
 ) -> Vec<Asked<T>> {
     let late: Vec<K> = all
         .iter()
-        .filter(|(_, asked)| asked.until <= now)
+        .filter(|(_, asked)| asked.done_by(now))
         .map(|(key, _)| key.clone())
         .collect();
     late.into_iter()
@@ -565,13 +579,13 @@ fn expired<K: std::hash::Hash + Eq + Clone, T>(
         .collect()
 }
 
-/// The requests of `all` past their deadline, taken out of it.
+/// The requests of `all` past their deadline or left by their callers, taken out of it.
 fn split<T>(all: &mut HashMap<InvocationId, Vec<Asked<T>>>, now: Instant) -> Vec<Asked<T>> {
     let mut late = Vec::new();
     for waiting in all.values_mut() {
         let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(waiting)
             .into_iter()
-            .partition(|asked| asked.until <= now);
+            .partition(|asked| asked.done_by(now));
         *waiting = kept;
         late.extend(gone);
     }
@@ -924,7 +938,17 @@ impl Inner {
             again.refused_on = None;
             again.times = again.times.saturating_add(1);
         }
-        let asked = self.waiting.lock_recover().asked_again();
+        // What its callers left, or what ran out of time, is answered and let go first: only
+        // what someone still waits for is asked again.
+        let mut give = Vec::new();
+        let asked = {
+            let mut waiting = self.waiting.lock_recover();
+            waiting.expire(tilo_clock::now(), &mut give);
+            waiting.asked_again()
+        };
+        for give in give {
+            give();
+        }
         for message in asked {
             let Err(error) = self.send(message) else {
                 continue;
@@ -1751,6 +1775,35 @@ mod tests {
             1,
             "only the held ask went to the device"
         );
+    }
+
+    /// A caller that gave up on its answer leaves nothing behind: its ask is let go at the next
+    /// sweep and is not asked again on a later connection, so the asks of calls that waited out
+    /// a session without its server do not pile up and go out again all at once on its return.
+    #[test]
+    fn an_ask_its_caller_left_is_let_go_and_never_asked_again() {
+        let observe = || RemoteActionMessage::Observe {
+            invocation: InvocationId::new(),
+            wait_ms: None,
+            seen: None,
+        };
+        let mut waiting = Waiting::default();
+        let (left, answer) = pending();
+        drop(answer);
+        let (kept, _answer) = pending();
+        waiting.catalogues.insert(1, Asked::new(left, observe()));
+        waiting.catalogues.insert(2, Asked::new(kept, observe()));
+        assert_eq!(waiting.asked_again().len(), 2, "both were asked");
+
+        let mut give = Vec::new();
+        waiting.expire(tilo_clock::now(), &mut give);
+        assert_eq!(give.len(), 1, "the left one is let go before its deadline");
+        assert_eq!(
+            waiting.asked_again().len(),
+            1,
+            "only the ask someone still waits for goes again"
+        );
+        assert!(waiting.catalogues.contains_key(&2));
     }
 
     /// A folder of small files goes up in steps of at most
