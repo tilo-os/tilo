@@ -1125,7 +1125,9 @@ impl Workspaces {
         create: bool,
     ) -> GroupKeysAnswer {
         let device = self.device_keys()?;
-        device.group_keys(&route.cluster_id, create).await
+        device
+            .group_keys(&route.cluster_id, collab_types::EVERY_MEMBER, create)
+            .await
     }
 
     /// Set what this host offers its workspaces, as the entry its person keeps

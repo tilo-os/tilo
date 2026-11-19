@@ -133,13 +133,16 @@ impl GroupKeys for DeviceGroupKeys {
     fn group_keys<'a>(
         &'a self,
         workspace: &'a str,
+        readers: &'a str,
         create: bool,
     ) -> tilo_workspace_service::workspaces::GroupKeysAnswerFuture<'a> {
         Box::pin(async move {
             if self.keys.get().is_none() {
                 return Some(Err("this device's key service is not up".into()));
             }
-            self.keys.group_keys(workspace, create, OPEN_WAIT).await
+            self.keys
+                .group_keys(workspace, readers, create, OPEN_WAIT)
+                .await
         })
     }
 }

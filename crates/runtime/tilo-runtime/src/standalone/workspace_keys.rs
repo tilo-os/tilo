@@ -148,6 +148,7 @@ impl tilo_workspace_service::workspaces::GroupKeys for DeviceGroupKeys {
     fn group_keys<'a>(
         &'a self,
         workspace: &'a str,
+        readers: &'a str,
         create: bool,
     ) -> std::pin::Pin<
         Box<
@@ -161,7 +162,7 @@ impl tilo_workspace_service::workspaces::GroupKeys for DeviceGroupKeys {
             if keys.get().is_none() {
                 return Some(Err("this device's key service is not running".into()));
             }
-            keys.group_keys(workspace, create, OPEN_WAIT).await
+            keys.group_keys(workspace, readers, create, OPEN_WAIT).await
         })
     }
 }
