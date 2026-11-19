@@ -214,12 +214,17 @@ pub struct AgentArgs {
 #[cfg(feature = "agents")]
 impl AgentArgs {
     /// The model the agents this host runs for its workspaces work with: `--agent-model`, else
-    /// `$TILO_AGENT_MODEL`, read as `--agents` reads it. `None` when neither names one, or the one
-    /// named is not usable (said in the log): the agents then tell whoever asks that the host runs
-    /// no model.
+    /// `$TILO_AGENT_MODEL`, read as `--agents` reads it, else `settings` — the provider chosen in
+    /// Settings, which is read again for every turn, so a provider added there is used without a
+    /// restart. A spec that is not usable is said in the log, and the agents then tell whoever asks
+    /// that the host runs no model.
     fn host_model(&self) -> Option<tilo_agent_session::ModelChoice> {
         let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-        let spec = self.model.clone().or_else(|| env("TILO_AGENT_MODEL"))?;
+        let spec = self
+            .model
+            .clone()
+            .or_else(|| env("TILO_AGENT_MODEL"))
+            .unwrap_or_else(|| "settings".into());
         let name = self
             .model_name
             .clone()
