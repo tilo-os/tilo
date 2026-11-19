@@ -30,7 +30,7 @@ if [[ -n "${TILO_PAGE_BUNDLE:-}" && -f "$TILO_PAGE_BUNDLE/pkg/tilo_browser_runti
 fi
 
 cd "$repo"
-# The directory a build told it by an absolute `CARGO_TARGET_DIR` (t and rcargo always do) needs
+# The directory a build told it by an absolute `CARGO_TARGET_DIR` (a cargo drop-in may) needs
 # no question: asking cargo loads the whole workspace's manifests on every job that builds a page.
 target=${CARGO_TARGET_DIR:-}
 if [[ $target != /* ]]; then

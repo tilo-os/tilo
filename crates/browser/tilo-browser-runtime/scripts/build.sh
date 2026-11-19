@@ -313,7 +313,7 @@ local began=$SECONDS
 "$cargo" "${compile[@]}"
 took "compile ($cargo_profile)" "$began"
 # Read Cargo's artifact location; never redirect it. A build told its directory by an absolute
-# `CARGO_TARGET_DIR` (t and rcargo always do) already knows it: asking cargo loads the whole
+# `CARGO_TARGET_DIR` (a cargo drop-in may) already knows it: asking cargo loads the whole
 # workspace's manifests again, beside the compile it just ran.
 target_dir=${CARGO_TARGET_DIR:-}
 if [[ $target_dir != /* ]]; then
