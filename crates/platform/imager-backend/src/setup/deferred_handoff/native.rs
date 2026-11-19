@@ -673,21 +673,6 @@ fn create_private_dir(path: &Path) -> io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mut options = std::fs::OpenOptions::new();
-    options
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    let mut file = options.open(path)?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BrowserReceipt {
@@ -899,7 +884,10 @@ fn import_browser(
     let plan_bytes = browser_plan.encode().map_err(|error| {
         io::Error::other(format!("Selected browser plan encoding failed: {error}"))
     })?;
-    write_private_file(&stable.join(browser_continuity::PLAN_FILE), &plan_bytes)?;
+    tilo_files::native::atomic::create_private(
+        &stable.join(browser_continuity::PLAN_FILE),
+        &plan_bytes,
+    )?;
     let profiles = stable.join(browser_continuity::PROFILES_DIRECTORY);
     create_private_dir(&profiles)?;
     for (source, profile) in selected.profiles() {
@@ -909,7 +897,10 @@ fn import_browser(
         let profile_directory = profiles.join(&profile.id);
         create_private_dir(&profile_directory)?;
         for file in snapshot.files() {
-            write_private_file(&profile_directory.join(file.name()), file.bytes())?;
+            tilo_files::native::atomic::create_private(
+                &profile_directory.join(file.name()),
+                file.bytes(),
+            )?;
         }
         source.validate()?;
     }
@@ -947,7 +938,7 @@ fn import_browser(
     let completion_bytes = signed.encode().map_err(|error| {
         io::Error::other(format!("Selected browser proof encoding failed: {error}"))
     })?;
-    write_private_file(&completion_path, &completion_bytes)?;
+    tilo_files::native::atomic::create_private(&completion_path, &completion_bytes)?;
     operation_directory.validate()?;
     Ok(Some(BrowserReceipt {
         profiles: browser_plan

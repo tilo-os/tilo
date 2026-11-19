@@ -974,7 +974,9 @@ fn publish_cache(
         if read_private(&path, MAX_CACHE)? != snapshot {
             continue;
         }
-        return atomic_private_write(&path, &bytes)
+        let parent = path.parent().ok_or(ConnectionError::StorageUnavailable)?;
+        ensure_private_dir(parent)?;
+        return tilo_files::native::atomic::write_private(&path, &bytes)
             .map_err(|_| ConnectionError::StorageUnavailable);
     }
     Err(ConnectionError::StorageUnavailable)
@@ -1416,15 +1418,6 @@ fn read_private(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, ConnectionEr
 }
 
 /// A reader never sees half a file, and a crash leaves the previous one intact.
-fn atomic_private_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("Kept mail needs a parent"))?;
-    ensure_private_dir(parent)
-        .map_err(|_| std::io::Error::other("Kept mail folder is unavailable"))?;
-    tilo_files::native::atomic::write_private(path, bytes)
-}
-
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), ConnectionError> {
     match std::fs::symlink_metadata(path) {
         Ok(info) if info.is_file() && !info.is_symlink() => {
@@ -1439,7 +1432,9 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), ConnectionError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err(ConnectionError::StorageUnavailable),
     }
-    atomic_private_write(path, bytes).map_err(|_| ConnectionError::StorageUnavailable)
+    ensure_private_dir(path.parent().ok_or(ConnectionError::StorageUnavailable)?)?;
+    tilo_files::native::atomic::write_private(path, bytes)
+        .map_err(|_| ConnectionError::StorageUnavailable)
 }
 
 #[cfg(test)]

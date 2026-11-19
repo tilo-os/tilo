@@ -40,7 +40,7 @@ pub(super) fn stage(
         .join(directory);
     std::fs::create_dir_all(&root)?;
     let name = format!("{}-{}.{}", safe(profile_id), safe(source_id), extension);
-    write_private(&root.join(name), text.as_bytes())?;
+    tilo_files::native::atomic::write_with_mode(&root.join(name), text.as_bytes(), 0o600)?;
     Ok(true)
 }
 
@@ -55,34 +55,6 @@ fn safe(value: &str) -> String {
         out.push_str("selected");
     }
     out
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let temporary = path.with_extension(format!(
-        "{}.tmp",
-        path.extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or("data")
-    ));
-    let mut options = std::fs::OpenOptions::new();
-    options
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    let mut file = options.open(&temporary)?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    std::fs::rename(&temporary, path)?;
-    if let Some(parent) = path.parent() {
-        let directory = std::fs::File::open(parent)?;
-        directory.sync_all()?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

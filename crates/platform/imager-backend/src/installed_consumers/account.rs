@@ -492,12 +492,8 @@ pub fn publish() -> io::Result<Value> {
         qualifier: &mut qualifier,
         route_qualifier: &mut route_qualifier,
     })?;
-    write_atomically(Path::new(RECEIPT), &receipt)?;
-    Ok(receipt)
-}
-
-fn write_atomically(target: &Path, receipt: &Value) -> io::Result<()> {
-    let mut bytes = json::canonical_ascii(receipt);
+    let mut bytes = json::canonical_ascii(&receipt);
     bytes.push(b'\n');
-    tilo_files::native::atomic::write_with_mode(target, &bytes, 0o644)
+    tilo_files::native::atomic::write_with_mode(Path::new(RECEIPT), &bytes, 0o644)?;
+    Ok(receipt)
 }
