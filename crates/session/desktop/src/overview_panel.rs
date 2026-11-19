@@ -1742,6 +1742,7 @@ mod tests {
                     with: vec![crate::overview::ShownPerson {
                         id: "ada".into(),
                         name: "Ada".into(),
+                        kind: crate::overview::HolderKind::Person,
                     }],
                     writable: false,
                 })

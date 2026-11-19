@@ -542,6 +542,17 @@ pub(crate) fn governance_policy(
     joined.peer.engine().policy(&workspace.to_string()).ok()
 }
 
+/// `workspace`'s people as its governance names them, as this page holds it: each with the name
+/// they gave themselves, which the page's shell names someone who is not here by.
+pub(crate) fn governance_people(
+    id: u32,
+    workspace: WorkspaceId,
+) -> Option<Vec<collab_types::Member>> {
+    let joined = replica_of(id)?;
+    let joined = joined.borrow();
+    joined.peer.engine().people(&workspace.to_string()).ok()
+}
+
 /// The name `workspace`'s governance records, as this page holds it: the workspace's one name,
 /// which every device and every list of it reads.
 pub(crate) fn governance_name(id: u32, workspace: WorkspaceId) -> Option<String> {
