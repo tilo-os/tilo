@@ -1743,14 +1743,18 @@ mod tests {
             store.close().await.unwrap();
         }
         let elapsed = started.elapsed();
+        let count = f64::from(u32::try_from(FILES).unwrap_or(u32::MAX));
+        let bytes = f64::from(u32::try_from(FILES * SMALL).unwrap_or(u32::MAX));
         eprintln!(
             "PERF small-file writes: {FILES} files of {SMALL} B in {:.1} ms = {:.0} files/s, {:.1} MiB/s",
             elapsed.as_secs_f64() * 1_000.0,
-            (FILES as f64) / elapsed.as_secs_f64(),
-            ((FILES * SMALL) as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
+            count / elapsed.as_secs_f64(),
+            (bytes / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
         );
 
-        let large: Vec<u8> = (0..LARGE).map(|index| (index % 251) as u8).collect();
+        let large: Vec<u8> = (0..LARGE)
+            .map(|index| u8::try_from(index % 251).unwrap())
+            .collect();
         let content = {
             let store = ContentStore::open(&root).await.unwrap();
             let content = store.write_content(&large).await.unwrap().unwrap();
@@ -1766,10 +1770,11 @@ mod tests {
             .unwrap();
         let elapsed = started.elapsed();
         assert_eq!(read.len(), LARGE);
+        let bytes = f64::from(u32::try_from(LARGE).unwrap_or(u32::MAX));
         eprintln!(
             "PERF large-file read: {LARGE} B in {:.1} ms = {:.1} MiB/s",
             elapsed.as_secs_f64() * 1_000.0,
-            (LARGE as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
+            (bytes / (1024.0 * 1024.0)) / elapsed.as_secs_f64()
         );
         store.close().await.unwrap();
     }
