@@ -388,7 +388,7 @@ impl WorkspaceActions {
         self.log()
             .entries
             .get(id)
-            .filter(|entry| entry.caller == *caller)
+            .filter(|entry| caller.continues(&entry.caller))
             .map(|entry| {
                 InvocationState::new(*id, entry.update.clone())
                     .linked(entry.link.clone())
@@ -616,12 +616,14 @@ impl WorkspaceActions {
         }
         {
             let mut log = self.log();
-            if let Some(entry) = log.entries.get(&invocation) {
-                if entry.caller != *caller || !entry.request.same_invocation(&request) {
+            if let Some(entry) = log.entries.get_mut(&invocation) {
+                if !caller.continues(&entry.caller) || !entry.request.same_invocation(&request) {
                     return receipt(ReceiptStatus::Rejected {
                         error: ActionCallError::InvocationConflict,
                     });
                 }
+                // Asked again on the connection that replaced its own: it is this one's now.
+                entry.caller.clone_from(caller);
                 let state = InvocationState::new(invocation, entry.update.clone());
                 return receipt(state.receipt().status);
             }
@@ -689,7 +691,7 @@ impl WorkspaceActions {
         let entry = log
             .entries
             .get_mut(id)
-            .filter(|entry| entry.caller == *caller)
+            .filter(|entry| caller.continues(&entry.caller))
             .ok_or(ActionCallError::UnknownInvocation)?;
         if entry.update.is_terminal() {
             return Err(ActionCallError::NotCancellable {
@@ -1370,6 +1372,9 @@ impl Worker {
     }
 
     fn run(mut self, jobs: &mpsc::Receiver<(Instant, Job)>) {
+        // What came and waits for this thread, taken most urgent first ([`job::Job::urgency`]):
+        // a listing never waits behind writes, or the names they left to read, that came before.
+        let mut queued = job::Queued::default();
         loop {
             // What the index's own thread read since the last pass is taken here, and the
             // next documents asked for; the folder's chunks are read here, between requests.
@@ -1379,6 +1384,21 @@ impl Worker {
                 let entries = self.warm_entries();
                 let files = self.warm_files(index::WARM_SLICE);
                 self.warming = !(entries && files);
+            }
+            while let Ok((at, job)) = jobs.try_recv() {
+                queued.push(at, job);
+            }
+            if let Some((at, job)) = queued.take() {
+                self.expire_watchers();
+                self.admit(at, job);
+                // Requests that keep coming never hold back a run's word:
+                // the page forgets a member it has not heard from.
+                if session_voice::next_due(&self.workspaces)
+                    .is_some_and(|due| due <= Instant::now())
+                {
+                    self.tick_voices();
+                }
+                continue;
             }
             let due = [
                 self.joining_until(),
@@ -1400,16 +1420,7 @@ impl Worker {
             };
             self.expire_watchers();
             match next {
-                Ok((queued, job)) => {
-                    self.admit(queued, job);
-                    // Requests that keep coming never hold back a run's word:
-                    // the page forgets a member it has not heard from.
-                    if session_voice::next_due(&self.workspaces)
-                        .is_some_and(|due| due <= Instant::now())
-                    {
-                        self.tick_voices();
-                    }
-                }
+                Ok((at, job)) => queued.push(at, job),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     self.give_up_joining();
                     self.tick_voices();

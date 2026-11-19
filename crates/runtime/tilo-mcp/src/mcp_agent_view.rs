@@ -25,6 +25,11 @@ pub(super) struct ViewArgs {
 
 /// The app's action that reads its window as lines.
 const OUTLINE: &str = "outline";
+/// How long a view read waits for its answer. The view is the answer: a read that gave up
+/// sooner told the agent nothing of what the window shows, only that it was still being
+/// read. A window read for the first time on the workspace's server is mounted and drawn
+/// there before it answers, which takes tens of seconds on a server that just started.
+const VIEW_WAIT_MS: u64 = 60_000;
 
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// `tilo_view {path}`: the lines of the view `path` names, or of the app window that
@@ -80,7 +85,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let path = format!("{}#{OUTLINE}", parsed.app);
         let mut refused_anchor: Option<String> = None;
         let mut value =
-            match Box::pin(self.do_one_value(&path, arguments.clone(), None, None)).await {
+            match Box::pin(self.do_one_value(&path, arguments.clone(), None, Some(VIEW_WAIT_MS)))
+                .await
+            {
                 Ok(value) => answer_value(value),
                 // No window of the app answers on this connection (a server shows none): nothing
                 // has a view to read, and the calls that reach what the path names are said.
@@ -91,7 +98,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                     refused_anchor = Some(why.to_string());
                     arguments.remove("anchor");
                     answer_value(
-                        Box::pin(self.do_one_value(&path, arguments.clone(), None, None)).await?,
+                        Box::pin(self.do_one_value(
+                            &path,
+                            arguments.clone(),
+                            None,
+                            Some(VIEW_WAIT_MS),
+                        ))
+                        .await?,
                     )
                 }
                 Err(why) => return Err(why),
@@ -111,7 +124,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 refused_anchor = Some(outcome(&value).text.trim().to_owned());
             }
             arguments.remove("anchor");
-            value = answer_value(Box::pin(self.do_one_value(&path, arguments, None, None)).await?);
+            value = answer_value(
+                Box::pin(self.do_one_value(&path, arguments, None, Some(VIEW_WAIT_MS))).await?,
+            );
         }
         if !shown(&value) {
             return Ok(outcome(&value));

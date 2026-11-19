@@ -85,11 +85,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
     }
 
+    /// What reads the workspace's contents piece by piece, where this connection has it.
+    pub(crate) fn workspace_gets(&self) -> Option<std::sync::Arc<dyn ContentGets>> {
+        self.host().content_gets()
+    }
+
     /// One piece of `args.content`, and the text saying how it reads on.
     async fn download(&self, args: GetArgs) -> Result<(Value, String), String> {
         let gets: std::sync::Arc<dyn ContentGets> = self
-            .host()
-            .content_gets()
+            .workspace_gets()
             .ok_or_else(|| CONTENT_GETS_UNAVAILABLE.to_owned())?;
         let length = if args.length == 0 {
             MAX_GET_CALL_BYTES

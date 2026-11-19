@@ -5700,17 +5700,21 @@ dispatch_inputs = { images = "", expected_content_sha256 = "", publish = "true" 
 arch = ["x86_64", "aarch64"]
 
 [[check]]
-name = "publish-extension-manifests"
+name = "publish-extension-manifests-{arch}"
 # Takes an identity token from t (at its deployment's own address) to registries and AWS STS/KMS: no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "bash tools/ci/publish/extension-manifests.sh publish /target/extension-manifests/x86_64 /target/extension-manifests/aarch64"
-needs = ["extension-manifests-x86_64", "extension-manifests-aarch64", "signing-tools"]
+# One per architecture: a manifest is published for its architecture's images alone, so with no
+# node of one architecture connected the other's still publish.
+run = "bash tools/ci/publish/extension-manifests.sh publish /target/extension-manifests/{arch}"
+needs = ["extension-manifests-{arch}", "signing-tools"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-extension-manifests", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTExtensionManifestSigner", TILO_SIGNING_AUDIENCE = "tilo-extension-manifests" }
 cache = false
 on = ["schedule:40 4 * * *", "dispatch"]
 secrets = ["TILO_PACKAGES_TOKEN"]
 id_token = ["tilo-extension-manifests"]
 dispatch_inputs = { images = "", expected_content_sha256 = "", publish = "true" }
+[check.matrix]
+arch = ["x86_64", "aarch64"]
 
 [[check]]
 name = "cloud-rystic-build"

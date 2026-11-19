@@ -53,6 +53,9 @@ pub(crate) struct Mounted {
     pub(crate) read_only: bool,
     /// Bytes of its files this computer holds.
     pub(crate) local_bytes: u64,
+    /// The device's session with the workspace is live: what the folder's status says of what was
+    /// sent holds only while it is, and a folder with none is not in sync, whatever it last sent.
+    pub(crate) connected: bool,
     #[serde(flatten)]
     pub(crate) status: tree::TreeStatus,
 }
@@ -427,6 +430,7 @@ impl Peer {
                         fs_protocol::file_action::verbs::WRITE,
                     ),
                     local_bytes: 0,
+                    connected: true,
                     status: shown.replica.status(),
                 };
                 (mounted, hashes)
@@ -581,8 +585,15 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
         .get("name")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("?");
+    // A peer that does not say is one that answers for its session itself.
+    let connected = workspace
+        .get("connected")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
     let state = if field("paused") {
         "paused"
+    } else if !connected {
+        "not connected to the workspace; changes made here wait to go out"
     } else if !field("opened") {
         "waiting for the workspace's files"
     } else if field("sent") && field("durable") {
@@ -607,6 +618,20 @@ pub(crate) fn describe_folder(workspace: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use tilo_server_session::workspaces::{KeepingDeviceAddress, PersonalWorkspace};
+
+    /// A folder whose device has no live session with the workspace is never "in sync": what it
+    /// last sent says nothing of what is written there since.
+    #[test]
+    fn a_folder_without_a_session_is_not_in_sync() {
+        let folder = |connected: bool| {
+            serde_json::json!({"name": "Tilo", "at": "/home/ada/Tilo", "opened": true,
+                "sent": true, "durable": true, "files": 1, "bytes": 1, "connected": connected})
+        };
+        assert!(describe_folder(&folder(true)).contains("(in sync;"));
+        let offline = describe_folder(&folder(false));
+        assert!(!offline.contains("in sync"), "{offline}");
+        assert!(offline.contains("not connected"), "{offline}");
+    }
 
     /// The host's list names each folder after its workspace, and the folder
     /// of the workspace this device entered exists before any list names it.

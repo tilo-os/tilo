@@ -195,7 +195,9 @@ impl InvocationLog {
     }
 
     pub(super) fn owned(&self, caller: &Caller, id: &InvocationId) -> Option<&Entry> {
-        self.entries.get(id).filter(|entry| entry.caller == *caller)
+        self.entries
+            .get(id)
+            .filter(|entry| caller.continues(&entry.caller))
     }
 }
 

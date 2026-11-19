@@ -30,7 +30,7 @@ cd "$repo_root"
 for bin in tilo-server tilo-server-admin tilo-enroll fs tilo-linux-vm tilo-hosted-jail tilo-api \
   tilolang-process \
   tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor \
-  tilo-rollback tilo-auth tilo-boot-signin tilo-crypto; do
+  tilo-rollback tilo-auth tilo-boot-signin tilo-crypto tilo-default-start; do
   [[ -x $binaries/$bin ]] || die "no $bin in $binaries"
 done
 use_buildah buildah overlay

@@ -1089,8 +1089,11 @@ pub fn login_key(name: Option<&str>) -> Result<Option<crate::direct::KeyFile>> {
 /// A key has one holder: a program acting with the device's key on a session
 /// of its own would cut the computer's off. `None` for any other key.
 ///
+/// A key named outright needs no login here: a login this computer cannot read is no device
+/// key, so the key's calls go their own way rather than failing on it.
+///
 /// # Errors
-/// The key file cannot be read, or the login is damaged.
+/// The key file cannot be read, or, with no key named, the login is damaged.
 pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
     let named = match (reach.key_file, api_key()) {
         (Some(path), _) => Some(
@@ -1106,7 +1109,7 @@ pub fn held_api_for(reach: Reach<'_>) -> Result<Option<std::path::PathBuf>> {
         (None, None) => None,
     };
     if let Some(secret) = named {
-        let Some((key, _)) = device::load(&device::device_dir()?)? else {
+        let Ok(Some((key, _))) = device::device_dir().and_then(|dir| device::load(&dir)) else {
             return Ok(None);
         };
         if !crate::constant_time_eq(
@@ -1233,6 +1236,45 @@ mod tests {
             drop(listener);
             drop(env);
             std::fs::remove_dir_all(&root).expect("the socket's directory goes");
+        }
+
+        phase a_key_file_needs_no_login_this_computer_can_read;
+        {
+            let root = std::env::temp_dir().join(format!("tilo-key-file-{}", std::process::id()));
+            let device = root.join("device");
+            std::fs::create_dir_all(&device).expect("a device directory");
+            // A login gone stale: its key is no key at all.
+            std::fs::write(device.join("key"), b"stale").expect("a stale key");
+            std::fs::write(device.join("device.json"), b"{}").expect("a stale login");
+            let file = root.join("key.json");
+            let person = crate::tests::Person::new(7);
+            let key_file = crate::direct::KeyFile::new(
+                "https://tilo.example",
+                None,
+                "a script",
+                &person.device,
+                &person.cert,
+            );
+            std::fs::write(&file, serde_json::to_vec(&key_file).expect("a key file"))
+                .expect("the key file");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_DEVICE_DIR", &device).remove(KEY_ENV);
+            assert!(
+                device::load(&device).is_err(),
+                "the login this computer holds cannot be read"
+            );
+            let reached = held_api_for(Reach {
+                api: None,
+                key_file: Some(&file),
+                json: false,
+            });
+            assert!(
+                matches!(reached, Ok(None)),
+                "a key file goes its own way, whatever this computer's login is: {:?}",
+                reached.map_err(|error| error.to_string())
+            );
+            drop(env);
+            std::fs::remove_dir_all(&root).expect("the test's directory goes");
         }
     }
 }

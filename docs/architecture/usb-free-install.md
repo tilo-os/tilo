@@ -303,6 +303,19 @@ state `intended`, unless the action is `remove` for that operation.
   under `flock` on the disk, followed by `partx -u`. Raw writes go through
   `/dev/disk/by-partuuid/<guid>` opened `O_DIRECT|O_EXCL`.
 
+### Target disk
+
+On Linux a request may name the disk to stage onto instead of this machine's
+own system disk: `--disk serial:<serial>` or `--disk wwid:<wwn>`, the identities a
+machine plan names drives by. It resolves through the kernel's block devices
+(`/sys/class/block`), never udev's `/dev/disk/by-id` links, which a privileged
+container often lacks; a disk with a mounted partition is refused. The plan's
+`basis.disk.id` is that identity, so the helper resolves and re-probes the same
+disk in whatever namespace or boot it starts in, and `plan-stale` compares its
+GUID, size, sector size and partition map as usual. An empty GPT (a whole disk
+cleared for the install) is a valid target: all of it is unallocated. Without
+`--disk`, staging targets the system disk as before.
+
 ## 5. Host probe (`staging::probe`)
 
 It is unprivileged where possible. It produces `HostFacts` and a list of blockers
@@ -389,6 +402,20 @@ login succeeds. With the reclaim record present and every identity matching
 
 Any mismatch leaves the partitions untouched and logs why.
 
+## 7a. Tilo becomes the default start
+
+An alongside install leaves `BootOrder` as the retained OS had it and starts
+Tilo once through `BootNext`, so the next restart would boot the retained OS.
+The `server.set-default-start` action (also `tilo server set-default-start
+<server>`) moves the running Tilo's `Boot####` (`BootCurrent`) into the retained
+OS's place in `BootOrder`: every network-boot entry before that place stays
+where it was, so a network rescue still starts, and the retained OS's entry
+leaves the order. The action writes down the order it found and the order it wrote
+in `/var/lib/tilo/boot-order.json`; asking it again restores the recorded order
+when `BootOrder` is still what it wrote, and refuses otherwise. The one program
+that reads and writes firmware state is `tilo-default-start`, started as root by
+`tilo-server-control`; `tilo-boot-order enlist` is unchanged.
+
 ## 8. Imager UI and actions
 
 - The Review page for Full Tilo shows:
@@ -415,7 +442,9 @@ Any mismatch leaves the partitions untouched and logs why.
   - EFI load option encode/decode against fixtures;
   - record state machine and resume;
   - handoff validation;
-  - schema-2 bundle validation in Rust and Python against the same fixtures.
+  - schema-2 bundle validation in Rust and Python against the same fixtures;
+  - target-disk identity parsing, resolution over a temporary sysfs tree, and
+    the mounted-disk scan.
 - Linux loop-device test (root, CI `runner-disk-100g`): stage onto a loop disk
   with a fake efivarfs directory, then check partition map, readback digests,
   load option bytes and `remove`.

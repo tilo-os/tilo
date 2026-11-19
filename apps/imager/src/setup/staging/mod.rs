@@ -33,6 +33,7 @@ pub use imager_backend::BOOT_ENTRY_DESCRIPTION;
 pub const ESP_STATE_DIR: &str = "/EFI/tilo-staging";
 pub const ESP_RECORD_FILE: &str = "record.json";
 
+pub use imager_backend::staging::TargetDisk;
 pub use imager_backend::{is_guid, random_guid, same_guid};
 
 #[cfg(test)]

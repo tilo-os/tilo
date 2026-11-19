@@ -10,8 +10,13 @@
 //! option to the end of `BootOrder` once every firmware fact matches, and reads
 //! the firmware back afterwards. Exit status 0 when done (or already done), 1 on
 //! a refusal, 2 on a usage error.
+//!
+//! Its sibling `tilo-default-start` ([`default_start`]) makes Tilo the default
+//! start after an alongside install, and undoes it.
 
 mod args;
+
+pub mod default_start;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -63,7 +68,7 @@ fn os_error(errno: Errno, path: &str) -> Refusal {
 }
 
 /// The machine: EFI variables, `efibootmgr` and the effective user.
-pub trait Host {
+pub trait Machine {
     /// The efivarfs mount holding the EFI variables.
     fn efivars(&self) -> PathBuf {
         PathBuf::from("/sys/firmware/efi/efivars")
@@ -95,7 +100,7 @@ pub trait Host {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct System;
 
-impl Host for System {}
+impl Machine for System {}
 
 /// The payload of EFI variable `name` (after its four attribute bytes), or
 /// `None` when it does not exist.
@@ -103,8 +108,8 @@ impl Host for System {}
 /// # Errors
 /// A variable that is not a regular file, truncated or larger than 64 KiB,
 /// or one that cannot be opened or read.
-pub fn var(host: &dyn Host, name: &str, vendor: &str) -> Result<Option<Vec<u8>>, Refusal> {
-    let path = host.efivars().join(format!("{name}-{vendor}"));
+pub fn var(machine: &dyn Machine, name: &str, vendor: &str) -> Result<Option<Vec<u8>>, Refusal> {
+    let path = machine.efivars().join(format!("{name}-{vendor}"));
     let shown = path.display().to_string();
     let fd = match openat(
         CWD,
@@ -140,8 +145,8 @@ pub fn var(host: &dyn Host, name: &str, vendor: &str) -> Result<Option<Vec<u8>>,
 ///
 /// # Errors
 /// See [`var`]; an odd length.
-pub fn ids(host: &dyn Host, name: &str) -> Result<Option<Vec<String>>, Refusal> {
-    let Some(raw) = var(host, name, EFI_GLOBAL)? else {
+pub fn ids(machine: &dyn Machine, name: &str) -> Result<Option<Vec<String>>, Refusal> {
+    let Some(raw) = var(machine, name, EFI_GLOBAL)? else {
         return Ok(None);
     };
     if !raw.len().is_multiple_of(2) {
@@ -218,9 +223,9 @@ struct Node<'a> {
 /// # Errors
 /// An absent, inactive, truncated or malformed option, or one that does not
 /// name exactly one GPT partition and EFI file.
-pub fn option(host: &dyn Host, boot_id: &str) -> Result<BootOption, Refusal> {
+pub fn option(machine: &dyn Machine, boot_id: &str) -> Result<BootOption, Refusal> {
     let name = format!("Boot{boot_id}");
-    let raw = match var(host, &name, EFI_GLOBAL)? {
+    let raw = match var(machine, &name, EFI_GLOBAL)? {
         Some(raw) if raw.len() >= 10 => raw,
         _ => return refuse(format!("{name} is absent or truncated")),
     };
@@ -323,14 +328,14 @@ type State = (Vec<String>, BTreeMap<String, Option<Vec<u8>>>);
 /// The firmware facts enlisting requires, and the original bytes of every
 /// option involved, to detect a change between validation and the mutation.
 fn checked_state(
-    host: &dyn Host,
+    machine: &dyn Machine,
     boot_id: &str,
     esp: &str,
     loader: &str,
 ) -> Result<State, Refusal> {
-    let order = ids(host, "BootOrder")?;
-    let current = ids(host, "BootCurrent")?;
-    let next_boot = ids(host, "BootNext")?;
+    let order = ids(machine, "BootOrder")?;
+    let current = ids(machine, "BootCurrent")?;
+    let next_boot = ids(machine, "BootNext")?;
     let order = match order {
         Some(order) if !order.is_empty() => order,
         _ => return refuse("BootOrder is absent, empty or duplicated"),
@@ -347,7 +352,7 @@ fn checked_state(
     if next_boot.is_some() {
         return refuse("BootNext is occupied; refusing to change persistent order");
     }
-    let first = option(host, order.first().map_or("", String::as_str))?;
+    let first = option(machine, order.first().map_or("", String::as_str))?;
     if casefold(&first.loader) != casefold(WINDOWS_LOADER) || first.partuuid == esp {
         return refuse("Windows Boot Manager is not the first BootOrder entry on a separate ESP");
     }
@@ -357,18 +362,18 @@ fn checked_state(
     entries.sort_unstable();
     entries.dedup();
     for entry in entries {
-        let raw = var(host, &format!("Boot{entry}"), EFI_GLOBAL)?;
-        option(host, &entry)?;
+        let raw = var(machine, &format!("Boot{entry}"), EFI_GLOBAL)?;
+        option(machine, &entry)?;
         originals.insert(entry, raw);
     }
-    let target = option(host, boot_id)?;
+    let target = option(machine, boot_id)?;
     if target.description != "Tilo"
         || target.partuuid != esp
         || casefold(&target.loader) != casefold(loader)
     {
         return refuse("Tilo Boot#### does not match its expected ESP, label and loader");
     }
-    let Some(reported) = var(host, "LoaderDevicePartUUID", LOADER_VENDOR)? else {
+    let Some(reported) = var(machine, "LoaderDevicePartUUID", LOADER_VENDOR)? else {
         return refuse("systemd-boot did not report its loaded ESP");
     };
     let loaded_esp = utf16le(&reported)
@@ -381,21 +386,26 @@ fn checked_state(
 
 /// Appends `boot_id` to `BootOrder` after every check, and reads it back.
 /// Returns what to tell the operator.
-pub fn enlist(host: &dyn Host, boot_id: &str, esp: &str, loader: &str) -> Result<String, Refusal> {
-    let (order, originals) = checked_state(host, boot_id, esp, loader)?;
+pub fn enlist(
+    machine: &dyn Machine,
+    boot_id: &str,
+    esp: &str,
+    loader: &str,
+) -> Result<String, Refusal> {
+    let (order, originals) = checked_state(machine, boot_id, esp, loader)?;
     if order.iter().any(|entry| entry == boot_id) {
         return Ok(format!(
             "Boot{boot_id} is already in BootOrder; Windows remains first"
         ));
     }
     // Detect changes between validation and the only mutation.
-    if checked_state(host, boot_id, esp, loader)? != (order.clone(), originals.clone()) {
+    if checked_state(machine, boot_id, esp, loader)? != (order.clone(), originals.clone()) {
         return refuse("firmware changed before BootOrder update");
     }
     let mut wanted = order;
     wanted.push(boot_id.to_owned());
     let joined = wanted.join(",");
-    let result = host.efibootmgr(&["-q", "-o", &joined])?;
+    let result = machine.efibootmgr(&["-q", "-o", &joined])?;
     if !result.status.success() {
         return refuse(format!(
             "efibootmgr failed: {}",
@@ -403,14 +413,14 @@ pub fn enlist(host: &dyn Host, boot_id: &str, esp: &str, loader: &str) -> Result
         ));
     }
     let differs = || -> Result<bool, Refusal> {
-        if ids(host, "BootOrder")?.as_ref() != Some(&wanted)
-            || ids(host, "BootNext")?.is_some()
-            || ids(host, "BootCurrent")?.as_deref() != Some(&[boot_id.to_owned()][..])
+        if ids(machine, "BootOrder")?.as_ref() != Some(&wanted)
+            || ids(machine, "BootNext")?.is_some()
+            || ids(machine, "BootCurrent")?.as_deref() != Some(&[boot_id.to_owned()][..])
         {
             return Ok(true);
         }
         for (entry, raw) in &originals {
-            if var(host, &format!("Boot{entry}"), EFI_GLOBAL)? != *raw {
+            if var(machine, &format!("Boot{entry}"), EFI_GLOBAL)? != *raw {
                 return Ok(true);
             }
         }
@@ -434,7 +444,12 @@ fn is_guid(text: &str) -> bool {
 }
 
 /// The command line and the exit status.
-pub fn main(host: &dyn Host, args: &[OsString], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+pub fn main(
+    machine: &dyn Machine,
+    args: &[OsString],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
     let parsed = match parse(args) {
         Ok(Parsed::Run(parsed)) => parsed,
         Ok(Parsed::Help(help)) => {
@@ -447,7 +462,7 @@ pub fn main(host: &dyn Host, args: &[OsString], out: &mut dyn Write, err: &mut d
         }
     };
     let outcome = (|| {
-        if host.euid() != 0 {
+        if machine.euid() != 0 {
             return refuse("run as root after validating Tilo's first boot");
         }
         let boot_ok =
@@ -460,7 +475,7 @@ pub fn main(host: &dyn Host, args: &[OsString], out: &mut dyn Write, err: &mut d
             return refuse("loader must be the ARM64 systemd-boot primary or fallback path");
         }
         enlist(
-            host,
+            machine,
             &parsed.boot_id.to_uppercase(),
             &parsed.esp_partuuid.to_lowercase(),
             &parsed.loader,

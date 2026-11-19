@@ -42,6 +42,7 @@ RUN test -x /usr/libexec/tilo/tilo-installer \
     && test -x /usr/libexec/tilo-session-select \
     && test -x /usr/libexec/tilo-cage-session \
     && test -x /usr/libexec/tilo-boot-order \
+    && test -x /usr/libexec/tilo-default-start \
     && command -v efibootmgr >/dev/null \
     && printf 'kargs = ["tilo.install"]\n' \
       > /usr/lib/bootc/kargs.d/50-installer.toml \

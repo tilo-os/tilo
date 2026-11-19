@@ -15,7 +15,10 @@ pub mod process;
 pub mod protocol;
 pub mod record_io;
 pub mod request_io;
+pub mod target;
 pub mod windows;
+
+pub use target::TargetDisk;
 
 /// Read native installation facts without granting write authority.
 /// Unsupported hosts return an explicit blocker rather than hiding the flow.

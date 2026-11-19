@@ -780,17 +780,19 @@ files = [
 ]
 
 # Dual boot: run by hand after the first Tilo boot to enlist it after Windows
-# in the firmware boot order. The
-# installer image, and so every target it installs, inherits it from here.
+# in the firmware boot order, and after an alongside install to make Tilo the
+# default start (and to restore the retained OS's place). The installer image,
+# and so every target it installs, inherits it from here.
 [[component]]
 name = "boot-order"
 kind = "userspace"
 scope = "vm"
 packages = ["tilo-boot-order"]
-bins = ["tilo-boot-order"]
+bins = ["tilo-boot-order", "tilo-default-start"]
 layer = "recovery-files"
 files = [
   { from = "tilo-boot-order", to = "/usr/libexec/tilo-boot-order", mode = "0755" },
+  { from = "tilo-default-start", to = "/usr/libexec/tilo-default-start", mode = "0755" },
 ]
 
 # USB-free install: tilo-staging-reclaim.service (enabled by the installer

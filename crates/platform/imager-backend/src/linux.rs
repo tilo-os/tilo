@@ -102,6 +102,95 @@ pub fn resolve_system_disk() -> Result<PathBuf, Blocker> {
     }
 }
 
+/// The whole disks that back this namespace's mounts: a named staging target
+/// whose disk is among them is in use.
+#[cfg(target_os = "linux")]
+fn mounted_backing_disks() -> Result<Vec<String>, String> {
+    let info = std::fs::read_to_string("/proc/self/mountinfo")
+        .map_err(|e| format!("/proc/self/mountinfo: {e}"))?;
+    let mut resolve = |name: &str| -> Result<Vec<String>, String> {
+        // `mounted_disks` hands a `/dev/` source without its prefix, or the
+        // mount's device number when the source is not a path.
+        let node = match name.split_once(':').and_then(|(major, minor)| {
+            Some((major.parse::<u32>().ok()?, minor.parse::<u32>().ok()?))
+        }) {
+            Some((major, minor)) => {
+                let sys = PathBuf::from(format!("/sys/dev/block/{major}:{minor}"));
+                let real =
+                    std::fs::canonicalize(&sys).map_err(|e| format!("{}: {e}", sys.display()))?;
+                let device = real
+                    .file_name()
+                    .ok_or_else(|| format!("{} has no device name", sys.display()))?;
+                PathBuf::from("/dev").join(device)
+            }
+            None => PathBuf::from("/dev").join(name),
+        };
+        backing_disks_of(&node)
+    };
+    crate::staging::target::mounted_disks(&info, &mut resolve)
+}
+
+#[cfg(target_os = "linux")]
+fn backing_disks_of(node: &Path) -> Result<Vec<String>, String> {
+    let json = match Command::new("lsblk")
+        .args(["-J", "-s", "-o", "NAME,TYPE"])
+        .arg(node)
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        }
+        // A device that vanished from this namespace backs no disk of ours.
+        _ => return Ok(Vec::new()),
+    };
+    match linux_parse::backing_disks(&json) {
+        Ok(disks) => Ok(disks),
+        // RAID and multipath mounts cannot be attributed to one whole disk;
+        // they never make a plain disk look free, so they resolve to nothing.
+        Err(_) => Ok(Vec::new()),
+    }
+}
+
+/// Probe the disk a request names, without write authority.
+#[cfg(target_os = "linux")]
+pub fn probe_target(target: &crate::staging::target::TargetDisk) -> Result<HostFacts, String> {
+    let platform = LinuxPlatform::open_target(target)?;
+    if removable(&platform.disk) {
+        return Err(format!("{target} is removable"));
+    }
+    if !Path::new("/sys/firmware/efi").is_dir() && !platform.efivars.is_dir() {
+        return Err("firmware is not UEFI".into());
+    }
+    let disk = match platform.system_disk() {
+        Ok(disk) => disk,
+        Err(e) if e == "not-gpt" => return Err(format!("{target} has no GPT partition table")),
+        Err(e) => return Err(format!("{target}: {e}")),
+    };
+    let firmware = super::firmware::read_firmware(&platform)?;
+    let mut facts = HostFacts {
+        basis: Some(super::plan::Basis {
+            disk,
+            system_volume: None,
+            linux_btrfs_volume: None,
+            firmware,
+        }),
+        bitlocker_protected: false,
+        blockers: Vec::new(),
+    };
+    if !facts
+        .basis
+        .as_ref()
+        .is_some_and(|basis| basis.firmware.uefi)
+    {
+        facts.block(Blocker::NotUefi);
+    }
+    if linux_parse::on_low_battery(&power_supplies()) {
+        facts.block(Blocker::OnBattery);
+    }
+    Ok(facts)
+}
+
 impl LinuxPlatform {
     /// The adapter for this host's system disk: errors when the disk or retained filesystem cannot
     /// be opened.
@@ -118,15 +207,74 @@ impl LinuxPlatform {
             None => resolve_system_disk()
                 .map_err(|b| format!("{b:?}: the system disk is unsupported"))?,
         };
-        let mut platform = Self {
-            btrfs: None,
-            disk,
-            efivars: env("TILO_STAGING_TEST_EFIVARS").unwrap_or_else(|| PathBuf::from(EFIVARS)),
-            by_partuuid: PathBuf::from("/dev/disk/by-partuuid"),
-            private_nodes: PathBuf::from(format!("/dev/.tilo-staging-{}", std::process::id())),
-        };
+        let mut platform = Self::at(disk);
         platform.btrfs = btrfs::Held::discover(&platform)?;
         Ok(platform)
+    }
+
+    /// The adapter for the disk a staging request names by its identity
+    /// (`serial:<serial>` or `wwid:<wwn>`): the unallocated part of that disk,
+    /// never this machine's own system disk unless the request named it.
+    ///
+    /// A disk with a mounted partition is refused: staging never writes beside
+    /// contents in use.
+    pub fn open_target(target: &crate::staging::target::TargetDisk) -> Result<Self, String> {
+        let disk = match Self::test_disk() {
+            Some(disk) => disk,
+            None => {
+                crate::staging::target::resolve(target, &crate::staging::target::Roots::default())?
+            }
+        };
+        let platform = Self::at(disk);
+        let name = platform.disk_name()?;
+        let in_use = mounted_backing_disks()
+            .map_err(|e| format!("{target}: the mount table is unreadable: {e}"))?;
+        if in_use.contains(&name) {
+            return Err(format!(
+                "{target} ({name}) has a mounted partition; unmount it before staging"
+            ));
+        }
+        Ok(platform)
+    }
+
+    /// The adapter for the disk a request's plan names: its recorded identity
+    /// when it was staged onto a named disk, its device path otherwise.
+    pub fn open_on(id: &str) -> Result<Self, String> {
+        if id.is_empty() {
+            return Err("the plan names no disk".into());
+        }
+        if let Ok(target) = crate::staging::target::TargetDisk::parse(id) {
+            Self::open_target(&target)
+        } else {
+            let disk = match Self::test_disk() {
+                Some(disk) => disk,
+                None => PathBuf::from(id),
+            };
+            let mut platform = Self::at(disk);
+            platform.btrfs = btrfs::Held::discover(&platform)?;
+            Ok(platform)
+        }
+    }
+
+    fn test_disk() -> Option<PathBuf> {
+        super::firmware::test_overrides_allowed()
+            .then(|| std::env::var_os("TILO_STAGING_TEST_DISK"))
+            .flatten()
+            .map(PathBuf::from)
+    }
+
+    fn at(disk: PathBuf) -> Self {
+        let efivars = super::firmware::test_overrides_allowed()
+            .then(|| std::env::var_os("TILO_STAGING_TEST_EFIVARS"))
+            .flatten()
+            .map_or_else(|| PathBuf::from(EFIVARS), PathBuf::from);
+        Self {
+            btrfs: None,
+            disk,
+            efivars,
+            by_partuuid: PathBuf::from("/dev/disk/by-partuuid"),
+            private_nodes: PathBuf::from(format!("/dev/.tilo-staging-{}", std::process::id())),
+        }
     }
 
     fn disk_name(&self) -> IoResult<String> {

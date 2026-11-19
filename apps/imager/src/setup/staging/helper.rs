@@ -165,6 +165,9 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
         return bad("invalid release reference");
     }
     let plan = &request.plan;
+    if plan.basis.disk.id.is_empty() {
+        return bad("the plan names no disk");
+    }
     if plan.boot_entry.description != super::BOOT_ENTRY_DESCRIPTION {
         return bad("unexpected boot entry description");
     }
@@ -2505,19 +2508,26 @@ fn system_store() -> Result<RecordStore, String> {
     Ok(store)
 }
 
-fn open_platform() -> Result<Box<dyn Platform>, String> {
+fn open_platform(request: &Request) -> Result<Box<dyn Platform>, String> {
     #[cfg(target_os = "linux")]
     {
-        Ok(Box::new(imager_backend::linux::LinuxPlatform::open()?))
+        // The plan's disk is the identity the request was reviewed against:
+        // a `serial:`/`wwid:` name from a plan, or the system disk's device
+        // path when this machine's own disk was staged.
+        Ok(Box::new(imager_backend::linux::LinuxPlatform::open_on(
+            &request.plan.basis.disk.id,
+        )?))
     }
     #[cfg(windows)]
     {
+        let _ = request;
         Ok(Box::new(
             imager_backend::staging::windows::WindowsPlatform::elevated()?,
         ))
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {
+        let _ = request;
         Err("USB-free installation is available on Windows and Linux only".into())
     }
 }
@@ -2546,7 +2556,7 @@ pub fn maybe_run_staging_helper(args: &[String]) -> Result<Option<i32>, String> 
         let _ = file.flush();
     };
     let result = (|| {
-        let mut platform = open_platform().map_err(io_refusal)?;
+        let mut platform = open_platform(&request).map_err(io_refusal)?;
         let store = system_store().map_err(|m| Refusal::new(codes::RECORD_FAILED, m))?;
         let mut on_progress = |p: &Progress| {
             if let Ok(line) = serde_json::to_vec(p) {

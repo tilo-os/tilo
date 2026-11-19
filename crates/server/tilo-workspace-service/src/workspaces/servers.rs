@@ -16,7 +16,8 @@
 //!
 //! Each entry also carries what the person asked that server to do
 //! ([`Asked`]): its health, a service's journal, a restart, a reboot, an
-//! update, a pause or resumption of updates, a rollback or a drain. Asking is
+//! update, a pause or resumption of updates, a rollback, a drain or making
+//! Tilo its default start. Asking is
 //! an action on the document, and so is answering; the server its entry names
 //! carries the request out and keeps what it found or did, and every device
 //! reads both. The action that asks (`server.status` and the others, served by

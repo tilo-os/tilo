@@ -1127,16 +1127,18 @@ fn run_hosted(
 }
 
 /// Whether `cmd` calls Tilo's API, which without a key is as this computer's login: a `do`
-/// in a named workspace (else it acts on this desktop), an `sdk` or `migrate` into one, and
-/// every other workspace command but `keys create` and `keys export`, which ask the API server.
+/// in a named workspace (else it acts on this desktop), an `sdk`, `migrate`, `keys create` or
+/// `keys export` naming one, and every other workspace command.
 fn acts_as_the_login(cmd: &Cmd, named: bool) -> bool {
     match cmd {
         Cmd::Do { args, .. } => named || args.iter().any(|arg| arg == "-w" || arg == "--workspace"),
-        Cmd::Sdk { .. } | Cmd::Migrate { .. } => named,
-        // A new key is asked of the API server, never of this computer's session.
-        Cmd::Keys {
+        // A new key is asked of the API server, never of this computer's session: the session
+        // only names the workspace a key is to reach, when `-w` names it by its name.
+        Cmd::Sdk { .. }
+        | Cmd::Migrate { .. }
+        | Cmd::Keys {
             cmd: hosted::KeysCmd::Export { .. } | hosted::KeysCmd::Create { .. },
-        } => false,
+        } => named,
         Cmd::Keys { .. } | Cmd::Workspace { .. } | Cmd::View { .. } => true,
         other => acts_in_a_workspace(other),
     }
