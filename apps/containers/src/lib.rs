@@ -19,6 +19,7 @@ pub mod draft;
 pub mod model;
 pub mod podman;
 pub mod resource;
+mod rows;
 pub mod search;
 pub mod terminal;
 mod view;
