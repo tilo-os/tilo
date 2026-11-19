@@ -95,19 +95,19 @@ published dev image, not on a disk of your own tree (its packages resolve anew
 and match no manifest: the install answers "Not available for this version of
 Tilo yet").
 
-For the newest published dev image (`x86_64-ci`), `<commit>` its revision
-(`skopeo inspect docker://registry.tilo.so/tilo/tilo-vm:x86_64-ci`):
+Every published dev image has its payload: `publish-os-dev-<arch>` publishes the
+payload for its own commit first (`publish-windows-compat-<arch>`). The signed
+manifest follows at the daily `publish-extension-manifests-<arch>` run; for a
+dev image published since, sign it now:
 
 ```sh
-t dispatch --repo tilo --ref main publish-windows-compat-x86_64 \
-  --input revision=<commit> --publish        # the payload, for that image
 t dispatch --repo tilo --ref main publish-extension-manifests-x86_64 --publish
 ```
 
-The second signs a manifest for every published image whose payload exists; it
-ends red while another extension does not resolve, and still publishes the rest
-(its log says `published tilo-extension-windows-compat ...`). Then, in a VM of
-that image (`tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci-x86_64`),
+It signs a manifest for every published image whose payload exists; it ends
+red while another extension does not resolve, and still publishes the rest (its
+log says `published tilo-extension-windows-compat ...`). Then, in a VM of that
+image (`tilo-vm vm upgrade --image registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci-x86_64`),
 install it the way Settings does:
 
 ```sh
@@ -116,13 +116,16 @@ sudo /usr/libexec/tilo-extension status:windows-compat   # installing -> install
 ls /usr/lib/tilo/windows-runners                          # proton, steam-runtime
 ```
 
+An image that would change `/usr` when merged (an entry not owned by root,
+unlabelled, writable by others, or a directory of the base with another mode or
+label) is refused before it is linked: the status reads `failed` with "not
+turned on, it would damage the system: <the entry>", and nothing is merged. An
+extension that still keeps a start from reaching the graphical target is turned
+off by the next start (`tilo-extension-trial.service`).
+
 On a check server, `t test os-vm-x86_64` from a tree that differs from main
 gives a VM to reach with `t vm ssh` (a VM of main's own result takes no
 connections); move it onto the published image with `bootc switch` first.
-
-Known: with the extension merged, a dev VM hangs at boot in
-`systemd-tmpfiles-setup.service` and new logins hang, so the Proton route is not
-yet usable on a dev image.
 
 ## Building somewhere else: `tilo-vm image build`
 
