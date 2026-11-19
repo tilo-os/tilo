@@ -1119,7 +1119,7 @@ tilo_test_env::scenario! {
     {
         let m = compile_body(
             r#"type Thread {
-    subject: Text
+    title: Text
 }
 action archive(t: Thread) (icon: .archive, key: "e") {}
 action reply(t: Thread) (key: "Ctrl+Enter") {}
@@ -1140,7 +1140,7 @@ action nothing(t: Thread) {}"#,
         for wrong in [r#"key: "ee""#, r#"key: "Entr""#, r#"key: "Ctrl+""#] {
             let said = format!(
                 r"type Thread {{
-    subject: Text
+    title: Text
 }}
 action a(t: Thread) ({wrong}) {{}}"
             );
@@ -1154,10 +1154,10 @@ action a(t: Thread) ({wrong}) {{}}"
     // window-wide against the other root actions, not against an item's.
     {
         let thread = r"type Thread {
-    subject: Text
+    title: Text
 }
 type Draft {
-    subject: Text
+    title: Text
 }";
         expect(
             "E090",
@@ -1183,11 +1183,11 @@ root threads: Threads
 default view thread_list for Threads
 default view thread_page for Thread
 view thread_page(t: Thread) {{
-    ui.ListRow(title: t.title)
+    text(t.title)
 }}
 row view thread_row for Thread
 view thread_row(t: Thread) {{
-    row(t.subject)
+    row(t.title)
 }}
 view thread_list(threads: Threads) {{
     std.list(threads.threads) {{ (t, at) ->
@@ -1196,8 +1196,8 @@ view thread_list(threads: Threads) {{
         }}
     }}
 }}
-primary action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(subject: "")) }}
-action tidy(threads: Threads) (key: "Ctrl+N") {{ threads.threads.remove_where(s -> s.subject == "") }}"#
+primary action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(title: "")) }}
+action tidy(threads: Threads) (key: "Ctrl+N") {{ threads.threads.remove_where(s -> s.title == "") }}"#
             ),
         );
         ok(&format!(
@@ -1209,11 +1209,11 @@ root threads: Threads
 default view thread_list for Threads
 default view thread_page for Thread
 view thread_page(t: Thread) {{
-    ui.ListRow(title: t.title)
+    text(t.title)
 }}
 row view thread_row for Thread
 view thread_row(t: Thread) {{
-    row(t.subject)
+    row(t.title)
 }}
 view thread_list(threads: Threads) {{
     std.list(threads.threads) {{ (t, at) ->
@@ -1222,7 +1222,7 @@ view thread_list(threads: Threads) {{
         }}
     }}
 }}
-action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(subject: "")) }}
+action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(title: "")) }}
 action archive(t: Thread) (key: "Ctrl+N") {{}}"#
         ));
     }
