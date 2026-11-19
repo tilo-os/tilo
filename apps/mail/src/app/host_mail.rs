@@ -178,6 +178,7 @@ impl HostMail {
             outgoing_port: config.smtp_port,
             password: config.password.clone(),
             identities: config.identities.clone(),
+            services: person_accounts::Services::default(),
         };
         let Some(argument) = map(&adding) else {
             self.add_error = Some("the account could not be asked for".into());
@@ -977,6 +978,7 @@ mod tests {
             outgoing_port: 465,
             has_secret: true,
             identities: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -995,6 +997,7 @@ mod tests {
             serde_json::to_value(MailAccounts {
                 accounts: accounts.clone(),
                 active: active.unwrap_or_default(),
+                signing_in: Vec::new(),
             })
             .unwrap()
         }
@@ -1305,6 +1308,7 @@ mod tests {
             outgoing_port: 465,
             has_secret: true,
             identities: Vec::new(),
+            ..Default::default()
         });
         let listed = taken_accounts(&mut mail);
         assert_eq!(

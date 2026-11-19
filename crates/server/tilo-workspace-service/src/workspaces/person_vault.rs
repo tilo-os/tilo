@@ -379,6 +379,7 @@ pub(super) async fn mail_with_item(
             outgoing_port: adding.outgoing_port,
             password: sign_in.secret.to_string(),
             identities: Vec::new(),
+            services: person_accounts::Services::default(),
         },
     )
     .await

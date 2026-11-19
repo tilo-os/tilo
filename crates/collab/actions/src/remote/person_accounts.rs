@@ -44,6 +44,22 @@ pub const ADD_MAIL_WITH_ITEM: &str = "add-mail-with-item";
 /// Remove a mail account and its secret (`account`), answering the accounts
 /// that remain as a [`MailAccounts`].
 pub const REMOVE: &str = "remove";
+/// Where the mail of an address lives ([`FindServers`]), worked out from the
+/// address alone, answering [`FoundServers`]. Nothing signs in: the person
+/// sees the servers before they type a password for them.
+pub const FIND_SERVERS: &str = "find-servers";
+/// Begin signing in on a provider's own page ([`BeginSignIn`]), answering
+/// where the person's browser goes ([`SignInStep`]). The server finishes the
+/// sign-in itself when the provider sends the browser back, keeps the
+/// account, and every window following [`WATCH`] sees it arrive; until then
+/// [`MailAccounts::signing_in`] names it.
+pub const BEGIN_SIGN_IN: &str = "begin-sign-in";
+/// Stop waiting for a sign-in begun with [`BEGIN_SIGN_IN`] (`signIn`), or
+/// forget one that failed, answering the accounts as [`MailAccounts`].
+pub const CANCEL_SIGN_IN: &str = "cancel-sign-in";
+/// Say which of an account's services the person uses ([`SetServices`]),
+/// answering the accounts as [`MailAccounts`].
+pub const SET_SERVICES: &str = "set-services";
 /// Fetch one folder of one account ([`FetchMail`]), answering what the
 /// server holds as a [`FetchedMail`].
 pub const FETCH: &str = "fetch";
@@ -93,7 +109,120 @@ pub fn target(action: &str) -> RemoteActionTarget {
     }
 }
 
-/// One mail account, as [`LIST`] and [`ADD_MAIL`] answer it.
+/// Who provides an account: a provider whose own page signs a person in, one
+/// whose sign-in is an app password, or any other mail provider.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Provider {
+    /// Google: Gmail, Google Calendar and Google Drive, signed in on
+    /// Google's page.
+    Google,
+    /// Microsoft: Outlook.com and Microsoft 365 mail and `OneDrive`, signed
+    /// in on Microsoft's page.
+    Microsoft,
+    /// iCloud: mail, calendars and contacts with an app-specific password.
+    Icloud,
+    /// A Nextcloud server: files, calendars and contacts, signed in on the
+    /// server's own page (Login Flow v2).
+    Nextcloud,
+    /// Any other mail provider: an address and its password.
+    #[default]
+    Other,
+}
+
+impl Provider {
+    /// The provider by the name the wire gives it.
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        serde_json::from_value(serde_json::Value::String(key.to_owned())).ok()
+    }
+
+    /// The name the wire gives it.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Google => "google",
+            Self::Microsoft => "microsoft",
+            Self::Icloud => "icloud",
+            Self::Nextcloud => "nextcloud",
+            Self::Other => "other",
+        }
+    }
+
+    /// Whether the person signs in on the provider's own page
+    /// ([`BEGIN_SIGN_IN`]) rather than with a password.
+    #[must_use]
+    pub const fn signs_in_on_its_page(self) -> bool {
+        matches!(self, Self::Google | Self::Microsoft | Self::Nextcloud)
+    }
+
+    /// The services an account of this provider can feed.
+    #[must_use]
+    pub const fn offers(self) -> Services {
+        match self {
+            Self::Google | Self::Icloud => Services {
+                mail: true,
+                calendar: true,
+                files: false,
+            },
+            Self::Microsoft | Self::Other => Services {
+                mail: true,
+                calendar: false,
+                files: false,
+            },
+            Self::Nextcloud => Services {
+                mail: false,
+                calendar: true,
+                files: false,
+            },
+        }
+    }
+}
+
+/// Which of an account's services the person uses. One account feeds every
+/// app: Mail reads it where `mail` is on, Calendar where `calendar` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Services {
+    #[serde(default)]
+    pub mail: bool,
+    #[serde(default)]
+    pub calendar: bool,
+    #[serde(default)]
+    pub files: bool,
+}
+
+impl Default for Services {
+    /// A mail account's: its mail.
+    fn default() -> Self {
+        Self {
+            mail: true,
+            calendar: false,
+            files: false,
+        }
+    }
+}
+
+impl Services {
+    /// Only what `provider` offers of these.
+    #[must_use]
+    pub const fn within(self, provider: Provider) -> Self {
+        let offered = provider.offers();
+        Self {
+            mail: self.mail && offered.mail,
+            calendar: self.calendar && offered.calendar,
+            files: self.files && offered.files,
+        }
+    }
+
+    /// Whether none is on.
+    #[must_use]
+    pub const fn none(self) -> bool {
+        !(self.mail || self.calendar || self.files)
+    }
+}
+
+/// One account, as [`LIST`] and [`ADD_MAIL`] answer it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MailAccount {
@@ -111,6 +240,31 @@ pub struct MailAccount {
     /// Other names and addresses it sends as, each `Name <address>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub identities: Vec<String>,
+    /// Who provides it.
+    #[serde(default)]
+    pub provider: Provider,
+    /// Which of its services the person uses.
+    #[serde(default)]
+    pub services: Services,
+    /// The server a Nextcloud account signs in to, or the calendar server of
+    /// another; empty where there is none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub server: String,
+}
+
+/// A sign-in begun with [`BEGIN_SIGN_IN`] that has not made an account yet.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SigningIn {
+    /// The sign-in's id, as [`CANCEL_SIGN_IN`] names it.
+    pub id: String,
+    pub provider: Provider,
+    /// The Nextcloud server it signs in to; empty for the others.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub server: String,
+    /// Why it made no account, once it failed: in words the person reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed: Option<String>,
 }
 
 /// Every mail account the person's vault keeps.
@@ -122,6 +276,84 @@ pub struct MailAccounts {
     /// first account otherwise.
     #[serde(default)]
     pub active: String,
+    /// The sign-ins begun on a provider's page that made no account yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signing_in: Vec<SigningIn>,
+}
+
+/// An address whose servers to find ([`FIND_SERVERS`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FindServers {
+    pub address: String,
+}
+
+/// One server and its port.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServerAt {
+    /// The server's name.
+    pub name: String,
+    pub port: u16,
+}
+
+/// Where an address's mail lives ([`FIND_SERVERS`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FoundServers {
+    /// Who provides it. A provider that signs in on its own page
+    /// ([`Provider::signs_in_on_its_page`]) is signed in to there, never with
+    /// a password.
+    pub provider: Provider,
+    pub incoming: ServerAt,
+    pub outgoing: ServerAt,
+    /// The sign-in name, when the provider says it is not the address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+}
+
+/// A sign-in to begin on a provider's own page ([`BEGIN_SIGN_IN`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BeginSignIn {
+    /// Google, Microsoft or Nextcloud.
+    pub provider: Provider,
+    /// The Nextcloud server's address; empty for the others.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub server: String,
+    /// What the account is used for: the provider is asked for only that.
+    #[serde(default)]
+    pub services: Services,
+    /// The account this signs in to again, when its sign-in stopped working;
+    /// empty for a new account.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub account: String,
+}
+
+/// Where the person's browser goes to sign in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SignInStep {
+    /// The sign-in's id, as [`MailAccounts::signing_in`] and
+    /// [`CANCEL_SIGN_IN`] name it.
+    pub id: String,
+    /// The provider's page to open.
+    pub open: String,
+}
+
+/// A sign-in to stop waiting for ([`CANCEL_SIGN_IN`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CancelSignIn {
+    pub sign_in: String,
+}
+
+/// The services one account feeds ([`SET_SERVICES`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetServices {
+    pub account: String,
+    pub services: Services,
 }
 
 /// A mail account to add. The password travels here and nowhere back: the
@@ -135,9 +367,14 @@ pub struct AddMailAccount {
     /// The sign-in name, when it is not the address itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// The incoming (IMAP) server. Empty: the server finds both from
+    /// the address ([`FIND_SERVERS`]).
+    #[serde(default)]
     pub incoming_host: String,
     #[serde(default = "default_imaps_port")]
     pub incoming_port: u16,
+    /// The outgoing (SMTP) server. Empty: found with the incoming one.
+    #[serde(default)]
     pub outgoing_host: String,
     #[serde(default = "default_submissions_port")]
     pub outgoing_port: u16,
@@ -148,6 +385,10 @@ pub struct AddMailAccount {
     /// Other names and addresses it sends as, each `Name <address>`.
     #[serde(default)]
     pub identities: Vec<String>,
+    /// What the account is used for. An iCloud account's calendars are
+    /// kept with the same app password where `calendar` is on.
+    #[serde(default)]
+    pub services: Services,
 }
 
 impl std::fmt::Debug for AddMailAccount {
@@ -160,6 +401,7 @@ impl std::fmt::Debug for AddMailAccount {
             .field("incoming_port", &self.incoming_port)
             .field("outgoing_host", &self.outgoing_host)
             .field("outgoing_port", &self.outgoing_port)
+            .field("services", &self.services)
             .finish_non_exhaustive()
     }
 }
@@ -664,6 +906,7 @@ mod tests {
             outgoing_port: 465,
             password: "hunter2".into(),
             identities: Vec::new(),
+            services: Services::default(),
         };
         let printed = format!("{adding:?}");
         assert!(!printed.contains("hunter2"), "{printed}");
@@ -679,6 +922,7 @@ mod tests {
             outgoing_port: 465,
             has_secret: true,
             identities: Vec::new(),
+            ..Default::default()
         };
         let json = serde_json::to_value(&read).unwrap();
         assert!(json.get("password").is_none());

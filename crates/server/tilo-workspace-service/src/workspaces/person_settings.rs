@@ -756,12 +756,14 @@ fn mail_accounts(root: &Path) -> Result<MailAccounts, String> {
                         },
                         |config| config.identities,
                     ),
+                ..MailAccount::default()
             })
             .collect(),
         active: store
             .active_id(&accounts::AccountTypeId::from(accounts::email::TYPE_ID))
             .map(ToString::to_string)
             .unwrap_or_default(),
+        signing_in: Vec::new(),
     })
 }
 
@@ -2482,6 +2484,7 @@ mod mail_session_tests {
                     outgoing_port: 465,
                     password: "thunderbird-secret".into(),
                     identities: vec!["Ada at work <ada@work.example.test>".into()],
+                    services: person_accounts::Services::default(),
                 },
             ))
             .unwrap();
@@ -2541,6 +2544,7 @@ mod mail_session_tests {
                     outgoing_port: 465,
                     password: String::new(),
                     identities: Vec::new(),
+                    services: person_accounts::Services::default(),
                 },
             ))
             .unwrap();
