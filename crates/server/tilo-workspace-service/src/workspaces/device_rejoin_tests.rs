@@ -9,6 +9,9 @@ use super::tests::{governor, signed_pre_admission, test_host};
 use super::*;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
+/// How long a tab's certificate lasts: thirty days.
+const TAB_CERT_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
+
 /// Ask a pre-admitted join of `device_cert` with a fresh pre-admission for its
 /// person, as a browser coming through the entry does.
 async fn pre_admitted_join(
@@ -158,7 +161,7 @@ fn based_on(
         device_label: label.into(),
         capabilities: DeviceCapabilities::member(),
         issued_at_ns: now,
-        expires_at_ns: Some(now.saturating_add(30 * 24 * 60 * 60 * 1_000_000_000)),
+        expires_at_ns: Some(now.saturating_add(TAB_CERT_NS)),
         signature: [0; 64],
         issuer: Some(Box::new(signer_cert.clone())),
     };

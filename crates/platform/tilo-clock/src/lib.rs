@@ -160,20 +160,24 @@ pub mod local {
         #[derive(Clone, Copy, Debug)]
         pub(super) struct Zone;
 
+        #[expect(
+            clippy::unused_self,
+            reason = "the browser holds the zone; the methods keep the native zone's signatures"
+        )]
         impl Zone {
             pub(super) fn here() -> Self {
                 Self
             }
 
-            pub(super) fn at(&self, at: Timestamp) -> Zoned {
+            pub(super) fn at(self, at: Timestamp) -> Zoned {
                 super::read(at, offset)
             }
 
-            pub(super) fn name(&self) -> Option<String> {
+            pub(super) fn name(self) -> Option<String> {
                 crate::page::zone_name()
             }
 
-            pub(super) fn instant_of(&self, local: DateTime) -> Option<Timestamp> {
+            pub(super) fn instant_of(self, local: DateTime) -> Option<Timestamp> {
                 super::resolve(local, offset)
             }
         }
