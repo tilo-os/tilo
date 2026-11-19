@@ -18,6 +18,11 @@
 //! a host that restarts holds none, and reads from the records what was left
 //! ([`chat::summons::left_begun`]).
 //!
+//! A server that is stopping closes its turns ([`Turns::close`]): no turn begins any more, and
+//! it waits until the turns going ended ([`Turns::idle`]) before it stops, so a restart never
+//! cuts a turn off halfway. What was asked meanwhile stays in the workspace, and the next start
+//! answers it.
+//!
 //! Beside its turns a server keeps which conversations have their summary being written
 //! ([`Turns::summarise`]), for as long as that takes: a summary is written once its turn gave
 //! the place back, so the next turn there may end while it is still under way.
@@ -191,6 +196,8 @@ pub(super) enum Entered {
     Began(Held),
     /// A turn goes there already.
     Goes(Arc<Going>),
+    /// The server is stopping: no turn begins.
+    Closed,
 }
 
 /// The turns going on a host.
@@ -201,6 +208,8 @@ pub(super) struct Turns {
     moves: Arc<AtomicU64>,
     /// The conversations whose summary is being written now, each with its workspace.
     summarised: Mutex<BTreeSet<(String, String)>>,
+    /// Set once the server stops: no turn begins any more.
+    closed: AtomicBool,
 }
 
 /// A conversation's summary being written: dropping it lets the next one be written.
@@ -241,12 +250,30 @@ impl Turns {
         })
     }
 
+    /// Begin no turn from now on: the server is stopping.
+    pub(super) fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
+
+    /// How many turns go now.
+    pub(super) fn going(&self) -> usize {
+        self.going.lock_recover().len()
+    }
+
+    /// Whether no turn goes, and none writes its conversation's summary.
+    pub(super) fn idle(&self) -> bool {
+        self.going() == 0 && self.summarised.lock_recover().is_empty()
+    }
+
     /// Begin `turn` in `workspace`, unless a turn of its agent goes in its place already.
     pub(super) fn enter(self: &Arc<Self>, workspace: &str, turn: &Turn) -> Entered {
         let place = place(workspace, turn);
         let mut going = self.going.lock_recover();
         if let Some(held) = going.get(&place) {
             return Entered::Goes(Arc::clone(held));
+        }
+        if self.closed.load(Ordering::SeqCst) {
+            return Entered::Closed;
         }
         let began = Arc::new(Going {
             ask: Mutex::new(turn.ask.clone()),
@@ -305,7 +332,7 @@ mod tests {
     fn begun(turns: &Arc<Turns>, turn: &Turn) -> Held {
         match turns.enter("w", turn) {
             Entered::Began(held) => held,
-            Entered::Goes(_) => panic!("a turn goes in its place already"),
+            Entered::Goes(_) | Entered::Closed => panic!("a turn goes in its place already"),
         }
     }
 
@@ -313,8 +340,25 @@ mod tests {
     fn goes(turns: &Arc<Turns>, turn: &Turn) -> Arc<Going> {
         match turns.enter("w", turn) {
             Entered::Goes(going) => going,
-            Entered::Began(_) => panic!("no turn goes in its place"),
+            Entered::Began(_) | Entered::Closed => panic!("no turn goes in its place"),
         }
+    }
+
+    /// A stopping server begins no turn, still hands a going one what its person wrote, and is
+    /// idle once that turn ended.
+    #[test]
+    fn a_closed_server_begins_no_turn_and_waits_for_the_one_going() {
+        let turns = Arc::new(Turns::default());
+        let held = begun(&turns, &wrote("first"));
+        turns.close();
+        assert!(!turns.idle());
+        goes(&turns, &wrote("second"));
+        let mut other = wrote("elsewhere");
+        other.conversation = "ada alone".to_owned();
+        assert!(matches!(turns.enter("w", &other), Entered::Closed));
+        drop(held);
+        assert!(turns.idle());
+        assert!(matches!(turns.enter("w", &wrote("third")), Entered::Closed));
     }
 
     /// A turn that went on with what its person wrote next is not handed the message it left:

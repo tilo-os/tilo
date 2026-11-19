@@ -288,13 +288,32 @@ pub struct HostedServer {
     /// The agents it runs for the workspaces it governs.
     #[cfg(feature = "agents")]
     host_agents: Option<tokio::task::JoinHandle<()>>,
+    /// What lets those agents' turns end before it stops.
+    #[cfg(feature = "agents")]
+    draining: Option<tilo_server::workspace_agents::Draining>,
     /// Its state's lock, released once it stopped.
     _lock: tilo_server::state_lock::StateLock,
 }
 
+/// How long a stopping server waits for its agents' turns to end. A turn this cuts off says so in
+/// its reply; one that ends in time is never cut off by a restart.
+#[cfg(feature = "agents")]
+const TURN_DRAIN: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 impl HostedServer {
+    /// Begin no agent turn any more and wait until the turns going ended, at most
+    /// [`TURN_DRAIN`]: the first thing a server that is stopping does, while everything a turn
+    /// works with is still up.
+    pub async fn finish_turns(&self) {
+        #[cfg(feature = "agents")]
+        if let Some(draining) = &self.draining {
+            draining.finish(TURN_DRAIN).await;
+        }
+    }
+
     /// Stop the agents (they resume on the next start), then the server.
     pub async fn shutdown(self) {
+        self.finish_turns().await;
         #[cfg(feature = "agents")]
         if let Some(agents) = self.agents {
             agents.shutdown();
@@ -382,6 +401,7 @@ pub async fn start_server_lending(
             server,
             agents: Some(agents),
             host_agents: None,
+            draining: None,
             _lock: lock,
         });
     }
@@ -406,7 +426,7 @@ pub async fn start_server_lending(
         // The agents each workspace made to run here work around the clock, on the host's model.
         // The devices this server placed itself: no agent reads as one of them for a person.
         let placed = server.environments();
-        let host_agents = server.workspaces().cloned().map(|workspaces| {
+        let started = server.workspaces().cloned().map(|workspaces| {
             // What is judged for a person is counted on their assistant's day,
             // and a question that waits for them reaches their log.
             tilo_server::workspace_telling::start(&workspaces);
@@ -415,26 +435,26 @@ pub async fn start_server_lending(
                 model = %model.as_ref().map_or_else(|| "none".to_owned(), tilo_agent_session::ModelChoice::describe),
                 "the workspaces' agents run on this host"
             );
-            tokio::spawn(
-                tilo_server::workspace_agents::HostAgents::new(
-                    workspaces,
-                    actions,
-                    model.map(tilo_server::workspace_agents::model_of),
-                )
-                // A coding agent among them is worked by its harness in its workspace's
-                // machine, where the shells are.
-                .with_coding(shells)
-                .with_events(events)
-                .with_initiative(initiative)
-                .placing(browsers)
-                .knowing_placed(placed)
-                .run(),
+            let agents = tilo_server::workspace_agents::HostAgents::new(
+                workspaces,
+                actions,
+                model.map(tilo_server::workspace_agents::model_of),
             )
+            // A coding agent among them is worked by its harness in its workspace's
+            // machine, where the shells are.
+            .with_coding(shells)
+            .with_events(events)
+            .with_initiative(initiative)
+            .placing(browsers)
+            .knowing_placed(placed);
+            (agents.draining(), tokio::spawn(agents.run()))
         });
+        let (draining, host_agents) = started.unzip();
         return Ok(HostedServer {
             server,
             agents: None,
             host_agents,
+            draining,
             _lock: lock,
         });
     }
@@ -447,6 +467,8 @@ pub async fn start_server_lending(
         agents: None,
         #[cfg(feature = "agents")]
         host_agents: None,
+        #[cfg(feature = "agents")]
+        draining: None,
         _lock: lock,
     })
 }

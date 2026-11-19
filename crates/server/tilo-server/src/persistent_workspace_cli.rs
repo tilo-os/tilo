@@ -1702,6 +1702,8 @@ pub(crate) async fn run(
         result = serve_operator(&context, &mut operator, invitations.as_mut(), owner_socket.as_ref()) => result,
         result = shutdown => result,
     };
+    // Its agents' turns end first, while everything they work with is still up.
+    hosted.finish_turns().await;
     for runner in moderator
         .into_iter()
         .chain(runners)
