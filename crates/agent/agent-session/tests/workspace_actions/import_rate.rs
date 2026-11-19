@@ -8,6 +8,11 @@
 //! the tracker to arrive that nobody holds, no listing fails because the import
 //! wrote between two of its pages, and nothing grows with what the tracker
 //! already holds.
+//!
+//! A listing reads several pages one after another. It waits for at most the
+//! one list the import is writing when it starts, never for a list begun
+//! between two of its pages: a listing takes about as long as one of the
+//! import's lists, where it took one list per page.
 
 use super::api::ISSUER;
 use super::api_on_server::{api_on_server, approved_key, headers, json_of};
@@ -24,9 +29,13 @@ const LISTS: usize = 10;
 /// part of the tracker nobody held took thirty seconds.
 const RATE_FLOOR: f64 = 50.0;
 
-/// The longest one of the person's calls takes while the import goes on: a
-/// listing reads a few pages, each after the list then running.
+/// The longest one of the person's calls takes while the import goes on.
 const CALL_CEILING: Duration = Duration::from_secs(10);
+
+/// How many of the import's lists a listing beside it takes at most, in the
+/// middle: about one, the list it began beside. Waiting for a list at each of
+/// its pages took three to four.
+const LISTING_IN_LISTS: f64 = 1.75;
 
 /// One key's calls of the API, held by whoever makes them.
 #[derive(Clone)]
@@ -246,6 +255,20 @@ async fn an_import_keeps_its_pace_while_the_person_works_beside_it() {
         slowest <= CALL_CEILING,
         "a call beside the import took {slowest:?}, over {CALL_CEILING:?}"
     );
+    // A listing beside the import waits for the list it began beside, not
+    // for one list per page.
+    let mut listings: Vec<Duration> = calls
+        .iter()
+        .filter(|(at, call, _)| *call == "ls" && *at < LISTS)
+        .map(|(_, _, took)| *took)
+        .collect();
+    let listing = median(&mut listings);
+    let list = median(&mut lists.clone());
+    assert!(
+        listing.as_secs_f64() <= list.as_secs_f64() * LISTING_IN_LISTS,
+        "a listing beside the import took {listing:?} in the middle, a list {list:?}: {listings:?}"
+    );
+
     let half = LISTS / 2;
     let mut early: Vec<Duration> = calls
         .iter()

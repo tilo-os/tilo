@@ -21,6 +21,14 @@
 //! the thread free. An agent works at full speed again once the person is
 //! quiet.
 //!
+//! The same holds among an agent's own requests: a listing is several reads one after another,
+//! and an import's next write started between two of them held the next page for the whole
+//! write, so `tilo ls` during an import waited for one write per page. For [`READ_PAUSE`] after
+//! an agent's read was served, no agent's write is started while nothing else waits: the
+//! listing's next page finds the thread free, and waits for no write that began after its
+//! first page. A write that waited [`AGENT_TURN`] goes in any case, so reads that keep coming
+//! never hold writes back for good.
+//!
 //! An agent is never stopped for good: a person whose page asks again and
 //! again would otherwise hold every agent off for as long as it stays open.
 //! Once an agent's request has waited [`AGENT_TURN`] since an agent last had a
@@ -35,6 +43,7 @@ use tilo_actions::remote::Caller;
 
 use super::Job;
 use super::invocation_log::InvocationLog;
+use super::job::Urgency;
 
 /// How long after serving a person's request the thread starts no agent's: about the time a
 /// person's next request of the same command takes to arrive, a round trip and the client's
@@ -43,6 +52,11 @@ pub(super) const PERSON_PAUSE: Duration = Duration::from_millis(300);
 
 /// The longest agents wait for a turn while a person keeps asking.
 pub(super) const AGENT_TURN: Duration = Duration::from_secs(2);
+
+/// How long after serving an agent's read the thread starts no agent's write: about the time
+/// the next read of the same listing takes to arrive, a round trip and the client's own work on
+/// the page it was answered.
+pub(super) const READ_PAUSE: Duration = Duration::from_millis(150);
 
 /// Requests sent to the thread and not served yet.
 #[derive(Default)]
@@ -56,6 +70,10 @@ pub(super) struct Queue {
     /// Since when the agents wait for a turn: when an agent's request came while none waited,
     /// or an agent's was last served ([`AGENT_TURN`]).
     agents_waiting: Option<Instant>,
+    /// When an agent's read was last answered ([`READ_PAUSE`]).
+    agent_read: Option<Instant>,
+    /// The request last taken is an agent's read: answered once the thread asks for the next.
+    reading: bool,
     /// Nobody sends any more requests: the thread ends once these are served.
     closed: bool,
 }
@@ -109,6 +127,9 @@ impl Queue {
     /// has paused ([`Self::paused_until`]); an agent's first once the agents waited their longest
     /// ([`AGENT_TURN`]).
     pub(super) fn next(&mut self) -> Option<(Instant, Job)> {
+        if std::mem::take(&mut self.reading) {
+            self.agent_read = Some(Instant::now());
+        }
         if !self.agents_due()
             && let Some(at) = most_urgent(self.person.iter().map(|(_, job, _)| job))
             && let Some((queued, job, pauses)) = self.person.remove(at)
@@ -122,9 +143,26 @@ impl Queue {
             return None;
         }
         let at = most_urgent(self.agents.iter().map(|(_, job)| job))?;
-        let job = self.agents.remove(at)?;
+        if self.reading_until(at).is_some() {
+            return None;
+        }
+        let (queued, job) = self.agents.remove(at)?;
+        self.reading = job.urgency() == Urgency::Read;
         self.agents_waiting = (!self.agents.is_empty()).then(Instant::now);
-        Some(job)
+        Some((queued, job))
+    }
+
+    /// Until when the agent's write at `at` waits for the next read of a listing whose last
+    /// page was just served ([`READ_PAUSE`]): never a read, nor a write that waited its longest
+    /// ([`AGENT_TURN`]).
+    fn reading_until(&self, at: usize) -> Option<Instant> {
+        let (queued, job) = self.agents.get(at)?;
+        if job.urgency() == Urgency::Read || queued.elapsed() >= AGENT_TURN || self.closed {
+            return None;
+        }
+        self.agent_read?
+            .checked_add(READ_PAUSE)
+            .filter(|until| *until > Instant::now())
     }
 
     /// Whether the agents waited their longest for a turn ([`AGENT_TURN`]).
@@ -135,14 +173,20 @@ impl Queue {
                 .is_some_and(|since| since.elapsed() >= AGENT_TURN)
     }
 
-    /// Until when an agent's request waits for the person's next, while one waits.
+    /// Until when an agent's request waits for the person's next, or an agent's write for the
+    /// next read of a listing, while one waits.
     pub(super) fn paused_until(&self) -> Option<Instant> {
-        if self.agents.is_empty() || self.closed || self.agents_due() {
+        if self.agents.is_empty() || self.closed {
             return None;
         }
-        self.person_asked?
-            .checked_add(PERSON_PAUSE)
-            .filter(|until| *until > Instant::now())
+        let person = (!self.agents_due())
+            .then(|| self.person_asked?.checked_add(PERSON_PAUSE))
+            .flatten()
+            .filter(|until| *until > Instant::now());
+        person.or_else(|| {
+            most_urgent(self.agents.iter().map(|(_, job)| job))
+                .and_then(|at| self.reading_until(at))
+        })
     }
 
     /// Nobody sends any more requests, and every one sent was served.
