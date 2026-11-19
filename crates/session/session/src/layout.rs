@@ -5,12 +5,12 @@
 //! is what the layout and the person's view say, and every change a window makes is written there
 //! ([`Self::capture`]) and read back from it ([`Self::follow`]). Undo and redo of a layout change
 //! are taken from its own history ([`Self::step`]).
-//! Both documents are read from the engine's copy of the workspace, which holds what the workspace
-//! admitted and what it held before this device joined, and written through this device's
-//! workspace service as its signed, sealed writes. Nothing here decides whether a write may land:
-//! that is the workspace's, decided where the service takes it in. A document that
-//! did not move since the last look is neither read nor written again, and what is written is
-//! published off the loop ([`crate::engine_write`]).
+//! Both documents are read from and written to the workspace's own copy in this device's workspace
+//! service: what the workspace admitted, what it held before this device joined included, and what
+//! this device writes there as its signed, sealed writes. Nothing here decides whether a write may
+//! land: that is the workspace's, decided where the service takes it in. A document that did not
+//! move since the last look is neither read nor written again, and what is written is published off
+//! the loop ([`crate::engine_write`]).
 
 // Nothing compiled for the web reads this module's roles yet: the page's session wires them with
 // its own host.
@@ -66,7 +66,7 @@ fn actor(engine: &Engine, person: &str) -> automerge::ActorId {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct Route {
     app: &'static str,
-    record: String,
+    document: String,
 }
 
 impl Route {
@@ -74,7 +74,7 @@ impl Route {
     fn layout() -> Self {
         Self {
             app: DESKTOP_APP,
-            record: DESKTOP_DOCUMENT.to_owned(),
+            document: DESKTOP_DOCUMENT.to_owned(),
         }
     }
 
@@ -82,7 +82,7 @@ impl Route {
     fn view(person: &str) -> Self {
         Self {
             app: DESKTOP_APP,
-            record: person_view::resource_of(person),
+            document: person_view::resource_of(person),
         }
     }
 }
@@ -646,6 +646,9 @@ pub(crate) struct Layouts {
     device: RefCell<String>,
     /// The engine this session keeps its workspaces in, once it opened them.
     engine: RefCell<Option<Arc<Engine>>>,
+    /// Where the workspaces' documents are read, once the session opened this device's service: a
+    /// layout and its views are read from the workspace's own copy, as they are written to it.
+    reads: RefCell<Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>>>,
     /// What this device's workspace service writes into the workspaces' documents, once the
     /// session opened it: where a layout's write reaches the workspace.
     writes: RefCell<Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>>>,
@@ -905,23 +908,37 @@ impl Layouts {
         settled
     }
 
-    /// `key`'s record, read from the engine's copy of the workspace: what the workspace last
-    /// admitted, what it held before this device joined included. `Ok(None)` for a record no one
-    /// wrote yet.
-    fn record(
-        engine: &Engine,
+    /// `key`'s document, read from the workspace's own copy in this device's service: what the
+    /// workspace last admitted, what it held before this device joined included. `Ok(None)` for a
+    /// document no one wrote yet, or one that did not move since `known`.
+    fn document(
+        &self,
         key: &Key,
         known: Option<[u8; 32]>,
     ) -> Result<Option<(automerge::AutoCommit, [u8; 32])>, String> {
-        let (workspace_id, route) = key;
-        let Some((bytes, revision)) =
-            engine.record_since(&workspace_id.to_string(), route.app, &route.record, known)?
-        else {
+        use tilo_workspace_service::workspace_documents::DocumentRead;
+        let Some(reads) = self.reads() else {
             return Ok(None);
         };
-        automerge::AutoCommit::load(&bytes)
-            .map(|doc| Some((doc, revision)))
-            .map_err(|error| error.to_string())
+        let (workspace_id, route) = key;
+        match reads.read(&workspace_id.to_string(), route.app, &route.document, None)? {
+            DocumentRead::Whole {
+                revision, bytes, ..
+            } => {
+                if known == Some(revision) {
+                    return Ok(None);
+                }
+                automerge::AutoCommit::load(&bytes)
+                    .map(|doc| Some((doc, revision)))
+                    .map_err(|error| error.to_string())
+            }
+            // What this device holds stands: nothing moved, nothing is here yet, or it is on its
+            // way.
+            DocumentRead::Changes { .. }
+            | DocumentRead::Unchanged(_)
+            | DocumentRead::Absent
+            | DocumentRead::Pending => Ok(None),
+        }
     }
 
     /// Lay every workspace's layout into `tree`, and each person's view of it: what the records say
@@ -1049,15 +1066,25 @@ impl Layouts {
         self.moved.get()
     }
 
-    /// Read the workspaces' documents through `engine`, and write the layouts through `writes`, the
-    /// session's own write of its device's workspace service.
+    /// Read the workspaces' documents through `reads`, this device's workspace service, and write
+    /// the layouts through `writes`, its one commit path: what a look reads is what a write
+    /// reaches.
     pub(crate) fn attach(
         &self,
         engine: &Arc<Engine>,
+        reads: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
         writes: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
     ) {
         *self.engine.borrow_mut() = Some(Arc::clone(engine));
+        *self.reads.borrow_mut() = Some(Arc::clone(reads));
         *self.writes.borrow_mut() = Some(Arc::clone(writes));
+    }
+
+    /// Where the workspaces' documents are read, once the session opened its service.
+    fn reads(
+        &self,
+    ) -> Option<Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>> {
+        self.reads.borrow().clone()
     }
 
     /// The writes into the workspaces' documents, once the session opened its service.
@@ -1115,18 +1142,18 @@ impl Layouts {
                 continue;
             }
             let known = self.held(&key, |held| held.revision);
-            let record = Self::record(engine, &key, known);
+            let document = self.document(&key, known);
             // Read at this revision, whatever it held: a record that fails to read fails again until
             // the engine moves.
             self.held(&key, |held| {
                 held.read_at = Some(at);
                 held.read_once = true;
             });
-            let Ok(record) = record else {
+            let Ok(document) = document else {
                 changed |= self.owed(workspace_id, workspace);
                 continue;
             };
-            let Some((doc, revision)) = record else {
+            let Some((doc, revision)) = document else {
                 // Read against a revision, nothing comes back while the record did not move: what
                 // was read stands. A workspace with no layout yet is read as one: a layout that
                 // arrives moves the engine's revision, and the next pass reads it.
@@ -1289,9 +1316,9 @@ impl Layouts {
                 changed |= view.place_own(workspace);
             }
             let known = self.held(&key, |held| held.revision);
-            let record = Self::record(engine, &key, known);
+            let document = self.document(&key, known);
             self.held(&key, |held| held.read_at = Some(at));
-            let (doc, revision) = match record {
+            let (doc, revision) = match document {
                 Ok(Some(read)) => read,
                 // Read against a revision, nothing came back while the view did not move: what
                 // was read stands.
@@ -1307,7 +1334,7 @@ impl Layouts {
                 // holds and this look cannot read is nobody's to write over, so nothing counts as
                 // written until a look reads it.
                 failed => {
-                    let absent = failed.is_err() && nothing_written(engine, workspace_id, &route);
+                    let absent = failed.is_err() && self.nothing_written(workspace_id, &route);
                     self.held(&key, |held| {
                         held.read = true;
                         held.unreadable = !absent;
@@ -1468,7 +1495,7 @@ impl Layouts {
             }
             return false;
         };
-        let (reached, revision, holds) = self.reached(engine, &key);
+        let (reached, revision, holds) = self.reached(&key);
         // A layout the workspace holds is laid out here before this device writes it: what the
         // layout shows before then is not what the person made of it. A copy this device wrote is
         // what its next write is made on, with the workspace's merged in.
@@ -1779,7 +1806,7 @@ impl Layouts {
             let Some(sealed) = self.sealed(engine, &key) else {
                 continue;
             };
-            let (mut doc, revision) = self.copy(engine, &key);
+            let (mut doc, revision) = self.copy(&key);
             doc.set_actor(actor(engine, person));
             let log = self
                 .held(&key, |held| held.undo.take())
@@ -1976,7 +2003,7 @@ impl Layouts {
         let Some(sealed) = self.sealed(engine, &key) else {
             return false;
         };
-        let (mut doc, revision) = self.copy(engine, &key);
+        let (mut doc, revision) = self.copy(&key);
         doc.set_actor(actor(engine, person));
         let before = doc.get_heads();
         if !edit(&mut doc) {
@@ -2102,7 +2129,7 @@ impl Layouts {
                 });
                 continue;
             };
-            let (mut held, revision) = self.copy(engine, &key);
+            let (mut held, revision) = self.copy(&key);
             let from = held.get_heads();
             let mut log = self.held(&key, |kept| kept.undo.take());
             let mut refused = None;
@@ -2215,7 +2242,7 @@ impl Layouts {
         let changes = candidate.save_after(heads);
         // A write on no history is the whole record: the one that founds it.
         let founding = heads.is_empty();
-        let (document, app) = (route.record.clone(), route.app);
+        let (document, app) = (route.document.clone(), route.app);
         let workspace = workspace_id.to_string();
         let mut writing = crate::engine_write::Writing::write(self.wake.handle(), async move {
             writes
@@ -2351,22 +2378,18 @@ impl Layouts {
     /// device's own copy holds, the revision it was read at, and whether this device holds a copy.
     /// A record this device was never sent, or cannot read, is one it holds nothing of, and one
     /// that did not move since its copy is the copy.
-    fn reached(
-        &self,
-        engine: &Engine,
-        key: &Key,
-    ) -> (Option<automerge::AutoCommit>, Option<[u8; 32]>, bool) {
+    fn reached(&self, key: &Key) -> (Option<automerge::AutoCommit>, Option<[u8; 32]>, bool) {
         let (holds, known) = self.held(key, |held| (held.kept.is_some(), held.based));
         let known = holds.then_some(known).flatten();
-        let read = Self::record(engine, key, known).unwrap_or(None);
+        let read = self.document(key, known).unwrap_or(None);
         let revision = read.as_ref().map(|(_, revision)| *revision);
         (read.map(|(doc, _)| doc), revision, holds)
     }
 
     /// The record of `key` this device writes on ([`base_of`]), and the revision the workspace's
     /// copy is at.
-    fn copy(&self, engine: &Engine, key: &Key) -> (automerge::AutoCommit, Option<[u8; 32]>) {
-        let (reached, revision, _) = self.reached(engine, key);
+    fn copy(&self, key: &Key) -> (automerge::AutoCommit, Option<[u8; 32]>) {
+        let (reached, revision, _) = self.reached(key);
         let kept = self.held(key, |held| held.kept.clone());
         (base_of(key.0, kept, reached), revision)
     }
@@ -2624,11 +2647,19 @@ fn keys_awaited(engine: &Engine, key: &Key) -> bool {
     matches!(engine.seal_keys(*workspace_id), Ok(SealKeys::Waiting))
 }
 
-/// Whether this device holds `workspace_id` and it holds nothing of `route` yet: what a view is
-/// written onto, rather than over one this look cannot read.
-fn nothing_written(engine: &Engine, workspace_id: WorkspaceId, route: &Route) -> bool {
-    engine.workspaces().contains(&workspace_id)
-        && !engine.holds_resource(&workspace_id.to_string(), route.app, &route.record)
+/// Whether this device's service holds `workspace_id` and it holds nothing of `route` yet: what a
+/// view is written onto, rather than over one this look cannot read. A workspace the service does
+/// not hold is one the session has no documents of at all, never one it may write a view over.
+impl Layouts {
+    fn nothing_written(&self, workspace_id: WorkspaceId, route: &Route) -> bool {
+        self.reads().is_some_and(|reads| {
+            reads
+                .workspaces()
+                .iter()
+                .any(|held| held == &workspace_id.to_string())
+                && !reads.holds(&workspace_id.to_string(), route.app, &route.document)
+        })
+    }
 }
 
 /// Write `step`, a change this device made of the person's view, into `doc` as one change, and
@@ -2791,9 +2822,10 @@ impl crate::activity::History for LayoutHistory {
     fn attach(
         &self,
         engine: &Arc<Engine>,
+        reads: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
         writes: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
     ) {
-        self.layouts.attach(engine, writes);
+        self.layouts.attach(engine, reads, writes);
     }
 }
 

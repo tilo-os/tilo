@@ -605,7 +605,10 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
         hold: Arc::clone(&hold),
         person: person.clone(),
     }) as Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>;
-    desktops.attach(&engine, &writes);
+    let reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments> = Arc::new(
+        crate::records::testing::EngineDocuments(Arc::clone(&engine)),
+    );
+    desktops.attach(&engine, &reads, &writes);
     // The workspace's keys, as the key service hands them to this device.
     let keys = key_group::KeyGroup::create(
         workspace,
@@ -636,7 +639,7 @@ fn a_layout_save_is_made_and_written_off_the_loop() {
         "the loop folds no record and begins no history"
     );
     assert!(
-        desktops.reached(&engine, &layout).0.is_none(),
+        desktops.reached(&layout).0.is_none(),
         "the loop writes nothing into the workspace"
     );
     assert!(
@@ -778,11 +781,12 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     );
     let (wake, _heard) = woken();
     let desktops = Layouts::new(Arc::clone(&notes), wake, person.clone(), Some(state.path()));
-    desktops.attach(
-        &engine,
-        &(Arc::new(crate::records::testing::EngineWrites(Arc::clone(&engine)))
-            as Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>),
+    let writes: Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites> =
+        Arc::new(crate::records::testing::EngineWrites(Arc::clone(&engine)));
+    let reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments> = Arc::new(
+        crate::records::testing::EngineDocuments(Arc::clone(&engine)),
     );
+    desktops.attach(&engine, &reads, &writes);
     let mut shown = layout.clone();
     desktops.follow(&engine, "", &mut shown);
     // What a look that cannot reach the workspace leaves behind: the layout the person made of
@@ -808,11 +812,12 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
     // are here.
     let (wake, _heard) = woken();
     let next = Layouts::new(Arc::clone(&notes), wake, person, Some(state.path()));
-    next.attach(
-        &engine,
-        &(Arc::new(crate::records::testing::EngineWrites(Arc::clone(&engine)))
-            as Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>),
+    let writes: Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites> =
+        Arc::new(crate::records::testing::EngineWrites(Arc::clone(&engine)));
+    let reads: Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments> = Arc::new(
+        crate::records::testing::EngineDocuments(Arc::clone(&engine)),
     );
+    next.attach(&engine, &reads, &writes);
     assert!(
         !next.held(&view_key, |held| held.pending_view.is_empty()),
         "the view is back"

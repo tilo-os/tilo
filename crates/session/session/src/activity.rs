@@ -78,11 +78,12 @@ pub trait History {
     ) -> bool;
     /// A number that moves whenever the session's layout does.
     fn moved(&self) -> u64;
-    /// Read the layouts through `engine`, and write them through `writes`, once this session
-    /// opened both.
+    /// Read the layouts through `reads`, and write them through `writes`, once this session
+    /// opened both: the documents of the workspaces the session holds.
     fn attach(
         &self,
         engine: &std::sync::Arc<crate::engine::Engine>,
+        reads: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceDocuments>,
         writes: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
     );
 }
@@ -372,8 +373,8 @@ impl Activity {
         writes: &Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
     ) -> Option<Arc<crate::engine::Engine>> {
         let engine = crate::options::open_engine(options, handle)?;
+        self.0.layouts.attach(&engine, &reads, writes);
         self.attach_documents(reads);
-        self.0.layouts.attach(&engine, writes);
         self.attach_engine(Arc::clone(&engine));
         Some(engine)
     }
@@ -1769,6 +1770,9 @@ mod tests {
         fn attach(
             &self,
             _engine: &std::sync::Arc<crate::engine::Engine>,
+            _reads: &std::sync::Arc<
+                dyn tilo_workspace_service::workspace_documents::DeviceDocuments,
+            >,
             _writes: &std::sync::Arc<dyn tilo_workspace_service::workspace_documents::DeviceWrites>,
         ) {
         }
