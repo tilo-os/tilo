@@ -1613,3 +1613,8 @@ paths = [
     "crates/collab/action-policy/tests/agent_answers.rs",
     "crates/platform/tilo-workspace-agent/src/tests.rs",
 ]
+
+[[allow]]
+reason = "The link's `host-changed` failure code, the page's own wire vocabulary for the server a workspace's address pins: read here, never shown. The person's words for it name the server."
+words = ["host"]
+paths = ["crates/sdk/ui-core/src/workspace_sync.rs"]

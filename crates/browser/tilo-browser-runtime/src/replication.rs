@@ -2169,7 +2169,7 @@ impl Joined {
             .peer
             .status()
             .unanswerable(self.workspace)
-            .map(str::to_owned);
+            .map(|failure| crate::desktop::Unanswered::of(failure.code, failure.message.clone()));
         for mounted in self.mounts.values() {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
                 shared.follow_unanswerable(cause.clone(), handle);

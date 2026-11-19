@@ -350,7 +350,7 @@ pub(crate) struct Shared {
     /// ([`tilo_session_client::link::PeerStatus::unanswerable`]): a window whose resource is on its
     /// way shows that failure instead of waiting for an answer that cannot come, and waits again
     /// once the workspace can answer.
-    unanswerable: Rc<RefCell<Option<String>>>,
+    unanswerable: Rc<RefCell<Option<Unanswered>>>,
     /// The tabs whose window could not open what it names, with what the window says instead
     /// ([`crate::window_states`]).
     pub(crate) unopened: Rc<RefCell<HashMap<TabId, String>>>,
@@ -465,7 +465,7 @@ impl Shared {
 
     /// The workspace cannot answer this page now, for `cause`, or can again (`None`): the windows
     /// waiting for a resource are built again, showing the failure or waiting once more.
-    pub fn follow_unanswerable(&self, cause: Option<String>, handle: &DesktopHandle) {
+    pub fn follow_unanswerable(&self, cause: Option<Unanswered>, handle: &DesktopHandle) {
         if *self.unanswerable.borrow() == cause {
             return;
         }
@@ -477,7 +477,10 @@ impl Shared {
     /// while the workspace cannot answer, why ([`Self::follow_unanswerable`]).
     fn awaiting_resource(&self) -> Unready {
         match self.unanswerable.borrow().clone() {
-            Some(cause) => Unready::Failed(cause),
+            Some(unanswered) => Unready::Failed {
+                cause: unanswered.cause,
+                technical: unanswered.technical,
+            },
             None => Unready::Arriving,
         }
     }
@@ -1083,7 +1086,10 @@ impl Tiles {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                     self.shared.awaiting_resource()
                 }
-                Unbuilt::Failed(detail) => Unready::Failed(detail),
+                Unbuilt::Failed(technical) => Unready::Failed {
+                    cause: None,
+                    technical,
+                },
             })?;
         let record = component.record().clone();
         let previous = self
@@ -1242,14 +1248,37 @@ fn embed_instance(view: &ResourceView) -> TabId {
     hasher.finish() | (1 << 63)
 }
 
+/// Why the workspace cannot answer this page now, and what its link said about it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Unanswered {
+    /// The plain cause the link's failure code names, where it names one a person can act on.
+    pub(crate) cause: Option<ui::workspace_sync::WorkspaceUnanswered>,
+    /// What the link said, kept behind the card's Details.
+    pub(crate) technical: String,
+}
+
+impl Unanswered {
+    /// Why the link failure `code` leaves the workspace unanswered, with what it said.
+    pub(crate) fn of(code: &str, technical: String) -> Self {
+        Self {
+            cause: ui::workspace_sync::WorkspaceUnanswered::from_code(code),
+            technical,
+        }
+    }
+}
+
 /// Why a window cannot show its app yet.
 enum Unready {
     /// The app's code is still being fetched.
     Arriving,
     /// What the window says instead.
     Notice(String),
-    /// The app could not be built on the record the window shows; what the launch answered.
-    Failed(String),
+    /// The app could not be built on the record the window shows: what the launch answered, and,
+    /// where the link named one, why the workspace could not answer.
+    Failed {
+        cause: Option<ui::workspace_sync::WorkspaceUnanswered>,
+        technical: String,
+    },
 }
 
 impl From<String> for Unready {
@@ -1495,19 +1524,29 @@ impl TileSource for Tiles {
                 })
             }
             // The app was not built: the window says that it could not open and what to do, in
-            // the person's words, and tries again on their word. What the launch answered is for
-            // whoever looks into it: behind the card's Details, and in the console.
-            Err(Unready::Failed(detail)) => {
-                self.shared
-                    .unopened
-                    .borrow_mut()
-                    .insert(tab.id, detail.clone());
+            // the person's words, and tries again on their word. Where the link named the cause,
+            // the card leads with it; what the launch or the link answered is for whoever looks
+            // into it: behind the card's Details, and in the console.
+            Err(Unready::Failed { cause, technical }) => {
+                let said = cause.map_or_else(|| technical.clone(), |cause| cause.to_string());
+                self.shared.unopened.borrow_mut().insert(tab.id, said);
                 self.shared.landed.borrow_mut().remove(&tab.id);
                 if self.shared.records.borrow().contains_key(&tab.id) {
                     self.shared.waiting.borrow_mut().insert(tab.id);
                 }
-                web_sys::console::warn_1(&format!("{} could not open: {detail}", tab.title).into());
-                let outcome = tilo_desktop_surface::outcome::Outcome::not_built(&tab.title, detail);
+                web_sys::console::warn_1(
+                    &format!("{} could not open: {technical}", tab.title).into(),
+                );
+                let outcome = match cause {
+                    Some(cause) => tilo_desktop_surface::outcome::Outcome::not_built_because(
+                        &tab.title,
+                        cause.to_string(),
+                        &technical,
+                    ),
+                    None => {
+                        tilo_desktop_surface::outcome::Outcome::not_built(&tab.title, &technical)
+                    }
+                };
                 let shared = self.shared.clone();
                 let id = tab.id;
                 TileHost::new(ui::widget::TileContent::App(Box::new(
