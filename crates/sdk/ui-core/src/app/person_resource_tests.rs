@@ -607,7 +607,7 @@ fn a_member_record_of_a_kind_no_manifest_declares_own_is_refused() {
 }
 
 #[test]
-fn a_previous_member_record_is_readable_only_through_recovery() {
+fn a_previous_member_document_is_readable_only_through_recovery() {
     crate::app_surface::register_package(
         APP,
         b"[[resources]]\nkind = \"test.watched\"\nlabel = \"Watched\"\nversion = 1\nown = true\n",
@@ -634,15 +634,15 @@ fn a_previous_member_record_is_readable_only_through_recovery() {
         .unwrap();
     assert!(matches!(
         archive.open_resource(kind.clone(), &|_| panic!("no initialization")),
-        Err(crate::resource::ResourceOpenError::ArchivedMemberRecord)
+        Err(crate::resource::ResourceOpenError::ArchivedMemberDocument)
     ));
     assert!(matches!(
         archive.open_existing_resource(kind.clone()),
-        Err(crate::resource::ResourceOpenError::ArchivedMemberRecord)
+        Err(crate::resource::ResourceOpenError::ArchivedMemberDocument)
     ));
     assert!(matches!(
         archive.open_original_resource(kind.clone(), |_| panic!("no initialization")),
-        Err(crate::resource::ResourceOpenError::ArchivedMemberRecord)
+        Err(crate::resource::ResourceOpenError::ArchivedMemberDocument)
     ));
     fixture.flush();
     let mut restart = ResourceOwners::with_store(backend);

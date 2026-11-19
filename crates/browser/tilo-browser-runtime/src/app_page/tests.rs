@@ -228,7 +228,7 @@ tilo_test_env::scenario! {
         assert!(store.wanted_resources().is_empty());
     }
 
-    phase an_archived_member_record_does_not_replace_the_workspace_record;
+    phase an_archived_member_document_leaves_the_workspace_primary_available;
     {
         let definition = definition(true);
         let own = DocumentId::of_member(author().id(), definition.resource_type.as_str())

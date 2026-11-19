@@ -522,7 +522,7 @@ impl PersonState {
         &self,
         owner: &str,
     ) -> Result<Option<Rc<P::State>>, String> {
-        self.read_legacy_record::<P, _>(owner, |doc, _, _| Self::read_legacy::<P>(doc))?
+        self.read_previous::<P, _>(owner, |doc, _, _| Self::read_legacy::<P>(doc))?
             .transpose()
     }
 
@@ -530,7 +530,7 @@ impl PersonState {
         &self,
         owner: &str,
     ) -> super::workspace::LegacyMemberContent<P> {
-        self.read_legacy_record::<P, _>(owner, |doc, checkout, content| {
+        self.read_previous::<P, _>(owner, |doc, checkout, content| {
             let content = content.ok_or("the previous record has no content store")?;
             Ok((
                 checkout.id.as_str().to_owned(),
@@ -547,7 +547,7 @@ impl PersonState {
         store: &ui_core::resource::ResourceStore,
     ) -> super::workspace::LegacyMemberParts<C> {
         let Some((id, content)) = self
-            .read_legacy_record::<C::Base, _>(owner, |_, checkout, content| {
+            .read_previous::<C::Base, _>(owner, |_, checkout, content| {
                 (checkout.id.clone(), content)
             })?
         else {
@@ -573,7 +573,7 @@ impl PersonState {
         Ok(Some((id.as_str().to_owned(), parts, content)))
     }
 
-    fn read_legacy_record<P: Resource, T>(
+    fn read_previous<P: Resource, T>(
         &self,
         owner: &str,
         read: impl FnOnce(

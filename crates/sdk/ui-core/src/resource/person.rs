@@ -230,7 +230,7 @@ impl PersonResources {
         Ok(Some(read(
             &doc,
             &checkout,
-            record_content(package, &home, &checkout.id),
+            content_of(package, &home, &checkout.id),
         )))
     }
 
@@ -317,7 +317,7 @@ impl PersonResources {
         initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredResource, ResourceOpenError> {
         if self.member_archive() {
-            return Err(ResourceOpenError::ArchivedMemberRecord);
+            return Err(ResourceOpenError::ArchivedMemberDocument);
         }
         let checkout = DocumentCheckout::new(self.id_of(&kind)?, kind);
         match open_in(&self.store, &checkout, initialize) {
@@ -361,7 +361,7 @@ impl PersonResources {
         kind: ResourceType,
     ) -> Result<Option<StoredResource>, ResourceOpenError> {
         if self.member_archive() {
-            return Err(ResourceOpenError::ArchivedMemberRecord);
+            return Err(ResourceOpenError::ArchivedMemberDocument);
         }
         let checkout = DocumentCheckout::new(self.id_of(&kind)?, kind);
         let store = match self.store.try_open_resource(&checkout) {
@@ -401,7 +401,7 @@ impl PersonResources {
         initialize: impl Fn(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<StoredResource, ResourceOpenError> {
         if self.member_archive() {
-            return Err(ResourceOpenError::ArchivedMemberRecord);
+            return Err(ResourceOpenError::ArchivedMemberDocument);
         }
         if self.replica {
             return Err(ResourceOpenError::IdentityMismatch);
@@ -661,15 +661,11 @@ impl StoredResource {
     #[must_use]
     pub fn content(&self) -> Option<tilo_content::ContentStore> {
         let (package, home) = self.store.app_and_home();
-        record_content(package, &home, &self.checkout.id)
+        content_of(package, &home, &self.checkout.id)
     }
 }
 
-fn record_content(
-    package: String,
-    home: &str,
-    id: &DocumentId,
-) -> Option<tilo_content::ContentStore> {
+fn content_of(package: String, home: &str, id: &DocumentId) -> Option<tilo_content::ContentStore> {
     let workspace = uuid::Uuid::parse_str(home).ok()?;
     let route = if id.is_package_primary() {
         crate::collaboration::RouteSpec::app(package, workspace)

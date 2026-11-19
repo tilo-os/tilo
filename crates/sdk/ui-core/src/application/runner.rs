@@ -1185,6 +1185,7 @@ impl ApplicationOwner {
         const MAX_SUCCESSORS: usize = 64;
         let mut successors = 0;
         let target = loop {
+            definition.refuse_archived_document(&records, &self.author, &checkout.id)?;
             match records.try_open_resource(&checkout) {
                 Ok(_) => {
                     break LaunchTarget::Record {
@@ -1402,7 +1403,7 @@ mod native_process_tests {
             ));
         }
 
-        phase members_open_the_same_app_record_in_a_workspace;
+        phase members_open_the_same_workspace_primary;
         {
             use crate::application_test_support as probe;
             let mut definition = definition(probe::APP);
