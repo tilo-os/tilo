@@ -715,6 +715,7 @@ id = "post"
 incoming_message = true
 kind = "undoable"
 params = [
+  { name = "id", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
   { name = "channel", type = "text", required = true, schema = { type = "string" } },
   { name = "text", type = "text", required = true, schema = { type = "string" } },
   { name = "parent", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
@@ -1114,6 +1115,7 @@ fields = [
 [[resources.types]]
 name = "NewMessage"
 fields = [
+  { name = "id", type = { option = "text" } },
   { name = "channel", type = "text" },
   { name = "text", type = "text" },
   { name = "parent", type = { option = "text" } },

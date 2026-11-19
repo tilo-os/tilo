@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.video-player@1932567c11289a24";
+export const SURFACE = "so.tilo.video-player@3d989ffc0c9849f4";
 
 export interface Playlist {
   name: string;
@@ -157,12 +157,11 @@ export interface Library extends tilo.Resource {
   openVideo(args?: {
     path?: string;
   }): Promise<void>;
-  clearRecent(): Promise<void>;
 }
 
 /** The actions `Library` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const LIBRARY_ACTIONS = ["createPlaylist", "createPlaylistMany", "deletePlaylist", "deletePlaylistMany", "addToPlaylist", "addToPlaylistMany", "addToWatchLater", "addToWatchLaterMany", "addAnnotation", "addAnnotationMany", "deleteAnnotation", "deleteAnnotationMany", "setTransport", "setTransportMany", "openVideo", "clearRecent"] as const;
+export const LIBRARY_ACTIONS = ["createPlaylist", "createPlaylistMany", "deletePlaylist", "deletePlaylistMany", "addToPlaylist", "addToPlaylistMany", "addToWatchLater", "addToWatchLaterMany", "addAnnotation", "addAnnotationMany", "deleteAnnotation", "deleteAnnotationMany", "setTransport", "setTransportMany", "openVideo"] as const;
 
 /** The `video-player.library` kind at `path`. */
 export function library(ws: tilo.Workspace, path: string): Library {

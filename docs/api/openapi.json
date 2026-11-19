@@ -6722,6 +6722,26 @@
         ],
         "description": ""
       },
+      "camera.set-grid.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {}
+        },
+        "required": [
+          "on"
+        ],
+        "description": ""
+      },
+      "camera.set-level.Arguments": {
+        "type": "object",
+        "properties": {
+          "on": {}
+        },
+        "required": [
+          "on"
+        ],
+        "description": ""
+      },
       "canvas.artwork.paint.Arguments": {
         "type": "object",
         "properties": {
@@ -9580,6 +9600,12 @@
       "chat.messages.post.Arguments": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "channel": {
             "type": "string"
           },
@@ -12589,6 +12615,54 @@
         "type": "object",
         "properties": {},
         "required": [],
+        "description": ""
+      },
+      "clocks.collection.open-alarm.Arguments": {
+        "type": "object",
+        "properties": {
+          "alarm": {}
+        },
+        "required": [
+          "alarm"
+        ],
+        "description": ""
+      },
+      "clocks.collection.show.Arguments": {
+        "type": "object",
+        "properties": {
+          "section": {}
+        },
+        "required": [
+          "section"
+        ],
+        "description": ""
+      },
+      "clocks.collection.dismiss-notice.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "clocks.collection.float-timer.Arguments": {
+        "type": "object",
+        "properties": {
+          "timer": {},
+          "floating": {}
+        },
+        "required": [
+          "timer",
+          "floating"
+        ],
+        "description": ""
+      },
+      "clocks.collection.float-stopwatch.Arguments": {
+        "type": "object",
+        "properties": {
+          "floating": {}
+        },
+        "required": [
+          "floating"
+        ],
         "description": ""
       },
       "clocks.on-devices.keep.Arguments": {
@@ -17843,16 +17917,6 @@
         "required": [],
         "description": ""
       },
-      "logs.journal.select-entry.Arguments": {
-        "type": "object",
-        "properties": {
-          "entry_id": {}
-        },
-        "required": [
-          "entry_id"
-        ],
-        "description": ""
-      },
       "mail.mailbox.server-applied.Arguments": {
         "type": "object",
         "properties": {
@@ -20232,26 +20296,6 @@
           "query": {}
         },
         "required": [],
-        "description": ""
-      },
-      "monitor.processes.inspect.Arguments": {
-        "type": "object",
-        "properties": {
-          "process": {}
-        },
-        "required": [
-          "process"
-        ],
-        "description": ""
-      },
-      "monitor.processes.copy-pid.Arguments": {
-        "type": "object",
-        "properties": {
-          "process": {}
-        },
-        "required": [
-          "process"
-        ],
         "description": ""
       },
       "music.library.create-playlist.Arguments": {
@@ -23759,6 +23803,38 @@
         "required": [],
         "description": ""
       },
+      "settings.root.set-source-options-visible.Arguments": {
+        "type": "object",
+        "properties": {
+          "visible": {}
+        },
+        "required": [
+          "visible"
+        ],
+        "description": ""
+      },
+      "settings.root.set-source-inspection-visible.Arguments": {
+        "type": "object",
+        "properties": {
+          "visible": {}
+        },
+        "required": [
+          "visible"
+        ],
+        "description": ""
+      },
+      "settings.root.open-source-picker.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
+      "settings.root.show-live-keyboard-map.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "settings.root.storage-summary.Arguments": {
         "type": "object",
         "properties": {},
@@ -23784,6 +23860,12 @@
         "required": [
           "model"
         ],
+        "description": ""
+      },
+      "settings.root.toggle-microphone-test.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
         "description": ""
       },
       "settings.root.discover-thunderbird-accounts.Arguments": {
@@ -30258,12 +30340,6 @@
         "required": [],
         "description": ""
       },
-      "video-player.library.clear-recent.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "video-player.recent.keep.Arguments": {
         "type": "object",
         "properties": {
@@ -30392,30 +30468,10 @@
         ],
         "description": ""
       },
-      "weather.locations.refresh.Arguments": {
+      "weather.locations.refresh-all.Arguments": {
         "type": "object",
         "properties": {},
         "required": [],
-        "description": ""
-      },
-      "weather.locations.refresh-location.Arguments": {
-        "type": "object",
-        "properties": {
-          "location": {}
-        },
-        "required": [
-          "location"
-        ],
-        "description": ""
-      },
-      "weather.locations.open-location.Arguments": {
-        "type": "object",
-        "properties": {
-          "location": {}
-        },
-        "required": [
-          "location"
-        ],
         "description": ""
       },
       "windows.manager.open-file.Arguments": {
@@ -31537,6 +31593,18 @@
       "arguments": "#/components/schemas/camera.record-scan.Arguments"
     },
     {
+      "app": "so.tilo.camera",
+      "resource": "camera",
+      "action": "set-grid",
+      "arguments": "#/components/schemas/camera.set-grid.Arguments"
+    },
+    {
+      "app": "so.tilo.camera",
+      "resource": "camera",
+      "action": "set-level",
+      "arguments": "#/components/schemas/camera.set-level.Arguments"
+    },
+    {
       "app": "so.tilo.canvas",
       "resource": "canvas.artwork",
       "action": "paint",
@@ -32297,6 +32365,36 @@
       "resource": "clocks.collection",
       "action": "reset-stopwatch",
       "arguments": "#/components/schemas/clocks.collection.reset-stopwatch.Arguments"
+    },
+    {
+      "app": "so.tilo.clocks",
+      "resource": "clocks.collection",
+      "action": "open-alarm",
+      "arguments": "#/components/schemas/clocks.collection.open-alarm.Arguments"
+    },
+    {
+      "app": "so.tilo.clocks",
+      "resource": "clocks.collection",
+      "action": "show",
+      "arguments": "#/components/schemas/clocks.collection.show.Arguments"
+    },
+    {
+      "app": "so.tilo.clocks",
+      "resource": "clocks.collection",
+      "action": "dismiss-notice",
+      "arguments": "#/components/schemas/clocks.collection.dismiss-notice.Arguments"
+    },
+    {
+      "app": "so.tilo.clocks",
+      "resource": "clocks.collection",
+      "action": "float-timer",
+      "arguments": "#/components/schemas/clocks.collection.float-timer.Arguments"
+    },
+    {
+      "app": "so.tilo.clocks",
+      "resource": "clocks.collection",
+      "action": "float-stopwatch",
+      "arguments": "#/components/schemas/clocks.collection.float-stopwatch.Arguments"
     },
     {
       "app": "so.tilo.clocks",
@@ -33469,12 +33567,6 @@
       "arguments": "#/components/schemas/logs.journal.set-live-tail.Arguments"
     },
     {
-      "app": "so.tilo.logs",
-      "resource": "logs.journal",
-      "action": "select-entry",
-      "arguments": "#/components/schemas/logs.journal.select-entry.Arguments"
-    },
-    {
       "app": "so.tilo.mail",
       "resource": "mail.mailbox",
       "action": "server-applied",
@@ -34001,18 +34093,6 @@
       "resource": "monitor.processes",
       "action": "filter",
       "arguments": "#/components/schemas/monitor.processes.filter.Arguments"
-    },
-    {
-      "app": "so.tilo.monitor",
-      "resource": "monitor.processes",
-      "action": "inspect",
-      "arguments": "#/components/schemas/monitor.processes.inspect.Arguments"
-    },
-    {
-      "app": "so.tilo.monitor",
-      "resource": "monitor.processes",
-      "action": "copy-pid",
-      "arguments": "#/components/schemas/monitor.processes.copy-pid.Arguments"
     },
     {
       "app": "so.tilo.music",
@@ -34599,6 +34679,30 @@
     {
       "app": "so.tilo.settings",
       "resource": "settings.root",
+      "action": "set-source-options-visible",
+      "arguments": "#/components/schemas/settings.root.set-source-options-visible.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "set-source-inspection-visible",
+      "arguments": "#/components/schemas/settings.root.set-source-inspection-visible.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "open-source-picker",
+      "arguments": "#/components/schemas/settings.root.open-source-picker.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "show-live-keyboard-map",
+      "arguments": "#/components/schemas/settings.root.show-live-keyboard-map.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
       "action": "storage-summary",
       "arguments": "#/components/schemas/settings.root.storage-summary.Arguments"
     },
@@ -34613,6 +34717,12 @@
       "resource": "settings.root",
       "action": "show-hub-model",
       "arguments": "#/components/schemas/settings.root.show-hub-model.Arguments"
+    },
+    {
+      "app": "so.tilo.settings",
+      "resource": "settings.root",
+      "action": "toggle-microphone-test",
+      "arguments": "#/components/schemas/settings.root.toggle-microphone-test.Arguments"
     },
     {
       "app": "so.tilo.settings",
@@ -36404,12 +36514,6 @@
     },
     {
       "app": "so.tilo.video-player",
-      "resource": "video-player.library",
-      "action": "clear-recent",
-      "arguments": "#/components/schemas/video-player.library.clear-recent.Arguments"
-    },
-    {
-      "app": "so.tilo.video-player",
       "resource": "video-player.recent",
       "action": "keep",
       "arguments": "#/components/schemas/video-player.recent.keep.Arguments"
@@ -36447,20 +36551,8 @@
     {
       "app": "so.tilo.weather",
       "resource": "weather.locations",
-      "action": "refresh",
-      "arguments": "#/components/schemas/weather.locations.refresh.Arguments"
-    },
-    {
-      "app": "so.tilo.weather",
-      "resource": "weather.locations",
-      "action": "refresh-location",
-      "arguments": "#/components/schemas/weather.locations.refresh-location.Arguments"
-    },
-    {
-      "app": "so.tilo.weather",
-      "resource": "weather.locations",
-      "action": "open-location",
-      "arguments": "#/components/schemas/weather.locations.open-location.Arguments"
+      "action": "refresh-all",
+      "arguments": "#/components/schemas/weather.locations.refresh-all.Arguments"
     },
     {
       "app": "so.tilo.windows",

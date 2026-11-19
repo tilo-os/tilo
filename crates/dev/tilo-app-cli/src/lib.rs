@@ -4243,6 +4243,14 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
     if rust_sources(app_dir, &app_dir.join("src"), &mut sources).is_err() {
         return;
     }
+    // The resource and its verbs may live in the app's model crate (`apps/<name>-model`), which
+    // the app's window draws: those sources are the app's too.
+    if let (Some(parent), Some(name)) = (app_dir.parent(), app_dir.file_name()) {
+        let model = parent.join(format!("{}-model", name.to_string_lossy()));
+        if model.join("Cargo.toml").is_file() {
+            let _ = rust_sources(app_dir, &model.join("src"), &mut sources);
+        }
+    }
     let source = sources
         .iter()
         .map(|(_, text)| text.as_str())

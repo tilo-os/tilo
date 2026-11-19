@@ -639,10 +639,13 @@ api_env() {
     "TILO_API_WEB_ENTRY=$site_origin" \
     "TILO_API_HOST=$server_origin" \
     "TILO_API_STATE=$api_state/api.json"
-  # A server reached through another packet relay has no page anyone else
-  # opens: its invitations carry themselves, under tilo.sh's page.
+  # An invitation's link carries itself under the page whoever follows it
+  # opens: this stack's own site, or tilo.sh's when the stack is reached
+  # through another packet relay and its own page opens nowhere else.
   if [[ -n $(cat "$state/reached-through" 2>/dev/null || true) ]]; then
     printf '%s\n' "TILO_API_INVITE_ENTRY=${TILO_SH_INVITE_ENTRY:-https://tilo.sh}"
+  else
+    printf '%s\n' "TILO_API_INVITE_ENTRY=$site_origin"
   fi
 }
 

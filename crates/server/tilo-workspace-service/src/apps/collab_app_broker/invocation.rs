@@ -20,6 +20,7 @@ pub struct InvocationEnvelope {
 impl InvocationEnvelope {
     /// The context the host set for the invocation: who invoked it, of what
     /// kind, for whom, in which run.
+    #[cfg(test)]
     #[must_use]
     pub fn context(&self) -> Option<&tilo_actions::ActionContext> {
         self.context.as_ref()

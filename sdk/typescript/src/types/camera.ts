@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.camera@f66037316b6e9646";
+export const SURFACE = "so.tilo.camera@d00226e6b30f6a23";
 
 /** One of "Photo", "Video". */
 export type CaptureKind = "Photo" | "Video";
@@ -71,11 +71,17 @@ export interface Camera extends tilo.Resource {
   }): Promise<void>;
   /** Runs `record-scan` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   recordScanMany(items: RecordScanArgs[]): Promise<tilo.ActionAnswer[]>;
+  setGrid(args: {
+    on: boolean;
+  }): Promise<void>;
+  setLevel(args: {
+    on: boolean;
+  }): Promise<void>;
 }
 
 /** The actions `Camera` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const CAMERA_ACTIONS = ["registerCapture", "registerCaptureMany", "recordScan", "recordScanMany"] as const;
+export const CAMERA_ACTIONS = ["registerCapture", "registerCaptureMany", "recordScan", "recordScanMany", "setGrid", "setLevel"] as const;
 
 /** The `camera` kind at `path`. */
 export function camera(ws: tilo.Workspace, path: string): Camera {

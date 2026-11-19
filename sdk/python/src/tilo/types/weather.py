@@ -64,7 +64,7 @@ MoveToTopArgs = TypedDict("MoveToTopArgs", {
 
 class Locations(Resource):
     """Weather — `weather.locations`."""
-    __surface__ = "so.tilo.weather@3150b872b91bc7e1"
+    __surface__ = "so.tilo.weather@d2252d1ae403d4ce"
     places: list[Entry[Place]]
     default_place: str
 
@@ -101,17 +101,12 @@ class Locations(Resource):
         return self.many("move-to-top", items)
 
     # the app's `remove` action is the SDK's own: run it with `action("remove")`.
-    # the app's `refresh` action is the SDK's own: run it with `action("refresh")`.
-    def refresh_location(self, *, location: str) -> None:
+    def refresh_all(self) -> None:
         """Runs the app's action."""
-        return self.action("refresh-location", location=location)
-
-    def open_location(self, *, location: str) -> None:
-        """Runs the app's action."""
-        return self.action("open-location", location=location)
+        return self.action("refresh-all")
 
     # The actions a call reaches before the resource is read: `await tracker.create(...)`
     # needs no `load()` first.
-    __actions__ = frozenset({"save_location", "save_location_many", "use_as_default", "use_as_default_many", "move_to_top", "move_to_top_many", "refresh_location", "open_location"})
+    __actions__ = frozenset({"save_location", "save_location_many", "use_as_default", "use_as_default_many", "move_to_top", "move_to_top_many", "refresh_all"})
 
 
