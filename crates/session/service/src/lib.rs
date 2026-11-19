@@ -111,6 +111,15 @@ pub trait Service {
     /// What it publishes now: its resources, each with its actions.
     fn resources(&self) -> Vec<ResourceSpec>;
 
+    /// What the actions on the row `row` are like now, when they differ from
+    /// their declaration: a drive's write action while it is mounted, a
+    /// window's verbs while its app is unresponsive. Read for every published
+    /// child, so the palette, agents and scripts follow the row it is about;
+    /// the row's own actions that are not named stay as they are.
+    fn row_status(&self, _row: &str) -> Vec<tilo_actions::RowStatus> {
+        Vec::new()
+    }
+
     /// The reading of `resource` now, as its state's JSON; `None` for a
     /// resource it does not publish.
     fn read(&self, resource: &str) -> Option<Value>;
@@ -670,10 +679,13 @@ impl Services {
     /// Everything the services publish now.
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
-        self.started
-            .iter()
-            .flat_map(|service| service.resources())
-            .collect()
+        let mut all = Vec::new();
+        for service in &self.started {
+            let mut resources = service.resources();
+            tilo_actions::apply_row_statuses(&mut resources, |row| service.row_status(row));
+            all.extend(resources);
+        }
+        all
     }
 
     /// The reading of `resource`, from the service publishing it.

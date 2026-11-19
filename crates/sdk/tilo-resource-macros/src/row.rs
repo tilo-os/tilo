@@ -103,6 +103,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             ) -> ::std::vec::Vec<#krate::__private::ActionSpec> {
                 #effects_with
             }
+
         }
     })
 }

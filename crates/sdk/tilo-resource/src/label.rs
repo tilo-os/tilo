@@ -248,7 +248,7 @@ pub fn titled(
             )
             .or_else(|| resolve(word.catalogue, &format!("{scope}-{name}"), &[], Fill::Whole));
             match title {
-                Some(title) => param.titled(title),
+                Some(title) => param.described(title),
                 None => param,
             }
         })

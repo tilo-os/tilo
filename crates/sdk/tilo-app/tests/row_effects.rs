@@ -40,6 +40,27 @@ pub enum JobEffect {
     /// is.
     #[effect(on = Job, kind = "read")]
     Skip,
+    /// Retarget this job.
+    #[effect(kind = "read")]
+    Retarget {
+        #[param(resource = "test.jobs", "The job to retarget")]
+        job: String,
+    },
+    /// Wipe this job.
+    #[effect(on = Job, kind = "outside", destructive, phrase = "Self::wipe_name")]
+    Wipe {
+        #[param("The job")]
+        job: String,
+    },
+}
+
+impl JobEffect {
+    fn wipe_name(effect: &Self) -> String {
+        match effect {
+            Self::Wipe { job } => format!("wipe {job}"),
+            _ => String::new(),
+        }
+    }
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -265,7 +286,163 @@ fn a_row_may_name_its_press_the_way_only_it_can() {
     );
 }
 
+#[test]
+fn a_row_id_is_parsed_as_the_field_the_effect_acts_with() {
+    let row = LiveRow::typed::<Minute>("12", "12:30").into_resource();
+    let wait = row
+        .actions
+        .iter()
+        .find(|action| action.id == "wait")
+        .expect("the minute offers its wait");
+    let encoded = wait.build_json(&serde_json::Map::new()).unwrap();
+    assert_eq!(
+        MinuteEffect::from_payload(&encoded.payload).unwrap(),
+        MinuteEffect::Wait { minute: 12 },
+        "the row id is the number the effect takes, never text it cannot read"
+    );
+
+    let unreadable = LiveRow::typed::<Minute>("minute:twelve", "12:30").into_resource();
+    let wait = unreadable
+        .actions
+        .iter()
+        .find(|action| action.id == "wait")
+        .expect("the row is still published");
+    assert_eq!(
+        wait.contract.availability,
+        tilo_actions::Availability::Unavailable {
+            code: "row_id".into(),
+            reason: "`minute:twelve` is not one this effect acts on".into(),
+        },
+        "a row whose id is not what the effect acts on is offered refused, with why"
+    );
+}
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "test.minutes", label = "Minute", effects = MinuteEffect)]
+struct Minute;
+
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "test.minutes.effect", catalogue = "tests/locales")]
+pub enum MinuteEffect {
+    /// Wait out this minute.
+    #[effect(on = Minute, kind = "read")]
+    Wait {
+        #[param("The minute to wait out")]
+        minute: u64,
+    },
+}
+
+#[test]
+fn a_row_offered_effect_keeps_the_phrase_its_caller_types() {
+    let row = LiveRow::typed::<Job>("job:7", "Backup").into_resource();
+    let wipe = row
+        .actions
+        .iter()
+        .find(|action| action.id == "wipe")
+        .expect("the row offers its wipe");
+    assert_eq!(
+        wipe.contract.confirmation,
+        tilo_actions::ConfirmationPolicy::Phrase {
+            phrase: "wipe job:7".into(),
+        },
+        "a destructive effect bound to a row asks for the phrase it declares"
+    );
+}
+
+#[derive(tilo_resource::Row)]
+#[row(kind = "test.colours", label = "Colour", effects = ColourEffect)]
+struct Colour;
+
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "test.colours.effect", catalogue = "tests/locales")]
+pub enum ColourEffect {
+    /// Recolour this calendar.
+    #[effect(on = Colour, kind = "read")]
+    Recolour {
+        #[param("The calendar")]
+        calendar: String,
+        #[param("The colour")]
+        colour: String,
+    },
+}
+
+#[test]
+fn a_row_prefills_a_parameter_with_what_its_state_knows() {
+    let bindings = tilo_resource::RowBindings::new()
+        .bind(ColourEffect::RECOLOUR, [("calendar", "c:1".into())])
+        .default_values(ColourEffect::RECOLOUR, [("colour", "amber".into())]);
+    let row = LiveRow::typed_with::<Colour>("c:1", "Work", &bindings).into_resource();
+    let recolour = row
+        .actions
+        .iter()
+        .find(|action| action.id == "recolour")
+        .expect("the row offers its recolour");
+    assert_eq!(
+        recolour
+            .params()
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect::<Vec<_>>(),
+        ["colour"],
+        "the colour is still asked, so its caller may change it"
+    );
+    assert_eq!(
+        recolour.params()[0]
+            .schema
+            .as_deref()
+            .and_then(|schema| schema.get("default")),
+        Some(&serde_json::Value::String("amber".into())),
+        "the row's own colour fills the field"
+    );
+    let encoded = recolour
+        .build_json(&serde_json::Map::from_iter([(
+            "colour".to_owned(),
+            "red".into(),
+        )]))
+        .unwrap();
+    assert_eq!(
+        ColourEffect::from_payload(&encoded.payload).unwrap(),
+        ColourEffect::Recolour {
+            calendar: "c:1".into(),
+            colour: "red".into(),
+        },
+        "what the caller finally gives is what it acts with"
+    );
+}
+
+#[test]
+fn a_pickable_resource_parameter_names_the_kind_it_takes() {
+    let spec = JobEffect::spec("retarget").expect("the effect is declared");
+    let job = &spec.params()[0];
+    assert_eq!(job.name.as_ref(), "job");
+    assert_eq!(job.ty, tilo_actions::ParamType::Resource);
+    assert_eq!(
+        job.resource_kind(),
+        Some("test.jobs"),
+        "a surface offers a person the resources of that kind"
+    );
+    let row = <JobEffect as tilo_resource::Effect>::rows()
+        .into_iter()
+        .find(|row| row.id == "retarget")
+        .unwrap();
+    assert_eq!(
+        (row.param_types)()[0].1(&mut tilo_actions::surface::TypeSet::default()),
+        tilo_actions::surface::FieldType::Resource("test.jobs".into())
+    );
+}
+
 struct RowPublishingApp;
+
+/// This test's own words: the catalogue the framework reads the effect's
+/// labels and parameter descriptions from at publication.
+static CATALOG: tilo_app::i18n::EmbeddedCatalog =
+    tilo_app::i18n::EmbeddedCatalog::new("en-US", &[("en-US", include_str!("locales/en-US.ftl"))])
+        .with_language_pack(tilo_app::i18n::LanguagePack {
+            id: env!("CARGO_PKG_NAME"),
+            locales: &["en-US"],
+            source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/tests/locales"),
+        })
+        .with_system_locale();
 
 thread_local! {
     static RAN: std::cell::RefCell<Vec<JobEffect>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -275,6 +452,10 @@ impl ResourceApp for RowPublishingApp {
     type Resource = Jobs;
     const ID: &'static str = "so.tilo.test-jobs";
     const TITLE: &'static str = "Jobs";
+
+    fn catalog() -> Option<&'static tilo_app::i18n::EmbeddedCatalog> {
+        Some(&CATALOG)
+    }
 
     fn view(cx: &mut ViewCx<Jobs>) -> Element {
         cx.effects(|effect: JobEffect, _| {
@@ -407,5 +588,14 @@ fn a_row_status_and_an_items_presentation_reach_the_published_tree() {
             .and_then(|presentation| presentation.detail.as_deref()),
         Some(format!("item {id}").as_str()),
         "the view's presentation is on the item its document does not hold it for"
+    );
+
+    CATALOG.ensure();
+    let published = JobEffect::spec("retarget").expect("the effect is declared");
+    assert_eq!(
+        published.params()[0].description,
+        "The job to move",
+        "a parameter's description is the catalogue's word, read in the person's language, \
+         never the source text the declaration carries"
     );
 }
