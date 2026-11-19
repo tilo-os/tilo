@@ -499,7 +499,12 @@ paths = [
 [[allow]]
 reason = "A size raise names the t run that measured it."
 words = ["run"]
-paths = ["tools/perf/tapp-size-budget/raises/*", "tools/perf/runtime-size-budget/raises/*"]
+paths = ["tools/perf/tapp-size-budget/raises/*", "tools/perf/runtime-size-budget/raises/*", "tools/web/wasm-size-budget/raises/*"]
+
+[[allow]]
+reason = "The web size ratchet reads and checks a raise's `run`, the run that measured the bundle, and its test writes that key."
+words = ["run"]
+paths = ["tools/web/wasm_size_ratchet.py", "tools/tests/test_wasm_size_ratchet.py"]
 
 [[allow]]
 reason = "The push lint and the integration script start cargo, rustfmt, t and Git: a run there is one of those processes, and Python's subprocess.run names it."
@@ -1500,3 +1505,9 @@ reason = "The compatibility service's entry point for executing one translated c
 words = ["run"]
 identifiers = ["run_translated_command"]
 paths = ["crates/windows/compat-service/src/lib.rs", "crates/windows/compat-service/src/translated.rs"]
+
+[[allow]]
+reason = "The web size ratchet's test writes a raise's TOML with a helper named `record`, and its run fixtures pass that helper's `run`."
+words = ["record", "run"]
+identifiers = ["record", "run", "not_a_run"]
+paths = ["tools/tests/test_wasm_size_ratchet.py"]

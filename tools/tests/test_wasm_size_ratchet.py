@@ -29,8 +29,10 @@ def raised(budget: ratchet.Budget, **files: str) -> ratchet.Budget:
     return ratchet.Budget(budget.text, raises)
 
 
-def record(added: int, measured: int = 1400, run: int = 55499, reason: str = REASON) -> str:
-    return f"bytes = {added}\nrun = {run}\nmeasured = {measured}\n{reason}"
+def record(added: int, measured: int = 1400, run: int | str = 55499,
+           reason: str = REASON) -> str:
+    written = f'"{run}"' if isinstance(run, str) else run
+    return f"bytes = {added}\nrun = {written}\nmeasured = {measured}\n{reason}"
 
 
 class MeasureTest(unittest.TestCase):
@@ -155,6 +157,16 @@ class BudgetRatchetTest(unittest.TestCase):
                      record(400000, measured=1400)):
             with self.subTest(weak=weak):
                 self.assertTrue(ratchet.increases(BUDGET, raised(BUDGET, weak=weak)))
+
+    def test_a_t_run_id_measures_a_raise_as_a_run_number_does(self) -> None:
+        for run in ("rbdc7ad3857", "r0a1b2c3d4e5"):
+            with self.subTest(run=run):
+                self.assertEqual(
+                    ratchet.increases(BUDGET, raised(BUDGET, canvas=record(400, run=run))), [])
+        for not_a_run in ("bdc7ad3857", "r", "rXYZ", 0, -1):
+            with self.subTest(run=not_a_run):
+                self.assertTrue(
+                    ratchet.increases(BUDGET, raised(BUDGET, weak=record(400, run=not_a_run))))
 
     def test_new_bundles_may_be_added(self) -> None:
         after = ratchet.Budget(BUDGET.text + "[bundles.starter]\nbytes = 5\n")

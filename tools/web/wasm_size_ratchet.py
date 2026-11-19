@@ -16,7 +16,9 @@
   budget;
 - `check-budget --base REV` fails when a budget is larger than at REV, beyond
   what the raise files new in this change add. A raise records `bytes`, the
-  app-sdk `run` that measured the bundle, the `measured` bytes and a `reason`;
+  `run` that measured the bundle (a Release / apps run number, or the t run
+  `sdk-web-size` printed as `r` and its hex id), the `measured` bytes and a
+  `reason`;
 - `parts/<bundle>.json` holds what the start module was made of when its
   budget was last set (function bytes by `crate::module`, from the
   splitter's `split.json`). A measurement over budget names the parts that
@@ -37,6 +39,7 @@ import argparse
 import json
 import math
 import pathlib
+import re
 import subprocess
 import sys
 import tomllib
@@ -209,15 +212,20 @@ def grown(name: str, now: dict[str, int], root: pathlib.Path = REPO) -> list[str
 
 
 def raise_problems(bundle: str, name: str, record: dict, headroom: float) -> list[str]:
+    run = record.get("run")
+    # The run that measured the growth: a Release / apps run number, or the t run
+    # (`r` and its hex id, as `t test` prints it) of an sdk-web-size check.
+    measured = ((isinstance(run, int) and not isinstance(run, bool) and run > 0)
+                or (isinstance(run, str) and re.fullmatch(r"r[0-9a-f]{6,}", run) is not None))
     valid = (
         isinstance(record.get("bytes"), int) and record["bytes"] > 0
-        and isinstance(record.get("run"), int) and record["run"] > 0
+        and measured
         and isinstance(record.get("measured"), int) and record["measured"] > 0
         and isinstance(record.get("reason"), str) and len(record["reason"].strip()) >= 20
     )
     if not valid:
-        return [f"{bundle}: raise {name} needs positive bytes, an app-sdk run number, "
-                f"its measured bytes and a reason"]
+        return [f"{bundle}: raise {name} needs positive bytes, the run that measured it "
+                f"(a run number or a t run id), its measured bytes and a reason"]
     if record["bytes"] > budget_for(record["measured"], headroom):
         return [f"{bundle}: raise {name} adds more than its whole measurement"]
     return []
