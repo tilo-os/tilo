@@ -77,6 +77,23 @@ fn browser_assets_for_missing(character: char) -> &'static [&'static str] {
 }
 
 pub(crate) fn browser_text_demands_emoji(text: &str) -> bool {
+    // Only a grapheme holding one of these can ask for the emoji font, so text
+    // without any (all of ASCII, most prose) is answered without breaking it
+    // into graphemes.
+    let may_ask = |character: char| {
+        use unicode_properties::{EmojiStatus, UnicodeEmoji};
+        matches!(character, '\u{fe0f}' | '\u{20e3}' | '\u{200d}')
+            || matches!(
+                character.emoji_status(),
+                EmojiStatus::EmojiPresentation
+                    | EmojiStatus::EmojiPresentationAndModifierBase
+                    | EmojiStatus::EmojiPresentationAndEmojiComponent
+                    | EmojiStatus::EmojiPresentationAndModifierAndEmojiComponent
+            )
+    };
+    if text.is_ascii() || !text.chars().any(may_ask) {
+        return false;
+    }
     crate::text_break::graphemes(text).any(browser_grapheme_demands_emoji)
 }
 
@@ -2862,13 +2879,28 @@ impl TextRenderer {
         let Some(demands) = self.browser_font_demands.as_mut() else {
             return;
         };
-        for run in buffer.layout_runs() {
-            let emoji_presentation = browser_text_demands_emoji(run.text);
-            if emoji_presentation && !self.browser_font_assets.contains("Noto-COLRv1.ttf") {
+        let colour_emoji = self.browser_font_assets.contains("Noto-COLRv1.ttf");
+        // Each laid-out line is one wrapped line of a paragraph, and its text is
+        // the whole paragraph: asked once per paragraph, not once per line.
+        let mut asked: Option<(usize, bool)> = None;
+        for laid in buffer.layout_runs() {
+            let missing = laid.glyphs.iter().any(|glyph| glyph.glyph_id == 0);
+            if colour_emoji && !missing {
+                continue;
+            }
+            let emoji_presentation = match asked {
+                Some((line, emoji)) if line == laid.line_i => emoji,
+                _ => {
+                    let emoji = browser_text_demands_emoji(laid.text);
+                    asked = Some((laid.line_i, emoji));
+                    emoji
+                }
+            };
+            if emoji_presentation && !colour_emoji {
                 demands.insert("Noto-COLRv1.ttf".to_owned());
             }
-            for glyph in run.glyphs.iter().filter(|glyph| glyph.glyph_id == 0) {
-                let Some(text) = run.text.get(glyph.start..glyph.end) else {
+            for glyph in laid.glyphs.iter().filter(|glyph| glyph.glyph_id == 0) {
+                let Some(text) = laid.text.get(glyph.start..glyph.end) else {
                     continue;
                 };
                 for character in text.chars() {
@@ -3817,6 +3849,31 @@ fn rich_run_below_clip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_asks_for_the_emoji_font_as_its_graphemes_do() {
+        for text in [
+            "",
+            "plain words, a link or two.",
+            "café naïve Ærø",
+            "漢字かな交じり文",
+            "a heart \u{2764}\u{fe0f} drawn as emoji",
+            "a heart \u{2764} drawn as text",
+            "a face \u{263a}\u{fe0e} asked as text",
+            "keycap 1\u{fe0f}\u{20e3}",
+            "thumbs \u{1f44d}\u{1f3fd}",
+            "family \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}",
+            "a joiner\u{200d}between letters",
+            "flag \u{1f1f3}\u{1f1f1}",
+            "rocket \u{1f680}",
+        ] {
+            assert_eq!(
+                browser_text_demands_emoji(text),
+                crate::text_break::graphemes(text).any(browser_grapheme_demands_emoji),
+                "{text:?}"
+            );
+        }
+    }
 
     tilo_test_env::scenario! {
         /// A browser renderer's optional font assets.
