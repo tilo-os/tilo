@@ -587,6 +587,8 @@ where
     /// What a program taken back after a restart gives back when it ends: the lease the desktop
     /// before this one lent it, which this one knows only as one whose program ended.
     pub(crate) fn release_taken_back(&self) -> Box<dyn FnOnce() + Send> {
+        // Also what a desktop gives back as it starts: the leases of programs that ended while
+        // no desktop was there, such as every program a logout ended.
         let resources = Arc::clone(&self.resources);
         Box::new(move || resources.release_ended())
     }

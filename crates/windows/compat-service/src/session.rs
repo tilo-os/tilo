@@ -115,6 +115,9 @@ where
             vm,
             displays,
         )?;
+        // Programs a logout or a crash ended left their leases behind, with nobody to give them
+        // back: this desktop does, before it lends any of its own.
+        service.release_taken_back()();
         Ok(Self {
             service,
             store,
@@ -2130,7 +2133,8 @@ mod tests {
 
     /// A program the desktop before a restart started ends under this one: the lease that desktop
     /// lent it (its private sound daemons' directory) is given back as it ends, not left until
-    /// some later launch happens to look.
+    /// some later launch happens to look. A desktop that starts gives back the leases of programs
+    /// that ended while none was there, as a logout ends them all.
     #[test]
     fn a_program_taken_back_after_a_restart_gives_its_lease_back_when_it_ends() {
         #[derive(Default)]
@@ -2192,6 +2196,10 @@ mod tests {
             }]))),
         )
         .unwrap();
+        assert!(
+            std::mem::take(&mut *heard.0.lock().unwrap()),
+            "a starting desktop gives back what ended programs held"
+        );
 
         managed.take_back();
 
