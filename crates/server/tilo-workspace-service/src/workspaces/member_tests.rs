@@ -72,6 +72,7 @@ async fn a_device_joins_a_workspace_its_invitation_names_and_holds_its_governanc
     let serving_state = tempfile::tempdir().unwrap();
     let member_state = tempfile::tempdir().unwrap();
     let (_serving, device, created, invitation) = shared(serving_state.path(), "Shared", 11).await;
+    let person = device.1.user_public_key;
     let member = member_service(member_state.path(), device).await;
     let entered = member
         .workspaces()
@@ -94,6 +95,23 @@ async fn a_device_joins_a_workspace_its_invitation_names_and_holds_its_governanc
     assert_eq!(
         state.governance().workspace_name().as_deref(),
         Some("Shared")
+    );
+    // The surface this device's runtime reads its member copies by.
+    let held = member.workspaces();
+    assert!(held.member_ids().await.contains(&entered));
+    let (name, copy) = held
+        .member_copy(entered)
+        .await
+        .expect("the member copy is listed");
+    assert_eq!(name, "Shared");
+    assert_eq!(
+        copy.governance().workspace_name().as_deref(),
+        Some("Shared")
+    );
+    assert_eq!(held.member_actor(entered).await, Some(hex::encode(person)));
+    assert!(
+        held.member_key_holders(entered).await.is_some(),
+        "the member copy's keepers are read from its governance"
     );
 }
 

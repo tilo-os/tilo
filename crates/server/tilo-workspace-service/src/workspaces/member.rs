@@ -50,6 +50,8 @@ pub(super) struct Members {
     /// waits for before it is published, since a write published before the
     /// serving device listens is in no store of its own.
     up: std::sync::Mutex<std::collections::HashMap<WorkspaceId, tokio::sync::watch::Sender<bool>>>,
+    /// Told each time a workspace is held here as a member copy.
+    held: Arc<tokio::sync::Notify>,
 }
 
 /// The extension of the file beside a member copy's workspace naming the
@@ -365,8 +367,81 @@ impl Workspaces {
             state
         };
         self.serve_member(&state, device)?;
+        self.inner.member.held.notify_waiters();
         tracing::info!(%name, workspace_id = %workspace, "holding a workspace this device joined as a member");
         Ok(workspace)
+    }
+
+    /// Told each time a workspace is held here as a member copy.
+    #[must_use]
+    pub fn members_held(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.inner.member.held)
+    }
+
+    /// Every workspace held here as a member copy.
+    pub async fn member_ids(&self) -> Vec<WorkspaceId> {
+        let states = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut ids = Vec::new();
+        for state in states {
+            if let Ok(governed) = state.try_lock()
+                && governed.member.is_some()
+            {
+                ids.push(governed.workspace_id());
+            }
+        }
+        ids
+    }
+
+    /// `workspace`'s member copy as this device holds it: the name its
+    /// governance gives it, and the replica it syncs. `None` for a workspace
+    /// this service does not hold as a member copy.
+    pub async fn member_copy(&self, workspace: WorkspaceId) -> Option<(String, StatePeer)> {
+        let state = self
+            .inner
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace.to_string())
+            .cloned()?;
+        let governed = state.lock().await;
+        governed.member.as_ref()?;
+        Some((governed.name(), governed.peer().clone()))
+    }
+
+    /// The person the device this member copy acts as acts for in
+    /// `workspace`, as its governance admits it now.
+    pub async fn member_actor(&self, workspace: WorkspaceId) -> Option<String> {
+        let device = self.member_identity().ok()?;
+        let (_, state) = self.member_copy(workspace).await?;
+        let member = state
+            .permissions(device.cert.device_public_key, tilo_clock::wall())
+            .ok()?;
+        member.person_id().map(str::to_owned)
+    }
+
+    /// The people that hold `workspace`'s keys, as the governance of the
+    /// member copy held here decides it.
+    pub async fn member_key_holders(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
+        let (_, state) = self.member_copy(workspace).await?;
+        let policy = state.governance().governed_policy().ok()?;
+        let mut holders = std::collections::BTreeSet::new();
+        for person in policy.keepers() {
+            let mut key = [0; 32];
+            if hex::decode_to_slice(person, &mut key).is_ok() {
+                holders.insert(collab_types::Ed25519PublicKey::from_bytes(key));
+            }
+        }
+        Some(holders)
     }
 
     /// Whether `workspace` is held here as a member copy of another device.
