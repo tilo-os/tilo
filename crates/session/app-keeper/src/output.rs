@@ -15,10 +15,11 @@
 
 use std::fs::File;
 use std::io;
+use std::io::{Seek as _, SeekFrom};
 use std::os::unix::fs::FileExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 /// How much of one stream a keeper keeps: a start-up's warnings and the lines just before a
@@ -44,6 +45,78 @@ pub fn cursor(path: &Path) -> PathBuf {
 #[must_use]
 pub fn path(dir: &Path, stream: &str) -> PathBuf {
     dir.join(format!("output.{stream}"))
+}
+
+/// How much of its own log a keeper keeps: a keeper says a few lines per launch, and one that
+/// somehow said more still never fills the runtime directory its app's streams live in.
+pub const LOG_BYTES: u64 = 64 * 1024;
+
+/// Where the keeper writes what it says of itself: beside what its app wrote, never in the app's
+/// streams, which carry the app's own words to the session.
+#[must_use]
+pub fn log_path(dir: &Path) -> PathBuf {
+    dir.join("keeper.log")
+}
+
+/// The keeper's own log, as its tracing is written: [`LOG_BYTES`] long at most, and shared by
+/// every thread that logs.
+#[derive(Clone, Debug)]
+pub struct Log(Arc<Mutex<LogFile>>);
+
+#[derive(Debug)]
+struct LogFile {
+    file: File,
+    /// How many bytes were written since the log last started over.
+    written: u64,
+}
+
+impl Log {
+    /// Start the log at `path`, empty: a keeper's directory is one launch's, so the launch before
+    /// it said what it had to say.
+    ///
+    /// # Errors
+    /// The file could not be made in the keeper's directory.
+    pub fn create(path: &Path) -> io::Result<Self> {
+        let file = File::options()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        Ok(Self(Arc::new(Mutex::new(LogFile { file, written: 0 }))))
+    }
+}
+
+impl io::Write for Log {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut log = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        log.file.flush()
+    }
+}
+
+impl io::Write for LogFile {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if self.written.saturating_add(len) > LOG_BYTES {
+            // The newest lines are what a diagnosis reads: a full log starts over.
+            self.file.seek(SeekFrom::Start(0))?;
+            self.file.set_len(0)?;
+            self.written = 0;
+        }
+        self.file.write_all(bytes)?;
+        self.written = self.written.saturating_add(len);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
 }
 
 /// One stream's bounded file, as the keeper writes it.

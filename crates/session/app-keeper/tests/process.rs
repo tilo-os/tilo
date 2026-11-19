@@ -60,9 +60,15 @@ struct Keeper {
 impl Keeper {
     /// A keeper whose app runs until `<scratch>/stop` exists, then exits 3.
     fn start() -> Self {
+        Self::with_script("while [ ! -e '{stop}' ]; do sleep 0.02; done; exit 3")
+    }
+
+    /// [`Self::start`] with the app's `script`, whose `{stop}` is the file that ends it.
+    fn with_script(script: &str) -> Self {
         let scratch = tempfile::tempdir().expect("a directory");
         let dir = scratch.path().join("keeper");
         let stop = scratch.path().join("stop");
+        let script = script.replace("{stop}", &stop.display().to_string());
         let child = Command::new(env!("CARGO_BIN_EXE_tilo-app-keeper"))
             .arg("--dir")
             .arg(&dir)
@@ -71,10 +77,7 @@ impl Keeper {
             .arg("--")
             .arg("sh")
             .arg("-c")
-            .arg(format!(
-                "while [ ! -e '{}' ]; do sleep 0.02; done; exit 3",
-                stop.display()
-            ))
+            .arg(script)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -263,6 +266,64 @@ fn a_later_session_hears_the_end(keeper: &mut Keeper) {
         _ => None,
     });
     assert_eq!(end, End::Exited { code: 3 });
+}
+
+/// What the keeper says of itself goes to its own bounded log in its directory: the streams the
+/// launcher passes on carry the app's words alone, which is what a failed launch is read for.
+#[test]
+fn a_keeper_that_logs_leaves_the_apps_streams_alone() {
+    let mut keeper = Keeper::with_script(
+        "printf 'said out\\n'; printf 'said err\\n' >&2; while [ ! -e '{stop}' ]; do sleep 0.02; done; exit 3",
+    );
+    let desktop = Desktop::new();
+    let mut control = Control::greet(&keeper.dir);
+    control.attach(&desktop, keeper.child.id());
+    control.described_when(|described| described.attached && described.app_pid.is_some());
+    keeper.end_app();
+    control.wait_for(|message| matches!(message, FromKeeper::Ended { .. }).then_some(()));
+    // A session heard the end, so the keeper leaves.
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = keeper
+            .child
+            .try_wait()
+            .expect("the keeper can be waited for")
+        {
+            break status;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the keeper did not end"
+        );
+        std::thread::park_timeout(Duration::from_millis(10));
+    };
+    assert!(status.success(), "{status:?}");
+    let mut said_out = String::new();
+    let mut said_err = String::new();
+    keeper
+        .child
+        .stdout
+        .take()
+        .expect("its output")
+        .read_to_string(&mut said_out)
+        .expect("what the app wrote");
+    keeper
+        .child
+        .stderr
+        .take()
+        .expect("its error stream")
+        .read_to_string(&mut said_err)
+        .expect("what the app wrote");
+    assert_eq!(said_out, "said out\n", "the app's output alone");
+    assert_eq!(
+        said_err, "said err\n",
+        "the app's errors alone: no line of the keeper's"
+    );
+    let log = std::fs::read_to_string(keeper.dir.join("keeper.log")).expect("the keeper's log");
+    assert!(
+        log.contains("the app ended"),
+        "the keeper said how the app ended in its own log: {log}"
+    );
 }
 
 #[test]

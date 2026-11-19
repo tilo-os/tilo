@@ -368,6 +368,15 @@ impl Keeper {
     }
 }
 
+/// Make the keeper's private directory at `dir` if it is not there yet, before anything of the
+/// launch is written into it.
+///
+/// # Errors
+/// The directory could not be made, or one at `dir` is not this user's own.
+pub fn prepare_dir(dir: &Path) -> io::Result<()> {
+    private_dir(dir)
+}
+
 /// The keeper's directory: made if missing, and refused unless only its user can enter it.
 fn private_dir(dir: &Path) -> io::Result<()> {
     match std::fs::create_dir(dir) {
