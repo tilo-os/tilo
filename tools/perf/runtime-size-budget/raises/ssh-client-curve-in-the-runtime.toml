@@ -1,0 +1,16 @@
+# Remote and Git Client each carried their SSH client's P-384 code: p384,
+# primeorder and crypto-bigint, 117,190 bytes of named code in each. The
+# runtime exports it once now (baaebb759ef), and each of the two apps dropped
+# 114,688 bytes: t's app-sizes-x86_64 measured Remote 3,165,184 -> 3,050,496
+# and Git Client 4,211,712 -> 4,097,024 at ea60c484c1e against baaebb759ef
+# (runs rebb000d6fc and r1d69ee0eb2). The runtime carries the one copy,
+# 161,085,584 -> 161,254,848 bytes, 169,264 more, which the 229,376 bytes the
+# two apps dropped covers. The runtime is 36,288 over its 161,218,560-byte
+# budget; the amount is that excess rounded up to one 64 KiB step, with no
+# headroom besides it. The aarch64 runtime exports the same code once for the
+# same two apps; its first run prints what to raise that budget to.
+reason = "Remote and Git Client each carried their SSH client's P-384 code, so the runtime exports it once: the two apps dropped 229,376 bytes together and the runtime grew 169,264, less than they saved"
+run = "r1d69ee0eb2"
+
+[runtime.x86_64]
+bytes = 65536
