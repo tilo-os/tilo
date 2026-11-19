@@ -1021,11 +1021,7 @@ impl Landing<'_, '_> {
                 for picture in &page.pictures {
                     images.push(workspace.put(&picture.bytes)?);
                 }
-                let markdown = if page.url.is_empty() {
-                    page.markdown.clone()
-                } else {
-                    format!("{}\n\n[{}]({})", page.markdown, "Open in Outline", page.url)
-                };
+                let markdown = page.markdown.clone();
                 let origin = origin_of(
                     page.author.as_ref(),
                     "Outline",
