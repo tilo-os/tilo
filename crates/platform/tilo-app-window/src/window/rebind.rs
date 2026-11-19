@@ -6,7 +6,7 @@ use super::UiNode;
 /// that would take the other path now that the window offers the actions `after` named as another
 /// kind; `None` when none would. An event that runs an action the app publishes is bound to the
 /// action itself, and one that runs an action it does not publish is the view's own.
-pub(super) fn rebinding(
+pub(crate) fn rebinding(
     before: &crate::adapter::Published,
     after: &crate::adapter::Adapter,
     node: &UiNode,
