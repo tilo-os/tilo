@@ -30,10 +30,11 @@ use deferred_intent::validate_deferred_arguments;
 pub(crate) use deferred_intent::{DeferredIntent, PreparedActionIntent};
 
 mod control;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use control::control_draft_identity;
 pub(crate) use control::{
     ControlContinuationArguments, ControlDeclaration, ControlIdentity, ControlObservation,
-    control_declaration, control_draft_identity, control_observation,
-    control_observation_with_arguments,
+    control_declaration, control_observation, control_observation_with_arguments,
 };
 use control::{
     ControlInputSurface, control_input_surface, resources_for_control_target, unique_control_spec,
