@@ -483,12 +483,9 @@ struct Fine: View {
 /// The place of a live Tilo thing: one card, filled whole in the cards' own tone. The source's
 /// own view draws the thing there, or says in its place why it is not shown, at the height it
 /// takes itself; its buttons are a card's buttons. Without a source, the thing's name stands there.
-/// A thing the person's own assistant shared for them carries one button under it, the way to
-/// end that share; no other thing does.
 struct LiveThingPlace: View {
     let thing: LiveThing
     @Environment(\.liveThingView) private var draw
-    @Environment(AssistantModel.self) private var model: AssistantModel?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -507,12 +504,6 @@ struct LiveThingPlace: View {
             }
             .frame(maxWidth: .infinity)
             .accessibilityLabel(thing.title)
-            if thing.theirsToEnd {
-                Button(AssistantWords.stopSharing.said) { model?.stopSharing(thing.id) }
-                    .buttonStyle(BoxButtonStyle())
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Token.raised)

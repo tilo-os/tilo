@@ -88,10 +88,7 @@ final class LiveThingPlaceTests: XCTestCase {
             window.setContentSize(hosting.fittingSize)
             await drive.settle(200)
             let stops = drive.nodes(AssistantWords.stopSharing.said, role: "AXButton")
-            XCTAssertEqual(stops.count, 1, "one thing is theirs to end, and one button says so: \(drive.said())")
-            drive.picture("live-place-stop-sharing-\(scheme == .dark ? "dark" : "light")")
-            drive.press(stops.first)
-            await drive.until("the source is asked to end that thing and no other") { source.calls("stopSharing") == ["stopSharing(poem)"] }
+            XCTAssertEqual(stops.count, 0, "no stop-sharing button stands under a live thing: \(drive.said())")
             window.contentView = nil
             window.close()
         }
