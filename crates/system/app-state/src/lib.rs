@@ -43,6 +43,7 @@ pub use doc_writer::{
     StoredLoad,
 };
 pub use fs_store::{FsStore, Held, INSTANCE_VIEWS_DIR, finish_writes, workspace_index_directory};
+pub mod held;
 mod save_plan;
 pub use save_plan::{Save, SavePlan};
 
